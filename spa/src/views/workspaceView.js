@@ -13,7 +13,7 @@ import { mountAgentRail } from "../core/agentRail.js";
 import { createAgentSelection } from "../core/agentSelection.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { renderFilesTab } from "./files.js";
-import { directoryId, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
+import { directoryId, directoryTab, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
 import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
@@ -234,8 +234,7 @@ function refreshWorkspacePane(state, workspace) {
   const directory = selectedDirectory(workspace, state.route.sourceId);
   const sourceId = directoryId(directory);
   if (!sourceId) return null;
-  const tab = directory.is_git === false ? "files" : state.route.tab || "changes";
-  const canonical = { ...state.route, sourceId, tab };
+  const canonical = { ...state.route, sourceId, tab: directoryTab(directory, state.route.tab) };
   const body = $("#tabbody");
   const previousGuard = state.pane?.canLeave;
   if (App.routeLeaveGuard === previousGuard) App.routeLeaveGuard = null;
@@ -251,6 +250,15 @@ function refreshWorkspacePane(state, workspace) {
   App.routeLeaveGuard = state.pane?.canLeave || null;
   return { directory, canonical, body };
 }
+
+/** The console is the workspace's, not a directory's: moving between
+ *  directories or refs never replaces the sessions it is holding. */
+const mountWorkspaceConsole = (state) =>
+  mountConsole($("#console-region"), {
+    kind: "workspace",
+    workspaceId: state.route.workspaceId,
+    deviceId: state.context.deviceId,
+  });
 
 function mountWorkspaceAgentRail(workspace, state, sourceId) {
   const { route, context } = state;
@@ -277,17 +285,12 @@ function mountWorkspace(workspace, state) {
   state.agentRail = mountWorkspaceAgentRail(workspace, state, sourceId);
   if (!sourceId) {
     $("#tabbody").innerHTML = errorHtml("This workspace has no source directories.");
-    state.consolePanel = mountConsole($("#console-region"), {
-      kind: "workspace",
-      workspaceId: route.workspaceId,
-      deviceId: state.context.deviceId,
-    });
+    state.consolePanel = mountWorkspaceConsole(state);
     return;
   }
 
-  const tab = directory.is_git === false ? "files" : route.tab || "changes";
-  const canonical = { ...route, sourceId, tab };
-  if (route.sourceId !== sourceId || route.tab !== tab) markRoute(canonical);
+  const canonical = { ...route, sourceId, tab: directoryTab(directory, route.tab) };
+  if (route.sourceId !== sourceId || route.tab !== canonical.tab) markRoute(canonical);
 
   state.refreshPane = (nextWorkspace) => refreshWorkspacePane(state, nextWorkspace);
   const mounted = state.refreshPane(workspace);
@@ -298,11 +301,7 @@ function mountWorkspace(workspace, state) {
 
   state.paintTabs = directoryTabsPainter(mounted.body, state, sourceId);
   App.viewDispose = observeTabs(mounted.body, state.paintTabs, App.viewDispose);
-  state.consolePanel = mountConsole($("#console-region"), {
-    kind: "workspace",
-    workspaceId: route.workspaceId,
-    deviceId: state.context.deviceId,
-  });
+  state.consolePanel = mountWorkspaceConsole(state);
 }
 
 export async function renderWorkspace() {

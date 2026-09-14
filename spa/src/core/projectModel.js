@@ -1,3 +1,5 @@
+import { directoryTab } from "./workspaceModel.js";
+
 /** The primary checkout route for a project returned by project.add/list.
  * Plain folders start in Files; repositories retain the Changes landing.
  *
@@ -34,6 +36,6 @@ export function workspaceRoute(workspace) {
     projectId: workspace.project_id,
     workspaceId: workspace.id,
     ...(directory ? { sourceId: directory.source_id || directory.id } : null),
-    tab: directory?.is_git === false ? "files" : "changes",
+    tab: directoryTab(directory),
   };
 }

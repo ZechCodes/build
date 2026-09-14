@@ -42,6 +42,7 @@ import { stampWorkspace } from "./feedMerge.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
 import { workspaceRoute } from "./projectModel.js";
+import { directoryTab } from "./workspaceModel.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
@@ -261,7 +262,7 @@ function openWorkspaceDirectory(sourceId) {
     projectId: App.route.projectId,
     workspaceId: App.route.workspaceId,
     sourceId,
-    tab: directory.is_git === false ? "files" : "changes",
+    tab: directoryTab(directory),
   });
 }
 

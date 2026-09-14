@@ -7,6 +7,13 @@ export function selectedDirectory(workspace, sourceId) {
   return directories.find((entry) => directoryId(entry) === sourceId) || directories[0] || null;
 }
 
+/** Which tab a workspace directory can be standing on. A directory with no
+ * repository in it has no Changes to show, so Files is the only surface it
+ * has — whatever the URL, the row or the menu asked for. Everything that mints
+ * a workspace route or opens a directory asks here, so the rule is one rule. */
+export const directoryTab = (directory, wanted = "changes") =>
+  directory?.is_git === false ? "files" : wanted || "changes";
+
 export function workspaceScope(workspaceId, sourceId) {
   return workspaceId && sourceId ? { workspace_id: workspaceId, source_id: sourceId } : null;
 }

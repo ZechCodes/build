@@ -30,7 +30,10 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // up instead of walking every kind in one chain.
 // 66 since a row's project tag is one function both row painters call, rather
 // than the same conditional written out in each of them.
-const RATCHETED_FUNCTIONS = 66;
+// 65 since the rail's projects face lists only workspaces: a project block's
+// head has one kind of surface to open and one create button, and its chevron
+// is its own helper.
+const RATCHETED_FUNCTIONS = 65;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

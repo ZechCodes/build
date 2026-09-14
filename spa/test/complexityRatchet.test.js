@@ -5,10 +5,9 @@
 // way once the comment is written, so the count is asserted here: adding one
 // fails this test, and retiring one is a deliberate edit of the number below.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
+
+import { srcJsFiles, srcSourceOf } from "./srcFiles.js";
 
 // Measured when the gate landed: 78 functions across 39 files under src/.
 // 77 since diffFileHtml became a header, a body and a frame.
@@ -28,35 +27,22 @@ import { describe, it, expect } from "vitest";
 // up instead of walking every kind in one chain.
 const RATCHETED_FUNCTIONS = 68;
 
-const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything
 // below it without touching the count above: none may exist.
 const BLANKET = /eslint-disable(?!-next-line)[^\n]*complexity/;
 
-function jsFiles(dir) {
-  return readdirSync(dir, { withFileTypes: true })
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .flatMap((entry) => {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) return jsFiles(path);
-      return entry.name.endsWith(".js") ? [path] : [];
-    });
-}
-
 describe("the complexity ratchet", () => {
   it("is never switched off for a whole block or file", () => {
-    const blanket = jsFiles(SRC).filter((path) => BLANKET.test(readFileSync(path, "utf8")));
+    const blanket = srcJsFiles().filter((file) => BLANKET.test(srcSourceOf(file)));
     expect(blanket, "a blanket eslint-disable for complexity defeats the ratchet").toEqual([]);
   });
 
   it("holds at the count measured when the gate landed", () => {
-    const found = jsFiles(SRC).flatMap((path) =>
-      readFileSync(path, "utf8")
+    const found = srcJsFiles().flatMap((file) =>
+      srcSourceOf(file)
         .split("\n")
-        .flatMap((line, index) =>
-          line.includes(DISABLE) ? [`${path.slice(SRC.length + 1)}:${index + 1}`] : [],
-        ),
+        .flatMap((line, index) => (line.includes(DISABLE) ? [`${file}:${index + 1}`] : [])),
     );
     expect(
       found.length,

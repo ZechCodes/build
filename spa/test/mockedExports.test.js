@@ -15,6 +15,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { srcJsFiles, srcSourceOf } from "./srcFiles.js";
+
 /** Every `vi.mock` / `vi.doMock` on a local module whose factory is an object
  *  literal, as `{ file, module, names }`. A factory that returns anything else
  *  (a class, a spread of the real module) names nothing to check. */
@@ -75,9 +77,8 @@ const MOCKS = readdirSync(resolve("test"))
 /** Every name `src/` imports from the module at `path`, across the whole tree. */
 function namesImportedFromSrc(path) {
   const names = new Set();
-  const files = readdirSync(resolve("src"), { recursive: true }).filter((file) => String(file).endsWith(".js"));
-  for (const file of files) {
-    const source = readFileSync(resolve("src", String(file)), "utf8");
+  for (const file of srcJsFiles()) {
+    const source = srcSourceOf(file);
     const imports = new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*["'][^"']*${path}["']`, "g");
     for (let match = imports.exec(source); match; match = imports.exec(source))
       for (const name of match[1].split(",")) names.add(name.trim().split(/\s+/).pop());

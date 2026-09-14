@@ -13,11 +13,9 @@
 // it. Comments are stripped first — prose may still talk about what the app
 // used to do, as long as no code does it.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const SRC = resolve("src");
+import { srcJsFiles, srcSourceOf } from "./srcFiles.js";
 
 // The six aliases plus the harness catalog that sat beside them, all read off
 // App itself. `context.call` and `row.offline` are the answers that replaced
@@ -42,24 +40,17 @@ const RETIRED = [
 
 const RETIRED_NAME = new RegExp(`\\b(${RETIRED.join("|")})\\b`);
 
-function jsFilesIn(dir) {
-  return readdirSync(dir, { recursive: true })
-    .map(String)
-    .filter((file) => file.endsWith(".js"))
-    .sort();
-}
-
 /** One file's source with its comments blanked out, line count preserved so a
  *  hit still reports the line it is on. */
 function codeOf(file) {
-  return readFileSync(resolve(SRC, file), "utf8")
+  return srcSourceOf(file)
     .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
     .replace(/\/\/[^\n]*/g, "");
 }
 
 /** Every `file:line` under src/ whose code matches, comments not counted. */
 function hitsFor(pattern) {
-  return jsFilesIn(SRC).flatMap((file) =>
+  return srcJsFiles().flatMap((file) =>
     codeOf(file)
       .split("\n")
       .flatMap((line, index) => (pattern.test(line) ? [`${file}:${index + 1} ${line.trim()}`] : [])),
@@ -70,7 +61,7 @@ describe("no file under spa/src reads a current device", () => {
   it("finds files to scan at all", () => {
     // A guard on the guard: a reader that stopped finding anything would
     // otherwise pass by scanning nothing.
-    expect(jsFilesIn(SRC).length).toBeGreaterThan(100);
+    expect(srcJsFiles().length).toBeGreaterThan(100);
   });
 
   it("names none of the retired App.* aliases", () => {

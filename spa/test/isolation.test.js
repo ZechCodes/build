@@ -414,7 +414,7 @@ describe("the device's settings page", () => {
     );
 
     expect(document.querySelector("#root [data-isolation=lock]").textContent).toBe(
-      "Locked to git worktrees on this device: no reflink support here.",
+      "Rift is unavailable on this device: no reflink support here.",
     );
     const options = [...document.querySelector("#root [data-isolation=select]").options];
     expect(options.map((option) => option.disabled)).toEqual([false, true]);

@@ -89,7 +89,7 @@ describe("the machine's own panels", () => {
     const rows = [...document.querySelectorAll("#projlist .projrow")];
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("relaydb");
-    expect(rows[0].textContent).toContain("Copy-on-write clone");
+    expect(rows[0].textContent).toContain("Rift (copy-on-write)");
 
     document.querySelector("#newrepo").click();
     const addOptions = openNewRepo.mock.calls[0][1];
@@ -187,8 +187,16 @@ describe("device settings", () => {
     expect(session.call).toHaveBeenCalledWith("settings.set", { isolation: "rift" });
   });
 
-  it("uses the named device's Rift capability rather than the active application session", async () => {
-    App.call = vi.fn().mockResolvedValue({ isolation_available: { rift: true } });
+  it("uses the named device's Rift capability rather than another machine's", async () => {
+    // Every machine answers for itself: a second device that has Rift says
+    // nothing about whether this one does, and is never asked.
+    const spare = {
+      deviceId: "spare",
+      call: vi.fn().mockResolvedValue({ isolation_available: { rift: true } }),
+      close: vi.fn(),
+    };
+    App.devices = [...App.devices, { id: "spare", name: "Spare machine", status: "online" }];
+    openSession.mockImplementation(async (deviceId) => (deviceId === "spare" ? spare : session));
     session.call.mockImplementation(async (method) => {
       if (method === "settings.get") return {
         projects_dir: "/projects",
@@ -207,7 +215,7 @@ describe("device settings", () => {
     const rift = [...document.querySelector("[data-isolation=select]").options].find(({ value }) => value === "rift");
     expect(rift.disabled).toBe(true);
     expect(document.querySelector("[data-isolation=lock]").textContent).toContain("Rift CLI was not found");
-    expect(App.call).not.toHaveBeenCalled();
+    expect(spare.call).not.toHaveBeenCalled();
   });
 
   it("does not let a detached preference control call its old device", async () => {

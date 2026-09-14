@@ -95,13 +95,21 @@ let calls;
 let rail;
 let call;
 
-/** The one machine these cases work: what the rail is handed to write into. */
-const device = () => contextFor("device-1");
+// The one machine these cases work.
+const DEVICE_ID = "device-1";
+
+/** That machine's context: what the rail is handed to write into. */
+const device = () => contextFor(DEVICE_ID);
+
+/** Its bridge answers with this from now on. Adopting a session for a device
+ *  the registry already holds is that bridge reconnecting, so this is how a
+ *  case hands the rail a new transport mid-run. */
+const bridgeAnswersWith = (answer) => adoptDeviceSession({ deviceId: DEVICE_ID, call: answer });
 
 const mountBranch = () => {
   rail = mountAgentRail(host(), {
     kind: "branch",
-    deviceId: "device-1",
+    deviceId: DEVICE_ID,
     projectId: "project-1",
     branch: "build/isolation",
     autofocusComposer: true,
@@ -138,7 +146,7 @@ beforeEach(async () => {
     }
     return {};
   });
-  adoptDeviceSession({ deviceId: "device-1", call });
+  bridgeAnswersWith(call);
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 });
@@ -163,7 +171,7 @@ describe("agent rail chat ownership", () => {
       if (postCount > 1) return { posted_sequence: 8 };
       return new Promise((_, reject) => (rejectPost = reject));
     });
-    adoptDeviceSession({ deviceId: "device-1", call });
+    bridgeAnswersWith(call);
     await mountBranch();
 
     bubble("agent-b").click();
@@ -261,7 +269,7 @@ describe("agent rail chat ownership", () => {
       calls.push({ method, params });
       return new Promise((resolve) => (resolveDetail = resolve));
     });
-    adoptDeviceSession({ deviceId: "device-1", call });
+    bridgeAnswersWith(call);
     await mountBranch();
 
     expect(input()).toBeNull();
@@ -296,7 +304,7 @@ describe("agent rail chat ownership", () => {
       calls.push({ method, params });
       return new Promise((resolve) => (resolveAdd = resolve));
     });
-    adoptDeviceSession({ deviceId: "device-1", call });
+    bridgeAnswersWith(call);
     await mountBranch();
 
     const provisionalInput = input();
@@ -329,7 +337,7 @@ describe("agent rail chat ownership", () => {
       calls.push({ method, params });
       return new Promise((resolve) => (resolveAdd = resolve));
     });
-    adoptDeviceSession({ deviceId: "device-1", call });
+    bridgeAnswersWith(call);
     await mountBranch();
 
     addBubble().click();
@@ -365,7 +373,7 @@ describe("agent rail chat ownership", () => {
       }
       return { entity_id: "run-1", agent: agent("created-agent", 1) };
     });
-    adoptDeviceSession({ deviceId: "device-1", call });
+    bridgeAnswersWith(call);
     await mountBranch();
 
     writeDraft("start the agent");
@@ -382,7 +390,7 @@ describe("agent rail chat ownership", () => {
       }
       return baseCall(method, params);
     });
-    adoptDeviceSession({ deviceId: "device-1", call: reconnectedCall });
+    bridgeAnswersWith(reconnectedCall);
     rail.dispose();
     rail = null;
     document.body.innerHTML = '<div id="agent-rail"></div>';
@@ -415,7 +423,7 @@ describe("agent rail chat ownership", () => {
       }
       return originalCall(method, params);
     });
-    adoptDeviceSession({ deviceId: "device-1", call: oldCall });
+    bridgeAnswersWith(oldCall);
     await mountBranch();
 
     writeDraft("start after reconnect");
@@ -433,7 +441,7 @@ describe("agent rail chat ownership", () => {
       if (method === "agent.start") return { agent_id: "created-agent" };
       return originalCall(method, params);
     });
-    adoptDeviceSession({ deviceId: "device-1", call: newCall });
+    bridgeAnswersWith(newCall);
     host().querySelector(".chat-recovery-entry button").click();
     await flush();
 
@@ -455,7 +463,7 @@ describe("agent rail chat ownership", () => {
       calls.push({ method, params });
       return new Promise((_, reject) => (rejectCreation = reject));
     });
-    adoptDeviceSession({ deviceId: "device-1", call: heldCall });
+    bridgeAnswersWith(heldCall);
     await mountBranch();
 
     bubble("agent-b").click();
@@ -508,7 +516,7 @@ describe("agent rail chat ownership", () => {
     };
     rail = mountAgentRail(host(), {
       kind: "issue",
-      deviceId: "device-1",
+      deviceId: DEVICE_ID,
       projectId: "project-1",
       issueId: "issue-1",
       autofocusComposer: true,

@@ -319,6 +319,25 @@ to ask about.
   Decisions.md` (dated lines at the inbox and router decisions) say what the
   product now does.
 
+### Running the suites
+
+```bash
+cd spa && npm run lint && npm test && npm run build
+```
+
+Node 25 shipped an experimental Web Storage implementation, and it is a trap
+for this tree: it defines a `localStorage` global that answers `undefined`
+unless the process was started with `--localstorage-file`, and vitest's jsdom
+environment leaves a global that is already defined alone. jsdom's own Storage
+therefore never lands, and every jsdom suite dies on the first preference
+`spa/src/app.js` reads. `spa/test/setup/localStorage.js` (wired in
+`spa/vite.config.js` under `test.setupFiles`) installs an in-memory Storage
+with `Object.defineProperty` — a plain assignment lands on Node's setter and
+changes nothing — whenever there is no usable one, which also gives the
+node-environment suites a `localStorage` they never had. The suite is green on
+Node 22 (CI, `spa/.nvmrc`) and on Node 26, with or without
+`--no-experimental-webstorage`.
+
 ### Unverified
 
 1. **The two-bridge browser pass has not been run — for any of the three

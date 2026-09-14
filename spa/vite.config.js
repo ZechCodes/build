@@ -50,6 +50,10 @@ export default defineConfig({
     target: "es2022",
   },
   test: {
+    // Node 25+ defines a `localStorage` global that answers undefined without
+    // --localstorage-file, and vitest's jsdom environment will not replace a
+    // global that is already there. Every suite is given one here instead.
+    setupFiles: ["./test/setup/localStorage.js"],
     // The DOM suites open with `await import("../src/app.js")`, which makes
     // the worker transform and execute the whole client module graph before
     // the first assertion. That is work, not waiting — and with the suite's

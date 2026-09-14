@@ -35,10 +35,11 @@ vi.mock("../src/devices.js", () => ({
 // The gate opens every online device at once and carries on the moment the
 // first one answers; the context it is handed is what the app calls home.
 const homeContext = { deviceId: "d1", session: {}, call: async () => ({}) };
+const greetLiveBridge = vi.fn();
 vi.mock("../src/connection.js", () => ({
   openDeviceSessions: () => ({ first: Promise.resolve(homeContext), settled: Promise.resolve([homeContext]) }),
   claimHomeContext: () => {},
-  greetLiveBridge: () => {},
+  greetLiveBridge: (...args) => greetLiveBridge(...args),
   setConn: () => {},
   CONNECTION_STATUS: { connected: "", connecting: "", deviceOffline: "", noDevices: "" },
 }));
@@ -102,6 +103,16 @@ describe("the first-run screen", () => {
     await flush();
     expect(approveDevice).toHaveBeenCalledWith("G6ZP-KD2U");
     expect(refreshDevices).toHaveBeenCalledTimes(2);
+  });
+
+  // One owner of one fact: connection.js greets every device it lands, so the
+  // gate greeting the home device again would put a second session.hello on the
+  // wire at every boot.
+  it("leaves greeting a bridge to whoever landed its session", async () => {
+    devices = [{ id: "d1", name: "studio", fingerprint: "AAAA", status: "online" }];
+    await boot();
+    await flush();
+    expect(greetLiveBridge).not.toHaveBeenCalled();
   });
 
   it("names a lookup refusal without losing the screen", async () => {

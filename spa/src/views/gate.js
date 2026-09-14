@@ -5,7 +5,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, render } from "../app.js";
-import { CONNECTION_STATUS, claimHomeContext, greetLiveBridge, openDeviceSessions, setConn } from "../connection.js";
+import { CONNECTION_STATUS, claimHomeContext, openDeviceSessions, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -49,10 +49,11 @@ async function enterApp() {
   setGate(false);
   paintDevicePicker();
   setConn(CONNECTION_STATUS.connected);
-  // Before the surfaces mount, so they take the cadence this bridge earns: a
-  // bridge that pushes lets them stand down to the safety poll, and one that
-  // does not leaves every interval exactly where it has always been.
-  greetLiveBridge(home);
+  // The bridges are already greeted: connection.js greets every device as it
+  // lands it, which is before the first one answers here — so the surfaces
+  // mount on the cadence each bridge has earned. A bridge that pushes lets them
+  // stand down to the safety poll; one that does not leaves every interval
+  // exactly where it has always been.
   startFeed();
   startCacheSync();
   initInboxRail();

@@ -102,12 +102,17 @@ function closeQuietly(session) {
 }
 
 /** The one writer of a context's offline mark. */
-export function setContextOffline(deviceId, { offline = true, sinceMs = null } = {}) {
+export function setContextOffline(deviceId, mark = {}) {
   const context = contexts.get(deviceId);
-  if (!context) return null;
+  if (context) writeOfflineMark(context, mark);
+  return context || null;
+}
+
+// Going offline without a stamp means "as of now"; coming back online has no
+// time to keep.
+function writeOfflineMark(context, { offline = true, sinceMs = null }) {
   context.offline = Boolean(offline);
   context.offlineSince = context.offline ? sinceMs || Date.now() : null;
-  return context;
 }
 
 /** Where creation goes and what the App.* aliases point at. Stage 1's meaning

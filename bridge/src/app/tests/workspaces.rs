@@ -1006,6 +1006,16 @@ fn clean_only_finish_rejects_hidden_dirty_work_then_archives_and_stops_queued_ag
         crate::workspace::WorkspaceStatus::Finished
     );
 
+    assert_archived_workspace_stays_readable(&mut state, workspace_id, run_id);
+}
+
+/// What a workspace still answers after Done: it keeps the conversation and the
+/// agents it had, and the archive lists it with the time it was finished at.
+fn assert_archived_workspace_stays_readable(
+    state: &mut AppState,
+    workspace_id: &str,
+    run_id: &str,
+) {
     let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
     assert_eq!(detail["result"]["entity_id"], run_id);
     assert_eq!(detail["result"]["agents"].as_array().unwrap().len(), 1);

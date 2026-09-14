@@ -52,6 +52,21 @@ export function verbCall(row) {
  */
 export const rowFeedView = (row, feed) => deviceView(feed, row?.deviceId || homeContext()?.deviceId);
 
+/**
+ * The same rows, the home device's first.
+ *
+ * A route carries no device until stage 2, and every machine mints a `proj-1`
+ * with a `main` in it — so a route naming a project and a branch can stand on
+ * two rows, and the one it means is the home device's. A row this client holds
+ * itself names no device and is the home device's too. Stage 2 reads the device
+ * off the route and this goes.
+ */
+export function homeRowsFirst(rows) {
+  const home = homeContext()?.deviceId;
+  const mine = (row) => !row.deviceId || row.deviceId === home;
+  return [...rows.filter(mine), ...rows.filter((row) => !mine(row))];
+}
+
 /** What a row on another device is titled with instead of what it opens. */
 export const AWAY_TITLE = "Opens once this page can name its device";
 

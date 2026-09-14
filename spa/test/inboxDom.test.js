@@ -387,6 +387,17 @@ describe("the inbox rail", () => {
     expect(rowFor("iss-1").className).not.toContain("active");
   });
 
+  // Every device's first project is `proj-1` and every repo has a `main`, so a
+  // route that names neither can stand on two rows. Until a route carries its
+  // device, the one it means is the home device's.
+  it("marks the home device's row when another device holds the same branch", () => {
+    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+    feed([branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", run_id: "run-2", worktree_id: "wt-2" }), branchRow()]);
+
+    expect(rowFor("run-2").className).not.toContain("active");
+    expect(rowFor("run-1").className).toContain("active");
+  });
+
   it("deletes a branch on Done, dismisses its row at once, and reads the entry", async () => {
     menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);

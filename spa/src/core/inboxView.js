@@ -45,7 +45,14 @@ import { entityIdOf } from "./entityId.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { homeProjectKey, onDeviceStateChanged } from "./deviceContexts.js";
-import { openableHereBlock, openableHereRows, paintDeviceState, rowFeedView, verbCall } from "./inboxDevices.js";
+import {
+  homeRowsFirst,
+  openableHereBlock,
+  openableHereRows,
+  paintDeviceState,
+  rowFeedView,
+  verbCall,
+} from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
@@ -201,8 +208,11 @@ function rowUi(showProject) {
   // A reroute goes to the machine holding the capture, so the destinations it
   // offers are that machine's — its projects, and the branches they have.
   const destinations = rowFeedView(entryOf(picker.rerouteKey), snapshot);
+  // A route names no device yet, so the row it stands on is looked for among
+  // the home device's rows before anybody else's.
+  const activeKey = activeEntryKey(App.route, homeRowsFirst(entries));
   return {
-    activeKey: activeEntryKey(App.route, entries),
+    activeKey,
     openMenuKey,
     projects: destinations.projects,
     ...picker,
@@ -213,15 +223,15 @@ function rowUi(showProject) {
     folded: new Set(),
     // The block holding the branch or issue the route stands on. A capture's
     // route names no project; the row it stands on does.
-    activeProjectId: activeProjectKey(),
+    activeProjectId: activeProjectKey(activeKey),
   };
 }
 
 /** The block the route stands in, named the way every block is named. The row
  *  the route opens says which device it is on; a route that matches no row is
  *  the home device's project. */
-function activeProjectKey() {
-  const standing = entries.find((entry) => entry.key === activeEntryKey(App.route, entries));
+function activeProjectKey(activeKey) {
+  const standing = entries.find((entry) => entry.key === activeKey);
   if (standing) return standing.projectKey || null;
   return homeProjectKey(App.route.projectId);
 }

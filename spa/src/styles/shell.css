@@ -228,6 +228,8 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
    something is shut and says why. */
 .inbox-offline { opacity:.62; }
 .inbox-offline .mi[aria-disabled="true"] { opacity:.55; cursor:default; }
+/* And the word that says which of the two the grey means. */
+.inbox-away { flex:none; font-size:11px; }
 /* A checkout with no branch is on no URL, so its row opens nothing. */
 .inbox-unroutable { cursor:default; }
 .inbox-entry .warn { font-size:11px; }

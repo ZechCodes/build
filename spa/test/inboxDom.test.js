@@ -1175,6 +1175,21 @@ describe("a row on another device", () => {
     expect(awayCall).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
   });
 
+  // Grey on its own is not a mark: a dimmed row reads as "this matters less",
+  // not as "this machine is not here". The row says the word, where its own
+  // tags go, and the word goes the moment the machine answers again.
+  it("wears the word offline while its device is away", async () => {
+    setContextOffline("dev-2", { offline: true });
+    feed([branchRow(), awayRow()]);
+
+    expect(rowFor("run-2").querySelector(".inbox-away").textContent).toBe("offline");
+    expect(rowFor("run-1").querySelector(".inbox-away")).toBe(null);
+
+    setContextOffline("dev-2", { offline: false });
+
+    expect(rowFor("run-2").querySelector(".inbox-away")).toBe(null);
+  });
+
   // A reroute goes to the machine holding the capture, and that daemon knows
   // only the projects it minted itself — every machine has a `p1`. So the
   // picker offers that device's projects and the branches they already have.

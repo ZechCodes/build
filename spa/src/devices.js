@@ -2,7 +2,7 @@
 // and are patched live by the relay's device_key / device_offline pushes.
 
 import { $ } from "./dom.js";
-import { esc } from "./core/text.js";
+import { deviceOfflineWord, esc } from "./core/text.js";
 import { ICON_CHEVRON_DOWN, ICON_SETTINGS } from "./core/icons.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
@@ -140,7 +140,7 @@ function choiceHtml(deviceId, label, pressed) {
 }
 
 function deviceLabel(device) {
-  return `${device.name}${device.status === "online" ? "" : " (offline)"}`;
+  return `${device.name}${device.status === "online" ? "" : ` (${deviceOfflineWord})`}`;
 }
 
 function setPickerOpen(picker, open) {

@@ -39,6 +39,11 @@ export const deviceFrozenText = (name) =>
  *  for surfaces with room for one. */
 export const deviceOfflineMark = "Device offline";
 
+/** The one word a greyed row and the device picker both wear to say a machine
+ *  is not here. Lower case: it is a mark on something else, never a sentence of
+ *  its own. */
+export const deviceOfflineWord = "offline";
+
 /** What it says where nothing is reachable: no device to name, and no time that
  *  would mean anything, so it says what is true and what happens. */
 export const allDevicesOfflineText = () =>

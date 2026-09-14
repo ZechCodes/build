@@ -12,7 +12,7 @@
 import { App } from "../app.js";
 import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
 import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
-import { allDevicesOfflineText, deviceOfflineMark } from "./text.js";
+import { allDevicesOfflineText, deviceOfflineMark, deviceOfflineWord } from "./text.js";
 import { deviceOfflineNotice } from "./deviceNotice.js";
 import { notifyError } from "./notify.js";
 import { EMPTY_CATALOG } from "./modelCatalog.js";
@@ -83,7 +83,7 @@ export const verbCall = (row) => deviceCall(row && row.deviceId);
  */
 export function paintDeviceState(list, { entryFor, blockFor }) {
   for (const element of list.querySelectorAll(".inbox-entry")) {
-    markDeviceState(element, entryFor(element.dataset.key), ".inbox-menu .mi");
+    markAway(element, markDeviceState(element, entryFor(element.dataset.key), ".inbox-menu .mi"));
   }
   for (const element of list.querySelectorAll(".inbox-project")) {
     markDeviceState(element, blockFor(element.dataset.project), ":scope > .inbox-project-head .inbox-project-create");
@@ -92,7 +92,8 @@ export function paintDeviceState(list, { entryFor, blockFor }) {
 
 /** One row or block: greyed while its own device is away, and every control
  *  named by `controls` shut with the reason. A row this client holds itself
- *  names no device and is nobody's to grey. */
+ *  names no device and is nobody's to grey. Says whether that device is away,
+ *  which is what a row's own mark is painted from. */
 function markDeviceState(element, painted, controls) {
   const reason = painted && painted.deviceId ? verbTarget(painted).disabled : false;
   element.classList.toggle("inbox-offline", Boolean(reason));
@@ -100,6 +101,26 @@ function markDeviceState(element, painted, controls) {
     if (reason) shutControl(control, reason);
     else openControl(control);
   }
+  return Boolean(reason);
+}
+
+/** The word a greyed row wears. Grey on its own says "this matters less", not
+ *  "the machine holding it is not here", so the row says it — on its first
+ *  line, where its own tags are, ahead of the unread count. It is put there
+ *  after the paint, with the grey, because nothing about a row changes when its
+ *  machine goes. */
+function markAway(element, away) {
+  const shown = element.querySelector(".inbox-away");
+  if (!away) {
+    shown?.remove();
+    return;
+  }
+  const line = element.querySelector(".inbox-body > .inbox-line");
+  if (shown || !line) return;
+  const word = document.createElement("span");
+  word.className = "dim inbox-away";
+  word.textContent = deviceOfflineWord;
+  line.insertBefore(word, line.querySelector(".badge"));
 }
 
 /** A control whose device cannot answer: it says so, and it does nothing. What

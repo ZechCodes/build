@@ -108,9 +108,47 @@ describe("the blocks the projects face lists", () => {
     expect(projectRoute({ project_id: "folder-1", is_git: false, base_branch: "trunk" })).toEqual({
       name: "branch", projectId: "folder-1", branch: "trunk", tab: "files",
     });
-    expect(projectRoute({ project_id: "repo-1", is_git: true, base_branch: "main" })).toEqual({
-      name: "branch", projectId: "repo-1", branch: "main", tab: "changes",
+    expect(projectRoute({ project_id: "repo-1", deviceId: "d", is_git: true, base_branch: "main" })).toEqual({
+      name: "branch", deviceId: "d", projectId: "repo-1", branch: "main", tab: "changes",
     });
+  });
+
+  // A block opens the machine its project is on: the head of a block, the
+  // primary checkout under it, and a plain folder's own surface all name one.
+  it("block routes carry deviceId", () => {
+    const { blocks } = projectBlocks({
+      projects: [
+        on("dev-2", { id: "p1", name: "relaydb" }),
+        on("dev-2", { id: "folder-1", name: "notes", is_git: false, base_branch: "main" }),
+      ],
+      devices,
+      nowMs: NOW,
+      items: [
+        branch({ deviceId: "dev-2", projectKey: "dev-2/p1", branch: "main", run_id: null, primary: true, can_finish: false }),
+      ],
+    });
+    expect(blocks.find((block) => block.id === "p1").route).toMatchObject({ name: "branch", deviceId: "dev-2", projectId: "p1" });
+    expect(blocks.find((block) => block.id === "folder-1").route).toMatchObject({
+      name: "branch",
+      deviceId: "dev-2",
+      projectId: "folder-1",
+      tab: "files",
+    });
+  });
+
+  // The rail is one list across every machine, and every block on it opens.
+  it("no block is unroutable for being on another device", () => {
+    const { blocks } = projectBlocks({
+      projects: [on("dev-1", { id: "p1", name: "relaydb" }), on("dev-2", { id: "p1", name: "relaydb" })],
+      devices,
+      nowMs: NOW,
+      items: [
+        branch({ branch: "main", run_id: null, primary: true, can_finish: false }),
+        branch({ deviceId: "dev-2", projectKey: "dev-2/p1", branch: "main", run_id: "run-2", primary: true, can_finish: false }),
+      ],
+    });
+    expect(blocks.map((block) => block.route?.deviceId)).toEqual(["dev-1", "dev-2"]);
+    expect(blocks.every((block) => projectHeadHtml(block, {}).includes("inbox-unroutable"))).toBe(false);
   });
   it("files every row under its project in inbox order, and stands the blocks in the order their first live row holds", () => {
     const { blocks } = projectBlocks({
@@ -264,6 +302,7 @@ describe("the blocks the projects face lists", () => {
     });
     expect(blocks.find((block) => block.id === "p1").route).toEqual({
       name: "branch",
+      deviceId: "dev-1",
       projectId: "p1",
       branch: "main",
       tab: "changes",
@@ -280,6 +319,7 @@ describe("the blocks the projects face lists", () => {
     });
     expect(blocks[0].route).toEqual({
       name: "branch",
+      deviceId: "dev-1",
       projectId: "folder-1",
       branch: "main",
       tab: "files",

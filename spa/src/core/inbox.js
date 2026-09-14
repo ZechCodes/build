@@ -165,9 +165,9 @@ export function mergePendingRows(items = [], pending = []) {
   return rows;
 }
 
-/** Where an entry opens. A branch is (project, branch name); an issue is its
- *  own surface. A checkout with no branch is nameable by no URL, so it opens
- *  nowhere until it is on one.
+/** Where an entry opens. A branch is (device, project, branch name); an issue
+ *  is its own surface on the machine holding it. A checkout with no branch is
+ *  nameable by no URL, so it opens nowhere until it is on one.
  *
  *  A capture opens wherever it was routed. Until it is routed it opens its own
  *  decision page — what to do with it is a question, and a question deserves a
@@ -186,9 +186,11 @@ export function entryRoute(item) {
     return item.state === "queued" ? null : { name: "capture", id: item.capture_id };
   }
   if (item.kind === "issue") {
-    return item.issue_id ? { name: "issue", projectId: item.project_id, id: item.issue_id } : null;
+    return item.issue_id ? { name: "issue", deviceId: item.deviceId, projectId: item.project_id, id: item.issue_id } : null;
   }
-  return item.branch ? { name: "branch", projectId: item.project_id, branch: item.branch, tab: "changes" } : null;
+  return item.branch
+    ? { name: "branch", deviceId: item.deviceId, projectId: item.project_id, branch: item.branch, tab: "changes" }
+    : null;
 }
 
 const ms = (iso) => {
@@ -448,7 +450,11 @@ export function cacheableEntityIds({ items = [], nowMs = Date.now() } = {}) {
 }
 
 /** The entry the current route is standing on, so the list can mark it. Takes
- *  every row on screen — Recent included, since an open one is on screen. */
+ *  every row on screen — Recent included, since an open one is on screen.
+ *
+ *  A branch is named by its machine as well as its project: two devices each
+ *  hold a `proj-1` with a `main` in it, and those are two rows. An issue id is
+ *  a uuid, so it names one row wherever it is. */
 export function activeEntryKey(route, entries) {
   if (!route) return null;
   if (route.name === "capture") {
@@ -460,7 +466,9 @@ export function activeEntryKey(route, entries) {
   const work = entries.filter((entry) => entry.kind !== "capture");
   const match =
     route.name === "branch"
-      ? work.find((entry) => entry.projectId === route.projectId && entry.branch === route.branch)
+      ? work.find(
+          (entry) => entry.deviceId === route.deviceId && entry.projectId === route.projectId && entry.branch === route.branch,
+        )
       : route.name === "issue"
         ? work.find((entry) => entry.issueId === route.id)
         : null;

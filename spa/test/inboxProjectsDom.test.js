@@ -303,15 +303,15 @@ describe("the projects face", () => {
     rowFor("run-1").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
-    expect(location.hash).toBe("#/project/p1/branch/build%2Flogin/changes");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 
   it("opens the project's checkout from its name, and nothing from a project without one", () => {
     blockFor("dev-1/p1").querySelector("[data-project-open]").click();
-    expect(location.hash).toBe("#/project/p1/branch/main/changes");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/main/changes");
     expect(blockFor("dev-1/p2").querySelector("[data-project-open]").classList.contains("inbox-unroutable")).toBe(true);
     blockFor("dev-1/p2").querySelector("[data-project-open]").click();
-    expect(location.hash).toBe("#/project/p1/branch/main/changes");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/main/changes");
   });
 
   it("folds a block shut by its chevron, keeps it shut across the feed and a reload, and opens it again", async () => {

@@ -222,7 +222,7 @@ describe("what the inbox lists", () => {
     // still has a key to be opened by, and its own menu to be cleared from.
     expect(entries[0].entityId).toBeNull();
     expect(entries[0].key).toBe("branch:dev-1/p1:main");
-    expect(entries[0].route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "changes" });
+    expect(entries[0].route).toEqual({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
     const html = inboxRowHtml(entries[0], {});
     expect(html).toContain('data-key="branch:dev-1/p1:main"');
     expect(html).not.toContain("data-entity");
@@ -230,7 +230,35 @@ describe("what the inbox lists", () => {
   });
 
   it("routes an issue to its own surface", () => {
-    expect(entryRoute(issue())).toEqual({ name: "issue", projectId: "p2", id: "iss-1" });
+    expect(entryRoute(issue())).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
+  });
+
+  // Every machine mints a `proj-1`, so a route that names a project without
+  // naming the machine names two projects. The row knows which machine
+  // answered for it, and hands that to the route it opens.
+  it("entryRoute carries deviceId on branch and issue routes", () => {
+    expect(entryRoute({ kind: "branch", deviceId: "d", project_id: "p", branch: "b" })).toEqual({
+      name: "branch",
+      deviceId: "d",
+      projectId: "p",
+      branch: "b",
+      tab: "changes",
+    });
+    expect(entryRoute({ kind: "issue", deviceId: "d", project_id: "p", issue_id: "iss-2" })).toEqual({
+      name: "issue",
+      deviceId: "d",
+      projectId: "p",
+      id: "iss-2",
+    });
+  });
+
+  // A capture is not per-device business: its decision page is named by the
+  // capture and nothing else.
+  it("a capture's own decision route carries no device", () => {
+    expect(entryRoute({ kind: "capture", deviceId: "d", capture_id: "cap-1", state: "unrouted" })).toEqual({
+      name: "capture",
+      id: "cap-1",
+    });
   });
 
   it("has nowhere to send a detached checkout — it has no branch to name", () => {
@@ -333,7 +361,7 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     );
     expect(entry.facts).toBe("Creating…");
     expect(entry.placeholder).toBe(false);
-    expect(entry.route).toEqual({ name: "issue", projectId: "p2", id: "iss-1" });
+    expect(entry.route).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
   });
 
   // The bridge says how the checkout a verb is cutting is isolated from the
@@ -634,8 +662,21 @@ describe("the active entry", () => {
   const all = [...entries, ...recent];
 
   it("is the one the route is standing on", () => {
-    expect(activeEntryKey({ name: "branch", projectId: "p1", branch: "build/login" }, all)).toBe("run-1");
-    expect(activeEntryKey({ name: "issue", projectId: "p2", id: "iss-1" }, all)).toBe("iss-1");
+    expect(activeEntryKey({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" }, all)).toBe("run-1");
+    expect(activeEntryKey({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" }, all)).toBe("iss-1");
+  });
+
+  // Two machines both hold a `proj-1` with a `build/login` in it, and those are
+  // two rows. The route says which machine it is standing on, so the mark goes
+  // on that machine's row and on no other.
+  it("activeEntryKey marks the row on the route's device, not another device's copy of the same branch", () => {
+    const twice = inboxEntries({
+      items: [branch(), branch({ deviceId: "dev-2", projectKey: "dev-2/p1", run_id: "run-2", worktree_id: "wt-2" })],
+      nowMs: NOW,
+    });
+    const both = [...twice.entries, ...twice.recent];
+    expect(activeEntryKey({ name: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/login" }, both)).toBe("run-2");
+    expect(activeEntryKey({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" }, both)).toBe("run-1");
   });
 
   it("is nothing on a route that names no work item", () => {
@@ -994,7 +1035,7 @@ describe("capture rows", () => {
           routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
         }),
       ).route,
-    ).toEqual({ name: "issue", projectId: "p1", id: "iss-9" });
+    ).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p1", id: "iss-9" });
   });
 
   it("mark the row the decision page is standing on", () => {
@@ -1055,7 +1096,7 @@ describe("capture rows", () => {
       }),
       branch(),
     ]);
-    expect(activeEntryKey({ name: "branch", projectId: "p1", branch: "build/login" }, entries)).toBe("run-1");
+    expect(activeEntryKey({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" }, entries)).toBe("run-1");
   });
 
   it("escape what the user said and what the router asked", () => {

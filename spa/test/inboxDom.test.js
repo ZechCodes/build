@@ -345,14 +345,14 @@ describe("the inbox rail", () => {
     rowFor("run-1").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
-    expect(location.hash).toBe("#/project/p1/branch/build%2Flogin/changes");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 
   it("opens an issue by its own id", async () => {
     rowFor("iss-1").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "iss-1" });
-    expect(location.hash).toBe("#/project/p2/issue/iss-1");
+    expect(location.hash).toBe("#/device/dev-1/project/p2/issue/iss-1");
   });
 
   it("opens a project's primary checkout, which names no entity to read", async () => {
@@ -360,7 +360,7 @@ describe("the inbox rail", () => {
     document.querySelector('#inbox-list .inbox-entry[data-key="branch:dev-1/p1:main"]').click();
     await flush();
     expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
-    expect(location.hash).toBe("#/project/p1/branch/main/changes");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/main/changes");
   });
 
   // A reader of a long conversation holds a window on it, not the whole
@@ -392,21 +392,27 @@ describe("the inbox rail", () => {
   });
 
   it("marks the entry the route stands on", async () => {
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
     feed(feedItems);
     expect(rowFor("run-1").className).toContain("active");
     expect(rowFor("iss-1").className).not.toContain("active");
   });
 
   // Every device's first project is `proj-1` and every repo has a `main`, so a
-  // route that names neither can stand on two rows. Until a route carries its
-  // device, the one it means is the home device's.
-  it("marks the home device's row when another device holds the same branch", () => {
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+  // route that names neither can stand on two rows. The route names its
+  // device, so the mark goes where the reader actually is.
+  it("marks the row on the route's device", () => {
     feed([branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", run_id: "run-2", worktree_id: "wt-2" }), branchRow()]);
 
-    expect(rowFor("run-2").className).not.toContain("active");
+    App.route = { name: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/login", tab: "changes" };
+    feed(feedItems);
+    expect(rowFor("run-2").className).toContain("active");
+    expect(rowFor("run-1").className).not.toContain("active");
+
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
+    feed(feedItems);
     expect(rowFor("run-1").className).toContain("active");
+    expect(rowFor("run-2").className).not.toContain("active");
   });
 
   it("deletes a branch on Done, dismisses its row at once, and reads the entry", async () => {
@@ -631,7 +637,7 @@ describe("the inbox rail", () => {
     rowFor("run-old").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-old" });
-    expect(location.hash).toBe("#/project/p1/branch/build%2Fold/changes");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Fold/changes");
   });
 
   // Clearing a row is not muting it: a muted row stays and stops asking, a
@@ -1208,6 +1214,6 @@ describe("a row on another device", () => {
     home.click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
-    expect(location.hash).toBe("#/project/p1/branch/build%2Flogin/changes");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 });

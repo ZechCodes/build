@@ -146,6 +146,21 @@ describe("the shell's grid", () => {
     expect(shellCss).toMatch(/#view \{[^}]*grid-template-columns:minmax\(0, 1fr\)/);
   });
 
+  it("gives the pinned rail the whole column, and drops the toggle that stands on it", () => {
+    // The reviewer's screenshot: a dead band above the docked rail with the
+    // inbox toggle floating in it. The band was the rail's own margin, and the
+    // toggle it made room for does nothing while the rail is already there —
+    // the pin in the rail's head is the control at that width.
+    const rail = shellCss.match(/\n#inbox-rail \{[^}]*\}/)[0];
+    expect(rail).toMatch(/height:100%/);
+    expect(rail).not.toMatch(/margin-top/);
+    expect(shellCss).toMatch(/body:not\(\.inbox-collapsed\):not\(\.gated\) #inbox-open \{[^}]*display:none/);
+    // Where the rail overlays the view instead of standing beside it, the
+    // toggle is still the way in and out, so it comes back.
+    const narrow = shellCss.match(/@media \(max-width: 900px\) \{[\s\S]*?\n\}/)[0];
+    expect(narrow).toMatch(/body:not\(\.inbox-collapsed\) #inbox-open \{[^}]*display:grid/);
+  });
+
   it("gives the gate the whole frame", () => {
     const hidden = shellCss.match(/body\.gated[^{]*\{[^}]*display:none[^}]*\}/g).join("\n");
     for (const region of ["#inbox-open", "#toolbar", "#agent-rail", "#console-region"]) {

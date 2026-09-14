@@ -13,11 +13,19 @@ import "../styles/shell.css";
 
 const COLLAPSED_KEY = "build.inbox.collapsed";
 
+/** The width the rail stops being a column and is laid over the view instead
+ *  (styles/shell.css, `@media (max-width: 900px)`). One number, because every
+ *  answer that depends on it — whether the pin does anything, whether
+ *  navigating puts the rail away, whether the header toggle is still the way
+ *  out — has to give the same answer at the same width. */
+const RAIL_OVERLAYS_AT = 900;
+const railOverlays = () => window.innerWidth <= RAIL_OVERLAYS_AT;
+
 /** Docked or away on this device, given what the user last chose and how much
  *  room there is. A viewport narrow enough to overlay the rail starts with it
  *  away; a choice, once made, is what counts. */
 export function railStartsCollapsed(stored, viewportWidth) {
-  if (viewportWidth <= 900) return true;
+  if (viewportWidth <= RAIL_OVERLAYS_AT) return true;
   if (stored === "1") return true;
   if (stored === "") return false;
   return false;
@@ -117,6 +125,10 @@ function syncInboxControls(collapsed = document.body.classList.contains("inbox-c
 }
 
 function syncOpenControl(open, visible, collapsed) {
+  // Pinned beside the view the rail is already the inbox, and this toggle only
+  // stands on top of it (styles/shell.css hides it there too, so the layout
+  // never reserves its room). Pinned OVER the view it is still the way out.
+  open.hidden = !collapsed && !railOverlays();
   const count = open.dataset.attentionCount;
   const attention = count ? `, ${count} unread notification${count === "1" ? "" : "s"}` : "";
   const label = `${collapsed ? (visible ? "Close" : "Open") + " the inbox" : "Go to inbox"}${attention}`;
@@ -166,7 +178,7 @@ function setInboxPopover(on, { restoreFocus = false } = {}) {
 }
 
 function dismissInbox({ restoreFocus = false } = {}) {
-  const pinnedMobile = window.innerWidth <= 900 && !document.body.classList.contains("inbox-collapsed");
+  const pinnedMobile = railOverlays() && !document.body.classList.contains("inbox-collapsed");
   if (pinnedMobile) setInboxCollapsed(true, { persist: false, reveal: false });
   else setInboxPopover(false, { restoreFocus });
   if (restoreFocus) $("#inbox-open")?.focus();
@@ -208,7 +220,7 @@ function wireHoverPeek(open, rail) {
 export function goFromInbox(route) {
   const navigation = go(route);
   const closeAfterNavigation = (accepted) => {
-    if (accepted && window.innerWidth < 900) {
+    if (accepted && railOverlays()) {
       setInboxCollapsed(true, { persist: false, reveal: false });
     }
     return accepted;
@@ -255,7 +267,7 @@ export function initInboxRail() {
   const pin = $("#inbox-collapse");
   pin.innerHTML = ICON_PIN;
   pin.onclick = () => {
-    if (window.innerWidth <= 900) return;
+    if (railOverlays()) return;
     setInboxCollapsed(!document.body.classList.contains("inbox-collapsed"));
   };
   const newProject = $("#inbox-new-project");
@@ -281,7 +293,7 @@ export function initInboxRail() {
   });
   document.addEventListener("keydown", (event) => {
     const inboxVisible = document.body.classList.contains("inbox-popover-open") ||
-      (window.innerWidth < 900 && !document.body.classList.contains("inbox-collapsed"));
+      (railOverlays() && !document.body.classList.contains("inbox-collapsed"));
     if (event.key === "Escape" && !event.defaultPrevented && inboxVisible) {
       dismissInbox({ restoreFocus: true });
     }

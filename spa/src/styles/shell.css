@@ -52,7 +52,12 @@ body.inbox-collapsed { --inbox-space:0px; }
 #inbox-rail {
   grid-column:1;
   width:var(--inbox-rail);
-  height:calc(100% - var(--global-head)); margin-top:var(--global-head);
+  /* The whole column, with no band above it. The band used to hold the header
+     toggle; pinned, the rail IS the inbox and that toggle does nothing, so it
+     goes (below) rather than being paid for in dead height. --global-head is
+     still where the floating toggle sits, which is what the away rail hangs
+     its popover under. */
+  height:100%;
   display:flex; flex-direction:column; min-height:0;
   background:var(--panel);
   border:1px solid var(--line3, var(--line));
@@ -100,7 +105,10 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 .inbox-foot { border-top:1px solid var(--line); padding-top:8px; display:flex;
   flex-direction:column; gap:8px; }
 .inbox-foot #devpick { max-width:100%; }
-/* The floating reopen toggle, only while the rail is away. */
+/* The floating reopen toggle, only while the rail is away: pinned, the rail is
+   already the inbox and this would only stand on top of it. The pin in the
+   rail's own head is the control at that width. */
+body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 #inbox-open { position:relative; display:grid;
   height:var(--inbox-toggle); padding:0; overflow:visible;
   place-items:center;
@@ -949,6 +957,9 @@ body.gated #inbox-rail { display:none; }
     bottom:0; height:auto; margin:0; z-index:40;
     box-shadow:8px 0 24px var(--shadow-soft); width:min(86vw, 300px); }
   #inbox-collapse { display:none; }
+  /* Here the rail is a layer over the work rather than a column beside it, so
+     the header toggle is still the way in and out of it. */
+  body:not(.inbox-collapsed) #inbox-open { display:grid; }
   body:not(.inbox-collapsed):not(.gated) #inbox-scrim {
     display:block; position:fixed; inset:0; z-index:35; background:var(--scrim); }
   body.inbox-collapsed.inbox-popover-open:not(.gated) #inbox-scrim {

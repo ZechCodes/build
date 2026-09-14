@@ -226,6 +226,21 @@ describe("the docked rail's head toggle", () => {
   });
 });
 
+describe("the header toggle beside a pinned rail", () => {
+  it("is gone while the rail is pinned, and back once it is away", () => {
+    setInboxCollapsed(false);
+    expect(document.getElementById("inbox-open").hidden).toBe(true);
+    setInboxCollapsed(true);
+    expect(document.getElementById("inbox-open").hidden).toBe(false);
+  });
+
+  it("stays the way back where the rail overlays the view instead", () => {
+    vi.stubGlobal("innerWidth", 900);
+    setInboxCollapsed(false);
+    expect(document.getElementById("inbox-open").hidden).toBe(false);
+  });
+});
+
 describe("the floating card", () => {
   it("does not persist or animate the responsive startup state", () => {
     expect(localStorage.getItem("build.inbox.collapsed")).toBeNull();

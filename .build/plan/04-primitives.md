@@ -670,3 +670,12 @@ Stage 03 (`03-retire-device-switcher.md`):
     ratchet), `core/adoption.js:95,123` (comments) and `devices.js:62`.
 11. §3: `resetFeedScope` is already gone (stage 1); the scan test must strip
     comments and also match `App.offlineSince` and `App.modelCatalog`.
+12. §4: stage 2 left two treatments for a machine that cannot answer, and both
+    are meant. A surface already open when its machine goes stays frozen on
+    what it read — nothing re-renders, the panes read their caches and the
+    polls fail quietly. A navigation that arrives at one mounts the notice
+    (`branchView.js:129` and `issueView.js:33` ask `!canAnswer(context)` of
+    the route's context), because an arrival has only whatever the browser
+    cached and every verb on the frame would be refused. This stage owns the
+    reconciliation if it wants one: the disabled verbs and the device-naming
+    banner in §4 are what a frozen arrival would need.

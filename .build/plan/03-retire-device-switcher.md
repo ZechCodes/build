@@ -95,8 +95,15 @@ device it is waiting for.
 Rows of an offline device: greyed, "offline" mark, verbs disabled, still
 present (stage 1). A view open on a device that goes offline: the existing
 frozen-view treatment, banner naming the device, resumes silently when its
-context returns. When the last context goes: the gate's waiting screen
-(`renderWaiting`) — not a banner over a dead app.
+context returns. A navigation that *arrives* at a work item on a device that
+cannot answer — never opened here, or gone since — mounts the device notice
+(`core/deviceNotice.js`, stage 2) instead of a surface: there is nothing on
+screen to freeze, every verb on the frame would be refused, and the notice
+hands the link back the moment that device lands. Changing that to a frozen
+mount is this stage's call and needs this stage's two pieces first — the
+disabled verbs inside a mounted surface, and the banner naming the device.
+When the last context goes: the gate's waiting screen (`renderWaiting`) — not a
+banner over a dead app.
 
 ### 5. Docs
 

@@ -1,32 +1,20 @@
 [
   {
-    "id": "isolation-seam",
-    "title": "The isolation seam: one trait, one façade, the worktree backend moved behind it",
-    "path": ".build/plan/01-isolation-seam.md",
-    "summary": "Add bridge/src/isolation with the Isolation enum (worktree | cow, read from disk by Isolation::of), IsolationAvailability and the seven-primitive IsolationBackend trait; move today's git-linked-worktree code into WorktreeBackend; turn WorktreeManager into the façade that cuts branches, picks the directory and routes to backends, absorbing Orchestrator::merge_into_base and gaining publish/sync_base/discover/prune and the project-repo ref operations; split describe_checkout out of the porcelain parser and put isolation on ExternalWorktree. Creation calls take an Isolation argument; the app passes Worktree. No behavior change; existing tests prove it."
+    "id": "device-contexts",
+    "title": "Device contexts and the merged feed: every online device, one inbox",
+    "path": ".build/plan/01-device-contexts.md",
+    "summary": "Replace the singleton session/scope with a per-device context registry (core/deviceContexts.js) and open a session to every online device, joining late devices on their device_key push; poll each device's board.list and project.list and deliver one merged feed whose rows carry deviceId and projectKey; tag change events and cache sync by device; make offline per device with the banner only when no device is live. The inbox and projects rail render the merge with device-qualified keys; rows from other devices work their inbox verbs against their own device but stay unroutable until routes carry a device. The picker is untouched; App.session/App.call remain as aliases of the home device."
   },
   {
-    "id": "route-app-through-facade",
-    "title": "Route every checkout operation in the app through the façade",
-    "path": ".build/plan/02-route-app-through-facade.md",
-    "summary": "Delete app.rs's own git for finishing a worktree (remove_registered_worktree, merge_external_branch, local_branch_exists, delete_local_branch_for_finish, restore_finish_branch_after_removal_failure), the scan wrappers and the best-effort worktree prune, and call the WorktreeManager façade instead; classify_stage_publication publishes the checkout's branch first. Behavior unchanged; after this stage a second backend needs no app changes."
+    "id": "device-identity-routes",
+    "title": "Composite identity and device-bearing routes: open any row from any device",
+    "path": ".build/plan/02-device-identity-routes.md",
+    "summary": "Routes become #/device/<d>/project/<p>/... with device-less and legacy URLs resolving across every device's feed (collisions prefer the home device, then the first online device); every route producer carries deviceId and every view, sheet, rail and console takes its call, cache scope and chat repository from the route's device context; terminals follow the route's device; the stage 1 read-only rule is deleted. Ratcheted router functions do not grow; the device prefix is peeled in a helper."
   },
   {
-    "id": "cow-backend",
-    "title": "The copy-on-write backend and the availability probe",
-    "path": ".build/plan/03-cow-backend.md",
-    "summary": "Implement CowBackend (clonefile on macOS, per-file FICLONE reflink on Linux; strip inherited .git/worktrees, write the .git/build-isolation marker, check out the branch, clean untracked, keep ignored caches) with publish/sync_base as local fetches by path, discovery by marker under the worktrees root, and cow_availability (same .git directory, same volume, a real clone probe) with user-facing reasons. Wired into the façade but not yet selectable. Tests run the real clone on APFS and skip with a printed reason on ext4."
-  },
-  {
-    "id": "isolation-settings",
-    "title": "The isolation setting: account default, per-project override, locked when unavailable",
-    "path": ".build/plan/04-isolation-settings.md",
-    "summary": "Persist an account-level isolation setting and a per-project override in the bridge config; one resolver (override, else account, downgraded to worktree with the probe's reason when cow is unavailable) feeds every creation site, and a downgrade is recorded on the thread. settings.get/set gain isolation and isolation_available; project.list rows gain isolation, isolation_effective, isolation_available; new project.set_isolation. cow is refused wherever the probe fails."
-  },
-  {
-    "id": "spa-isolation-controls",
-    "title": "The isolation controls: account settings panel and project settings select",
-    "path": ".build/plan/05-spa-isolation-controls.md",
-    "summary": "A pure core/isolation.js mirroring core/defaultHarness.js, a Work isolation panel under Default agent on the Settings page, a Work isolation select in the project settings sheet with an Account default option, the copy-on-write option disabled with the bridge's reason when locked, and the effective isolation shown on each project row. Vitest first, then a browser pass."
+    "id": "retire-device-switcher",
+    "title": "Retire the switcher: the picker filters, the app has no current device",
+    "path": ".build/plan/03-retire-device-switcher.md",
+    "summary": "The device picker becomes a filter (All devices by default) plus the settings cog; a Creation device select on the account Settings page is the one owner of where new projects and captures go; the model catalog and the remaining bridge-scoped settings panels move onto the device context and the per-device settings page; App.session/App.call/App.cacheScope/App.chatRepository/App.offline, switchDevice and resetFeedScope are deleted and a source-scan test keeps them out; README, UX Redesign Decisions and HANDOFF record the new scope and the follow-ons."
   }
 ]

@@ -9,7 +9,7 @@
 
 import { fuzzyRank } from "./fuzzy.js";
 import { clashingProjectNames } from "./inboxProjects.js";
-import { deviceKey } from "./deviceKey.js";
+import { routeProjectKey } from "./deviceKey.js";
 
 /** The branch the daemon will cut for a typed name, mirrored for the preview
  *  only — the daemon is still the one that decides. */
@@ -145,10 +145,6 @@ export function toolbarIdentity(route = {}, { items = [], projects = [] } = {}) 
     row,
   };
 }
-
-/** The account-wide name of the project a route stands in, or null while the
- *  route still has no machine to name it with. */
-const routeProjectKey = (route) => (route.deviceId && route.projectId ? deviceKey(route.deviceId, route.projectId) : null);
 
 function projectName(projectKey, projects, row) {
   const project = projects.find((entry) => entry.projectKey === projectKey);

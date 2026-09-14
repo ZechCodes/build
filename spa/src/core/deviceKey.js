@@ -17,3 +17,9 @@ export function splitDeviceKey(key) {
   const projectId = key.slice(seam + 1);
   return projectId ? { deviceId: key.slice(0, seam), projectId } : null;
 }
+
+/** The account-wide name of the project a route stands in, or null while the
+ *  route names no machine or no project — a capture's does neither. A route
+ *  carries the bare id one bridge minted, so its device is half the name. */
+export const routeProjectKey = (route) =>
+  route && route.deviceId && route.projectId ? deviceKey(route.deviceId, route.projectId) : null;

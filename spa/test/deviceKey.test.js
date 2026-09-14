@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deviceKey, splitDeviceKey } from "../src/core/deviceKey.js";
+import { deviceKey, routeProjectKey, splitDeviceKey } from "../src/core/deviceKey.js";
 
 // A project's identity across the account is the pair (deviceId, projectId):
 // every device's first project is `proj-1`, so the bare bridge id names nothing
@@ -26,5 +26,20 @@ describe("the device key", () => {
     expect(splitDeviceKey("/proj-1")).toBe(null);
     expect(splitDeviceKey("dev-a/")).toBe(null);
     expect(splitDeviceKey("")).toBe(null);
+  });
+});
+
+// A route carries the bare id one bridge minted and the machine it minted it
+// on, so the project it stands in is named from the pair — in one place, for
+// the toolbar and the rail alike.
+describe("the project a route stands in", () => {
+  it("names it by the route's device and project together", () => {
+    expect(routeProjectKey({ name: "branch", deviceId: "dev-a", projectId: "proj-1" })).toBe("dev-a/proj-1");
+  });
+
+  it("names nothing when the route names no machine, no project, or nothing at all", () => {
+    expect(routeProjectKey({ name: "branch", projectId: "proj-1" })).toBe(null);
+    expect(routeProjectKey({ name: "capture", deviceId: "dev-a" })).toBe(null);
+    expect(routeProjectKey(null)).toBe(null);
   });
 });

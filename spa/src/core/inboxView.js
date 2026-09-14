@@ -43,7 +43,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { deviceKey } from "./deviceKey.js";
+import { routeProjectKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
 import { paintDeviceState, verbCall } from "./inboxDevices.js";
@@ -188,8 +188,7 @@ function rowUi(showProject) {
 function activeProjectKey(activeKey) {
   const standing = entries.find((entry) => entry.key === activeKey);
   if (standing) return standing.projectKey || null;
-  const { deviceId, projectId } = App.route;
-  return deviceId && projectId ? deviceKey(deviceId, projectId) : null;
+  return routeProjectKey(App.route);
 }
 
 /** The inbox face: one list, Recent at its end. */

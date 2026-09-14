@@ -38,10 +38,11 @@ export function persistRailView(view, storage) {
   }
 }
 
-/** What the user has said of each project's fold: project id → folded. A
- *  project they have said nothing about is absent, and the face decides for
- *  it. Anything stored that is not that shape is nothing said. (An older
- *  client stored a list of the folded ids; that reads as those said folded.) */
+/** What the user has said of each project's fold: project key → folded (the
+ *  account-wide name, core/deviceKey.js). A project they have said nothing
+ *  about is absent, and the face decides for it. Anything stored that is not
+ *  that shape is nothing said, and so is anything an older client wrote under
+ *  a bare project id — it names no project now, so no block ever asks for it. */
 export function loadProjectFolds(storage) {
   try {
     const parsed = JSON.parse(storage.getItem(FOLDED_PROJECTS_KEY) || "{}");

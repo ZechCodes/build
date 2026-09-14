@@ -40,6 +40,7 @@ import { filterByDevice } from "./deviceFilter.js";
 import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { stampWorkspace } from "./feedMerge.js";
 import { patchList } from "./patchList.js";
+import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
 import { workspaceRoute } from "./projectModel.js";
 import "../styles/shell.css";
 
@@ -168,6 +169,12 @@ const routeProject = () => ({
   projectKey: routeProjectKey(App.route),
 });
 
+/** Read the workspaces of the project the route is standing in, when the route
+ *  is standing in a workspace at all. Every way into a route runs this. */
+const loadStandingWorkspaces = () => {
+  if (App.route.name === "workspace") void loadWorkspaces(routeProject(), App.route.workspaceId);
+};
+
 /** The workspace the route is standing in, off the rows its project's machine
  *  last listed. */
 const standingWorkspace = () =>
@@ -180,39 +187,6 @@ const standingDirectories = () =>
   App.route.name === "workspace" ? workspaceDirectoryModel(standingWorkspace(), App.route.sourceId) : [];
 
 // ---- the bar ----------------------------------------------------------------
-
-/** Pure: the toolbar's markup for one identity. Names come from repos, agents
- *  and the user, so every one of them is escaped. */
-export function toolbarHtml({ project, kind, label, directories = [] }) {
-  const identity = kind === "workspace"
-    ? `<button class="tb-sel tb-workspace" data-select="workspace" type="button" aria-haspopup="menu" aria-expanded="false">
-         <span class="tb-name">${esc(label)}</span><span class="tb-caret">▾</span>
-       </button>`
-    : kind
-      ? `<button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu" aria-expanded="false">
-           <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
-         </button>
-         <span class="tb-sep">/</span><span class="tb-legacy-item"><span class="tb-name${kind === "branch" ? " mono" : ""}">${esc(label)}</span></span>`
-      : `<button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu" aria-expanded="false">
-           <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
-         </button>`;
-  const directoryTabs = directories.length
-    ? `<div class="tb-directories" role="tablist" aria-label="Workspace directories">${directories
-        .map(
-          (directory) =>
-            `<button class="tb-directory${directory.current ? " current" : ""}" data-directory="${esc(directory.sourceId)}" type="button" role="tab" aria-selected="${directory.current ? "true" : "false"}">${esc(directory.label)}</button>`,
-        )
-        .join("")}</div>
-       <button class="tb-sel tb-directory-menu" data-select="directory" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Choose workspace directory">
-         <span class="tb-name">${esc(directories.find((directory) => directory.current)?.label || directories[0].label)}</span><span class="tb-caret">▾</span>
-       </button>`
-    : "";
-  return `<div class="toolbar">
-    ${identity}
-    ${directoryTabs}
-    <div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>
-  </div>`;
-}
 
 function identity() {
   return toolbarIdentity(App.route, {
@@ -351,11 +325,7 @@ function observeToolbar(host) {
 }
 
 function openJumpMenu(anchor) {
-  const list = anchor.dataset.select === "project"
-    ? "projects"
-    : anchor.dataset.select === "directory"
-      ? "directories"
-      : "workspaces";
+  const list = MENU_FOR_SELECTOR[anchor.dataset.select] || "workspaces";
   if (list === "workspaces" && App.route.name === "workspace") rememberScope(routeProjectKey(App.route));
   open = {
     ...menuShell(anchor, "tbmenu"),
@@ -484,13 +454,6 @@ function directoryMenuShellHtml() {
   return `<div class="tbmenu-list" aria-label="Workspace directories"></div>`;
 }
 
-/** The counter a menu row wears: what is waiting inside it, and nothing at all
- *  when nothing is. Same badge the inbox rows use. */
-function unreadBadgeHtml(count, what) {
-  if (!count) return "";
-  return `<span class="badge" title="${count} unread in ${esc(what)}">${count}</span>`;
-}
-
 /** The project half's rows: which project — said with its machine when another
  *  machine uses the same name — and how much is waiting in it. */
 function projectMenuEntries() {
@@ -560,6 +523,15 @@ function workspaceMenuShellHtml() {
     </div>`;
 }
 
+/** Which list each selector opens. A selector is a kind, so it is a table
+ *  rather than a chain; a trigger this table does not name opens the workspace
+ *  list, which is the bar's own. */
+const MENU_FOR_SELECTOR = {
+  project: "projects",
+  directory: "directories",
+  workspace: "workspaces",
+};
+
 /** Which rows each list of the jump menu offers, and the frame each sits in.
  *  A list is a kind, so it is a table rather than a chain. */
 const MENU_LISTS = {
@@ -596,7 +568,7 @@ export function initToolbar() {
   });
   paint({ entering: true });
   observeToolbar($("#toolbar"));
-  if (App.route.name === "workspace") void loadWorkspaces(routeProject(), App.route.workspaceId);
+  loadStandingWorkspaces();
 }
 
 /** Repaint for the route the shell just entered — the one paint that re-scopes,
@@ -605,7 +577,7 @@ export function toolbarRouteChanged() {
   if (!mounted) return;
   closeMenu();
   paint({ entering: true });
-  if (App.route.name === "workspace") void loadWorkspaces(routeProject(), App.route.workspaceId);
+  loadStandingWorkspaces();
 }
 
 /** Teardown, for tests and for a gate that tears the session down. */

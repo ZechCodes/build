@@ -9,7 +9,7 @@
 // Everything here is fire-and-forget against the cache: a failed write is a
 // cold revisit, never an error the user sees.
 
-import { App } from "../app.js";
+import { contextFor } from "./deviceContexts.js";
 import { subscribeFeed } from "./taskFeed.js";
 import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds } from "./inbox.js";
@@ -32,20 +32,23 @@ const ENTITY_REFRESH_MS = 60000;
 let unsubscribe = null;
 let holdingLock = false;
 let releaseLock = null;
-const entityWatchers = new Map(); // entityId → { dispose }
-const refreshing = new Set(); // entityIds mid-fetch, so deliveries never stack
-let activeRows = new Map(); // entityId → its feed row (scope lives on the row)
+const entityWatchers = new Map(); // row key → { dispose }
+const refreshing = new Set(); // row keys mid-fetch, so deliveries never stack
+let activeRows = new Map(); // row key → { deviceId, entityId, row }
 
-const syncContext = () => {
-  const session = App.session;
-  const scope = App.cacheScope;
-  return {
-    deviceId: (scope && scope.deviceId) || (session && session.deviceId) || null,
-    call: App.call,
-    requestScope: scope || session,
-    active: () => scope ? scope === App.cacheScope && scope.active() : session === App.session,
+/** An entity belongs to the device it is on: two machines can hold the same id,
+ *  and neither one's records are the other's. The pair is written as a key in
+ *  this one place. */
+const rowKey = (deviceId, entityId) => `${deviceId}|${entityId}`;
+
+/** What the syncer needs of a device, from that device's context. */
+const syncContext = (context) =>
+  context && {
+    deviceId: context.deviceId,
+    call: context.call,
+    requestScope: context.cacheScope,
+    active: () => context.active(),
   };
-};
 
 /** The git scope a feed row's checkout answers under — the same derivation the
  *  branch surface makes (views/branchView.js branchScope), minus the primary
@@ -216,11 +219,12 @@ async function warmFileDiffs(context, entityId, scope, status) {
  *  bodies it names, and every conversation that was ever warmed on it. The warm
  *  waits for an idle turn, so it runs alongside the refresh rather than inside
  *  it — an entity whose tab never goes idle still syncs on the next tick. */
-async function refreshEntity(entityId) {
-  const context = syncContext();
-  const row = activeRows.get(entityId);
-  if (!context.deviceId || !row || refreshing.has(entityId)) return;
-  refreshing.add(entityId);
+async function refreshEntity(key) {
+  const active = activeRows.get(key);
+  const context = active && syncContext(contextFor(active.deviceId));
+  if (!context || refreshing.has(key)) return;
+  refreshing.add(key);
+  const { entityId, row } = active;
   try {
     const scope = gitScopeOf(row);
     if (scope) {
@@ -231,41 +235,67 @@ async function refreshEntity(entityId) {
     }
     await refreshThreads(context, entityId, row);
   } finally {
-    refreshing.delete(entityId);
+    refreshing.delete(key);
   }
 }
 
-// eslint-disable-next-line complexity -- ratchet: onSnapshot is at 14, cap 10 — reduce it, then drop this line
-async function onSnapshot(snapshot) {
-  const context = syncContext();
-  // The feed's boot paint is this cache talking; only live answers are news.
-  if (!context.deviceId || !holdingLock || snapshot.cached) return;
-  await writeCached({ deviceId: context.deviceId, entityId: "", kind: "feed" }, snapshot);
-  if (!context.active()) return;
-
-  const active = new Set(cacheableEntityIds({ items: snapshot.items }));
-  activeRows = new Map();
-  for (const item of snapshot.items || []) {
-    const id = entityIdOf(item);
-    if (id && active.has(id)) activeRows.set(id, item);
+/** The rows of one device's view worth keeping records for, replacing whatever
+ *  that device named last time and leaving every other device's alone. */
+function keepActiveRows(deviceId, view, active) {
+  for (const [key, held] of activeRows) {
+    if (held.deviceId === deviceId) activeRows.delete(key);
   }
+  for (const row of view.items || []) {
+    const entityId = entityIdOf(row);
+    if (entityId && active.has(entityId)) activeRows.set(rowKey(deviceId, entityId), { deviceId, entityId, row });
+  }
+}
 
-  // Immediate eviction: whatever holds records but is no longer named.
+/** Immediate eviction: whatever this device holds records for but no longer
+ *  names. Another device's records are another device's business. */
+async function evictUnnamed(context, active) {
   for (const cachedId of await cachedEntityIds(context.deviceId)) {
     if (!context.active()) return;
     if (!active.has(cachedId)) await evictEntity(context.deviceId, cachedId);
   }
+}
 
-  // The watcher set follows the active set; a branch entering it syncs now.
-  for (const [id, watcher] of entityWatchers) {
-    if (active.has(id)) continue;
+/** The watcher set follows the active set, across every device: a branch
+ *  entering it syncs now, and one that left stops being read. */
+function retuneWatchers() {
+  for (const [key, watcher] of entityWatchers) {
+    if (activeRows.has(key)) continue;
     watcher.dispose();
-    entityWatchers.delete(id);
+    entityWatchers.delete(key);
   }
-  for (const id of activeRows.keys()) {
-    if (entityWatchers.has(id)) continue;
-    entityWatchers.set(id, watchChanges({ refresh: () => refreshEntity(id), intervalMs: ENTITY_REFRESH_MS, entity: id }));
-    refreshEntity(id);
+  for (const [key, { deviceId, entityId }] of activeRows) {
+    if (entityWatchers.has(key)) continue;
+    entityWatchers.set(
+      key,
+      watchChanges({ refresh: () => refreshEntity(key), intervalMs: ENTITY_REFRESH_MS, entity: entityId, deviceId }),
+    );
+    refreshEntity(key);
+  }
+}
+
+/** Follow one device's view: persist it for that device's boot paint, evict
+ *  what it stopped naming, and keep what it names warm. */
+async function syncDeviceSnapshot(deviceId, view) {
+  const context = syncContext(contextFor(deviceId));
+  // The feed's boot paint is this cache talking; only live answers are news.
+  if (!context || view.cached) return;
+  await writeCached({ deviceId, entityId: "", kind: "feed" }, view);
+  if (!context.active()) return;
+  const active = new Set(cacheableEntityIds({ items: view.items }));
+  keepActiveRows(deviceId, view, active);
+  await evictUnnamed(context, active);
+  retuneWatchers();
+}
+
+async function onSnapshot(snapshot) {
+  if (!holdingLock) return;
+  for (const [deviceId, view] of Object.entries(snapshot.devices || {})) {
+    await syncDeviceSnapshot(deviceId, view);
   }
 }
 

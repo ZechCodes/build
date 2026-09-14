@@ -51,6 +51,23 @@ vi.mock("../src/core/changeEvents.js", () => ({
 const App = { session: { deviceId: "dev-1" }, call: vi.fn(async () => ({})) };
 vi.mock("../src/app.js", () => ({ App }));
 
+// The syncer works a device through its context, so this file registers them.
+// A device's call is its own; the one this file mostly talks to answers through
+// App.call, which every case scripts.
+const contexts = new Map();
+vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: (deviceId) => contexts.get(deviceId) || null }));
+
+const registerDevice = (deviceId, call = (...args) => App.call(...args)) => {
+  const context = {
+    deviceId,
+    call,
+    cacheScope: { deviceId, active: () => true },
+    active: () => contexts.get(deviceId) === context,
+  };
+  contexts.set(deviceId, context);
+  return context;
+};
+
 let cache, sync;
 
 const flush = async () => {
@@ -65,8 +82,11 @@ const warmStatus = () => warmTree.status({ head: "abc", stat: { insertions: 1, d
 
 const snapshot = (items) => ({ items, plans: [], runs: [], externalWorktrees: [], projects: [], primaryChanges: [] });
 
+/** What subscribers get: the merge, with every device's own view beside it. */
+const merged = (byDevice) => ({ ...snapshot(Object.values(byDevice).flatMap((view) => view.items)), devices: byDevice });
+
 const feed = async (items) => {
-  feedSubscriber(snapshot(items));
+  feedSubscriber(merged({ "dev-1": snapshot(items) }));
   await flush();
 };
 
@@ -77,6 +97,8 @@ beforeEach(async () => {
   delete globalThis.navigator?.locks;
   registeredWatchers = [];
   feedSubscriber = null;
+  contexts.clear();
+  registerDevice("dev-1");
   App.session = { deviceId: "dev-1" };
   App.call = vi.fn(async (method) => {
     if (method === "git.status") return warmStatus();
@@ -111,6 +133,66 @@ describe("following the feed", () => {
     ]);
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).toBeTruthy();
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" })).toBeUndefined();
+  });
+});
+
+// ---- more than one device --------------------------------------------------
+// Every device answers for itself: its own snapshot, its own cache, its own
+// eviction. Two machines both call their first project `proj-1` and can even
+// name the same entity, so nothing about one device's rows may reach another's.
+describe("following every device's feed", () => {
+  const twoDevices = async (dev2Call) => {
+    registerDevice("dev-2", dev2Call);
+    const one = snapshot([branchItem()]);
+    const two = snapshot([branchItem({ branch: "build/search" })]);
+    sync.startCacheSync();
+    feedSubscriber(merged({ "dev-1": one, "dev-2": two }));
+    await flush();
+  };
+
+  it("persists each device's snapshot under its own device", async () => {
+    await twoDevices(vi.fn(async () => ({})));
+    const first = await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" });
+    const second = await cache.readCached({ deviceId: "dev-2", entityId: "", kind: "feed" });
+    expect(first.value.items[0].branch).toBe("build/login");
+    expect(second.value.items[0].branch).toBe("build/search");
+  });
+
+  it("keys active rows by device and entity, so two devices' rows never collide", async () => {
+    const secondCall = vi.fn(async (method) => {
+      if (method === "git.status") return warmStatus();
+      if (method === "git.log") return { commits: [{ hash: "def" }], more: false };
+      return {};
+    });
+    await twoDevices(secondCall);
+    // The same run id on two machines is two rows, each read through its own
+    // device's call and written under its own device.
+    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
+    expect(secondCall).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" })).toBeTruthy();
+    expect((await cache.readCached({ deviceId: "dev-2", entityId: "run-1", kind: "log" })).value.commits[0].hash).toBe("def");
+  });
+
+  it("evicts within one device only what that device's view stops naming", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" }, {});
+    await cache.writeCached({ deviceId: "dev-2", entityId: "run-2", kind: "status" }, {});
+    registerDevice("dev-2", vi.fn(async () => ({})));
+    const one = snapshot([branchItem()]);
+    const two = snapshot([branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2" })]);
+    sync.startCacheSync();
+    feedSubscriber(merged({ "dev-1": one, "dev-2": two }));
+    await flush();
+
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" })).toBeUndefined();
+    expect(await cache.readCached({ deviceId: "dev-2", entityId: "run-2", kind: "status" })).toBeTruthy();
+  });
+
+  it("leaves a device with no context alone — nothing can be read for it", async () => {
+    const one = snapshot([branchItem()]);
+    sync.startCacheSync();
+    feedSubscriber(merged({ "dev-9": one }));
+    await flush();
+    expect(await cache.readCached({ deviceId: "dev-9", entityId: "", kind: "feed" })).toBeUndefined();
   });
 });
 
@@ -269,7 +351,8 @@ describe("one syncer per browser", () => {
 describe("the boot echo", () => {
   it("ignores the snapshot the cache itself painted", async () => {
     sync.startCacheSync();
-    feedSubscriber({ ...snapshot([branchItem()]), cached: true });
+    const view = { ...snapshot([branchItem()]), cached: true };
+    feedSubscriber({ ...merged({ "dev-1": view }), cached: true });
     await flush();
     expect(App.call).not.toHaveBeenCalled();
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" })).toBeUndefined();

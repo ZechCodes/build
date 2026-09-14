@@ -26,8 +26,9 @@ describe("onlineStickyDeviceId", () => {
   });
 });
 
-// The home device is where creation goes and what the App.* aliases point at:
-// the sticky choice while it can answer, and otherwise whichever device can.
+// The home device is where creation goes, and what a link that names no device
+// is about: the sticky choice while it can answer, and otherwise whichever
+// device can.
 describe("homeDeviceId", () => {
   it("returns the sticky device when it is online", () => {
     const devices = [

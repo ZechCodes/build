@@ -96,8 +96,9 @@ export function openDeviceSession(deviceId, { waitForDevice = false } = {}) {
   });
 }
 
-/** A settings page owns its connection: it never changes the active workspace,
- * and the active device's offline state must not pause another device's RPCs. */
+/** A settings page owns its connection: nothing about it reaches the registry,
+ * so no device the app is already holding is disturbed, and no other device
+ * being offline pauses its RPCs. */
 export async function openDeviceSettingsSession(deviceId, { onLost } = {}) {
   const session = await openRelaySession({ ...relayDial(deviceId), waitForDevice: false, onLost });
   if (session.deviceId !== deviceId) {
@@ -278,14 +279,15 @@ export function chooseCreationDevice(deviceId) {
  * is, and this is asked whenever one of those, or the home device itself, has
  * changed. `landed` is the context whose own state just changed — a device that
  * just landed or just went — and is taken in hand again even when it was
- * already home, because what the aliases copy off it is not what it was.
+ * already home, because what the surfaces read off it is not what it was.
  */
 export function syncHome(landed = null) {
   const followed = followedHomeId;
-  // Nothing at all is online, so the account names no home: the aliases stay on
-  // the device they were already following and read it again, which is how they
-  // come to say it has gone offline. At boot they are on nobody yet, which is
-  // how the device the pick names keeps home while it is still handshaking.
+  // Nothing at all is online, so the account names no home: the side effects
+  // stay on the device they were already following and run for it again, which
+  // is how the picker and the composer come to say it has gone offline. At boot
+  // nothing has been followed yet, which is how the device the pick names keeps
+  // home while it is still handshaking.
   const home = homeContext() || contextFor(followed);
   if (home && (home.deviceId !== followed || home === landed)) followHomeContext(home);
 }
@@ -358,7 +360,9 @@ export function goOffline(deviceId) {
   setContextOffline(deviceId);
   dropPeerLink(context);
   closeQuietly(context.session);
-  syncHome(context); // home may have moved off it — and if it has not, the aliases still have to say it is offline
+  // Home may have moved off it — and if it has not, the surfaces that follow
+  // home still have to say the device they are about is offline.
+  syncHome(context);
   paintConnectionStatus();
   resume(deviceId);
 }

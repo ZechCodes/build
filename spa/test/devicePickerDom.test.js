@@ -23,6 +23,7 @@ vi.mock("../src/connection.js", () => ({
 vi.mock("../src/core/inboxView.js", () => ({ inboxListRouteChanged: vi.fn(), mountInboxList: vi.fn(), setInboxView: vi.fn() }));
 import { initDevicePicker, paintDevicePicker } from "../src/devices.js";
 import { rememberDeviceFilter } from "../src/core/deviceFilter.js";
+import { adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
 
 const choices = () => [...document.querySelectorAll(".device-picker-choice")];
 const labelOf = (button) => button.querySelector("span").textContent;
@@ -38,9 +39,15 @@ beforeEach(() => {
   Object.assign(App, { gated: false, deviceFilter: null, selectedDeviceId: "a", devices: [
     { id: "a", name: "Laptop", status: "online" }, { id: "b", name: "Desktop", status: "offline" },
   ] });
+  resetDeviceContexts();
   initDevicePicker();
   paintDevicePicker();
 });
+
+/** A paired device this client has open. */
+const deviceAnswering = (deviceId) =>
+  adoptDeviceSession({ deviceId, call: async () => ({}), close: () => {}, peer: () => {}, onCarrier: () => {} });
+
 describe("custom device picker", () => {
   it("reveals device settings by closing the rail on a phone", () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
@@ -65,6 +72,33 @@ describe("custom device picker", () => {
     // all-devices row is about no machine, so it has no cog.
     expect(choices()[0].closest(".device-picker-row").querySelector("[data-settings-device]")).toBeNull();
   });
+  // The rows in the rail say why a machine cannot be asked anything; the picker
+  // is the same account list and says the same word, so a bridge answering in a
+  // shape this app cannot read does not read as plainly online here.
+  it("says why a machine cannot be asked, in the word its rows wear", () => {
+    deviceAnswering("a");
+    adoptBridgeSelection(contextFor("a"), { version: "0.9.0", unsupported: "bridge" }, null);
+    paintDevicePicker();
+    document.querySelector(".device-picker-toggle").click();
+    expect(choices().map(labelOf)).toEqual(["All devices", "Laptop (update)", "Desktop (offline)"]);
+  });
+
+  // The account list is one read behind the session: a machine whose session
+  // has dropped is away on the rail the moment it goes, so it is away here too.
+  it("calls a machine away once its own session has gone, whatever the list says", () => {
+    deviceAnswering("a");
+    setContextOffline("a", { offline: true });
+    paintDevicePicker();
+    expect(labelOf(choices()[1])).toBe("Laptop (offline)");
+  });
+
+  // A machine the account calls online that this client has not opened yet is
+  // not away: the picker says what the account list says until a context of its
+  // own says otherwise.
+  it("says nothing about a machine it has not opened yet", () => {
+    expect(labelOf(choices()[1])).toBe("Laptop");
+  });
+
   it("picking a device sets the filter and does not touch selectedDeviceId", () => {
     document.querySelector(".device-picker-toggle").click();
     document.querySelector('[data-filter-device="b"]').click();

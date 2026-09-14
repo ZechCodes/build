@@ -2,7 +2,9 @@
 // and are patched live by the relay's device_key / device_offline pushes.
 
 import { $ } from "./dom.js";
-import { deviceOfflineWord, esc } from "./core/text.js";
+import { esc } from "./core/text.js";
+import { canAnswer, contextFor } from "./core/deviceContexts.js";
+import { deviceAwayWord } from "./core/deviceNotice.js";
 import { ICON_CHEVRON_DOWN, ICON_SETTINGS } from "./core/icons.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
@@ -139,8 +141,14 @@ function choiceHtml(deviceId, label, pressed) {
     </button>`;
 }
 
+/** How a machine reads in the picker: the account's name for it, and — when it
+ *  cannot be asked anything — the same one word its rows in the rail wear, which
+ *  says WHY it cannot (core/deviceNotice.js). A machine this client has not
+ *  opened yet has nothing of its own to say, so the account list speaks for it. */
 function deviceLabel(device) {
-  return `${device.name}${device.status === "online" ? "" : ` (${deviceOfflineWord})`}`;
+  const context = contextFor(device.id);
+  const away = device.status !== "online" || Boolean(context && !canAnswer(context));
+  return away ? `${device.name} (${deviceAwayWord(context)})` : device.name;
 }
 
 function setPickerOpen(picker, open) {

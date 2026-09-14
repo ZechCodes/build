@@ -1,5 +1,6 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
+import { hashFromRoute } from "./router.js";
 import { RENDERED_FOLD_ATTRIBUTE, patchElement, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { followConversation, paintKeepingPlace } from "./paintKeepingPlace.js";
@@ -561,8 +562,19 @@ function linkLocation(link) {
 }
 
 /// One reference, as the chip under a message.
+///
+/// A file is an anchor, because it names a place in this app that has a URL of
+/// its own: the href is written by whoever wires the chip, which is the surface
+/// that knows which checkout the conversation is about (`wireThreadLinks`). The
+/// browser's own gestures then work on it — middle-click, Cmd-click, "open in
+/// new tab" — which a button can never offer. Every other kind opens a work
+/// item the render cannot name a URL for, so it stays a button.
 function linkChipHtml(link) {
-  return `<button type="button" class="thread-reference" ${linkAttributes(link)}>${esc(linkLocation(link))}</button>`;
+  const attributes = `class="thread-reference" ${linkAttributes(link)}`;
+  const label = esc(linkLocation(link));
+  return link.kind === "file"
+    ? `<a ${attributes}>${label}</a>`
+    : `<button type="button" ${attributes}>${label}</button>`;
 }
 
 function linksHtml(links) {
@@ -1736,10 +1748,33 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
   });
 }
 
-export function wireThreadLinks(root, openLink) {
+/// Whether a press is the browser's rather than the app's. A middle click, or
+/// a click held with a modifier, means "open this somewhere else" — another
+/// tab, another window — and a chip that is a real link already knows how.
+const pressIsTheBrowsers = (event) =>
+  event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+
+/**
+ * Wire the reference chips under the messages of a conversation.
+ *
+ * `openLink(link)` navigates the app. `routeFor(link)` says where a file
+ * reference goes — the caller's, because only the surface holding the
+ * conversation knows which checkout its paths are written against
+ * (core/threadLinks.js) — and its answer becomes the anchor's href, so the
+ * browser can open the file in a tab of its own. A caller that names no route
+ * leaves the chips hrefless and keeps the in-app press.
+ */
+export function wireThreadLinks(root, openLink, routeFor = () => null) {
   if (!root) return;
   root.querySelectorAll(".thread-reference").forEach((chip) => {
-    chip.onclick = () => openLink(linkFromDataset(chip.dataset));
+    const link = linkFromDataset(chip.dataset);
+    const route = chip.tagName === "A" ? routeFor(link) : null;
+    if (route) chip.href = hashFromRoute(route);
+    chip.onclick = (event) => {
+      if (chip.href && pressIsTheBrowsers(event)) return;
+      event.preventDefault();
+      openLink(link);
+    };
   });
 }
 

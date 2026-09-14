@@ -66,6 +66,7 @@ import { deviceCatalog } from "./inboxDevices.js";
 import { createConversationCache } from "./conversationCache.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
+import { fileLinkRoute } from "./threadLinks.js";
 import { entityIdOf } from "./entityId.js";
 import { replyOrNothing } from "./session.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
@@ -1445,7 +1446,7 @@ export function mountAgentRail(host, context) {
     wireThreadRevisionLinks(body, (revisionId) =>
       chatRepository.currentCall()("thread.revision", { entity_id: controller.identity.entityId, revision_id: revisionId }),
     );
-    wireThreadLinks(body, openLink);
+    wireThreadLinks(body, openLink, routeForLink);
     wireThreadOptions(body, (choice) => choose(choice).catch((error) => {
       notifyError("Choice failed", error.message);
       throw error;
@@ -1603,6 +1604,23 @@ export function mountAgentRail(host, context) {
     surfaceOverlay = null;
   };
 
+  /** What the paths in this conversation are written against: the checkout the
+   *  rail is mounted on, and — for a workspace — the directories it is made of,
+   *  so a path mounted under one of them opens in that directory. */
+  const linkContext = () => ({
+    kind: entity.kind,
+    deviceId: context.deviceId ?? null,
+    projectId: entity.projectId || context.projectId,
+    workspaceId: context.workspaceId,
+    sourceId: context.sourceId,
+    directories: entity.directories,
+    branch: entity.branch,
+  });
+
+  /** Where a file reference points, for the chip's own href and for the press
+   *  on it alike — one answer, so a link says where it goes. */
+  const routeForLink = (link) => fileLinkRoute(link, linkContext());
+
   /** A reference in the conversation goes where it points, as far as the two
    *  work-item surfaces can take it. */
   const openLink = (link) => {
@@ -1610,20 +1628,8 @@ export function mountAgentRail(host, context) {
       go({ name: "issue", projectId: entity.projectId, id: link.issue_id || link.plan_id });
       return;
     }
-    if (link.kind === "file" && entity.kind === "workspace") {
-      go({
-        name: "workspace",
-        projectId: entity.projectId,
-        workspaceId: context.workspaceId,
-        sourceId: context.sourceId,
-        tab: "files",
-        ...(link.path ? { file: link.path, line: link.line } : {}),
-      });
-      return;
-    }
-    if (link.kind === "file" && entity.kind === "branch" && entity.branch) {
-      go({ name: "branch", projectId: entity.projectId, branch: entity.branch, tab: "files" });
-    }
+    const route = routeForLink(link);
+    if (route) go(route);
   };
 
   /// Tell the daemon how much of this agent's conversation has been read, and

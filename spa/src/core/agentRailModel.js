@@ -362,6 +362,9 @@ export function railEntity(payload, kind = "branch") {
       canAdd: !!entityId && agents.length > 0,
       chatCapable: true,
       executionContext: row.execution_context || null,
+      // The checkouts mounted into this workspace, kept because a path an agent
+      // writes names the directory it is in (core/threadLinks.js).
+      directories: row.directories || [],
       agents,
       thread: (row.run && row.run.thread) || row.thread || null,
     };

@@ -15,7 +15,7 @@ import { openRelaySession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
-import { App, pointAliasesAt, render, rememberSelectedDevice } from "./app.js";
+import { App, pointAliasesAt } from "./app.js";
 import {
   adoptDeviceSession,
   closeQuietly,
@@ -278,19 +278,6 @@ export function syncHome(landed = null) {
   // how the device the pick names keeps home while it is still handshaking.
   const home = homeContext() || contextFor(followed);
   if (home && (home.deviceId !== followed || home === landed)) followHomeContext(home);
-}
-
-/** Move home to another device: where creation goes, which context the aliases
- *  follow, and which machine the terminals attach to. It closes nothing — every
- *  other device stays live and keeps filling the inbox. */
-export async function setHomeDevice(deviceId) {
-  rememberSelectedDevice(deviceId);
-  // The pick is remembered first, so a device opened here lands as the home one
-  // and syncHome takes it in hand on the way in; asking again then changes
-  // nothing, rather than offering the capture queue a second time.
-  if (!hasLiveSession(deviceId)) await connectDevice(deviceId);
-  syncHome();
-  render();
 }
 
 // ---- opening every device ----------------------------------------------------

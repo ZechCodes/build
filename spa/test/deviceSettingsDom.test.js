@@ -4,7 +4,14 @@ const { App, openSession, openBrowser } = vi.hoisted(() => ({
   App: { devices: [], viewDispose: null }, openSession: vi.fn(), openBrowser: vi.fn(),
 }));
 vi.mock("../src/app.js", () => ({ App }));
-vi.mock("../src/connection.js", () => ({ openDeviceSettingsSession: openSession }));
+vi.mock("../src/connection.js", () => ({
+  openDeviceSettingsSession: openSession,
+  openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
+  syncHome: () => {},
+  forgetHomeFollow: () => {},
+  setConn: () => {},
+  CONNECTION_STATUS: {},
+}));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 import { renderDeviceSettings } from "../src/views/deviceSettings.js";
 let session;

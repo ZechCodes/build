@@ -45,6 +45,9 @@ vi.mock("../src/devices.js", () => ({
 const answering = { deviceId: "d1", session: {}, call: async () => ({}) };
 vi.mock("../src/connection.js", () => ({
   openDeviceSessions: () => ({ first: Promise.resolve(answering), settled: Promise.resolve([answering]) }),
+  openDeviceSettingsSession: async () => answering,
+  syncHome: () => {},
+  forgetHomeFollow: () => {},
   setConn: () => {},
   CONNECTION_STATUS: { connected: "", connecting: "", deviceOffline: "", noDevices: "" },
 }));

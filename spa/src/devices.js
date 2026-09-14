@@ -8,12 +8,21 @@ import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
-import { openDeviceSessions, setHomeDevice, syncHome } from "./connection.js";
+import { rememberDeviceFilter } from "./core/deviceFilter.js";
+import { openDeviceSessions, syncHome } from "./connection.js";
 
 export async function refreshDevices() {
   App.devices = await fetchDevices();
+  forgetFilterOnMissingDevice();
   paintDevicePicker();
   return App.devices;
+}
+
+/** A rail filtered to a device the account no longer lists would show nothing
+ *  at all, with nothing on screen to say why. The account is what the picker is
+ *  a filter over, so a device leaving it takes the filter with it. */
+function forgetFilterOnMissingDevice() {
+  if (App.deviceFilter && !deviceFor(App.deviceFilter)) rememberDeviceFilter(null);
 }
 
 /** The account's entry for one device, as the list last saw it. */
@@ -72,36 +81,58 @@ export function markDeviceOffline(deviceId) {
   markDevice(deviceId, "offline");
 }
 
+const ALL_DEVICES = "All devices";
+
 export function paintDevicePicker() {
   const picker = $("#devpick");
   if (!picker) return;
   picker.hidden = App.gated || App.devices.length === 0;
   if (picker.hidden) return;
-  const current = App.session?.deviceId || App.selectedDeviceId || "";
-  const selected = App.devices.find((device) => device.id === current);
-  const label = selected ? deviceLabel(selected) : "Choose a device";
+  // The filter is over the account's own list, so the toggle says what the rail
+  // is showing: one machine by name, or all of them.
+  const label = deviceNameOf(App.devices, App.deviceFilter) || ALL_DEVICES;
   picker.innerHTML = `
-    <button class="device-picker-toggle" type="button" aria-expanded="false" aria-controls="device-picker-menu" title="Which device runs your tasks">
+    <button class="device-picker-toggle" type="button" aria-expanded="false" aria-controls="device-picker-menu" title="Which devices the inbox shows">
       <span>${esc(label)}</span><span aria-hidden="true">${ICON_CHEVRON_DOWN}</span>
     </button>
     <div class="device-picker-menu" id="device-picker-menu" aria-label="Devices" hidden>
-      ${App.devices.map((device) => deviceRow(device, current)).join("")}
-    </div>
-    <div class="device-picker-error" role="status"></div>`;
+      ${pickerRowsHtml()}
+    </div>`;
+}
+
+/** The rows the menu offers: the all-devices choice, then one row per machine.
+ *  Each kind paints itself, so the cog a machine's row carries is not a
+ *  condition inside one renderer. */
+function pickerRowsHtml() {
+  const filter = App.deviceFilter || null;
+  return [allDevicesRowHtml(filter), ...App.devices.map((device) => deviceRowHtml(device, filter))].join("");
+}
+
+/** The account as a whole, which is what the rail shows until a machine is
+ *  picked. It is about no machine, so it has no settings cog. */
+function allDevicesRowHtml(filter) {
+  return `<div class="device-picker-row">
+    ${choiceHtml("", ALL_DEVICES, filter === null)}
+  </div>`;
+}
+
+function deviceRowHtml(device, filter) {
+  return `<div class="device-picker-row">
+    ${choiceHtml(device.id, deviceLabel(device), filter === device.id)}
+    <button type="button" class="device-picker-settings" data-settings-device="${esc(device.id)}" aria-label="Settings for ${esc(device.name)}" title="Settings for ${esc(device.name)}"><span aria-hidden="true">${ICON_SETTINGS}</span></button>
+  </div>`;
+}
+
+/** What every row is picked by: the device the rail is to show, with the
+ *  account's own row naming no device at all. */
+function choiceHtml(deviceId, label, pressed) {
+  return `<button type="button" class="device-picker-choice" data-filter-device="${esc(deviceId)}" aria-pressed="${pressed}">
+      <span>${esc(label)}</span><span aria-hidden="true">${pressed ? "✓" : ""}</span>
+    </button>`;
 }
 
 function deviceLabel(device) {
   return `${device.name}${device.status === "online" ? "" : " (offline)"}`;
-}
-
-function deviceRow(device, current) {
-  const label = deviceLabel(device);
-  return `<div class="device-picker-row">
-    <button type="button" class="device-picker-choice" data-select-device="${esc(device.id)}" aria-pressed="${device.id === current}">
-      <span>${esc(label)}</span><span aria-hidden="true">${device.id === current ? "✓" : ""}</span>
-    </button>
-    <button type="button" class="device-picker-settings" data-settings-device="${esc(device.id)}" aria-label="Settings for ${esc(device.name)}" title="Settings for ${esc(device.name)}"><span aria-hidden="true">${ICON_SETTINGS}</span></button>
-  </div>`;
 }
 
 function setPickerOpen(picker, open) {
@@ -111,20 +142,13 @@ function setPickerOpen(picker, open) {
   picker.querySelector(".device-picker-toggle").setAttribute("aria-expanded", String(open));
 }
 
-let movingHome = false;
-async function selectDevice(picker, deviceId) {
-  if (movingHome) return;
-  movingHome = true;
+/** Show one machine's work, or every machine's. Nothing is connected and
+ *  nothing is moved: the three lists are repainted from what the devices have
+ *  already said (core/deviceFilter.js), and the reader stays where they are. */
+function chooseDeviceFilter(picker, deviceId) {
   setPickerOpen(picker, false);
-  try {
-    await setHomeDevice(deviceId);
-    paintDevicePicker();
-  } catch {
-    paintDevicePicker();
-    picker.querySelector(".device-picker-error").textContent = "Device unreachable. Try again when it is online.";
-  } finally {
-    movingHome = false;
-  }
+  rememberDeviceFilter(deviceId);
+  paintDevicePicker();
 }
 
 function pickerClick(event, picker) {
@@ -135,8 +159,9 @@ function pickerClick(event, picker) {
   } else if (button.dataset.settingsDevice) {
     setPickerOpen(picker, false);
     goFromInbox({ name: "device", id: button.dataset.settingsDevice });
-  } else if (button.dataset.selectDevice) {
-    void selectDevice(picker, button.dataset.selectDevice);
+  } else if (button.hasAttribute("data-filter-device")) {
+    // The all-devices row names no device, which is what "no filter" is.
+    chooseDeviceFilter(picker, button.dataset.filterDevice || null);
   }
 }
 

@@ -42,11 +42,11 @@ vi.mock("../src/core/composeView.js", async (importOriginal) => ({
 }));
 const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 
-const { App, disposeApplicationScope } = await import("../src/app.js");
+const { App, disposeApplicationScope, rememberSelectedDevice } = await import("../src/app.js");
 const { contextFor, deviceFeedView, knownContexts, liveContexts } = await import(
   "../src/core/deviceContexts.js"
 );
-const { goOffline, openDeviceSessions, resume, setHomeDevice } = await import("../src/connection.js");
+const { goOffline, openDeviceSessions, resume, syncHome } = await import("../src/connection.js");
 const { markDeviceOffline, markDeviceOnline } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
@@ -290,22 +290,26 @@ describe("per-device connections", () => {
     expect(App.offline).toBe(false); // home is back, and the aliases say so
   });
 
+  // A device that has never answered here has no context to keep a resume off,
+  // so the account opening every online device can race the resume that is
+  // already waiting for it. Whichever lands second is nobody's.
   it("hands back a resumed session for a device that came back another way", async () => {
-    await connectEveryDevice();
-    slowMs.set("dev-a", 1000);
-    goOffline("dev-a"); // the device's own resume starts waiting for it
-    await flush();
-    slowMs.delete("dev-a");
+    unreachable.add("dev-b");
+    await connectEveryDevice(); // dev-b refused, and is kept after on a backoff
+    unreachable.delete("dev-b");
+    slowMs.set("dev-b", 1000);
+    await vi.advanceTimersByTimeAsync(2000); // its resume is waiting on the relay
+    slowMs.delete("dev-b");
 
-    await setHomeDevice("dev-a"); // a connect that does not wait gets there first
-    const live = lastSession("dev-a");
+    await openDeviceSessions().settled; // a connect that does not wait gets there first
+    const live = lastSession("dev-b");
     await vi.advanceTimersByTimeAsync(1000);
 
-    const late = lastSession("dev-a");
+    const late = lastSession("dev-b");
     expect(late).not.toBe(live);
     expect(late.close).toHaveBeenCalled(); // nothing needs it: the device is live
-    expect(contextFor("dev-a").session).toBe(live);
-    expect(contextFor("dev-a").offline).toBe(false);
+    expect(contextFor("dev-b").session).toBe(live);
+    expect(contextFor("dev-b").offline).toBe(false);
   });
 
   // A bridge that drops is heard twice: its own session is lost, and the relay
@@ -449,7 +453,8 @@ describe("per-device connections", () => {
     const stayed = lastSession("dev-a");
     const home = lastSession("dev-b");
 
-    await setHomeDevice("dev-b");
+    rememberSelectedDevice("dev-b");
+    syncHome();
 
     expect(App.selectedDeviceId).toBe("dev-b");
     expect(App.session).toBe(home);
@@ -476,7 +481,8 @@ describe("per-device connections", () => {
     const stop = subscribeFeed((snapshot) => (here = deviceFeedView(snapshot)));
     expect(here.items.map((item) => item.deviceId)).toEqual(["dev-a"]);
 
-    await setHomeDevice("dev-b");
+    rememberSelectedDevice("dev-b");
+    syncHome();
 
     expect(here.items.map((item) => item.deviceId)).toEqual(["dev-b"]);
     stop();
@@ -489,39 +495,40 @@ describe("per-device connections", () => {
     await flush();
     expect(projectsOffered()).toEqual(["dev-a repo"]);
 
-    await setHomeDevice("dev-b");
+    rememberSelectedDevice("dev-b");
+    syncHome();
 
     expect(projectsOffered()).toEqual(["dev-b repo"]);
   });
 
-  // Picking a device that has no session opens one, and the landing already
-  // names it home — the pick is remembered before the connect. Taking it in
-  // hand a second time on the way back re-points what is already pointed,
-  // repaints the picker, delivers a second identical snapshot and offers the
-  // capture queue twice.
+  // The picked device coming back opens a session, and the landing already
+  // names it home. Taking it in hand a second time on the way out re-points
+  // what is already pointed, repaints the picker, delivers a second identical
+  // snapshot and offers the capture queue twice.
   it("takes a newly opened home device in hand once, not twice", async () => {
     devices = [online("dev-a", "Laptop"), { id: "dev-b", name: "Desktop", status: "offline" }];
     App.devices = devices;
     await connectEveryDevice();
-    App.devices = devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
     captures.flush.mockClear();
+    rememberSelectedDevice("dev-b"); // creation is to go to the device that is away
 
-    await setHomeDevice("dev-b");
+    markDeviceOnline("dev-b"); // …and the relay says it is back
+    await flush();
 
     expect(App.session).toBe(lastSession("dev-b"));
     expect(captures.flush).toHaveBeenCalledTimes(1);
   });
 
   // A device that refused is kept after on a backoff. When it answers some
-  // other way — the user picks it, or the relay says it is back and it joins —
-  // that timer is still armed, and it fires at a device that is already live:
-  // another handshake, another greeting, and a session for the bin.
+  // other way — the relay says it is back and it joins — that timer is still
+  // armed, and it fires at a device that is already live: another handshake,
+  // another greeting, and a session for the bin.
   it("drops a resume still scheduled for a device that landed another way", async () => {
     unreachable.add("dev-b");
     await connectEveryDevice();
     unreachable.delete("dev-b");
 
-    await setHomeDevice("dev-b");
+    await openDeviceSessions().settled;
     const landed = openedFor("dev-b").length;
     await vi.advanceTimersByTimeAsync(30000);
 

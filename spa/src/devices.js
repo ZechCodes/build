@@ -48,8 +48,14 @@ function markDevice(deviceId, status) {
 
 export function markDeviceOnline(deviceId) {
   if (!deviceFor(deviceId)) {
-    // A device we have not seen yet (approved elsewhere) — refresh the list.
-    refreshDevices();
+    // A device we have not seen yet (approved elsewhere) — read the list, then
+    // join it like any other. Reading alone would leave it online in the picker
+    // and contributing no rows until it next reconnected.
+    refreshDevices()
+      .then(() => openDeviceSessions())
+      .catch(() => {
+        /* the account list is unreachable; the next push tries again */
+      });
     return;
   }
   // A device that came up after boot joins the account's inbox here, without a

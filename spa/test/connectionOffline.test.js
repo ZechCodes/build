@@ -266,6 +266,24 @@ describe("per-device connections", () => {
     expect(captures.flush).not.toHaveBeenCalled();
   });
 
+  // Paired in another tab: the relay pushes that device's key before this tab's
+  // list has ever heard of it. Reading the list is only half of joining it —
+  // without the open it shows in the picker as online and contributes no rows
+  // until it reconnects.
+  it("connects a device paired in another tab, once the list has caught up", async () => {
+    devices = [online("dev-a", "Laptop")];
+    App.devices = devices;
+    await connectEveryDevice();
+    expect(liveIds()).toEqual(["dev-a"]);
+
+    devices = [online("dev-a", "Laptop"), online("dev-c", "Studio")];
+    markDeviceOnline("dev-c");
+    await flush();
+
+    expect(liveIds()).toEqual(["dev-a", "dev-c"]);
+    expect(contextFor("dev-c").session).toBe(lastSession("dev-c"));
+  });
+
   it("resolves the first success without waiting on the slowest device", async () => {
     slowMs.set("dev-b", 5000);
 

@@ -63,9 +63,23 @@ const homeCall = (method, params) => deviceCall(null)(method, params);
 const canSend = () => canAnswer(homeContext());
 /** What the account calls the machine this box sends to, while it can name it:
  *  the creation device, online or away. */
-const creationDeviceName = () => deviceNameOf(App.devices, creationDeviceId(App.devices, App.selectedDeviceId));
+const creationDeviceName = () => deviceNameOf(App.devices, captureDeviceId());
 const projectNameOf = (projectId) =>
   (feed.projects.find((project) => project.id === projectId) || {}).name || projectId || "";
+/** The machine a capture this client holds is on: the one creation goes to,
+ *  which is the one it was sent to or is waiting for. The rail is one list
+ *  across every machine, so a row the feed does not carry yet still has to say
+ *  whose it is. */
+const captureDeviceId = () => creationDeviceId(App.devices, App.selectedDeviceId);
+
+/** One capture this client is holding, as a row: the daemon's record, the
+ *  project name off the creation device's slice of the feed, and the machine
+ *  the row is on — which is the one it went to, not whichever is home by the
+ *  time some later answer corrects it. */
+function heldCaptureRow(capture, deviceId = captureDeviceId()) {
+  const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
+  return captureRow(capture, { projectName, deviceId });
+}
 
 // ---- what the client is holding ----------------------------------------------
 
@@ -96,9 +110,8 @@ function announce() {
 export function adoptCaptureRecord(capture) {
   const held = capture && capture.id ? tracked.get(capture.id) : null;
   if (!held) return;
-  const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
   tracked.set(capture.id, {
-    row: captureRow(capture, { projectName }),
+    row: heldCaptureRow(capture, held.row.deviceId),
     settledAt: held.settledAt ? Date.now() : null,
     settling: false,
   });
@@ -117,15 +130,19 @@ export function subscribePendingCaptures(listener) {
 }
 
 function hold(text) {
-  queue = saveCaptureQueue(
-    [...queue, queuedCapture(text, { id: `local-${Date.now()}-${queue.length}`, createdAt: new Date().toISOString() })],
-  );
+  queue = saveCaptureQueue([
+    ...queue,
+    queuedCapture(text, {
+      id: `local-${Date.now()}-${queue.length}`,
+      createdAt: new Date().toISOString(),
+      deviceId: captureDeviceId(),
+    }),
+  ]);
   announce();
 }
 
 function track(capture) {
-  const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
-  tracked.set(capture.id, { row: captureRow(capture, { projectName }), settledAt: null, settling: false });
+  tracked.set(capture.id, { row: heldCaptureRow(capture), settledAt: null, settling: false });
   announce();
 }
 
@@ -174,8 +191,7 @@ function syncTracked() {
     changed = true;
     homeCall("capture.get", { capture_id: id })
       .then((capture) => {
-        const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
-        tracked.set(id, { row: captureRow(capture, { projectName }), settledAt: Date.now(), settling: false });
+        tracked.set(id, { row: heldCaptureRow(capture, entry.row.deviceId), settledAt: Date.now(), settling: false });
       })
       .catch(() => tracked.delete(id))
       .then(announce);

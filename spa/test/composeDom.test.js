@@ -213,6 +213,18 @@ describe("capture first", () => {
     expect(rows.map((row) => [row.capture_id, row.state])).toEqual([["capture-1", "routing"]]);
   });
 
+  // The rail lists every machine's work and the picker narrows it to one, so
+  // every row on it says which machine it is on — including the ones the client
+  // is holding, which no device's feed carries yet. A capture goes to the
+  // machine creation goes to, and that is the machine its row names.
+  it("stamps the machine it went to on the row it is holding", async () => {
+    press("c");
+    type("#compose-text", "fix the login redirect");
+    $("#compose-send").click();
+    await flush();
+    expect(pendingCaptureRows().map((row) => row.deviceId)).toEqual(["dev-1"]);
+  });
+
   it("sends on ⌘/ctrl+Enter, since a capture can be more than one line", async () => {
     press("c");
     const text = type("#compose-text", "ship it");
@@ -336,6 +348,8 @@ describe("while the device is away", () => {
     const queued = JSON.parse(localStorage.getItem(CAPTURE_QUEUE_KEY));
     expect(queued.map((entry) => entry.text)).toEqual(["remember the redirect"]);
     expect(pendingCaptureRows().map((row) => row.state)).toEqual(["queued"]);
+    // Still that machine's row: it is where this is going the moment it answers.
+    expect(pendingCaptureRows().map((row) => row.deviceId)).toEqual(["dev-1"]);
   });
 
   it("sends what it was holding the moment the device is back", async () => {

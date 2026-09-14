@@ -14,18 +14,24 @@ const feedProjects = [
   { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb" },
   { id: "p2", deviceId: "dev-1", projectKey: "dev-1/p2", name: "dotfiles" },
 ];
-let subscriber = null;
-const refreshFeed = vi.fn(async () => subscriber && subscriber({ items: feedItems, projects: feedProjects }));
+// Every reader of the feed, not just the rail: the compose box reads it too,
+// and a fixture that remembered only the last subscriber delivered a snapshot
+// to whichever module happened to subscribe last.
+let subscribers = [];
+const deliver = (snapshot) => subscribers.forEach((fn) => fn(snapshot));
+const refreshFeed = vi.fn(async () => deliver({ items: feedItems, projects: feedProjects }));
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    subscriber = fn;
+    subscribers.push(fn);
     fn({ items: feedItems, projects: feedProjects });
-    return () => {};
+    return () => {
+      subscribers = subscribers.filter((each) => each !== fn);
+    };
   },
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
-  deliverFeed: () => subscriber && subscriber({ items: feedItems, projects: feedProjects }),
+  deliverFeed: () => deliver({ items: feedItems, projects: feedProjects }),
   primaryRunIdFor: () => null,
 }));
 
@@ -153,11 +159,12 @@ const issueRow = (over = {}) => ({
  *  is making or removing right now. */
 const feed = (items, pending = [], devices = null) => {
   feedItems = items;
-  subscriber({ items, pending, projects: feedProjects, ...(devices ? { devices } : {}) });
+  deliver({ items, pending, projects: feedProjects, ...(devices ? { devices } : {}) });
 };
 
 beforeEach(async () => {
   vi.resetModules();
+  subscribers = [];
   ({ App } = await import("../src/app.js"));
   ({ adoptDeviceSession, setContextOffline } = await import("../src/core/deviceContexts.js"));
   ({ mountInboxList, markSeen } = await import("../src/core/inboxView.js"));
@@ -1218,6 +1225,29 @@ describe("a row on another device", () => {
     expect([...captureRowFor("capture-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
       "build/away",
     ]);
+  });
+
+  // A capture the client has just sent is on the rail before any device's feed
+  // carries it, and it is on exactly one machine: the one creation goes to. The
+  // picker narrows the rail to one machine, so it reaches that row like every
+  // other.
+  it("the filter hides a capture this client is still holding", async () => {
+    const { initCompose } = await import("../src/core/composeView.js");
+    const record = { id: "capture-9", text: "ship it", created_at: now(), state: "routing", routing: null };
+    homeAnswersWith(vi.fn(async (method) => (method.startsWith("capture.") ? record : { ok: true })));
+    initCompose();
+    document.querySelector("#compose-open").click();
+    document.querySelector("#compose-text").value = "ship it";
+    document.querySelector("#compose-send").click();
+    await flush();
+    expect(captureRowFor("capture-9")).toBeTruthy();
+
+    rememberDeviceFilter("dev-2");
+    expect(captureRowFor("capture-9")).toBeNull();
+
+    rememberDeviceFilter("dev-1");
+    expect(captureRowFor("capture-9")).toBeTruthy();
+    rememberDeviceFilter(null);
   });
 
   // The picker narrows what is LISTED and nothing else: the surface you are

@@ -46,7 +46,7 @@ import { goFromInbox } from "./inboxShell.js";
 import { routeProjectKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
-import { filterByDevice } from "./deviceFilter.js";
+import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
 import { creationTarget, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
@@ -125,8 +125,11 @@ export const INBOX_SCOPE = "inbox";
 export { markSeen, noteSelfAction };
 
 // The captures this client is holding or watching stand beside the daemon's
-// own rows; the daemon's copy wins wherever both name the same capture.
-const mergedItems = () => mergeCaptureRows(mergePendingRows(items, pendingLifecycle), pendingCaptureRows());
+// own rows; the daemon's copy wins wherever both name the same capture. They
+// are narrowed by the picker on the way in — the snapshot's own rows were
+// narrowed as it arrived, and a row is a row whoever is holding it.
+const mergedItems = () =>
+  mergeCaptureRows(mergePendingRows(items, pendingLifecycle), onlyDeviceRows(pendingCaptureRows(), App.deviceFilter));
 
 /** Show one of the rail's two faces. The shell calls this with what the user
  *  chose (and remembered); the list repaints as that face. */

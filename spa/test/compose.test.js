@@ -39,10 +39,14 @@ const capture = (over = {}) => ({
 describe("the capture queue", () => {
   it("keeps what was said when there is nothing to send it to", () => {
     const storage = memoryStorage();
-    const queue = [queuedCapture("ship the thing", { id: "local-1", createdAt: "2026-08-14T10:00:00Z" })];
+    const queue = [
+      queuedCapture("ship the thing", { id: "local-1", createdAt: "2026-08-14T10:00:00Z", deviceId: "dev-1" }),
+    ];
     saveCaptureQueue(queue, storage);
+    // The machine it is waiting for is kept with it: the rail lists every
+    // machine's work, and this row is on one of them.
     expect(JSON.parse(storage.entries.get(CAPTURE_QUEUE_KEY))).toEqual([
-      { id: "local-1", text: "ship the thing", createdAt: "2026-08-14T10:00:00Z" },
+      { id: "local-1", text: "ship the thing", createdAt: "2026-08-14T10:00:00Z", deviceId: "dev-1" },
     ]);
     expect(loadCaptureQueue(storage)).toEqual(queue);
   });

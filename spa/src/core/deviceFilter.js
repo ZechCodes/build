@@ -29,11 +29,19 @@ export function filterByDevice(snapshot, deviceFilter) {
   const shown = { ...snapshot };
   for (const field of FEED_COLLECTIONS) {
     const rows = snapshot[field];
-    if (Array.isArray(rows)) shown[field] = rows.filter((row) => row.deviceId === deviceFilter);
+    if (Array.isArray(rows)) shown[field] = onlyDeviceRows(rows, deviceFilter);
   }
   if (snapshot.devices) shown.devices = onlyDevice(snapshot.devices, deviceFilter);
   return shown;
 }
+
+/** One machine's rows out of a list, or the list itself when the filter names
+ *  no machine. Every collection of a snapshot is narrowed with this, and so are
+ *  the rows the client holds outside one — a capture sent a moment ago, which
+ *  no device's board carries yet — so a held row and a stored one answer the
+ *  picker the same way. */
+export const onlyDeviceRows = (rows, deviceFilter) =>
+  deviceFilter ? rows.filter((row) => row.deviceId === deviceFilter) : rows;
 
 /** The `devices` map narrowed the same way: a surface that reads one machine's
  *  slice out of a filtered snapshot must not find another machine's. */

@@ -27,10 +27,11 @@ const TITLE_WIDTH = 80;
 
 // ---- what the client holds ---------------------------------------------------
 
-/** One capture the client is holding: the text, an id of its own making, and
- *  when it was said. The daemon mints the real id when it takes it. */
-export function queuedCapture(text, { id, createdAt }) {
-  return { id, text, createdAt };
+/** One capture the client is holding: the text, an id of its own making, when
+ *  it was said, and the machine it is going to. The daemon mints the real id
+ *  when it takes it. */
+export function queuedCapture(text, { id, createdAt, deviceId = null }) {
+  return { id, text, createdAt, deviceId };
 }
 
 const isQueued = (entry) =>
@@ -125,12 +126,16 @@ function captureUnreadReason(capture) {
  * it carries. One row vocabulary, whichever side the copy came from.
  */
 // eslint-disable-next-line complexity -- ratchet: captureRow is at 11, cap 10 — reduce it, then drop this line
-export function captureRow(capture, { projectName = "" } = {}) {
+export function captureRow(capture, { projectName = "", deviceId = null } = {}) {
   const routing = capture.routing || null;
   const reason = captureUnreadReason(capture);
   return {
     kind: "capture",
     capture_id: capture.id,
+    // Which machine this row is on, stamped the way the feed stamps its own
+    // rows: a capture the client is holding is not on any device's board yet,
+    // and the rail narrowed to one machine still has to know whose it is.
+    deviceId,
     project_id: routing ? routing.project_id : "",
     project: projectName,
     branch: routing && routing.kind === "branch" ? routing.target_id : null,
@@ -162,7 +167,10 @@ export function captureRow(capture, { projectName = "" } = {}) {
  *  the daemon, which is a kind of working. */
 export function queuedCaptureRow(queued) {
   return {
-    ...captureRow({ id: queued.id, text: queued.text, created_at: queued.createdAt, state: "queued" }),
+    ...captureRow(
+      { id: queued.id, text: queued.text, created_at: queued.createdAt, state: "queued" },
+      { deviceId: queued.deviceId || null },
+    ),
     working: true,
   };
 }

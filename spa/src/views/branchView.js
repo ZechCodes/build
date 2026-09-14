@@ -39,7 +39,7 @@ import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.j
 import { entityIdOf } from "../core/entityId.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { routeProjectKey } from "../core/deviceKey.js";
-import { deviceOfflineHtml } from "../core/deviceNotice.js";
+import { mountDeviceNotice } from "../core/deviceNotice.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { refreshFeed } from "../core/taskFeed.js";
@@ -124,9 +124,10 @@ export async function renderBranch() {
   root.className = "surface";
   // A machine that cannot answer — never opened here, or gone since — has
   // nothing under this link to read or write, so the surface names it rather
-  // than standing a frame up over calls that can only be refused.
+  // than standing a frame up over calls that can only be refused. The notice
+  // waits for that machine and hands the link back when it lands.
   if (!canAnswer(context)) {
-    root.innerHTML = deviceOfflineHtml(deviceId);
+    mountDeviceNotice(root, deviceId);
     return;
   }
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;

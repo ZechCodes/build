@@ -475,6 +475,35 @@ describe("a branch on a device this client has not opened", () => {
     expect(App.call).not.toHaveBeenCalled();
   });
 
+  // The reload case. Two machines answer on their own schedule, and the gate
+  // paints as soon as the first one lands: a link to the second paints the
+  // notice a beat before its machine is there. The notice is where the link
+  // waits, not where it ends — the surface stands itself up the moment that
+  // machine can answer, without the reader navigating away and back.
+  it("mounts the surface the moment the device lands", async () => {
+    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+    App.devices = [...App.devices, { id: "dev-3", name: "Laptop", status: "online" }];
+    App.route = { name: "branch", deviceId: "dev-3", projectId: "p1", branch: "main", tab: "changes" };
+    App.call = vi.fn(async () => ({}));
+    const theirCall = vi.fn(async (method) => {
+      if (method === "branch.get") return { ...row, branch: "main", primary: true, worktree_id: null };
+      if (method === "git.status") return { files: [], head: "abc", status_key: "clean" };
+      if (method === "git.log") return { commits: [] };
+      return {};
+    });
+
+    await renderBranch();
+    expect(document.getElementById("tabbody")).toBeNull();
+
+    adoptDeviceSession({ deviceId: "dev-3", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} });
+    await flush();
+
+    expect(document.getElementById("root").textContent).not.toContain("isn't connected");
+    expect(document.getElementById("tabbody")).toBeTruthy();
+    expect(theirCall.mock.calls.some(([method]) => method === "branch.get")).toBe(true);
+    expect(App.call.mock.calls.some(([method]) => method === "branch.get")).toBe(false);
+  });
+
   it("a route naming a device this account has no context for renders the offline state and mounts nothing", async () => {
     App.route = { name: "branch", deviceId: "dev-unknown", projectId: "p1", branch: "main", tab: "changes" };
     App.call = vi.fn(async () => ({}));

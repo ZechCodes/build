@@ -130,4 +130,23 @@ describe("an issue on a device this client has not opened", () => {
     expect(App.call).not.toHaveBeenCalled();
     expect(theirCall).not.toHaveBeenCalled();
   });
+
+  // The reload case: the machines land one at a time, and the gate paints on
+  // the first of them. The notice is where the link waits, not where it ends.
+  it("mounts the surface the moment the device lands", async () => {
+    const contexts = await import("../src/core/deviceContexts.js");
+    App.devices = [...App.devices, { id: "dev-3", name: "Laptop", status: "online" }];
+    App.route = { name: "issue", deviceId: "dev-3", projectId: "p1", id: "issue-1" };
+    const lateCall = vi.fn(theirCall);
+
+    await renderIssue();
+    expect(document.getElementById("tabbody")).toBeNull();
+
+    contexts.adoptDeviceSession({ deviceId: "dev-3", call: lateCall, close: () => {}, peer: () => {}, onCarrier: () => {} });
+    await flush();
+
+    expect(document.getElementById("tabbody")).toBeTruthy();
+    expect(lateCall.mock.calls.some(([method]) => method === "issue.get")).toBe(true);
+    expect(App.call.mock.calls.some(([method]) => method === "issue.get")).toBe(false);
+  });
 });

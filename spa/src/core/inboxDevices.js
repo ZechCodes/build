@@ -33,19 +33,28 @@ export function deviceTarget(deviceId) {
   return { call: context.call, disabled: false };
 }
 
+/** One machine's catalog, however it is asked for: a machine that cannot answer
+ *  offers the empty catalog — the harness's own default, and nothing to choose
+ *  between — rather than the last machine's list. */
+const askCatalog = (deviceId, ask) => {
+  const context = contextOf(deviceId);
+  return canAnswer(context) ? ask(context) : Promise.resolve(EMPTY_CATALOG);
+};
+
 /**
  * The harnesses one machine offers, for a surface that starts work there.
  *
  * Asked the same way a call is, so no reader compares device ids or falls back
  * to an account-wide answer: the composer asks for home's, the create dialog
- * and the agent rail for the machine of the address they were given. A machine
- * that cannot answer offers the empty catalog — the harness's own default, and
- * nothing to choose between — rather than the last machine's list.
+ * and the agent rail for the machine of the address they were given.
  */
-export function deviceCatalog(deviceId) {
-  const context = contextOf(deviceId);
-  return canAnswer(context) ? context.modelCatalog() : Promise.resolve(EMPTY_CATALOG);
-}
+export const deviceCatalog = (deviceId) => askCatalog(deviceId, (context) => context.modelCatalog());
+
+/** Ask one machine again, and keep the new answer: the account has changed
+ *  something its catalog reports, so what that machine's context holds is out
+ *  of date. Refuses out loud — the page that asked is the one that can say the
+ *  refresh did not land. */
+export const refreshDeviceCatalog = (deviceId) => askCatalog(deviceId, (context) => context.refreshModelCatalog());
 
 /** The call a surface about one machine makes: that machine's, or one that
  *  refuses in the words its rows are greyed with — so no call site asks whether

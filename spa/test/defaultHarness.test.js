@@ -331,7 +331,7 @@ describe("the Settings page", () => {
         current = { ...current, agent_modes: { ...current.agent_modes, ...params.agent_modes } };
         return current;
       }
-      if (method === "models.list" && catalogReads++ < 2) return CATALOG;
+      if (method === "models.list" && catalogReads++ < 1) return CATALOG;
       if (method === "models.list") throw new Error("catalog refresh failed");
       return {};
     });

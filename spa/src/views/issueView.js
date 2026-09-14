@@ -11,6 +11,7 @@ import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountDeviceNotice } from "../core/deviceNotice.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
+import { deviceCatalog } from "../core/inboxDevices.js";
 import { mountIssueView } from "../core/issueView.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -78,8 +79,9 @@ export async function renderIssue() {
     initialStageId: selectedStageId,
     callRpc,
     navigate: go,
-    // The harnesses on offer are this machine's, held on its context.
-    loadCatalog: context.modelCatalog,
+    // The harnesses on offer are this machine's, asked for the way every other
+    // surface asks: by the device its link names.
+    loadCatalog: () => deviceCatalog(deviceId),
     // The branches an implementation can be sent into are the feed's own branch
     // rows, so the assignment control reads the same list the inbox does.
     loadWorkItems: async () => (await callRpc("board.list")).items || [],

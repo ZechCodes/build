@@ -21,8 +21,7 @@ import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHar
 import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
 import { ACCOUNT_ISOLATION, isolationLabel, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
 import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
-import { homeContext } from "../core/deviceContexts.js";
-import { deviceCatalog } from "../core/inboxDevices.js";
+import { deviceCatalog, refreshDeviceCatalog } from "../core/inboxDevices.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -146,7 +145,7 @@ export async function renderSettings() {
     saved = settings;
     await mountAgentDefaults();
     try {
-      await homeContext()?.refreshModelCatalog();
+      await refreshDeviceCatalog(null);
     } catch {
       // Confirmed settings already keep this page's creation defaults current.
     }

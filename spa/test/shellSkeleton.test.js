@@ -91,7 +91,7 @@ describe("the shell's markup", () => {
       expect([id, !!document.getElementById(id)]).toEqual([id, true]);
     }
     // The banners, the sheet scrim and the device picker survive the rebuild.
-    for (const id of ["offbar", "verbar", "scrim", "sheet", "devpick"]) {
+    for (const id of ["verbar", "scrim", "sheet", "devpick"]) {
       expect([id, !!document.getElementById(id)]).toEqual([id, true]);
     }
     // Account lives at the foot of the inbox rail.

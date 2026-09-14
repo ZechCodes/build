@@ -32,8 +32,10 @@ vi.mock("../src/core/peerLink.js", () => ({
     throw new Error("no peer path in jsdom");
   },
 }));
-// The route render is not what this file is about; the shell still runs.
-vi.mock("../src/views/inbox.js", () => ({ renderInbox: () => {} }));
+// The route render is not what this file is about; the shell still runs, and
+// the gate handing the app back is one of the things this file is about.
+const routes = vi.hoisted(() => ({ renderInbox: vi.fn() }));
+vi.mock("../src/views/inbox.js", () => ({ renderInbox: (...args) => routes.renderInbox(...args) }));
 // Everything the composer does is its own file's business; what matters here is
 // which device is offered the captures nobody could send yet.
 vi.mock("../src/core/composeView.js", async (importOriginal) => ({
@@ -52,10 +54,11 @@ const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFee
 const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
+const { holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js");
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
 
-const online = (id, name) => ({ id, name, status: "online" });
+const online = (id, name) => ({ id, name, status: "online", fingerprint: `${id}-fingerprint` });
 
 const openedFor = (deviceId) => opened.filter((options) => options.preferDeviceId === deviceId);
 
@@ -94,8 +97,15 @@ beforeEach(() => {
   disposeApplicationScope();
   stopFeed();
   document.body.innerHTML =
-    '<div id="root"></div><div id="devpick"></div><div id="offbar" hidden><span id="offbar-text"></span></div><div id="conn"></div><div id="compose"></div><div id="inbox-list"></div>';
+    '<div id="root"></div><div id="devpick"></div><div id="conn"></div><div id="compose"></div><div id="inbox-list"></div>';
   document.body.className = "";
+  App.gated = false;
+  App.poll = null;
+  App.viewDispose = null;
+  routes.renderInbox.mockClear();
+  // The app is entered: the gate is listening for the account running out of
+  // machines to answer, which is what holds it and what hands it back.
+  holdAppWhileNoDeviceAnswers();
   opened = [];
   unreachable = new Set();
   slowMs = new Map();
@@ -138,8 +148,10 @@ function projectsOffered() {
   return names;
 }
 
-const bannerText = () => document.getElementById("offbar-text").textContent;
-const bannerShown = () => !document.getElementById("offbar").hidden;
+/** Whether the gate is holding the app: nothing can answer, so there is no
+ *  route to stand on and the waiting screen owns the page. */
+const held = () => document.body.classList.contains("gated");
+const waitingNote = () => document.getElementById("waitnote")?.textContent || "";
 const liveIds = () => liveContexts().map((context) => context.deviceId);
 
 /** Boot: open every online device, as the gate does. It names no home — each
@@ -167,8 +179,7 @@ describe("per-device connections", () => {
     expect(liveIds()).toEqual(["dev-b"]);
     // Its rows are still the account's rows — greyed by the rail, not removed.
     expect(feed.items.map((item) => item.deviceId)).toEqual(["dev-a", "dev-b"]);
-    expect(bannerShown()).toBe(false);
-    expect(document.body.classList.contains("offline")).toBe(false);
+    expect(held()).toBe(false); // the account still has a machine to stand on
     // dev-a is home, so the aliases the composer and the frozen views read must
     // say so — the banner's silence is about the account, not about them.
     expect(App.offline).toBe(true);
@@ -193,7 +204,7 @@ describe("per-device connections", () => {
 
     expect(App.offline).toBe(true);
     expect(App.offlineSince).toBe(contextFor("dev-a").offlineSince);
-    expect(bannerShown()).toBe(true);
+    expect(held()).toBe(true);
   });
 
   // The banner's silence is only half the answer: the rail has to keep showing
@@ -249,9 +260,8 @@ describe("per-device connections", () => {
     goOffline("dev-b");
     await flush();
 
-    expect(bannerShown()).toBe(true);
-    expect(bannerText()).toBe(allDevicesOfflineText());
-    expect(document.body.classList.contains("offline")).toBe(true);
+    expect(held()).toBe(true);
+    expect(waitingNote()).toContain(allDevicesOfflineText());
   });
 
   it("keeps naming the one device on the account, and when it went unreachable", async () => {
@@ -263,8 +273,61 @@ describe("per-device connections", () => {
     goOffline("dev-a");
     await flush();
 
-    expect(bannerShown()).toBe(true);
-    expect(bannerText()).toBe(offlineBannerText("Laptop", contextFor("dev-a").offlineSince));
+    expect(held()).toBe(true);
+    expect(waitingNote()).toContain(offlineBannerText("Laptop", contextFor("dev-a").offlineSince));
+  });
+
+  // Every surface is about a machine, so an account with none has nothing to
+  // stand on: the gate takes the app back rather than leaving a dead route
+  // under a banner. The view goes with it — its poll and its own teardown —
+  // and nothing is started to watch for a device, because every device is
+  // already being asked for.
+  it("holds the app on the waiting screen when the last device goes", async () => {
+    await connectEveryDevice();
+    startFeed(60000);
+    await flush();
+    const poll = { dispose: vi.fn() };
+    const viewDispose = vi.fn();
+    App.poll = poll;
+    App.viewDispose = viewDispose;
+    unreachable.add("dev-a");
+    unreachable.add("dev-b");
+
+    goOffline("dev-a");
+    goOffline("dev-b");
+    await flush();
+
+    expect(held()).toBe(true);
+    expect(document.getElementById("waitlist").textContent).toContain("Laptop");
+    expect(document.getElementById("waitlist").textContent).toContain("Desktop");
+    expect(poll.dispose).toHaveBeenCalled();
+    expect(viewDispose).toHaveBeenCalled();
+    expect(App.poll).toBe(null);
+    expect(App.viewDispose).toBe(null);
+  });
+
+  // And the way back is the same signal: the machine that answers hands the
+  // reader their route back, with the feed reading it again — no reload.
+  it("hands the app back the moment one device answers again", async () => {
+    await connectEveryDevice();
+    startFeed(60000);
+    await flush();
+    unreachable.add("dev-a");
+    unreachable.add("dev-b");
+    goOffline("dev-a");
+    goOffline("dev-b");
+    await flush();
+    expect(held()).toBe(true);
+    routes.renderInbox.mockClear();
+
+    unreachable.delete("dev-a");
+    await resume("dev-a");
+    await flush();
+
+    expect(held()).toBe(false);
+    expect(routes.renderInbox).toHaveBeenCalled();
+    expect(document.getElementById("devpick").hidden).toBe(false);
+    expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");
   });
 
   it("reopens only the device resume names, waiting for it, and leaves the other session alone", async () => {

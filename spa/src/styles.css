@@ -107,11 +107,10 @@ input[type=checkbox] { accent-color:var(--accent); }
    no browser chrome to hide, and body scroll there meant a third scrollbar on
    top of the rail's and the content's. dvh with a vh fallback, so the frame
    tracks the layout viewport the keyboard resizes (interactive-widget). The
-   offline banner and the shell are the only in-flow children; everything else
+   version banner and the shell are the only in-flow children; everything else
    on body is position:fixed. */
 body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:column;
   background:var(--bg); color:var(--ink); font:14px/1.55 "Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
-#offbar { flex:none; }
 a { color:inherit; }
 .mono { font-family:var(--mono); }
 .dim { color:var(--dim); }
@@ -135,10 +134,8 @@ a { color:inherit; }
 #device-projects-path { overflow-wrap:anywhere; }
 body.inbox-collapsed #root.device-settings { padding-top:calc(48px + env(safe-area-inset-top, 0px)); }
 
-/* offline banner */
-#offbar { background:var(--amber-bg); color:var(--amber); border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent); padding:7px 18px; font-size:12.5px; }
 /* new-version banner: an offer, not a warning — accent, one Reload, never auto.
-   In-flow like #offbar, so the locked shell shrinks under it. */
+   In flow above the shell, so the locked frame shrinks under it. */
 #verbar { flex:none; display:flex; align-items:center; gap:12px;
   background:var(--accent-soft); color:var(--accent);
   border-bottom:1px solid color-mix(in srgb, var(--accent) 35%, transparent);

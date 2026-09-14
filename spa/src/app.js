@@ -291,14 +291,19 @@ function followRouteDevice() {
   if (followTerminalDevice()) terminalRouteDeviceId = deviceId;
 }
 
-export function render() {
+/**
+ * Take the mounted view down: its read, and its own client-side resources
+ * (terminal panes, their ResizeObservers and window listeners).
+ *
+ * The server PTYs persist — dispose never closes them. Every render runs this
+ * before the next view claims #root, and so does the gate when it takes #root
+ * back from a view whose machine has gone.
+ */
+export function unmountView() {
   if (App.poll) {
     App.poll.dispose();
     App.poll = null;
   }
-  // Tear down the outgoing view's client-side resources (terminal panes, their
-  // ResizeObservers + window listeners) before the next view claims #root. The
-  // server PTYs persist — dispose never closes them.
   if (App.viewDispose) {
     try {
       App.viewDispose();
@@ -307,6 +312,10 @@ export function render() {
     }
     App.viewDispose = null;
   }
+}
+
+export function render() {
+  unmountView();
   inboxRouteChanged(); // keep the rail tracking the route
   toolbarRouteChanged(); // …and the toolbar naming where you are standing
   followRouteDevice(); // …and the terminals typing at the machine it names

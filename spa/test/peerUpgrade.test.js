@@ -140,7 +140,7 @@ async function loseAndReturn(replacement) {
 
 beforeEach(() => {
   disposeApplicationScope();
-  document.body.innerHTML = '<div id="offbar" hidden><span id="offbar-text"></span></div><div id="conn"></div>';
+  document.body.innerHTML = '<div id="conn"></div>';
   document.body.className = "";
   changed.length = 0;
   opened.length = 0;

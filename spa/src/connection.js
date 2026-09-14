@@ -21,12 +21,10 @@ import {
   closeQuietly,
   contextFor,
   homeContext,
-  knownContexts,
   liveContexts,
   setContextOffline,
 } from "./core/deviceContexts.js";
 import {
-  deviceName,
   markDeviceOnline,
   markDeviceOffline,
   paintDevicePicker,
@@ -36,12 +34,11 @@ import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
-import { allDevicesOfflineText, offlineBannerText } from "./core/text.js";
 
 /// Connection status has no chip of its own any more — the status line under the
-/// rail is the device picker and nothing else. Offline still speaks up loudly
-/// through the banner (#offbar), which is the state that actually needs saying.
-/// Kept as a no-op-when-absent writer so every caller stays unchanged.
+/// rail is the device picker and nothing else. The state that needs saying is
+/// an account with nothing that can answer, and the gate's waiting screen says
+/// it. Kept as a no-op-when-absent writer so every caller stays unchanged.
 export function setConn(html) {
   const el = $("#conn");
   if (el) el.innerHTML = html;
@@ -219,7 +216,7 @@ function landSession(session) {
   // late device just opened — gets its own board watcher and reads at once.
   joinFeed(context);
   syncHome(context);
-  paintOfflineBanner();
+  paintConnectionStatus();
   greetLiveBridge(context);
   upgradeToPeer(context); // in the background: the user is live already
   return context;
@@ -362,7 +359,7 @@ export function goOffline(deviceId) {
   dropPeerLink(context);
   closeQuietly(context.session);
   syncHome(context); // home may have moved off it — and if it has not, the aliases still have to say it is offline
-  paintOfflineBanner();
+  paintConnectionStatus();
   resume(deviceId);
 }
 
@@ -432,29 +429,12 @@ function reconnectFor(deviceId) {
   return unconnected.get(deviceId);
 }
 
-// ---- the account-wide banner -------------------------------------------------
+// ---- what the status line says -----------------------------------------------
 
-/** The banner speaks for the account, not for a device: while anything is
- *  reachable the rail's greyed rows say all there is to say about the one that
- *  is not. */
-export function paintOfflineBanner() {
-  const nothingLive = liveContexts().length === 0;
-  document.body.classList.toggle("offline", nothingLive);
-  const banner = $("#offbar");
-  if (banner) banner.hidden = !nothingLive;
-  if (!nothingLive) {
-    setConn(CONNECTION_STATUS.connected);
-    return;
-  }
-  const text = $("#offbar-text");
-  if (text) text.textContent = bannerText(knownContexts());
-  setConn(CONNECTION_STATUS.reconnecting);
-}
-
-/** One device is named, with when it went unreachable; several of them (or none
- *  this client ever reached) is a sentence about the account. */
-function bannerText(contexts) {
-  if (contexts.length !== 1) return allDevicesOfflineText();
-  const [context] = contexts;
-  return offlineBannerText(deviceName(context.deviceId) || "Your device", context.offlineSince || Date.now());
+/** The status line's chip. There is no banner over the app any more: while some
+ *  machine is reachable the rail's greyed rows say all there is to say about
+ *  the one that is not, and when none is the gate holds the app and its waiting
+ *  screen names the machines the account is waiting for (views/gate.js). */
+export function paintConnectionStatus() {
+  setConn(liveContexts().length ? CONNECTION_STATUS.connected : CONNECTION_STATUS.reconnecting);
 }

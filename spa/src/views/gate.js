@@ -1,11 +1,18 @@
 // Connection gate. Before the app can load we need a live, owned device.
 // Three entry states: onboarding (no devices yet), waiting (devices exist but
 // none online — auto-reconnect), connected (open the E2EE session and render).
+//
+// The waiting screen is not only a boot state. Every surface in the app is
+// about a machine, so an account that has run out of machines that can answer
+// has nothing to stand on: the gate takes the app back and says which machines
+// it is waiting for, and hands it straight back when one of them lands.
 
 import { $ } from "../dom.js";
-import { esc } from "../core/text.js";
-import { App, render } from "../app.js";
+import { allDevicesOfflineText, esc, offlineBannerText } from "../core/text.js";
+import { App, render, unmountView } from "../app.js";
 import { CONNECTION_STATUS, openDeviceSessions, setConn } from "../connection.js";
+import { knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
+import { deviceNameOf } from "../core/devicePolicy.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -44,19 +51,68 @@ async function enterApp() {
     clearInterval(App._watch);
     App._watch = null;
   }
-  setGate(false);
-  paintDevicePicker();
-  setConn(CONNECTION_STATUS.connected);
-  // The bridges are already greeted: connection.js greets every device as it
-  // lands it, which is before the first one answers here — so the surfaces
-  // mount on the cadence each bridge has earned. A bridge that pushes lets them
-  // stand down to the safety poll; one that does not leaves every interval
-  // exactly where it has always been.
-  startFeed();
+  holdAppWhileNoDeviceAnswers();
+  handBackToReader();
   startCacheSync();
   initInboxRail();
   initToolbar();
   render(); // the hash route survives the gate, so deep links land where they point
+}
+
+/** Give the page back to the reader: the shell is theirs again, the picker says
+ *  what the rail is showing, and the devices are read on their cadence.
+ *
+ *  The bridges are already greeted: connection.js greets every device as it
+ *  lands it, which is before the first one answers here — so the surfaces mount
+ *  on the cadence each bridge has earned. A bridge that pushes lets them stand
+ *  down to the safety poll; one that does not leaves every interval exactly
+ *  where it has always been. */
+function handBackToReader() {
+  holding = false;
+  setGate(false);
+  paintDevicePicker();
+  setConn(CONNECTION_STATUS.connected);
+  startFeed();
+}
+
+// Whether the gate is holding the app for want of a machine that can answer.
+let holding = false;
+let stopWatchingDevices = null;
+
+/**
+ * Hold the app whenever nothing can answer, and hand it back when something
+ * can.
+ *
+ * Reachability is not news the feed carries — a row does not change when the
+ * machine behind it goes — so it is heard from the registry. One device of
+ * several going is the rail's business: its rows grey and the account carries
+ * on. The last one going is the whole app's, because there is no longer a
+ * machine for any surface to be about.
+ */
+export function holdAppWhileNoDeviceAnswers() {
+  stopWatchingDevices?.();
+  stopWatchingDevices = onDeviceStateChanged(() => (liveContexts().length ? leaveHold() : holdForDevices()));
+}
+
+/** Nothing can answer: the mounted view goes, and the waiting screen says which
+ *  machines the account is waiting for. Nothing is started to watch for one —
+ *  every device is already being asked for on its own backoff, and the first to
+ *  land hands the app straight back. */
+function holdForDevices() {
+  if (holding) return;
+  holding = true;
+  unmountView();
+  renderWaiting(App.devices);
+}
+
+/** A machine answered: the reader gets the route they were standing on back,
+ *  with the feed reading that machine again. The hold stopped the feed, so this
+ *  starts it — the device that just landed is live by the time this runs, and
+ *  its own joinFeed finds it already polling. */
+function leaveHold() {
+  if (!holding) return;
+  handBackToReader();
+  render();
 }
 
 // Poll for a device to come online, then connect automatically.
@@ -186,13 +242,24 @@ function paintWaiting(devices) {
   if (list.innerHTML !== html) list.innerHTML = html;
 }
 
+/** Why the page is waiting, in the account's own words: one machine this client
+ *  had and lost is named, with when it went unreachable; several of them — or
+ *  none this client ever reached — is a sentence about the account. */
+function waitingText() {
+  const contexts = knownContexts();
+  if (contexts.length !== 1) return allDevicesOfflineText();
+  const [context] = contexts;
+  const name = deviceNameOf(App.devices, context.deviceId) || "Your device";
+  return offlineBannerText(name, context.offlineSince || Date.now());
+}
+
 function renderWaiting(devices) {
   setGate(true);
   setConn(CONNECTION_STATUS.deviceOffline);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
       <h1 style="margin:0 0 6px">Waiting for your device</h1>
-      <p class="settings-intro" style="margin:0 0 18px">None of your devices are online right now. Start your bridge and Build will connect automatically — no need to refresh.</p>
+      <p class="settings-intro" style="margin:0 0 18px" id="waitnote">${esc(waitingText())} Start your bridge and Build will connect automatically — no need to refresh.</p>
       <div class="panel"><div id="waitlist"></div></div>
       <div class="row" style="margin-top:14px"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>
         <button class="btn" id="retrybtn" style="margin-left:auto">Retry now</button>

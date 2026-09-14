@@ -36,39 +36,69 @@ import { pageVisible, whenVisible } from "./visibility.js";
  *  on. */
 export const SAFETY_POLL_MS = 60000;
 
-let armed = false;
+// Event mode is a fact about one bridge, so it is held per device: one machine
+// pushing says nothing about another that predates push invalidation.
+const armed = new Map(); // deviceId → whether that bridge pushes
 const watchers = new Set();
 let visibilityWired = false;
 
-/** Read the bridge's greeting. Returns whether event mode armed. */
-export function armChangeEvents(greeting) {
+/** A device id as this module keys it. A caller with no device to name (a
+ *  surface that spans them, a test) is the unnamed one. */
+const deviceKeyOf = (deviceId) => (deviceId === null || deviceId === undefined ? "" : String(deviceId));
+
+/** Read one bridge's greeting. Returns whether event mode armed for it. */
+export function armChangeEvents(greeting, deviceId = null) {
+  const device = deviceKeyOf(deviceId);
   const nowArmed = Boolean(greeting && greeting.push_events === true);
-  if (nowArmed === armed) return armed;
-  armed = nowArmed;
+  if (armed.get(device) === nowArmed) return nowArmed;
+  armed.set(device, nowArmed);
   // A surface mounted before the mode was known (or across a reconnect onto a
   // different bridge) keeps polling at whatever cadence it started with unless
   // it is re-timed here.
-  watchers.forEach(startTimer);
-  return armed;
+  retime(device);
+  return nowArmed;
 }
 
-/** Whether the bridge on the other end pushes change events. */
-export function changeEventsArmed() {
-  return armed;
+/** Retire a device: what it pushed is nobody's cadence any more. */
+export function disarmChangeEvents(deviceId) {
+  const device = deviceKeyOf(deviceId);
+  if (!armed.delete(device)) return;
+  retime(device);
 }
+
+/** Re-time every watcher that hears this device — its own, and the ones that
+ *  span devices and therefore follow every bridge's mode. */
+function retime(device) {
+  [...watchers].filter((watcher) => watcher.hears(device)).forEach(startTimer);
+}
+
+/** Whether pushes can be expected. For one device, that device's bridge; for a
+ *  surface that spans devices, only when every bridge it could hear from
+ *  pushes — one polling device is a device nothing would announce. */
+export function changeEventsArmed(deviceId = null) {
+  if (deviceId === null || deviceId === undefined) {
+    return armed.size > 0 && [...armed.values()].every(Boolean);
+  }
+  return armedFor(deviceId);
+}
+
+/** One bridge's mode, with no spanning rule over it: what an event arriving
+ *  from that device is measured against. */
+const armedFor = (deviceId) => armed.get(deviceKeyOf(deviceId)) === true;
 
 /** The interval a surface polling every `fastMs` should actually run at. Event
  *  mode stands a fast poll down to the safety poll and leaves a slow one alone —
  *  standing down must never mean speeding up. */
-export function pollIntervalMs(fastMs) {
-  return armed ? Math.max(fastMs, SAFETY_POLL_MS) : fastMs;
+export function pollIntervalMs(fastMs, deviceId = null) {
+  return changeEventsArmed(deviceId) ? Math.max(fastMs, SAFETY_POLL_MS) : fastMs;
 }
 
-/** Forget every watcher and disarm. Tests, and a client that lost its session. */
+/** Forget every watcher and disarm every device. Tests, and a client that lost
+ *  its sessions. */
 export function resetChangeEvents() {
   watchers.forEach((watcher) => clearInterval(watcher.timer));
   watchers.clear();
-  armed = false;
+  armed.clear();
 }
 
 /** The ids a watcher stands for right now. Read at delivery, never at mount:
@@ -80,9 +110,14 @@ function entityIdsOf(watcher) {
   return list.filter((id) => id !== null && id !== undefined && id !== "").map(String);
 }
 
+/** The predicate a watcher is registered with: the whole of "does this surface
+ *  hear that device?", asked once per delivery and never re-derived. */
+const hearsFor = (deviceId) =>
+  deviceId === null || deviceId === undefined ? () => true : (device) => deviceKeyOf(device) === deviceKeyOf(deviceId);
+
 function startTimer(watcher) {
   clearInterval(watcher.timer);
-  watcher.timer = setInterval(watcher.tick, pollIntervalMs(watcher.intervalMs));
+  watcher.timer = setInterval(watcher.tick, pollIntervalMs(watcher.intervalMs, watcher.deviceId));
 }
 
 /** Run a watcher's refresh for an event, under the same visibility gate its
@@ -128,6 +163,7 @@ export function watchChanges({
   refresh,
   intervalMs,
   entity = null,
+  deviceId = null,
   catchUpOnVisible = true,
   pausesWhileHidden = true,
 }) {
@@ -135,8 +171,12 @@ export function watchChanges({
     refresh,
     intervalMs,
     entity,
+    deviceId,
     catchUpOnVisible,
     pausesWhileHidden,
+    // Whose events this surface is about, decided once, here: a surface that
+    // named a device hears that device, and one that named none spans them all.
+    hears: hearsFor(deviceId),
     // A surface that named no entity is the feed, whatever its entity getter
     // would answer later.
     boardScoped: entity === null || entity === undefined,
@@ -162,10 +202,10 @@ export function watchChanges({
 /** A change event off the session. Ignored entirely while unarmed — an old
  *  bridge sends none, and a client that never greeted must behave as if it
  *  could not hear them. Returns whether the event was one we act on. */
-export function dispatchChangeEvent(payload) {
-  if (!armed || !payload) return false;
+export function dispatchChangeEvent(payload, deviceId = null) {
+  if (!payload || !armedFor(deviceId)) return false;
   if (payload.type === "board.changed") {
-    [...watchers].filter((watcher) => watcher.boardScoped).forEach(deliver);
+    [...watchers].filter((watcher) => watcher.boardScoped && watcher.hears(deviceId)).forEach(deliver);
     return true;
   }
   if (payload.type === "entity.changed") {
@@ -180,8 +220,9 @@ export function dispatchChangeEvent(payload) {
 /** Refetch everything on screen, once. What a reconnect does: the socket was
  *  down, every event sent during the gap went nowhere, and no amount of
  *  listening will get them back. */
-export function refetchEverything() {
-  [...watchers].forEach(deliver);
+export function refetchEverything(deviceId = null) {
+  const woken = deviceId === null ? [...watchers] : [...watchers].filter((watcher) => watcher.hears(deviceId));
+  woken.forEach(deliver);
 }
 
 /**
@@ -197,7 +238,7 @@ export function refetchEverything() {
  * feature detection, and it is the whole of it — the client goes back to
  * polling with nothing to configure.
  */
-export async function greetBridge(call, { isCurrent = () => true, onGreeting = () => {} } = {}) {
+export async function greetBridge(call, { deviceId = null, isCurrent = () => true, onGreeting = () => {} } = {}) {
   let greeting = null;
   try {
     greeting = await call("session.hello");
@@ -206,9 +247,9 @@ export async function greetBridge(call, { isCurrent = () => true, onGreeting = (
   }
   // A slower old device can answer after another session has been adopted.
   // Its features and gap belong to that old session, not the current app.
-  if (!isCurrent()) return changeEventsArmed();
+  if (!isCurrent()) return changeEventsArmed(deviceId);
   onGreeting(greeting);
-  armChangeEvents(greeting);
-  refetchEverything();
-  return changeEventsArmed();
+  armChangeEvents(greeting, deviceId);
+  refetchEverything(deviceId);
+  return changeEventsArmed(deviceId);
 }

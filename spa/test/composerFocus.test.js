@@ -284,6 +284,11 @@ describe("a work item that keeps losing its agent", () => {
     await flush();
   };
 
+  /** Whose conversation the head says is open. The head wears the topic the
+   *  agent named its work with (`set_topic`) and shimmers "Starting" until
+   *  there is one, so the harness name rides as the title. */
+  const headWho = () => document.querySelector(".rail-who").title;
+
   const typeInto = () => {
     const input = document.getElementById("railinput");
     input.focus();
@@ -382,11 +387,11 @@ describe("a work item that keeps losing its agent", () => {
     expect(document.getElementById("railinput")).toBe(input);
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe("half a thought");
-    expect(document.querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho()).toBe("Claude Code 1");
   });
 
   // The same tick that rebuilt the panel also rewrote the strip and the head:
-  // the agent's bubble became a ghost and the name above the conversation
+  // the agent's bubble became a ghost and the head over the conversation
   // became "New agent", a second and a half at a time.
   it("keeps saying whose conversation is open", async () => {
     await mount();
@@ -396,7 +401,7 @@ describe("a work item that keeps losing its agent", () => {
     const strip = document.querySelector(".rail-strip");
     expect([...strip.querySelectorAll(".rail-bubble")].map((bubble) => bubble.dataset.bubble))
       .toEqual(["agent", "add"]);
-    expect(document.querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho()).toBe("Claude Code 1");
   });
 
   // The guard is a hiccup filter, not a freeze: a branch whose run really has

@@ -156,6 +156,10 @@ const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
 const panel = () => railHost().querySelector(".rail-panel");
+/** Whose conversation the head says is open. The head wears the topic the agent
+ *  named its work with (`set_topic`) and shimmers "Starting" until there is
+ *  one, so the harness name and ordinal these cases pin rides as the title. */
+const headWho = (root = railHost()) => root.querySelector(".rail-who").title;
 const tuiToggle = () => panel().querySelector(".rail-tui");
 const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
@@ -244,7 +248,7 @@ describe("the bubble strip", () => {
     await mount();
     bubbles()[1].click();
     await flush();
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
     expect(bubbles()[1].classList.contains("active")).toBe(true);
     bubbles()[1].click();
     await flush();
@@ -262,7 +266,7 @@ describe("the bubble strip", () => {
     await flush();
 
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
-    expect(panel().querySelector(".rail-who").textContent).toBe("Codex 1");
+    expect(headWho(panel())).toBe("Codex 1");
   });
 
   // The rail reads the row every 1.6s and nearly every read says the same
@@ -372,7 +376,7 @@ describe("the bubble strip", () => {
     const chooser = railHost().querySelector(".rail-newagent");
     expect(chooser).toBeTruthy();
     expect(chooser.querySelector(".rail-harness-choice.chosen").dataset.provider).toBe("codex");
-    expect(railHost().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(headWho()).toBe("New agent");
     expect(railHost().querySelector("#railinput").placeholder).toContain("start an agent");
   });
 
@@ -614,7 +618,7 @@ describe("taking an agent back off the branch", () => {
     // A working branch, not a broken one: the strip drops to its ghost and the
     // panel head offers to start a new agent.
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
-    expect(panel().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(headWho(panel())).toBe("New agent");
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -645,7 +649,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code 1");
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -684,7 +688,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "unknown method: agent.remove");
     // Still open on the agent it failed to remove, still offering to try again.
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
     expect(removeButton()).toBeTruthy();
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
   });
@@ -710,7 +714,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(payload.agents.map((each) => each.id)).toEqual(["ag-1", "ag-2"]);
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code 1");
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(0);
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
     expect(notifyError).not.toHaveBeenCalled();
@@ -727,7 +731,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(payload.agents.map((each) => each.id)).toEqual(["ag-1"]);
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
-    expect(panel().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(headWho(panel())).toBe("New agent");
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -771,7 +775,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
     expect(removeButton()).toBeTruthy();
     expect(notifyError).toHaveBeenCalledTimes(1);
@@ -797,7 +801,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
     expect(bubbles()[1].classList.contains("active")).toBe(true);
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
   });
 
   it("removes an agent the create record still names", async () => {
@@ -832,9 +836,25 @@ describe("taking an agent back off the branch", () => {
 });
 
 describe("the conversation panel", () => {
+  it("wears the topic the agent named its work with, and shimmers until it has", async () => {
+    await mount();
+    // Nothing named yet: the head says so, in the shimmering word.
+    expect(panel().querySelector(".rail-who").textContent).toBe("Starting");
+    expect(panel().querySelector(".rail-who").classList.contains("rail-who-starting")).toBe(true);
+    expect(headWho(panel())).toBe("Claude Code 1");
+
+    payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(panel().querySelector(".rail-who").textContent).toBe("Unify prompt delivery");
+    expect(panel().querySelector(".rail-who").classList.contains("rail-who-starting")).toBe(false);
+    expect(headWho(panel())).toBe("Claude Code 1");
+  });
+
   it("carries the agent, the one way down to its screen, and a box to write in", async () => {
     await mount();
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code 1");
     const modes = [...panel().querySelectorAll(".rail-mode")];
     expect(modes).toHaveLength(1);
     expect(modes[0].textContent).toBe("TUI");
@@ -1136,7 +1156,7 @@ describe("the conversation panel", () => {
     bubbles()[1].click();
     await flush();
 
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
     expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
@@ -1283,7 +1303,7 @@ describe("the conversation panel", () => {
       bubbles()[1].click();
       await flush();
 
-      expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+      expect(headWho(panel())).toBe("Claude Code 2");
       expect(panel().textContent).toContain("words from ag-2");
       expect(panel().textContent).not.toContain("words from ag-1");
     });
@@ -1833,7 +1853,7 @@ describe("the chat tab of a branch with no agent", () => {
     payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2 })] });
     vi.advanceTimersByTime(1600);
     await flush();
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
   });
 
   it("moves the highlight to the card that is pressed, and creates that one", async () => {
@@ -2655,6 +2675,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   });
 });
 
+// The bridge behind these is the machine's own, handed over mid-test: a
+// workspace whose checkout this bridge holds no run for answers differently,
+// it is not another machine.
 describe("a workspace conversation on a metadata-only bridge", () => {
   it("recovers the exact adopted run and posts through its agent conversation", async () => {
     const run = {
@@ -2664,7 +2687,7 @@ describe("a workspace conversation on a metadata-only bridge", () => {
       agents: [agent({ id: "ag-workspace", conversation_id: "conversation-workspace", state: "live" })],
       thread: { items: [], sessions: [] },
     };
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "workspace.get") return { id: "run-3", project_id: "p1", directories: [{ branch: "build/login" }] };
@@ -2692,7 +2715,7 @@ describe("a workspace conversation on a metadata-only bridge", () => {
   });
 
   it("shows the shared new-conversation composer without creating storage on open", async () => {
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
@@ -2715,7 +2738,7 @@ describe("a workspace conversation on a metadata-only bridge", () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({
       provider: "claude_adk", model: "claude-opus-5", effort: "high",
     }));
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
@@ -2745,7 +2768,7 @@ describe("a workspace conversation on a metadata-only bridge", () => {
 
   it("restores the draft and retries workspace creation after ensure fails", async () => {
     let ensureAttempts = 0;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
@@ -2845,7 +2868,7 @@ describe("creating an agent, before the daemon has answered for it", () => {
 
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
     expect(bubbles()[0].classList.contains("active")).toBe(true);
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code 1");
     expect(timeline().textContent).toContain("start here");
     expect(composer().value).toBe("");
     expect(callsTo("agent.add")).toHaveLength(1);
@@ -3206,20 +3229,25 @@ describe("the one status row", () => {
     expect(clockRule[0]).toContain("display:inline-block");
   });
 
-  it("shimmers the status clock and every ticking row clock through one rule, holding still under reduced motion", () => {
+  // The head of a conversation whose agent has not named its work yet is
+  // mid-something too, so it wears the same shimmer as the clocks rather than
+  // a copy of it — one rule, one keyframe, one reduced-motion answer.
+  it("shimmers the status clock, every ticking row clock and a starting head through one rule, holding still under reduced motion", () => {
     expect(shellCss.match(/@keyframes clock-shimmer/g)).toHaveLength(1);
     expect(shellCss.match(/linear-gradient\(100deg/g)).toHaveLength(1);
-    const shimmerRule = shellCss.match(
-      /\n\.rail-status-working, \.surface-row-clock\[data-running-since\] \{ color:transparent;[^}]*\}/,
-    );
+    const shimmering = /\.rail-status-working, \.surface-row-clock\[data-running-since\], \.rail-who-starting/;
+    const shimmerRule = shellCss.match(new RegExp(`\\n${shimmering.source} \\{ color:transparent;[^}]*\\}`));
     expect(shimmerRule[0]).toContain("animation:clock-shimmer");
     expect(shimmerRule[0]).toContain("background-clip:text");
     expect(shimmerRule[0]).toContain("var(--clock-ink)");
     const stillRule = shellCss.match(
-      /@media \(prefers-reduced-motion: reduce\) \{\n?\s*\.rail-status-working, \.surface-row-clock\[data-running-since\] \{[^}]*\}/,
+      new RegExp(`@media \\(prefers-reduced-motion: reduce\\) \\{\\n?\\s*${shimmering.source} \\{[^}]*\\}`),
     );
     expect(stillRule).not.toBe(null);
     expect(stillRule[0]).toContain("animation:none");
+    // Each wearer brings its own ink: the working clock the accent, a starting
+    // head the dim.
+    expect(shellCss).toContain(".rail-who-starting { --clock-ink:var(--dim); font-weight:500; }");
   });
 
   it("wears the working colour on the status clock and grey on a row clock, holding its digits still", () => {

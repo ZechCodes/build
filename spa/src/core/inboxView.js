@@ -195,14 +195,15 @@ function draw() {
 /** What every row is painted with. `showProject` is whether a row names its
  *  own project — under a project block it has already been told. */
 function rowUi(showProject) {
+  const picker = reroutePicker();
   return {
     activeKey: activeEntryKey(App.route, entries),
     openMenuKey,
     projects,
-    ...reroutePicker(),
+    ...picker,
     // The branches that project already has, off the same feed rows the
     // compose panel offers: one source for "which branches are there".
-    rerouteBranches: branchOptions(items, reroutePicker().rerouteBranchProject),
+    rerouteBranches: branchOptions(items, picker.rerouteBranchProject),
     showProject,
     folded: new Set(),
     // The block holding the branch or issue the route stands on. A capture's
@@ -231,7 +232,7 @@ function drawInbox(list, shown, nowMs) {
   const ui = rowUi(true);
   paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
   patchList(list, live, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-  paintRecent(list, { recent }, ui, "inbox");
+  paintRecent(list, recent, ui, "inbox");
 }
 
 /** The projects face: the new-project control, the unrouted captures on their
@@ -302,7 +303,7 @@ function paintBlocks(host, blocks, ui) {
       patchList(rows, block.recent, { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
     } else {
       patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-      paintRecent(element, block, ui, block.projectKey);
+      paintRecent(element, block.recent, ui, block.projectKey);
     }
     anchor = element;
   }
@@ -322,8 +323,8 @@ function paintEmpty(container, empty, html, selector) {
  *  have gone quiet. It is its own container, so the quiet rows are its keyed
  *  children and each list reconciles only its own. `scope` names whose Recent
  *  it is, which is what the user's open-or-shut is remembered under. */
-function paintRecent(host, partition, ui, scope) {
-  if (!partition.recent.length) {
+function paintRecent(host, recent, ui, scope) {
+  if (!recent.length) {
     host.querySelector(":scope > .inbox-recent")?.remove();
     return;
   }
@@ -331,16 +332,16 @@ function paintRecent(host, partition, ui, scope) {
   if (!section) {
     section = document.createElement("div");
     section.className = "inbox-recent";
-    section.append(el(recentToggleHtml(partition.recent, false, scope)));
+    section.append(el(recentToggleHtml(recent, false, scope)));
   }
   // Recent follows the list proper. A row that arrives while nothing was keyed
   // above it lands after the section, so the section is put back at the end
   // whenever a paint has left something below it.
   if (host.lastElementChild !== section) host.appendChild(section);
   const open = recentIsOpen(recentOpen.get(scope));
-  patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(partition.recent, open, scope)));
+  patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(recent, open, scope)));
   // Recent's rows are quiet rows: one line each, no state dot.
-  patchList(section, open ? partition.recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
+  patchList(section, open ? recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
 }
 
 /** A row key is whatever the daemon minted (a worktree's is derived from a

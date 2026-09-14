@@ -12,11 +12,12 @@ import { resolve } from "node:path";
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 let feedItems = [];
-const feedProjects = [
+const homeProjects = () => [
   { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb" },
   { id: "p2", deviceId: "dev-1", projectKey: "dev-1/p2", name: "dotfiles" },
   { id: "p3", deviceId: "dev-1", projectKey: "dev-1/p3", name: "mascot" },
 ];
+let feedProjects = homeProjects();
 let subscriber = null;
 const refreshFeed = vi.fn(async () => subscriber && subscriber({ items: feedItems, projects: feedProjects }));
 vi.mock("../src/core/taskFeed.js", () => ({
@@ -28,6 +29,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
+  dropFeedDevice: () => {},
   primaryRunIdFor: () => null,
 }));
 const openCreateWork = vi.fn();
@@ -42,7 +44,7 @@ let setInboxView;
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const list = () => document.getElementById("inbox-list");
 const blocks = () => [...document.querySelectorAll("#inbox-list .inbox-project")];
-const blockFor = (projectId) => document.querySelector(`.inbox-project[data-project="${projectId}"]`);
+const blockFor = (projectKey) => document.querySelector(`.inbox-project[data-project="${projectKey}"]`);
 const rowsIn = (block) => [...block.querySelectorAll(".inbox-project-rows > .inbox-entry")].map((row) => row.dataset.key);
 const rowFor = (entityId) => document.querySelector(`.inbox-entry[data-entity="${entityId}"]`);
 const viewButton = (view) => document.querySelector(`[data-inbox-view="${view}"]`);
@@ -173,10 +175,18 @@ beforeEach(async () => {
   window.innerWidth = 1200;
   App.route = { name: "inbox" };
   App.gated = false;
+  App.devices = [
+    { id: "dev-1", name: "workshop", status: "online" },
+    { id: "dev-2", name: "laptop", status: "online" },
+  ];
   App.call = vi.fn(async () => ({ ok: true }));
+  // Every row in the rail names the device it came from; the home device is
+  // what a route that names none is about.
+  (await import("../src/app.js")).adoptApplicationScope({ deviceId: "dev-1", call: App.call });
   refreshFeed.mockClear();
   openCreateWork.mockClear();
   openNewRepo.mockClear();
+  feedProjects = homeProjects();
   feedItems = [branchRow(), primaryRow(), issueRow(), captureRow()];
   initInboxRail();
 });
@@ -226,17 +236,17 @@ describe("the projects face", () => {
     const loose = [...list().querySelectorAll(".inbox-unsorted > .inbox-entry")].map((row) => row.dataset.key);
     expect(loose).toEqual(["capture:cap-1"]);
     // relaydb's oldest row (the primary, 50h) beats dotfiles' (1h); mascot has nothing.
-    expect(blocks().map((block) => block.dataset.project)).toEqual(["p1", "p2", "p3"]);
-    expect(rowsIn(blockFor("p1"))).toEqual(["branch:dev-1/p1:main", "run-1"]);
-    expect(rowsIn(blockFor("p2"))).toEqual(["iss-1"]);
-    expect(rowsIn(blockFor("p3"))).toEqual([]);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/p1", "dev-1/p2", "dev-1/p3"]);
+    expect(rowsIn(blockFor("dev-1/p1"))).toEqual(["branch:dev-1/p1:main", "run-1"]);
+    expect(rowsIn(blockFor("dev-1/p2"))).toEqual(["iss-1"]);
+    expect(rowsIn(blockFor("dev-1/p3"))).toEqual([]);
     // Nothing in mascot at all: flat, no empty line, and nothing to fold.
-    expect(blockFor("p3").classList.contains("inbox-flat")).toBe(true);
-    expect(blockFor("p3").querySelector(".inbox-project-rows").children.length).toBe(0);
-    expect(blockFor("p3").querySelector("[data-project-fold]").disabled).toBe(true);
-    expect(blockFor("p1").classList.contains("inbox-flat")).toBe(false);
-    expect(blockFor("p1").querySelector(".inbox-project-name").textContent).toBe("relaydb");
-    expect(blockFor("p1").querySelector(".inbox-project-head .inbox-unread").textContent).toBe("1");
+    expect(blockFor("dev-1/p3").classList.contains("inbox-flat")).toBe(true);
+    expect(blockFor("dev-1/p3").querySelector(".inbox-project-rows").children.length).toBe(0);
+    expect(blockFor("dev-1/p3").querySelector("[data-project-fold]").disabled).toBe(true);
+    expect(blockFor("dev-1/p1").classList.contains("inbox-flat")).toBe(false);
+    expect(blockFor("dev-1/p1").querySelector(".inbox-project-name").textContent).toBe("relaydb");
+    expect(blockFor("dev-1/p1").querySelector(".inbox-project-head .inbox-unread").textContent).toBe("1");
     // The block already says which project, so the row does not.
     expect(rowFor("run-1").querySelector(".inbox-tag")).toBeNull();
     // New project heads the list.
@@ -247,39 +257,39 @@ describe("the projects face", () => {
     feed([
       branchRow({ anchor: hoursAgo(300), last_activity: hoursAgo(40) }),
       issueRow(),
-      branchRow({ project_id: "p3", project: "mascot", branch: "build/model", run_id: "run-3", anchor: hoursAgo(2) }),
+      branchRow({ project_id: "p3", projectKey: "dev-1/p3", project: "mascot", branch: "build/model", run_id: "run-3", anchor: hoursAgo(2) }),
       captureRow(),
     ]);
-    expect(blocks().map((block) => block.dataset.project)).toEqual(["p3", "p2", "p1"]);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/p3", "dev-1/p2", "dev-1/p1"]);
     // Its quiet rows stand straight under the head as one-line rows, with the
     // block's own chevron as their fold and no Recent disclosure.
-    expect(blockFor("p1").classList.contains("inbox-flat")).toBe(true);
-    expect(rowsIn(blockFor("p1"))).toEqual(["run-1"]);
+    expect(blockFor("dev-1/p1").classList.contains("inbox-flat")).toBe(true);
+    expect(rowsIn(blockFor("dev-1/p1"))).toEqual(["run-1"]);
     expect(rowFor("run-1").classList.contains("inbox-quiet")).toBe(true);
     expect(rowFor("run-1").querySelector(".sdot")).toBeNull();
-    expect(blockFor("p1").querySelector("[data-recent-toggle]")).toBeNull();
-    expect(blockFor("p1").querySelector("[data-project-fold]").disabled).toBe(false);
+    expect(blockFor("dev-1/p1").querySelector("[data-recent-toggle]")).toBeNull();
+    expect(blockFor("dev-1/p1").querySelector("[data-project-fold]").disabled).toBe(false);
     // Quiet rows start hidden: the block starts folded, and the chevron opens it.
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
-    blockFor("p1").querySelector("[data-project-fold]").click();
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(false);
-    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: false });
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(true);
+    blockFor("dev-1/p1").querySelector("[data-project-fold]").click();
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ "dev-1/p1": false });
   });
 
   it("highlights the block holding the branch or issue the route stands on", () => {
     expect(list().querySelector(".inbox-project.active")).toBeNull();
     App.route = { name: "branch", projectId: "p2", branch: "x", tab: "changes" };
     feed(feedItems);
-    expect([...list().querySelectorAll(".inbox-project.active")].map((block) => block.dataset.project)).toEqual(["p2"]);
+    expect([...list().querySelectorAll(".inbox-project.active")].map((block) => block.dataset.project)).toEqual(["dev-1/p2"]);
     App.route = { name: "capture", id: "cap-1" };
     feed(feedItems);
     expect(list().querySelector(".inbox-project.active")).toBeNull();
   });
 
   it("draws the folds and the Recent toggles as chevron icons", () => {
-    expect(blockFor("p1").querySelector("[data-project-fold] svg")).toBeTruthy();
+    expect(blockFor("dev-1/p1").querySelector("[data-project-fold] svg")).toBeTruthy();
     feed([branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) }), primaryRow()]);
-    expect(blockFor("p1").querySelector("[data-recent-toggle] svg")).toBeTruthy();
+    expect(blockFor("dev-1/p1").querySelector("[data-recent-toggle] svg")).toBeTruthy();
   });
 
   it("opens a row like the inbox does", async () => {
@@ -290,34 +300,34 @@ describe("the projects face", () => {
   });
 
   it("opens the project's checkout from its name, and nothing from a project without one", () => {
-    blockFor("p1").querySelector("[data-project-open]").click();
+    blockFor("dev-1/p1").querySelector("[data-project-open]").click();
     expect(location.hash).toBe("#/project/p1/branch/main/changes");
-    expect(blockFor("p2").querySelector("[data-project-open]").classList.contains("inbox-unroutable")).toBe(true);
-    blockFor("p2").querySelector("[data-project-open]").click();
+    expect(blockFor("dev-1/p2").querySelector("[data-project-open]").classList.contains("inbox-unroutable")).toBe(true);
+    blockFor("dev-1/p2").querySelector("[data-project-open]").click();
     expect(location.hash).toBe("#/project/p1/branch/main/changes");
   });
 
   it("folds a block shut by its chevron, keeps it shut across the feed and a reload, and opens it again", async () => {
-    blockFor("p1").querySelector("[data-project-fold]").click();
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
-    expect(blockFor("p1").querySelector("[data-project-fold]").getAttribute("aria-expanded")).toBe("false");
-    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: true });
+    blockFor("dev-1/p1").querySelector("[data-project-fold]").click();
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(true);
+    expect(blockFor("dev-1/p1").querySelector("[data-project-fold]").getAttribute("aria-expanded")).toBe("false");
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ "dev-1/p1": true });
     feed(feedItems);
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(true);
 
     vi.resetModules();
     ({ initInboxRail } = await import("../src/core/inboxShell.js"));
     document.body.innerHTML = bodyHtml;
     initInboxRail();
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(true);
 
-    blockFor("p1").querySelector("[data-project-fold]").click();
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(false);
-    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: false });
+    blockFor("dev-1/p1").querySelector("[data-project-fold]").click();
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ "dev-1/p1": false });
   });
 
   it("opens the create surface on the block's project from its +, on the Branch tab", () => {
-    blockFor("p2").querySelector('[data-project-create="p2"]').click();
+    blockFor("dev-1/p2").querySelector('[data-project-create="dev-1/p2"]').click();
     expect(openCreateWork).toHaveBeenCalledTimes(1);
     const [options] = openCreateWork.mock.calls[0];
     expect(options).toMatchObject({ projectId: "p2", projectName: "dotfiles", kind: "branch" });
@@ -325,25 +335,25 @@ describe("the projects face", () => {
   });
 
   it("expands a collapsed project when creating a branch in it", () => {
-    blockFor("p1").querySelector("[data-project-fold]").click();
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
+    blockFor("dev-1/p1").querySelector("[data-project-fold]").click();
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(true);
 
-    blockFor("p1").querySelector('[data-project-create="p1"]').click();
+    blockFor("dev-1/p1").querySelector('[data-project-create="dev-1/p1"]').click();
 
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(false);
-    expect(blockFor("p1").querySelector("[data-project-fold]").getAttribute("aria-expanded")).toBe("true");
-    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: false });
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(false);
+    expect(blockFor("dev-1/p1").querySelector("[data-project-fold]").getAttribute("aria-expanded")).toBe("true");
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ "dev-1/p1": false });
     expect(openCreateWork).toHaveBeenCalledTimes(1);
   });
 
   it("expands a quiet project that started collapsed when creating a branch in it", () => {
     feed([branchRow({ anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(true);
 
-    blockFor("p1").querySelector('[data-project-create="p1"]').click();
+    blockFor("dev-1/p1").querySelector('[data-project-create="dev-1/p1"]').click();
 
-    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(false);
-    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: false });
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ "dev-1/p1": false });
   });
 
   it("opens the new-repository sheet from the top, and re-reads the feed once it is made", () => {
@@ -363,28 +373,28 @@ describe("the projects face", () => {
       issueRow(),
       issueRow({ issue_id: "iss-old", anchor: hoursAgo(200), last_activity: hoursAgo(30), working: false }),
     ]);
-    const toggleIn = (projectId) => blockFor(projectId).querySelector("[data-recent-toggle]");
+    const toggleIn = (projectKey) => blockFor(projectKey).querySelector("[data-recent-toggle]");
     // Both start shut, however thin the block above; each opens on its own press.
-    expect(toggleIn("p1").getAttribute("aria-expanded")).toBe("false");
+    expect(toggleIn("dev-1/p1").getAttribute("aria-expanded")).toBe("false");
     expect(rowFor("run-old")).toBeNull();
-    expect(toggleIn("p2").getAttribute("aria-expanded")).toBe("false");
+    expect(toggleIn("dev-1/p2").getAttribute("aria-expanded")).toBe("false");
     expect(rowFor("iss-old")).toBeNull();
-    toggleIn("p2").click();
+    toggleIn("dev-1/p2").click();
     await flush();
-    expect(toggleIn("p2").getAttribute("aria-expanded")).toBe("true");
+    expect(toggleIn("dev-1/p2").getAttribute("aria-expanded")).toBe("true");
     expect(rowFor("iss-old")).toBeTruthy();
     expect(rowFor("iss-old").parentElement.className).toBe("inbox-recent");
-    expect(blockFor("p2").contains(rowFor("iss-old"))).toBe(true);
+    expect(blockFor("dev-1/p2").contains(rowFor("iss-old"))).toBe(true);
     // Recent's rows are quiet rows: one line, no dot.
     expect(rowFor("iss-old").classList.contains("inbox-quiet")).toBe(true);
     expect(rowFor("iss-old").querySelector(".sdot")).toBeNull();
 
-    toggleIn("p1").click();
+    toggleIn("dev-1/p1").click();
     await flush();
     expect(rowFor("run-old")).toBeTruthy();
-    expect(toggleIn("p2").getAttribute("aria-expanded")).toBe("true");
+    expect(toggleIn("dev-1/p2").getAttribute("aria-expanded")).toBe("true");
     feed(feedItems);
-    expect(toggleIn("p1").getAttribute("aria-expanded")).toBe("true");
+    expect(toggleIn("dev-1/p1").getAttribute("aria-expanded")).toBe("true");
   });
 
   it("moves a cleared row into its project's accessible Recent fold immediately", async () => {
@@ -393,7 +403,7 @@ describe("the projects face", () => {
     row.querySelector("[data-menu]").click();
     row.querySelector("[data-dismiss]").click();
 
-    const relaydb = blockFor("p1");
+    const relaydb = blockFor("dev-1/p1");
     expect(relaydb.classList.contains("inbox-flat")).toBe(true);
     expect(relaydb.classList.contains("inbox-folded")).toBe(true);
     expect(rowFor("run-1").classList.contains("inbox-quiet")).toBe(true);
@@ -405,16 +415,56 @@ describe("the projects face", () => {
     expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-1" });
   });
 
+  // Every device mints its project ids from its own counter, so both machines
+  // have a `proj-1`. Two blocks, two selectors, and the device said out loud
+  // only when the project's name alone does not say which is which.
+  it("two devices each with proj-1 render two blocks with distinct keys", () => {
+    feedProjects.push({ id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "relaydb" });
+    feed([
+      branchRow(),
+      branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", branch: "build/far", run_id: "run-far" }),
+    ]);
+    expect(blocks().map((block) => block.dataset.project)).toContain("dev-1/p1");
+    expect(blocks().map((block) => block.dataset.project)).toContain("dev-2/p1");
+    expect(rowsIn(blockFor("dev-1/p1"))).toEqual(["run-1"]);
+    expect(rowsIn(blockFor("dev-2/p1"))).toEqual(["run-far"]);
+    // Each block folds on its own, under its own name.
+    blockFor("dev-2/p1").querySelector("[data-project-fold]").click();
+    expect(blockFor("dev-2/p1").classList.contains("inbox-folded")).toBe(true);
+    expect(blockFor("dev-1/p1").classList.contains("inbox-folded")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ "dev-2/p1": true });
+  });
+
+  it("device name shown only on the name clash", () => {
+    expect(blockFor("dev-1/p1").querySelector(".inbox-project-name .dim")).toBeNull();
+
+    feedProjects.push({ id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "relaydb" });
+    feedProjects.push({ id: "p7", deviceId: "dev-2", projectKey: "dev-2/p7", name: "notes" });
+    feed(feedItems);
+    expect(blockFor("dev-1/p1").querySelector(".inbox-project-name .dim").textContent).toBe("workshop");
+    expect(blockFor("dev-2/p1").querySelector(".inbox-project-name .dim").textContent).toBe("laptop");
+    expect(blockFor("dev-2/p1").querySelector(".inbox-project-name").textContent).toBe("relaydb laptop");
+    expect(blockFor("dev-2/p7").querySelector(".inbox-project-name .dim")).toBeNull();
+    expect(blockFor("dev-1/p2").querySelector(".inbox-project-name .dim")).toBeNull();
+  });
+
+  it("creates in the bare project the bridge minted, not the account's name for it", () => {
+    feedProjects.push({ id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "relaydb" });
+    feed(feedItems);
+    blockFor("dev-2/p1").querySelector("[data-project-create]").click();
+    expect(openCreateWork.mock.calls[0][0]).toMatchObject({ projectId: "p1", projectName: "relaydb" });
+  });
+
   it("touches nothing when the feed repeats what it already said", () => {
     expect(churn(list(), () => feed(feedItems))).toEqual([]);
   });
 
   it("redraws only the row that changed, and keeps every block's and row's element", () => {
-    const block = blockFor("p1");
+    const block = blockFor("dev-1/p1");
     const branch = rowFor("run-1");
     const issue = rowFor("iss-1");
     const records = churn(list(), () => feed([branchRow({ unread_count: 4 }), primaryRow(), issueRow(), captureRow()]));
-    expect(blockFor("p1")).toBe(block);
+    expect(blockFor("dev-1/p1")).toBe(block);
     expect(rowFor("run-1")).toBe(branch);
     expect(rowFor("iss-1")).toBe(issue);
     expect(records.length).toBeGreaterThan(0);
@@ -423,11 +473,11 @@ describe("the projects face", () => {
   });
 
   it("keeps the blocks already there when a project moves to the front", () => {
-    const relaydb = blockFor("p1");
-    const dotfiles = blockFor("p2");
+    const relaydb = blockFor("dev-1/p1");
+    const dotfiles = blockFor("dev-1/p2");
     feed([branchRow(), primaryRow(), issueRow({ anchor: hoursAgo(400) }), captureRow()]);
-    expect(blocks().map((block) => block.dataset.project)).toEqual(["p2", "p1", "p3"]);
-    expect(blockFor("p1")).toBe(relaydb);
-    expect(blockFor("p2")).toBe(dotfiles);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/p2", "dev-1/p1", "dev-1/p3"]);
+    expect(blockFor("dev-1/p1")).toBe(relaydb);
+    expect(blockFor("dev-1/p2")).toBe(dotfiles);
   });
 });

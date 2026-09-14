@@ -43,6 +43,8 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
+import { deviceKey } from "./deviceKey.js";
+import { homeContext } from "./deviceContexts.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
@@ -67,12 +69,13 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 // it is: the inbox's, or one project block's. A scope nobody has spoken for
 // lets its partition decide (it opens when the list above it is thin).
 const recentOpen = new Map();
-// What the user has said of each block's fold (project id → folded). A block
+// What the user has said of each block's fold (project key → folded). A block
 // they have said nothing about folds as the face decides. Remembered on this
 // device.
 let folds = new Map();
-// Each block as last painted, by project id: where its head opens, and what
-// it is called — which is what the create it offers is titled with.
+// Each block as last painted, by project key: where its head opens, what it is
+// called — which is what the create it offers is titled with — and the bare
+// project id every RPC still wants.
 let blocksPainted = new Map();
 const capturesBeingRerouted = new Set();
 const errors = new Map(); // row key → the message its row is showing
@@ -201,8 +204,19 @@ function rowUi(showProject) {
     folded: new Set(),
     // The block holding the branch or issue the route stands on. A capture's
     // route names no project; the row it stands on does.
-    activeProjectId: App.route.projectId || (entries.find((entry) => entry.key === activeEntryKey(App.route, entries)) || {}).projectId || null,
+    activeProjectId: activeProjectKey(),
   };
+}
+
+/** The block the route stands in, named the way every block is named. The row
+ *  the route opens says which device it is on; a route that matches no row is
+ *  the home device's project, because stage 1's routes name no device. Stage 2
+ *  reads the device off the route and this goes. */
+function activeProjectKey() {
+  const standing = entries.find((entry) => entry.key === activeEntryKey(App.route, entries));
+  if (standing) return standing.projectKey || null;
+  const home = homeContext();
+  return home && App.route.projectId ? deviceKey(home.deviceId, App.route.projectId) : null;
 }
 
 /** The inbox face: one list, Recent at its end. */
@@ -220,10 +234,11 @@ function drawInbox(list, shown, nowMs) {
 /** The projects face: the new-project control, the unrouted captures on their
  *  own, then a block per project with its rows and its own Recent. */
 function drawProjects(list, shown, nowMs) {
-  const face = projectBlocks({ items: shown, projects, nowMs });
+  const face = projectBlocks({ items: shown, projects, devices: App.devices, nowMs });
   entries = [...face.unsorted, ...face.blocks.flatMap((block) => [...block.entries, ...block.recent])];
-  blocksPainted = new Map(face.blocks.map((block) => [block.id, block]));
-  const ui = { ...rowUi(false), folded: new Set(face.blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.id)) };
+  blocksPainted = new Map(face.blocks.map((block) => [block.projectKey, block]));
+  const folded = new Set(face.blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
+  const ui = { ...rowUi(false), folded };
   const frame = projectsFrame(list);
   patchList(frame.unsorted, face.unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
   paintBlocks(frame.blocks, face.blocks, ui);
@@ -261,8 +276,8 @@ function paintBlocks(host, blocks, ui) {
       host.insertBefore(element, anchor);
     } else {
       element.classList.toggle("inbox-flat", block.flat);
-      element.classList.toggle("inbox-folded", ui.folded.has(block.id));
-      element.classList.toggle("active", ui.activeProjectId === block.id);
+      element.classList.toggle("inbox-folded", ui.folded.has(block.projectKey));
+      element.classList.toggle("active", ui.activeProjectId === block.projectKey);
       patchElement(element.querySelector(":scope > .inbox-project-head"), el(projectHeadHtml(block, ui)));
       if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
     }
@@ -274,7 +289,7 @@ function paintBlocks(host, blocks, ui) {
       patchList(rows, block.recent, { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
     } else {
       patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-      paintRecent(element, block, ui, block.id);
+      paintRecent(element, block, ui, block.projectKey);
     }
     anchor = element;
   }
@@ -419,7 +434,9 @@ function projectClicked(target) {
     const block = blocksPainted.get(create.dataset.projectCreate);
     expandFold(create.dataset.projectCreate);
     closeMenu();
-    openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", kind: "branch", navigate: goFromInbox });
+    // The create surface talks to one bridge, which knows its projects by the
+    // bare id it minted.
+    if (block) openCreateWork({ projectId: block.id, projectName: block.name, kind: "branch", navigate: goFromInbox });
     return true;
   }
   if (target.closest("[data-new-project]")) {
@@ -434,19 +451,19 @@ function projectClicked(target) {
 }
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */
-function toggleFold(projectId) {
-  const block = blocksPainted.get(projectId);
+function toggleFold(projectKey) {
+  const block = blocksPainted.get(projectKey);
   if (!block) return;
-  folds.set(projectId, !blockIsFolded(block, folds));
+  folds.set(projectKey, !blockIsFolded(block, folds));
   persistProjectFolds(folds, localStorage);
   draw();
 }
 
 /** Creating a branch gives the new row somewhere visible to land. */
-function expandFold(projectId) {
-  const block = blocksPainted.get(projectId);
+function expandFold(projectKey) {
+  const block = blocksPainted.get(projectKey);
   if (!block || !blockIsFolded(block, folds)) return;
-  folds.set(projectId, false);
+  folds.set(projectKey, false);
   persistProjectFolds(folds, localStorage);
   draw();
 }

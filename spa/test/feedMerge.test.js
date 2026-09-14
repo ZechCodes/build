@@ -15,14 +15,22 @@ const board = (over = {}) => ({
   external_worktrees: [{ worktree_id: "wt-1", project_id: "proj-2" }],
   pending: [{ entity_id: "wt-9", project_id: "proj-1", state: "creating" }],
   primary_changes: [{ project_id: "proj-2", run_id: "run-2" }],
+  workspace_summaries: [{ workspace_id: "ws-1", work_summary: { pushes: 2, additions: 8, deletions: 1 } }],
   ...over,
 });
 
 const projectList = { projects: [{ project_id: "proj-1", name: "relaydb" }] };
 
+const workspaceList = {
+  workspaces: [
+    { workspace_id: "ws-1", project_id: "proj-1", name: "login" },
+    { workspace_id: "ws-2", project_id: "proj-2", name: "search" },
+  ],
+};
+
 describe("reading one device's wire", () => {
   it("stamps every row of every collection with deviceId, and projectKey where it names a project_id", () => {
-    const view = liveFeedSnapshot(board(), projectList, "dev-a");
+    const view = liveFeedSnapshot(board(), projectList, workspaceList, "dev-a");
     for (const field of ["items", "plans", "runs", "externalWorktrees", "pending", "primaryChanges"]) {
       expect(view[field], field).toHaveLength(1);
       expect(view[field][0].deviceId, field).toBe("dev-a");
@@ -31,20 +39,21 @@ describe("reading one device's wire", () => {
   });
 
   it("leaves a row that names no project without a project key", () => {
-    const view = liveFeedSnapshot(board({ items: [{ kind: "issue", issue_id: "iss-1" }] }), projectList, "dev-a");
+    const issueOnly = board({ items: [{ kind: "issue", issue_id: "iss-1" }] });
+    const view = liveFeedSnapshot(issueOnly, projectList, workspaceList, "dev-a");
     expect(view.items[0].deviceId).toBe("dev-a");
     expect("projectKey" in view.items[0]).toBe(false);
   });
 
   it("stamps every project with deviceId and projectKey and keeps project_id on the wire shape", () => {
-    const view = liveFeedSnapshot(board(), projectList, "dev-a");
+    const view = liveFeedSnapshot(board(), projectList, workspaceList, "dev-a");
     expect(view.projects).toEqual([
       { id: "proj-1", project_id: "proj-1", name: "relaydb", deviceId: "dev-a", projectKey: "dev-a/proj-1" },
     ]);
   });
 
   it("answers empty collections for a bridge that sends none", () => {
-    const view = liveFeedSnapshot({}, {}, "dev-a");
+    const view = liveFeedSnapshot({}, {}, {}, "dev-a");
     expect(view).toEqual({
       items: [],
       plans: [],
@@ -53,15 +62,44 @@ describe("reading one device's wire", () => {
       pending: [],
       primaryChanges: [],
       projects: [],
+      workspaces: [],
     });
+  });
+
+  it("stamps a workspace with its device, its project and its account-wide name", () => {
+    const view = liveFeedSnapshot(board(), projectList, workspaceList, "dev-a");
+    expect(view.workspaces.map(({ id, deviceId, projectKey, workspaceKey }) => ({
+      id,
+      deviceId,
+      projectKey,
+      workspaceKey,
+    }))).toEqual([
+      { id: "ws-1", deviceId: "dev-a", projectKey: "dev-a/proj-1", workspaceKey: "dev-a/ws-1" },
+      { id: "ws-2", deviceId: "dev-a", projectKey: "dev-a/proj-2", workspaceKey: "dev-a/ws-2" },
+    ]);
+  });
+
+  it("joins the board's work summary onto the workspace it names, and leaves the rest without one", () => {
+    const view = liveFeedSnapshot(board(), projectList, workspaceList, "dev-a");
+    expect(view.workspaces[0].work_summary).toEqual({ pushes: 2, additions: 8, deletions: 1 });
+    expect("work_summary" in view.workspaces[1]).toBe(false);
+  });
+
+  it("answers no workspaces for a bridge that does not serve them", () => {
+    expect(liveFeedSnapshot(board(), projectList, null, "dev-a").workspaces).toEqual([]);
   });
 });
 
 describe("merging the devices", () => {
   const viewOf = (deviceId, over = {}) =>
-    liveFeedSnapshot({ items: [{ kind: "branch", project_id: "proj-1", branch: deviceId }], ...over }, projectList, deviceId);
+    liveFeedSnapshot(
+      { items: [{ kind: "branch", project_id: "proj-1", branch: deviceId }], ...over },
+      projectList,
+      { workspaces: [{ workspace_id: `ws-${deviceId}`, project_id: "proj-1" }] },
+      deviceId,
+    );
 
-  it("concatenates the seven arrays in device order, ids not in the order last", () => {
+  it("concatenates the eight arrays in device order, ids not in the order last", () => {
     const byDevice = new Map([
       ["dev-c", viewOf("dev-c")],
       ["dev-b", viewOf("dev-b")],
@@ -73,6 +111,11 @@ describe("merging the devices", () => {
       "dev-a/proj-1",
       "dev-b/proj-1",
       "dev-c/proj-1",
+    ]);
+    expect(merged.workspaces.map((workspace) => workspace.workspaceKey)).toEqual([
+      "dev-a/ws-dev-a",
+      "dev-b/ws-dev-b",
+      "dev-c/ws-dev-c",
     ]);
     for (const field of ["plans", "runs", "externalWorktrees", "pending", "primaryChanges"]) {
       expect(merged[field], field).toEqual([]);
@@ -95,8 +138,8 @@ describe("merging the devices", () => {
 
 describe("one device's view of a merge", () => {
   it("reads the named device's view out of the merge", () => {
-    const a = liveFeedSnapshot(board(), projectList, "dev-a");
-    const b = liveFeedSnapshot({}, {}, "dev-b");
+    const a = liveFeedSnapshot(board(), projectList, workspaceList, "dev-a");
+    const b = liveFeedSnapshot({}, {}, {}, "dev-b");
     const merged = mergeFeeds(new Map([["dev-a", a], ["dev-b", b]]), ["dev-a", "dev-b"]);
     expect(deviceView(merged, "dev-a")).toBe(a);
     expect(deviceView(merged, "dev-b")).toBe(b);

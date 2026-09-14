@@ -245,10 +245,11 @@ export function refetchEverything(deviceId = null) {
  * Greet a freshly live session: ask what this bridge can do, arm event mode if
  * it pushes, and read everything once.
  *
- * Every live session comes through here — the first one, a reconnect, a switch
- * to another device — and each of them has a gap behind it that announced
- * nothing, so the refetch is unconditional and so is the re-arming: the device
- * on the other end may not be the one that answered last time.
+ * Every live session comes through here — an account's first, a reconnect, a
+ * device joining the ones already open — and each of them has a gap behind it
+ * that announced nothing, so the refetch is unconditional. So is the re-arming:
+ * event mode is a fact about one bridge, and a bridge that has just been
+ * restarted or updated may not do what it did the last time it answered.
  *
  * A bridge that predates push invalidation refuses `session.hello`. That is the
  * feature detection, and it is the whole of it — the client goes back to

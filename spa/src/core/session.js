@@ -140,7 +140,8 @@ export async function openRelaySession({
      *  the session is handed over, so the first relay attach is the caller's
      *  own greeting, not a second one. */
     onCarrier: (fn) => (onCarrierChange = fn),
-    /** Sever this session deliberately (e.g. switching devices) — no onLost. */
+    /** Sever this session deliberately — the device was let go of, or a newer
+     *  session for it landed and this one lost the race — with no onLost. */
     close: () => {
       carrierSwitch.close();
       severed = true;

@@ -130,8 +130,10 @@ function track(capture) {
 }
 
 /**
- * Send what the client is holding, oldest first. Called on every fresh session
- * (connection.js adopts one) — the gate, a reconnect, a device switch.
+ * Send what the client is holding, oldest first. Captures go to the machine
+ * creation goes to, so this is called whenever that machine has a live session
+ * to take them: its first one, a reconnect, or home moving to a machine that is
+ * already live (connection.js followHomeContext).
  */
 export async function flushCaptures() {
   if (!queue.length || !canSend()) return;

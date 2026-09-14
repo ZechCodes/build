@@ -29,8 +29,9 @@ const noop = () => {};
 const expiry = (ms, message) => new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms));
 
 /**
- * @param preferDeviceId `() => device id or null`, re-read on every connect: a
- *   device switch is answered by the next socket, not by this one.
+ * @param preferDeviceId `() => device id or null`, re-read on every connect:
+ *   this link is pinned to one machine, and a caller moving to another one is
+ *   answered by the next socket, not by this one.
  * @param waitForDevice wait as long as it takes for a device to come online.
  *   This socket IS the "tell me when a device is back" channel, so a resume
  *   waits; a boot gives up after `deviceWaitMs` and shows the waiting screen.
@@ -225,8 +226,8 @@ export function createRelayLink({
     /** The device this link's session is with. */
     deviceId: () => session?.deviceId ?? null,
 
-    /** Drop the socket and let the reconnect bring it back — how a caller
-     *  re-reads `preferDeviceId` after a device switch. */
+    /** Drop the socket and let the reconnect bring it back — how a caller that
+     *  has moved to another machine gets `preferDeviceId` re-read. */
     dropSocket() {
       try {
         socket?.close();

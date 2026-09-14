@@ -120,8 +120,9 @@ export class TerminalSocket {
       WebSocketImpl,
       fetchToken: getToken,
       getPinnedDeviceKey,
-      // The terminals follow the app session's device, re-read on every
-      // connect; a device switch is answered by the next socket.
+      // The terminals are on one machine at a time — the route's device, else
+      // home — re-read on every connect; the shells moving machine is answered
+      // by the next socket.
       preferDeviceId,
       acceptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
       carrying: () => this._switch.active(),

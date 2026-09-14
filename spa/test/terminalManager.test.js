@@ -47,7 +47,7 @@ vi.mock("../src/terminal/session.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { followTerminalDevice, terminalManager, terminalsRideOn } = await import("../src/terminal/manager.js");
+const { followTerminalDevice, terminalManager } = await import("../src/terminal/manager.js");
 
 /** The one socket the manager owns, as if it had connected to `deviceId`, with
  *  its counters cleared. */
@@ -68,14 +68,15 @@ beforeEach(() => {
   contexts.clear();
 });
 
-describe("terminalsRideOn", () => {
-  it("watches nothing on the carrier it is handed", () => {
-    const carrier = { onClose: vi.fn(), onEnvelope: vi.fn(), send: vi.fn(), close: vi.fn() };
+describe("the carrier the terminals are given", () => {
+  it("is watched by nobody here", () => {
+    const term = { onClose: vi.fn(), onEnvelope: vi.fn(), send: vi.fn(), close: vi.fn() };
+    contexts.set("dev-a", { deviceId: "dev-a", peerLink: { term } });
+    socketOn("dev-a");
 
-    terminalsRideOn(carrier);
+    followTerminalDevice();
 
-    expect(carrier.onClose).not.toHaveBeenCalled();
-    terminalsRideOn(null);
+    expect(term.onClose).not.toHaveBeenCalled();
   });
 });
 

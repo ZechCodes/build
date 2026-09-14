@@ -83,7 +83,7 @@ export function terminalManager() {
  * hands both streams back at once; a second listener on the same carrier would
  * run that fallback twice, through two owners of one fact.
  */
-export function terminalsRideOn(carrier) {
+function terminalsRideOn(carrier) {
   peerCarrier = carrier || null;
   socket?.peer(peerCarrier);
 }

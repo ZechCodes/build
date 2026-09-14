@@ -7,6 +7,8 @@
 // what is the account's, and every answer on this one belongs to this machine.
 import { $ } from "../dom.js";
 import { deviceOfflineText, esc } from "../core/text.js";
+import { deviceOfflineNotice } from "../core/deviceNotice.js";
+import { contextFor } from "../core/deviceContexts.js";
 import { App } from "../app.js";
 import { openDeviceSettingsSession } from "../connection.js";
 import { openBrowser } from "../sheets/browser.js";
@@ -138,11 +140,32 @@ export async function renderDeviceSettings() {
     }
   };
   retry.onclick = connect;
-  if (device.status !== "online") {
-    pathLabel.textContent = "Unavailable while offline";
-    status.textContent = "Bring this device online, then retry to configure it.";
-    retry.hidden = false;
+  const refusal = whyNothingCanBeAsked(device);
+  if (refusal) {
+    pathLabel.textContent = refusal.path;
+    status.textContent = refusal.words;
+    retry.hidden = !refusal.retry;
     return;
   }
   await connect();
+}
+
+/**
+ * Why this machine can be asked nothing at all, before a socket is opened for
+ * it — or null, which is the page standing itself up.
+ *
+ * Two ways a page about a machine has nothing to stand on, and each says one
+ * sentence in the status line rather than six panels that all fail. A machine
+ * the account calls offline is a wait, so it keeps the way back on. A bridge
+ * speaking an API major no adapter here claims is answering, in a shape this
+ * tab cannot read: retrying reads the same shape again, so there is no Retry
+ * and no folder to choose — the fix is on one side or the other, which is what
+ * the notice says.
+ */
+function whyNothingCanBeAsked(device) {
+  if (device.status !== "online")
+    return { path: "Unavailable while offline", words: "Bring this device online, then retry to configure it.", retry: true };
+  if (contextFor(device.id)?.unsupported)
+    return { path: "Unavailable", words: deviceOfflineNotice(device.id), retry: false };
+  return null;
 }

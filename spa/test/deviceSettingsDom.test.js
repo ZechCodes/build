@@ -14,7 +14,7 @@ const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelC
     contextFor: vi.fn(),
     refreshFeed: vi.fn(),
   }));
-vi.mock("../src/app.js", () => ({ App }));
+vi.mock("../src/app.js", () => ({ App, render: () => {} }));
 vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
   retireDevice: () => {},
@@ -27,7 +27,15 @@ vi.mock("../src/connection.js", () => ({
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo }));
 vi.mock("../src/sheets/setRemote.js", () => ({ openSetRemote }));
-vi.mock("../src/core/deviceContexts.js", () => ({ contextFor }));
+// The page reads this machine's own context for one thing only: whether its
+// bridge speaks an API major this tab can read. The rest of the module is named
+// because core/deviceNotice.js — which words that answer — imports it.
+vi.mock("../src/core/deviceContexts.js", () => ({
+  contextFor,
+  canAnswer: () => false,
+  onDeviceStateChanged: () => () => {},
+  routeContext: () => null,
+}));
 vi.mock("../src/core/taskFeed.js", () => ({ refreshFeed }));
 import { renderDeviceSettings } from "../src/views/deviceSettings.js";
 
@@ -116,6 +124,35 @@ describe("the machine's own panels", () => {
     expect(document.querySelector('[data-triage-setting="control"]').disabled).toBe(false);
     // Everything the bridge owns is asked of this page's own connection.
     expect(session.call).toHaveBeenCalledWith("models.list");
+  });
+
+  // The machine is answering; nothing here can read the shape of its answers,
+  // so settings.get would be a guess and the folder browser would write one.
+  // The page says which side is behind and offers no way on.
+  it("says the bridge is behind instead of asking a machine this app cannot read", async () => {
+    contextFor.mockImplementation(() => ({ unsupported: "bridge", apiVersion: "0.9.0" }));
+
+    await renderDeviceSettings();
+    await flush();
+
+    const status = document.querySelector("#device-settings-status").textContent;
+    expect(status).toContain("Other machine speaks Build API 0.9.0");
+    expect(status).toContain("update its bridge");
+    expect(openSession).not.toHaveBeenCalled();
+    expect(document.querySelector("#device-settings-retry").hidden).toBe(true);
+    expect(document.querySelector("#device-projects-change").disabled).toBe(true);
+    expect(document.querySelector("#projlist")).toBeNull();
+  });
+
+  // And the other way round: this tab is the one that is out of date.
+  it("says the app is behind when the machine speaks a newer API than this tab", async () => {
+    contextFor.mockImplementation(() => ({ unsupported: "app", apiVersion: "2.0.0" }));
+
+    await renderDeviceSettings();
+    await flush();
+
+    expect(document.querySelector("#device-settings-status").textContent).toContain("reload to open it");
+    expect(openSession).not.toHaveBeenCalled();
   });
 
   it("stands no panel up for a machine it cannot reach, and stands them up on retry", async () => {

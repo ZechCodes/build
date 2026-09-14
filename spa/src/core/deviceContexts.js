@@ -100,7 +100,9 @@ export function retireDeviceContext(deviceId) {
   return context;
 }
 
-function closeQuietly(session) {
+/** A session nobody wants any more. Closing one that is already gone is not an
+ *  error anywhere: the socket may have died before we got to it. */
+export function closeQuietly(session) {
   try {
     session?.close?.();
   } catch {

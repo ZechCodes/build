@@ -19,6 +19,7 @@ import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, pointAliasesAt, render, rememberSelectedDevice } from "./app.js";
 import {
   adoptDeviceSession,
+  closeQuietly,
   contextFor,
   homeContext,
   knownContexts,
@@ -329,14 +330,6 @@ export function goOffline(deviceId) {
   if (homeContext() === context) followHomeContext(context);
   paintOfflineBanner();
   resume(deviceId);
-}
-
-function closeQuietly(session) {
-  try {
-    session?.close?.();
-  } catch {
-    /* already gone */
-  }
 }
 
 /** Keep asking for one device until it answers. `waitForDevice` blocks on the

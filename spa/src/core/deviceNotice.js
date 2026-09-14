@@ -5,17 +5,33 @@
 // here.
 
 import { App, render } from "../app.js";
-import { deviceAppBehindText, deviceBridgeBehindText, deviceFrozenText, deviceOfflineText, esc } from "./text.js";
+import {
+  appBehindMark,
+  appBehindWord,
+  bridgeBehindMark,
+  bridgeBehindWord,
+  deviceAppBehindText,
+  deviceBridgeBehindText,
+  deviceFrozenText,
+  deviceOfflineMark,
+  deviceOfflineText,
+  deviceOfflineWord,
+  esc,
+} from "./text.js";
 import { deviceNameOf } from "./devicePolicy.js";
 import { canAnswer, contextFor, onDeviceStateChanged, routeContext } from "./deviceContexts.js";
 
-/** Why a machine cannot answer, one sentence per reason. A bridge speaking an
- *  API major nothing here claims is not offline — it is answering, in a shape
- *  this tab cannot read — so it says which side is behind instead. */
-const UNREACHABLE_WORDS = {
-  app: deviceAppBehindText,
-  bridge: deviceBridgeBehindText,
+/** Why a machine cannot answer, in all three lengths a surface has room for. A
+ *  bridge speaking an API major nothing here claims is not offline — it is
+ *  answering, in a shape this tab cannot read — so everything it is said with
+ *  names the side that is behind instead of calling the machine away. */
+const UNREACHABLE = {
+  app: { sentence: deviceAppBehindText, mark: appBehindMark, word: appBehindWord },
+  bridge: { sentence: deviceBridgeBehindText, mark: bridgeBehindMark, word: bridgeBehindWord },
 };
+
+/** How a machine that cannot answer is said, by why it cannot. */
+const unreachableAs = (context) => UNREACHABLE[context?.unsupported] || null;
 
 /** What this client says about a machine it cannot reach, in the account's name
  *  for it — the one sentence, whether a surface prints it or a refused opener
@@ -23,9 +39,16 @@ const UNREACHABLE_WORDS = {
 export function deviceOfflineNotice(deviceId) {
   const name = deviceNameOf(App.devices, deviceId);
   const context = contextFor(deviceId);
-  const words = UNREACHABLE_WORDS[context?.unsupported];
-  return words ? words(name, context.apiVersion) : deviceOfflineText(name);
+  const said = unreachableAs(context);
+  return said ? said.sentence(name, context.apiVersion) : deviceOfflineText(name);
 }
+
+/** The short mark a control shut for want of a machine wears: its title, and
+ *  the words a call to that machine is refused with. */
+export const deviceAwayMark = (context) => unreachableAs(context)?.mark || deviceOfflineMark;
+
+/** The one word a greyed row wears to say why it is grey. */
+export const deviceAwayWord = (context) => unreachableAs(context)?.word || deviceOfflineWord;
 
 /** What this client says over a surface that was already open when its machine
  *  went: it keeps what that machine last said, so it names whose state it is

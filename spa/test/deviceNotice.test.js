@@ -7,9 +7,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../src/app.js";
-import { deviceOfflineNotice, mountDeviceNotice, mountDeviceStrip } from "../src/core/deviceNotice.js";
-import { deviceFrozenText } from "../src/core/text.js";
-import { adoptDeviceSession, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
+import { deviceAwayMark, deviceAwayWord, deviceOfflineNotice, mountDeviceNotice, mountDeviceStrip } from "../src/core/deviceNotice.js";
+import { deviceFrozenText, deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
+import {
+  adoptBridgeSelection,
+  adoptDeviceSession,
+  resetDeviceContexts,
+  setContextOffline,
+} from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 
 beforeEach(() => {
@@ -44,6 +49,33 @@ describe("what a client says about a machine it cannot reach", () => {
     expect(root.querySelector("script")).toBeNull();
     App.viewDispose?.();
     App.viewDispose = null;
+  });
+});
+
+// A row has room for a word, not a sentence: grey plus "offline" is the whole
+// of what a row says about a machine that is not here. A machine that IS here
+// and answering in a shape this tab cannot read is not offline, so the word and
+// the mark say which side needs the update instead.
+describe("the word and the mark a row wears for a machine that cannot answer", () => {
+  const behind = (side) => adoptBridgeSelection(adoptDeviceSession(fakeSession("dev-1")), { version: "9.0.0", unsupported: side }, null);
+
+  it("says offline for a machine that is not connected", () => {
+    const context = adoptDeviceSession(fakeSession("dev-1"));
+    setContextOffline("dev-1");
+    expect(deviceAwayWord(context)).toBe(deviceOfflineWord);
+    expect(deviceAwayMark(context)).toBe(deviceOfflineMark);
+  });
+
+  it("asks for the update on the side that is behind", () => {
+    expect(deviceAwayWord(behind("bridge"))).toBe("update");
+    expect(deviceAwayMark(behind("bridge"))).toBe("Bridge is out of date");
+    expect(deviceAwayWord(behind("app"))).toBe("reload");
+    expect(deviceAwayMark(behind("app"))).toBe("App is out of date");
+  });
+
+  it("says offline for a machine this client holds nothing for at all", () => {
+    expect(deviceAwayWord(null)).toBe(deviceOfflineWord);
+    expect(deviceAwayMark(null)).toBe(deviceOfflineMark);
   });
 });
 

@@ -12,14 +12,15 @@
 import { App } from "../app.js";
 import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
 import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
-import { allDevicesOfflineText, deviceOfflineMark, deviceOfflineWord } from "./text.js";
-import { deviceOfflineNotice } from "./deviceNotice.js";
+import { allDevicesOfflineText } from "./text.js";
+import { deviceAwayMark, deviceAwayWord, deviceOfflineNotice } from "./deviceNotice.js";
 import { notifyError } from "./notify.js";
 import { EMPTY_CATALOG } from "./modelCatalog.js";
 
 /** What a device that cannot answer offers: nothing to call, and the words its
- *  rows and their menus are titled with. */
-const NO_DEVICE = Object.freeze({ call: null, disabled: deviceOfflineMark });
+ *  rows and their menus are marked with — which say why it cannot, since a
+ *  machine answering in a shape this tab cannot read is not away at all. */
+const noDevice = (context) => ({ call: null, disabled: deviceAwayMark(context), word: deviceAwayWord(context) });
 
 /** The machine a surface is about: the one it names, or the one creation goes
  *  to when it names none. */
@@ -34,8 +35,8 @@ const contextOf = (deviceId) => (deviceId ? contextFor(deviceId) : homeContext()
  */
 function deviceTarget(deviceId) {
   const context = contextOf(deviceId);
-  if (!canAnswer(context)) return NO_DEVICE;
-  return { call: context.rpc, disabled: false };
+  if (!canAnswer(context)) return noDevice(context);
+  return { call: context.rpc, disabled: false, word: null };
 }
 
 /**
@@ -97,25 +98,27 @@ const ROW_CONTROLS = ".inbox-menu .mi, [data-workspace-done]";
 /** And what a project block offers: the + that starts work in it. */
 const BLOCK_CONTROLS = ":scope > .inbox-project-head .inbox-project-create";
 
-/** One row or block: greyed while its own device is away, and every control
- *  named by `controls` shut with the reason. A row this client holds itself
- *  names no device and is nobody's to grey. Says whether that device is away,
- *  which is what a row's own mark is painted from. */
+/** One row or block: greyed while its own device cannot answer, and every
+ *  control named by `controls` shut with the reason. A row this client holds
+ *  itself names no device and is nobody's to grey. Hands back the word that
+ *  device's rows wear, which is what a row's own mark is painted from. */
 function markDeviceState(element, painted, controls) {
-  const reason = painted && painted.deviceId ? verbTarget(painted).disabled : false;
+  const target = painted && painted.deviceId ? verbTarget(painted) : null;
+  const reason = (target && target.disabled) || false;
   element.classList.toggle("inbox-offline", Boolean(reason));
   for (const control of element.querySelectorAll(controls)) {
     if (reason) shutControl(control, reason);
     else openControl(control);
   }
-  return Boolean(reason);
+  return reason ? target.word : null;
 }
 
-/** The word a greyed row wears. Grey on its own says "this matters less", not
- *  "the machine holding it is not here", so the row says it — on its first
- *  line, where its own tags are, ahead of the unread count. It is put there
- *  after the paint, with the grey, because nothing about a row changes when its
- *  machine goes. */
+/** The word a greyed row wears — offline, or the update that would make its
+ *  machine readable again. Grey on its own says "this matters less", not "the
+ *  machine holding it cannot be asked", so the row says it — on its first line,
+ *  where its own tags are, ahead of the unread count. It is put there after the
+ *  paint, with the grey, because nothing about a row changes when its machine
+ *  goes. */
 function markAway(element, away) {
   const shown = element.querySelector(".inbox-away");
   if (!away) {
@@ -123,11 +126,10 @@ function markAway(element, away) {
     return;
   }
   const line = element.querySelector(".inbox-body > .inbox-line");
-  if (shown || !line) return;
-  const word = document.createElement("span");
+  if (!line) return;
+  const word = shown || line.insertBefore(document.createElement("span"), line.querySelector(".badge"));
   word.className = "dim inbox-away";
-  word.textContent = deviceOfflineWord;
-  line.insertBefore(word, line.querySelector(".badge"));
+  word.textContent = away;
 }
 
 /** A control whose device cannot answer: it says so, and it does nothing. What

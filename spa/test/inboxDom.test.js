@@ -86,7 +86,9 @@ let App;
 let mountInboxList;
 let inboxListRouteChanged;
 let setInboxView;
+let adoptBridgeSelection;
 let adoptDeviceSession;
+let contextFor;
 let resetDeviceContexts;
 let setContextOffline;
 let rememberDeviceFilter;
@@ -108,7 +110,9 @@ beforeEach(async () => {
   localStorage.clear();
   ({ App } = await import("../src/app.js"));
   ({ mountInboxList, inboxListRouteChanged, setInboxView } = await import("../src/core/inboxView.js"));
-  ({ adoptDeviceSession, resetDeviceContexts, setContextOffline } = await import("../src/core/deviceContexts.js"));
+  ({ adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } = await import(
+    "../src/core/deviceContexts.js"
+  ));
   ({ rememberDeviceFilter } = await import("../src/core/deviceFilter.js"));
   resetDeviceContexts();
   App.route = { name: "inbox" };
@@ -260,11 +264,22 @@ describe("the projects face", () => {
 });
 
 describe("an account with more than one device", () => {
+  const projectsOnBoth = () => [project("project-1", "Payments", "dev-1"), project("project-1", "Payments", "dev-2")];
+
   const twoDevices = () => {
-    const projects = [project("project-1", "Payments", "dev-1"), project("project-1", "Payments", "dev-2")];
+    feed([workspace(), workspace({ id: "workspace-2", deviceId: "dev-2", name: "Refunds" })], projectsOnBoth());
+  };
+
+  /** The same two machines, with a workspace on each the bridge calls clean —
+   *  so each row carries the one verb that would ask its own machine. */
+  const twoDevicesWithDone = () => {
+    const clean = { pushes: 0, additions: 0, deletions: 0, clean: true };
     feed(
-      [workspace(), workspace({ id: "workspace-2", deviceId: "dev-2", name: "Refunds" })],
-      projects,
+      [
+        workspace({ work_summary: clean }),
+        workspace({ id: "workspace-2", deviceId: "dev-2", name: "Refunds", work_summary: clean }),
+      ],
+      projectsOnBoth(),
     );
   };
 
@@ -275,14 +290,7 @@ describe("an account with more than one device", () => {
   });
 
   it("greys a row whose machine is away and shuts the verbs that would ask it", () => {
-    const clean = { pushes: 0, additions: 0, deletions: 0, clean: true };
-    feed(
-      [
-        workspace({ work_summary: clean }),
-        workspace({ id: "workspace-2", deviceId: "dev-2", name: "Refunds", work_summary: clean }),
-      ],
-      [project("project-1", "Payments", "dev-1"), project("project-1", "Payments", "dev-2")],
-    );
+    twoDevicesWithDone();
 
     setContextOffline("dev-2", { offline: true });
 
@@ -309,6 +317,20 @@ describe("an account with more than one device", () => {
     setContextOffline("dev-2", { offline: false });
 
     expect(rows()[1].querySelector(".inbox-away")).toBeNull();
+  });
+
+  // A machine whose bridge speaks an API this app cannot read is answering:
+  // calling its rows offline would be a lie, and waiting for it would never
+  // end. The row says which side is out of date instead.
+  it("asks for the update on a row whose bridge this app cannot read", () => {
+    twoDevicesWithDone();
+
+    adoptBridgeSelection(contextFor("dev-2"), { version: "0.9.0", unsupported: "bridge" }, null);
+
+    expect(rows()[1].classList.contains("inbox-offline")).toBe(true);
+    expect(rows()[1].querySelector(".inbox-away").textContent).toBe("update");
+    expect(rows()[1].querySelector("[data-workspace-done]").title).toBe("Bridge is out of date");
+    expect(rows()[0].querySelector(".inbox-away")).toBeNull();
   });
 
   it("greys a block whose machine is away and shuts its +", () => {

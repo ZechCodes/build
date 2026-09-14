@@ -50,10 +50,21 @@ export const deviceBridgeBehindText = (name, version) =>
  *  for surfaces with room for one. */
 export const deviceOfflineMark = "Device offline";
 
+/** And the marks for the two version gaps: the machine is answering, so saying
+ *  it is offline would be a lie. Which side is out of date is the whole of what
+ *  a control has room to say; the sentences above say what to do about it. */
+export const appBehindMark = "App is out of date";
+export const bridgeBehindMark = "Bridge is out of date";
+
 /** The one word a greyed row and the device picker both wear to say a machine
  *  is not here. Lower case: it is a mark on something else, never a sentence of
  *  its own. */
 export const deviceOfflineWord = "offline";
+
+/** And the words for the two version gaps, in what a row has room for: the one
+ *  thing that would make that machine readable again. */
+export const appBehindWord = "reload";
+export const bridgeBehindWord = "update";
 
 /** What the waiting screen is waiting for. An account with several machines
  *  lists them all under this heading, and any one of them hands the app back —

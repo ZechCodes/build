@@ -51,7 +51,7 @@ const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts } =
 const { chooseCreationDevice, goOffline, openDeviceSessions, resume, syncHome } = await import("../src/connection.js");
 const { markDeviceOffline, markDeviceOnline } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
-const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
+const { allDevicesOfflineText, deviceUnreachableText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
 const { holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js");
@@ -274,7 +274,7 @@ describe("per-device connections", () => {
     await flush();
 
     expect(held()).toBe(true);
-    expect(waitingNote()).toContain(offlineBannerText("Laptop", contextFor("dev-a").offlineSince));
+    expect(waitingNote()).toContain(deviceUnreachableText("Laptop", contextFor("dev-a").offlineSince));
   });
 
   // Every surface is about a machine, so an account with none has nothing to

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { allDevicesOfflineText, deviceOfflineText, esc, humanAge, messageOf, offlineBannerText } from "../src/core/text.js";
+import { allDevicesOfflineText, deviceOfflineText, deviceUnreachableText, esc, humanAge, messageOf } from "../src/core/text.js";
 
 describe("esc", () => {
   it("escapes the HTML-significant characters and stringifies nullish", () => {
@@ -42,23 +42,29 @@ describe("humanAge", () => {
   });
 });
 
-describe("offlineBannerText", () => {
+describe("deviceUnreachableText", () => {
   it("names the device, stamps the time it went unreachable, and promises resumption", () => {
     // A fixed local timestamp — assert on the pieces, not a locale-exact string.
     const sinceMs = new Date(2026, 6, 18, 15, 42).getTime();
-    const text = offlineBannerText("Zech's MacBook", sinceMs);
+    const text = deviceUnreachableText("Zech's MacBook", sinceMs);
     expect(text).toContain("Zech's MacBook");
     expect(text).toContain("unreachable since");
     expect(text).toContain("tasks will resume when it reconnects");
     // Carries a rendered clock time (locale-formatted h:mm).
     expect(text).toMatch(/\d{1,2}:\d{2}/);
   });
+
+  // The fallback for an unnamed machine lives here with its sentence, the way
+  // the other two device sentences keep theirs.
+  it("says whose device it is when this client cannot name it", () => {
+    expect(deviceUnreachableText(null, Date.now())).toMatch(/^Your device unreachable since /);
+  });
 });
 
 describe("allDevicesOfflineText", () => {
   it("says every device is offline, in plain words", () => {
     // With nothing reachable there is no device to name and no time that means
-    // anything: the banner says what is true and what happens next.
+    // anything: it says what is true and what happens next.
     const text = allDevicesOfflineText();
     expect(text).toContain("All devices are offline");
     expect(text).toContain("tasks will resume when one reconnects");

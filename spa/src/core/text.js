@@ -14,12 +14,12 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  words; anything else a call rejected with is shown as it reads. */
 export const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
-/** The offline banner sentence: honest about WHEN the device went unreachable
- *  (a moving "reconnecting…" claim reads as a lie while nothing is happening)
- *  and calm about what resumes automatically. */
-export function offlineBannerText(name, sinceMs) {
+/** What the account says about the one machine it had and lost: honest about
+ *  WHEN it went unreachable (a moving "reconnecting…" claim reads as a lie while
+ *  nothing is happening) and calm about what resumes automatically. */
+export function deviceUnreachableText(name, sinceMs) {
   const time = new Date(sinceMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `${name} unreachable since ${time} — tasks will resume when it reconnects.`;
+  return `${name || "Your device"} unreachable since ${time} — tasks will resume when it reconnects.`;
 }
 
 /** What a work surface says when the machine its link names cannot answer —
@@ -33,8 +33,8 @@ export const deviceOfflineText = (name) =>
 export const deviceFrozenText = (name) =>
   `${name || "That device"} isn't connected — this is what it last said.`;
 
-/** The banner for the state where nothing is reachable: no device to name, and
- *  no time that would mean anything, so it says what is true and what happens. */
+/** What it says where nothing is reachable: no device to name, and no time that
+ *  would mean anything, so it says what is true and what happens. */
 export const allDevicesOfflineText = () =>
   "All devices are offline — tasks will resume when one reconnects.";
 

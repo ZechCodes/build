@@ -8,7 +8,7 @@
 // it is waiting for, and hands it straight back when one of them lands.
 
 import { $ } from "../dom.js";
-import { allDevicesOfflineText, esc, offlineBannerText } from "../core/text.js";
+import { allDevicesOfflineText, deviceUnreachableText, esc } from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
 import { CONNECTION_STATUS, openDeviceSessions, setConn } from "../connection.js";
 import { knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
@@ -250,8 +250,7 @@ function waitingText() {
   const contexts = knownContexts();
   if (contexts.length !== 1) return allDevicesOfflineText();
   const [context] = contexts;
-  const name = deviceNameOf(App.devices, context.deviceId) || "Your device";
-  return offlineBannerText(name, context.offlineSince || Date.now());
+  return deviceUnreachableText(deviceNameOf(App.devices, context.deviceId), context.offlineSince || Date.now());
 }
 
 function renderWaiting(devices) {

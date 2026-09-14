@@ -296,9 +296,7 @@ function onMenuClick(event) {
   }
   const work = event.target.closest("[data-work]");
   if (work) {
-    const entry = workMenuModel({ items: feed.items, projectKey: scopedProject()?.projectKey, query: open.query }).find(
-      (candidate) => candidate.key === work.dataset.work,
-    );
+    const entry = scopedWork().find((candidate) => candidate.key === work.dataset.work);
     closeMenu();
     if (entry) go(entry.route);
     return;
@@ -353,9 +351,14 @@ function projectMenuShellHtml() {
     <div class="tbmenu-list"></div>`;
 }
 
+/** The scoped project's work, as the open menu lists it: what the rows are
+ *  painted from, and what a clicked row is looked up in. Both ask here, so the
+ *  row that was clicked is the row that was painted. */
+const scopedWork = () => workMenuModel({ items: feed.items, projectKey: scopedProject()?.projectKey, query: open.query });
+
 /** The item half's rows: the scoped project's branches and issues. */
 function workMenuEntries() {
-  const work = workMenuModel({ items: feed.items, projectKey: scopedProject()?.projectKey, query: open.query });
+  const work = scopedWork();
   if (!work.length) return [{ key: "none", html: `<div class="tb-none dim">Nothing here yet.</div>` }];
   return work.map((entry) => ({
     key: `work:${entry.key}`,

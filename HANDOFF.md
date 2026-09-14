@@ -563,9 +563,11 @@ app boots on.
   this device: …".
 - **Branch and issue surfaces.** Main did not retire them — `VIEWS` still maps
   them — it retired issue *creation*. Our device-aware `renderBranch` and
-  `renderIssue` stay the views those routes render; main's two unwired redirect
-  views are kept, migrated to the route's context, and stay unwired. Wiring
-  them is a product switch main has not thrown.
+  `renderIssue` stay the views those routes render. Main's two redirect views
+  (`retiredBranchView.js`, `retiredIssueView.js`) are deleted: nothing on
+  either side imported them, no suite covered them, and wiring them is a
+  product switch main has not thrown. They are in main's history if that
+  switch is ever thrown.
 - **Device-less work URLs.** A `#/project/<p>/workspace/<w>` link with no device
   now parks on `resolve/project` by design and is rewritten once a machine
   claims it, rather than parsing straight through to a surface.

@@ -75,6 +75,16 @@ describe("filtering the merge to one machine", () => {
     expect(merged.items).toHaveLength(2);
   });
 
+  // The collections are the feed's own list (core/feedMerge.js), not "every
+  // array on the snapshot": an array of something other than rows carries no
+  // device to be kept by, and emptying it would be a device filter deciding
+  // something that is about no device.
+  it("carries an array that is not a collection of rows over whole", () => {
+    const shown = filterByDevice({ ...merged, deviceOrder: ["dev-a", "dev-b"] }, "dev-b");
+
+    expect(shown.deviceOrder).toEqual(["dev-a", "dev-b"]);
+  });
+
   it("carries cached over", () => {
     expect(filterByDevice(merge(true), "dev-a").cached).toBe(true);
     expect(filterByDevice(merge(false), "dev-a").cached).toBe(false);

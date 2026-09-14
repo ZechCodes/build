@@ -11,6 +11,7 @@
 // No painter asks whether a filter is set.
 
 import { App, DEVICE_FILTER_KEY } from "../app.js";
+import { FEED_COLLECTIONS } from "./feedMerge.js";
 import { deliverFeed } from "./taskFeed.js";
 
 /**
@@ -18,14 +19,17 @@ import { deliverFeed } from "./taskFeed.js";
  * names no machine.
  *
  * Every collection the snapshot carries is filtered the same way — each row was
- * stamped with the device that answered for it (core/feedMerge.js) — so a
- * collection added to the feed later is narrowed without this being touched.
+ * stamped with the device that answered for it — so a collection added to the
+ * feed later is narrowed without this being touched. Which fields those are is
+ * asked of the one place that reads the wire (core/feedMerge.js): anything else
+ * the snapshot carries is about no device and is handed on whole.
  */
 export function filterByDevice(snapshot, deviceFilter) {
   if (!deviceFilter || !snapshot) return snapshot;
   const shown = { ...snapshot };
-  for (const [field, value] of Object.entries(snapshot)) {
-    if (Array.isArray(value)) shown[field] = value.filter((row) => row.deviceId === deviceFilter);
+  for (const field of FEED_COLLECTIONS) {
+    const rows = snapshot[field];
+    if (Array.isArray(rows)) shown[field] = rows.filter((row) => row.deviceId === deviceFilter);
   }
   if (snapshot.devices) shown.devices = onlyDevice(snapshot.devices, deviceFilter);
   return shown;

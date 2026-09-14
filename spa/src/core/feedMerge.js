@@ -28,11 +28,14 @@ const WIRE_FIELDS = Object.freeze({
 });
 
 /** The collections a snapshot carries: the board's, in the order the wire names
- *  them, and the projects that come from the second read. */
-const COLLECTIONS = Object.freeze([...Object.keys(WIRE_FIELDS), "projects"]);
+ *  them, and the projects that come from the second read. Every one of them is
+ *  an array of rows stamped with the device that answered, which is what lets a
+ *  reader narrow a snapshot to one machine (core/deviceFilter.js) without
+ *  knowing what any row is. */
+export const FEED_COLLECTIONS = Object.freeze([...Object.keys(WIRE_FIELDS), "projects"]);
 
 const EMPTY_VIEW = Object.freeze({
-  ...Object.fromEntries(COLLECTIONS.map((field) => [field, Object.freeze([])])),
+  ...Object.fromEntries(FEED_COLLECTIONS.map((field) => [field, Object.freeze([])])),
   cached: true,
 });
 
@@ -82,7 +85,7 @@ function orderedViews(byDevice, deviceOrder) {
 export function mergeFeeds(byDevice, deviceOrder = []) {
   const ordered = orderedViews(byDevice, deviceOrder);
   const merged = { devices: Object.fromEntries(ordered) };
-  for (const field of COLLECTIONS) {
+  for (const field of FEED_COLLECTIONS) {
     merged[field] = ordered.flatMap(([, view]) => view[field] || []);
   }
   merged.cached = ordered.every(([, view]) => Boolean(view.cached));

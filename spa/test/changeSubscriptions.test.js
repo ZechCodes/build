@@ -400,12 +400,33 @@ describe("the board revision", () => {
 });
 
 describe("telling the cache layer which contract is live", () => {
-  it("announces the flip into subscriptions and back", async () => {
+  // Each bridge negotiates for itself, so the flip names the machine it is
+  // about: the cache layer re-times that device's reads and leaves the rest.
+  it("announces the flip into subscriptions and back, naming the device it is about", async () => {
     const flips = [];
-    const stop = changeEvents.onSubscriptionsChange((active) => flips.push(active));
-    await changeEvents.greetBridge(subscribingBridge());
-    await changeEvents.greetBridge(legacyBridge());
+    const stop = changeEvents.onSubscriptionsChange((deviceId, active) => flips.push([deviceId, active]));
+    await changeEvents.greetBridge(subscribingBridge(), { deviceId: "dev-1" });
+    await changeEvents.greetBridge(legacyBridge(), { deviceId: "dev-1" });
     stop();
-    expect(flips).toEqual([true, false]);
+    expect(flips).toEqual([
+      ["dev-1", true],
+      ["dev-1", false],
+    ]);
+  });
+
+  it("leaves the other device's contract standing when one falls back", async () => {
+    const flips = [];
+    const stop = changeEvents.onSubscriptionsChange((deviceId, active) => flips.push([deviceId, active]));
+    await changeEvents.greetBridge(subscribingBridge(), { deviceId: "dev-1" });
+    await changeEvents.greetBridge(subscribingBridge(), { deviceId: "dev-2" });
+    await changeEvents.greetBridge(legacyBridge(), { deviceId: "dev-2" });
+    stop();
+    expect(flips).toEqual([
+      ["dev-1", true],
+      ["dev-2", true],
+      ["dev-2", false],
+    ]);
+    expect(changeEvents.subscriptionsActive("dev-1")).toBe(true);
+    expect(changeEvents.subscriptionsActive("dev-2")).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 class BranchRailContext {
-  constructor({ projectId, branch }) {
+  constructor({ deviceId = null, projectId, branch }) {
     this.kind = "branch";
+    this.deviceId = deviceId;
     this.projectId = projectId;
     this.branch = branch;
     this.key = `branch:${projectId}:${branch}`;
@@ -19,13 +20,14 @@ class BranchRailContext {
   }
 
   feedRoute() {
-    return { name: "branch", projectId: this.projectId, branch: this.branch };
+    return { name: "branch", deviceId: this.deviceId, projectId: this.projectId, branch: this.branch };
   }
 }
 
 class IssueRailContext {
-  constructor({ projectId, issueId }) {
+  constructor({ deviceId = null, projectId, issueId }) {
     this.kind = "issue";
+    this.deviceId = deviceId;
     this.projectId = projectId;
     this.issueId = issueId;
     this.key = `issue:${issueId}`;
@@ -50,7 +52,7 @@ class IssueRailContext {
   }
 
   feedRoute() {
-    return { name: "issue", projectId: this.projectId, id: this.issueId };
+    return { name: "issue", deviceId: this.deviceId, projectId: this.projectId, id: this.issueId };
   }
 }
 

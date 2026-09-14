@@ -60,8 +60,7 @@ import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
-import { currentCacheScope } from "./cacheScope.js";
-import { deviceFeedView, homeContext } from "./deviceContexts.js";
+import { deviceFeedView } from "./deviceContexts.js";
 import { createConversationCache } from "./conversationCache.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
@@ -177,18 +176,20 @@ const chatRecoveryHtml = (controller) => controller.recoveries().map((recovery) 
 
 const conversationIdOf = (agent) => agent?.conversation_id || agent?.id || "";
 
+/** What the rail talks through: the cache and the conversations of the machine
+ *  the surface above it is standing on, both handed down by that surface. A
+ *  standalone mount (the pane suites) brings only a caller, and the rail makes
+ *  its own repository over it. */
 function railChatDependencies(context) {
-  const cacheScope = context.cacheScope || App.cacheScope || currentCacheScope();
-  const injectedRepository = context.chatRepository || App.chatRepository;
+  const cacheScope = context.cacheScope;
+  const injectedRepository = context.chatRepository;
   return {
     cacheScope,
     ownsRepository: !injectedRepository,
     repository: injectedRepository || createChatRepository({
       scope: cacheScope || {},
       viewingContext: context.viewingContext || App.viewingContext,
-      // Standalone compatibility only. Application mounts inject a scoped
-      // repository which connection lifecycle retargets explicitly.
-      call: (method, params) => App.call(method, params),
+      call: (method, params) => context.call(method, params),
     }),
   };
 }
@@ -701,11 +702,10 @@ export function mountAgentRail(host, context) {
   const unsubscribePending = subscribeOptimistic(pendingAgentsScope(), () => paint());
 
   const unsubscribeFeed = subscribeFeed((feed) => {
-    // The home device's rows, not the merge: this work item is on one machine,
-    // and every machine mints a `proj-1` — so the row is looked for by the
-    // machine and the project together.
-    const home = homeContext()?.deviceId;
-    feedRow = toolbarIdentity({ ...feedRoute(), deviceId: home }, deviceFeedView(feed, home)).row;
+    // One machine's rows, not the merge: this work item is on the machine its
+    // link named, and every machine mints a `proj-1` — so the row is looked for
+    // by the machine and the project together.
+    feedRow = toolbarIdentity(feedRoute(), deviceFeedView(feed, context.deviceId)).row;
     paintRailStatus();
   });
 

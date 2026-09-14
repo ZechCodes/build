@@ -179,8 +179,10 @@ describe("the rail's poll", () => {
     App.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
+      deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
+      call: (method, params) => App.call(method, params),
     });
     await flush();
   });
@@ -270,8 +272,10 @@ describe("a work item that keeps losing its agent", () => {
     App.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
+      deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
+      call: (method, params) => App.call(method, params),
     });
     await flush();
   };
@@ -359,8 +363,10 @@ describe("a work item that keeps losing its agent", () => {
     });
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
+      deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
+      call: (method, params) => App.call(method, params),
     });
     await flush();
     // The first read lands on a bare tick; the run resolves on the third.

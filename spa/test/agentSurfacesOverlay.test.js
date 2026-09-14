@@ -126,8 +126,12 @@ const finishedShells = () => {
 const mount = async () => {
   rail = mountAgentRail(document.getElementById("agent-rail"), {
     kind: "branch",
+    deviceId: "dev-1",
     projectId: "p1",
     branch: "build/login",
+    // A standalone mount brings its own caller: the rail makes its repository
+    // over the machine it was handed, not over an ambient one.
+    call: (method, params) => App.call(method, params),
   });
   await flush();
 };

@@ -156,8 +156,21 @@ const pushFeed = async (snapshot) => {
   await flush();
 };
 
-const mount = async (context = { kind: "branch", projectId: "p1", branch: "build/login" }) => {
-  rail = mountAgentRail(railHost(), context);
+/** The rail as a surface mounts it: the work item, plus the machine's cache,
+ *  conversations and caller, which the view beside it hands down. */
+const railAddress = (over = {}) => ({
+  kind: "branch",
+  deviceId: "dev-1",
+  projectId: "p1",
+  branch: "build/login",
+  cacheScope: currentCacheScope(),
+  chatRepository: App.chatRepository,
+  call: (method, params) => App.call(method, params),
+  ...over,
+});
+
+const mount = async (context = {}) => {
+  rail = mountAgentRail(railHost(), railAddress(context));
   await flush();
 };
 
@@ -1525,6 +1538,34 @@ describe("focusing the composer on a freshly created branch", () => {
 });
 
 describe("the pinned status line above the composer", () => {
+  // Every machine mints a `p1` with a `build/login` in it, and the feed holds
+  // all of them at once. The rail is about one work item on one machine, so the
+  // row it reports on comes out of that machine's slice.
+  it("the rail reads the work item's row from its own device's slice of the feed", async () => {
+    const theirs = {
+      kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-2",
+      working: false, working_time: null, stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
+    };
+    const mine = {
+      kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
+      working: false, working_time: null, stat: { insertions: 99, deletions: 99, ahead: 0, behind: 0 },
+    };
+    await pushFeed({
+      items: [mine, theirs],
+      projects: [],
+      devices: {
+        "dev-1": { items: [mine], projects: [] },
+        "dev-2": { items: [theirs], projects: [] },
+      },
+    });
+
+    await mount({ deviceId: "dev-2" });
+
+    expect(railStatus().textContent).toContain("+4");
+    expect(railStatus().textContent).toContain("−1");
+    expect(railStatus().textContent).not.toContain("99");
+  });
+
   it("pins nothing when the feed row has nothing to report", async () => {
     await mount();
     expect(railStatus().hidden).toBe(true);
@@ -1535,7 +1576,7 @@ describe("the pinned status line above the composer", () => {
     payload = branchRow({ agents: [agent({ working_time: { since: new Date(Date.now() - 750000).toISOString(), seconds: 750 } })] });
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 750000).toISOString(), seconds: 750 }, stat: null,
       }],
       projects: [],
@@ -1549,7 +1590,7 @@ describe("the pinned status line above the composer", () => {
   it("shows the diffstat and ahead/behind alongside, only when nonzero", async () => {
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: false, working_time: null, stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
       }],
       projects: [],
@@ -1568,7 +1609,7 @@ describe("the pinned status line above the composer", () => {
     // around. One group carries both, and the sheet anchors it to the row's end.
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 },
         stat: { insertions: 104, deletions: 38, ahead: 0, behind: 1 },
       }],
@@ -1604,7 +1645,7 @@ describe("the pinned status line above the composer", () => {
 
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 }, stat: null,
       }],
       projects: [],
@@ -1643,7 +1684,7 @@ describe("the pinned status line above the composer", () => {
     payload = branchRow({ agents: [agent({ working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 } })] });
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 }, stat: null,
       }],
       projects: [],
@@ -2138,7 +2179,7 @@ describe("interrupting the turn", () => {
 });
 
 describe("the conversation's local cache", () => {
-  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" }];
+  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1" }];
   const threadItem = (sequence, body) => ({
     id: `m-${sequence}`,
     type: "message",
@@ -2204,7 +2245,7 @@ describe("the conversation's local cache", () => {
 });
 
 describe("revisiting a conversation", () => {
-  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" }];
+  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1" }];
   const historyThread = () => ({
     items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "the history", created_at: "2026-08-30T12:00:00Z" } }],
     has_more: false,
@@ -2323,10 +2364,10 @@ describe("the agent's surfaces, carried by the status row", () => {
 
 describe("the agent's surfaces, seeded from the local cache", () => {
   const feedItems = [{
-    kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3",
+    kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1",
     agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
   }];
-  const railContext = { kind: "branch", projectId: "p1", branch: "build/login" };
+  const railContext = () => railAddress();
   const shellsRunning = (...descriptions) => ({
     shells: descriptions.map((description, index) => ({ id: `sh-${index}`, description, state: "running", tail: [] })),
   });
@@ -2440,7 +2481,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   it("drops a seed whose agent was left while the read was in flight", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
-    rail = mountAgentRail(railHost(), railContext);
+    rail = mountAgentRail(railHost(), railContext());
     bubbles()[1].click(); // ag-1's seed is still in flight
     await flush();
     expect(pillKinds()).toEqual([]);
@@ -2505,7 +2546,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   it("leaves no seed landing after the rail is gone", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
-    rail = mountAgentRail(railHost(), railContext);
+    rail = mountAgentRail(railHost(), railContext());
     rail.dispose();
     rail = null;
     await flush();
@@ -2906,7 +2947,7 @@ describe("the one status row", () => {
       agents: [agent({ ...payload.agents?.[0], working_time: { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 } })],
     }), pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 },
         stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
       }],

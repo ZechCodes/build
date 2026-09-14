@@ -369,8 +369,10 @@ describe("the rail's poll on an unchanged conversation", () => {
     App.call = vi.fn(async (method) => (method === "branch.get" ? row() : {}));
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
+      deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
+      call: (method, params) => App.call(method, params),
     });
     await flush();
   });

@@ -59,7 +59,7 @@ let mounted = false;
 // A machine that cannot answer hands back a caller that refuses, so nothing
 // here asks whether a device is there — only canSend, which is the same
 // question the note and the queue are the answer to.
-const homeCall = () => deviceCall(null);
+const homeCall = (method, params) => deviceCall(null)(method, params);
 const canSend = () => canAnswer(homeContext());
 /** What the account calls the machine this box sends to, while it can name it:
  *  the creation device, online or away. */
@@ -135,7 +135,7 @@ function track(capture) {
  */
 export async function flushCaptures() {
   if (!queue.length || !canSend()) return;
-  const { sent, remaining } = await flushCaptureQueue(queue, (text) => homeCall()("capture.create", { text }));
+  const { sent, remaining } = await flushCaptureQueue(queue, (text) => homeCall("capture.create", { text }));
   queue = saveCaptureQueue(remaining);
   sent.forEach(({ capture }) => track(capture));
   announce();
@@ -170,7 +170,7 @@ function syncTracked() {
     if (entry.settledAt || entry.settling || !canSend()) continue;
     entry.settling = true;
     changed = true;
-    homeCall()("capture.get", { capture_id: id })
+    homeCall("capture.get", { capture_id: id })
       .then((capture) => {
         const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
         tracked.set(id, { row: captureRow(capture, { projectName }), settledAt: Date.now(), settling: false });
@@ -397,7 +397,7 @@ async function submitCapture() {
   box.error = "";
   paintBox({ focus: false });
   try {
-    track(await homeCall()("capture.create", { text }));
+    track(await homeCall("capture.create", { text }));
     closeCompose();
     await refreshFeed();
   } catch {
@@ -435,7 +435,7 @@ async function submitManual() {
     agentParams: agentChoiceParams(box.catalog, box.choice),
   });
   try {
-    const created = await replyOrNothing(homeCall()(method, params));
+    const created = await replyOrNothing(homeCall(method, params));
     settleManualRoute(manualRouteDestination(box.kind, created, box.projectId));
   } catch (error) {
     fail(messageOf(error));

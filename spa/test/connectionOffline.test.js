@@ -325,7 +325,8 @@ describe("per-device connections", () => {
     await flush();
 
     expect(held()).toBe(false);
-    expect(routes.renderInbox).toHaveBeenCalled();
+    expect(routes.renderInbox).toHaveBeenCalledTimes(1); // the route is rendered once, not once per device state
+
     expect(document.getElementById("devpick").hidden).toBe(false);
     expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");
   });

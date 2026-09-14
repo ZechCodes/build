@@ -55,7 +55,7 @@ vi.mock("../src/connection.js", () => ({
 // jsdom is neither a Mac nor a Linux desktop; the platform table has its own
 // test, and this one is about what the gate does with the key it is handed.
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "macos-arm64" }));
-vi.mock("../src/app.js", () => ({ App: { devices: [], selectedDeviceId: null }, render: () => {} }));
+vi.mock("../src/app.js", () => ({ App: { devices: [], selectedDeviceId: null }, render: () => {}, unmountView: () => {} }));
 vi.mock("../src/core/taskFeed.js", () => ({ startFeed: () => {}, stopFeed: () => {} }));
 vi.mock("../src/core/cacheSync.js", () => ({ startCacheSync: () => {} }));
 vi.mock("../src/core/inboxShell.js", () => ({ initInboxRail: () => {} }));

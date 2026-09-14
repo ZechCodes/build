@@ -1,3 +1,4 @@
+import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { workspaceRoute } from "../core/projectModel.js";
@@ -11,11 +12,11 @@ export async function renderRetiredIssue() {
   const callRpc = App.call;
   root.innerHTML = '<div class="empty">loading…</div>';
   try {
-    const answer = await callRpc("issue.get", { issue_id: route.id });
+    const answer = await callRpc("issue.get", { issue_id: route.id, ...SMALLEST_THREAD_PAGE });
     const issue = answer.issue || answer;
     const workspaceId = implementationId(issue);
     if (workspaceId) {
-      const workspaceAnswer = await callRpc("workspace.get", { workspace_id: workspaceId });
+      const workspaceAnswer = await callRpc("workspace.get", { workspace_id: workspaceId, ...SMALLEST_THREAD_PAGE });
       const destination = workspaceRoute(workspaceAnswer.workspace || workspaceAnswer);
       if (destination) return go(destination);
     }

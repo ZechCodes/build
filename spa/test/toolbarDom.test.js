@@ -99,7 +99,7 @@ describe("workspace toolbar", () => {
     menu().querySelector('[data-project="p1"]').click();
     await flush();
 
-    expect(App.call).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1" });
+    expect(App.call).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1", thread_limit: 1 });
     expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
   });
   it("ignores a workspace list response overtaken by a newer project choice", async () => {

@@ -1,3 +1,4 @@
+import { SMALLEST_THREAD_PAGE } from "./thread.js";
 // The view area's toolbar: where you are standing, how to go somewhere else,
 // and what the work you are standing in is doing.
 //
@@ -115,7 +116,7 @@ async function workspaceRows(projectId, selectedWorkspaceId) {
   if (!selectedWorkspaceId) return rows;
   const selected = rows.find((workspace) => workspace.id === selectedWorkspaceId);
   if (Array.isArray(selected?.directories)) return rows;
-  const detail = workspaceAnswer(await App.call("workspace.get", { workspace_id: selectedWorkspaceId }));
+  const detail = workspaceAnswer(await App.call("workspace.get", { workspace_id: selectedWorkspaceId, ...SMALLEST_THREAD_PAGE }));
   return detail.id ? [...rows.filter((workspace) => workspace.id !== detail.id), detail] : rows;
 }
 

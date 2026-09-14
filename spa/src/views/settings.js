@@ -121,6 +121,15 @@ export async function renderSettings() {
       <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
     </div>
     <div class="panel">
+      <h3>🖥️ Creation device</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">The inbox and the projects rail show every device. This is the one that takes new work.</div>
+      <div class="field" style="max-width:340px">
+        <label for="creationdev">New projects and captures go to</label>
+        <select id="creationdev" disabled><option>loading…</option></select>
+        <div class="dim" id="creationfallback" style="font-size:12.5px;margin-top:6px" role="status"></div>
+      </div>
+    </div>
+    <div class="panel">
       <h3>🤖 Browser agent defaults</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">What a new issue created in this browser starts with. You can still change any of it per issue, under the harness button in the New issue sheet.</div>
       <div class="field-row" style="display:flex;gap:10px;flex-wrap:wrap">

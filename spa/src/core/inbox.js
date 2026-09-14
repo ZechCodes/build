@@ -165,32 +165,35 @@ export function mergePendingRows(items = [], pending = []) {
   return rows;
 }
 
-/** Where an entry opens. A branch is (device, project, branch name); an issue
- *  is its own surface on the machine holding it. A checkout with no branch is
- *  nameable by no URL, so it opens nowhere until it is on one.
+/** Where each kind of entry opens, looked up rather than walked. A branch is
+ *  (device, project, branch name); an issue is its own surface on the machine
+ *  holding it. A checkout with no branch is nameable by no URL, so it opens
+ *  nowhere until it is on one.
  *
- *  A capture opens wherever it was routed. Until it is routed it opens its own
- *  decision page — what to do with it is a question, and a question deserves a
- *  surface. One this client is still holding has no record to decide about, so
- *  it opens nowhere. */
+ *  A capture opens wherever it was routed — it answers as the work item it
+ *  names. Until it is routed it opens its own decision page: what to do with it
+ *  is a question, and a question deserves a surface. One this client is still
+ *  holding has no record to decide about, so it opens nowhere. */
+const OPENS_AT = {
+  capture: (item) => {
+    if (item.routing) return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
+    return item.state === "queued" ? null : { name: "capture", id: item.capture_id };
+  },
+  issue: (item) =>
+    item.issue_id ? { name: "issue", deviceId: item.deviceId, projectId: item.project_id, id: item.issue_id } : null,
+  branch: (item) =>
+    item.branch ? { name: "branch", deviceId: item.deviceId, projectId: item.project_id, branch: item.branch, tab: "changes" } : null,
+};
+
+/** Where an entry opens, and null for a row with nowhere to go. */
 export function entryRoute(item) {
   // A row standing in for a card that does not exist yet opens nowhere: there
   // is nothing on the other side of it. It opens itself the moment its record
   // lands under the same key. A card that is already there keeps its surface
   // however busy the daemon is with it.
   if (item.placeholder) return null;
-  if (item.kind === "capture") {
-    if (item.routing) {
-      return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
-    }
-    return item.state === "queued" ? null : { name: "capture", id: item.capture_id };
-  }
-  if (item.kind === "issue") {
-    return item.issue_id ? { name: "issue", deviceId: item.deviceId, projectId: item.project_id, id: item.issue_id } : null;
-  }
-  return item.branch
-    ? { name: "branch", deviceId: item.deviceId, projectId: item.project_id, branch: item.branch, tab: "changes" }
-    : null;
+  // A checkout is the kind a row wears when it says nothing else.
+  return (OPENS_AT[item.kind] || OPENS_AT.branch)(item);
 }
 
 const ms = (iso) => {

@@ -468,7 +468,11 @@ export function openNewProject() {
   const target = creationTarget("No device can take a new project");
   if (!target) return;
   openNewRepo((project) => {
-    const route = projectRoute(project);
+    // The machine that made it is the machine it is on: the answer to a fresh
+    // project.create is not a feed row and carries no device of its own, and a
+    // device-less route is resolved by asking every machine — which would hand
+    // the reader another machine's project of the same number.
+    const route = projectRoute({ ...project, deviceId: target.deviceId });
     if (route) goFromInbox(route);
     refreshFeed();
   }, target);

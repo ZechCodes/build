@@ -157,12 +157,14 @@ function openControl(control) {
  * Null while that machine cannot answer — and the reader is told so under
  * `refusal`, because a control that quietly does nothing is a fault to whoever
  * pressed it. The sheet itself never learns any of this: it is handed one
- * caller and asks nothing about devices.
+ * caller and asks nothing about devices. The machine's id rides along for
+ * whoever has to stamp it onto what the sheet made, since a fresh creation
+ * answer names no machine of its own.
  */
 export function creationTarget(refusal) {
   const context = homeContext();
   if (canAnswer(context)) {
-    return { callRpc: context.rpc, deviceName: deviceNameOf(App.devices, context.deviceId) };
+    return { callRpc: context.rpc, deviceId: context.deviceId, deviceName: deviceNameOf(App.devices, context.deviceId) };
   }
   notifyError(refusal, creationRefusal());
   return null;

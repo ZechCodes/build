@@ -41,6 +41,8 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 vi.mock("../src/core/inboxShell.js", () => ({ goFromInbox: (...args) => navigate(...args) }));
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => createWorkspace(...args) }));
+const newRepoSheet = vi.fn();
+vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: (...args) => newRepoSheet(...args) }));
 
 const key = (deviceId, id) => `${deviceId}/${id}`;
 
@@ -108,6 +110,7 @@ const blocks = () => [...document.querySelectorAll("#inbox-list .inbox-project")
 let App;
 let mountInboxList;
 let inboxListRouteChanged;
+let openNewProject;
 let setInboxView;
 let adoptBridgeSelection;
 let adoptDeviceSession;
@@ -128,11 +131,12 @@ beforeEach(async () => {
   subscribers = [];
   navigate.mockReset();
   createWorkspace.mockReset();
+  newRepoSheet.mockReset();
   refreshFeed.mockClear();
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   ({ App } = await import("../src/app.js"));
-  ({ mountInboxList, inboxListRouteChanged, setInboxView } = await import("../src/core/inboxView.js"));
+  ({ mountInboxList, inboxListRouteChanged, openNewProject, setInboxView } = await import("../src/core/inboxView.js"));
   ({ adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } = await import(
     "../src/core/deviceContexts.js"
   ));
@@ -441,6 +445,27 @@ describe("an account with more than one device", () => {
     expect(App.route).toBe(standing);
     rememberDeviceFilter(null);
     expect(rows()).toHaveLength(2);
+  });
+
+  // The answer to a fresh project.create is not a feed row: it carries the id
+  // one bridge minted and no machine at all. Left unstamped the link is
+  // device-less, and a device-less link is resolved by asking every machine —
+  // which hands the reader whichever one happens to hold the same numbered
+  // project. Creation already knows the machine it asked, so the route says it.
+  it("opens a new project on the machine it was made on", () => {
+    App.selectedDeviceId = "dev-2";
+    twoDevices();
+
+    openNewProject();
+    newRepoSheet.mock.calls[0][0]({ project_id: "project-1", base_branch: "main" });
+
+    expect(navigate).toHaveBeenCalledWith({
+      name: "branch",
+      deviceId: "dev-2",
+      projectId: "project-1",
+      branch: "main",
+      tab: "changes",
+    });
   });
 });
 

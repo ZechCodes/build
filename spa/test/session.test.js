@@ -9,11 +9,12 @@ class FakeWebSocket {
     this.url = url;
     this.sent = [];
     this.listeners = {};
+    this.readyState = 1; // OPEN
     FakeWebSocket.instances.push(this);
   }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   send(text) { this.sent.push(JSON.parse(text)); }
-  close() { this.emit("close", {}); }
+  close() { this.readyState = 3; /* CLOSED */ this.emit("close", {}); }
   emit(type, event = {}) { (this.listeners[type] || []).forEach((fn) => fn(event)); }
   serverSend(obj) { this.emit("message", { data: JSON.stringify(obj) }); }
 }

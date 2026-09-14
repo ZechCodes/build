@@ -10,15 +10,18 @@ class FakeWebSocket {
     this.url = url;
     this.sent = [];
     this.listeners = {};
+    this.readyState = 1; // OPEN
     FakeWebSocket.instances.push(this);
   }
   addEventListener(type, fn) {
     (this.listeners[type] ||= []).push(fn);
   }
   send(text) {
+    if (this.readyState !== 1) throw new Error("WebSocket is already in CLOSING or CLOSED state.");
     this.sent.push(JSON.parse(text));
   }
   close() {
+    this.readyState = 3; // CLOSED
     this.emit("close", {});
   }
   emit(type, event = {}) {
@@ -228,6 +231,40 @@ describe("createRelayLink", () => {
     await settle();
 
     expect(seen.deviceKeys).toContainEqual(["dev-b", "pk-dev-b"]);
+    link.close();
+  });
+});
+
+// The handshake is written across awaits — the token, the device key, the
+// session init the transport builds — and a reconnect can take the socket out
+// from under any of them. The frame that resumes must not be written to a dead
+// wire: that write is what the browser logs as "WebSocket is already in
+// CLOSING or CLOSED state".
+describe("a socket that goes mid-handshake", () => {
+  it("does not write the session init to it", async () => {
+    const { link } = linkOn({
+      transport: {
+        ...fakeTransport,
+        createSessionInit: async (args) => {
+          FakeWebSocket.instances.at(-1).close();
+          return fakeTransport.createSessionInit(args);
+        },
+      },
+    });
+    const refusal = link.start().catch((error) => error);
+    await settle();
+    const ws = FakeWebSocket.instances[0];
+
+    ws.emit("open");
+    await settle();
+    ws.serverSend({ type: "authenticated" });
+    ws.serverSend({ type: "device_key", device_id: "dev-a", transport_public_key: "pk-dev-a" });
+    await settle();
+
+    expect(ws.find("session_init")).toBeUndefined();
+    // And the attempt ends in the wire's own words, not in whatever the browser
+    // says about a write it should never have been asked to make.
+    expect((await refusal).message).toBe("the relay socket closed");
     link.close();
   });
 });

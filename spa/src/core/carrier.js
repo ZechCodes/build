@@ -28,6 +28,30 @@ export function openCarrier({ socket, channel, sessionId }) {
   return channel ? channelCarrier(channel) : relayCarrier(socket, sessionId);
 }
 
+/** `WebSocket.OPEN`, as a number rather than as a global: this module is read
+ *  in environments that have no `WebSocket` of their own. */
+const SOCKET_OPEN = 1;
+
+/**
+ * Write to a relay socket, or say it is gone.
+ *
+ * Every frame this app puts on a relay socket is written across awaits — a
+ * frame's encryption, the transport's session init, a ping the liveness watcher
+ * issued two seconds ago — and a bridge reconnect takes the socket out from
+ * under any of them. The write that resumes can never arrive, and a browser
+ * logs it as "WebSocket is already in CLOSING or CLOSED state". CLOSING is part
+ * of the question: a socket someone has called `close()` on stops taking writes
+ * at once and reports its close a turn later.
+ *
+ * The refusal is an ordinary loss, in the words a lost channel is refused in,
+ * so the call that frame belonged to fails now rather than waiting out a reply
+ * nobody will send.
+ */
+export function sendOverSocket(socket, text) {
+  if (!socket || socket.readyState !== SOCKET_OPEN) throw new Error("the relay socket closed");
+  socket.send(text);
+}
+
 /** What every carrier shares: one envelope sink, one close report that fires
  *  at most once, however the wire ended.
  *
@@ -70,7 +94,7 @@ function relayCarrier(socket, sessionId) {
   socket.addEventListener("close", core.end);
   return {
     ...core.interface,
-    send: (envelope) => socket.send(JSON.stringify({ type: "e2ee_envelope", session_id: sessionId, envelope })),
+    send: (envelope) => sendOverSocket(socket, JSON.stringify({ type: "e2ee_envelope", session_id: sessionId, envelope })),
     close: () => {
       core.end();
       socket.close();

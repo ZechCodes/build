@@ -13,7 +13,7 @@
 // strand every frame already in flight on it. A device that will not take the
 // session back leaves it behind rather than presenting it forever.
 
-import { openCarrier } from "./carrier.js";
+import { openCarrier, sendOverSocket } from "./carrier.js";
 import { relayInbox } from "./relayInbox.js";
 
 const DEFAULT_OPEN_TIMEOUT_MS = 8000;
@@ -140,7 +140,7 @@ export function createRelayLink({
         }),
         expiry(openTimeoutMs, "open timeout"),
       ]);
-      ws.send(JSON.stringify({ type: "authenticate", token }));
+      sendOverSocket(ws, JSON.stringify({ type: "authenticate", token }));
 
       const wanted = preferDeviceId();
       const hello = await waitFor(
@@ -172,7 +172,8 @@ export function createRelayLink({
         deviceTransportPublicKeyB64: pinnedKeyB64,
         sessionKeyB64: reattaching ? session.sessionKeyB64 : undefined,
       });
-      ws.send(
+      sendOverSocket(
+        ws,
         JSON.stringify({
           type: "session_init",
           session_id: sessionId,

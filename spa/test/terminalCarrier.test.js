@@ -10,6 +10,7 @@ class FakeWebSocket {
     this.url = url;
     this.sent = [];
     this.listeners = {};
+    this.readyState = 1; // OPEN
     FakeWebSocket.instances.push(this);
   }
   addEventListener(type, fn) {
@@ -19,6 +20,7 @@ class FakeWebSocket {
     this.sent.push(JSON.parse(text));
   }
   close() {
+    this.readyState = 3; // CLOSED
     this.emit("close", {});
   }
   emit(type, event = {}) {

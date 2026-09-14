@@ -28,13 +28,19 @@ export const UNASKED_CATALOG = Object.freeze({ default_provider: "", providers: 
  * Every write is guarded by `context.active()`: a read can outlive the device
  * it was asked of, and its answer still belongs to whoever asked, but it must
  * not become the catalog of anything afterwards.
+ *
+ * The read goes out on `context.rpc`, so a machine that is away — or whose
+ * bridge speaks an API major nothing here claims — refuses it the way it
+ * refuses every other read, rather than being asked for a list this tab could
+ * not read the answer to. A refusal reads as the empty catalog below, which is
+ * what such a machine offers.
  */
 export function createModelCatalog(context) {
   let held = null;
   let asking = null;
 
   const read = async () => {
-    const answer = normalizeModelCatalog(await context.call("models.list"));
+    const answer = normalizeModelCatalog(await context.rpc("models.list"));
     if (context.active()) held = answer;
     return answer;
   };

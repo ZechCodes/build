@@ -420,6 +420,23 @@ describe("one device's model catalog", () => {
     expect(listsCalled(context)).toBe(2);
   });
 
+  // The catalog is a read like every other read: a machine that is away, and one
+  // whose bridge speaks an API major nothing here claims, are both machines that
+  // cannot be asked. Neither is asked — the session hears nothing — and each
+  // offers the empty catalog, which is the harness's own default and nothing to
+  // choose between.
+  it("answers the empty catalog without asking a machine that cannot answer", async () => {
+    const behind = adoptDeviceSession(bridgeOffering("dev-a", offering("claude")));
+    adoptBridgeSelection(behind, { unsupported: "bridge", version: "0.9.0" });
+    const away = adoptDeviceSession(bridgeOffering("dev-b", offering("codex")));
+    setContextOffline("dev-b");
+
+    expect((await behind.modelCatalog()).providers[0].models).toEqual([]);
+    expect((await away.modelCatalog()).providers[0].models).toEqual([]);
+    expect(listsCalled(behind)).toBe(0);
+    expect(listsCalled(away)).toBe(0);
+  });
+
   // A read can outlive the device it was asked of. Its answer still belongs to
   // whoever asked, but it must not become the catalog of anything afterwards.
   it("populates nothing from an answer that lands after the device was retired", async () => {

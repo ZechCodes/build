@@ -14,7 +14,8 @@ import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { onlineStickyDeviceId } from "./core/devicePolicy.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
-import { App, adoptApplicationScope, render, rememberSelectedDevice } from "./app.js";
+import { App, adoptHomeSession, render, rememberSelectedDevice } from "./app.js";
+import { homeContext } from "./core/deviceContexts.js";
 import {
   deviceName,
   markDeviceOnline,
@@ -160,18 +161,16 @@ export function greetLiveBridge() {
 }
 
 export function adoptSession(session) {
-  const deviceChanged = Boolean(App.cacheScope && App.cacheScope.deviceId !== session.deviceId);
+  const previousDeviceId = homeContext()?.deviceId || null;
   dropPeerLink(); // whatever was carrying was carrying the session we just left
-  App.session = session;
-  App.call = session.call;
+  // Reconnects keep this device's controllers/drafts and only replace their
+  // transport. A device switch retires the old context before any new view can
+  // capture it. The App.* aliases follow the context this adoption made home.
+  const context = adoptHomeSession(session);
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   session.onCarrier(greetLiveBridge);
-  // Reconnects keep this device's controllers/drafts and only replace their
-  // transport. A device switch retires the old scope before any new view can
-  // capture it.
-  adoptApplicationScope({ deviceId: session.deviceId, call: session.call });
-  if (deviceChanged) resetFeedScope();
+  if (previousDeviceId && previousDeviceId !== context.deviceId) resetFeedScope();
   paintDevicePicker();
   // Every live session starts here — the gate's first one, a reconnect, a
   // device switch — so this is where captures taken with no device to send them

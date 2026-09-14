@@ -13,8 +13,14 @@ import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
-import { adoptCacheScope, clearCacheScope } from "./core/cacheScope.js";
-import { createChatRepository } from "./core/chatRepository.js";
+import { clearCacheScope } from "./core/cacheScope.js";
+import {
+  adoptDeviceSession,
+  homeContext,
+  resetDeviceContexts,
+  retireDeviceContext,
+  setHomeContext,
+} from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
@@ -47,23 +53,49 @@ export const App = {
 
 };
 
-/** Bind application chat state to a live device. Reconnecting that same device
- * only replaces the transport; switching devices retires every controller and
- * its private draft/offer state before a new repository is created. */
-export function adoptApplicationScope({ deviceId, call }) {
-  if (App.cacheScope?.active() && App.cacheScope.deviceId === deviceId && App.chatRepository) {
-    App.call = call;
-    App.chatRepository.retarget(call);
-    return App.chatRepository;
-  }
-  disposeApplicationScope();
-  App.viewingContext = createViewingContext({ enabled: false });
-  App.cacheScope = adoptCacheScope(deviceId);
-  App.chatRepository = createChatRepository({ scope: App.cacheScope, call, viewingContext: App.viewingContext });
-  App.call = call;
+// The compatibility aliases: the home device's context, copied onto App as
+// plain fields. Plain, because tests and unmigrated surfaces assign App.call
+// directly. Stage 3 deletes the six fields and everything below them here.
+const ALIAS_DEFAULTS = Object.freeze({
+  session: null,
+  call: null,
+  cacheScope: null,
+  chatRepository: null,
+  offline: false,
+  offlineSince: null,
+});
+
+/** Say which context the App.* aliases — and creation — now follow. */
+export function pointAliasesAt(context) {
+  for (const [field, empty] of Object.entries(ALIAS_DEFAULTS)) App[field] = context?.[field] ?? empty;
+  return setHomeContext(context);
+}
+
+/** Adopt a session as the home device's: the registry creates or retargets
+ * that device's context, and the aliases follow it. Reconnecting the same
+ * device only replaces its transport. */
+export function adoptHomeSession(session) {
+  const previous = homeContext();
+  const context = adoptDeviceSession(session);
+  if (previous && previous !== context) retireSwitchedDevice(previous.deviceId);
+  pointAliasesAt(context);
+  return context;
+}
+
+// Stage 1 still runs one home session at a time, so switching devices retires
+// the device the app was on, with the model catalog and the reader's position
+// it filled. A later package keeps both contexts live and this goes away.
+function retireSwitchedDevice(deviceId) {
+  retireDeviceContext(deviceId);
   App.modelCatalog = null;
   App.viewingContext.clear();
-  return App.chatRepository;
+}
+
+/** Bind application chat state to a live device, given a session-shaped
+ * { deviceId, call }. The registry is the real adoption; this is what the
+ * callers that still speak in scopes say. */
+export function adoptApplicationScope(session) {
+  return adoptHomeSession(session).chatRepository;
 }
 
 /** Explicit auth/application teardown hook. The current product signs out by
@@ -74,12 +106,10 @@ export function disposeApplicationScope() {
   pendingLeaveDecision = null;
   App.routeLeaveGuard = null;
   App.viewingContext?.setEnabled?.(false);
-  App.chatRepository?.dispose();
-  App.chatRepository = null;
-  App.cacheScope = null;
-  App.call = null;
-  App.modelCatalog = null;
+  resetDeviceContexts();
   clearCacheScope();
+  pointAliasesAt(null);
+  App.modelCatalog = null;
 }
 
 /** The bridge's provider/model catalog, cached for the session.

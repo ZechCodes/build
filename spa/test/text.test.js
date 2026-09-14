@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { allDevicesOfflineText, deviceOfflineText, deviceUnreachableText, esc, humanAge, messageOf } from "../src/core/text.js";
+import {
+  allDevicesOfflineText,
+  deviceOfflineMark,
+  deviceOfflineText,
+  deviceUnreachableText,
+  esc,
+  humanAge,
+  messageOf,
+} from "../src/core/text.js";
 
 describe("esc", () => {
   it("escapes the HTML-significant characters and stringifies nullish", () => {
@@ -82,5 +90,14 @@ describe("deviceOfflineText", () => {
 
   it("falls back to plain words when the account has no name for the device", () => {
     expect(deviceOfflineText(null)).toContain("That device");
+  });
+});
+
+describe("deviceOfflineMark", () => {
+  it("is the short label a control whose machine cannot answer wears", () => {
+    // A label, not a sentence: it is a greyed row's title and a shut menu
+    // item's reason, and it lives here with the account's other offline words
+    // rather than as a literal inside the module that paints them.
+    expect(deviceOfflineMark).toBe("Device offline");
   });
 });

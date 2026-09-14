@@ -33,6 +33,12 @@ export const deviceOfflineText = (name) =>
 export const deviceFrozenText = (name) =>
   `${name || "That device"} isn't connected — this is what it last said.`;
 
+/** The short mark a control whose machine cannot answer wears: the title on a
+ *  greyed row, the reason a shut menu item gives, and the words a call to that
+ *  machine is refused with. A label, not a sentence — the sentences above are
+ *  for surfaces with room for one. */
+export const deviceOfflineMark = "Device offline";
+
 /** What it says where nothing is reachable: no device to name, and no time that
  *  would mean anything, so it says what is true and what happens. */
 export const allDevicesOfflineText = () =>

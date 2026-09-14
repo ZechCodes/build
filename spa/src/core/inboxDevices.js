@@ -12,13 +12,13 @@
 import { App } from "../app.js";
 import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
 import { deviceNameOf } from "./devicePolicy.js";
-import { allDevicesOfflineText } from "./text.js";
+import { allDevicesOfflineText, deviceOfflineMark } from "./text.js";
 import { notifyError } from "./notify.js";
 import { EMPTY_CATALOG } from "./modelCatalog.js";
 
 /** What a device that cannot answer offers: nothing to call, and the words its
  *  rows and their menus are titled with. */
-const NO_DEVICE = Object.freeze({ call: null, disabled: "Device offline" });
+const NO_DEVICE = Object.freeze({ call: null, disabled: deviceOfflineMark });
 
 /** The machine a surface is about: the one it names, or the one creation goes
  *  to when it names none. */

@@ -7,6 +7,7 @@ import {
   esc,
   humanAge,
   messageOf,
+  waitingForDeviceText,
 } from "../src/core/text.js";
 
 describe("esc", () => {
@@ -32,6 +33,15 @@ describe("messageOf", () => {
     expect(messageOf(new Error("unknown project_id: p2"))).toBe("unknown project_id: p2");
     expect(messageOf("the relay is offline")).toBe("the relay is offline");
     expect(messageOf({ code: 7 })).toBe("[object Object]");
+  });
+});
+
+describe("waitingForDeviceText", () => {
+  it("waits for the one machine the account has, or for any of the several", () => {
+    // The screen lists every machine below the heading, so "your device" over a
+    // list of three reads as a promise about one of them in particular.
+    expect(waitingForDeviceText(1)).toBe("Waiting for your device");
+    expect(waitingForDeviceText(3)).toBe("Waiting for a device");
   });
 });
 

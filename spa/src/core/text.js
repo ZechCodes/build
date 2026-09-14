@@ -44,6 +44,12 @@ export const deviceOfflineMark = "Device offline";
  *  its own. */
 export const deviceOfflineWord = "offline";
 
+/** What the waiting screen is waiting for. An account with several machines
+ *  lists them all under this heading, and any one of them hands the app back —
+ *  so naming "your device" over that list promises one of them in particular. */
+export const waitingForDeviceText = (deviceCount) =>
+  deviceCount > 1 ? "Waiting for a device" : "Waiting for your device";
+
 /** What it says where nothing is reachable: no device to name, and no time that
  *  would mean anything, so it says what is true and what happens. */
 export const allDevicesOfflineText = () =>

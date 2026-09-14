@@ -174,6 +174,7 @@ function projectsOffered() {
  *  route to stand on and the waiting screen owns the page. */
 const held = () => document.body.classList.contains("gated");
 const waitingNote = () => document.getElementById("waitnote")?.textContent || "";
+const waitingHeading = () => document.querySelector("#root h1")?.textContent || "";
 const liveIds = () => liveContexts().map((context) => context.deviceId);
 
 /** Boot: open every online device, as the gate does. It names no home — each
@@ -342,6 +343,7 @@ describe("per-device connections", () => {
     await flush();
 
     expect(held()).toBe(true);
+    expect(waitingHeading()).toBe("Waiting for your device");
     expect(waitingNote()).toContain(deviceUnreachableText("Laptop", contextFor("dev-a").offlineSince));
   });
 
@@ -366,6 +368,8 @@ describe("per-device connections", () => {
     await flush();
 
     expect(held()).toBe(true);
+    // Two machines are listed under it, and either of them hands the app back.
+    expect(waitingHeading()).toBe("Waiting for a device");
     expect(document.getElementById("waitlist").textContent).toContain("Laptop");
     expect(document.getElementById("waitlist").textContent).toContain("Desktop");
     expect(poll.dispose).toHaveBeenCalled();

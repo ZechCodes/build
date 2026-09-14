@@ -8,7 +8,7 @@
 // it is waiting for, and hands it straight back when one of them lands.
 
 import { $ } from "../dom.js";
-import { allDevicesOfflineText, deviceUnreachableText, esc } from "../core/text.js";
+import { allDevicesOfflineText, deviceUnreachableText, esc, waitingForDeviceText } from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
 import { openDeviceSessions } from "../connection.js";
 import { knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
@@ -261,7 +261,7 @@ function renderWaiting(devices) {
   setGate(true);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
-      <h1 style="margin:0 0 6px">Waiting for your device</h1>
+      <h1 style="margin:0 0 6px">${esc(waitingForDeviceText(devices.length))}</h1>
       <p class="settings-intro" style="margin:0 0 18px" id="waitnote">${esc(waitingText())} Start your bridge and Build will connect automatically — no need to refresh.</p>
       <div class="panel"><div id="waitlist"></div></div>
       <div class="row" style="margin-top:14px"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>

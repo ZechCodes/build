@@ -449,29 +449,30 @@ export function cacheableEntityIds({ items = [], nowMs = Date.now() } = {}) {
   return [...ids];
 }
 
+/** Which row each kind of route stands on, as a test one row answers. A
+ *  capture names where it was routed, but it is not that work item: a work
+ *  route stands on the branch or the issue itself, and a capture route stands
+ *  only on the capture. */
+const STANDS_ON = {
+  // A branch is named by its machine as well as its project: two devices each
+  // hold a `proj-1` with a `main` in it, and those are two rows.
+  branch: (route) => (entry) =>
+    entry.kind !== "capture" &&
+    entry.deviceId === route.deviceId &&
+    entry.projectId === route.projectId &&
+    entry.branch === route.branch,
+  // An issue id is a uuid, so it names one row wherever it is.
+  issue: (route) => (entry) => entry.kind !== "capture" && entry.issueId === route.id,
+  capture: (route) => (entry) => entry.kind === "capture" && entry.captureId === route.id,
+};
+
 /** The entry the current route is standing on, so the list can mark it. Takes
- *  every row on screen — Recent included, since an open one is on screen.
- *
- *  A branch is named by its machine as well as its project: two devices each
- *  hold a `proj-1` with a `main` in it, and those are two rows. An issue id is
- *  a uuid, so it names one row wherever it is. */
+ *  every row on screen — Recent included, since an open one is on screen. A
+ *  route that names no work item stands on nothing. */
 export function activeEntryKey(route, entries) {
-  if (!route) return null;
-  if (route.name === "capture") {
-    const capture = entries.find((entry) => entry.kind === "capture" && entry.captureId === route.id);
-    return capture ? capture.key : null;
-  }
-  // A capture names where it was routed, but it is not that work item — the row
-  // the route stands on is the branch or the issue itself.
-  const work = entries.filter((entry) => entry.kind !== "capture");
-  const match =
-    route.name === "branch"
-      ? work.find(
-          (entry) => entry.deviceId === route.deviceId && entry.projectId === route.projectId && entry.branch === route.branch,
-        )
-      : route.name === "issue"
-        ? work.find((entry) => entry.issueId === route.id)
-        : null;
+  const standsOn = route && STANDS_ON[route.name];
+  if (!standsOn) return null;
+  const match = entries.find(standsOn(route));
   return match ? match.key : null;
 }
 

@@ -10,6 +10,8 @@ import {
   workspaceDirectoryModel,
   workspaceMenuModel,
 } from "../src/core/toolbarModel.js";
+import { deviceKey, workspaceKey } from "../src/core/deviceKey.js";
+import { stampWorkspace } from "../src/core/feedMerge.js";
 import { deviceTagHtml } from "../src/core/inboxProjects.js";
 
 const NOW = Date.parse("2026-08-13T12:00:00Z");
@@ -285,6 +287,10 @@ describe("the branch a typed name becomes", () => {
 });
 
 describe("workspace navigation", () => {
+  // A workspace belongs to one machine, so the menu and the bar are given the
+  // account-wide names the feed stamps (core/deviceKey.js) rather than the bare
+  // ids one bridge minted: the fixtures go through `stampWorkspace`, which is
+  // also what turns a wire `workspace_id` into the `id` the menu prints.
   const workspaces = [
     {
       id: "ws-1",
@@ -297,14 +303,22 @@ describe("workspace navigation", () => {
     },
     { workspace_id: "ws-2", project_id: "p1", name: "release" },
     { id: "ws-3", project_id: "p2", name: "mascot work" },
-  ];
+  ].map((workspace) => stampWorkspace(workspace, "dev-1"));
 
   it("lists only the scoped project's workspaces and normalizes their ids", () => {
-    expect(workspaceMenuModel({ workspaces, projectId: "p1", workspaceId: "ws-2" }).map((row) => [row.id, row.current])).toEqual([
+    const scope = { workspaces, projectKey: deviceKey("dev-1", "p1") };
+    expect(workspaceMenuModel({ ...scope, workspaceKey: workspaceKey("dev-1", "ws-2") }).map((row) => [row.id, row.current])).toEqual([
       ["ws-1", false],
       ["ws-2", true],
     ]);
-    expect(workspaceMenuModel({ workspaces, projectId: "p1", query: "pay" }).map((row) => row.id)).toEqual(["ws-1"]);
+    expect(workspaceMenuModel({ ...scope, query: "pay" }).map((row) => row.id)).toEqual(["ws-1"]);
+  });
+
+  it("leaves another machine's workspaces out of the menu", () => {
+    const elsewhere = stampWorkspace({ id: "ws-9", project_id: "p1", name: "payment-work" }, "dev-2");
+    expect(
+      workspaceMenuModel({ workspaces: [...workspaces, elsewhere], projectKey: deviceKey("dev-1", "p1") }).map((row) => row.id),
+    ).toEqual(["ws-1", "ws-2"]);
   });
 
   it("turns workspace directories into persistent tab identities", () => {
@@ -316,11 +330,12 @@ describe("workspace navigation", () => {
 
   it("names a workspace and its selected directory from the canonical route", () => {
     const identity = toolbarIdentity(
-      { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" },
+      { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" },
       { items: [], projects, workspaces },
     );
     expect(identity).toMatchObject({
       projectId: "p1",
+      projectKey: deviceKey("dev-1", "p1"),
       project: "relaydb",
       kind: "workspace",
       label: "payment-work",

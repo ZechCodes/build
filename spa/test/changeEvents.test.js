@@ -136,6 +136,24 @@ describe("board.changed", () => {
   });
 });
 
+// An event kind this client has nothing registered for is not news: it wakes
+// nobody, and says so, whatever the wire calls it.
+describe("an event this client does not act on", () => {
+  it("wakes nobody for an unknown kind, or an entity event that names no id", () => {
+    armChangeEvents({ push_events: true }, "dev-a");
+    const feed = vi.fn();
+    const detail = vi.fn();
+    watchChanges({ refresh: feed, intervalMs: 2000 });
+    watchChanges({ refresh: detail, intervalMs: 1600, entity: "run-7" });
+
+    expect(dispatchChangeEvent({ type: "session.hello" }, "dev-a")).toBe(false);
+    expect(dispatchChangeEvent({ type: "entity.changed" }, "dev-a")).toBe(false);
+    expect(dispatchChangeEvent({ type: "constructor" }, "dev-a")).toBe(false);
+    expect(feed).not.toHaveBeenCalled();
+    expect(detail).not.toHaveBeenCalled();
+  });
+});
+
 describe("entity.changed", () => {
   it("refetches only the surfaces showing that entity", () => {
     armChangeEvents({ push_events: true }, "dev-a");

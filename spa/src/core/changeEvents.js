@@ -42,9 +42,16 @@ const armed = new Map(); // deviceId → whether that bridge pushes
 const watchers = new Set();
 let visibilityWired = false;
 
-/** A device id as this module keys it. A caller with no device to name (a
- *  surface that spans them, a test) is the unnamed one. */
-const deviceKeyOf = (deviceId) => (deviceId === null || deviceId === undefined ? "" : String(deviceId));
+/** An id as this module keys it: text, with "nothing named" reading as "". */
+const idText = (value) => (value === null || value === undefined ? "" : String(value));
+
+/** A caller that named no device at all: a surface that spans them, a reconnect
+ *  that wakes everything, a test. Asked in this one place. */
+const spansDevices = (deviceId) => deviceId === null || deviceId === undefined;
+
+/** A device id as this module keys it. A caller with no device to name is the
+ *  unnamed one. */
+const deviceKeyOf = idText;
 
 /** Read one bridge's greeting. Returns whether event mode armed for it. */
 export function armChangeEvents(greeting, deviceId = null) {
@@ -76,9 +83,7 @@ function retime(device) {
  *  surface that spans devices, only when every bridge it could hear from
  *  pushes — one polling device is a device nothing would announce. */
 export function changeEventsArmed(deviceId = null) {
-  if (deviceId === null || deviceId === undefined) {
-    return armed.size > 0 && [...armed.values()].every(Boolean);
-  }
+  if (spansDevices(deviceId)) return armed.size > 0 && [...armed.values()].every(Boolean);
   return armedFor(deviceId);
 }
 
@@ -107,13 +112,13 @@ export function resetChangeEvents() {
 function entityIdsOf(watcher) {
   const named = typeof watcher.entity === "function" ? watcher.entity() : watcher.entity;
   const list = Array.isArray(named) ? named : [named];
-  return list.filter((id) => id !== null && id !== undefined && id !== "").map(String);
+  return list.map(idText).filter(Boolean);
 }
 
 /** The predicate a watcher is registered with: the whole of "does this surface
  *  hear that device?", asked once per delivery and never re-derived. */
 const hearsFor = (deviceId) =>
-  deviceId === null || deviceId === undefined ? () => true : (device) => deviceKeyOf(device) === deviceKeyOf(deviceId);
+  spansDevices(deviceId) ? () => true : (device) => deviceKeyOf(device) === deviceKeyOf(deviceId);
 
 function startTimer(watcher) {
   clearInterval(watcher.timer);
@@ -199,29 +204,40 @@ export function watchChanges({
   };
 }
 
+const watchersWhere = (matches) => [...watchers].filter(matches);
+
+/** Who each kind of event wakes. The board moved on a device, so its board
+ *  watchers read again; an entity moved, so whoever is showing it does —
+ *  wherever it is, since an entity id is the same id on any surface holding it.
+ *  A kind with no audience here (`null`, or no entry at all) is an event this
+ *  client does not act on. */
+const AUDIENCE_FOR = new Map([
+  ["board.changed", (payload, deviceId) => watchersWhere((watcher) => watcher.boardScoped && watcher.hears(deviceId))],
+  [
+    "entity.changed",
+    (payload) => {
+      const id = idText(payload.id);
+      return id ? watchersWhere((watcher) => entityIdsOf(watcher).includes(id)) : null;
+    },
+  ],
+]);
+
 /** A change event off the session. Ignored entirely while unarmed — an old
  *  bridge sends none, and a client that never greeted must behave as if it
  *  could not hear them. Returns whether the event was one we act on. */
 export function dispatchChangeEvent(payload, deviceId = null) {
   if (!payload || !armedFor(deviceId)) return false;
-  if (payload.type === "board.changed") {
-    [...watchers].filter((watcher) => watcher.boardScoped && watcher.hears(deviceId)).forEach(deliver);
-    return true;
-  }
-  if (payload.type === "entity.changed") {
-    const id = payload.id === null || payload.id === undefined ? "" : String(payload.id);
-    if (!id) return false;
-    [...watchers].filter((watcher) => entityIdsOf(watcher).includes(id)).forEach(deliver);
-    return true;
-  }
-  return false;
+  const audience = AUDIENCE_FOR.get(payload.type)?.(payload, deviceId);
+  if (!audience) return false;
+  audience.forEach(deliver);
+  return true;
 }
 
 /** Refetch everything on screen, once. What a reconnect does: the socket was
  *  down, every event sent during the gap went nowhere, and no amount of
  *  listening will get them back. */
 export function refetchEverything(deviceId = null) {
-  const woken = deviceId === null ? [...watchers] : [...watchers].filter((watcher) => watcher.hears(deviceId));
+  const woken = spansDevices(deviceId) ? [...watchers] : watchersWhere((watcher) => watcher.hears(deviceId));
   woken.forEach(deliver);
 }
 

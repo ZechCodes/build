@@ -1,14 +1,30 @@
-// The account archive: everything that has ended, across every project, on one
-// reading page. Done archives an inbox entry; this is where the entry went.
+// The account archive: everything that has ended, across every project and
+// every machine, on one reading page. Done archives an inbox entry; this is
+// where the entry went.
 //
-// Reads `archived.list` — the archive is the user's, not a project's, so it is
-// not a per-project pane any more. Opening a row states its record and offers
-// nothing to do with it: an archived record is history.
+// Reads `archived.list` from every machine that can answer — the archive is the
+// user's, not a project's and not a device's — and holds the merged list newest
+// first. Opening a row states its record and offers nothing to do with it: an
+// archived record is history.
 
 import { $ } from "../dom.js";
 import { App } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
-import { archiveListHtml, archiveRows } from "../core/archive.js";
+import { liveContexts } from "../core/deviceContexts.js";
+import { deviceKey } from "../core/deviceKey.js";
+import { archiveListHtml, archiveRows, newestFirst } from "../core/archive.js";
+
+/** One machine's share of the archive: its rows, each stamped with the machine
+ *  that answered for it and keyed by it, since every daemon mints its own
+ *  record ids and two machines can hand back the same one. A machine that will
+ *  not answer contributes nothing rather than emptying the page. */
+const readDeviceArchive = (context) =>
+  context
+    .call("archived.list")
+    .then((payload) =>
+      archiveRows(payload).map((row) => ({ ...row, deviceId: context.deviceId, key: deviceKey(context.deviceId, row.key) })),
+    )
+    .catch(() => null);
 
 const POLL_MS = 15000;
 
@@ -49,21 +65,25 @@ export function renderArchive() {
     painted = true;
   };
 
+  // Nothing answered: a bridge too old to have the method, one that just went
+  // away, or an account with no machine on it right now. Whatever is already on
+  // screen stays; a first read that lands nothing says so.
+  const sayUnavailable = () => {
+    const host = $("#archive-list");
+    if (!disposed && !painted && host) {
+      host.innerHTML = '<div class="empty">The archive is unavailable right now. It will retry.</div>';
+    }
+  };
+
   const load = async () => {
-    let payload;
-    try {
-      payload = await App.call("archived.list");
-    } catch {
-      // A bridge too old to answer, or one that just went away. Whatever is
-      // already on screen stays; a first read that fails says so.
-      const host = $("#archive-list");
-      if (!disposed && !painted && host) {
-        host.innerHTML = '<div class="empty">The archive is unavailable right now. It will retry.</div>';
-      }
+    const answers = await Promise.all(liveContexts().map(readDeviceArchive));
+    if (disposed) return;
+    const landed = answers.filter((answer) => answer !== null);
+    if (!landed.length) {
+      sayUnavailable();
       return;
     }
-    if (disposed) return;
-    rows = archiveRows(payload);
+    rows = landed.flat().sort(newestFirst);
     // A row that vanished cannot stay open under a row it no longer is.
     if (openKey && !rows.some((row) => row.key === openKey)) openKey = null;
     draw();

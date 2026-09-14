@@ -11,36 +11,48 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
-const items = [
-  {
-    kind: "issue",
-    project_id: "p2",
-    project: "dotfiles",
-    title: "Split the prompt templates",
-    branch: null,
-    state: "approved",
-    finished_at: "2026-08-12T18:00:00Z",
-    issue_id: "issue-1",
-    stages: 3,
-  },
-  {
-    kind: "branch",
-    project_id: "p1",
-    project: "relaydb",
-    title: "Fix the login flow",
-    branch: "build/login",
-    state: "archived",
-    action: "delete",
-    finished_at: "2026-08-10T09:30:00Z",
-    run_id: "run-1",
-    worktree_id: "wt-1",
-    worktree_path: "/wt/login",
-    head_sha: "abc1234",
-  },
-];
+// The account's archive spans the account: every machine is asked what it
+// filed away, and the rows come back in one list, newest first, each carrying
+// the machine that answered for it.
+const issueItem = {
+  kind: "issue",
+  project_id: "p2",
+  project: "dotfiles",
+  title: "Split the prompt templates",
+  branch: null,
+  state: "approved",
+  finished_at: "2026-08-12T18:00:00Z",
+  issue_id: "issue-1",
+  stages: 3,
+};
+
+const branchItem = {
+  kind: "branch",
+  project_id: "p1",
+  project: "relaydb",
+  title: "Fix the login flow",
+  branch: "build/login",
+  state: "archived",
+  action: "delete",
+  finished_at: "2026-08-10T09:30:00Z",
+  run_id: "run-1",
+  worktree_id: "wt-1",
+  worktree_path: "/wt/login",
+  head_sha: "abc1234",
+};
 
 let App;
 let renderAccount;
+let adoptDeviceSession;
+let resetDeviceContexts;
+// What each machine says it has filed away, as the test writes it.
+let filed;
+
+const answering = (deviceId) => ({
+  deviceId,
+  close: () => {},
+  call: vi.fn(async (method) => (method === "archived.list" ? { items: filed[deviceId] } : {})),
+});
 
 beforeEach(async () => {
   vi.resetModules();
@@ -48,8 +60,15 @@ beforeEach(async () => {
   location.hash = "#/account/archive";
   ({ App } = await import("../src/app.js"));
   ({ renderAccount } = await import("../src/views/account.js"));
+  ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   App.route = { name: "account", page: "archive" };
-  App.call = vi.fn(async (method) => (method === "archived.list" ? { items } : {}));
+  App.devices = [
+    { id: "dev-1", name: "workshop", status: "online" },
+    { id: "dev-2", name: "laptop", status: "online" },
+  ];
+  filed = { "dev-1": [issueItem], "dev-2": [branchItem] };
+  adoptDeviceSession(answering("dev-1"));
+  adoptDeviceSession(answering("dev-2"));
 });
 
 afterEach(() => {
@@ -57,18 +76,33 @@ afterEach(() => {
   App.poll = null;
   if (App.viewDispose) App.viewDispose();
   App.viewDispose = null;
+  resetDeviceContexts();
 });
 
 const rows = () => [...document.querySelectorAll("#archive-list .archive-row")];
 
 describe("the account archive page", () => {
-  it("lists what every project filed away, newest first", async () => {
+  it("lists what every device filed away, newest first", async () => {
     await renderAccount();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("archived.list");
-    expect(rows().map((row) => row.dataset.key)).toEqual(["issue-1", "run-1"]);
+    // One list across the account, each row named by the machine it is on.
+    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/issue-1", "dev-2/run-1"]);
     expect(rows()[1].textContent).toContain("relaydb");
     expect(rows()[1].textContent).toContain("Archived");
+  });
+
+  it("keeps the machines' records apart when both name a record the same", async () => {
+    filed["dev-2"] = [{ ...issueItem, project: "relaydb", finished_at: "2026-08-11T09:30:00Z" }];
+    await renderAccount();
+    await flush();
+
+    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/issue-1", "dev-2/issue-1"]);
+    rows()[1].click();
+    expect(document.querySelectorAll(".archive-record")).toHaveLength(1);
+    // The record opened is the one under the row that was pressed, not the
+    // other machine's record of the same name.
+    expect(rows()[1].getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector(".archive-record").textContent).toContain("relaydb");
   });
 
   it("opens one record at a time, under its own row", async () => {
@@ -122,7 +156,7 @@ describe("the account archive page", () => {
     await renderAccount();
     await vi.advanceTimersByTimeAsync(0);
     expect(rows()).toHaveLength(2);
-    items.pop();
+    filed["dev-2"] = [];
 
     await vi.advanceTimersByTimeAsync(15000 + 10);
 
@@ -130,10 +164,25 @@ describe("the account archive page", () => {
     vi.useRealTimers();
   });
 
-  it("says so when the device cannot answer, and keeps what it has", async () => {
-    App.call = vi.fn(async () => {
-      throw new Error("offline");
+  it("keeps the machines that did answer when one of them will not", async () => {
+    resetDeviceContexts();
+    adoptDeviceSession(answering("dev-1"));
+    adoptDeviceSession({
+      deviceId: "dev-2",
+      close: () => {},
+      call: vi.fn(async () => {
+        throw new Error("offline");
+      }),
     });
+
+    await renderAccount();
+    await flush();
+
+    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/issue-1"]);
+  });
+
+  it("says so when no device can answer, and keeps what it has", async () => {
+    resetDeviceContexts();
     await renderAccount();
     await flush();
     expect(document.querySelector("#archive-list").textContent).toContain("unavailable");

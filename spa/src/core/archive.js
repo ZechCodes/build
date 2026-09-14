@@ -97,15 +97,20 @@ function toRow(item, index) {
   };
 }
 
-/** Everything the bridge filed away, newest first. Rows that are not objects
- *  are dropped; rows missing a stamp keep their place at the end, because a
- *  record with no date is still a record. */
+/** The order the archive reads in: newest first, and a record missing its stamp
+ *  keeps its place at the end, because a record with no date is still a record.
+ *  Stated once, because the merge across devices orders the same way. */
+export const newestFirst = (first, second) =>
+  (second.finishedMs ?? Number.NEGATIVE_INFINITY) - (first.finishedMs ?? Number.NEGATIVE_INFINITY);
+
+/** Everything one bridge filed away, newest first. Rows that are not objects
+ *  are dropped. */
 export function archiveRows(payload) {
   const items = Array.isArray(payload?.items) ? payload.items : [];
   return items
     .filter((item) => item && typeof item === "object")
     .map(toRow)
-    .sort((a, b) => (b.finishedMs ?? Number.NEGATIVE_INFINITY) - (a.finishedMs ?? Number.NEGATIVE_INFINITY));
+    .sort(newestFirst);
 }
 
 const factRow = (label, value) =>

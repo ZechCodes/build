@@ -92,7 +92,7 @@ describe("Settings → Downloads", () => {
       Promise.race([renderSettings().then(() => "settled"), flush().then(() => "stalled")]),
     ).resolves.toBe("settled");
     expect(typeof document.getElementById("adddev").onclick).toBe("function");
-    expect(typeof document.getElementById("newrepo").onclick).toBe("function");
+    expect(typeof document.getElementById("creationdev").onchange).toBe("function");
     expect(document.getElementById("downloads").textContent).toContain("loading…");
   });
 

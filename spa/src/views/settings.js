@@ -1,29 +1,28 @@
-// Settings: projects (which repo agents work on), the privacy story, and the
-// devices & keys panel (api-backed, stays live even when the bridge is offline).
+// Account settings: what belongs to the account rather than to any one machine
+// — the privacy story, where creation goes, the defaults a new issue starts
+// with, this browser's own preferences, and the devices & keys panel (api-backed,
+// so it stays live even when every bridge is offline).
+//
+// Everything a bridge owns — the projects it holds, the folder it keeps them in,
+// how agents run there — is on that machine's own page, which this one links to.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App, go } from "../app.js";
-import { projectRoute } from "../core/projectModel.js";
+import { App } from "../app.js";
+import { hashFromRoute } from "../core/router.js";
 import { refreshDevices } from "../devices.js";
 import { chooseCreationDevice } from "../connection.js";
-import { creationDeviceId, deviceNameOf } from "../core/devicePolicy.js";
+import { creationDeviceId } from "../core/devicePolicy.js";
+import { retireDeviceContext } from "../core/deviceContexts.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
-import { openBrowser } from "../sheets/browser.js";
-import { openNewRepo } from "../sheets/newRepo.js";
-import { openSetRemote } from "../sheets/setRemote.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
 import { chosenProviderId } from "../core/agentChoice.js";
-import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
-import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
-import { ACCOUNT_ISOLATION, isolationLabel, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
-import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
-import { deviceCatalog, refreshDeviceCatalog } from "../core/inboxDevices.js";
+import { deviceCatalog } from "../core/inboxDevices.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -34,18 +33,15 @@ import {
   creatableCatalog,
 } from "../core/modelPicker.js";
 
-/** The creation device's catalog as this page's own confirmed saves leave it.
- *  A save is answered by the bridge before the catalog reports it, so the
- *  creation defaults below would otherwise offer what the account no longer
- *  says until the next read lands — or for good, if that read is refused. */
-function asSaved(catalog, saved) {
-  if (!saved) return catalog;
-  return {
-    ...catalog,
-    default_provider: saved.default_harness ?? catalog.default_provider,
-    agent_modes: saved.agent_modes ?? catalog.agent_modes,
-  };
-}
+/** One paired machine: what it is called, the key it holds, whether it is
+ *  reachable, the way to its own settings, and the way to unpair it. The link
+ *  is minted by the router, like every other link in the app. */
+const deviceRowHtml = (device) => `
+        <div class="projrow"><span class="pname">${esc(device.name)}</span>
+          <span class="ppath mono" style="font-size:11px" title="${esc(device.fingerprint)}">${esc(device.fingerprint.slice(0, 16))}…</span>
+          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${device.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(device.status)}</span>
+          <a class="btn mini devsettings" href="${esc(hashFromRoute({ name: "device", id: device.id }))}">Settings…</a>
+          <button class="btn mini revoke" data-id="${esc(device.id)}">Revoke</button></div>`;
 
 /** The paired machines, as the creation choice offers them: the account's own
  *  list, in its own order, with the machine creation goes to today shown. */
@@ -70,17 +66,6 @@ function mountCreationDevice() {
 export async function renderSettings() {
   $("#root").innerHTML = `
     <div class="board-head"><div><h1>Settings</h1><p>Your keys, your custody.</p></div></div>
-    <div class="panel">
-      <h3>📁 Projects</h3>
-      <div id="projlist"><span class="dim" style="font-size:13px">loading…</span></div>
-      <div class="addproj">
-        <button class="btn primary" id="newrepo">Add project…</button>
-      </div>
-      <div class="projfolder">Projects folder: <code id="pdir">…</code>
-        <button class="btn mini" id="changedir">Change…</button>
-        <span class="dim">clones land here</span></div>
-      <div class="adderr" id="adderr"></div>
-    </div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
     <div class="panel">
       <h3>🔒 What our servers see</h3>
@@ -107,10 +92,6 @@ export async function renderSettings() {
       </div>
       <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
-    ${agentModesPanelHtml()}
-    ${defaultHarnessPanelHtml()}
-    ${isolationPanelHtml()}
-    ${triageSettingPanelHtml()}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -132,70 +113,14 @@ export async function renderSettings() {
     </div>
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed.</div>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed. Each device's own settings — its projects, its folder, how agents run there — live on its page.</div>
       <div id="devlist"><span class="dim" style="font-size:13px">loading…</span></div>
       <div class="addproj"><button class="btn primary" id="adddev">Add a device…</button></div>
       <div class="adderr" id="deverr"></div>
     </div>`;
 
-  const callRpc = (method, params) => App.call(method, params);
-  const refresh = async () => {
-    try {
-      const { projects } = await App.call("project.list");
-      $("#projlist").innerHTML =
-        projects
-          .map(
-            (p) => `
-        <div class="projrow"><span class="pname">${esc(p.name)}</span>
-          <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${p.is_git === false ? "Folder · Git not initialized" : esc(p.base_branch) + " · " + isolationLabel(p.isolation_effective)}</span>
-          <span class="premote">${p.remote ? "⇄ " + esc(p.remote) : '<span class="dim">no remote</span>'}</span>
-          ${p.is_git === false ? "" : `<button class="btn mini setremote" data-id="${esc(p.project_id)}">Set remote…</button>`}</div>`,
-          )
-          .join("") || '<div class="dim" style="font-size:13px">No projects yet.</div>';
-      const { projects_dir } = await App.call("settings.get");
-      $("#pdir").textContent = projects_dir;
-      $("#projlist").querySelectorAll(".setremote").forEach(
-        (btn) =>
-          (btn.onclick = () => {
-            const project = projects.find((p) => p.project_id === btn.dataset.id);
-            openSetRemote(project, refresh, { callRpc });
-          }),
-      );
-    } catch (e) {
-      $("#projlist").innerHTML = `<div class="adderr">${esc(e.message)}</div>`;
-    }
-  };
-  await refresh();
-  // What a panel on this page has just saved and had confirmed. The creation
-  // defaults below are built from the creation device's catalog, which still
-  // reports the old answer until it is re-read — and may refuse to be re-read
-  // at all — so what was confirmed is laid over it either way.
-  let saved = null;
-  const syncModelCatalog = async (settings) => {
-    saved = settings;
-    await mountAgentDefaults();
-    try {
-      await refreshDeviceCatalog(null);
-    } catch {
-      // Confirmed settings already keep this page's creation defaults current.
-    }
-    await mountAgentDefaults();
-  };
-  await mountAgentModes($("#root"), { callRpc, onSaved: syncModelCatalog });
-  await mountDefaultHarness($("#root"), { callRpc, onSaved: syncModelCatalog });
-  await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION });
-  await mountTriageSetting($("#root"), { callRpc });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
-  const creationId = creationDeviceId(App.devices, App.selectedDeviceId);
-  $("#newrepo").onclick = () =>
-    openNewRepo(
-      async (project) => {
-        if (project?.project_id) go(projectRoute(project));
-        else await refresh();
-      },
-      { callRpc, deviceName: deviceNameOf(App.devices, creationId) },
-    );
 
   // The agent defaults panel: the same three selectors the New issue sheet hides
   // behind its harness button, saved on every change (there is no Save button —
@@ -203,13 +128,13 @@ export async function renderSettings() {
   async function mountAgentDefaults() {
     const providerSelect = $("#defprovider");
     if (!providerSelect) return;
-    const catalog = asSaved(await deviceCatalog(null), saved);
+    const catalog = await deviceCatalog(null);
     let current = loadAgentDefaults();
     const note = $("#defsaved");
 
     // These defaults are spent creating agents, so they offer what every create
     // surface offers: the two agents, never the carrier behind either family —
-    // those questions belong to the Agent modes panel below.
+    // that question is the machine's, and is asked on its own page.
     const offered = creatableCatalog(catalog);
 
     const paint = () => {
@@ -234,23 +159,6 @@ export async function renderSettings() {
     $("#defeffort").onchange = () => store({ ...current, effort: $("#defeffort").value }, "Saved.");
   }
 
-  // Pick a different projects folder (any directory).
-  $("#changedir").onclick = () =>
-    openBrowser({
-      title: "Choose a projects folder",
-      gitOnly: false,
-      callRpc,
-      onChoose: async (path) => {
-        try {
-          await App.call("settings.set", { projects_dir: path });
-          $("#scrim").classList.remove("show");
-          await refresh();
-        } catch (e) {
-          const err = $("#berr");
-          if (err) err.textContent = e.message;
-        }
-      },
-    });
   // Notifications: a single toggle backed by the browser's push subscription.
   const refreshPushToggle = async () => {
     const toggle = $("#pushtoggle");
@@ -292,15 +200,7 @@ export async function renderSettings() {
     try {
       const devices = await refreshDevices();
       $("#devlist").innerHTML = devices.length
-        ? devices
-            .map(
-              (d) => `
-        <div class="projrow"><span class="pname">${esc(d.name)}</span>
-          <span class="ppath mono" style="font-size:11px" title="${esc(d.fingerprint)}">${esc(d.fingerprint.slice(0, 16))}…</span>
-          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${d.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(d.status)}</span>
-          <button class="btn mini revoke" data-id="${esc(d.id)}">Revoke</button></div>`,
-            )
-            .join("")
+        ? devices.map(deviceRowHtml).join("")
         : '<div class="dim" style="font-size:13px">No devices yet. Install the bridge above, then add it with its pairing code.</div>';
       $("#devlist").querySelectorAll(".revoke").forEach(
         (btn) =>
@@ -309,6 +209,9 @@ export async function renderSettings() {
             $("#deverr").textContent = "";
             try {
               await revokeDevice(btn.dataset.id);
+              // A device the account no longer has cannot be asked anything:
+              // its drafts, its cached reads and its session go with it.
+              retireDeviceContext(btn.dataset.id);
               await refreshDeviceList();
             } catch (e) {
               $("#deverr").textContent = e.message;

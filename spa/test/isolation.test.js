@@ -13,6 +13,19 @@ import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { sessionAnswering } from "./deviceSessionFixture.js";
+
+// The device page opens its own connection to the machine it is about; here it
+// answers with whatever App.call is standing at the time.
+const { openSession } = vi.hoisted(() => ({ openSession: vi.fn() }));
+vi.mock("../src/connection.js", () => ({
+  openDeviceSettingsSession: openSession,
+  chooseCreationDevice: () => {},
+  openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
+  syncHome: () => {},
+  forgetHomeFollow: () => {},
+  setConn: () => {},
+  CONNECTION_STATUS: {},
+}));
 import {
   ISOLATIONS,
   isolationLabel,
@@ -373,27 +386,22 @@ describe("the mounted control", () => {
   });
 });
 
-// Where the account's own choice lives: Account -> Settings, directly under the
-// agent it starts new work on, painted from the same bridge every device reads.
-describe("the Settings page", () => {
+// Where a machine's default lives: its own settings page, directly under the
+// agent it starts new work with, painted from that machine's bridge.
+describe("the device's settings page", () => {
   const renderWith = async (call) => {
     vi.resetModules();
     document.body.innerHTML = bodyHtml;
-    // The devices panel talks HTTP, not the bridge. Nothing here is about it,
-    // and a real request from jsdom hangs until the test's own deadline.
-    globalThis.fetch = vi.fn(async () => {
-      throw new Error("no network in tests");
-    });
     const { App } = await import("../src/app.js");
     const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
-    const { renderSettings } = await import("../src/views/settings.js");
+    const { renderDeviceSettings } = await import("../src/views/deviceSettings.js");
     App.call = vi.fn(call);
-    // The creation device: the page's harness catalog is that machine's, and
-    // this is the account list and the pick that name it.
     App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
     App.selectedDeviceId = "dev-1";
+    App.route = { name: "device", id: "dev-1" };
+    openSession.mockResolvedValue(sessionAnswering(App));
     adoptDeviceSession(sessionAnswering(App));
-    await renderSettings();
+    await renderDeviceSettings();
     await flush();
     return App.call;
   };
@@ -409,7 +417,7 @@ describe("the Settings page", () => {
     return {};
   };
 
-  it("puts the isolation panel directly under the fallback agent, on what the account holds", async () => {
+  it("puts the isolation panel directly under the fallback agent, on what the machine holds", async () => {
     await renderWith(settingsCall({ isolation: "cow", isolation_available: { cow: true, reason: null } }));
 
     const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
@@ -431,7 +439,7 @@ describe("the Settings page", () => {
     expect(options.map((option) => option.disabled)).toEqual([false, true]);
   }, SLOW_IMPORT_MS);
 
-  it("saves a chosen isolation through the account's own method", async () => {
+  it("saves a chosen isolation through the machine's own method", async () => {
     const call = await renderWith(settingsCall({ isolation: "worktree", isolation_available: { cow: true } }));
     const select = document.querySelector("#root [data-isolation=select]");
 
@@ -443,21 +451,19 @@ describe("the Settings page", () => {
     expect(call).toHaveBeenCalledWith("settings.set", { isolation: "cow" });
   }, SLOW_IMPORT_MS);
 
-  // Every panel on this page owns its own bridge read: a settings.get the
-  // bridge refuses takes down the isolation panel and nothing else — not the
-  // devices list, which is api-backed and lives while the bridge is gone.
-  it("survives a settings read the bridge refuses, panel by panel", async () => {
+  // Every panel on this page owns its own bridge read: one read the bridge
+  // refuses takes down the panel that made it and nothing else.
+  it("survives a read the bridge refuses, panel by panel", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
-      if (method === "models.list") return { default_provider: "claude", providers: [] };
-      throw new Error("the bridge is offline");
+      if (method === "models.list") throw new Error("the catalog is unavailable");
+      return { projects_dir: "/p", default_harness: "claude", isolation: "cow", isolation_available: { cow: true } };
     });
 
-    expect(document.querySelector("#root [data-isolation=error]").textContent).toBe("the bridge is offline");
-    expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(true);
-    expect(document.querySelector("#pushtoggle").textContent).not.toBe("checking…");
-    expect(document.querySelector("#devlist").textContent).not.toContain("loading…");
-    expect(document.querySelector("#themepick")).not.toBe(null);
+    expect(document.getElementById("harnesserr").textContent).toBe("the catalog is unavailable");
+    expect(document.querySelector("#root [data-isolation=select]").value).toBe("cow");
+    expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(false);
+    expect(document.querySelector("#device-projects-path").textContent).toBe("/p");
   }, SLOW_IMPORT_MS);
 
   it("names on every project row what that project will actually do", async () => {

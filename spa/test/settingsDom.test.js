@@ -16,9 +16,10 @@ const CATALOG = {
   providers: [{ id: "claude", label: "Claude Code", models: [], efforts: [], creatable: true }],
 };
 
-const { App, chooseCreationDevice } = vi.hoisted(() => ({
+const { App, chooseCreationDevice, revokeDevice } = vi.hoisted(() => ({
   App: { call: null, devices: [], selectedDeviceId: null },
   chooseCreationDevice: vi.fn(),
+  revokeDevice: vi.fn(async () => {}),
 }));
 
 let devices = [];
@@ -41,7 +42,7 @@ vi.mock("../src/connection.js", () => ({
   CONNECTION_STATUS: {},
 }));
 vi.mock("../src/api.js", () => ({
-  revokeDevice: async () => {},
+  revokeDevice: (...args) => revokeDevice(...args),
   fetchDownloads: async () => ({ platforms: [], install_command: "" }),
   mintInstallCommand: async () => ({ install_command: "", expires_in_s: 600 }),
 }));
@@ -58,15 +59,15 @@ vi.mock("../src/push.js", () => ({
   disablePush: async () => {},
 }));
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "linux-x86_64" }));
-vi.mock("../src/sheets/browser.js", () => ({ openBrowser: () => {} }));
-vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: () => {} }));
-vi.mock("../src/sheets/setRemote.js", () => ({ openSetRemote: () => {} }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const $ = (selector) => document.querySelector(selector);
 
 let renderSettings;
+let adoptDeviceSession;
+let contextFor;
+let resetDeviceContexts;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -79,6 +80,8 @@ beforeEach(async () => {
   App.selectedDeviceId = null;
   document.body.innerHTML = bodyHtml;
   ({ renderSettings } = await import("../src/views/settings.js"));
+  ({ adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+  resetDeviceContexts();
 });
 
 describe("Settings → Creation device", () => {
@@ -127,5 +130,47 @@ describe("Settings → Creation device", () => {
 
     expect($("#creationdev").textContent).toContain("No devices yet");
     expect($("#creationdev").disabled).toBe(true);
+  });
+});
+
+// What the account owns and what a bridge owns are two different pages: the
+// projects a machine holds, where it keeps them and how agents run there are
+// facts of that machine, read on that machine's own page.
+describe("Settings → what the account keeps", () => {
+  it("asks the bridge nothing on the account page", async () => {
+    adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
+    await renderSettings();
+    await flush();
+
+    const asked = call.mock.calls.map(([method]) => method);
+    expect(asked).not.toContain("project.list");
+    expect(asked).not.toContain("settings.get");
+    expect(document.querySelector("#projlist")).toBeNull();
+    expect(document.querySelector("[data-isolation=select]")).toBeNull();
+    expect(document.querySelector("#defaultharness")).toBeNull();
+    expect(document.querySelector("[data-triage-setting]")).toBeNull();
+  });
+
+  it("links each paired device to its own settings page", async () => {
+    await renderSettings();
+    await flush();
+
+    const links = [...document.querySelectorAll("#devlist a.devsettings")];
+    expect(links.map((link) => link.getAttribute("href"))).toEqual(["#/device/dev-1/settings", "#/device/dev-2/settings"]);
+    expect(links[0].textContent).toContain("Settings");
+  });
+
+  it("retires a revoked device's context", async () => {
+    adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
+    await renderSettings();
+    await flush();
+    expect(contextFor("dev-1")).not.toBeNull();
+
+    devices = devices.filter((device) => device.id !== "dev-1");
+    document.querySelector("#devlist .revoke").click();
+    await flush();
+
+    expect(revokeDevice).toHaveBeenCalledWith("dev-1");
+    expect(contextFor("dev-1")).toBeNull();
   });
 });

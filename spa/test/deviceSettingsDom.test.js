@@ -1,8 +1,19 @@
 // @vitest-environment jsdom
+// One machine's own settings page: everything the bridge owns — its projects,
+// where they are kept, and how agents run there — read and written over the
+// connection this page opens to that machine, and nothing else.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const { App, openSession, openBrowser } = vi.hoisted(() => ({
-  App: { devices: [], viewDispose: null }, openSession: vi.fn(), openBrowser: vi.fn(),
-}));
+const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelCatalog, contextFor, refreshFeed } =
+  vi.hoisted(() => ({
+    App: { devices: [], viewDispose: null },
+    openSession: vi.fn(),
+    openBrowser: vi.fn(),
+    openNewRepo: vi.fn(),
+    openSetRemote: vi.fn(),
+    refreshModelCatalog: vi.fn(async () => ({})),
+    contextFor: vi.fn(),
+    refreshFeed: vi.fn(),
+  }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
@@ -14,15 +25,134 @@ vi.mock("../src/connection.js", () => ({
   CONNECTION_STATUS: {},
 }));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
+vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo }));
+vi.mock("../src/sheets/setRemote.js", () => ({ openSetRemote }));
+vi.mock("../src/core/deviceContexts.js", () => ({ contextFor }));
+vi.mock("../src/core/taskFeed.js", () => ({ refreshFeed }));
 import { renderDeviceSettings } from "../src/views/deviceSettings.js";
+
+const CATALOG = {
+  default_provider: "claude",
+  providers: [
+    { id: "claude", label: "Claude Code", models: [], efforts: [] },
+    { id: "codex", label: "Codex", models: [], efforts: [] },
+  ],
+};
+const SETTINGS = {
+  projects_dir: "/projects",
+  default_harness: "claude",
+  agent_modes: { claude: "tui", codex: "headless" },
+  isolation: "worktree",
+  isolation_available: { cow: true, reason: null },
+  triage_enabled: false,
+};
+const PROJECTS = [
+  {
+    project_id: "p1",
+    name: "relaydb",
+    path: "/projects/relaydb",
+    base_branch: "main",
+    isolation_effective: "cow",
+    remote: "git@github.com:org/relaydb.git",
+    is_git: true,
+  },
+];
+
+const flush = () => new Promise((done) => setTimeout(done, 0));
+
 let session;
 beforeEach(() => {
   vi.clearAllMocks();
   document.body.innerHTML = '<main id="root"></main><div id="scrim"><div id="sheet"></div></div>';
   App.devices = [{ id: "other", name: "Other machine", status: "online" }];
   App.route = { name: "device", id: "other" };
-  session = { deviceId: "other", call: vi.fn().mockResolvedValue({ projects_dir: "/projects" }), close: vi.fn() };
+  session = {
+    deviceId: "other",
+    call: vi.fn(async (method) => {
+      if (method === "project.list") return { projects: PROJECTS };
+      if (method === "models.list") return CATALOG;
+      return { ...SETTINGS };
+    }),
+    close: vi.fn(),
+  };
   openSession.mockResolvedValue(session);
+  refreshModelCatalog.mockResolvedValue({});
+  contextFor.mockImplementation((deviceId) => (deviceId === "other" ? { refreshModelCatalog } : null));
+});
+
+describe("the machine's own panels", () => {
+  it("lists the device's projects over its own connection, with Add project and Set remote on that connection", async () => {
+    await renderDeviceSettings();
+    await flush();
+
+    expect(session.call).toHaveBeenCalledWith("project.list");
+    const rows = [...document.querySelectorAll("#projlist .projrow")];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("relaydb");
+    expect(rows[0].textContent).toContain("Copy-on-write clone");
+
+    document.querySelector("#newrepo").click();
+    const addOptions = openNewRepo.mock.calls[0][1];
+    expect(addOptions.deviceName).toBe("Other machine");
+    await addOptions.callRpc("project.create", { name: "docs" });
+    expect(session.call).toHaveBeenLastCalledWith("project.create", { name: "docs" });
+
+    document.querySelector("#projlist .setremote").click();
+    const [project, , remoteOptions] = openSetRemote.mock.calls[0];
+    expect(project.project_id).toBe("p1");
+    await remoteOptions.callRpc("project.set_remote", { project_id: "p1", url: "" });
+    expect(session.call).toHaveBeenLastCalledWith("project.set_remote", { project_id: "p1", url: "" });
+  });
+
+  it("mounts the agent modes, default harness, isolation and triage panels over the same connection", async () => {
+    await renderDeviceSettings();
+    await flush();
+
+    expect(document.getElementById("agentmode-claude").value).toBe("tui");
+    expect(document.getElementById("agentmode-codex").value).toBe("headless");
+    expect(document.getElementById("defaultharness").value).toBe("claude");
+    expect(document.querySelector("[data-isolation=select]").value).toBe("worktree");
+    expect(document.querySelector("[data-isolation=select]").disabled).toBe(false);
+    expect(document.querySelector('[data-triage-setting="control"]').disabled).toBe(false);
+    // Everything the bridge owns is asked of this page's own connection.
+    expect(session.call).toHaveBeenCalledWith("models.list");
+  });
+
+  it("refreshes that device's model catalog when a harness setting is saved", async () => {
+    await renderDeviceSettings();
+    await flush();
+
+    const select = document.getElementById("defaultharness");
+    select.value = "codex";
+    select.dispatchEvent(new Event("change"));
+    await flush();
+    await flush();
+
+    expect(session.call).toHaveBeenCalledWith("settings.set", { default_harness: "codex" });
+    expect(contextFor).toHaveBeenCalledWith("other");
+    expect(refreshModelCatalog).toHaveBeenCalled();
+  });
+
+  it("saves for a machine the app holds no context for, and outlives a refused refresh", async () => {
+    contextFor.mockReturnValue(null);
+    await renderDeviceSettings();
+    await flush();
+    const modes = document.getElementById("agentmode-claude");
+    modes.value = "headless";
+    modes.dispatchEvent(new Event("change"));
+    await flush();
+    await flush();
+    expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved.");
+
+    contextFor.mockImplementation(() => ({ refreshModelCatalog }));
+    refreshModelCatalog.mockRejectedValueOnce(new Error("the catalog is gone"));
+    modes.value = "tui";
+    modes.dispatchEvent(new Event("change"));
+    await flush();
+    await flush();
+    expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved.");
+    expect(document.querySelector("[data-agent-modes-error]").textContent).toBe("");
+  });
 });
 describe("device settings", () => {
   it("opens the named device and saves through the same connection as the folder browser", async () => {

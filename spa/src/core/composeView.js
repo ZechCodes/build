@@ -13,8 +13,9 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
-import { deviceFeedView } from "./deviceContexts.js";
-import { deviceCatalog } from "./inboxDevices.js";
+import { canAnswer, deviceFeedView, homeContext } from "./deviceContexts.js";
+import { deviceCall, deviceCatalog } from "./inboxDevices.js";
+import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
 import { UNASKED_CATALOG } from "./modelCatalog.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { isConfirmOpen } from "./confirm.js";
@@ -23,7 +24,9 @@ import {
   branchOptions,
   captureRow,
   composeBoxHtml,
+  composeManualAwayNote,
   composeOfflineNote,
+  composePlaceholder,
   composePromptHtml,
   composeShortcutFires,
   flushCaptureQueue,
@@ -51,7 +54,16 @@ const listeners = new Set(); // who repaints when the held captures change
 let feed = { items: [], projects: [] };
 let box = null; // the open box's state, or null while it is shut
 let mounted = false;
-const canSend = () => !!App.call && !App.offline;
+// Every call this box makes is the creation device's, asked for the way every
+// other surface asks: by the device it is about, with naming none meaning home.
+// A machine that cannot answer hands back a caller that refuses, so nothing
+// here asks whether a device is there — only canSend, which is the same
+// question the note and the queue are the answer to.
+const homeCall = () => deviceCall(null);
+const canSend = () => canAnswer(homeContext());
+/** What the account calls the machine this box sends to, while it can name it:
+ *  the creation device, online or away. */
+const creationDeviceName = () => deviceNameOf(App.devices, creationDeviceId(App.devices, App.selectedDeviceId));
 const projectNameOf = (projectId) =>
   (feed.projects.find((project) => project.id === projectId) || {}).name || projectId || "";
 
@@ -123,7 +135,7 @@ function track(capture) {
  */
 export async function flushCaptures() {
   if (!queue.length || !canSend()) return;
-  const { sent, remaining } = await flushCaptureQueue(queue, (text) => App.call("capture.create", { text }));
+  const { sent, remaining } = await flushCaptureQueue(queue, (text) => homeCall()("capture.create", { text }));
   queue = saveCaptureQueue(remaining);
   sent.forEach(({ capture }) => track(capture));
   announce();
@@ -158,7 +170,7 @@ function syncTracked() {
     if (entry.settledAt || entry.settling || !canSend()) continue;
     entry.settling = true;
     changed = true;
-    App.call("capture.get", { capture_id: id })
+    homeCall()("capture.get", { capture_id: id })
       .then((capture) => {
         const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
         tracked.set(id, { row: captureRow(capture, { projectName }), settledAt: Date.now(), settling: false });
@@ -215,9 +227,11 @@ function paintBox({ focus = true } = {}) {
   const host = $("#compose");
   if (!host || !box) return;
   const caret = focus ? null : selectionOf(host);
+  const deviceName = creationDeviceName();
   host.innerHTML = composeBoxHtml({
     value: box.value,
-    note: canSend() ? "" : composeOfflineNote(queue.length),
+    placeholder: composePlaceholder(deviceName),
+    note: canSend() ? "" : composeOfflineNote(queue.length, deviceName),
     error: box.error,
     busy: box.busy,
     advanced: box.advancedOpen ? advancedHtml() : "",
@@ -383,7 +397,7 @@ async function submitCapture() {
   box.error = "";
   paintBox({ focus: false });
   try {
-    track(await App.call("capture.create", { text }));
+    track(await homeCall()("capture.create", { text }));
     closeCompose();
     await refreshFeed();
   } catch {
@@ -407,7 +421,7 @@ async function submitManual() {
     return;
   }
   if (!canSend()) {
-    fail("Your device is away — capture it instead and it will be routed when it is back.");
+    fail(composeManualAwayNote(creationDeviceName()));
     return;
   }
   box.busy = true;
@@ -421,7 +435,7 @@ async function submitManual() {
     agentParams: agentChoiceParams(box.catalog, box.choice),
   });
   try {
-    const created = await replyOrNothing(App.call(method, params));
+    const created = await replyOrNothing(homeCall()(method, params));
     settleManualRoute(manualRouteDestination(box.kind, created, box.projectId));
   } catch (error) {
     fail(messageOf(error));

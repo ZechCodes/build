@@ -8,6 +8,7 @@ import {
   ROUTED_LINGER_MS,
   branchOptions,
   captureRow,
+  composeManualAwayNote,
   composeOfflineNote,
   composePlaceholder,
   composeShortcutFires,
@@ -290,6 +291,15 @@ describe("what the box says about the machine it sends to", () => {
     expect(composeOfflineNote(0, "Laptop")).toBe("Laptop is away — this is kept here and sent when it is back.");
     expect(composeOfflineNote(1, "Laptop")).toBe("1 capture is waiting for Laptop.");
     expect(composeOfflineNote(3, "Laptop")).toBe("3 captures are waiting for Laptop.");
+  });
+
+  it("names the same device when the manual panel will not create on it", () => {
+    expect(composeManualAwayNote("Laptop")).toBe(
+      "Laptop is away — capture it instead and it will be routed when it is back.",
+    );
+    expect(composeManualAwayNote(null)).toBe(
+      "Your device is away — capture it instead and it will be routed when it is back.",
+    );
   });
 
   it("says your device when this client cannot name one", () => {

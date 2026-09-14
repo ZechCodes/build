@@ -189,15 +189,17 @@ export function composePromptHtml() {
 }
 
 /**
- * The open box. `note` is what the client wants to say about where this is
- * going (queued while the device is away); `advanced` is the manual panel's
- * markup, rendered only while its disclosure is open.
+ * The open box. `placeholder` is the line it asks with and `note` is what the
+ * client wants to say about where this is going (queued while the device is
+ * away) — both computed by the caller, which is the one that knows which
+ * machine this capture is for; `advanced` is the manual panel's markup,
+ * rendered only while its disclosure is open.
  */
 // eslint-disable-next-line complexity -- ratchet: composeBoxHtml is at 13, cap 10 — reduce it, then drop this line
-export function composeBoxHtml({ value = "", note = "", error = "", busy = false, advanced = "" } = {}) {
+export function composeBoxHtml({ value = "", placeholder, note = "", error = "", busy = false, advanced = "" } = {}) {
   return `<div class="compose-box">
-    <textarea id="compose-text" rows="3" placeholder="What do you want to get done?"
-      aria-label="What do you want to get done?">${esc(value)}</textarea>
+    <textarea id="compose-text" rows="3" placeholder="${esc(placeholder)}"
+      aria-label="${esc(placeholder)}">${esc(value)}</textarea>
     <div class="compose-row">
       <button class="compose-disclose" id="compose-advanced" type="button" aria-expanded="${advanced ? "true" : "false"}">
         ${advanced ? "▾" : "▸"} I know where this goes</button>
@@ -265,7 +267,16 @@ export const composePlaceholder = (deviceName) =>
  *  waiting for, and that the text is kept meanwhile — the difference between a
  *  queue and a loss. A client that cannot name the machine says whose it is. */
 export function composeOfflineNote(queuedCount, deviceName) {
-  if (!queuedCount) return `${deviceName || "Your device"} is away — this is kept here and sent when it is back.`;
+  if (!queuedCount) return `${awayFrom(deviceName)} — this is kept here and sent when it is back.`;
   const waitingFor = deviceName || "your device";
   return queuedCount === 1 ? `1 capture is waiting for ${waitingFor}.` : `${queuedCount} captures are waiting for ${waitingFor}.`;
 }
+
+/** How every line about a machine that cannot take work starts — named when
+ *  this client can name it, and whose it is when it cannot. */
+const awayFrom = (deviceName) => `${deviceName || "Your device"} is away`;
+
+/** What the manual panel says instead of creating: the box beside it takes the
+ *  text whatever happens, which is the way out this offers. */
+export const composeManualAwayNote = (deviceName) =>
+  `${awayFrom(deviceName)} — capture it instead and it will be routed when it is back.`;

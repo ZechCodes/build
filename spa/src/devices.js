@@ -15,8 +15,11 @@ export async function refreshDevices() {
   return App.devices;
 }
 
+/** The account's entry for one device, as the list last saw it. */
+const deviceFor = (deviceId) => App.devices.find((device) => device.id === deviceId) || null;
+
 export function deviceName(deviceId) {
-  return App.devices.find((d) => d.id === deviceId)?.name || null;
+  return deviceFor(deviceId)?.name || null;
 }
 
 /**
@@ -26,34 +29,36 @@ export function deviceName(deviceId) {
  * session layer refuses to connect to them.
  */
 export async function pinnedDeviceTransportKey(deviceId) {
-  const pinnedKey = () => App.devices.find((d) => d.id === deviceId)?.transport_public_key_b64 || null;
+  const pinnedKey = () => deviceFor(deviceId)?.transport_public_key_b64 || null;
   const known = pinnedKey();
   if (known) return known;
   await refreshDevices();
   return pinnedKey();
 }
 
+/** Patch one device's status and repaint the picker that reads it. Says whether
+ *  this was news; a device the list has never heard of is nobody to patch. */
+function markDevice(deviceId, status) {
+  const device = deviceFor(deviceId);
+  if (!device || device.status === status) return false;
+  device.status = status;
+  paintDevicePicker();
+  return true;
+}
+
 export function markDeviceOnline(deviceId) {
-  const device = App.devices.find((d) => d.id === deviceId);
-  if (!device) {
+  if (!deviceFor(deviceId)) {
     // A device we have not seen yet (approved elsewhere) — refresh the list.
     refreshDevices();
     return;
   }
-  if (device.status === "online") return;
-  device.status = "online";
-  paintDevicePicker();
   // A device that came up after boot joins the account's inbox here, without a
   // reload: every online device with no live session is opened.
-  openDeviceSessions();
+  if (markDevice(deviceId, "online")) openDeviceSessions();
 }
 
 export function markDeviceOffline(deviceId) {
-  const device = App.devices.find((d) => d.id === deviceId);
-  if (device && device.status !== "offline") {
-    device.status = "offline";
-    paintDevicePicker();
-  }
+  markDevice(deviceId, "offline");
 }
 
 export function paintDevicePicker() {

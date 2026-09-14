@@ -9,52 +9,75 @@
 import { subscribeFeed } from "../core/taskFeed.js";
 import { deviceFeedView } from "../core/deviceContexts.js";
 
-/** The row this surface stands up from, off the shared snapshot without
- *  subscribing. A route names one machine's project — every machine mints a
- *  `proj-1`, and the merge holds all of them — so the row is looked for in
- *  that machine's view of the feed. */
-function seedBranchState(deviceId, projectId, branch) {
+/** Nothing to stand up from: the Changes tab, and a live read to fill it. */
+const NO_SEED = { row: null, defaultTab: "changes" };
+
+/** The one row a project with no git in it has: its folder, browsable in the
+ *  Files tab. */
+const folderRow = (project, projectId, branch) => ({
+  kind: "branch",
+  project_id: projectId,
+  project: project.name,
+  branch,
+  primary: true,
+  is_git: false,
+});
+
+/** One machine's view of the shared snapshot, read off it without subscribing.
+ *  A route names one machine's project — every machine mints a `proj-1`, and
+ *  the merge holds all of them — so the rows are that machine's. */
+function deviceSnapshot(deviceId) {
   let snapshot = null;
   const unsubscribe = subscribeFeed((feed) => {
     snapshot = deviceFeedView(feed, deviceId);
   });
   unsubscribe();
-  if (!snapshot) return { row: null, defaultTab: "changes" };
-  const seeded = (snapshot.items || []).find(
-    (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
-  );
-  if (seeded) return { row: seeded, defaultTab: "changes" };
-  const project = (snapshot.projects || []).find((candidate) => candidate.id === projectId);
-  if (!project || project.is_git !== false) return { row: null, defaultTab: "changes" };
-  return {
-    row: { kind: "branch", project_id: projectId, project: project.name, branch, primary: true, is_git: false },
-    defaultTab: "files",
-  };
+  return snapshot;
 }
 
-/** The one row a project with no git in it has: its folder, browsable in the
- *  Files tab. Null for anything the machine calls a git project. */
-async function loadPlainBranch(callRpc, projectId, branch) {
+const branchRowIn = (snapshot, projectId, branch) =>
+  (snapshot.items || []).find(
+    (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
+  ) || null;
+
+const folderRowIn = (snapshot, projectId, branch) => {
+  const project = (snapshot.projects || []).find((candidate) => candidate.id === projectId);
+  return project && project.is_git === false ? folderRow(project, projectId, branch) : null;
+};
+
+/** The row this surface stands up from, and the tab that row is best seen in. */
+function seedBranchState(deviceId, projectId, branch) {
+  const snapshot = deviceSnapshot(deviceId);
+  if (!snapshot) return NO_SEED;
+  const seeded = branchRowIn(snapshot, projectId, branch);
+  if (seeded) return { row: seeded, defaultTab: "changes" };
+  const folder = folderRowIn(snapshot, projectId, branch);
+  return folder ? { row: folder, defaultTab: "files" } : NO_SEED;
+}
+
+/** What the machine lists under this project id, or null when it lists nothing
+ *  under it and when it could not be asked at all. */
+async function listedProject(callRpc, projectId) {
   try {
     const listed = await callRpc("project.list");
-    const project = (listed.projects || []).find((candidate) => (candidate.project_id || candidate.id) === projectId);
-    if (!project || project.is_git !== false) return null;
-    return { kind: "branch", project_id: projectId, project: project.name, branch, primary: true, is_git: false };
+    return (listed.projects || []).find((candidate) => (candidate.project_id || candidate.id) === projectId) || null;
   } catch {
     return null;
   }
+}
+
+/** The folder behind a project with no git in it. Null for anything the machine
+ *  calls a git project. */
+async function loadPlainBranch(callRpc, projectId, branch) {
+  const project = await listedProject(callRpc, projectId);
+  return project && project.is_git === false ? folderRow(project, projectId, branch) : null;
 }
 
 /** Whether the machine calls this project a git one, or null when it could not
  *  be asked — a folder that has just been initialized elsewhere says true. */
 export async function projectGitState(callRpc, projectId) {
-  try {
-    const listed = await callRpc("project.list");
-    const project = (listed.projects || []).find((candidate) => (candidate.project_id || candidate.id) === projectId);
-    return project ? project.is_git !== false : null;
-  } catch {
-    return null;
-  }
+  const project = await listedProject(callRpc, projectId);
+  return project ? project.is_git !== false : null;
 }
 
 /** The row and the tab the surface opens with: the feed's row where there is

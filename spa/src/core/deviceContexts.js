@@ -9,7 +9,6 @@
 
 import { App } from "../app.js";
 import { releaseScope, scopeFor } from "./cacheScope.js";
-import { deviceKey } from "./deviceKey.js";
 import { homeDeviceId } from "./devicePolicy.js";
 import { createChatRepository } from "./chatRepository.js";
 import { deviceView } from "./feedMerge.js";
@@ -163,16 +162,6 @@ export function routeContext(route) {
   return contextFor(route?.deviceId);
 }
 
-/** The account-wide name of a project a route names (core/deviceKey.js). A
- *  route carries the bare id one bridge minted and every bridge mints a
- *  `proj-1`, so the device has to come from somewhere: until routes carry one,
- *  it is the home device's. Answers null when there is no home device or no
- *  project to name. Stage 2 reads the device off the route and this goes. */
-export function homeProjectKey(projectId) {
-  const home = homeContext();
-  return home && projectId ? deviceKey(home.deviceId, projectId) : null;
-}
-
 /**
  * One device's slice of a merged feed snapshot: its rows and its projects.
  *
@@ -180,7 +169,7 @@ export function homeProjectKey(projectId) {
  * branch — is about one machine, and so is what a row's verb offers: a reroute
  * names a project by the bare id the daemon holding it minted, and every daemon
  * mints a `proj-1`. Naming no device means the home device, which is where
- * creation goes and, until routes carry one, what every route is about.
+ * creation goes when nothing else says.
  */
 export function deviceFeedView(snapshot, deviceId = null) {
   const view = deviceView(snapshot, deviceId || homeContext()?.deviceId);

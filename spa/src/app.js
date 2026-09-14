@@ -71,9 +71,9 @@ function copyAliasesFrom(context) {
   for (const [field, empty] of Object.entries(ALIAS_DEFAULTS)) App[field] = context?.[field] ?? empty;
 }
 
-/** Say which context the App.* aliases follow. That includes cacheScope's own
- *  ambient alias, which surfaces still read as currentCacheScope() while they
- *  mount — and which is where the device they are on is kept. */
+/** Say which context the App.* aliases follow, cacheScope's own ambient alias
+ *  included. No surface reads that alias any more — each one takes its scope
+ *  from the context its route names — and stage 3 retires it with the rest. */
 export function pointAliasesAt(context) {
   const home = context || null;
   copyAliasesFrom(home);

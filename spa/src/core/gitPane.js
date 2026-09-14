@@ -363,8 +363,7 @@ export function mountGitPane(
   {
     scope,
     callRpc,
-    // The cache of the machine this checkout is on, handed down by the view
-    // that mounted the pane. A standalone mount brings none and caches nothing.
+    // The cache of the machine this checkout is on: the view hands it down.
     cacheScope,
     agentCommitOptions = [],
     review = null,

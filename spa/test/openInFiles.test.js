@@ -12,6 +12,10 @@ import { createReviewPlug } from "../src/core/changesReview.js";
 import { renderFilesTab } from "../src/views/files.js";
 import { worktreeOf } from "./gitWireFixture.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -12,2 +12,2 @@\n-old\n+${line}\n`;
 
@@ -266,7 +270,7 @@ describe("the file the route names", () => {
     App.selectedDeviceId = "dev-1";
     adoptDeviceSession({
       deviceId: "dev-1",
-      call: (...args) => App.call(...args),
+      call: (...args) => bridge.call(...args),
       close: () => {},
       peer: () => {},
       onCarrier: () => {},
@@ -295,7 +299,7 @@ describe("the file the route names", () => {
 
   it("opens the Files tab on the file the URL names", async () => {
     const asked = [];
-    App.call = answering(asked);
+    bridge.call = answering(asked);
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files", file: "src/a.js", line: 2 };
     await renderBranch();
     await flush();
@@ -310,7 +314,7 @@ describe("the file the route names", () => {
   // the diff. The wrapper spreads the plug now, and this is what says so.
   it("renders the whole Changes surface, toolbar verbs and box included", async () => {
     const asked = [];
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "branch.get")
         return { ...row, run_id: "run-1", run: { run_id: "run-1", state: "review", base_branch: "main", thread: { items: [], sessions: [] } } };
       asked.push({ method, params });
@@ -336,7 +340,7 @@ describe("the file the route names", () => {
 
   it("leaves an ordinary visit to the Files tab at the root", async () => {
     const asked = [];
-    App.call = answering(asked);
+    bridge.call = answering(asked);
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files" };
     await renderBranch();
     await flush();
@@ -350,7 +354,7 @@ describe("the file the route names", () => {
   // is already showing.
   it("writes the file the reader picks into the URL, without a re-render", async () => {
     const asked = [];
-    App.call = answering(asked);
+    bridge.call = answering(asked);
     // A branch surface always names the machine the checkout is on; moving
     // within the tab keeps naming it, or the link stops addressing anything.
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files" };

@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { srcJsFiles, srcSourceOf } from "./srcFiles.js";
+import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 
 /** Every `vi.mock` / `vi.doMock` on a local module whose factory is an object
  *  literal, as `{ file, module, names }`. A factory that returns anything else

@@ -6,6 +6,10 @@ import { resolve } from "node:path";
 import { MOTION_DURATION_MS } from "../src/core/motion.js";
 import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
@@ -60,7 +64,7 @@ const branchAddress = (over = {}) => ({
   deviceId: "dev-1",
   projectId: "p1",
   branch: "build/login",
-  call: (...args) => App.call(...args),
+  call: (...args) => bridge.call(...args),
   ...over,
 });
 
@@ -83,7 +87,7 @@ beforeEach(() => {
   manager.closeTerminal.mockReset().mockResolvedValue(undefined);
   manager.attachTerminal.mockReset().mockResolvedValue({ snapshot: "", cursor: 0 });
   manager.detach.mockReset();
-  App.call = vi.fn(async () => ({ project_id: "p1", branch: "build/login", run_id: "run-3" }));
+  bridge.call = vi.fn(async () => ({ project_id: "p1", branch: "build/login", run_id: "run-3" }));
 });
 
 afterEach(async () => {
@@ -144,7 +148,7 @@ describe("the head the mount paints", () => {
   });
 
   it("offers no + where there is no checkout to open a shell in", async () => {
-    App.call = vi.fn(async () => ({ project_id: "p1", branch: "loose", run_id: null, worktree_id: null, primary: false }));
+    bridge.call = vi.fn(async () => ({ project_id: "p1", branch: "loose", run_id: null, worktree_id: null, primary: false }));
     panel = mountConsole(region(), branchAddress({ branch: "loose" }));
     await flush();
     await settleMotion();

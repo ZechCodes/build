@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from "vitest";
-const { App } = vi.hoisted(() => ({ App: { call: vi.fn() } }));
-vi.mock("../src/app.js", () => ({ App }));
 import { openBrowser } from "../src/sheets/browser.js";
 const listing = (path) => ({ path, parent: "/", is_git: false, entries: [] });
 beforeEach(() => {
@@ -13,7 +11,6 @@ it("uses the supplied device connection and initial folder", async () => {
   const onChoose = vi.fn();
   await openBrowser({ title: "Projects", callRpc, startPath: "/device-projects", onChoose });
   expect(callRpc).toHaveBeenCalledWith("fs.list", { path: "/device-projects" });
-  expect(App.call).not.toHaveBeenCalled();
   document.querySelector("#choosecur").click();
   expect(onChoose).toHaveBeenCalledWith("/device-projects");
 });

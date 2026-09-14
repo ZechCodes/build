@@ -6,6 +6,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 // jsdom gives import.meta.url an http origin, so the sources are read from the
 // package root (vitest's cwd), as the other jsdom suites do.
 const indexSource = readFileSync(resolve("index.html"), "utf8");
@@ -60,7 +64,7 @@ beforeEach(() => {
   document.body.className = "";
   location.hash = "";
   App.gated = false;
-  App.call = vi.fn(async (method, params) => rpc(method, params));
+  bridge.call = vi.fn(async (method, params) => rpc(method, params));
   App.poll = null;
   App.viewDispose = null;
   App.devices = [{ id: "dev-1", name: "This device", status: "online" }];
@@ -72,7 +76,7 @@ beforeEach(() => {
 const openDevice = () =>
   adoptDeviceSession({
     deviceId: "dev-1",
-    call: (...args) => App.call(...args),
+    call: (...args) => bridge.call(...args),
     close: () => {},
     peer: () => {},
     onCarrier: () => {},

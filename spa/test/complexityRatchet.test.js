@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { srcJsFiles, srcSourceOf } from "./srcFiles.js";
+import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 
 // Measured when the gate landed: 78 functions across 39 files under src/.
 // 77 since diffFileHtml became a header, a body and a frame.

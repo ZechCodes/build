@@ -13,7 +13,7 @@ import { describe, it, expect, vi } from "vitest";
 import { renderDeviceSettingsPage } from "./deviceSettingsFixture.js";
 
 // The device page opens its own connection to the machine it is about; here it
-// answers with whatever App.call is standing at the time.
+// answers with whatever the fixture's bridge is standing at the time.
 const { openSession } = vi.hoisted(() => ({ openSession: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
   openDeviceSettingsSession: openSession,

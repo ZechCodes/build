@@ -8,6 +8,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
@@ -72,7 +76,7 @@ const mountAndOpen = async (deviceId = "dev-1") => {
     deviceId,
     projectId: "p1",
     branch: "build/login",
-    call: (...args) => App.call(...args),
+    call: (...args) => bridge.call(...args),
     cacheScope: scopeFor(deviceId),
   });
   await flush();
@@ -90,7 +94,7 @@ beforeEach(async () => {
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });
   manager.closeTerminal.mockReset().mockResolvedValue(undefined);
   manager.attachTerminal.mockReset().mockResolvedValue({ snapshot: "", cursor: 0 });
-  App.call = vi.fn(async (method) => {
+  bridge.call = vi.fn(async (method) => {
     if (method === "branch.get") return { project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" };
     return {};
   });
@@ -107,7 +111,7 @@ describe("the cached tab list", () => {
       { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
       { scope: { run_id: "run-3" }, termIds: ["term-1", "term-2"] },
     );
-    App.call = vi.fn(() => new Promise(() => {}));
+    bridge.call = vi.fn(() => new Promise(() => {}));
     manager.listTerminals.mockImplementation(() => new Promise(() => {}));
     await mountAndOpen();
     expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
@@ -157,7 +161,7 @@ describe("an account with more than one device", () => {
       { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
       { scope: { run_id: "run-3" }, termIds: ["term-4", "term-5"] },
     );
-    App.call = vi.fn(() => new Promise(() => {}));
+    bridge.call = vi.fn(() => new Promise(() => {}));
     manager.listTerminals.mockImplementation(() => new Promise(() => {}));
 
     await mountAndOpen("dev-2");

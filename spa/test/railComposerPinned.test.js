@@ -14,6 +14,10 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
@@ -69,7 +73,7 @@ const mount = async () => {
     branch: "build/login",
     // A standalone mount brings its own caller: the rail makes its repository
     // over the machine it was handed, not over an ambient one.
-    call: (method, params) => App.call(method, params),
+    call: (method, params) => bridge.call(method, params),
   });
   await flush();
 };
@@ -81,7 +85,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   mountAgentTab.mockClear();
   payload = branchRow();
-  App.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
+  bridge.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
 });
 
 afterEach(() => {
@@ -183,7 +187,7 @@ describe("the conversation panel's column", () => {
     document.getElementById("railsend").click();
     await flush();
 
-    const post = App.call.mock.calls.find(([method]) => method === "thread.post");
+    const post = bridge.call.mock.calls.find(([method]) => method === "thread.post");
     expect(post[1]).toMatchObject({ entity_id: "run-3", agent_id: "ag-1", body: "ship it" });
   });
 });

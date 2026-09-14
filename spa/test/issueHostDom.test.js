@@ -7,6 +7,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const flush = async () => {
@@ -46,7 +50,7 @@ beforeEach(async () => {
     { id: "dev-2", name: "Desktop", status: "online" },
   ];
   App.selectedDeviceId = "dev-1"; // home is this machine; the link is the other one
-  App.call = vi.fn(async () => ({}));
+  bridge.call = vi.fn(async () => ({}));
   theirCall = vi.fn(async (method) => {
     if (method === "issue.get") return issuePayload;
     if (method === "issue.stages") return { stages: [stage("s1", "Wire"), stage("s2", "Paint")] };
@@ -57,7 +61,7 @@ beforeEach(async () => {
     return {};
   });
   const session = (deviceId, call) => ({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
-  contexts.adoptDeviceSession(session("dev-1", (...args) => App.call(...args)));
+  contexts.adoptDeviceSession(session("dev-1", (...args) => bridge.call(...args)));
   contexts.adoptDeviceSession(session("dev-2", theirCall));
   App.route = { name: "issue", deviceId: "dev-2", projectId: "p1", id: "issue-1" };
 });
@@ -79,8 +83,8 @@ describe("an issue on another device", () => {
 
     expect(reached(theirCall, "entity.seen")).toBe(true);
     expect(reached(theirCall, "issue.get")).toBe(true);
-    expect(reached(App.call, "entity.seen")).toBe(false);
-    expect(reached(App.call, "issue.get")).toBe(false);
+    expect(reached(bridge.call, "entity.seen")).toBe(false);
+    expect(reached(bridge.call, "issue.get")).toBe(false);
   });
 
   it("syncHash keeps the device segment when the open stage changes", async () => {
@@ -111,7 +115,7 @@ describe("an issue on a device that has gone offline", () => {
     expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
     expect(document.getElementById("tabbody")).toBeNull();
     expect(theirCall).not.toHaveBeenCalled();
-    expect(App.call).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
   });
 });
 
@@ -127,7 +131,7 @@ describe("an issue on a device this client has not opened", () => {
     await flush();
 
     expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
-    expect(App.call).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
     expect(theirCall).not.toHaveBeenCalled();
   });
 
@@ -147,6 +151,6 @@ describe("an issue on a device this client has not opened", () => {
 
     expect(document.getElementById("tabbody")).toBeTruthy();
     expect(lateCall.mock.calls.some(([method]) => method === "issue.get")).toBe(true);
-    expect(App.call.mock.calls.some(([method]) => method === "issue.get")).toBe(false);
+    expect(bridge.call.mock.calls.some(([method]) => method === "issue.get")).toBe(false);
   });
 });

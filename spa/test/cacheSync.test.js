@@ -7,6 +7,10 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
 import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 // Real clock, not a frozen one: the syncer partitions active-vs-Recent with
 // Date.now(), so the items' ages must be relative to the same now.
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
@@ -48,16 +52,16 @@ vi.mock("../src/core/changeEvents.js", () => ({
   },
 }));
 
-const App = { session: { deviceId: "dev-1" }, call: vi.fn(async () => ({})) };
+const App = {};
 vi.mock("../src/app.js", () => ({ App }));
 
 // The syncer works a device through its context, so this file registers them.
 // A device's call is its own; the one this file mostly talks to answers through
-// App.call, which every case scripts.
+// bridge.call, which every case scripts.
 const contexts = new Map();
 vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: (deviceId) => contexts.get(deviceId) || null }));
 
-const registerDevice = (deviceId, call = (...args) => App.call(...args)) => {
+const registerDevice = (deviceId, call = (...args) => bridge.call(...args)) => {
   const context = {
     deviceId,
     // The registry hands out the device's caller, not one session's.
@@ -100,8 +104,7 @@ beforeEach(async () => {
   feedSubscriber = null;
   contexts.clear();
   registerDevice("dev-1");
-  App.session = { deviceId: "dev-1" };
-  App.call = vi.fn(async (method) => {
+  bridge.call = vi.fn(async (method) => {
     if (method === "git.status") return warmStatus();
     if (method === "git.log") return { commits: [{ hash: "abc" }], more: false };
     return {};
@@ -168,7 +171,7 @@ describe("following every device's feed", () => {
     await twoDevices(secondCall);
     // The same run id on two machines is two rows, each read through its own
     // device's call and written under its own device.
-    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
     expect(secondCall).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" })).toBeTruthy();
     expect((await cache.readCached({ deviceId: "dev-2", entityId: "run-1", kind: "log" })).value.commits[0].hash).toBe("def");
@@ -216,22 +219,22 @@ describe("keeping active branches warm", () => {
   it("conditionally refreshes a cached status and keeps the full held shape on an unchanged answer", async () => {
     const held = warmStatus();
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, held);
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "git.status") return { unchanged: true, status_key: held.status_key };
       if (method === "git.log") return { commits: [], more: false };
       return {};
     });
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: held.status_key });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: held.status_key });
     expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.files).toEqual(held.files);
   });
 
   it("syncs git status and the commit list for an active branch, run-scoped", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
-    expect(App.call).toHaveBeenCalledWith("git.log", { run_id: "run-1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.log", { run_id: "run-1" });
     const log = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" });
     expect(log.value.commits).toHaveLength(1);
   });
@@ -248,7 +251,7 @@ describe("keeping active branches warm", () => {
   it("prefetches the changed files' bodies in idle time, so expanding one is instant", async () => {
     const idle = [];
     globalThis.requestIdleCallback = (work) => idle.push(work);
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "git.status") return warmStatus();
       if (method === "git.diff") return warmTree.diff(params);
       if (method === "git.log") return { commits: [], more: false };
@@ -256,11 +259,11 @@ describe("keeping active branches warm", () => {
     });
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).not.toHaveBeenCalledWith("git.diff", expect.anything());
+    expect(bridge.call).not.toHaveBeenCalledWith("git.diff", expect.anything());
 
     idle.forEach((work) => work());
     await flush();
-    expect(App.call).toHaveBeenCalledWith("git.diff", { run_id: "run-1", paths: ["src/a.js"] });
+    expect(bridge.call).toHaveBeenCalledWith("git.diff", { run_id: "run-1", paths: ["src/a.js"] });
     const body = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: "src/a.js" });
     expect(body.value.patch).toBe(patchFor("src/a.js", "new line"));
   });
@@ -268,7 +271,7 @@ describe("keeping active branches warm", () => {
   it("keeps syncing an entity whose idle turn never comes", async () => {
     const idleNeverRun = [];
     globalThis.requestIdleCallback = (work) => idleNeverRun.push(work);
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "git.status") return warmStatus();
       if (method === "git.diff") return warmTree.diff(params);
       if (method === "git.log") return { commits: [], more: false };
@@ -278,16 +281,16 @@ describe("keeping active branches warm", () => {
     await feed([branchItem()]);
     expect(idleNeverRun.length).toBeGreaterThan(0);
 
-    App.call.mockClear();
+    bridge.call.mockClear();
     registeredWatchers.find((watcher) => watcher.entity === "run-1").refresh();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key });
   });
 
   it("warms only the leading viewport budget instead of every offscreen body", async () => {
     const many = Object.fromEntries(Array.from({ length: 60 }, (_unused, index) => [`f${index}.js`, "line"]));
     const big = worktreeOf(many);
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "git.status") return big.status();
       if (method === "git.diff") return big.diff(params);
       if (method === "git.log") return { commits: [], more: false };
@@ -296,7 +299,7 @@ describe("keeping active branches warm", () => {
     sync.startCacheSync();
     await feed([branchItem()]);
     await flush();
-    const asked = App.call.mock.calls.filter(([method]) => method === "git.diff");
+    const asked = bridge.call.mock.calls.filter(([method]) => method === "git.diff");
     expect(asked).toHaveLength(1);
     expect(asked[0][1].paths).toHaveLength(3);
   });
@@ -304,7 +307,7 @@ describe("keeping active branches warm", () => {
   it("scopes a checkout Build does not own by project and worktree", async () => {
     sync.startCacheSync();
     await feed([branchItem({ run_id: null })]);
-    expect(App.call).toHaveBeenCalledWith("git.status", { project_id: "p1", worktree_id: "wt-1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { project_id: "p1", worktree_id: "wt-1" });
   });
 
   it("registers one change watcher per active branch and refreshes on delivery", async () => {
@@ -312,10 +315,10 @@ describe("keeping active branches warm", () => {
     await feed([branchItem()]);
     const watcher = registeredWatchers.find((w) => w.entity === "run-1");
     expect(watcher).toBeTruthy();
-    App.call.mockClear();
+    bridge.call.mockClear();
     watcher.refresh();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key });
   });
 
   it("lets a watcher go, disposed, when its entity leaves the active set", async () => {
@@ -328,14 +331,14 @@ describe("keeping active branches warm", () => {
 
   it("does not stack refreshes for an entity already being fetched", async () => {
     let settle;
-    App.call = vi.fn(() => new Promise((resolve) => (settle = resolve)));
+    bridge.call = vi.fn(() => new Promise((resolve) => (settle = resolve)));
     sync.startCacheSync();
     await feed([branchItem()]);
     const watcher = registeredWatchers.find((w) => w.entity === "run-1");
     watcher.refresh();
     watcher.refresh();
     await flush();
-    expect(App.call.mock.calls.length).toBe(2); // one status + one log, not four
+    expect(bridge.call.mock.calls.length).toBe(2); // one status + one log, not four
     settle({});
   });
 
@@ -345,7 +348,7 @@ describe("keeping active branches warm", () => {
     await feed([
       { kind: "issue", project_id: "p2", issue_id: "iss-1", state: "plan_review", anchor: ago(2), last_activity: ago(2) },
     ]);
-    expect(App.call).not.toHaveBeenCalledWith("git.status", expect.anything());
+    expect(bridge.call).not.toHaveBeenCalledWith("git.status", expect.anything());
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "iss-1", kind: "thread" })).toBeTruthy();
   });
 });
@@ -358,7 +361,7 @@ describe("one syncer per browser", () => {
     sync = await import("../src/core/cacheSync.js");
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" })).toBeUndefined();
     vi.unstubAllGlobals();
   });
@@ -370,7 +373,7 @@ describe("the boot echo", () => {
     const view = { ...snapshot([branchItem()]), cached: true };
     feedSubscriber({ ...merged({ "dev-1": view }), cached: true });
     await flush();
-    expect(App.call).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" })).toBeUndefined();
   });
 });
@@ -381,7 +384,7 @@ describe("keeping warmed conversations fresh", () => {
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
       { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
     );
-    App.call = vi.fn(async (method) => {
+    bridge.call = vi.fn(async (method) => {
       if (method === "git.status") return { head: "abc", patch: "p" };
       if (method === "git.log") return { commits: [] };
       if (method === "branch.get")
@@ -390,7 +393,7 @@ describe("keeping warmed conversations fresh", () => {
     });
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).toHaveBeenCalledWith("branch.get", {
+    expect(bridge.call).toHaveBeenCalledWith("branch.get", {
       project_id: "p1",
       branch: "build/login",
       agent_id: "ag-1",
@@ -405,7 +408,7 @@ describe("keeping warmed conversations fresh", () => {
       { deviceId: "dev-1", entityId: "iss-1", kind: "thread", sub: "" },
       { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
     );
-    App.call = vi.fn(async (method) =>
+    bridge.call = vi.fn(async (method) =>
       method === "issue.get"
         ? { issue_id: "iss-1", thread: { items: [{ id: "m-3", data: { sequence: 3 } }], has_more: false, thread_total: 3 } }
         : {},
@@ -414,7 +417,7 @@ describe("keeping warmed conversations fresh", () => {
     await feed([
       { kind: "issue", project_id: "p2", issue_id: "iss-1", state: "plan_review", anchor: ago(2), last_activity: ago(2) },
     ]);
-    expect(App.call).toHaveBeenCalledWith("issue.get", { issue_id: "iss-1", thread_limit: FIRST_PAGE_ITEMS });
+    expect(bridge.call).toHaveBeenCalledWith("issue.get", { issue_id: "iss-1", thread_limit: FIRST_PAGE_ITEMS });
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "iss-1", kind: "thread", sub: "" });
     expect(record.value.deliveredSequence).toBe(3);
   });
@@ -424,7 +427,7 @@ describe("keeping warmed conversations fresh", () => {
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
       { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
     );
-    App.call = vi.fn(async (method) => {
+    bridge.call = vi.fn(async (method) => {
       if (method === "branch.get")
         return {
           run: {
@@ -449,7 +452,7 @@ describe("keeping warmed conversations fresh", () => {
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
       { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
     );
-    App.call = vi.fn(async (method) => {
+    bridge.call = vi.fn(async (method) => {
       if (method === "branch.get")
         return {
           run: {
@@ -478,7 +481,7 @@ describe("keeping warmed conversations fresh", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     await cache.writeCached(address, { surfaces });
     clock.mockRestore();
-    App.call = vi.fn(async (method) => {
+    bridge.call = vi.fn(async (method) => {
       if (method === "branch.get")
         return {
           run: {
@@ -496,7 +499,7 @@ describe("keeping warmed conversations fresh", () => {
   it("asks for no conversation that was never opened", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).not.toHaveBeenCalledWith("branch.get", expect.anything());
+    expect(bridge.call).not.toHaveBeenCalledWith("branch.get", expect.anything());
   });
 });
 
@@ -504,14 +507,14 @@ describe("keeping file listings warm", () => {
   it("syncs the top-level directory for an active branch", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "" });
+    expect(bridge.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "" });
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" });
     expect(record).toBeTruthy();
   });
 
   it("re-lists the directories the reader walked into", async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" }, { path: "src", entries: [] });
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "fs.tree") return { path: params.path, entries: [{ name: "fresh.js", kind: "file" }] };
       if (method === "git.status") return { head: "abc" };
       if (method === "git.log") return { commits: [] };
@@ -519,7 +522,7 @@ describe("keeping file listings warm", () => {
     });
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "src" });
+    expect(bridge.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "src" });
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" });
     expect(record.value.entries).toHaveLength(1);
   });
@@ -529,12 +532,12 @@ describe("keeping a warmed review diff fresh", () => {
   it("re-reads run.diff only where the All-changes view was opened before", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(App.call).not.toHaveBeenCalledWith("run.diff", expect.anything());
+    expect(bridge.call).not.toHaveBeenCalledWith("run.diff", expect.anything());
 
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: "old" });
-    App.call.mockClear();
+    bridge.call.mockClear();
     const watcher = registeredWatchers.find((w) => w.entity === "run-1" && !w.disposed);
-    App.call.mockImplementation(async (method) => {
+    bridge.call.mockImplementation(async (method) => {
       if (method === "run.diff") return { patch: "diff --git fresh" };
       if (method === "git.status") return { head: "abc" };
       if (method === "git.log") return { commits: [] };
@@ -543,7 +546,7 @@ describe("keeping a warmed review diff fresh", () => {
     });
     watcher.refresh();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("run.diff", { run_id: "run-1" });
+    expect(bridge.call).toHaveBeenCalledWith("run.diff", { run_id: "run-1" });
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" });
     expect(record.value.patch).toBe("diff --git fresh");
   });

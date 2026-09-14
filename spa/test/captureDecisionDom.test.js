@@ -6,6 +6,10 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const feedProjects = [
   { id: "p1", name: "relaydb" },
   { id: "p2", name: "dotfiles" },
@@ -137,7 +141,7 @@ beforeEach(async () => {
     onCarrier: () => {},
   });
   // The alias no surface on this page may read any more.
-  App.call = vi.fn(async () => record);
+  bridge.call = vi.fn(async () => record);
   host = document.getElementById("capture-page");
   surface = mountCaptureDecision(host, "capture-1");
   await surface.load();
@@ -301,7 +305,7 @@ describe("the capture decision page", () => {
     expect(asked).toContain("capture.answer");
     expect(asked).toContain("capture.reroute");
     expect(asked).toContain("capture.cancel");
-    expect(App.call).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
     expect(awayCall).not.toHaveBeenCalled();
   });
 
@@ -349,7 +353,7 @@ describe("a capture taken on a device that is not home", () => {
 
     expect(awayCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-2" });
     expect(homeCall).not.toHaveBeenCalled();
-    expect(App.call).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
   });
 
   it("offers that machine's projects as the destinations", () => {

@@ -8,6 +8,10 @@ import { resolve } from "node:path";
 
 import { callerReaches } from "./deviceSessionFixture.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const NOW = Date.now();
@@ -117,7 +121,7 @@ beforeEach(() => {
   rememberDeviceFilter(null);
   openSession("dev-1", workshopCall);
   openSession("dev-2", laptopCall);
-  App.call = vi.fn(async (method) => {
+  bridge.call = vi.fn(async (method) => {
     if (method === "worktree.create") return { project_id: "p1", branch: "build/mascot-model-spike", worktree_id: "wt-9" };
     if (method === "issue.create") return { project_id: "p1", issue_id: "plan-9", plan_id: "plan-9" };
     return {};

@@ -22,6 +22,10 @@ import {
   writeThreadKeepingComposer,
 } from "../src/core/thread.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const RAIL_COMPOSER = {
   inputId: "railinput",
   sendId: "railsend",
@@ -366,13 +370,13 @@ describe("the rail's poll on an unchanged conversation", () => {
     localStorage.clear();
     resetAgentRailMemory();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    App.call = vi.fn(async (method) => (method === "branch.get" ? row() : {}));
+    bridge.call = vi.fn(async (method) => (method === "branch.get" ? row() : {}));
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
       deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
-      call: (method, params) => App.call(method, params),
+      call: (method, params) => bridge.call(method, params),
     });
     await flush();
   });

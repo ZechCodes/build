@@ -6,6 +6,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const manager = {
@@ -64,7 +68,7 @@ const branchAddress = (over = {}) => ({
   deviceId: "dev-1",
   projectId: "p1",
   branch: "build/login",
-  call: (...args) => App.call(...args),
+  call: (...args) => bridge.call(...args),
   ...over,
 });
 
@@ -93,7 +97,7 @@ beforeEach(() => {
   manager.attachTerminal.mockReset().mockResolvedValue({ snapshot: "", cursor: 0 });
   manager.detach.mockReset();
   notifyError.mockClear();
-  App.call = vi.fn(async (method, params) => {
+  bridge.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
     if (method === "branch.get") return branchRow;
     return {};
@@ -165,7 +169,7 @@ describe("opening it", () => {
   });
 
   it("opens an issue's console on the primary checkout, without asking about a branch", async () => {
-    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => App.call(...args) });
+    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args) });
     await open();
     expect(manager.listTerminals).toHaveBeenCalledWith({ project_id: "p1" });
     expect(callsTo("branch.get")).toEqual([]);
@@ -179,7 +183,7 @@ describe("opening it", () => {
   });
 
   it("says so when the branch names no directory to stand in", async () => {
-    App.call = vi.fn(async () => {
+    bridge.call = vi.fn(async () => {
       throw new Error("branch.get: no branch is checked out in this project");
     });
     await mount();
@@ -225,7 +229,7 @@ describe("the sizes", () => {
     expect(size()).toBe("half");
     // Another work item's console is its own, and starts shut.
     panel.dispose();
-    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => App.call(...args) });
+    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args) });
     expect(size()).toBe("collapsed");
   });
 });

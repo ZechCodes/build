@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { srcJsFiles, srcSourceOf } from "./srcFiles.js";
+import { srcJsFiles, srcSourceOf, testJsFiles, testSourceOf } from "./treeFiles.js";
 
 // The six aliases plus the harness catalog that sat beside them, all read off
 // App itself. `context.call` and `row.offline` are the answers that replaced
@@ -42,20 +42,22 @@ const RETIRED_NAME = new RegExp(`\\b(${RETIRED.join("|")})\\b`);
 
 /** One file's source with its comments blanked out, line count preserved so a
  *  hit still reports the line it is on. */
-function codeOf(file) {
-  return srcSourceOf(file)
+function codeOf(source) {
+  return source
     .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
     .replace(/\/\/[^\n]*/g, "");
 }
 
-/** Every `file:line` under src/ whose code matches, comments not counted. */
-function hitsFor(pattern) {
-  return srcJsFiles().flatMap((file) =>
-    codeOf(file)
+/** Every `file:line` in a tree whose code matches, comments not counted. */
+function hitsIn(files, sourceOf, pattern) {
+  return files().flatMap((file) =>
+    codeOf(sourceOf(file))
       .split("\n")
       .flatMap((line, index) => (pattern.test(line) ? [`${file}:${index + 1} ${line.trim()}`] : [])),
   );
 }
+
+const hitsFor = (pattern) => hitsIn(srcJsFiles, srcSourceOf, pattern);
 
 describe("no file under spa/src reads a current device", () => {
   it("finds files to scan at all", () => {
@@ -76,5 +78,38 @@ describe("no file under spa/src reads a current device", () => {
       hitsFor(RETIRED_NAME),
       "the switcher and the application-scope singletons are gone; the registry owns every device",
     ).toEqual([]);
+  });
+});
+
+// A suite can stand an alias back up as easily as the app can, and for a while
+// every one of them did: a test wrote `App.call` and a fake session read it
+// back, which mocked nothing — no file under src/ has read that field since the
+// switcher went — but taught every later reader that the app still has a
+// current device. What replaced it is a registered context
+// (test/deviceSessionFixture.js) and a bridge the suite holds itself.
+//
+// Naming one is not writing one: three module guards assert on the literal
+// "App.call" to prove their module never reaches for an ambient caller, which
+// is this ban being kept rather than broken. So what fails here is the write.
+const ALIAS_WRITE = /\bApp\.(session|call|cacheScope|chatRepository|offline|offlineSince|modelCatalog)\s*=[^=]/;
+
+// Every suite but this one: the list of banned names above is the ban, not a
+// use of it.
+const scannedSuites = () => testJsFiles().filter((file) => file !== "noCurrentDevice.test.js");
+
+describe("no suite under spa/test stands a current device back up", () => {
+  it("finds suites to scan at all", () => {
+    expect(scannedSuites().length).toBeGreaterThan(100);
+  });
+
+  it("writes none of the retired App.* aliases", () => {
+    expect(
+      hitsIn(scannedSuites, testSourceOf, ALIAS_WRITE),
+      "hold the bridge in the suite and register its device with test/deviceSessionFixture.js",
+    ).toEqual([]);
+  });
+
+  it("calls none of the retired current-device functions", () => {
+    expect(hitsIn(scannedSuites, testSourceOf, RETIRED_NAME), "the registry owns every device").toEqual([]);
   });
 });

@@ -36,12 +36,11 @@ describe("openProjectSettings", () => {
     expect(sheet.querySelector("#psbranch").readOnly).toBe(true);
   });
 
-  it("asks only the caller it was handed, never an app-wide one", async () => {
+  it("asks only the caller it was handed", async () => {
     // Whoever opens the sheet has already resolved which machine this project
-    // is on; a sheet that reached for the app's own caller would read one
-    // device's project through another's bridge.
-    const { App } = await import("../src/app.js");
-    App.call = vi.fn(async () => ({ projects: [PROJECT] }));
+    // is on, and hands the sheet that machine's caller: the id it sends is the
+    // bare one that machine's daemon minted, so asking anybody else would read
+    // one device's project through another's bridge.
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
     await flush();
@@ -52,7 +51,6 @@ describe("openProjectSettings", () => {
       project_id: "proj-1",
       url: "git@github.com:8ly/other.git",
     });
-    expect(App.call).not.toHaveBeenCalled();
   });
 
   it("saves the remote through the bridge's own method and closes", async () => {

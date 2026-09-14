@@ -10,6 +10,14 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 import { sessionAnswering } from "./deviceSessionFixture.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
+// The device's conversations, as the registry holds them for this one machine:
+// the rail is handed one and writes every draft and message through it.
+let chatRepository = null;
+
 // The conversation cache writes through IndexedDB; give the module a fake one
 // before anything imports it.
 globalThis.indexedDB = new IDBFactory();
@@ -168,8 +176,8 @@ const railAddress = (over = {}) => ({
   projectId: "p1",
   branch: "build/login",
   cacheScope: scopeFor("dev-1"),
-  chatRepository: App.chatRepository,
-  call: (method, params) => App.call(method, params),
+  chatRepository,
+  call: (method, params) => bridge.call(method, params),
   ...over,
 });
 
@@ -195,7 +203,7 @@ beforeEach(async () => {
   mountAgentTab.mockClear();
   notifyError.mockClear();
   catalog = CATALOG; // asked for once per device; each test gets its own
-  App.call = vi.fn(async (method, params) => {
+  bridge.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
     if (method === "models.list") return catalog;
     if (method === "branch.get") return payload;
@@ -206,17 +214,17 @@ beforeEach(async () => {
     if (method === "thread.post") return { posted_sequence: 7 };
     return {};
   });
-  App.chatRepository = createChatRepository({ scope: scopeFor("dev-1"), call: (method, params) => App.call(method, params) });
+  chatRepository = createChatRepository({ scope: scopeFor("dev-1"), call: (method, params) => bridge.call(method, params) });
   // The machine the rail is mounted on: its bridge is what the harness catalog
   // comes from.
-  adoptDeviceSession(sessionAnswering(App));
+  adoptDeviceSession(sessionAnswering(bridge));
 });
 
 afterEach(() => {
   if (rail) rail.dispose();
   rail = null;
-  App.chatRepository?.dispose();
-  App.chatRepository = null;
+  chatRepository?.dispose();
+  chatRepository = null;
   vi.useRealTimers();
 });
 
@@ -414,8 +422,8 @@ describe("the bubble strip", () => {
 
     // The run behind the branch was replaced: the daemon refuses the id rather
     // than answering with somebody else's conversation.
-    const refusing = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const refusing = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "branch.get" && params.agent_id) throw new Error("unknown agent_id: ag-1");
       return refusing(method, params);
@@ -548,9 +556,9 @@ describe("taking an agent back off the branch", () => {
   };
 
   const holdRemove = () => {
-    const answering = App.call;
+    const answering = bridge.call;
     let refuse = null;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "agent.remove") return new Promise((_, reject) => { refuse = reject; });
       return answering(method, params);
@@ -648,8 +656,8 @@ describe("taking an agent back off the branch", () => {
   // standard way and stay exactly as it was, not break under the refusal.
   it("raises the standard error notice when the daemon does not know the method", async () => {
     await openSecondAgent();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "agent.remove") throw new Error("unknown method: agent.remove");
       return answering(method, params);
@@ -763,8 +771,8 @@ describe("taking an agent back off the branch", () => {
     await flush();
     confirmModal().querySelector("[data-confirm-ok]").click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "branch.get") throw new Error("the bridge is not answering");
       return answering(method, params);
@@ -931,8 +939,8 @@ describe("the conversation panel", () => {
     await mount();
     tuiToggle().click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         return {};
@@ -952,8 +960,8 @@ describe("the conversation panel", () => {
     await mount();
     tuiToggle().click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         return new Promise(() => {});
@@ -980,8 +988,8 @@ describe("the conversation panel", () => {
   it("marks the agent starting from a message that wakes it, so a second message starts nothing twice", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         return new Promise(() => {});
@@ -1038,8 +1046,8 @@ describe("the conversation panel", () => {
     await mount();
     tuiToggle().click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         const timedOut = new Error("agent.start timed out");
@@ -1061,8 +1069,8 @@ describe("the conversation panel", () => {
     await mount();
     tuiToggle().click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         throw new Error("no session could be spawned");
@@ -1228,7 +1236,7 @@ describe("the conversation panel", () => {
         items: [{ type: "message", data: { role: "agent", body: `words from ${who}`, seen_at: null } }],
         sessions: [],
       });
-      App.call = vi.fn(async (method, params) => {
+      bridge.call = vi.fn(async (method, params) => {
         calls.push({ method, params });
         if (method === "branch.get") {
           return branchRow({
@@ -1305,7 +1313,7 @@ describe("reading back past the top of a paged conversation", () => {
   const railBody = () => railHost().querySelector("#rail-body");
 
   const pagedConversation = (hasMore, moreAboveThatPage = true, agents = [agent()]) => {
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "branch.get") {
         // A cursored poll is a forward delta and says nothing about the far
@@ -1448,7 +1456,7 @@ describe("the count on a folded run of activity", () => {
   });
 
   const conversationOf = (thread) => {
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") {
@@ -1743,7 +1751,7 @@ describe("the first message", () => {
   // would mint a second owner of the checkout the Changes review just claimed.
   it("adopts through the adopter the view hands it", async () => {
     payload = branchRow({ run_id: null, run: null, agents: [] });
-    const shared = createAdoptingCall((method, params) => App.call(method, params), "p1", "wt-3");
+    const shared = createAdoptingCall((method, params) => bridge.call(method, params), "p1", "wt-3");
     await shared.adopt();
     await mount({ kind: "branch", projectId: "p1", branch: "build/login", adopting: () => shared });
 
@@ -1964,8 +1972,8 @@ describe("the composer's model menu", () => {
   it("names the pending model beside it once the menu has chosen another", async () => {
     payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.choose") {
         calls.push({ method, params });
         payload = branchRow({
@@ -1997,8 +2005,8 @@ describe("the composer's model menu", () => {
   it("moves the label the instant a model is picked, before agent.choose answers", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.choose") {
         calls.push({ method, params });
         return new Promise(() => {});
@@ -2018,9 +2026,9 @@ describe("the composer's model menu", () => {
   it("does not send with the old model while a newly picked model is still applying", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
+    const answering = bridge.call;
     let acknowledgeChoice;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.choose") {
         calls.push({ method, params });
         return new Promise((resolve) => { acknowledgeChoice = resolve; });
@@ -2062,8 +2070,8 @@ describe("the composer's model menu", () => {
   it("keeps the pick through a branch.get that still names the old model", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.choose") {
         calls.push({ method, params });
         return new Promise(() => {});
@@ -2086,8 +2094,8 @@ describe("the composer's model menu", () => {
   it("says a refusal the standard way and puts the menu back on what the bridge holds", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "agent.choose") throw new Error("agent.choose: the agent is locked to Claude Code");
       return answering(method, params);
@@ -2268,7 +2276,7 @@ describe("revisiting a conversation", () => {
       { items: historyThread().items, olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: [{ ...feedItems[0], agents: [agent()] }], projects: [] };
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return new Promise(() => {});
@@ -2293,7 +2301,7 @@ describe("revisiting a conversation", () => {
     rail.dispose();
     rail = null;
 
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") {
@@ -2396,7 +2404,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   const pillCount = (kind) =>
     railStatusPills().querySelector(`[data-surface-kind="${kind}"] .surface-pill-count`).textContent.trim();
   const answerNothing = () => {
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return new Promise(() => {});
@@ -2498,7 +2506,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   it("replaces the seeded pills with the first live payload", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test", "cargo clippy"));
     let answer = null;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return new Promise((resolve) => { answer = resolve; });
@@ -2573,8 +2581,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
     const held = new Promise((resolve) => {
       release = resolve;
     });
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "agent.add") return answer(method, params);
       calls.push({ method, params });
       await held;
@@ -2584,8 +2592,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
   };
 
   const refuseCall = (refused, message) => {
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== refused) return answer(method, params);
       calls.push({ method, params });
       throw new Error(message);
@@ -2605,8 +2613,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
     const held = new Promise((resolve) => {
       release = resolve;
     });
-    const running = App.chatRepository.optimisticStore().runOptimistic({
-      scope: `${App.chatRepository.scopeKey}:agents:branch:p1:build/login`,
+    const running = chatRepository.optimisticStore().runOptimistic({
+      scope: `${chatRepository.scopeKey}:agents:branch:p1:build/login`,
       records: [insertRecord("ag-7", agent({ id: "ag-7", ordinal: 1 }))],
       call: () => held,
       failureSummary: "Could not start the agent",
@@ -2672,8 +2680,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
     payload = agentless();
     await mount();
     let releasePost = null;
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "thread.post") return answer(method, params);
       calls.push({ method, params });
       await new Promise((resolve) => {
@@ -2786,8 +2794,8 @@ describe("sending to an agent that is already there", () => {
     const held = new Promise((resolve) => {
       release = resolve;
     });
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "thread.post") return answer(method, params);
       calls.push({ method, params });
       await held;
@@ -2797,8 +2805,8 @@ describe("sending to an agent that is already there", () => {
   };
 
   const refuseThreadPost = (message) => {
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "thread.post") return answer(method, params);
       calls.push({ method, params });
       throw new Error(message);
@@ -2867,8 +2875,8 @@ describe("sending to an agent that is already there", () => {
   it("leaves a delivered message where it landed when only the wake is refused", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "agent.start") return answer(method, params);
       calls.push({ method, params });
       throw new Error("no session could be spawned");
@@ -2888,8 +2896,8 @@ describe("sending to an agent that is already there", () => {
   it("keeps a delivered message, and raises nothing, when only the wake outlives the timer", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "agent.start") return answer(method, params);
       calls.push({ method, params });
       const timedOut = new Error("agent.start timed out");
@@ -2912,8 +2920,8 @@ describe("sending to an agent that is already there", () => {
   it("keeps the message on the thread when the post itself outlives the timer", async () => {
     payload = branchRow({ agents: [agent({ state: "live" })] });
     await mount();
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "thread.post") return answer(method, params);
       calls.push({ method, params });
       const timedOut = new Error("thread.post timed out");
@@ -3143,7 +3151,7 @@ describe("a run of activity in the rail", () => {
   const runRows = () => [...railHost().querySelectorAll(".thread-activity-group-list > .thread-activity")];
 
   const answering = (activityPage) => {
-    App.call.mockImplementation(async (method, params) => {
+    bridge.call.mockImplementation(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return payload;
@@ -3301,7 +3309,7 @@ describe("a run of activity in the rail", () => {
       [said(1, "Have a look."), toolCall(50, "Read y.js"), said(52, "Done.")],
       [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, rows: 40, last_tool_call: null }],
     );
-    App.call.mockImplementation(async (method, params) => {
+    bridge.call.mockImplementation(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return payload;
@@ -3415,7 +3423,7 @@ describe("an account with more than one device", () => {
     App.selectedDeviceId = "dev-1"; // home is the device the pick names
     contexts.adoptDeviceSession({
       deviceId: "dev-1",
-      call: (...args) => App.call(...args),
+      call: (...args) => bridge.call(...args),
       close: () => {},
       peer: () => {},
       onCarrier: () => {},
@@ -3429,7 +3437,7 @@ describe("an account with more than one device", () => {
       devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [mine], projects: [] } },
     };
     // The first read never answers, so what is painted is the seed alone.
-    App.call = vi.fn(async (method) => {
+    bridge.call = vi.fn(async (method) => {
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return new Promise(() => {});
       return {};

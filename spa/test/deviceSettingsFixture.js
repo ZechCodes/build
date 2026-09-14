@@ -20,7 +20,8 @@ const flush = () => new Promise((done) => setTimeout(done, 0));
 
 /**
  * Render one paired machine's settings page against a bridge that answers
- * `call`, and hand back the app it rendered on.
+ * `call`, and hand back `{ App, call }` — the app it rendered on, and the spy
+ * that bridge answered through.
  *
  * The page's own connection and the account's context for the same machine both
  * answer with that bridge, so a suite writes one and every reader sees the same
@@ -33,13 +34,13 @@ export async function renderDeviceSettingsPage(call, openSession) {
   const { App } = await import("../src/app.js");
   const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
   const { renderDeviceSettings } = await import("../src/views/deviceSettings.js");
-  App.call = vi.fn(call);
+  const bridge = { call: vi.fn(call) };
   App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
   App.selectedDeviceId = "dev-1";
   App.route = { name: "device", id: "dev-1" };
-  openSession.mockResolvedValue(sessionAnswering(App));
-  adoptDeviceSession(sessionAnswering(App));
+  openSession.mockResolvedValue(sessionAnswering(bridge));
+  adoptDeviceSession(sessionAnswering(bridge));
   await renderDeviceSettings();
   await flush();
-  return App;
+  return { App, call: bridge.call };
 }

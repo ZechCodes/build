@@ -9,6 +9,10 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 // The shared socket's status fan-out, as a double a test can drive: the real one
 // is what tells a surface its machine is reachable again.
 const status = vi.hoisted(() => {
@@ -80,7 +84,7 @@ beforeEach(() => {
   for (const fn of Object.values(manager)) fn.mockReset();
   manager.input.mockResolvedValue(undefined);
   manager.resize.mockResolvedValue(undefined);
-  App.call = vi.fn(async () => ({ project_id: "p1", branch: "build/login", run_id: "run-3" }));
+  bridge.call = vi.fn(async () => ({ project_id: "p1", branch: "build/login", run_id: "run-3" }));
 });
 
 const branch = {
@@ -88,7 +92,7 @@ const branch = {
   deviceId: "dev-1",
   projectId: "p1",
   branch: "build/login",
-  call: (...args) => App.call(...args),
+  call: (...args) => bridge.call(...args),
 };
 
 /** An open console on a branch whose checkout resolves. */

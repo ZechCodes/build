@@ -12,6 +12,10 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const refreshFeed = vi.fn(async () => {});
@@ -176,13 +180,13 @@ describe("the rail's poll", () => {
     resetAgentRailMemory();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     payload = branchRow([]);
-    App.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
+    bridge.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
       deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
-      call: (method, params) => App.call(method, params),
+      call: (method, params) => bridge.call(method, params),
     });
     await flush();
   });
@@ -224,7 +228,7 @@ describe("the rail's poll", () => {
     document.getElementById("railsend").click();
     await flush();
 
-    const post = App.call.mock.calls.find(([method]) => method === "thread.post");
+    const post = bridge.call.mock.calls.find(([method]) => method === "thread.post");
     expect(post[1]).toMatchObject({ entity_id: "run-3", agent_id: "ag-1", body: "ship it" });
   });
 });
@@ -269,13 +273,13 @@ describe("a work item that keeps losing its agent", () => {
 
   const mount = async () => {
     payload = withAgent();
-    App.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
+    bridge.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
       deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
-      call: (method, params) => App.call(method, params),
+      call: (method, params) => bridge.call(method, params),
     });
     await flush();
   };
@@ -353,7 +357,7 @@ describe("a work item that keeps losing its agent", () => {
   // unscoped ask that follows. Both are the same non-answer.
   it("keeps the box when the daemon refuses the agent it asked about", async () => {
     let tick = 0;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "branch.get") return {};
       // Two ticks off the bare checkout for every one that resolves the run.
       const bare = tick++ % 3 !== 2;
@@ -366,7 +370,7 @@ describe("a work item that keeps losing its agent", () => {
       deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
-      call: (method, params) => App.call(method, params),
+      call: (method, params) => bridge.call(method, params),
     });
     await flush();
     // The first read lands on a bare tick; the run resolves on the third.

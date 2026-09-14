@@ -5,6 +5,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { motionBeat } from "./motionRecorder.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const refreshFeed = vi.fn(async () => {});
 vi.mock("../src/core/taskFeed.js", () => ({
   refreshFeed: (...args) => refreshFeed(...args),
@@ -39,7 +43,7 @@ const highlighted = () => rows().findIndex((row) => row.getAttribute("aria-selec
 /** What the modal did beyond the reads it makes whichever tab is up: the
  *  project's branches, and the machine's harness catalog. */
 const READS = ["git.branches", "models.list"];
-const mutations = () => App.call.mock.calls.filter(([method]) => !READS.includes(method));
+const mutations = () => bridge.call.mock.calls.filter(([method]) => !READS.includes(method));
 
 const listed = (name, stamps = {}) => ({
   name,
@@ -69,7 +73,7 @@ beforeEach(() => {
   // The harnesses this project's machine offers, which is what its bridge says
   // and nothing the account holds.
   offered = { default_provider: "claude", providers: [] };
-  App.call = vi.fn(async (method) => {
+  bridge.call = vi.fn(async (method) => {
     if (method === "models.list") return offered;
     if (method === "git.branches") return { current: "main", branches };
     if (method === "run.adopt") return { run_id: "r-7", branch: "feature-x" };
@@ -80,10 +84,10 @@ beforeEach(() => {
   refreshFeed.mockClear();
   navigate = vi.fn();
   resetDeviceContexts();
-  // The project's own machine answers, through whatever App.call is standing at
+  // The project's own machine answers, through whatever the bridge is standing at
   // the time — a test that hands over a new one is that bridge answering
   // differently, not another machine.
-  deviceAnswering("dev-1", (...args) => App.call(...args));
+  deviceAnswering("dev-1", (...args) => bridge.call(...args));
 });
 
 describe("the create modal", () => {
@@ -126,7 +130,7 @@ describe("the create modal", () => {
     type("Mascot Model Spike!");
     modal().querySelector("[data-create-go]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "Mascot Model Spike!" });
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "Mascot Model Spike!" });
     expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/mascot-model-spike", tab: "changes" });
     expect(App.focusComposerOnMount).toBe(true);
     expect(refreshFeed).toHaveBeenCalled();
@@ -138,7 +142,7 @@ describe("the create modal", () => {
   // gave up on — is not a failure: the board is already carrying the row as
   // Creating, and it opens itself when the record settles.
   it("closes and leaves the board carrying the row when the create answers without a branch", async () => {
-    App.call = vi.fn(async () => ({ project_id: "p1", pending_worktree_id: "wt-pending" }));
+    bridge.call = vi.fn(async () => ({ project_id: "p1", pending_worktree_id: "wt-pending" }));
     openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     type("mascot spike");
     modal().querySelector("[data-create-go]").click();
@@ -150,7 +154,7 @@ describe("the create modal", () => {
   });
 
   it("closes the same way when the reply outlives the browser's timer", async () => {
-    App.call = vi.fn(async () => {
+    bridge.call = vi.fn(async () => {
       const timedOut = new Error("worktree.create timed out");
       timedOut.timedOut = true;
       timedOut.uncertain = true;
@@ -166,7 +170,7 @@ describe("the create modal", () => {
   });
 
   it("closes an issue the same way when its reply outlives the timer", async () => {
-    App.call = vi.fn(async () => {
+    bridge.call = vi.fn(async () => {
       const timedOut = new Error("issue.create timed out");
       timedOut.timedOut = true;
       timedOut.uncertain = true;
@@ -186,7 +190,7 @@ describe("the create modal", () => {
     type("Add a health endpoint");
     modal().querySelector("[data-create-go]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("issue.create", expect.objectContaining({ goal: "Add a health endpoint", project_id: "p2", dispatch: false }));
+    expect(bridge.call).toHaveBeenCalledWith("issue.create", expect.objectContaining({ goal: "Add a health endpoint", project_id: "p2", dispatch: false }));
     expect(navigate).toHaveBeenCalledWith({ name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-9" });
     expect(App.focusComposerOnMount).toBe(false);
     expect(modal()).toBeNull();
@@ -205,7 +209,7 @@ describe("the create modal", () => {
     openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue", navigate });
     await flush();
 
-    expect(App.call).toHaveBeenCalledWith("models.list");
+    expect(bridge.call).toHaveBeenCalledWith("models.list");
     expect([...modal().querySelectorAll("#create-choice-provider option")].map((option) => option.value)).toEqual([
       "claude",
       "codex",
@@ -228,7 +232,7 @@ describe("the create modal", () => {
     type("Add a health endpoint");
     modal().querySelector("[data-create-go]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("issue.create", {
+    expect(bridge.call).toHaveBeenCalledWith("issue.create", {
       goal: "Add a health endpoint",
       project_id: "p2",
       dispatch: false,
@@ -241,17 +245,17 @@ describe("the create modal", () => {
     type("spike");
     press("Enter");
     await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", expect.anything());
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", expect.anything());
 
-    App.call.mockClear();
+    bridge.call.mockClear();
     openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue", navigate });
     type("a goal");
     press("Enter");
     await flush();
-    expect(App.call).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
     press("Enter", { metaKey: true });
     await flush();
-    expect(App.call).toHaveBeenCalledWith("issue.create", expect.anything());
+    expect(bridge.call).toHaveBeenCalledWith("issue.create", expect.anything());
   });
 
   it("refuses an empty answer instead of creating something unnamed", async () => {
@@ -267,7 +271,7 @@ describe("the create modal", () => {
   });
 
   it("says what went wrong without losing what was typed, and lets you try again", async () => {
-    App.call = vi.fn(async () => {
+    bridge.call = vi.fn(async () => {
       throw new Error("a branch named build/scratch already exists");
     });
     openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
@@ -315,7 +319,7 @@ describe("the create modal's branch picker", () => {
       listed("feature-run", heldBy("run", "r-1")),
       listed("feature-elsewhere", heldBy("external_worktree", "wt-3")),
     ]);
-    expect(App.call).toHaveBeenCalledWith("git.branches", { project_id: "p1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.branches", { project_id: "p1" });
     expect(rowNames()).toEqual(["main", "feature-x", "feature-remote", "feature-run", "feature-elsewhere"]);
     expect(rows().map((row) => row.querySelector(".branch-row-verb").textContent)).toEqual([
       "Adopt",
@@ -333,10 +337,10 @@ describe("the create modal's branch picker", () => {
     branches = [listed("feature-x")];
     openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue", navigate });
     await flush();
-    expect(App.call).not.toHaveBeenCalledWith("git.branches", expect.anything());
+    expect(bridge.call).not.toHaveBeenCalledWith("git.branches", expect.anything());
     tab("branch").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("git.branches", { project_id: "p1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.branches", { project_id: "p1" });
     expect(rowNames()).toEqual(["feature-x"]);
   });
 
@@ -360,7 +364,7 @@ describe("the create modal's branch picker", () => {
     await openOnBranches([listed("feature-x")]);
     rows()[0].click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
     expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "feature-x", tab: "changes" });
     expect(App.focusComposerOnMount).toBe(true);
     expect(refreshFeed).toHaveBeenCalled();
@@ -371,8 +375,8 @@ describe("the create modal's branch picker", () => {
     await openOnBranches([listed("feature-elsewhere", heldBy("external_worktree", "wt-3"))]);
     rows()[0].click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", worktree_id: "wt-3" });
-    expect(App.call).not.toHaveBeenCalledWith("worktree.create", expect.anything());
+    expect(bridge.call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", worktree_id: "wt-3" });
+    expect(bridge.call).not.toHaveBeenCalledWith("worktree.create", expect.anything());
     expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "feature-elsewhere", tab: "changes" });
     expect(App.focusComposerOnMount).toBe(false);
   });
@@ -381,13 +385,13 @@ describe("the create modal's branch picker", () => {
     await openOnBranches([listed("main", { is_current: true, ...heldBy("primary_checkout", "wt-root") })]);
     rows()[0].click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", primary: true });
+    expect(bridge.call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", primary: true });
     expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
   });
 
   it("just opens a branch a run already owns", async () => {
     await openOnBranches([listed("feature-run", heldBy("run", "r-1"))]);
-    App.call.mockClear();
+    bridge.call.mockClear();
     rows()[0].click();
     await flush();
     expect(mutations()).toEqual([]);
@@ -405,7 +409,7 @@ describe("the create modal's branch picker", () => {
     expect(highlighted()).toBe(0);
     press("Enter");
     await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "main" });
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "main" });
   });
 
   it("highlights the branch it would cut as soon as there is text, so Enter still cuts it", async () => {
@@ -415,7 +419,7 @@ describe("the create modal's branch picker", () => {
     expect(rowNames()[0]).toBe("build/spike");
     press("Enter");
     await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "spike" });
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "spike" });
   });
 
   it("means the branch itself when the text spells one exactly", async () => {
@@ -424,12 +428,12 @@ describe("the create modal's branch picker", () => {
     expect(rowNames()).toEqual(["feature-x"]);
     press("Enter");
     await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
   });
 
   it("keeps the typed text, the caret and the rows when a pick is refused", async () => {
     await openOnBranches([listed("feature-x")]);
-    App.call = vi.fn(async () => {
+    bridge.call = vi.fn(async () => {
       throw new Error("branch \"feature-x\" is already checked out by run r-1");
     });
     type("feature-x");
@@ -451,13 +455,13 @@ describe("the create modal's branch picker", () => {
     expect(highlighted()).toBe(-1);
     press("Enter");
     await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
-    expect(App.call).not.toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "feature-x" });
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
+    expect(bridge.call).not.toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "feature-x" });
   });
 
   it("says nothing about matches while the listing is still on the wire, and says it once the answer is in", async () => {
     let answer;
-    App.call = vi.fn(
+    bridge.call = vi.fn(
       (method) => new Promise((resolve) => {
         answer = () => resolve({ current: "main", branches: [] });
         if (method !== "git.branches") resolve({});
@@ -474,7 +478,7 @@ describe("the create modal's branch picker", () => {
 
   it("lets a listing that lands after the modal was dismissed fall on the floor, painting nothing and taking no focus", async () => {
     let answer;
-    App.call = vi.fn(
+    bridge.call = vi.fn(
       (method) => new Promise((resolve) => {
         answer = () => resolve({ current: "main", branches: [listed("feature-x")] });
         if (method !== "git.branches") resolve({});
@@ -526,7 +530,7 @@ describe("the create modal's branch picker", () => {
     await openOnBranches([listed("feature-x")]);
     const pressed = rows()[0].onclick();
     await expect(pressed).rejects.toThrow("no route for that branch");
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
     expect(refreshFeed).toHaveBeenCalled();
     expect(modal()).toBeNull();
   });
@@ -567,11 +571,11 @@ describe("the create modal's branch picker", () => {
       "issue.create",
       expect.objectContaining({ goal: "Add a health endpoint", project_id: "p1", dispatch: false }),
     );
-    expect(App.call).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
   });
 
   it("still cuts a branch by name when the listing itself cannot be read", async () => {
-    App.call = vi.fn(async (method) => {
+    bridge.call = vi.fn(async (method) => {
       if (method === "git.branches") throw new Error("not a git repository");
       return { project_id: "p1", branch: "build/spike" };
     });
@@ -581,7 +585,7 @@ describe("the create modal's branch picker", () => {
     type("spike");
     press("Enter");
     await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "spike" });
+    expect(bridge.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "spike" });
     expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/spike", tab: "changes" });
   });
 });

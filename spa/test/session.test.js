@@ -591,7 +591,7 @@ describe("a session that rides two carriers", () => {
       });
 
       await expect(restart).resolves.toEqual({ sdp: "v=0 answer" });
-      expect(events.lost).toBe(0); // App.offline never flipped
+      expect(events.lost).toBe(0); // the device was never marked offline
     } finally {
       vi.useRealTimers();
     }

@@ -12,8 +12,12 @@ import { defaultHarnessOf, defaultHarnessPanelHtml, mountDefaultHarness } from "
 import { sessionAnswering } from "./deviceSessionFixture.js";
 import { renderDeviceSettingsPage } from "./deviceSettingsFixture.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 // The device page opens its own connection to the machine it is about; here
-// that connection answers with whatever App.call is standing at the time, so a
+// that connection answers with whatever the bridge is standing at the time, so a
 // test writes one bridge and both the page and the registry read it.
 const { openSession } = vi.hoisted(() => ({ openSession: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
@@ -317,10 +321,10 @@ describe("the account page's creation defaults", () => {
     const { App } = await import("../src/app.js");
     const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
     const { renderSettings } = await import("../src/views/settings.js");
-    App.call = vi.fn(async (method) => (method === "models.list" ? CATALOG : {}));
+    bridge.call = vi.fn(async (method) => (method === "models.list" ? CATALOG : {}));
     App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
     App.selectedDeviceId = "dev-1";
-    adoptDeviceSession(sessionAnswering(App));
+    adoptDeviceSession(sessionAnswering(bridge));
 
     await renderSettings();
     await flush();

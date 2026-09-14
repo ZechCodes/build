@@ -17,7 +17,7 @@ const CATALOG = {
 };
 
 const { App, chooseCreationDevice, retireDevice, revokeDevice } = vi.hoisted(() => ({
-  App: { call: null, devices: [], selectedDeviceId: null },
+  App: { devices: [], selectedDeviceId: null },
   chooseCreationDevice: vi.fn(),
   retireDevice: vi.fn(),
   revokeDevice: vi.fn(async () => {}),
@@ -75,7 +75,6 @@ beforeEach(async () => {
     { id: "dev-1", name: "Laptop", fingerprint: "AAAABBBBCCCCDDDD", status: "online" },
     { id: "dev-2", name: "Studio", fingerprint: "EEEEFFFF00001111", status: "online" },
   ];
-  App.call = (...args) => call(...args);
   App.devices = [];
   App.selectedDeviceId = null;
   document.body.innerHTML = bodyHtml;

@@ -30,8 +30,67 @@
 import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
+import { workspaceRoute } from "./projectModel.js";
+import { workspaceRun } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
+
+/** Work still local to every Git directory in a durable workspace. The bridge
+ * omits the summary when even one repository cannot be read, so absence must
+ * remain visibly unknown rather than looking like a clean workspace. */
+function workspaceFacts(summary) {
+  const values = summary && [summary.pushes, summary.additions, summary.deletions];
+  if (!values || values.some((value) => !Number.isSafeInteger(value) || value < 0)) return "Work summary unavailable";
+  return `${summary.pushes} ${summary.pushes === 1 ? "push" : "pushes"} · +${summary.additions} −${summary.deletions}`;
+}
+
+const firstText = (...values) => values.find(Boolean) || "";
+
+function toWorkspaceEntry(workspace, projectNames, conversation) {
+  const activity = conversation || { working: workspace.status === "active" };
+  return {
+    key: `workspace:${workspace.workspaceKey}`,
+    kind: "workspace",
+    workspaceId: workspace.id,
+    workspaceKey: workspace.workspaceKey,
+    deviceId: workspace.deviceId,
+    projectId: workspace.project_id,
+    projectKey: workspace.projectKey,
+    project: firstText(projectNames.get(workspace.projectKey), workspace.project, workspace.project_id),
+    name: firstText(workspace.name, workspace.root, "Workspace"),
+    title: firstText(workspace.root, workspace.name, "Workspace"),
+    entityId: entityIdOf(conversation),
+    state: entryState(activity),
+    unreadCount: activity.unread_count || 0,
+    reason: unreadReasonText(activity.unread_reason, "branch"),
+    muted: !!activity.muted,
+    dismissed: !!activity.dismissed,
+    working: !!activity.working,
+    canFinish: false,
+    // Only the bridge can establish that every Git directory is clean. A
+    // missing value is unknown and must never expose the one-tap archive.
+    clean: workspace.status === "ready" && workspace.work_summary?.clean === true,
+    facts: workspaceFacts(workspace.work_summary),
+    route: workspaceRoute(workspace),
+    anchorMs: ms(firstText(workspace.created_at, workspace.updated_at)),
+    lastActivityMs: ms(workspace.updated_at),
+  };
+}
+
+/** Every device's workspaces as rows. A workspace belongs to one machine, so it
+ *  is named — and its project and its conversation are looked up — by the
+ *  account-wide names the feed stamped (core/deviceKey.js): two machines each
+ *  hold a `proj-1`, and a run id on one says nothing about the other. */
+export function workspaceEntries(workspaces = [], projects = [], items = []) {
+  const projectNames = new Map(projects.map((project) => [project.projectKey, project.name]));
+  const conversations = new Map(items.filter((item) => item.kind === "branch" && entityIdOf(item))
+    .map((item) => [JSON.stringify([item.projectKey, entityIdOf(item)]), item]));
+  return workspaces.filter((workspace) => workspace.status !== "finished").map((workspace) => {
+    const owner = workspace.entity_id || workspace.run_id || workspace.id;
+    const conversation = conversations.get(JSON.stringify([workspace.projectKey, owner])) || workspaceRun(workspace, items);
+    return toWorkspaceEntry(workspace, projectNames, conversation);
+  });
+}
 
 /** How long a row can say nothing before it belongs to Recent rather than to
  *  the list proper. */
@@ -469,6 +528,9 @@ const STANDS_ON = {
     entry.branch === route.branch,
   // An issue id is a uuid, so it names one row wherever it is.
   issue: (route) => (entry) => entry.kind !== "capture" && entry.issueId === route.id,
+  // A workspace is named by its machine too: a workspace id is one bridge's.
+  workspace: (route) => (entry) =>
+    entry.kind === "workspace" && entry.deviceId === route.deviceId && entry.workspaceId === route.workspaceId,
   capture: (route) => (entry) => entry.kind === "capture" && entry.captureId === route.id,
 };
 
@@ -499,6 +561,7 @@ export function activeEntryKey(route, entries) {
  *  to take. A row with neither Done nor Mute still has its menu — Clear is
  *  what it is for. */
 function menuHtml(entry, open) {
+  if (entry.kind === "workspace") return "";
   // A row the daemon is in the middle of making or removing is not the
   // reader's to act on: every verb here would race the one already running,
   // and the daemon refuses a second claim on the same thing anyway.
@@ -548,6 +611,16 @@ function projectTagHtml(entry, ui) {
  *  machines share the name. */
 const titleProject = (entry) => (entry.deviceName ? `${entry.project} (${entry.deviceName})` : entry.project);
 
+/** A clean durable workspace can be put away directly from the row. Finishing
+ * preserves its checkout and stops its agents, so it does not use the branch
+ * deletion menu or confirmation. Asks the wiring whether this one is already
+ * being finished, so the row painter does not have to. */
+function workspaceDoneHtml(entry, ui) {
+  if (entry.kind !== "workspace" || !entry.clean) return "";
+  const pending = ui.finishingWorkspaces?.has(entry.key);
+  return `<button class="btn mini inbox-workspace-done" type="button" data-workspace-done="${esc(entry.key)}" aria-label="Archive workspace ${esc(entry.name)}"${pending ? " disabled" : ""}>${pending ? "Done…" : "Done"}</button>`;
+}
+
 /** Everything the two lines leave out, on the row itself: what the work is for,
  *  which project it lives in, and why it is asking for you. */
 function rowTooltip(entry) {
@@ -585,7 +658,7 @@ export function inboxRowHtml(entry, ui = {}) {
       <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
       <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+    <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
 }
 
@@ -667,17 +740,14 @@ function rerouteBranchHtml(projectId, branches) {
 }
 
 /** The destination picker behind the reroute chip: every project, and the two
- *  things a capture can become in it. An issue takes one tap — there is nothing
- *  else to say about it; a branch discloses the field that names it.
+ *  branch destination a capture can become in it.
  *
  *  `ui`: { projects, rerouteBranchProject, rerouteBranches }. */
 function rerouteMenuHtml(entry, ui = {}) {
   const rows = (ui.projects || [])
     .map(
       (project) => `<div class="reroute-project"><span class="mt">${esc(project.name || project.id)}</span>
-        <span class="reroute-kinds">
-          <button class="btn mini" type="button" data-reroute-project="${esc(project.id)}" data-reroute-kind="issue">Issue</button>
-          <button class="btn mini${project.id === ui.rerouteBranchProject ? " primary" : ""}" type="button"
+        <span class="reroute-kinds"><button class="btn mini${project.id === ui.rerouteBranchProject ? " primary" : ""}" type="button"
             data-reroute-branch-open="${esc(project.id)}">Branch</button>
         </span></div>${project.id === ui.rerouteBranchProject ? rerouteBranchHtml(project.id, ui.rerouteBranches) : ""}`,
     )

@@ -5,6 +5,24 @@ import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
 describe("conversation thread rendering", () => {
+  it("puts only delivery status and time in the message footer", () => {
+    document.body.innerHTML = threadHtml({ items: [
+      { type: "message", data: { role: "user", body: "sent", created_at: "2026-07-24T12:00:00Z" } },
+      { type: "message", data: { role: "user", body: "read", created_at: "2026-07-24T12:01:00Z", seen_at: "now" } },
+      { type: "message", data: { role: "agent", body: "reply", created_at: "2026-07-24T12:02:00Z" } },
+    ] });
+    const messages = [...document.querySelectorAll(".thread-message")];
+
+    expect(document.querySelector(".thread-message-head")).toBeNull();
+    expect(messages[0].querySelector(".thread-status").ariaLabel).toBe("Sent");
+    expect(messages[0].querySelectorAll(".thread-status svg")).toHaveLength(1);
+    expect(messages[1].querySelector(".thread-status").ariaLabel).toBe("Read");
+    expect(messages[1].querySelectorAll(".thread-status svg")).toHaveLength(2);
+    expect(messages[2].querySelector(".thread-status")).toBeNull();
+    expect([...messages[0].querySelector(".thread-message-footer").children].map((node) => node.tagName))
+      .toEqual(["SPAN", "TIME"]);
+  });
+
   it("renders messages, zero-token events, seen state, and revision resolution", async () => {
     const thread = {
       revisions: [{ id: "diff-revision-2-abcd", artifact: "diff" }],
@@ -16,7 +34,7 @@ describe("conversation thread rendering", () => {
     };
     const html = threadHtml(thread);
     expect(html).toContain("rename this");
-    expect(html).toContain("Seen");
+    expect(html).toContain('aria-label="Read"');
     expect(html).toContain("Resolved in diff-revision-2-abcd");
     expect(html).toContain("Which name?");
     expect(html).toContain("Revision created");
@@ -168,14 +186,14 @@ describe("conversation thread rendering", () => {
     expect(timeline.at(-2).textContent).toContain("Agent reported done");
     expect(timeline.at(-1).classList.contains("thread-message")).toBe(true);
     expect(timeline.at(-1).classList.contains("thread-completion")).toBe(false);
-    expect(timeline.at(-1).querySelector(".thread-message-head").textContent).toContain("Agent commented");
+    expect(timeline.at(-1).querySelector(".thread-message-head")).toBeNull();
     expect(timeline.at(-1).textContent).toContain("Implemented persistent review conversations.");
     expect(timeline.at(-1).textContent).not.toContain("Critical files");
     expect(timeline.at(-1).textContent).not.toContain("src/plan.js");
     expect(document.querySelector(".thread-event-detail")).toBeNull();
     expect(document.querySelector("details")).toBeNull();
     expect(document.querySelector("#planthreadinput")).not.toBeNull();
-    expect(document.querySelector("#planthreadsend .composer-send-label").textContent).toBe("Send");
+    expect(document.querySelector("#planthreadsend").getAttribute("aria-label")).toBe("Send message");
   });
 
   // The timeline's avatar spine is drawn by the timeline itself, so a
@@ -226,7 +244,7 @@ describe("conversation thread rendering", () => {
     // sitting open at a height nothing has filled yet.
     expect(document.querySelector("#diffthreadinput").rows).toBe(1);
     expect(document.querySelector("#diffthreadhint")).not.toBeNull();
-    expect(document.querySelector("#diffthreadsend .composer-send-label").textContent).toBe("Send");
+    expect(document.querySelector("#diffthreadsend").getAttribute("aria-label")).toBe("Send message");
     expect(document.querySelector("#diffthreadsend").classList.contains("composer-send")).toBe(true);
   });
 
@@ -250,9 +268,7 @@ describe("conversation thread rendering", () => {
         { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
       ],
     }, { initialMessage: "Do the task" });
-    const completionHead = [...document.querySelectorAll(".thread-message-head")].at(-1).textContent;
-    expect(completionHead).toContain("Codex TUI commented");
-    expect(completionHead).not.toContain("Agent commented");
+    expect(document.querySelector(".thread-message-head")).toBeNull();
     expect(document.querySelector(".thread-items").textContent).toContain("Codex TUI session ended");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex TUI reported done");
   });
@@ -375,10 +391,10 @@ describe("thread cache (cursor merge for the detail polls)", () => {
     // The next cursor moves past the mutation bump so the bridge stops
     // re-shipping the same item on every poll.
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: 2 });
-    // End-to-end regression guard: the re-rendered thread shows Seen.
+    // End-to-end regression guard: the re-rendered thread shows the read mark.
     const html = threadHtml(merged);
-    expect(html).toContain("Seen");
-    expect(html).not.toContain("Unread");
+    expect(html).toContain('aria-label="Read"');
+    expect(html).not.toContain('aria-label="Sent"');
   });
 
   // An EVENT mutates too, since a tool call's answer lands on the call's own
@@ -1024,6 +1040,28 @@ describe("attachments on the record", () => {
     expect(html).toContain("2 KB");
   });
 
+  it("opens an image in a dismissible lightbox and returns focus", async () => {
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    document.body.innerHTML = threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]), { threadState });
+    const preview = document.querySelector(".thread-attachment-preview");
+    wireThreadAttachments(document.body, async () => ({ mime: "image/png", content_b64: "AAAA" }), threadState);
+    preview.focus();
+    preview.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const lightbox = document.querySelector(".thread-lightbox");
+    expect(lightbox.querySelector("img").src).toBe("data:image/png;base64,AAAA");
+    expect(lightbox.querySelector("img").alt).toBe("shot.png");
+    lightbox.querySelector("button").focus();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector(".thread-lightbox")).toBeNull();
+    expect(document.activeElement).toBe(preview);
+  });
+
   it("escapes an attachment name rather than rendering it", () => {
     const html = threadHtml(withAttachments([
       { name: '<img src=x onerror="boom">.png', path: ".build/attachments/x.png", mime: "image/png", size: 1 },
@@ -1091,6 +1129,42 @@ describe("thread composer wiring", () => {
   };
   const cmdEnter = (input) => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true }));
 
+  const mountActionControl = () => {
+    document.body.innerHTML = `<div id="host">${composerHtml({
+      inputId: "ci", sendId: "cs", hintId: "ch", placeholder: "Say something…", canInterrupt: true,
+    })}</div>`;
+    return document.querySelector("#host");
+  };
+
+  it("changes Stop to Send while typing and follows a turn that ends during the stop request", async () => {
+    const host = mountActionControl();
+    let finishInterrupt;
+    const control = wireThreadComposer(host, {
+      ids: { input: "ci", send: "cs", hint: "ch" },
+      readDraft: () => "",
+      writeDraft: () => {},
+      onSubmit: () => Promise.resolve(),
+      onInterrupt: () => new Promise((resolve) => { finishInterrupt = resolve; }),
+    });
+    expect(host.querySelector("#cs").dataset.action).toBe("stop");
+
+    const input = host.querySelector("#ci");
+    input.value = "new direction";
+    input.dispatchEvent(new Event("input"));
+    expect(host.querySelector("#cs").dataset.action).toBe("send");
+
+    input.value = "";
+    input.dispatchEvent(new Event("input"));
+    host.querySelector("#cs").click();
+    control.setCanInterrupt(false);
+    expect(host.querySelector("#cs").disabled).toBe(true);
+    finishInterrupt();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(host.querySelector("#cs").dataset.action).toBe("send");
+    expect(host.querySelector("#cs").disabled).toBe(false);
+  });
+
   it("posts once when Cmd+Enter is pressed repeatedly during an in-flight send", async () => {
     // Cmd+Enter bypasses the button's native disabled gate, so without an
     // explicit re-entry guard the obvious retry double-posts.
@@ -1157,13 +1231,14 @@ describe("thread composer wiring", () => {
 });
 
 describe("sending a message that carries files", () => {
-  const mountWithTray = (overrides = {}) => {
+  const mountWithTray = (overrides = {}, composerOverrides = {}) => {
     document.body.innerHTML = `<div id="host">${composerHtml({
       inputId: "ti",
       sendId: "ts",
       hintId: "th",
       placeholder: "Say something…",
       attachable: true,
+      ...composerOverrides,
     })}</div>`;
     const host = document.querySelector("#host");
     const sent = [];
@@ -1189,6 +1264,14 @@ describe("sending a message that carries files", () => {
   const settle = async () => {
     for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   };
+
+  it("changes Stop to Send when a file is attached without any text", async () => {
+    const { host } = mountWithTray({}, { canInterrupt: true });
+    expect(host.querySelector("#ts").dataset.action).toBe("stop");
+    drop(host, [new File(["a"], "shot.png", { type: "image/png" })]);
+    await settle();
+    expect(host.querySelector("#ts").dataset.action).toBe("send");
+  });
 
   it("names the uploaded files on the send and empties the tray after", async () => {
     const { host, sent } = mountWithTray();

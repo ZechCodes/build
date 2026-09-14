@@ -1566,6 +1566,7 @@ async fn a_late_name_capture_cannot_overwrite_its_replacement_session() {
             SelfReport {
                 named: Some("live-S2-name".to_string()),
                 model: None,
+                effort: None,
             },
         );
         let mut tab = gated_tab(

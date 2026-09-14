@@ -1,0 +1,31 @@
+{
+  "method": "fs.tree",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7",
+    "path": "src"
+  },
+  "result": {
+    "path": "src",
+    "entries": [
+      {
+        "name": "api",
+        "kind": "dir"
+      },
+      {
+        "name": "main.rs",
+        "kind": "file",
+        "size": 1024
+      },
+      {
+        "name": "link",
+        "kind": "symlink"
+      }
+    ]
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

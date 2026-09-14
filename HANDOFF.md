@@ -55,6 +55,35 @@ talk straight to the relay. `frontend/` (dead React scaffold) is deleted.
 6. App frames are opaque encrypted envelopes; the relay never decrypts.
 7. Relay→api internal calls carry `X-Internal-Secret: $INTERNAL_API_SECRET`.
 
+## The browser↔bridge contract (inside the E2EE session)
+
+Wire spec: `planning/v2/Bridge Wire Protocol Spec.md`. Contract fixtures for
+every method live in `fixtures/api/v1/` and are checked by
+`bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`.
+
+1. Request frames are `{id, method, params}`; a cache warm-up adds
+   `"priority": "background"` (exactly that word) and the bridge's dispatcher
+   queues it behind foreground work. Absence is foreground on both ends.
+2. Replies are `{id, ok: true, result}` or `{id, ok: false, error, error_code,
+   retryable, details}`; a 1.0 bridge sends the string alone. The SPA's
+   adapter (`spa/src/core/bridgeApi/`) turns either into an `ApiError` with a
+   `code` (`"unknown"` when none was sent).
+3. `session.hello {client: {name, version, api_range}, changes?:
+   "subscriptions"}` answers `{api_version, push_events, events, changes:
+   {subscriptions, mode, kinds, batch_ms: {min, max}}, …}`. `api_version` is
+   semver (`1.1.0` now); the SPA selects an adapter by major and gates on a
+   major it cannot serve (app behind: reload; bridge behind: install line).
+   Capabilities are read off the greeting, never probed.
+4. Pushes are frames with a `type` and no `id`: the legacy `board.changed`
+   and `entity.changed {id}`, and for a session that greeted with
+   `changes: "subscriptions"` only `changes {subscription_id, items: [{entity_id,
+   state?, thread?: [{agent_id, last_sequence}], git?: {status_key, head},
+   files?: {paths, truncated}}]}` for what it asked for via
+   `changes.subscribe {subscription_id, scope, kinds, mode, priority}` /
+   `changes.unsubscribe {subscription_id}`.
+5. Unknown JSON fields are ignored on both ends; a minor may add fields and
+   event types, never remove them.
+
 ## Run it locally
 
 ```bash

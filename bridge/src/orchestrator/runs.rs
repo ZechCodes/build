@@ -73,6 +73,46 @@ pub struct ActiveRun {
 }
 
 impl ActiveRun {
+    /// A conversation owner for a durable workspace container. This is shaped
+    /// like an adopted run so the existing conversation and agent surfaces can
+    /// address it, but it performs no Git adoption: the agent works from the
+    /// workspace root where every materialized source is reachable.
+    pub fn workspace_conversation(
+        id: RunId,
+        workspace_name: String,
+        workspace_root: PathBuf,
+        model_choice: ModelChoice,
+    ) -> Self {
+        let mut run = Run::new(id, None, workspace_name.clone());
+        run.apply(RunEvent::Dispatch)
+            .expect("a new workspace conversation can enter building");
+        run.apply(RunEvent::BuildReady)
+            .expect("a workspace conversation can wait in review");
+        ActiveRun {
+            run,
+            worktree: Worktree {
+                name: workspace_name.clone(),
+                path: workspace_root,
+                recorded_branch: workspace_name,
+                base_branch: String::new(),
+            },
+            base_sha: None,
+            plan_path: crate::templates::DEFAULT_PLAN_PATH.to_string(),
+            stages: Vec::new(),
+            current_stage_id: None,
+            revising_stage_id: None,
+            auto_advance: false,
+            adopted: true,
+            triage: None,
+            recovery: None,
+            publication_attempt: None,
+            model_choice,
+            agents: AgentRoster::empty(),
+            last_summary: None,
+            last_error: None,
+        }
+    }
+
     /// Reattach a run recovered from the durable store after a daemon restart:
     /// the worktree survived on disk, the PTY session did not. `plan_path` is
     /// re-derived by the caller from the owning plan's record (adopted runs pass

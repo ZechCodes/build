@@ -45,10 +45,13 @@ impl AppState {
     /// session and never moves plan/run state — with no live agent the message
     /// simply waits for the next session's catch-up. Refused only where no
     /// conversation remains to post to: a terminal or unknown entity.
-    pub(in crate::app) fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
         let normalized_params = normalize_post_viewing_contexts(params)?;
         let params = &normalized_params;
         let entity_id = require_str(params, "entity_id")?;
+        if self.plans.contains_key(&entity_id) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
         if !self.plans.contains_key(&entity_id) && !self.runs.contains_key(&entity_id) {
             return Err("unknown conversation owner".to_string());
         }
@@ -557,7 +560,10 @@ impl AppState {
             .unwrap_or_default();
         let operation_prompt = receipt.and_then(|receipt| {
             delivery.payload.as_ref().map(|payload| TurnText {
-                cold: payload.delivery_prompt(&receipt.operation_id, true),
+                cold: crate::orchestrator::operation_conversation_prompt(
+                    &payload.delivery_prompt(&receipt.operation_id, true),
+                    &receipt.operation_id,
+                ),
                 warm: payload.delivery_prompt(&receipt.operation_id, false),
             })
         });
@@ -582,7 +588,7 @@ impl AppState {
         });
     }
 
-    pub(in crate::app) fn thread_operation(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn thread_operation(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let operation_id = required_operation_id(params)?;
         let receipt = self

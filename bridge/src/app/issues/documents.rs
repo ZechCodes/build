@@ -181,7 +181,7 @@ pub(in crate::app) fn attach_plan_operation_turn(
 impl AppState {
     /// Read the single (non-staged) plan doc from the canonical store — never
     /// from a worktree (the worktree is disposable; the store is the truth).
-    pub(in crate::app) fn plan_doc(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_doc(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
         if active.is_multi_stage() {
@@ -197,7 +197,7 @@ impl AppState {
 
     /// The stage board for a plan: manifest order, doc sub-state, and every
     /// comment (open and addressed) per stage. Read-only.
-    pub(in crate::app) fn plan_stages(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_stages(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
         if !active.is_multi_stage() {
@@ -226,7 +226,7 @@ impl AppState {
     }
 
     /// Read one stage's plan doc from the canonical store.
-    pub(in crate::app) fn plan_stage_doc(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_stage_doc(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
@@ -261,7 +261,7 @@ impl AppState {
 
     /// Approve the plan (the last human gate): the planning session ends and
     /// its scratch docs are dropped; the store docs are canonical.
-    pub(in crate::app) fn plan_approve(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_approve(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
@@ -286,7 +286,7 @@ impl AppState {
     }
 
     /// Send a batch of plan notes back to a fresh revision session.
-    pub(in crate::app) fn plan_send_notes(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_send_notes(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let messages = parse_thread_inputs(params, crate::thread::ArtifactKind::Plan, "comments")?;
         let project_id = self.project_of(&plan_id)?;
@@ -315,7 +315,7 @@ impl AppState {
         Ok(self.defer_job(job))
     }
 
-    pub(in crate::app) fn plan_stage_approve(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_stage_approve(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let project_id = self.project_of(&plan_id)?;
@@ -380,10 +380,7 @@ impl AppState {
 
     /// Send a stage's open comments to a fresh plan-revision session (the open
     /// comments ARE the payload).
-    pub(in crate::app) fn plan_stage_send_notes(
-        &mut self,
-        params: &Value,
-    ) -> Result<Value, String> {
+    pub(crate) fn plan_stage_send_notes(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let project_id = self.project_of(&plan_id)?;
@@ -407,7 +404,7 @@ impl AppState {
     }
 
     /// A freeform human message to the plan's agent.
-    pub(in crate::app) fn plan_message(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_message(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let message = require_str(params, "message")?;
         let viewing_context = parse_viewing_context(params.get("viewing_context"))?;
@@ -443,7 +440,7 @@ impl AppState {
         Ok(self.defer_job(job))
     }
 
-    pub(in crate::app) fn plan_abandon(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_abandon(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
@@ -474,7 +471,7 @@ impl AppState {
     /// Never refused for what was or was not built: an issue the user is done
     /// with is done, and an issue no branch ever implemented says so as a
     /// warning on the row (`finish.warnings`) for them to confirm through.
-    pub(in crate::app) fn plan_archive(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_archive(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let mut active = self.take_plan(&plan_id)?;
         if active.plan.archived_at.is_none() {
@@ -489,7 +486,7 @@ impl AppState {
     /// docs and the in-memory bookkeeping. Valid only for `Abandoned` plans (a
     /// live or approved plan must be abandoned first), and refused while any
     /// non-terminal run still implements it (that run would lose its docs).
-    pub(in crate::app) fn plan_delete(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_delete(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
         if active.plan.state != PlanState::Abandoned {
@@ -521,7 +518,7 @@ impl AppState {
     /// passage it is about — the same path a diff comment takes. There is no
     /// second record: the agent reads it with the tool it reads its messages
     /// with, and deleting the post deletes the comment.
-    pub(in crate::app) fn plan_comment_add(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_comment_add(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let body = require_str(params, "body")?;
@@ -572,7 +569,7 @@ impl AppState {
         Ok(json!({ "comment": comment_json(&comment) }))
     }
 
-    pub(in crate::app) fn plan_comment_delete(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_comment_delete(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let comment_id = require_str(params, "comment_id")?;
         let mut active = self.take_plan(&plan_id)?;

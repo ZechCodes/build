@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::API_VERSION;
 
 // ==== Push invalidation ====================================================
 
@@ -52,6 +53,23 @@ pub(in crate::app::tests) fn change_events(pushes: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Install a readable legacy Issue without exercising its retired mutation
+/// surface, then publish the same invalidations a completed mutation tail
+/// would publish. These tests cover the push fanout, not Issue creation.
+fn publish_legacy_issue(state: &Arc<Mutex<AppState>>, goal: &str) -> String {
+    let mut state = state.lock().unwrap();
+    let issue = state
+        .plan_create(&json!({ "goal": goal, "dispatch": false }))
+        .expect("the legacy issue fixture is filed through the domain seam");
+    let issue_id = issue["plan_id"]
+        .as_str()
+        .expect("the legacy issue has an id")
+        .to_string();
+    state.note_board_changed();
+    state.note_entity_changed(&issue_id);
+    issue_id
+}
+
 /// The capability announcement, in both places a client can find it: the
 /// greeting it opens with, and the probe it already sends. An old bridge has
 /// neither, so absence is the answer for a new client too.
@@ -68,8 +86,28 @@ async fn the_greeting_announces_push_events() {
         "{hello:?}"
     );
     assert_eq!(
+        hello["result"]["thread_post_operations"],
+        json!({
+            "version": 1,
+            "status_method": "thread.operation",
+            "states": ["queued", "claimed", "delivered", "uncertain"],
+        }),
+        "{hello:?}"
+    );
+    assert_eq!(
         hello["result"]["events"],
-        json!(["board.changed", "entity.changed"]),
+        json!(["board.changed", "entity.changed", "changes"]),
+        "{hello:?}"
+    );
+    // Step 1.5: what a Part 1 adapter reads instead of probing.
+    assert_eq!(
+        hello["result"]["changes"],
+        json!({
+            "subscriptions": true,
+            "mode": "legacy",
+            "kinds": ["state", "thread", "git", "files"],
+            "batch_ms": { "min": 1000, "max": 600_000 },
+        }),
         "{hello:?}"
     );
     assert!(
@@ -83,6 +121,79 @@ async fn the_greeting_announces_push_events() {
     assert_eq!(ping["result"]["pong"], true, "{ping:?}");
     assert_eq!(ping["result"]["push_events"], true, "{ping:?}");
     assert_eq!(ping["result"]["message_context"]["version"], 1, "{ping:?}");
+}
+
+/// Step 2.0 of the wire spec: the greeting and the probe both say which API
+/// this bridge speaks, so a client can pick an adapter without guessing.
+#[tokio::test]
+async fn the_greeting_and_the_probe_report_the_api_version() {
+    let (dir, repo) = init_repo();
+    let (_state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+
+    let hello = call(&handler, "session.hello", json!({}));
+    assert_eq!(hello["result"]["api_version"], API_VERSION, "{hello:?}");
+
+    let ping = call(&handler, "ping", json!({}));
+    assert_eq!(ping["result"]["api_version"], API_VERSION, "{ping:?}");
+}
+
+/// What a client declares about itself is counted per live session, by the
+/// range it asked for, so dropping a major is a decision made from numbers.
+/// A session that declared nothing — or nonsense — is a live client too, and
+/// counts as `unknown` rather than being refused.
+#[tokio::test]
+async fn bridge_stats_counts_live_clients_by_declared_range() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+    let greet = |session: &str, params: Value| {
+        let reply = handler.call(
+            SessionSender::detached(session),
+            req("session.hello", params),
+        );
+        assert_eq!(reply["ok"], true, "{reply:?}");
+    };
+
+    greet(
+        "spa-1",
+        json!({ "client": { "name": "spa", "version": "abc123", "api_range": ">=1.0.0 <2.0.0" } }),
+    );
+    greet(
+        "spa-2",
+        json!({ "client": { "api_range": ">=1.0.0 <2.0.0" } }),
+    );
+    greet("old", json!({}));
+    greet("odd", json!({ "client": "not an object" }));
+    greet("odder", json!({ "client": { "api_range": 7 } }));
+    // A reconnect greets again on the same session: still one client.
+    greet(
+        "spa-1",
+        json!({ "client": { "api_range": ">=1.0.0 <2.0.0" } }),
+    );
+
+    let stats = call(&handler, "bridge.stats", json!({}));
+    assert_eq!(
+        stats["result"]["clients"],
+        json!({ ">=1.0.0 <2.0.0": 2, "unknown": 3 }),
+        "{stats:?}"
+    );
+
+    let close = Frame {
+        session_id: "spa-1".into(),
+        message_id: String::new(),
+        frame_type: transport::CLOSE_FRAME_TYPE.into(),
+        sender: transport::SENDER_DEVICE.into(),
+        created_at: String::new(),
+        payload: Value::Null,
+    };
+    handler.call(SessionSender::detached("spa-1"), close);
+    drop(state);
+
+    let stats = call(&handler, "bridge.stats", json!({}));
+    assert_eq!(
+        stats["result"]["clients"],
+        json!({ ">=1.0.0 <2.0.0": 1, "unknown": 3 }),
+        "{stats:?}"
+    );
 }
 
 /// Greeting twice — a browser that reconnected — leaves one subscription,
@@ -107,12 +218,10 @@ async fn greeting_twice_leaves_one_subscription() {
 #[tokio::test]
 async fn a_state_change_reaches_the_browser_unasked() {
     let (dir, repo) = init_repo();
-    let (_state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, _handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
     settled_pushes(&mut rx, &key).await; // boot noise
 
-    let plan = call(&handler, "plan.create", json!({ "goal": "push me" }));
-    assert_eq!(plan["ok"], true, "{plan:?}");
-    let plan_id = plan_id_of(&plan);
+    let plan_id = publish_legacy_issue(&state, "push me");
 
     let events = change_events(&settled_pushes(&mut rx, &key).await);
     assert!(
@@ -224,9 +333,8 @@ async fn a_terminal_byte_storm_is_not_a_change_event() {
 #[tokio::test]
 async fn rapid_mutations_cost_one_event_per_window() {
     let (dir, repo) = init_repo();
-    let (_state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let plan = call(&handler, "plan.create", json!({ "goal": "coalesce me" }));
-    let plan_id = plan_id_of(&plan);
+    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let plan_id = publish_legacy_issue(&state, "coalesce me");
     settled_pushes(&mut rx, &key).await;
 
     let mutations = 60;
@@ -253,7 +361,7 @@ async fn rapid_mutations_cost_one_event_per_window() {
 #[tokio::test]
 async fn a_closed_session_hears_no_more_changes() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, _handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
     settled_pushes(&mut rx, &key).await;
 
     let close = Frame {
@@ -275,12 +383,7 @@ async fn a_closed_session_hears_no_more_changes() {
     );
     assert_eq!(state.lock().unwrap().changes().subscriber_count(), 0);
 
-    let plan = call(
-        &handler,
-        "plan.create",
-        json!({ "goal": "nobody hears this" }),
-    );
-    assert_eq!(plan["ok"], true, "{plan:?}");
+    publish_legacy_issue(&state, "nobody hears this");
     assert_eq!(
         change_events(&settled_pushes(&mut rx, &key).await),
         Vec::<Value>::new()
@@ -292,9 +395,8 @@ async fn a_closed_session_hears_no_more_changes() {
 #[tokio::test]
 async fn an_entity_change_names_the_entity_that_moved() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let plan = call(&handler, "plan.create", json!({ "goal": "agent moved me" }));
-    let plan_id = plan_id_of(&plan);
+    let (state, _handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let plan_id = publish_legacy_issue(&state, "agent moved me");
     settled_pushes(&mut rx, &key).await;
 
     state.lock().unwrap().note_entity_changed(&plan_id);
@@ -305,5 +407,246 @@ async fn an_entity_change_names_the_entity_that_moved() {
             json!({ "type": "board.changed" }),
             json!({ "type": "entity.changed", "id": plan_id }),
         ]
+    );
+}
+
+// ==== Subscriptions and the per-worktree watcher =============================
+
+/// `changes.subscribe` covering a worktree with `git` or `files` puts a
+/// watcher on it and answers `watch: "live"`; the last unsubscribe covering it
+/// drops the watcher. The reconcile runs on the off-lock drain, so the reply
+/// already knows whether the start succeeded.
+#[tokio::test]
+async fn a_subscription_covering_a_worktree_starts_its_watcher() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, _rx, _key) = greeted_push_session(&repo, dir.path());
+    let board = handler.call(sender.clone(), req("board.list", json!({})));
+    let project_id = board["result"]["projects"][0]["project_id"]
+        .as_str()
+        .expect("the QA daemon lists its repo as a project")
+        .to_string();
+
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-focus",
+                "scope": { "kind": "entity", "id": project_id },
+                "kinds": ["git", "files"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    assert_eq!(subscribed["result"]["watch"], "live", "{subscribed:?}");
+    assert!(state.lock().unwrap().watchers().is_watching(&project_id));
+
+    let listed = handler.call(sender.clone(), req("changes.list", json!({})));
+    assert_eq!(
+        listed["result"]["subscriptions"][0]["subscription_id"],
+        "s-focus"
+    );
+
+    let unsubscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.unsubscribe",
+            json!({ "subscription_id": "s-focus" }),
+        ),
+    );
+    assert_eq!(unsubscribed["result"]["ok"], true, "{unsubscribed:?}");
+    assert!(!state.lock().unwrap().watchers().is_watching(&project_id));
+}
+
+/// A write in a watched worktree reaches the subscription as a `changes`
+/// frame naming the path — the producer, the bus and the flusher wired end to
+/// end, with the facts source filling the git keys.
+#[tokio::test]
+async fn a_write_in_a_watched_worktree_is_pushed_with_its_path() {
+    let (dir, repo) = init_repo();
+    let (_state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let board = handler.call(sender.clone(), req("board.list", json!({})));
+    let project_id = board["result"]["projects"][0]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-focus",
+                "scope": { "kind": "entity", "id": project_id },
+                "kinds": ["git", "files"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["result"]["watch"], "live", "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    std::fs::write(repo.join("noted.txt"), "hello").unwrap();
+    let mut frames = Vec::new();
+    for _ in 0..40 {
+        frames.extend(
+            settled_pushes(&mut rx, &key)
+                .await
+                .into_iter()
+                .filter(|push| push["type"] == "changes"),
+        );
+        if !frames.is_empty() {
+            break;
+        }
+    }
+    let item = frames
+        .iter()
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["entity_id"] == project_id)
+        .unwrap_or_else(|| panic!("no changes item for the project: {frames:?}"));
+    assert_eq!(item["files"]["paths"], json!(["noted.txt"]), "{item:?}");
+    assert!(item["git"]["status_key"].is_string(), "{item:?}");
+    assert_eq!(frames[0]["subscription_id"], "s-focus");
+}
+
+/// The `state` item says what the board row says — the lifecycle state, how
+/// many agents are on the entity, and its attention — rather than the empty
+/// object that only ever meant "refetch everything about this".
+#[tokio::test]
+async fn a_state_item_carries_the_row_the_board_would_paint() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    // A run, not an issue: legacy issues no longer appear on the board, and
+    // the point of this test is that the pushed `state` says what the board
+    // row says. Minted through the domain seam because the workflow RPCs that
+    // used to mint one are retired.
+    let plan_id = {
+        let mut app = state.lock().unwrap();
+        let (_, run_id) = planned_run_in_review(&mut app, "state rides the item");
+        app.note_board_changed();
+        app.note_entity_changed(&run_id);
+        run_id
+    };
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-focus",
+                "scope": { "kind": "entity", "id": plan_id },
+                "kinds": ["state"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    state.lock().unwrap().note_entity_changed(&plan_id);
+
+    let pushes = settled_pushes(&mut rx, &key).await;
+    let item = pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["entity_id"] == plan_id)
+        .unwrap_or_else(|| panic!("no changes item for the issue: {pushes:?}"));
+    let board = call(&handler, "board.list", json!({}));
+    let row = board["result"]["items"]
+        .as_array()
+        .expect("the board lists items")
+        .iter()
+        .find(|row| row["run_id"] == plan_id.as_str())
+        .unwrap_or_else(|| panic!("no board row for the run: {board:?}"));
+    assert_eq!(
+        item["state"],
+        json!({
+            "run": row["state"],
+            "agents": row["agents"].as_array().expect("a row lists agents").len(),
+            "attention": row["unread_reason"].as_str().unwrap_or("none"),
+        }),
+        "{item:?} against {row:?}"
+    );
+}
+
+/// Step 1.5, the legacy default: a client that greets with NO `changes`
+/// param is subscribed to today's events and to nothing else. A real
+/// mutation over the wire reaches it as `{"type":"board.changed"}` and
+/// `{"type":"entity.changed","id":…}` — those keys and no others, the bytes
+/// a pre-subscriptions client parses — and never as a `changes` frame. The
+/// session beside it that greeted with `"changes": "subscriptions"` hears
+/// nothing at all from the same mutation until it subscribes, and then hears
+/// only its own subscription's frame.
+#[tokio::test]
+async fn a_legacy_greeting_hears_only_the_legacy_frames_for_a_real_mutation() {
+    let (dir, repo) = init_repo();
+    let (state, handler, _sender, mut legacy_rx, legacy_key) =
+        greeted_push_session(&repo, dir.path());
+    let (opted_in, mut opted_in_rx, opted_in_key) = SessionSender::observable("opted-in");
+    let greeting = handler.call(
+        opted_in.clone(),
+        req("session.hello", json!({ "changes": "subscriptions" })),
+    );
+    assert_eq!(greeting["result"]["changes"]["mode"], "subscriptions");
+    let run_id = {
+        let mut app = state.lock().unwrap();
+        planned_run_in_review(&mut app, "legacy hears this").1
+    };
+    settled_pushes(&mut legacy_rx, &legacy_key).await;
+    settled_pushes(&mut opted_in_rx, &opted_in_key).await;
+
+    // A real mutation over the wire, not a hand-published note.
+    let posted = call(
+        &handler,
+        "thread.post",
+        json!({ "entity_id": run_id, "body": "a real mutation" }),
+    );
+    assert_eq!(posted["ok"], true, "{posted:?}");
+
+    let legacy = settled_pushes(&mut legacy_rx, &legacy_key).await;
+    let board = json!({ "type": "board.changed" });
+    let entity = json!({ "type": "entity.changed", "id": run_id });
+    for frame in &legacy {
+        assert!(
+            *frame == board || *frame == entity,
+            "a legacy session hears the two legacy frames and nothing else, \
+             with no key beyond the ones it always carried: {frame:?}"
+        );
+    }
+    assert!(legacy.contains(&board), "{legacy:?}");
+    assert!(legacy.contains(&entity), "{legacy:?}");
+    assert_eq!(
+        settled_pushes(&mut opted_in_rx, &opted_in_key).await,
+        Vec::<Value>::new(),
+        "a session that opted into subscriptions hears nothing until it subscribes"
+    );
+
+    // ... and once it subscribes it hears its own frame, which is the one a
+    // legacy session never sees.
+    let subscribed = handler.call(
+        opted_in.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-run",
+                "scope": { "kind": "entity", "id": run_id },
+                "kinds": ["state"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut opted_in_rx, &opted_in_key).await;
+    state.lock().unwrap().note_entity_changed(&run_id);
+
+    assert!(
+        settled_pushes(&mut opted_in_rx, &opted_in_key)
+            .await
+            .iter()
+            .any(|push| push["type"] == "changes"),
+        "the subscribed session hears the new frame"
+    );
+    assert!(
+        settled_pushes(&mut legacy_rx, &legacy_key)
+            .await
+            .iter()
+            .all(|push| push["type"] != "changes"),
+        "the legacy session never hears one"
     );
 }

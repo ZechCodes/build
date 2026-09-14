@@ -23,12 +23,12 @@ import {
   dismissParamsOf,
   entryKeyOf,
   inboxEmptyHtml,
-  inboxEntries,
   inboxRowHtml,
   issueDoneConfirm,
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
+  workspaceEntries,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
@@ -43,7 +43,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { routeProjectKey } from "./deviceKey.js";
+import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
 import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
@@ -52,11 +52,10 @@ import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, rero
 import { projectRoute } from "./projectModel.js";
 import {
   blockIsFolded,
-  newProjectButtonHtml,
   projectBlockHtml,
-  projectBlocks,
   projectHeadHtml,
   rowDeviceNames,
+  workspaceProjectBlocks,
 } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
@@ -75,6 +74,7 @@ let projects = [];
 // The snapshot those arrays were taken from, kept whole for the one thing that
 // is about a single machine: where a capture can be rerouted to.
 let snapshot = null;
+let workspaces = [];
 let entries = [];
 let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
 let openMenuKey = null;
@@ -91,6 +91,7 @@ let folds = new Map();
 // project id every RPC still wants.
 let blocksPainted = new Map();
 const errors = new Map(); // row key → the message its row is showing
+const workspacesBeingFinished = new Set();
 
 
 /** A box in the list has the caret. The reconciler keeps a row that is still
@@ -113,13 +114,8 @@ function drawFromFeed() {
 }
 
 function publishAttentionCount() {
-  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const partition = inboxEntries({ items: shown, nowMs: Date.now() });
-  publishInboxAttentionCount(
-    [...partition.entries, ...partition.recent]
-      .filter((entry) => !entry.muted && !entry.dismissed)
-      .reduce((total, entry) => total + entry.unreadCount, 0),
-  );
+  const unread = workspaceEntries(workspaces, projects, items).filter((entry) => entry.state === "unread");
+  publishInboxAttentionCount(new Set(unread.map((entry) => entry.entityId || entry.key)).size);
 }
 
 /** The one name a row has, which is what the reconciler matches rows by. */
@@ -151,8 +147,7 @@ function draw() {
   publishAttentionCount();
   const list = $("#inbox-list");
   if (!list) return;
-  const shown = withDeviceNames(projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf }));
-  const nowMs = Date.now();
+  const shown = withDeviceNames(workspaceEntries(workspaces, projects, projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf })));
   list.onclick = onListClick;
   list.onkeydown = onCaptureKeydown;
   // A different face is a different list: the one is emptied for the other,
@@ -162,8 +157,8 @@ function draw() {
     list.replaceChildren();
   }
   const scroll = list.scrollTop;
-  if (view === "projects") drawProjects(list, shown, nowMs);
-  else drawInbox(list, shown, nowMs);
+  if (view === "projects") drawProjects(list, shown);
+  else drawWorkspaceList(list, shown);
   list.scrollTop = scroll;
   paintErrors(list);
   paintDeviceState(list, { entryFor: entryOf, blockFor: blockOf });
@@ -176,6 +171,17 @@ function draw() {
 function withDeviceNames(rows) {
   const names = rowDeviceNames({ items: rows, projects, devices: App.devices });
   return rows.map((row) => ({ ...row, deviceName: names.get(row.projectKey) || null }));
+}
+
+/** The inbox face's flat durable workspace list. */
+function drawWorkspaceList(list, shown) {
+  entries = shown;
+  const ui = rowUi(true);
+  paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
+  list.querySelector(":scope > .inbox-recent")?.remove();
+  list.querySelector(":scope > .inbox-unsorted")?.remove();
+  list.querySelector(":scope > .inbox-projects")?.remove();
+  patchList(list, entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
 }
 
 /** What every row is painted with. `showProject` is whether a row names its
@@ -199,6 +205,7 @@ function rowUi(showProject) {
     // The block holding the branch or issue the route stands on. A capture's
     // route names no project; the row it stands on does.
     activeProjectId: activeProjectKey(activeKey),
+    finishingWorkspaces: workspacesBeingFinished,
   };
 }
 
@@ -211,22 +218,11 @@ function activeProjectKey(activeKey) {
   return routeProjectKey(App.route);
 }
 
-/** The inbox face: one list, Recent at its end. */
-function drawInbox(list, shown, nowMs) {
-  const { entries: live, recent } = inboxEntries({ items: shown, nowMs });
-  // Every row on screen, Recent included: what the route stands on and what a
-  // click resolves to do not care which section a row sits in.
-  entries = [...live, ...recent];
-  const ui = rowUi(true);
-  paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
-  patchList(list, live, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-  paintRecent(list, recent, ui, "inbox");
-}
-
-/** The projects face: the new-project control, the unrouted captures on their
- *  own, then a block per project with its rows and its own Recent. */
-function drawProjects(list, shown, nowMs) {
-  const { unsorted, blocks } = projectBlocks({ items: shown, projects, devices: App.devices, nowMs });
+/** The projects face: any workspaces whose project nothing lists, then one
+ *  block per project — every machine's, each head naming its machine where two
+ *  machines use that project name. */
+function drawProjects(list, shown) {
+  const { unsorted, blocks } = workspaceProjectBlocks(shown, projects, routeWorkspaceKey(App.route), App.devices);
   entries = [...unsorted, ...blocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(blocks.map((block) => [block.projectKey, block]));
   const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
@@ -242,7 +238,7 @@ function projectsFrame(list) {
   let unsorted = list.querySelector(":scope > .inbox-unsorted");
   if (!unsorted) {
     unsorted = el('<div class="inbox-unsorted"></div>');
-    list.append(el(newProjectButtonHtml()), unsorted, el('<div class="inbox-projects"></div>'));
+    list.append(unsorted, el('<div class="inbox-projects"></div>'));
   }
   return { unsorted, blocks: list.querySelector(":scope > .inbox-projects") };
 }
@@ -350,6 +346,7 @@ function closeMenu() {
 /** One control per attribute a row paints, in the order a press is read in:
  *  the innermost control wins. Each is handed the element that was pressed. */
 const ROW_CONTROLS = [
+  ["data-workspace-done", (control) => finishWorkspace(entryOf(control.dataset.workspaceDone))],
   ["data-done", (control) => finishRow(control.dataset.done)],
   ["data-mute", (control) => toggleMute(entryOf(control.dataset.mute))],
   ["data-dismiss", (control) => dismissEntry(entryOf(control.dataset.dismiss))],
@@ -434,7 +431,7 @@ function openMenu(key) {
 // project. And the one control above every block: a new project. Which press
 // is which is the table BLOCK_CONTROLS, up with the other control tables.
 
-/** The block's name opens the project's checkout, when it has one. */
+/** The block's name opens the project's workspace, when it has one. */
 function openBlockHead(projectKey) {
   const block = blockOf(projectKey);
   if (block && block.route) goFromInbox(block.route);
@@ -453,15 +450,15 @@ function createInBlock(projectKey) {
     projectId: block.id,
     deviceId: block.deviceId,
     projectName: block.name,
-    kind: "branch",
     navigate: goFromInbox,
   });
 }
 
-/** The one control above every block: a project the account does not have yet.
- *  It is made where creation goes, over that machine's own connection; while no
- *  machine can answer there is nowhere to make it, and the rail says so. */
-function openNewProject() {
+/** The one control above every block, and the rail head's own: a project the
+ *  account does not have yet. It is made where creation goes, over that
+ *  machine's own connection; while no machine can answer there is nowhere to
+ *  make it, and the rail says so. */
+export function openNewProject() {
   const target = creationTarget("No device can take a new project");
   if (!target) return;
   openNewRepo((project) => {
@@ -575,6 +572,25 @@ async function finishEntry(entry) {
   await refreshFeed();
 }
 
+/** Archive a clean workspace in one tap. The bridge rechecks cleanliness at
+ * execution time, stops every agent it owns, and preserves the checkout. */
+async function finishWorkspace(entry) {
+  if (!entry || entry.kind !== "workspace" || !entry.clean || workspacesBeingFinished.has(entry.key)) return;
+  workspacesBeingFinished.add(entry.key);
+  errors.delete(entry.key);
+  draw();
+  try {
+    await verbCall(entry)("workspace.finish", { workspace_id: entry.workspaceId, require_clean: true });
+    workspaces = workspaces.filter((workspace) => workspace.workspaceKey !== entry.workspaceKey);
+  } catch (error) {
+    errors.set(entry.key, messageOf(error));
+  } finally {
+    workspacesBeingFinished.delete(entry.key);
+    draw();
+  }
+  await refreshFeed();
+}
+
 function showRowError(key, error) {
   errors.set(key, messageOf(error));
   draw();
@@ -604,7 +620,11 @@ export function mountInboxList() {
     items = snapshot.items || [];
     pendingLifecycle = snapshot.pending || [];
     projects = snapshot.projects || [];
-    const live = new Set(items.map(entryKeyOf));
+    workspaces = snapshot.workspaces || [];
+    const live = new Set([
+      ...items.map(entryKeyOf),
+      ...workspaces.map((workspace) => `workspace:${workspace.workspaceKey}`),
+    ]);
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
     const merged = mergedItems();
     // Every verb that names only an entity — a read report, a self-action —

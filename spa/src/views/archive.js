@@ -8,7 +8,7 @@
 // archived record is history.
 
 import { $ } from "../dom.js";
-import { App } from "../app.js";
+import { App, go } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
 import { liveContexts } from "../core/deviceContexts.js";
 import { deviceKey } from "../core/deviceKey.js";
@@ -52,6 +52,11 @@ export function renderArchive() {
     host.innerHTML = archiveListHtml(rows, { openKey });
     host.querySelectorAll(".archive-row").forEach((card) => {
       const toggle = () => {
+        const row = rows.find((candidate) => candidate.key === card.dataset.key);
+        if (row?.kind === "workspace" && row.workspaceId && row.projectId) {
+          go({ name: "workspace", projectId: row.projectId, workspaceId: row.workspaceId, tab: "changes" });
+          return;
+        }
         openKey = openKey === card.dataset.key ? null : card.dataset.key;
         draw();
       };

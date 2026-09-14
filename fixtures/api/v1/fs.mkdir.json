@@ -1,0 +1,17 @@
+{
+  "method": "fs.mkdir",
+  "since": "1.1.0",
+  "params": {
+    "parent": "~/Projects",
+    "name": "new-workspace"
+  },
+  "result": {
+    "path": "/home/dev/Projects/new-workspace"
+  },
+  "errors": [
+    "invalid_params",
+    "not_found",
+    "conflict",
+    "internal"
+  ]
+}

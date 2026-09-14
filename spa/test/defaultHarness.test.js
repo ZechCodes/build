@@ -99,7 +99,7 @@ describe("the fallback-agent panel", () => {
     await flush();
 
     expect(host.textContent).toContain(
-      "This account fallback is used only when a coding-agent creation request does not name a provider.",
+      "This device fallback is used only when a coding-agent creation request does not name a provider.",
     );
     expect(host.textContent).toContain(
       "Creation pickers send the displayed Claude Code or Codex provider and override this fallback.",
@@ -333,7 +333,10 @@ describe("the account page's creation defaults", () => {
     const defaults = document.getElementById("defprovider");
     expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
     expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
-    // Nothing a bridge owns is on this page any more.
+    // Nothing a bridge owns is on this page any more, and what is left says
+    // whose defaults they are.
     expect(document.getElementById("defaultharness")).toBeNull();
+    expect(document.getElementById("agentmode-claude")).toBeNull();
+    expect(document.querySelector("#root").textContent).toContain("Browser agent defaults");
   }, 30000);
 });

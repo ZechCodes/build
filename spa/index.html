@@ -9,8 +9,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>Build — review is the product</title>
     <link rel="manifest" href="/app/static/manifest.webmanifest" />
-    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#15171c" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f3f7f8" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#07151b" media="(prefers-color-scheme: dark)" />
     <!-- Parser-blocking and above the bundle: the module below is deferred, so
          without this the first paint is the light theme for every dark-theme
          reader. A file rather than an inline block because the production CSP
@@ -28,23 +28,26 @@
       <span>A new version of Build is available.</span>
       <button class="btn" id="verbar-reload">Reload</button>
     </div>
-    <!-- The universal three-panel shell: the inbox rail (global, persistent),
-         the view column (toolbar / view body / console), and the agent rail at
-         the right edge of the view body — the rail belongs to the selected
+    <!-- The universal shell: the inbox rail (global, persistent), the view
+         column (toolbar / view body / console), and the agent rail at the
+         right edge of the view body. Branches add their view rail beside the
+         main content. The agent rail belongs to the selected
          branch or issue, so it sits below the toolbar, beside the tab content. -->
     <div id="shell">
+      <header id="global-controls">
+        <button class="iconbtn" id="inbox-open" title="Open the inbox" aria-label="Open the inbox" aria-controls="inbox-rail" aria-expanded="false">
+          <span class="inbox-open-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16l2 9v5H2v-5l2-9Z"/><path d="M2 14h5l2 3h6l2-3h5"/></svg></span>
+          <span class="inbox-open-count" aria-hidden="true"></span>
+        </button>
+      </header>
       <aside id="inbox-rail" aria-label="Inbox">
         <div class="inbox-head">
-          <button class="iconbtn" id="inbox-collapse" title="Collapse the inbox">◫</button>
-          <span class="logo">Build</span>
           <!-- The rail's two faces: the one list, or the projects. Painted by
                core/inboxShell.js, which remembers the choice. -->
           <div class="inbox-views" id="inbox-views" role="group" aria-label="Rail view"></div>
+          <button class="inbox-new-project" id="inbox-new-project" type="button" title="New project" aria-label="New project"></button>
+          <button class="iconbtn" id="inbox-collapse" type="button" title="Unpin the inbox" aria-label="Unpin the inbox" aria-pressed="true"></button>
         </div>
-        <!-- Global compose: capture first, route after. Pinned above the
-             entries, on every route — the gate keeps it too, and holds what is
-             said there until a device answers. -->
-        <div id="compose"></div>
         <div id="inbox-list"></div>
         <div class="inbox-foot">
           <div class="srow snav" id="nav-account"><span class="sicon">◉</span><span class="stitle">Account</span></div>
@@ -56,17 +59,13 @@
       <div id="view">
         <div id="toolbar"></div>
         <div id="view-body">
+          <nav id="branch-tabs" aria-label="Branch views"></nav>
           <main id="root"></main>
           <aside id="agent-rail" aria-label="Agents"></aside>
         </div>
         <div id="console-region"></div>
       </div>
     </div>
-    <button class="iconbtn" id="inbox-open" title="Open the inbox" aria-label="Open the inbox">
-      <span class="inbox-open-icon" aria-hidden="true">◫</span>
-      <span class="inbox-open-count" aria-hidden="true"></span>
-    </button>
-
     <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
   </body>
 </html>

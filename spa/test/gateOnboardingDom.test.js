@@ -16,7 +16,17 @@ const DOWNLOADS = downloadsPayload({
 
 let devices = [];
 let downloads = async () => DOWNLOADS;
-const refreshDevices = vi.fn(async () => devices);
+let openSession = async () => ({});
+let refresh = async () => devices;
+const refreshDevices = vi.fn(() => refresh());
+// What connection.js hands the gate: every online device opened at once, and
+// the promise of the first one to answer. The fixture's `openSession` is the
+// one that answers.
+const openDeviceSessions = vi.fn(() => {
+  const first = openSession({ preferDeviceId: null });
+  return { first, settled: first.then((context) => [context], () => []) };
+});
+const render = vi.fn();
 const lookupDevice = vi.fn(async () => ({ name: "studio", fingerprint: "AAAA BBBB CCCC DDDD" }));
 const approveDevice = vi.fn(async () => {});
 const fetchDownloads = vi.fn(() => downloads());
@@ -42,12 +52,11 @@ vi.mock("../src/devices.js", () => ({
 // wire at every boot. This mock names only what gate.js imports, and the
 // hand-over test below is what fails if a greeting — or a claim on home —
 // creeps back in.
-const answering = { deviceId: "d1", session: {}, call: async () => ({}) };
 vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
   retireDevice: () => {},
-  openDeviceSessions: () => ({ first: Promise.resolve(answering), settled: Promise.resolve([answering]) }),
-  openDeviceSettingsSession: async () => answering,
+  openDeviceSessions: (...args) => openDeviceSessions(...args),
+  openDeviceSettingsSession: async () => ({}),
   syncHome: () => {},
   goOffline: () => {},
   forgetHomeFollow: () => {},
@@ -55,7 +64,11 @@ vi.mock("../src/connection.js", () => ({
 // jsdom is neither a Mac nor a Linux desktop; the platform table has its own
 // test, and this one is about what the gate does with the key it is handed.
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "macos-arm64" }));
-vi.mock("../src/app.js", () => ({ App: { devices: [], selectedDeviceId: null }, render: () => {}, unmountView: () => {} }));
+vi.mock("../src/app.js", () => ({
+  App: { devices: [], selectedDeviceId: null },
+  render: (...args) => render(...args),
+  unmountView: () => {},
+}));
 vi.mock("../src/core/taskFeed.js", () => ({ startFeed: () => {}, stopFeed: () => {} }));
 vi.mock("../src/core/cacheSync.js", () => ({ startCacheSync: () => {} }));
 vi.mock("../src/core/inboxShell.js", () => ({ initInboxRail: () => {} }));
@@ -70,8 +83,126 @@ beforeEach(async () => {
   vi.clearAllMocks();
   devices = [];
   downloads = async () => DOWNLOADS;
+  openSession = async () => ({});
+  refresh = async () => devices;
   document.body.innerHTML = bodyHtml;
+  const { App } = await import("../src/app.js");
+  Object.assign(App, { devices: [], selectedDeviceId: null, _connecting: false, _watch: null });
   ({ boot } = await import("../src/views/gate.js"));
+});
+
+describe("the device connection gate", () => {
+  it("opens every online device at once and enters on the first that answers", async () => {
+    devices = [
+      { id: "sticky", name: "Studio", fingerprint: "AAAA", status: "online" },
+      { id: "available", name: "Laptop", fingerprint: "BBBB", status: "online" },
+    ];
+    openSession = async () => ({ deviceId: "available" });
+    const { App } = await import("../src/app.js");
+    App.devices = devices;
+    App.selectedDeviceId = "sticky";
+
+    await boot();
+
+    expect(openDeviceSessions).toHaveBeenCalledTimes(1);
+    expect(document.body.classList.contains("gated")).toBe(false);
+    expect(document.getElementById("root").textContent).not.toContain("Waiting for your device");
+  });
+
+  it("does not claim none are online after an online device's handshake fails", async () => {
+    devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "online" }];
+    openSession = async () => {
+      throw new Error("device did not accept the session");
+    };
+    const { App } = await import("../src/app.js");
+    App.devices = devices;
+
+    await boot();
+
+    expect(document.getElementById("waitintro").textContent).toContain("report online");
+    expect(document.getElementById("waitintro").textContent).not.toContain("None of your devices");
+    clearInterval(App._watch);
+    App._watch = null;
+  });
+
+  it("does not let an older failed boot re-gate a session established by a newer boot", async () => {
+    devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "online" }];
+    let finishStaleRefresh;
+    const staleRefresh = new Promise((resolve) => {
+      finishStaleRefresh = resolve;
+    });
+    let refreshCount = 0;
+    refresh = async () => {
+      refreshCount += 1;
+      return refreshCount === 2 ? staleRefresh : devices;
+    };
+    openSession = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("relay warming up"))
+      .mockResolvedValueOnce({ deviceId: "dev-a" });
+
+    const staleBoot = boot();
+    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
+    await boot();
+    expect(document.body.classList.contains("gated")).toBe(false);
+
+    finishStaleRefresh(devices);
+    await staleBoot;
+
+    expect(document.body.classList.contains("gated")).toBe(false);
+    expect(document.getElementById("root").textContent).not.toContain("Waiting for your device");
+    const { App } = await import("../src/app.js");
+    expect(App._watch).toBe(null);
+  });
+
+  it("keeps the newer boot responsible for waiting when a shared connection attempt fails", async () => {
+    devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "online" }];
+    let rejectConnection;
+    openSession = vi.fn(
+      () =>
+        new Promise((resolve, reject) => {
+          rejectConnection = reject;
+        }),
+    );
+
+    const olderBoot = boot();
+    await vi.waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
+    const newerBoot = boot();
+    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
+    rejectConnection(new Error("relay warming up"));
+    await Promise.all([olderBoot, newerBoot]);
+
+    expect(openSession).toHaveBeenCalledTimes(1);
+    expect(document.getElementById("root").textContent).toContain("Waiting for your device");
+    const { App } = await import("../src/app.js");
+    expect(App._watch).not.toBe(null);
+    clearInterval(App._watch);
+    App._watch = null;
+  });
+
+  it("shares a successful connection attempt between overlapping boots", async () => {
+    devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "online" }];
+    let finishConnection;
+    openSession = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finishConnection = resolve;
+        }),
+    );
+
+    const olderBoot = boot();
+    await vi.waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
+    const newerBoot = boot();
+    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
+    const session = { deviceId: "dev-a" };
+    finishConnection(session);
+    await Promise.all([olderBoot, newerBoot]);
+
+    expect(openSession).toHaveBeenCalledTimes(1);
+    expect(openDeviceSessions).toHaveBeenCalledTimes(1);
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(document.body.classList.contains("gated")).toBe(false);
+  });
 });
 
 describe("the first-run screen", () => {

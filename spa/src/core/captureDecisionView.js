@@ -62,7 +62,7 @@ export function mountCaptureDecision(host, captureId) {
   let captureDeviceId = null; // the machine this capture is on, once a snapshot says
   // What the user has typed or chosen, kept beside the page rather than in it:
   // a repaint rebuilds the page, and these are theirs.
-  const draft = { projectId: "", kind: "issue", branch: "", answer: "" };
+  const draft = { projectId: "", kind: "branch", branch: "", answer: "" };
 
   host.innerHTML = '<div class="empty">Reading the capture…</div>';
 
@@ -191,12 +191,8 @@ export function mountCaptureDecision(host, captureId) {
         draw();
       };
     }
-    host.querySelectorAll("[data-capture-kind]").forEach((control) => {
-      control.onclick = () => {
-        draft.kind = control.dataset.captureKind;
-        draw();
-      };
-    });
+    const branchKind = host.querySelector('[data-capture-kind="branch"]');
+    if (branchKind) branchKind.onclick = () => draw();
     const branchField = host.querySelector("#capture-branch");
     if (branchField) branchField.oninput = () => (draft.branch = branchField.value);
     const route = host.querySelector("#capture-route");

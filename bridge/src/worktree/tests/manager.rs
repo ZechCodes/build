@@ -1,6 +1,6 @@
 use super::super::comparison::worktree_status_line_count;
 use crate::git_fixture::{git_in, init_repo};
-use crate::isolation::probe::cow_or_skip;
+use crate::isolation::probe::rift_or_skip;
 use crate::isolation::Isolation;
 use crate::worktree::{Worktree, WorktreeManager};
 use std::path::{Path, PathBuf};
@@ -104,8 +104,8 @@ fn a_clones_availability_is_the_probes_answer() {
 
     assert_eq!(availability.lock_reason(Isolation::Worktree), None);
     assert_eq!(
-        availability.lock_reason(Isolation::Cow),
-        availability.cow.as_ref().err().map(String::as_str),
+        availability.lock_reason(Isolation::Rift),
+        availability.rift.as_ref().err().map(String::as_str),
         "the clone lock is exactly the probe's failure sentence"
     );
 }
@@ -125,7 +125,7 @@ fn each_backend_sits_at_the_isolation_it_makes() {
     assert_eq!(
         mgr.backends()
             .map(|slot| slot.map(|backend| backend.kind())),
-        [Some(Isolation::Worktree), Some(Isolation::Cow)],
+        [Some(Isolation::Worktree), Some(Isolation::Rift)],
     );
 }
 /// A clone is a directory, and a directory already under the worktrees root
@@ -133,13 +133,13 @@ fn each_backend_sits_at_the_isolation_it_makes() {
 #[test]
 fn a_clone_directory_makes_its_name_taken() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let mgr = manager(&dir, &repo);
 
-    let first = mgr.create("dup", "main", Isolation::Cow).unwrap().worktree;
-    let second = mgr.create("dup", "main", Isolation::Cow).unwrap().worktree;
+    let first = mgr.create("dup", "main", Isolation::Rift).unwrap().worktree;
+    let second = mgr.create("dup", "main", Isolation::Rift).unwrap().worktree;
 
     assert_eq!(first.name, "dup");
     assert_eq!(

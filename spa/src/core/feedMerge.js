@@ -12,7 +12,7 @@
 // against `deviceView(feed, id)` and a consumer that wants them all reads the
 // merge itself.
 
-import { deviceKey } from "./deviceKey.js";
+import { deviceKey, workspaceKey } from "./deviceKey.js";
 
 /** Where each collection comes from on the wire. The redesigned feed is one row
  *  per work item; the legacy collections below still ship, and still feed what
@@ -28,11 +28,11 @@ const WIRE_FIELDS = Object.freeze({
 });
 
 /** The collections a snapshot carries: the board's, in the order the wire names
- *  them, and the projects that come from the second read. Every one of them is
- *  an array of rows stamped with the device that answered, which is what lets a
- *  reader narrow a snapshot to one machine (core/deviceFilter.js) without
- *  knowing what any row is. */
-export const FEED_COLLECTIONS = Object.freeze([...Object.keys(WIRE_FIELDS), "projects"]);
+ *  them, and the projects and workspaces that come from the other two reads.
+ *  Every one of them is an array of rows stamped with the device that answered,
+ *  which is what lets a reader narrow a snapshot to one machine
+ *  (core/deviceFilter.js) without knowing what any row is. */
+export const FEED_COLLECTIONS = Object.freeze([...Object.keys(WIRE_FIELDS), "projects", "workspaces"]);
 
 const EMPTY_VIEW = Object.freeze({
   ...Object.fromEntries(FEED_COLLECTIONS.map((field) => [field, Object.freeze([])])),
@@ -53,13 +53,34 @@ function stampProject(project, deviceId) {
   return { ...project, id, deviceId, projectKey: deviceKey(deviceId, id) };
 }
 
-/** One device's snapshot, read from its `board.list` and `project.list`. */
-export function liveFeedSnapshot(board, projectList, deviceId) {
+/** A workspace as the account sees it: the machine it is checked out on, the
+ *  project it belongs to there, its own account-wide name, and the board's
+ *  summary of what is running in it when the board carries one. Exported
+ *  because the toolbar reads `workspace.list` off one device for its switcher,
+ *  and a workspace is named the same way wherever it was read. */
+export function stampWorkspace(workspace, deviceId, summaries = []) {
+  const id = workspace.workspace_id || workspace.id;
+  const summary = summaries.find((candidate) => candidate.workspace_id === id);
+  return {
+    ...workspace,
+    ...(summary ? { work_summary: summary.work_summary } : null),
+    id,
+    deviceId,
+    projectKey: deviceKey(deviceId, workspace.project_id),
+    workspaceKey: workspaceKey(deviceId, id),
+  };
+}
+
+/** One device's snapshot, read from its `board.list`, `project.list` and
+ *  `workspace.list`. A bridge that does not serve workspaces answers none. */
+export function liveFeedSnapshot(board, projectList, workspaceList, deviceId) {
   const view = {};
   for (const [field, wire] of Object.entries(WIRE_FIELDS)) {
     view[field] = (board[wire] || []).map((row) => stampRow(row, deviceId));
   }
   view.projects = (projectList.projects || []).map((project) => stampProject(project, deviceId));
+  const summaries = board.workspace_summaries || [];
+  view.workspaces = (workspaceList?.workspaces || []).map((workspace) => stampWorkspace(workspace, deviceId, summaries));
   return view;
 }
 
@@ -73,7 +94,7 @@ function orderedViews(byDevice, deviceOrder) {
 }
 
 /**
- * Every device's snapshot as one. The seven collections are concatenated in
+ * Every device's snapshot as one. The collections are concatenated in
  * device order; `devices` holds each device's own view, the same shape as the
  * merge, for the surfaces that are about one machine.
  *

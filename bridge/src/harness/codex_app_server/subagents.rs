@@ -303,7 +303,8 @@ impl CodexSubagents {
             return false;
         }
         let label = optional_text(item, "agentPath", LABEL_LIMIT);
-        let state = match item["kind"].as_str() {
+        let kind = item["kind"].as_str();
+        let state = match kind {
             Some("started" | "interacted") => Some("running"),
             Some("interrupted") => Some("failed"),
             Some("completed") => Some("done"),
@@ -321,10 +322,10 @@ impl CodexSubagents {
             } else if created {
                 agent.label = "Sub-agent".to_string();
             }
-            let preserves_failure = item["kind"].as_str() == Some("completed")
-                && agent.state.as_deref() == Some("failed");
+            let preserves_failure =
+                kind == Some("completed") && agent.state.as_deref() == Some("failed");
             if !preserves_failure {
-                apply_state(agent, state, None, false);
+                apply_state(agent, state, None, kind == Some("interacted"));
             }
             *agent != before
         })
@@ -777,22 +778,70 @@ mod tests {
     }
 
     #[test]
-    fn terminal_activity_cannot_be_regressed_or_duplicated() {
+    fn interaction_restarts_a_completed_agent_and_can_complete_again() {
         let mut held = CodexSubagents::default();
-        let completed = item(json!({
-            "id":"activity", "type":"subAgentActivity", "agentPath":"worker",
+        held.apply(&item(json!({
+            "id":"answer", "type":"collabAgentToolCall", "tool":"spawnAgent",
+            "status":"completed", "receiverThreadIds":["child"],
+            "agentsStates":{"child":{"status":"completed","message":"first answer"}}
+        })));
+        held.agents[0].surface.started_at = Some(0);
+        held.agents[0].surface.duration_ms = Some(42);
+
+        let interacted = item(json!({
+            "id":"later", "type":"subAgentActivity", "agentPath":"worker",
+            "agentThreadId":"child", "kind":"interacted"
+        }));
+        assert!(held.apply(&interacted));
+        assert!(!held.apply(&interacted));
+        let restarted = &held.snapshot().unwrap().subagents[0];
+        assert_eq!(restarted.state.as_deref(), Some("running"));
+        assert_ne!(restarted.started_at, Some(0));
+        assert!(restarted.duration_ms.is_none());
+        assert!(restarted.result.is_none());
+        assert!(restarted.error.is_none());
+
+        let completed_again = item(json!({
+            "id":"completed-again", "type":"subAgentActivity", "agentPath":"worker",
             "agentThreadId":"child", "kind":"completed"
         }));
-        assert!(held.apply(&completed));
-        assert!(!held.apply(&completed));
-        assert!(!held.apply(&item(json!({
+        assert!(held.apply(&completed_again));
+        assert!(!held.apply(&completed_again));
+        let completed = &held.snapshot().unwrap().subagents[0];
+        assert_eq!(completed.state.as_deref(), Some("done"));
+        assert!(completed.duration_ms.is_some());
+    }
+
+    #[test]
+    fn interaction_restarts_a_failed_agent_but_stale_start_does_not() {
+        let mut held = CodexSubagents::default();
+        held.apply(&item(json!({
+            "id":"failed", "type":"collabAgentToolCall", "tool":"spawnAgent",
+            "status":"failed", "receiverThreadIds":["child"],
+            "agentsStates":{"child":{"status":"errored","message":"first failure"}}
+        })));
+        held.agents[0].surface.started_at = Some(0);
+        held.agents[0].surface.duration_ms = Some(42);
+
+        held.apply(&item(json!({
+            "id":"stale-start", "type":"subAgentActivity", "agentPath":"worker",
+            "agentThreadId":"child", "kind":"started"
+        })));
+        assert_eq!(
+            held.snapshot().unwrap().subagents[0].state.as_deref(),
+            Some("failed")
+        );
+
+        assert!(held.apply(&item(json!({
             "id":"later", "type":"subAgentActivity", "agentPath":"worker",
             "agentThreadId":"child", "kind":"interacted"
         }))));
-        assert_eq!(
-            held.snapshot().unwrap().subagents[0].state.as_deref(),
-            Some("done")
-        );
+        let restarted = &held.snapshot().unwrap().subagents[0];
+        assert_eq!(restarted.state.as_deref(), Some("running"));
+        assert_ne!(restarted.started_at, Some(0));
+        assert!(restarted.duration_ms.is_none());
+        assert!(restarted.result.is_none());
+        assert!(restarted.error.is_none());
     }
 
     #[test]

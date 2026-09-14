@@ -26,7 +26,7 @@ impl AppState {
     /// repository and volume probes to the deferred-read drain. The answer is
     /// a coherent snapshot: registration changes while the probes run affect
     /// the next list request, not this one.
-    pub(in crate::app) fn defer_project_list(&mut self) -> Value {
+    pub(crate) fn defer_project_list(&mut self) -> Value {
         let projects = self
             .projects
             .iter()
@@ -37,6 +37,7 @@ impl AppState {
                 worktrees_root: self.project_worktrees_root(&project.id),
                 base_branch: project.base_branch.clone(),
                 is_git: project.is_git,
+                sources: project.sources.clone(),
                 isolation: project.isolation,
                 isolation_default: self.isolation,
             })
@@ -69,6 +70,15 @@ impl AppState {
             "base_branch": p.base_branch,
             "is_git": p.is_git,
             "remote": remote,
+            "sources": p.sources.iter().enumerate().map(|(index, source)| json!({
+                "id": source.id,
+                "name": source.name,
+                "mount": source.mount,
+                "path": source.path.display().to_string(),
+                "is_git": source.is_git,
+                "base_branch": source.base_branch,
+                "remote": source.remote.as_ref().or(if index == 0 { remote.as_ref() } else { None }),
+            })).collect::<Vec<_>>(),
             "isolation": p.isolation,
             "isolation_default": self.isolation,
             "isolation_effective": effective,

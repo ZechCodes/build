@@ -150,6 +150,8 @@ const CATALOG = {
 const railHost = () => document.getElementById("agent-rail");
 const modelMenuButton = () => railHost().querySelector(".composer-model .caret");
 const menuItem = (action) => railHost().querySelector(`.composer-model .mi[data-action="${action}"]`);
+const reasoningMenuButton = () => railHost().querySelector(".composer-reasoning .caret");
+const reasoningMenuItem = (action) => railHost().querySelector(`.composer-reasoning .mi[data-action="${action}"]`);
 const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
@@ -249,6 +251,18 @@ describe("the bubble strip", () => {
     expect(panel()).toBe(null);
     // …and the strip is still there with the panel shut.
     expect(bubbles().length).toBe(3);
+  });
+
+  it("repaints the header icon when a provider update arrives", async () => {
+    await mount();
+    expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("claude_adk");
+
+    payload = branchRow({ agents: [agent({ provider: "codex_app_server" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
+    expect(panel().querySelector(".rail-who").textContent).toBe("Codex 1");
   });
 
   // The rail reads the row every 1.6s and nearly every read says the same
@@ -357,7 +371,7 @@ describe("the bubble strip", () => {
     expect(callsTo("agent.add")).toEqual([]);
     const chooser = railHost().querySelector(".rail-newagent");
     expect(chooser).toBeTruthy();
-    expect(chooser.querySelector(".chooser-card.chosen").dataset.provider).toBe("codex");
+    expect(chooser.querySelector(".rail-harness-choice.chosen").dataset.provider).toBe("codex");
     expect(railHost().querySelector(".rail-who").textContent).toBe("New agent");
     expect(railHost().querySelector("#railinput").placeholder).toContain("start an agent");
   });
@@ -383,7 +397,7 @@ describe("the bubble strip", () => {
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
-    expect(railHost().querySelector(".rail-newagent .chooser-card.chosen").dataset.provider).toBe("claude_adk");
+    expect(railHost().querySelector(".rail-newagent .rail-harness-choice.chosen").dataset.provider).toBe("claude_adk");
   });
 
   it("backs out of the chooser onto whichever bubble is pressed", async () => {
@@ -1780,7 +1794,7 @@ describe("the first message", () => {
 // conversation has. Sending is the one act that creates one and speaks to it.
 describe("the chat tab of a branch with no agent", () => {
   const agentless = () => branchRow({ agents: [] });
-  const cards = () => [...railHost().querySelectorAll(".rail-newagent .chooser-card")];
+  const cards = () => [...railHost().querySelectorAll(".rail-newagent .rail-harness-choice")];
   const card = (provider) => cards().find((entry) => entry.dataset.provider === provider);
   const chosenCard = () => cards().find((entry) => entry.classList.contains("chosen"));
   const send = async (body) => {
@@ -1832,6 +1846,36 @@ describe("the chat tab of a branch with no agent", () => {
 
     await send("start here");
     expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
+  });
+
+  it("keeps model and effort when the selected harness is pressed again", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    }));
+    payload = agentless();
+    await mount();
+
+    chosenCard().click();
+    await flush();
+    expect(document.activeElement).toBe(chosenCard());
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+  });
+
+  it("passes a custom saved model through for a compatible harness", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "company-custom-model", effort: "custom",
+    }));
+    payload = agentless();
+    await mount();
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "company-custom-model", effort: "custom",
+    });
   });
 
   it("adopts a checkout Build owns nothing in before it creates the agent", async () => {
@@ -1923,10 +1967,15 @@ describe("the composer's model menu", () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "low" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · low");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("low");
     modelMenuButton().click();
     expect([...railHost().querySelectorAll(".composer-model .mi")].map((mi) => mi.dataset.action)).toEqual([
-      "model:", "model:claude-opus-5", "model:claude-haiku-4-5", "effort:", "effort:low", "effort:high",
+      "model:claude-opus-5", "model:claude-haiku-4-5",
+    ]);
+    reasoningMenuButton().click();
+    expect([...railHost().querySelectorAll(".composer-reasoning .mi")].map((mi) => mi.dataset.action)).toEqual([
+      "effort:low", "effort:high",
     ]);
   });
 
@@ -1950,22 +1999,24 @@ describe("the composer's model menu", () => {
     modelMenuButton().click();
     menuItem("model:claude-opus-5").click();
     await flush();
-    modelMenuButton().click();
-    menuItem("effort:high").click();
+    reasoningMenuButton().click();
+    reasoningMenuItem("effort:high").click();
     await flush();
 
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "high" })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · high");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("high");
   });
 
   it("says the model the open agent is actually running on, with no second round trip", async () => {
-    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5", active_effort: "high" })] });
     await mount();
 
     expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("high");
     expect(callsTo("agent.choose")).toEqual([]);
   });
 
@@ -1995,11 +2046,11 @@ describe("the composer's model menu", () => {
     expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
   });
 
-  it("says Default model for an agent that has never run and chose nothing", async () => {
+  it("asks for a model when an agent has never run and chose nothing", async () => {
     payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Default model");
+    expect(modelMenuButton().textContent).toContain("Select model");
   });
 
   it("moves the label the instant a model is picked, before agent.choose answers", async () => {
@@ -2045,7 +2096,7 @@ describe("the composer's model menu", () => {
 
     expect(callsTo("thread.post")).toEqual([]);
     expect(panel().querySelector("#railsend").disabled).toBe(true);
-    expect(panel().querySelector("#railsend").textContent).toContain("Applying model…");
+    expect(panel().querySelector("#railhint").textContent).toContain("Applying model…");
 
     acknowledgeChoice({
       entity_id: "run-3",
@@ -2064,6 +2115,40 @@ describe("the composer's model menu", () => {
       agent_id: "ag-1",
       choice_revision: 1,
       body: "use the new model",
+    });
+  });
+
+  it("uses model and reasoning changes made in an existing conversation on the next send", async () => {
+    payload = branchRow({
+      agents: [agent({ model: "claude-opus-5", effort: "low", active_model: "claude-opus-5" })],
+    });
+    await mount();
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    await flush();
+    modelMenuButton().click();
+    menuItem("model:claude-opus-5").click();
+    await flush();
+    reasoningMenuButton().click();
+    reasoningMenuItem("effort:high").click();
+    await flush();
+
+    const composer = panel().querySelector("#railinput");
+    composer.value = "continue with these settings";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("agent.choose").at(-1).params).toMatchObject({
+      agent_id: "ag-1",
+      model: "claude-opus-5",
+      effort: "high",
+    });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      agent_id: "ag-1",
+      choice_revision: 3,
+      body: "continue with these settings",
     });
   });
 
@@ -2113,57 +2198,51 @@ describe("the composer's model menu", () => {
   });
 });
 
-// A message to an agent mid-turn can be handed over two ways: queued for its
-// next step — which for a carrier that can be steered usually decides the same
-// turn — or after stopping the turn outright. Two behaviours behind one verb,
-// so the send is a split button, and the stop is never the default press.
+// An empty composer stops an interruptible active turn. As soon as there is a
+// draft, the same stable control sends it instead.
 describe("interrupting the turn", () => {
-  const splitSend = () => panel().querySelector(".composer-send-control .splitbtn");
-  const menuItem = (action) =>
-    [...panel().querySelectorAll(".composer-send-control .splitmenu .mi")].find((mi) => mi.dataset.action === action);
+  const send = () => panel().querySelector("#railsend");
 
   it("offers the plain send to an agent whose turn cannot be stopped", async () => {
     payload = branchRow({ agents: [agent({ working: true })] });
     await mount();
-    expect(splitSend()).toBe(null);
-    expect(panel().querySelector("#railsend")).toBeTruthy();
+    expect(send().dataset.action).toBe("send");
   });
 
   it("offers the plain send to an agent that is not working, whatever it can do", async () => {
     payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
     await mount();
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
   });
 
-  it("splits the send for a working agent that announced the interrupt", async () => {
+  it("shows stop for a working agent that announced the interrupt", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    expect(splitSend()).toBeTruthy();
-    // The default press is the send it always was, still the button by that id.
-    expect(splitSend().querySelector("#railsend").dataset.action).toBe("send");
-    expect(menuItem("interrupt_send").textContent).toContain("Interrupt & send");
+    expect(send().dataset.action).toBe("stop");
+    expect(send().getAttribute("aria-label")).toBe("Stop agent");
   });
 
-  it("posts the message with the interrupt flag when that is the option chosen", async () => {
+  it("invokes the standalone interrupt when stop is pressed", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    panel().querySelector("#railinput").value = "stop, do this instead";
-    splitSend().querySelector(".caret").click();
-    menuItem("interrupt_send").click();
+    send().click();
     await flush();
-    expect(callsTo("thread.post")[0].params).toMatchObject({
-      entity_id: "run-3", agent_id: "ag-1", body: "stop, do this instead", interrupt: true,
+    expect(callsTo("agent.interrupt")[0].params).toMatchObject({
+      entity_id: "run-3", agent_id: "ag-1", conversation_id: "ag-1",
     });
   });
 
-  it("leaves the flag off the default press", async () => {
+  it("changes stop back to send as soon as the user types", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    panel().querySelector("#railinput").value = "when you get a moment";
-    panel().querySelector("#railsend").click();
+    const input = panel().querySelector("#railinput");
+    input.value = "when you get a moment";
+    input.dispatchEvent(new Event("input"));
+    expect(send().dataset.action).toBe("send");
+    send().click();
     await flush();
     expect(callsTo("thread.post")[0].params.body).toBe("when you get a moment");
-    expect(callsTo("thread.post")[0].params.interrupt).toBeUndefined();
+    expect(callsTo("agent.interrupt")).toHaveLength(0);
   });
 
   // The condition changes every time an agent starts or finishes a turn, which
@@ -2174,13 +2253,13 @@ describe("interrupting the turn", () => {
     await mount();
     const input = panel().querySelector("#railinput");
     input.value = "half a sent";
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
 
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(splitSend()).toBeTruthy();
+    expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
 
@@ -2188,7 +2267,7 @@ describe("interrupting the turn", () => {
     payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
     vi.advanceTimersByTime(1600);
     await flush();
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
   });
@@ -2336,7 +2415,12 @@ describe("the agent's surfaces, carried by the status row", () => {
     await openPanelWithSurfaces();
 
     const block = railHost().querySelector(".rail-composer");
-    expect([...block.children].map((child) => child.id)).toEqual(["rail-status", "rail-chat-recovery", ""]);
+    expect([...block.children].map((child) => child.id)).toEqual([
+      "rail-surfaces-viewer",
+      "rail-status",
+      "rail-chat-recovery",
+      "",
+    ]);
     expect(block.querySelector('#rail-status-pills [data-surface-kind="shells"]')).not.toBe(null);
     expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
   });
@@ -2568,6 +2652,127 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await flush();
     expect(railHost().querySelector(".surface-pill")).toBe(null);
     expect(notifyError).not.toHaveBeenCalled();
+  });
+});
+
+describe("a workspace conversation on a metadata-only bridge", () => {
+  it("recovers the exact adopted run and posts through its agent conversation", async () => {
+    const run = {
+      run_id: "run-3",
+      project_id: "p1",
+      branch: "build/login",
+      agents: [agent({ id: "ag-workspace", conversation_id: "conversation-workspace", state: "live" })],
+      thread: { items: [], sessions: [] },
+    };
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { id: "run-3", project_id: "p1", directories: [{ branch: "build/login" }] };
+      if (method === "run.get") return run;
+      if (method === "thread.post") return {
+        entity_id: "run-3", agent_id: "ag-workspace", conversation_id: "conversation-workspace", posted_sequence: 7,
+      };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "run-3", sourceId: "root" });
+    const input = railHost().querySelector("#railinput");
+    expect(input).not.toBeNull();
+    input.value = "fix the deployed workspace";
+    railHost().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("run.get")[0].params).toMatchObject({ run_id: "run-3" });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-3",
+      agent_id: "ag-workspace",
+      conversation_id: "conversation-workspace",
+      body: "fix the deployed workspace",
+    });
+  });
+
+  it("shows the shared new-conversation composer without creating storage on open", async () => {
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1" });
+    if (!panel()) {
+      railHost().querySelector('[data-bubble="ghost"]').click();
+      await flush();
+    }
+
+    expect(railHost().querySelector(".rail-newagent")).not.toBeNull();
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+    expect(callsTo("workspace.ensure_conversation")).toEqual([]);
+    expect(callsTo("agent.add")).toEqual([]);
+  });
+
+  it("creates the workspace conversation on first send and uses saved defaults", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    }));
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      if (method === "workspace.ensure_conversation") return { workspace_id: "workspace-1", entity_id: "run-workspace" };
+      if (method === "agent.add") return { entity_id: "run-workspace", agent: agent({ id: "ag-workspace", ordinal: 1, state: "idle" }) };
+      if (method === "thread.post") return { posted_sequence: 1 };
+      if (method === "agent.start") return { agent_id: "ag-workspace" };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true });
+    railHost().querySelector("#railinput").value = "start in this workspace";
+    railHost().querySelector("#railsend").click();
+    await flush();
+
+    expect(calls.filter((entry) => ["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"].includes(entry.method))
+      .map((entry) => entry.method)).toEqual(["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"]);
+    expect(callsTo("workspace.ensure_conversation")[0].params).toEqual({ workspace_id: "workspace-1" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      entity_id: "run-workspace", provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-workspace", agent_id: "ag-workspace", body: "start in this workspace",
+    });
+    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-workspace", agent_id: "ag-workspace" });
+  });
+
+  it("restores the draft and retries workspace creation after ensure fails", async () => {
+    let ensureAttempts = 0;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      if (method === "workspace.ensure_conversation") {
+        ensureAttempts += 1;
+        if (ensureAttempts === 1) throw new Error("workspace unavailable");
+        return { entity_id: "run-workspace" };
+      }
+      if (method === "agent.add") return { agent: agent({ id: "ag-workspace", state: "idle" }) };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true });
+    railHost().querySelector("#railinput").value = "keep this draft";
+    railHost().querySelector("#railsend").click();
+    await flush();
+    expect(railHost().querySelector("#railinput").value).toBe("keep this draft");
+    expect(railHost().querySelector(".rail-newagent")).not.toBeNull();
+    expect(callsTo("agent.add")).toEqual([]);
+    expect(callsTo("thread.post")).toEqual([]);
+    expect(callsTo("agent.start")).toEqual([]);
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "workspace unavailable");
+
+    railHost().querySelector("#railsend").click();
+    await flush();
+    expect(callsTo("workspace.ensure_conversation")).toHaveLength(2);
+    expect(callsTo("agent.add")).toHaveLength(1);
   });
 });
 
@@ -3096,8 +3301,8 @@ describe("the one status row", () => {
   });
 });
 
-describe("the viewer at the bottom of the conversation column", () => {
-  it("stands between the conversation and the composer, with nothing drawn between", async () => {
+describe("the viewer above the conversation footer", () => {
+  it("is anchored inside the composer block so opening it cannot reflow the transcript", async () => {
     payload = branchRow({
       agents: [agent({ surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running", tail: [] }] } })],
     });
@@ -3106,18 +3311,21 @@ describe("the viewer at the bottom of the conversation column", () => {
     expect([...panel().children].map((child) => child.className)).toEqual([
       "rail-head",
       "rail-body",
-      "rail-surfaces-viewer",
       "rail-composer",
     ]);
+    expect(panel().querySelector(".rail-composer > .rail-surfaces-viewer")).not.toBeNull();
     expect(railHost().querySelector("#rail-surfaces-viewer").hidden).toBe(true);
   });
 
-  it("is drawn with no border and no divider of its own", () => {
+  it("is an independently scrolling popover anchored above the footer", () => {
     const viewerRule = shellCss.match(/\.rail-surfaces-viewer \{[^}]*\}/)[0];
-    expect(viewerRule).toMatch(/max-height:34vh/);
-    expect(viewerRule).toMatch(/overflow-y:auto/);
-    expect(viewerRule).not.toMatch(/border:/);
-    expect(viewerRule).not.toMatch(/border-top/);
+    const composerRule = shellCss.match(/\.rail-composer \{[^}]*\}/)[0];
+    expect(composerRule).toMatch(/position:relative/);
+    expect(viewerRule).toMatch(/position:absolute/);
+    expect(viewerRule).toMatch(/bottom:100%/);
+    expect(viewerRule).toMatch(/max-height:min\(46vh, 420px\)/);
+    expect(viewerRule).toMatch(/overflow:hidden/);
+    expect(shellCss).toMatch(/\.surface-popover-body \{[^}]*overflow-y:auto/);
   });
 });
 

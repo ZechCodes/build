@@ -77,6 +77,10 @@ pub(in crate::app) fn apply_thread_action(
         BridgeAction::SearchConversation { .. } => {
             Err("search_conversation is answered by the daemon, not one conversation".to_string())
         }
+        // The topic lives on the agent's record, which one thread cannot see.
+        BridgeAction::SetTopic { .. } => {
+            Err("set_topic is answered by the daemon, not one conversation".to_string())
+        }
         // The router's tools are about which work item a capture becomes, so
         // none of them is a thread operation. The socket refuses them before
         // this point; this arm is the type system agreeing.

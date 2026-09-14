@@ -1,17 +1,14 @@
 // The view area's toolbar: where you are standing, how to go somewhere else,
 // and what the work you are standing in is doing.
 //
-// Left: the project name, then the branch or issue name. They are two words of
-// one sentence and each opens the menu of its own kind — the project name lists
-// projects, the branch-or-issue name lists that project's branches and issues,
-// with the two creates at its foot. Picking a project re-scopes and hands you
-// straight to its work list (there is no project page any more; branches and
-// issues are the only navigation targets); picking work goes there; picking a
-// create opens the one create surface (core/createWork.js) on that project.
+// Left: a workspace switcher followed immediately by that workspace's directory
+// tabs. Its popup starts with the active project's workspaces; Switch project
+// moves the same popup to the project list, and a project choice moves it back
+// after loading that project's workspaces. Legacy branch and issue links retain
+// their project selector and static item identity while those routes remain supported.
 //
 // Right: a slot the standing view can fill with its own verb — a branch's
-// Done, say — then the ⋯ that carries what used to be the tab row's right
-// cluster (the archive and the project's settings). The working-time ticker
+// Done, say. The working-time ticker
 // and the diffstat used to sit beside it too; they pin above the agent rail's
 // composer now instead (core/agentRail.js) — a fact about the work item, read
 // beside the conversation about it rather than in a bar that outlives every
@@ -30,32 +27,48 @@ import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
-import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openCreateWork } from "./createWork.js";
-import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
+import {
+  projectMenuModel,
+  toolbarIdentity,
+  workMenuModel,
+  workspaceDirectoryModel,
+  workspaceMenuModel,
+} from "./toolbarModel.js";
 import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
 import { canAnswer, contextFor } from "./deviceContexts.js";
 import { filterByDevice } from "./deviceFilter.js";
-import { deviceOfflineNotice } from "./deviceNotice.js";
+import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
+import { stampWorkspace } from "./feedMerge.js";
 import { patchList } from "./patchList.js";
-import { projectRoute } from "./projectModel.js";
+import { workspaceRoute } from "./projectModel.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
+
+/** The surfaces a project's work items are still the answer for. Everywhere
+ *  else a project's workspaces are what there is to go to. */
+const LEGACY_SURFACES = new Set(["branch", "issue"]);
 
 // Every machine's rows: where you are standing, and what the work half lists.
 let feed = { items: [], projects: [] };
 // The same snapshot narrowed to the machines the picker is showing. Only the
 // list of places to GO is narrowed — the bar names the project you are in
-// whether or not the filter shows it, and the ⋯ opens that project's settings.
+// whether or not the filter shows it.
 let shownFeed = feed;
 // The account-wide name of the scoped project (core/deviceKey.js), never the
 // bare id: every machine mints a `proj-1`, and the menu lists them all.
 let scopedProjectKey = null;
+// Each project's workspaces as its own machine last listed them, by project
+// key — two machines' `proj-1` are two projects with two sets.
+const workspacesByProject = new Map();
+let workspaceRequest = 0;
+let loadingProjectKey = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
 let paintedIdentity = null; // what the bar's OWN markup was last built from — see paint()
 let verbRender = null; // (host) => void, the standing view's own verb-slot paint
+let toolbarResizeObserver = null;
 
 /** Register the standing view's verb-slot content — called every repaint the
  *  toolbar does, poll-driven ticks included, so the caller's own function must
@@ -111,31 +124,106 @@ function rememberScope(projectKey) {
   }
 }
 
+/** A workspace as this bar names it — the same account-wide names the feed
+ *  stamps, minted in the one place that mints them (core/feedMerge.js), so a
+ *  row read here and a row read by the rail are the same row. */
+const workspaceAnswer = (answer, deviceId) => stampWorkspace(answer?.workspace || answer || {}, deviceId);
+
+async function workspaceRows(context, projectId, selectedWorkspaceId) {
+  const listed = await context.rpc("workspace.list", { project_id: projectId });
+  const rows = (listed?.workspaces || []).map((workspace) => stampWorkspace(workspace, context.deviceId));
+  if (!selectedWorkspaceId) return rows;
+  const selected = rows.find((workspace) => workspace.id === selectedWorkspaceId);
+  if (Array.isArray(selected?.directories)) return rows;
+  const detail = workspaceAnswer(await context.rpc("workspace.get", { workspace_id: selectedWorkspaceId }), context.deviceId);
+  return detail.id ? [...rows.filter((workspace) => workspace.id !== detail.id), detail] : rows;
+}
+
+function acceptWorkspaceRows(request, projectKey, rows) {
+  if (request !== workspaceRequest) return;
+  workspacesByProject.set(projectKey, rows);
+  loadingProjectKey = null;
+  paint();
+}
+
+/** Read the workspace menu for one project off that project's own machine, then
+ * hydrate the selected row so its directory tabs are available even when
+ * `workspace.list` is summarized. A route or project switch overtakes an older
+ * answer rather than letting it repaint another project's toolbar. A machine
+ * that cannot answer lists nothing rather than standing over refused calls. */
+async function loadWorkspaces(project, selectedWorkspaceId = null) {
+  const context = contextFor(project?.deviceId);
+  if (!project?.projectKey || !canAnswer(context)) return;
+  const request = ++workspaceRequest;
+  loadingProjectKey = project.projectKey;
+  paint();
+  try {
+    acceptWorkspaceRows(request, project.projectKey, await workspaceRows(context, project.id, selectedWorkspaceId));
+  } catch {
+    acceptWorkspaceRows(request, project.projectKey, []);
+  }
+}
+
+/** The project the route is standing in, as the workspace reads need it: the
+ *  route is the authority on which machine and which project, whether or not
+ *  the feed has arrived yet. */
+const routeProject = () => ({
+  id: App.route.projectId,
+  deviceId: App.route.deviceId,
+  projectKey: routeProjectKey(App.route),
+});
+
+/** The workspace the route is standing in, off the rows its project's machine
+ *  last listed. */
+const standingWorkspace = () =>
+  (workspacesByProject.get(routeProjectKey(App.route)) || []).find(
+    (candidate) => candidate.workspaceKey === routeWorkspaceKey(App.route),
+  ) || null;
+
+/** Its directories, marked with the one the route is on. */
+const standingDirectories = () =>
+  App.route.name === "workspace" ? workspaceDirectoryModel(standingWorkspace(), App.route.sourceId) : [];
+
 // ---- the bar ----------------------------------------------------------------
 
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
-export function toolbarHtml({ project, kind, label }) {
-  const itemSelector = kind
-    ? `<span class="tb-sep">/</span>
-       <button class="tb-sel tb-item" data-select="item" type="button" aria-haspopup="menu">
-         <span class="tb-name${kind === "branch" ? " mono" : ""}">${esc(label)}</span><span class="tb-caret">▾</span>
+export function toolbarHtml({ project, kind, label, directories = [] }) {
+  const identity = kind === "workspace"
+    ? `<button class="tb-sel tb-workspace" data-select="workspace" type="button" aria-haspopup="menu" aria-expanded="false">
+         <span class="tb-name">${esc(label)}</span><span class="tb-caret">▾</span>
+       </button>`
+    : kind
+      ? `<button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu" aria-expanded="false">
+           <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
+         </button>
+         <span class="tb-sep">/</span><span class="tb-legacy-item"><span class="tb-name${kind === "branch" ? " mono" : ""}">${esc(label)}</span></span>`
+      : `<button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu" aria-expanded="false">
+           <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
+         </button>`;
+  const directoryTabs = directories.length
+    ? `<div class="tb-directories" role="tablist" aria-label="Workspace directories">${directories
+        .map(
+          (directory) =>
+            `<button class="tb-directory${directory.current ? " current" : ""}" data-directory="${esc(directory.sourceId)}" type="button" role="tab" aria-selected="${directory.current ? "true" : "false"}">${esc(directory.label)}</button>`,
+        )
+        .join("")}</div>
+       <button class="tb-sel tb-directory-menu" data-select="directory" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Choose workspace directory">
+         <span class="tb-name">${esc(directories.find((directory) => directory.current)?.label || directories[0].label)}</span><span class="tb-caret">▾</span>
        </button>`
     : "";
   return `<div class="toolbar">
-    <button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu">
-      <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
-    </button>
-    ${itemSelector}
-    <div class="tb-right">
-      <span class="tb-verb" id="tb-verb"></span>
-      <button class="iconbtn tb-more" data-select="more" type="button" title="More" aria-label="More actions" aria-haspopup="menu">⋯</button>
-    </div>
+    ${identity}
+    ${directoryTabs}
+    <div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>
   </div>`;
 }
 
 function identity() {
-  return toolbarIdentity(App.route, feed);
+  return toolbarIdentity(App.route, {
+    ...feed,
+    workspaces: workspacesByProject.get(routeProjectKey(App.route)) || [],
+  });
 }
 
 /** Repaint the bar. `entering` says the paint follows a navigation (a route the
@@ -158,6 +246,7 @@ function paint({ entering = false } = {}) {
     project: standing.project || nameOf(scopedProject()),
     kind: standing.kind,
     label: standing.label,
+    directories: standing.directories || [],
   };
   const signature = JSON.stringify(shown);
   // A poll tick that says the same thing the bar already shows must leave the
@@ -171,23 +260,40 @@ function paint({ entering = false } = {}) {
     // A repaint replaces the very buttons a menu hangs off, so an open menu is
     // re-pointed at the new one — otherwise its anchor is a detached node and
     // the selector that opened it stops toggling it shut.
-    if (open) open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
+    if (open) {
+      open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
+      open.anchor.setAttribute("aria-expanded", "true");
+    }
     host.querySelectorAll("[data-select]").forEach((control) => {
       control.onclick = (event) => {
         event.stopPropagation();
-        const wanted = control.dataset.select;
         if (open && open.anchor === control) {
           closeMenu();
           return;
         }
         closeMenu();
-        if (wanted === "more") openSurfaceMenu(control);
-        else openJumpMenu(control);
+        openJumpMenu(control);
       };
+    });
+    host.querySelectorAll("[data-directory]").forEach((control) => {
+      control.onclick = () => openWorkspaceDirectory(control.dataset.directory);
     });
   }
   paintVerb();
   if (open) paintMenu();
+}
+
+function openWorkspaceDirectory(sourceId) {
+  const directory = sourceId ? standingDirectories().find((candidate) => candidate.sourceId === sourceId) : null;
+  if (!directory) return;
+  go({
+    name: "workspace",
+    deviceId: App.route.deviceId,
+    projectId: App.route.projectId,
+    workspaceId: App.route.workspaceId,
+    sourceId,
+    tab: directory.is_git === false ? "files" : "changes",
+  });
 }
 
 // ---- the menu each selector opens -------------------------------------------
@@ -205,7 +311,7 @@ function menuShell(anchor, className) {
   document.body.appendChild(element);
 
   const onKeydown = (event) => {
-    if (event.key === "Escape") closeMenu();
+    if (event.key === "Escape") closeMenu({ restoreFocus: true });
   };
   const onOutside = (event) => {
     if (element.contains(event.target)) return;
@@ -224,24 +330,50 @@ function menuShell(anchor, className) {
   };
 }
 
-function closeMenu() {
+function closeMenu({ restoreFocus = false } = {}) {
   if (!open) return;
+  const anchor = open.anchor;
+  open.anchor?.setAttribute("aria-expanded", "false");
   open.dismiss();
   open.element.remove();
   open = null;
+  if (restoreFocus && anchor?.isConnected) anchor.focus();
+}
+
+/** A directory popup can be open while the toolbar crosses its container
+ * breakpoint. Dismiss it when its trigger becomes hidden so focus and menu
+ * state never remain attached to an unavailable control. */
+function reconcileOpenMenu() {
+  if (open?.select !== "directory") return;
+  if (getComputedStyle(open.anchor).display === "none") closeMenu();
+}
+
+function observeToolbar(host) {
+  toolbarResizeObserver?.disconnect();
+  if (typeof ResizeObserver !== "function") return;
+  toolbarResizeObserver = new ResizeObserver(reconcileOpenMenu);
+  toolbarResizeObserver.observe(host);
 }
 
 function openJumpMenu(anchor) {
+  const list = anchor.dataset.select === "project"
+    ? "projects"
+    : anchor.dataset.select === "directory"
+      ? "directories"
+      : "workspaces";
+  if (list === "workspaces" && App.route.name === "workspace") rememberScope(routeProjectKey(App.route));
   open = {
     ...menuShell(anchor, "tbmenu"),
     select: anchor.dataset.select,
     mode: "jump",
-    list: anchor.dataset.select === "project" ? "projects" : "work",
+    list,
     query: "",
   };
+  anchor.setAttribute("aria-expanded", "true");
   paintMenu();
   const filter = open.element.querySelector(".tb-filter");
-  if (filter) filter.focus();
+  const initialChoice = open.element.querySelector('[aria-checked="true"]') || open.element.querySelector("[role=menuitem]");
+  (filter || initialChoice)?.focus();
 }
 
 /** Move the open menu to the other list. The query goes with the list it was
@@ -263,23 +395,23 @@ function showList(list) {
 function paintMenu() {
   if (!open || open.mode !== "jump") return;
   paintMenuShell();
-  const entries = open.list === "projects" ? projectMenuEntries() : workMenuEntries();
+  const entries = (MENU_LISTS[open.list] || workspaceMenuEntries)();
   patchList(open.element.querySelector(".tbmenu-list"), entries, {
     keyOf: (entry) => entry.key,
     render: (entry) => entry.html,
   });
 }
 
-/** The frame the rows sit in: the filter, and — on the work list — the scope
- *  line and the two creates. Switching lists is a different menu, so that is the
+/** The frame the rows sit in: the filter, and — on the workspace list — the
+ *  project scope and create action. Switching lists is a different menu, so that is the
  *  one thing that builds it again. */
 function paintMenuShell() {
   if (open.element.dataset.list === open.list) return;
   open.element.dataset.list = open.list;
-  open.element.innerHTML = open.list === "projects" ? projectMenuShellHtml() : workMenuShellHtml();
+  open.element.innerHTML = (MENU_SHELLS[open.list] || workspaceMenuShellHtml)();
   open.element.onclick = onMenuClick;
   const filter = open.element.querySelector(".tb-filter");
-  filter.oninput = () => {
+  if (filter) filter.oninput = () => {
     open.query = filter.value;
     paintMenu();
   };
@@ -287,45 +419,87 @@ function paintMenuShell() {
 
 /** Every row the menu offers, answered in one place — a row that has just
  *  arrived is live without having been wired. */
-function onMenuClick(event) {
-  if (event.target.closest("[data-projects]")) {
-    showList("projects");
-    return;
-  }
-  const project = event.target.closest("[data-project]");
-  if (project) {
-    const selected = projectFor(project.dataset.project);
-    rememberScope(project.dataset.project);
-    if (selected?.is_git === false) {
-      closeMenu();
-      go(projectRoute(selected));
-      return;
-    }
+/** The project half's pick: the menu moves to what is inside that project. A
+ *  legacy branch or issue route is standing among work items, so it keeps the
+ *  work list; everywhere else a project's workspaces are what there is to go
+ *  to, and they are read from that project's own machine. */
+function pickProject(element) {
+  if (!element) return false;
+  const project = projectFor(element.dataset.project);
+  rememberScope(element.dataset.project);
+  if (LEGACY_SURFACES.has(App.route.name)) {
     showList("work");
-    return;
+    return true;
   }
-  const work = event.target.closest("[data-work]");
-  if (work) {
-    const entry = scopedWork().find((candidate) => candidate.key === work.dataset.work);
+  showList("workspaces");
+  void loadWorkspaces(project, standingWorkspaceIdIn(project));
+  return true;
+}
+
+/** The workspace the route is standing in, when the route is standing in this
+ *  project at all — so reopening the menu on the project you are in hydrates
+ *  the row you are on and its directory tabs. */
+const standingWorkspaceIdIn = (project) =>
+  routeProjectKey(App.route) === project?.projectKey ? App.route.workspaceId : null;
+
+function pickWorkspace(element) {
+  if (!element) return false;
+  const selected = scopedWorkspaces().find((candidate) => candidate.workspaceKey === element.dataset.workspace);
+  closeMenu();
+  const route = workspaceRoute(selected);
+  if (route) go(route);
+  return true;
+}
+
+function pickWork(element) {
+  if (!element) return false;
+  const entry = scopedWork().find((candidate) => candidate.key === element.dataset.work);
+  closeMenu();
+  if (entry) go(entry.route);
+  return true;
+}
+
+function onMenuClick(event) {
+  const { target } = event;
+  if (target.closest("[data-projects]")) return showList("projects");
+  const directory = target.closest("[data-menu-directory]");
+  if (directory) {
     closeMenu();
-    if (entry) go(entry.route);
+    openWorkspaceDirectory(directory.dataset.menuDirectory);
     return;
   }
-  const create = event.target.closest("[data-create]");
-  if (create) openCreate(create.dataset.create);
+  if (pickProject(target.closest("[data-project]"))) return;
+  if (pickWorkspace(target.closest("[data-workspace]"))) return;
+  if (pickWork(target.closest("[data-work]"))) return;
+  const create = target.closest("[data-create]");
+  if (create) openCreate();
 }
 
 /** The one create surface, on the scoped project and on the machine that
  *  project is on. An account with no project has nowhere to create, and says
  *  so. */
-function openCreate(kind) {
+function openCreate() {
   const project = scopedProject();
   closeMenu();
   if (!project) {
     notifyError("No project to create in.", "Add a project in Settings first.");
     return;
   }
-  openCreateWork({ projectId: project.id, deviceId: project.deviceId, projectName: nameOf(project), kind });
+  openCreateWork({ projectId: project.id, deviceId: project.deviceId, projectName: nameOf(project), navigate: go });
+}
+
+/** The directories of the workspace the route is standing in, as menu rows for
+ *  the collapsed toolbar. */
+function directoryMenuEntries() {
+  return standingDirectories().map((directory) => ({
+    key: `directory:${directory.sourceId}`,
+    html: `<button class="mi${directory.current ? " current" : ""}" data-menu-directory="${esc(directory.sourceId)}" type="button" role="menuitemradio" aria-checked="${directory.current ? "true" : "false"}">
+      <span class="mt">${esc(directory.label)}</span></button>`,
+  }));
+}
+
+function directoryMenuShellHtml() {
+  return `<div class="tbmenu-list" aria-label="Workspace directories"></div>`;
 }
 
 /** The counter a menu row wears: what is waiting inside it, and nothing at all
@@ -366,7 +540,8 @@ function projectMenuShellHtml() {
  *  row that was clicked is the row that was painted. */
 const scopedWork = () => workMenuModel({ items: feed.items, projectKey: scopedProject()?.projectKey, query: open.query });
 
-/** The item half's rows: the scoped project's branches and issues. */
+/** The item half's rows: the scoped project's branches and issues, for the
+ *  legacy surfaces that still have them. */
 function workMenuEntries() {
   const work = scopedWork();
   if (!work.length) return [{ key: "none", html: `<div class="tb-none dim">Nothing here yet.</div>` }];
@@ -381,67 +556,76 @@ function workMenuEntries() {
   }));
 }
 
-/** The item half's frame: the filter, the scope line above the rows, and the
- *  two creates at its foot. */
+/** The item half's frame: the filter and the scope line above the rows. */
 function workMenuShellHtml() {
-  const project = scopedProject();
-  const scopedName = nameOf(project) || "This project";
-  const create = project && project.is_git === false
-    ? ""
-    : `<div class="tbmenu-foot">
-      <button class="mi" data-create="branch" type="button" role="menuitem"><span class="mt">New branch…</span>
-        <span class="md">A checkout of its own, in ${esc(scopedName)}</span></button>
-      <button class="mi" data-create="issue" type="button" role="menuitem"><span class="mt">New issue…</span>
-        <span class="md">Nothing runs until your first message</span></button>
-    </div>`;
   return `
     <input class="tb-filter" type="text" placeholder="Jump to a branch or issue" value="${esc(open.query)}"
-      aria-label="Filter branches and issues" autocomplete="off" />
+      aria-label="Filter work items" autocomplete="off" />
     <div class="tb-group tb-scope">
-      <span>${esc(scopedName)}</span>
-      <button class="tb-scope-switch" data-projects type="button">Projects</button>
+      <span>${esc(scopedName())}</span>
+      <button class="tb-scope-switch" data-projects type="button">Switch project</button>
+    </div>
+    <div class="tbmenu-list"></div>`;
+}
+
+/** The scoped project's workspaces, as the open menu lists them, and what a
+ *  clicked row is looked up in. */
+const scopedWorkspaces = () =>
+  workspaceMenuModel({
+    workspaces: workspacesByProject.get(scopedProject()?.projectKey) || [],
+    projectKey: scopedProject()?.projectKey,
+    workspaceKey: routeWorkspaceKey(App.route),
+    query: open.query,
+  });
+
+function workspaceMenuEntries() {
+  const entries = scopedWorkspaces();
+  if (!entries.length) {
+    const message = loadingProjectKey === scopedProject()?.projectKey ? "Loading workspaces…" : "No workspace by that name.";
+    return [{ key: "none", html: `<div class="tb-none dim">${message}</div>` }];
+  }
+  return entries.map((workspace) => ({
+    key: `workspace:${workspace.workspaceKey}`,
+    html: `<button class="mi${workspace.current ? " current" : ""}" data-workspace="${esc(workspace.workspaceKey)}" type="button" role="menuitem">
+      <span class="mt">${esc(workspace.name)}</span>
+      <span class="md">${esc(workspace.status || "")}</span></button>`,
+  }));
+}
+
+/** What the scoped project is called, for the lines the menus head themselves
+ *  with. */
+const scopedName = () => nameOf(scopedProject()) || "This project";
+
+function workspaceMenuShellHtml() {
+  return `
+    <input class="tb-filter" type="text" placeholder="Jump to a workspace" value="${esc(open.query)}"
+      aria-label="Filter workspaces" autocomplete="off" />
+    <div class="tb-group tb-scope">
+      <span>${esc(scopedName())}</span>
+      <button class="tb-scope-switch" data-projects type="button">Switch project</button>
     </div>
     <div class="tbmenu-list"></div>
-    ${create}`;
+    <div class="tbmenu-foot">
+      <button class="mi" data-create="workspace" type="button" role="menuitem"><span class="mt">New workspace…</span>
+        <span class="md">Materialize every source in ${esc(scopedName())}</span></button>
+    </div>`;
 }
 
-// ---- the ⋯ -------------------------------------------------------------------
+/** Which rows each list of the jump menu offers, and the frame each sits in.
+ *  A list is a kind, so it is a table rather than a chain. */
+const MENU_LISTS = {
+  projects: projectMenuEntries,
+  directories: directoryMenuEntries,
+  work: workMenuEntries,
+  workspaces: workspaceMenuEntries,
+};
 
-/** What the tab row's right cluster used to carry. Archive is an account page
- *  now (the inbox is global, so an archive of it is too); settings is the
- *  project's own sheet. */
-function openSurfaceMenu(anchor) {
-  open = { ...menuShell(anchor, "tbmenu tbmenu-actions"), select: anchor.dataset.select, mode: "more" };
-  open.element.innerHTML = `
-    <button class="mi" data-action="archive" type="button" role="menuitem"><span class="mt">Archive</span>
-      <span class="md">Work that has been finished</span></button>
-    <button class="mi" data-action="settings" type="button" role="menuitem"><span class="mt">Project settings</span>
-      <span class="md">Name, path, base branch, remote</span></button>`;
-  open.element.querySelectorAll("[data-action]").forEach((row) => {
-    row.onclick = () => {
-      const action = row.dataset.action;
-      const project = scopedProject();
-      closeMenu();
-      if (action === "archive") go({ name: "account", page: "archive" });
-      else if (project) openSettingsFor(project);
-    };
-  });
-}
-
-/** A project's settings are a read and a write on the machine that project
- *  lives on, so the sheet is handed that machine's caller and asks nothing
- *  about devices itself. The id it sends stays the bare one that machine's
- *  daemon minted. A machine this client cannot reach — never opened here, or
- *  gone since — has nothing to show, so the sheet says which one instead of
- *  standing over calls that can only be refused. */
-function openSettingsFor(project) {
-  const context = contextFor(project.deviceId);
-  if (!canAnswer(context)) {
-    notifyError("Project settings can't be opened", deviceOfflineNotice(project.deviceId));
-    return;
-  }
-  openProjectSettings(project.id, { callRpc: context.rpc });
-}
+const MENU_SHELLS = {
+  projects: projectMenuShellHtml,
+  directories: directoryMenuShellHtml,
+  work: workMenuShellHtml,
+  workspaces: workspaceMenuShellHtml,
+};
 
 // ---- mounting ----------------------------------------------------------------
 
@@ -449,6 +633,7 @@ function openSettingsFor(project) {
 export function initToolbar() {
   if (mounted) {
     paint({ entering: true });
+    observeToolbar($("#toolbar"));
     return;
   }
   mounted = true;
@@ -463,6 +648,8 @@ export function initToolbar() {
     paint();
   });
   paint({ entering: true });
+  observeToolbar($("#toolbar"));
+  if (App.route.name === "workspace") void loadWorkspaces(routeProject(), App.route.workspaceId);
 }
 
 /** Repaint for the route the shell just entered — the one paint that re-scopes,
@@ -471,9 +658,13 @@ export function toolbarRouteChanged() {
   if (!mounted) return;
   closeMenu();
   paint({ entering: true });
+  if (App.route.name === "workspace") void loadWorkspaces(routeProject(), App.route.workspaceId);
 }
 
 /** Teardown, for tests and for a gate that tears the session down. */
 export function stopToolbar() {
+  workspaceRequest += 1;
+  toolbarResizeObserver?.disconnect();
+  toolbarResizeObserver = null;
   closeMenu();
 }

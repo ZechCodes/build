@@ -33,6 +33,17 @@ export const deviceOfflineText = (name) =>
 export const deviceFrozenText = (name) =>
   `${name || "That device"} isn't connected — this is what it last said.`;
 
+/** What a work surface says when the machine its link names speaks a newer
+ *  Build API than this tab: the machine is answering, but nothing here knows
+ *  the shape of its answers, so a reload is the whole of the fix. */
+export const deviceAppBehindText = (name, version) =>
+  `${name || "That device"} speaks Build API ${version || "unknown"}, which is newer than this app — reload to open it.`;
+
+/** And the other way round: the machine's bridge is older than every API this
+ *  app speaks, so the update is on that machine. */
+export const deviceBridgeBehindText = (name, version) =>
+  `${name || "That device"} speaks Build API ${version || "unknown"}, which is older than this app — update its bridge to open it.`;
+
 /** The short mark a control whose machine cannot answer wears: the title on a
  *  greyed row, the reason a shut menu item gives, and the words a call to that
  *  machine is refused with. A label, not a sentence — the sentences above are

@@ -20,14 +20,17 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // Main's toolbar/composer extraction and chat state ownership together retire
 // four counted functions, with no new exemption added.
 // The editable file viewer splits file-selection setup from its async read.
-// 69 since the cache syncer follows a device at a time: onSnapshot now only
-// walks the merged snapshot's devices, and the work it used to do inline is
-// syncDeviceSnapshot.
-// 68 since each route kind writes its own hash: hashFromRoute looks the writer
+// 69 since cacheSync's snapshot handler became four named steps: the active
+// rows, the eviction, the watcher set, and the entities entering it — and
+// syncDeviceSnapshot follows one device at a time, so onSnapshot only walks the
+// merged snapshot's devices.
+// 68 since capture routing is branch-only, so its manual form no longer
+// exceeds the cap.
+// 67 since each route kind writes its own hash: hashFromRoute looks the writer
 // up instead of walking every kind in one chain.
-// 67 since a row's project tag is one function both row painters call, rather
+// 66 since a row's project tag is one function both row painters call, rather
 // than the same conditional written out in each of them.
-const RATCHETED_FUNCTIONS = 67;
+const RATCHETED_FUNCTIONS = 66;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

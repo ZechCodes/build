@@ -1,0 +1,21 @@
+{
+  "method": "workspace.ensure_conversation",
+  "since": "1.1.0",
+  "params": {
+    "workspace_id": "ws-3f2a91c4",
+    "provider": "claude_code",
+    "model": "opus",
+    "effort": "high"
+  },
+  "result": {
+    "workspace_id": "ws-3f2a91c4",
+    "entity_id": "run-8c41d2f0",
+    "run_id": "run-8c41d2f0"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
+}

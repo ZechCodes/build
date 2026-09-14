@@ -467,7 +467,7 @@ impl AppState {
         Ok(())
     }
 
-    pub(in crate::app) fn thread_revision(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn thread_revision(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let revision_id = require_str(params, "revision_id")?;
         let address = self.resolve_conversation_params(&entity_id, params)?;
@@ -496,7 +496,7 @@ impl AppState {
     ///
     /// Ships exactly what a first page ships, so a client merges a page up the
     /// way it merges the page it opened on.
-    pub(in crate::app) fn thread_page(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn thread_page(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
         let address = self.resolve_conversation_params(&entity_id, params)?;
         let thread = self.conversation_at(&address)?;
@@ -513,7 +513,7 @@ impl AppState {
     /// entity is evicted. Only the tail run is live, and that one is not
     /// fetched at all — it arrives as the forward deltas a poll already
     /// carries.
-    pub(in crate::app) fn thread_activity(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn thread_activity(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
         let address = self.resolve_conversation_params(&entity_id, params)?;
         let thread = self.conversation_at(&address)?;

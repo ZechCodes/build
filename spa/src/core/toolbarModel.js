@@ -1,15 +1,11 @@
-// The view-area toolbar's pure model: what the two selectors say, what each
-// one's menu offers, and what the right side reports.
-//
-// The toolbar names where you are standing — project, then branch or issue —
-// and each name opens the menu of its own kind: the project half lists projects,
-// the item half lists the scoped project's branches and issues. Two questions,
-// two lists; a menu that answered both at once made the same list appear behind
-// both names. Everything here is pure; core/toolbar.js renders and wires it.
+// Pure identities and menu rows for the view-area toolbar. Workspace routes
+// show one workspace switcher and directory tabs; its popup moves between the
+// scoped project's workspaces and the project list. Legacy work routes keep
+// their project selector and static item identity. core/toolbar.js renders and wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
 import { deviceTags, projectNameOf } from "./inboxProjects.js";
-import { routeProjectKey } from "./deviceKey.js";
+import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 
 /** The branch the daemon will cut for a typed name, mirrored for the preview
  *  only — the daemon is still the one that decides. */
@@ -98,10 +94,50 @@ export function workMenuModel({ items = [], projectKey = null, query = "" } = {}
   return fuzzyRank(work, query, (entry) => `${entry.label} ${entry.detail}`);
 }
 
-/** What each kind of work route is: the row it stands on, and what the bar
- *  calls it. A route names one kind, so the bar reads its answer here rather
- *  than walking the kinds. */
+/** Workspaces registered for one project, filtered by their human name. A
+ *  project belongs to one machine, so the narrowing and the marking are both by
+ *  the account-wide names (core/deviceKey.js) the feed stamped on every row. */
+export function workspaceMenuModel({ workspaces = [], projectKey = null, workspaceKey = null, query = "" } = {}) {
+  const entries = workspaces
+    .filter((workspace) => !projectKey || workspace.projectKey === projectKey)
+    .map((workspace) => ({
+      ...workspace,
+      name: workspace.name || workspace.id,
+      current: workspace.workspaceKey === workspaceKey,
+    }));
+  return fuzzyRank(entries, query, (entry) => entry.name);
+}
+
+/** The source directories mounted into the selected workspace. `source_id` is
+ * the stable route identity; `id` is the concrete workspace-directory record
+ * and remains available for RPCs that need it. */
+export function workspaceDirectoryModel(workspace, sourceId = null) {
+  return ((workspace && workspace.directories) || []).map((directory) => ({
+    ...directory,
+    sourceId: directory.source_id || directory.id,
+    label: directory.name || directory.mount || directory.source_id || directory.id,
+    current: (directory.source_id || directory.id) === sourceId,
+  }));
+}
+
+/** What each kind of work route is: the row it stands on, what the bar calls it,
+ *  and whatever else that kind carries. A route names one kind, so the bar reads
+ *  its answer here rather than walking the kinds. */
 const STANDING = {
+  workspace: {
+    // A workspace is not a feed row: it is a record of its own, found among the
+    // workspaces below rather than among the items.
+    rowIs: () => () => false,
+    label: (route, row, carried) => carried.workspace?.name || route.workspaceId || "Workspace",
+    carries: (route, { workspaces }) => {
+      const workspace = workspaces.find((candidate) => candidate.workspaceKey === routeWorkspaceKey(route)) || null;
+      return {
+        workspaceId: route.workspaceId,
+        workspace,
+        directories: workspaceDirectoryModel(workspace, route.sourceId),
+      };
+    },
+  },
   branch: {
     // The machine and the project together name a branch row: both machines
     // mint a `proj-1` with a `main` in it, and those are two rows.
@@ -122,22 +158,24 @@ const STANDING = {
 /** What the bar says when the route is no work item at all. */
 const NOWHERE = Object.freeze({ projectId: null, projectKey: null, project: "", kind: null, label: "", row: null });
 
-/** Where the toolbar says you are standing: the project, and the branch or
- *  issue inside it. The route is the authority on identity (it is what a deep
- *  link carries, machine included); the feed only supplies the names it knows,
- *  and the row it names is the one on the route's own machine. */
-export function toolbarIdentity(route = {}, { items = [], projects = [] } = {}) {
+/** Where the toolbar says you are standing: the project, and the workspace,
+ *  branch or issue inside it. The route is the authority on identity (it is what
+ *  a deep link carries, machine included); the feed only supplies the names it
+ *  knows, and the record it names is the one on the route's own machine. */
+export function toolbarIdentity(route = {}, { items = [], projects = [], workspaces = [] } = {}) {
   const standing = STANDING[route.name];
   if (!standing) return NOWHERE;
   const key = routeProjectKey(route);
   const row = items.find(standing.rowIs(route)) || null;
+  const carried = standing.carries ? standing.carries(route, { items, projects, workspaces }) : null;
   return {
     projectId: route.projectId,
     projectKey: key,
     project: projectName(key, projects, row),
     kind: route.name,
-    label: standing.label(route, row),
+    label: standing.label(route, row, carried),
     row,
+    ...carried,
   };
 }
 

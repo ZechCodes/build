@@ -16,3 +16,24 @@ export function projectRoute(project) {
     tab: project.is_git === false ? "files" : "changes",
   };
 }
+
+/** The first useful directory in a workspace, preferring a repository because
+ * Changes is the most informative landing surface when one is available.
+ *
+ * The route names the machine the workspace is checked out on, for the same
+ * reason a project route does. A workspace the feed has not stamped — the answer
+ * to a fresh workspace.create — names none, and its caller stamps the device it
+ * asked. */
+export function workspaceRoute(workspace) {
+  if (!workspace?.id || !workspace.project_id) return null;
+  const directories = workspace.directories || [];
+  const directory = directories.find((entry) => entry.is_git) || directories[0];
+  return {
+    name: "workspace",
+    deviceId: workspace.deviceId,
+    projectId: workspace.project_id,
+    workspaceId: workspace.id,
+    ...(directory ? { sourceId: directory.source_id || directory.id } : null),
+    tab: directory?.is_git === false ? "files" : "changes",
+  };
+}

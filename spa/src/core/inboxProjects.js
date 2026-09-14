@@ -34,6 +34,62 @@ import { projectRoute } from "./projectModel.js";
  *  and the toolbar's menu row all have to agree on the same string. */
 export const projectNameOf = (project) => project.name || project.id;
 
+/** The projects a set of workspace rows is in: every device's listed projects,
+ *  plus one for any project a workspace names that its device has not listed. */
+function workspaceProjectsNamed(entries, projects) {
+  const named = new Map(projects.map((project) => [project.projectKey, project]));
+  for (const entry of entries) {
+    if (!entry.projectKey || named.has(entry.projectKey)) continue;
+    named.set(entry.projectKey, {
+      id: entry.projectId,
+      projectKey: entry.projectKey,
+      deviceId: entry.deviceId,
+      name: entry.project || entry.projectId,
+    });
+  }
+  return named;
+}
+
+/** One project's block on the landing rail's workspace face: its workspaces,
+ *  and the one the route is standing in as the block's own destination. */
+function workspaceBlockFor(project, grouped, tag, activeWorkspaceKey) {
+  const standing = grouped.find((entry) => entry.workspaceKey === activeWorkspaceKey && entry.route);
+  return {
+    key: `project:${project.projectKey}`,
+    id: project.id,
+    projectKey: project.projectKey,
+    deviceId: project.deviceId,
+    ...tag,
+    name: projectNameOf(project),
+    isGit: project.is_git !== false,
+    entries: grouped,
+    recent: [],
+    flat: grouped.length === 0,
+    route: (standing || grouped.find((entry) => entry.route))?.route || null,
+    unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, 0),
+    workspaceGroup: true,
+  };
+}
+
+/** Group the landing rail's workspace rows by the project they are in. A
+ *  project belongs to one machine, so the grouping is by the account-wide
+ *  project key and never by a name or a bare id: two machines each mint a
+ *  `proj-1`, and two projects may share a name — which is what the device tag
+ *  on the head is for. */
+export function workspaceProjectBlocks(entries = [], projects = [], activeWorkspaceKey = null, devices = []) {
+  const named = workspaceProjectsNamed(entries, projects);
+  const tags = deviceTags([...named.values()], devices);
+  const blocks = [...named.values()].map((project) =>
+    workspaceBlockFor(
+      project,
+      entries.filter((entry) => entry.projectKey === project.projectKey),
+      tags.get(project.projectKey),
+      activeWorkspaceKey,
+    ),
+  );
+  return { unsorted: entries.filter((entry) => !entry.projectKey), blocks };
+}
+
 /** The blocks' identity and names: every device's projects in the order they
  *  arrived, plus one for any project a row names that its device has not
  *  listed — the row is still work, and it is still somewhere.
@@ -207,9 +263,10 @@ export function projectHeadHtml(block, ui = {}) {
   const foldable = block.entries.length > 0 || block.recent.length > 0;
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
-  const title = block.route ? `Open ${block.name}'s checkout` : `${block.name} has no checkout to open`;
-  const create = block.isGit
-    ? `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" title="New branch or issue in ${esc(block.name)}" aria-label="New branch or issue in ${esc(block.name)}">${ICON_PLUS}</button>`
+  const surface = block.workspaceGroup ? "workspace" : "checkout";
+  const title = block.route ? `Open ${block.name}'s ${surface}` : `${block.name} has no ${surface} to open`;
+  const create = block.workspaceGroup
+    ? `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`
     : "";
   return `<div class="inbox-project-head">
     <button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.projectKey)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>
@@ -240,6 +297,3 @@ export function projectBlockHtml(block, ui = {}) {
 }
 
 /** The one control at the head of the projects face. */
-export function newProjectButtonHtml() {
-  return `<button class="inbox-new-project" type="button" data-new-project>${ICON_PLUS}<span>New project</span></button>`;
-}

@@ -140,7 +140,7 @@ export async function renderDeviceSettings() {
   retry.onclick = connect;
   if (device.status !== "online") {
     pathLabel.textContent = "Unavailable while offline";
-    status.textContent = "Bring this device online, then retry to read its settings.";
+    status.textContent = "Bring this device online, then retry to configure it.";
     retry.hidden = false;
     return;
   }

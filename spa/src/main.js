@@ -34,6 +34,7 @@ if (location.pathname.startsWith("/app")) {
     currentVersion: import.meta.env.VITE_BUILD_VERSION || "dev",
     fetchVersion: fetchServedVersion,
     onStale: () => {
+      App.updateAvailable = true; // what lets the app-behind version gate offer its reload
       $("#verbar").hidden = false;
     },
   });
@@ -46,11 +47,9 @@ if (location.pathname.startsWith("/app")) {
 
 initRouter();
 initDevicePicker();
-// Before the gate: what you want to get done is worth keeping whether or not a
-// device is there to take it.
+// Load captures saved by earlier builds so they can flush after connection.
 initCompose();
 
-$(".logo").onclick = () => go({ name: "inbox" });
 $("#nav-account").onclick = () => go({ name: "account", page: "settings" });
 $("#scrim").onclick = (e) => {
   if (e.target === $("#scrim")) requestSheetDismiss();

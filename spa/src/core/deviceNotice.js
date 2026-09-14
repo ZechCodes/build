@@ -5,14 +5,27 @@
 // here.
 
 import { App, render } from "../app.js";
-import { deviceFrozenText, deviceOfflineText, esc } from "./text.js";
+import { deviceAppBehindText, deviceBridgeBehindText, deviceFrozenText, deviceOfflineText, esc } from "./text.js";
 import { deviceNameOf } from "./devicePolicy.js";
-import { canAnswer, onDeviceStateChanged, routeContext } from "./deviceContexts.js";
+import { canAnswer, contextFor, onDeviceStateChanged, routeContext } from "./deviceContexts.js";
+
+/** Why a machine cannot answer, one sentence per reason. A bridge speaking an
+ *  API major nothing here claims is not offline — it is answering, in a shape
+ *  this tab cannot read — so it says which side is behind instead. */
+const UNREACHABLE_WORDS = {
+  app: deviceAppBehindText,
+  bridge: deviceBridgeBehindText,
+};
 
 /** What this client says about a machine it cannot reach, in the account's name
  *  for it — the one sentence, whether a surface prints it or a refused opener
  *  says it out loud. */
-export const deviceOfflineNotice = (deviceId) => deviceOfflineText(deviceNameOf(App.devices, deviceId));
+export function deviceOfflineNotice(deviceId) {
+  const name = deviceNameOf(App.devices, deviceId);
+  const context = contextFor(deviceId);
+  const words = UNREACHABLE_WORDS[context?.unsupported];
+  return words ? words(name, context.apiVersion) : deviceOfflineText(name);
+}
 
 /** What this client says over a surface that was already open when its machine
  *  went: it keeps what that machine last said, so it names whose state it is

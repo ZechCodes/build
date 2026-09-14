@@ -78,21 +78,3 @@ export function isStartupEvent(item) {
   return STATUS_LINE_EVENTS.has((item.data || {}).event);
 }
 
-// The report's four lists, in the order a reviewer reads them: what carries the
-// change, what it decided, what it might break, what it left alone.
-const REPORT_SECTIONS = [
-  { key: "critical_files", title: "Critical files" },
-  { key: "decisions", title: "Decisions" },
-  { key: "risk_notes", title: "Risks" },
-  { key: "skips", title: "Skipped" },
-];
-
-/** The report as sections worth rendering. A list the agent left out is left
- *  out here too — an empty heading says nothing and costs a reader a line. */
-export function completionReportSections(report) {
-  if (!report) return [];
-  return REPORT_SECTIONS.map((section) => ({
-    title: section.title,
-    items: (report[section.key] || []).filter((entry) => String(entry || "").trim()),
-  })).filter((section) => section.items.length);
-}

@@ -14,7 +14,7 @@ export const SURFACE_KINDS = [
 
 const KIND_LABELS = {
   [WORKFLOW_ENTRY_KIND]: "Workflows",
-  [AGENT_ENTRY_KIND]: "Subagents",
+  [AGENT_ENTRY_KIND]: "Agents",
   [SHELL_ENTRY_KIND]: "Shells",
   [CHECKLIST_ENTRY_KIND]: "Checklist",
 };

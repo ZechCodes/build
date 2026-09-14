@@ -1,13 +1,14 @@
+use crate::api::{self, ApiError, API_VERSION};
 use crate::app::{
-    agent_attach, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello, stream_start,
-    term_ack, term_attach, term_create, term_input, term_resize, AppState, DeliveryRunner,
+    agent_attach, agent_interrupt, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello,
+    stream_start, term_ack, term_attach, term_create, term_input, term_resize, AppState,
+    DeliveryRunner,
 };
 use crate::carrier::{FrameHandler, SessionSender};
-use crate::harness::harness_for;
 use crate::orchestrator::OrchestratorError;
 use crate::timing::FrameTimer;
+use crate::transport;
 use crate::transport::Frame;
-use crate::{models, transport};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -35,13 +36,17 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("run.abandon", "run_id"),
     ("run.release", "run_id"),
     ("run.adopt", "worktree_id"),
+    ("workspace.ensure_conversation", "workspace_id"),
     ("thread.post", "entity_id"),
 ];
 
-/// Dispatch one decrypted request frame. `stream.start` and `term.attach` are
-/// handled here because they need the shared `Arc` (background producer/pump) and
-/// the `SessionSender` (to push live output to this client); everything else runs
-/// under a short-held lock.
+/// Dispatch one decrypted request frame. [`session_scoped`] answers the verbs
+/// that need the shared `Arc` (background producer/pump) or the caller's own
+/// `SessionSender` (somewhere to push live output to); [`routed`] answers
+/// everything else, under a short-held lock, through `api::v1` first and the
+/// legacy table second. Both outcomes leave here as one reply envelope
+/// ([`crate::api::reply`]), so the success shape and the refusal shape — code,
+/// retryability, details — are written in exactly one place.
 pub(in crate::app) fn dispatch_frame(
     state: &Arc<Mutex<AppState>>,
     sender: SessionSender,
@@ -52,12 +57,15 @@ pub(in crate::app) fn dispatch_frame(
     // browser disconnect): release its attachments so the bridge stops encrypting
     // terminal output into a session nobody will ever read.
     if frame.frame_type == transport::CLOSE_FRAME_TYPE {
-        let changes = {
+        let (changes, watchers) = {
             let mut app = timer.lock(state);
             app.drop_session(sender.session_id());
-            app.changes()
+            (app.changes(), app.watchers())
         };
         changes.unsubscribe(sender.session_id());
+        // Its subscriptions went with it; the watchers they covered follow.
+        watchers.wake();
+        timer.clock().clients().forget(sender.session_id());
         return json!({ "ok": true });
     }
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
@@ -73,27 +81,51 @@ pub(in crate::app) fn dispatch_frame(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    let result = match method.as_str() {
+    let result = match session_scoped(state, &sender, &method, &params, &timer) {
+        Some(outcome) => outcome.map_err(ApiError::from),
+        // The caller is named for the frame: the `changes.*` verbs push to
+        // it, and `routed` carries only the state.
+        None => crate::api::v1::changes::with_session(&sender, || {
+            routed(state, &method, &params, &timer)
+        }),
+    };
+    api::reply(id, result)
+}
+
+/// The verbs that cannot go through [`AppState::route`]: each needs the
+/// caller's own [`SessionSender`] (somewhere to push to) or the shared `Arc`
+/// (a background producer or pump to spawn). `None` means "not one of mine",
+/// which is every verb `route` — and so `api::v1` — answers.
+fn session_scoped(
+    state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
+    method: &str,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Option<Result<Value, String>> {
+    Some(match method {
         // The greeting: what this bridge can do for the session, and — for the
         // capabilities that need somewhere to send to — the subscription
         // itself. Needs the caller's own `SessionSender`, which is why it is
         // here and not in `route`.
-        "session.hello" => session_hello(state, &sender, &timer),
+        "session.hello" => session_hello(state, sender, params, timer),
         // Answered from the frame clock alone, never from `AppState`: the frame
         // that asks what is wedging the daemon must not queue behind the wedge.
         "bridge.stats" => Ok(timer.clock().stats()),
-        "stream.start" => stream_start(state, &params, &timer),
-        "rtc.offer" => rtc_offer(state, &sender, &params, &timer),
-        "rtc.ice" => rtc_ice(state, sender.session_id(), &params, &timer),
-        "rtc.close" => rtc_close(state, sender.session_id(), &timer),
+        // QA-only (`BRIDGE_QA_AGENT=1`); unknown to everyone else.
+        "stream.start" if timer.lock(state).qa_agent => stream_start(state, params, timer),
+        "rtc.offer" => rtc_offer(state, sender, params, timer),
+        "rtc.ice" => rtc_ice(state, sender.session_id(), params, timer),
+        "rtc.close" => rtc_close(state, sender.session_id(), timer),
         // Opening a terminal or an agent in a worktree IS interacting with it in
         // Build — it is the reason a hand-made worktree graduates out of the
         // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
         "term.create" => {
-            let created = term_create(state, &params, &timer);
+            let created = term_create(state, params, timer);
             if created.is_ok() {
                 if let Some(scope_id) = params
-                    .get("run_id")
+                    .get("workspace_id")
+                    .or_else(|| params.get("run_id"))
                     .or_else(|| params.get("worktree_id"))
                     .and_then(Value::as_str)
                 {
@@ -102,66 +134,63 @@ pub(in crate::app) fn dispatch_frame(
             }
             created
         }
-        "term.attach" => term_attach(state, &sender, &params, &timer),
+        "term.attach" => term_attach(state, sender, params, timer),
         // A write to a child's pty blocks while the child is not draining, so
         // both of these take the handle under the lock and write with it
         // released.
-        "term.input" => term_input(state, &params, &timer),
-        "term.resize" => term_resize(state, &params, &timer),
+        "term.input" => term_input(state, params, timer),
+        "term.resize" => term_resize(state, params, timer),
         // Needs the caller's own session: an ack speaks for one client's
         // receive queue, not for the screen.
-        "term.ack" => term_ack(state, &sender, &params, &timer),
-        "agent.attach" => agent_attach(state, &sender, &params, &timer),
+        "term.ack" => term_ack(state, sender, params, timer),
+        "agent.attach" => agent_attach(state, sender, params, timer),
         // Bypasses `dispatch` because it hands its queued turn to
         // `DeliveryRunner`, which needs the shared handle `dispatch` does not
         // have.
-        "agent.start" => agent_start(state, &params, &timer),
-        _ => {
-            // A verb whose git work must not run under the lock hands that
-            // work back rather than doing it here; the drain below runs it with
-            // the mutex released. See `AppState::deferred_work`.
-            let (dispatched, deferred) = timer.lock(state).dispatch_deferring(&method, &params);
-            let dispatched = match deferred {
-                Some(deferred) => {
-                    // THE POINT OF ALL THIS: seconds to minutes of git — a
-                    // status walk, a fetch, a merge, a `git worktree remove` of
-                    // a six-gigabyte checkout — with every other frame, every
-                    // terminal pump and the relay's own read loop free to make
-                    // progress meanwhile.
-                    let done = deferred.run();
-                    timer.lock(state).apply_deferred(&method, &params, done)
-                }
-                None => dispatched,
-            };
-            // A verb speaks to a worktree's agent by queuing a turn, and the
-            // frame's own answer never waits for it to arrive: the mutation is
-            // durable, and a cold spawn blocks for seconds on the harness's
-            // readiness wait while the browser gives up at twelve.
-            if dispatched.is_ok() {
-                DeliveryRunner::drain(state, &timer);
-            }
-            dispatched
-        }
-    };
-    match result {
-        Ok(result) => json!({ "id": id, "ok": true, "result": result }),
-        Err(message) => json!({ "id": id, "ok": false, "error": message }),
-    }
+        "agent.start" => agent_start(state, params, timer),
+        // Upstream's stop control, on the same footing as `agent.start`: it
+        // reaches the harness through the shared handle, which `dispatch`
+        // does not hold.
+        "agent.interrupt" => agent_interrupt(state, params, timer),
+        _ => return None,
+    })
 }
 
-/// Copy a canonical opaque id into the legacy parameter name consumed by the
-/// compatibility implementation. If an old client already sent the legacy
-/// name it remains untouched.
-pub(in crate::app) fn alias_param(params: &Value, canonical: &str, legacy: &str) -> Value {
-    let mut aliased = params.clone();
-    if aliased.get(legacy).is_none() {
-        if let Some(value) = aliased.get(canonical).cloned() {
-            if let Some(object) = aliased.as_object_mut() {
-                object.insert(legacy.to_string(), value);
-            }
+/// Everything else: `route` (v1 first, legacy second) under a short-held lock,
+/// with the git work it defers run with the mutex released.
+fn routed(
+    state: &Arc<Mutex<AppState>>,
+    method: &str,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, ApiError> {
+    // A verb whose git work must not run under the lock hands that work back
+    // rather than doing it here; the drain below runs it with the mutex
+    // released. See `AppState::deferred_work`.
+    let (dispatched, deferred) = timer.lock(state).dispatch_deferring(method, params);
+    let dispatched = match deferred {
+        Some(deferred) => {
+            // THE POINT OF ALL THIS: seconds to minutes of git — a status
+            // walk, a fetch, a merge, a `git worktree remove` of a
+            // six-gigabyte checkout — with every other frame, every terminal
+            // pump and the relay's own read loop free to make progress
+            // meanwhile.
+            let done = deferred.run();
+            timer
+                .lock(state)
+                .apply_deferred(method, params, done)
+                .map_err(ApiError::classify)
         }
+        None => dispatched,
+    };
+    // A verb speaks to a worktree's agent by queuing a turn, and the frame's
+    // own answer never waits for it to arrive: the mutation is durable, and a
+    // cold spawn blocks for seconds on the harness's readiness wait while the
+    // browser gives up at twelve.
+    if dispatched.is_ok() {
+        DeliveryRunner::drain(state, timer);
     }
-    aliased
+    dispatched
 }
 
 /// The entity ids a frame names — in the params it was called with, and in the
@@ -174,13 +203,14 @@ pub(in crate::app) fn alias_param(params: &Value, canonical: &str, legacy: &str)
 /// the call is what minted it. `project_id` is deliberately absent: a project
 /// is not an entity a browser holds a detail view of.
 pub(in crate::app) fn entity_ids_of(params: &Value, result: &Value) -> Vec<String> {
-    const ENTITY_KEYS: [&str; 6] = [
+    const ENTITY_KEYS: [&str; 7] = [
         "id",
         "entity_id",
         "issue_id",
         "plan_id",
         "run_id",
         "worktree_id",
+        "workspace_id",
     ];
     let mut ids: Vec<String> = Vec::new();
     for source in [params, result] {
@@ -205,6 +235,26 @@ pub(in crate::app) fn err(e: OrchestratorError) -> String {
 /// once, so every required param reads the same to the client.
 pub(in crate::app) fn missing_param(key: &str) -> String {
     format!("missing required param: {key}")
+}
+
+/// Legacy documents remain readable, but workspaces no longer launch or
+/// mutate the retired issue/planning workflow.
+fn retired_planning_operation(method: &str) -> bool {
+    if method.starts_with("issue.") || method.starts_with("plan.") {
+        let action = method.split_once('.').map(|(_, action)| action);
+        return !matches!(
+            action,
+            Some("get" | "list" | "doc" | "stages" | "stage_doc" | "stage_diff" | "diff")
+        );
+    }
+    matches!(
+        method,
+        "run.create"
+            | "run.stage_dispatch"
+            | "run.stage_fix"
+            | "run.stage_send_notes"
+            | "run.set_auto_advance"
+    )
 }
 
 pub(in crate::app) fn optional_nonempty_string<'a>(
@@ -275,10 +325,7 @@ impl AppState {
             .cloned()
             .unwrap_or_else(|| json!({}));
 
-        match self.dispatch(&method, &params) {
-            Ok(result) => json!({ "id": id, "ok": true, "result": result }),
-            Err(message) => json!({ "id": id, "ok": false, "error": message }),
-        }
+        api::reply(id, self.dispatch_api(&method, &params))
     }
 
     /// Route a verb, record it if it counts as the human touching something,
@@ -292,6 +339,19 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<Value, String> {
+        self.dispatch_api(method, params)
+            .map_err(|error| error.message().to_string())
+    }
+
+    /// [`AppState::dispatch`] with the refusal's code kept — what
+    /// [`AppState::handle`] answers from, and what the tests that assert on
+    /// `error_code` read.
+    #[cfg(test)]
+    pub(in crate::app) fn dispatch_api(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, ApiError> {
         let (outcome, deferred) = self.dispatch_deferring(method, params);
         // No `Arc` to release the mutex through — the synchronous entry point.
         // The git work runs right here, exactly as it did before the split;
@@ -300,169 +360,79 @@ impl AppState {
             Some(deferred) => {
                 let done = deferred.run();
                 self.apply_deferred(method, params, done)
+                    .map_err(ApiError::classify)
             }
             None => outcome,
         }
     }
 
-    pub(in crate::app) fn route(&mut self, method: &str, params: &Value) -> Result<Value, String> {
-        match method {
+    /// v1 first, legacy second (wire spec Part 2, step 2.2). A verb
+    /// [`api::v1`] registers is answered from its typed handler; everything
+    /// else falls through to [`AppState::route_legacy`], whose bare
+    /// `Err(String)` has no code of its own and so reads as `internal`.
+    ///
+    /// The retirement guard runs before BOTH. Planning was retired upstream by
+    /// keeping its verbs served and making the mutating ones refuse, so the
+    /// check has to precede the facade that would otherwise run them: a
+    /// retired verb answers [`crate::app::issues::ISSUES_RETIRED_ERROR`], not
+    /// `unknown_method`, and its reads (`get`, `list`, `doc`, the stage and
+    /// diff reads) go on through v1 untouched.
+    ///
+    /// [`api::v1`]: crate::api::v1
+    pub(in crate::app) fn route(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, ApiError> {
+        if retired_planning_operation(method) {
+            // `unavailable`, not `internal`: the verb is served and its
+            // refusal is understood — the capability behind it is gone.
+            return Err(ApiError::unavailable(
+                crate::app::issues::ISSUES_RETIRED_ERROR,
+            ));
+        }
+        if let Some(answered) = crate::api::v1::dispatch(self, method, params) {
+            return answered;
+        }
+        match self.route_legacy(method, params) {
+            Some(outcome) => outcome.map_err(ApiError::from),
+            None => Err(ApiError::unknown_method(method)),
+        }
+    }
+
+    /// The verbs answered by hand rather than through [`api::v1`]: the probe,
+    /// the QA stream fixtures, and the two terminal reads that need no
+    /// session. `None` is "no such verb here", which [`AppState::route`]
+    /// turns into `unknown_method`.
+    ///
+    /// Every name here is also named in `tests/api_contract.rs`'s
+    /// `LEGACY_METHODS`, which is what keeps "answered outside v1" a decision
+    /// rather than an oversight.
+    ///
+    /// [`api::v1`]: crate::api::v1
+    pub(in crate::app) fn route_legacy(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Option<Result<Value, String>> {
+        Some(match method {
             // `push_events` rides the probe as well as the greeting: a client
             // that only ever pings can still tell whether this bridge will
             // invalidate for it, and an old client ignores the extra field.
             "ping" => Ok(json!({
                 "pong": true,
+                "api_version": API_VERSION,
                 "push_events": true,
                 "message_context": { "version": 1 },
             })),
-            // What a start leads with is the account's answer, so the default
-            // provider is the account's default harness. `models`/`efforts` are
-            // that harness's catalog, repeated at the top level for clients
-            // that predate `providers`.
-            "models.list" => Ok(json!({
-                "models": harness_for(self.default_harness).models(),
-                "efforts": harness_for(self.default_harness).effort_levels(),
-                "default_provider": self.default_harness,
-                "agent_modes": self.agent_modes,
-                "providers": models::provider_catalogs(),
-            })),
-            "thread.revision" => self.thread_revision(params),
-            "thread.page" => self.thread_page(params),
-            "thread.activity" => self.thread_activity(params),
-            "thread.post" => self.thread_post(params),
-            "thread.operation" => self.thread_operation(params),
-            "thread.attach" => self.thread_attach(params),
-            "thread.attachment" => self.thread_attachment(params),
-            "fs.list" => self.fs_list(params),
-            "fs.tree" => self.fs_tree(params),
-            "fs.read" => self.fs_read(params),
-            "fs.write" => self.fs_write(params),
-            "project.diff" => self.project_diff(params),
-            "git.log" => self.git_log(params),
-            "git.show" => self.git_show(params),
-            "git.status" => self.git_status(params),
-            "git.diff" => self.git_diff(params),
-            "git.stage" => self.git_stage(params),
-            "git.unstage" => self.git_unstage(params),
-            "git.commit" => self.git_commit(params),
-            "git.fetch" => self.git_fetch(params),
-            "git.pull" => self.git_pull(params),
-            "git.push" => self.git_push(params),
-            "git.branches" => self.git_branches(params),
-            "git.checkout" => self.git_checkout(params),
-            "git.branch_delete" => self.git_branch_delete(params),
-            "git.stash" => self.git_stash(params),
-            "git.stash_pop" => self.git_stash_pop(params),
-            "git.discard" => self.git_discard(params),
-            "git.merge_abort" => self.git_merge_abort(params),
-            "settings.get" => Ok(self.settings_get()),
-            "settings.set" => self.settings_set(params),
-            "project.list" => Ok(self.defer_project_list()),
-            "project.add" => self.project_add(params),
-            "project.init_git" => self.project_init_git(params),
-            "project.create" => self.project_create(params),
-            "project.clone" => self.project_clone(params),
-            "project.set_remote" => self.project_set_remote(params),
-            "project.set_isolation" => self.project_set_isolation(params),
-            "board.list" => Ok(self.board_list()),
-            // Capture surface: what the user said, kept before anything routes it.
-            "capture.create" => self.capture_create(params),
-            "capture.list" => Ok(self.capture_list()),
-            "capture.get" => self.capture_get(params),
-            "capture.answer" => self.capture_answer(params),
-            "capture.reroute" => self.capture_reroute(params),
-            "capture.cancel" => self.capture_cancel(params),
-            "archive.list" => self.archive_list(params),
-            "archived.list" => Ok(self.archived_list()),
-            // Canonical Issue surface. The existing plan id and plan-store path
-            // remain the durable identity/location; plan.* below is the
-            // deprecated wire adapter for existing clients.
-            "issue.create" => self.plan_create(params),
-            "issue.get" => self.plan_get(&alias_param(params, "issue_id", "plan_id")),
-            "issue.list" => Ok(self.issue_list()),
-            "issue.doc" => self.plan_doc(&alias_param(params, "issue_id", "plan_id")),
-            "issue.stages" => self.issue_stages(params),
-            "issue.stage_doc" => self.plan_stage_doc(&alias_param(params, "issue_id", "plan_id")),
-            "issue.approve" => self.plan_approve(&alias_param(params, "issue_id", "plan_id")),
-            "issue.send_notes" => self.plan_send_notes(&alias_param(params, "issue_id", "plan_id")),
-            "issue.stage_approve" => {
-                self.plan_stage_approve(&alias_param(params, "issue_id", "plan_id"))
-            }
-            "issue.stage_revise" => {
-                self.plan_stage_send_notes(&alias_param(params, "issue_id", "plan_id"))
-            }
-            "issue.implement_stage" => self.issue_implement_stage(params),
-            "issue.implement_all" => self.issue_implement_all(params),
-            "issue.set_auto_advance" => self.issue_set_auto_advance(params),
-            "issue.stage_fix" => self.issue_run_action(params, "fix"),
-            "issue.stage_diff" => self.issue_stage_diff(params),
-            "issue.diff" => self.issue_run_action(params, "diff"),
-            "issue.request_changes" => self.issue_run_action(params, "request_changes"),
-            "issue.git_action" => self.issue_run_action(params, "git_action"),
-            "issue.comment_add" => {
-                self.plan_comment_add(&alias_param(params, "issue_id", "plan_id"))
-            }
-            "issue.comment_delete" => {
-                self.plan_comment_delete(&alias_param(params, "issue_id", "plan_id"))
-            }
-            "issue.archive" => self.plan_archive(&alias_param(params, "issue_id", "plan_id")),
-            "issue.delete" => self.plan_delete(&alias_param(params, "issue_id", "plan_id")),
-            // Plan surface (project-scoped): keyed by plan_id, docs from store.
-            "plan.create" => self.plan_create(params),
-            "plan.get" => self.plan_get(params),
-            "plan.list" => Ok(self.plan_list()),
-            "plan.doc" => self.plan_doc(params),
-            "plan.stages" => self.plan_stages(params),
-            "plan.stage_doc" => self.plan_stage_doc(params),
-            "plan.approve" => self.plan_approve(params),
-            "plan.send_notes" => self.plan_send_notes(params),
-            "plan.stage_approve" => self.plan_stage_approve(params),
-            "plan.stage_send_notes" => self.plan_stage_send_notes(params),
-            "plan.comment_add" => self.plan_comment_add(params),
-            "plan.comment_delete" => self.plan_comment_delete(params),
-            "plan.message" => self.plan_message(params),
-            "plan.abandon" => self.plan_abandon(params),
-            "plan.delete" => self.plan_delete(params),
-            "plan.archive" => self.plan_archive(params),
-            // Run surface (worktree-scoped): keyed by run_id.
-            "run.create" => self.run_create(&alias_param(params, "issue_id", "plan_id")),
-            "run.get" => self.run_get(params),
-            "run.diff" => self.run_diff(params),
-            "run.stage_diff" => self.run_stage_diff(params),
-            "run.request_changes" => self.run_request_changes(params),
-            "run.stage_dispatch" => self.run_stage_dispatch(params),
-            "run.stage_fix" => self.run_stage_fix(params),
-            "run.stage_send_notes" => self.run_stage_send_notes(params),
-            "run.set_auto_advance" => self.run_set_auto_advance(params),
-            "run.git_action" => self.run_git_action(params),
-            "run.message" => self.run_message(params),
-            "run.abandon" => self.run_abandon(params),
-            "run.delete" => self.run_delete(params),
-            "run.adopt" => self.run_adopt(params),
-            "run.release" => self.run_release(params),
-            "run.finish" => self.run_finish(params),
-            // Branch surface: the work item the feed and the URLs speak, over
-            // whichever of run / worktree / primary checkout stores it.
-            "branch.get" => self.branch_get(params),
-            "branch.dispatch" => self.branch_dispatch(params),
-            "branch.finish" => self.branch_finish(params),
-            "worktree.create" => self.worktree_create(params),
-            "worktree.finish" => self.worktree_finish(params),
-            "entity.seen" => self.entity_seen(params),
-            "entity.mute" => self.entity_mute(params),
-            "entity.dismiss" => self.entity_dismiss(params),
-            "triage.override" => self.triage_override(params),
-            "agent.add" => self.agent_add(params),
-            "agent.choose" => self.agent_choose(params),
-            "agent.remove" => self.agent_remove(params),
-            "agent.list" => self.agent_list(params),
-            "worktree.diff" => self.worktree_diff(params),
-            "stream.events" => self.stream_events(params),
-            "stream.state" => self.stream_state(params),
+            // QA-only (`BRIDGE_QA_AGENT=1`), and unknown to everyone else: the
+            // scripted stream is a test fixture, not part of `api/v1`.
+            "stream.events" if self.qa_agent => self.stream_events(params),
+            "stream.state" if self.qa_agent => self.stream_state(params),
             "term.list" => self.term_list(params),
             "term.close" => self.term_close(params),
-            other => Err(format!("unknown method: {other}")),
-        }
+            _ => return None,
+        })
     }
 
     /// Stamp the entity a successful verb acted on, if that verb counts as an

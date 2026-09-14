@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 let armChangeEvents,
+  bridgeApiVersion,
   changeEventsArmed,
   disarmChangeEvents,
   dispatchChangeEvent,
@@ -31,6 +32,7 @@ beforeEach(async () => {
   setHidden(false);
   ({
     armChangeEvents,
+    bridgeApiVersion,
     changeEventsArmed,
     disarmChangeEvents,
     dispatchChangeEvent,
@@ -67,6 +69,18 @@ describe("arming", () => {
 });
 
 describe("the poll cadence", () => {
+  it("keeps polling directories whose external edits have no push watcher", () => {
+    const refresh = vi.fn();
+    const watcher = watchChanges({ refresh, intervalMs: 1600, entity: "workspace-1", keepPolling: true });
+    armChangeEvents({ push_events: true });
+    vi.advanceTimersByTime(3200);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    dispatchChangeEvent({ type: "entity.changed", id: "workspace-1" });
+    expect(refresh).toHaveBeenCalledTimes(3);
+    watcher.dispose();
+    vi.advanceTimersByTime(1600);
+    expect(refresh).toHaveBeenCalledTimes(3);
+  });
   it("keeps a surface's own interval while unarmed", () => {
     expect(pollIntervalMs(1600)).toBe(1600);
   });
@@ -265,8 +279,37 @@ describe("the greeting", () => {
   it("arms event mode when the bridge answers the flag", async () => {
     const call = vi.fn(async () => ({ push_events: true, events: ["board.changed"] }));
     await greetBridge(call, { deviceId: "dev-a" });
-    expect(call).toHaveBeenCalledWith("session.hello");
+    expect(call).toHaveBeenCalledWith("session.hello", expect.objectContaining({ client: expect.any(Object) }));
     expect(changeEventsArmed("dev-a")).toBe(true);
+  });
+
+  it("declares who is calling: the SPA, its build, and the API range it speaks", async () => {
+    const call = vi.fn(async () => ({ push_events: true }));
+    await greetBridge(call);
+    expect(call).toHaveBeenCalledWith("session.hello", {
+      client: { name: "spa", version: expect.any(String), api_range: ">=1.0.0 <2.0.0" },
+    });
+    expect(call.mock.calls[0][1].client.version).not.toBe("");
+  });
+
+  it("remembers the bridge's api_version, and reads 0.0.0 from a bridge that reports none", async () => {
+    expect(bridgeApiVersion()).toBe("0.0.0");
+    await greetBridge(async () => ({ push_events: true, api_version: "1.0.0" }));
+    expect(bridgeApiVersion()).toBe("1.0.0");
+    await greetBridge(async () => ({ push_events: true }));
+    expect(bridgeApiVersion()).toBe("0.0.0");
+    await greetBridge(async () => ({ push_events: true, api_version: "1.2.0" }));
+    await greetBridge(async () => {
+      throw new Error("unknown method: session.hello");
+    });
+    expect(bridgeApiVersion()).toBe("0.0.0");
+  });
+
+  it("still hands the whole greeting, api_version included, to onGreeting", async () => {
+    const accepted = vi.fn();
+    const greeting = { push_events: true, api_version: "1.0.0" };
+    await greetBridge(async () => greeting, { onGreeting: accepted });
+    expect(accepted).toHaveBeenCalledWith(greeting);
   });
 
   it("leaves a bridge that refuses the greeting polling", async () => {

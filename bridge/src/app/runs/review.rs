@@ -80,7 +80,7 @@ pub(in crate::app) fn triage_override_summary(
 }
 
 impl AppState {
-    pub(in crate::app) fn run_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_diff(&mut self, params: &Value) -> Result<Value, String> {
         self.plan_run_diff(params, None)
     }
 
@@ -108,7 +108,7 @@ impl AppState {
     /// Immutable stage review surface. Unlike `run.diff`, this never reads the
     /// working directory or current HEAD: it resolves only the two object ids
     /// persisted when the stage was dispatched and successfully validated.
-    pub(in crate::app) fn run_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
         self.plan_run_stage_diff(params, None)
     }
 
@@ -170,7 +170,7 @@ impl AppState {
     /// is only ever an instruction to read them: a warm agent gets exactly that,
     /// and a cold one gets it wrapped in enough run context to act on. The
     /// worktree's agent is delivered to, never killed and replaced.
-    pub(in crate::app) fn run_request_changes(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_request_changes(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let messages = parse_thread_inputs(params, crate::thread::ArtifactKind::Diff, "comments")?;
         let project_id = self.project_of(&run_id)?;
@@ -208,7 +208,7 @@ impl AppState {
         Ok(view)
     }
 
-    pub(in crate::app) fn run_stage_dispatch(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_stage_dispatch(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let model_override = if has_agent_choice(params) {
@@ -240,7 +240,7 @@ impl AppState {
         Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
     }
 
-    pub(in crate::app) fn run_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let note = params
@@ -277,7 +277,7 @@ impl AppState {
     /// analogue of `plan.stage_send_notes`, which is illegal once the plan is
     /// Approved. The run owns the session; the plan owns the docs; the
     /// revision's `done` ingests the rewritten docs back to the store.
-    pub(in crate::app) fn run_stage_send_notes(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_stage_send_notes(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let project_id = self.project_of(&run_id)?;
@@ -320,7 +320,7 @@ impl AppState {
 
     /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
     /// approved stage to its verdict.
-    pub(in crate::app) fn run_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let enabled = params
             .get("enabled")
@@ -398,7 +398,7 @@ impl AppState {
     /// keep the worktree; `merge`/`merge_push` merge into the base and end the
     /// run. Every action commits outstanding work first.
     #[allow(clippy::cognitive_complexity)] // ratchet: run_git_action is at 18, threshold 15 — bring it under, then remove
-    pub(in crate::app) fn run_git_action(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_git_action(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let action = require_str(params, "action")?;
         let project_id = self.project_of(&run_id)?;
@@ -623,7 +623,7 @@ impl AppState {
     ///
     /// Everything fallible happens before anything is written. A disagreement
     /// recorded in two of the three places is worse than one recorded in none.
-    pub(in crate::app) fn triage_override(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn triage_override(&mut self, params: &Value) -> Result<Value, String> {
         if !self.triage_enabled {
             return Err("triage.override: triage is disabled".to_string());
         }

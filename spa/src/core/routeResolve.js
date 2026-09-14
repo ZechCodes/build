@@ -7,9 +7,10 @@
 // device mints a `proj-1`, so a bare project id names a project only once
 // something says which machine it is on.
 //
-// The feed carries both halves — its items[] rows and its projects both know
-// the device that answered — so this is a lookup plus a policy, and both are
-// pure: the caller supplies the rows and says which device is home.
+// The feed carries every half — its items[] rows, its projects and its
+// workspaces all know the device that answered — so this is a lookup plus a
+// policy, and both are pure: the caller supplies the rows and says which
+// device is home.
 
 /** The first candidate on a device the account lists, in the account's own
  *  order — the caller passes the ONLINE ids, so an offline machine's copy is
@@ -36,10 +37,21 @@ export function pickDevice(candidates, policy = {}) {
   return atHome(rows, policy.homeDeviceId) || firstListed(rows, policy.deviceOrder) || rows[0] || null;
 }
 
-/** The branch surface a row opens, on the tab the URL named. Null when the row
- *  has no branch name: an entity no URL can address belongs on the inbox. */
-const branchRouteFor = (row, ref) =>
-  row.branch ? { name: "branch", projectId: row.project_id, branch: row.branch, tab: ref.tab || "changes" } : null;
+/** The surface a row opens, on the tab the URL named: a row that belongs to a
+ *  workspace opens that workspace, otherwise the branch checkout. Null when the
+ *  row names neither: an entity no URL can address belongs on the inbox. */
+const branchRouteFor = (row, ref) => {
+  if (row.workspace_id) {
+    return {
+      name: "workspace",
+      projectId: row.project_id,
+      workspaceId: row.workspace_id,
+      ...(row.source_id ? { sourceId: row.source_id } : null),
+      tab: ref.tab || "changes",
+    };
+  }
+  return row.branch ? { name: "branch", projectId: row.project_id, branch: row.branch, tab: ref.tab || "changes" } : null;
+};
 
 /** An issue whose implementation is in flight has no row of its own — the
  *  branch row carries its id, and the branch is the nearest surface the URL can
@@ -69,12 +81,14 @@ const REFERENCE_KINDS = Object.freeze({
     route: branchRouteFor,
   },
   issue: { rows: byId("issue_id"), route: issueRouteFor },
-  // A plain folder has no work row at all, so the projects answer for it: the
-  // row is only asked which device it is on, and the URL already said the rest.
+  // A plain folder has no work row at all, so the projects answer for it, and a
+  // workspace link that named no device is answered by the workspaces: each is
+  // only asked which device it is on, and the URL already said the rest.
   project: {
     rows: (ref, feed) => [
       ...feed.items.filter((row) => row.project_id === ref.projectId),
       ...feed.projects.filter((project) => (project.project_id || project.id) === ref.projectId),
+      ...feed.workspaces.filter((workspace) => workspace.project_id === ref.projectId),
     ],
     route: (row, ref) => ref.route || null,
   },
@@ -90,9 +104,9 @@ const inNamedProjectFirst = (rows, projectId) =>
  *  the same id are not candidates for it. */
 const onNamedDevice = (rows, deviceId) => (deviceId ? rows.filter((row) => row.deviceId === deviceId) : rows);
 
-/** Both halves of a snapshot, each defaulted: a feed carrying neither is still
- *  a feed, with nothing in it to answer by. */
-const bothHalves = (feed) => ({ items: feed?.items || [], projects: feed?.projects || [] });
+/** The three collections a lookup reads, each defaulted: a feed carrying none of
+ *  them is still a feed, with nothing in it to answer by. */
+const lookupCollections = (feed) => ({ items: feed?.items || [], projects: feed?.projects || [], workspaces: feed?.workspaces || [] });
 
 /** The device rides on the answer; a row that names none (a fixture, a feed
  *  from before rows were stamped) leaves the route as it found it. */
@@ -104,13 +118,13 @@ const onItsDevice = (route, row) => (route && row.deviceId ? { ...route, deviceI
  * land on the inbox).
  *
  * @param ref {kind: 'run'|'worktree'|'issue'|'primary'|'project', id?, projectId?, deviceId?, route?, tab?, stage?}
- * @param feed {items, projects} — the merge, every device's rows at once
+ * @param feed {items, projects, workspaces} — the merge, every device's rows at once
  * @param policy {homeDeviceId, deviceOrder} — which device wins a collision
  */
 export function resolveLegacyRoute(ref, feed, policy) {
   const kind = ref ? REFERENCE_KINDS[ref.kind] : null;
   if (!kind) return null;
-  const rows = onNamedDevice(kind.rows(ref, bothHalves(feed)), ref.deviceId);
+  const rows = onNamedDevice(kind.rows(ref, lookupCollections(feed)), ref.deviceId);
   const chosen = pickDevice(inNamedProjectFirst(rows, ref.projectId), policy);
   return chosen ? onItsDevice(kind.route(chosen, ref), chosen) : null;
 }

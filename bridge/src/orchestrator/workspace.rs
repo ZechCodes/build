@@ -156,7 +156,12 @@ pub type SessionLocatorFactory = std::sync::Arc<
 /// reason.
 pub type ResumeIdProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider, &str) -> bool + Send + Sync>;
 
-pub(super) const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `read_unread_messages` now and act on every unread message.";
+/// The one sentence Build says when a reviewer has written: every carrier,
+/// every phase, every path. The plan-side revise turns used to carry a
+/// shorter cousin of this line, so one agent heard two wordings of the
+/// same instruction depending on which door the message came through.
+pub const NEW_THREAD_MESSAGES_PROMPT: &str =
+    "New reviewer messages are available. Call `read_unread_messages` now, then act on every unread message. Reply with `post_thread_message` only when the conversation policy requires a written response.";
 
 /// How long a failed prompt write waits for the harness's exit status to
 /// become reapable before the failure is treated as fatal. Long enough to
@@ -208,37 +213,57 @@ pub const CATCH_UP_MESSAGES: usize = 40;
 /// and because a packet baked when the turn was queued misses whatever was
 /// said while it waited for the lock.
 pub(crate) fn conversation_prompt(prompt: &str) -> String {
+    conversation_prompt_with_mailbox(
+        prompt,
+        "- Before acting, call `read_unread_messages` and process every unread Issue message.\n\
+         - When Build says new reviewer messages are available, call `read_unread_messages`.",
+    )
+}
+
+fn conversation_prompt_with_mailbox(prompt: &str, mailbox: &str) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
     out.push_str(prompt);
     // This block is the canonical reply policy. The `post_thread_message` tool
-    // description in mcp.rs and NEW_THREAD_MESSAGES_PROMPT in app.rs defer to
+    // description in mcp.rs and NEW_THREAD_MESSAGES_PROMPT above defer to
     // it by reference — never restate these bullets elsewhere, restated copies
     // drift. The ambiguity rule stays above the silent-directive allowance so
     // an in-order reader hits the carve-out before committing to silence.
-    out.push_str(
+    out.push_str(&format!(
         "\n\nBuild conversation protocol:\n\
-         - Before acting, call `read_unread_messages` and process every unread Issue message.\n\
-         - When Build says new reviewer messages are available, call `read_unread_messages`.\n\
+         - First, call `set_topic` with the objective of this conversation in 2-4 words (e.g. \"Unify prompt delivery\"). The conversation header shows it and says \"Starting\" until you do. Call it again if the objective changes.\n\
+         {mailbox}\n\
          - If a reviewer message reads as either a question or a directive, post a one-line clarifying reply via `post_thread_message` instead of silently changing code.\n\
          - You may implement an unambiguous directive without replying; the next revision is its acknowledgment.\n\
          - Call `post_thread_message` only for a question, necessary pushback or clarification, or an explicit request for a response.\n\
          - Do not post acknowledgments or diff recaps.\n\
          - When the reply you need is a choice you can enumerate, send `options` with the message: each is a chip the reviewer presses, and what comes back is an ordinary reviewer message. Write each option's `message` as the full instruction it stands for, not a repeat of its label — that text is what a later session sees. Anything said afterwards closes the offer.\n\
          - A message may carry files (`attachments`, each with a `path`). Open every one before acting on that message: the reviewer attached it because the words alone do not carry what they mean.\n",
-    );
+    ));
     out
 }
 
+/// A cold prompt carrying one durable reviewer operation.
+///
+/// Operation delivery is fenced: acknowledging this turn must never turn into
+/// an unrestricted mailbox read that can consume a different operation. Keep
+/// the ordinary cold-session protocol, but state its initial read in the exact
+/// operation-scoped form the receipt requires.
+pub(crate) fn operation_conversation_prompt(prompt: &str, operation_id: &str) -> String {
+    conversation_prompt_with_mailbox(
+        prompt,
+        &format!(
+            "- Before acting, call `read_unread_messages` with `operation_id` set to `{operation_id}` and process exactly that operation's accepted messages. Do not consume another operation's messages."
+        ),
+    )
+}
+
 /// Close a cold prompt with the durable conversation: the catch-up packet the
-/// caller assembled, and the structured report the last session ended on.
+/// caller assembled. The last session's report is its outcome message, which
+/// is conversation and so already inside the packet.
 ///
 /// Kept newest-first inside the byte bound — a packet clipped from the front
 /// loses the oldest lines rather than the ones that just happened.
-pub(crate) fn append_durable_conversation(
-    mut out: String,
-    catch_up: &str,
-    thread: &crate::thread::Thread,
-) -> String {
+pub(crate) fn append_durable_conversation(mut out: String, catch_up: &str) -> String {
     if !catch_up.is_empty() {
         out.push_str("\nCatch-up packet from the durable conversation (oldest to newest):\n");
         if catch_up.len() <= 12_000 {
@@ -252,11 +277,8 @@ pub(crate) fn append_durable_conversation(
         }
         out.push('\n');
     }
-    if let Some(report) = &thread.last_completion {
-        out.push_str("\nPrevious structured completion report:\n");
-        out.push_str(&serde_json::to_string(report).unwrap_or_default());
-        out.push('\n');
-    }
+    // The previous session's report is its outcome message, and that is
+    // conversation: the packet above already carries it.
     out
 }
 

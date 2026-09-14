@@ -38,6 +38,7 @@
         "name": "Read",
         "summary": "Reading README.md"
       },
+      "model": "claude-haiku-4-5-20251001",
       "result": "4",
       "state": "done",
       "tokens": 12069,

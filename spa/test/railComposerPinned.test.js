@@ -103,14 +103,15 @@ describe("the conversation panel's column", () => {
     expect(scroller().parentElement).toBe(panel());
   });
 
-  it("lays the panel out head, thread, surface viewer, composer — in that order", async () => {
+  it("keeps the out-of-flow surface viewer inside the pinned composer", async () => {
     await mount();
     expect([...panel().children].map((child) => child.className)).toEqual([
       "rail-head",
       "rail-body",
-      "rail-surfaces-viewer",
       "rail-composer",
     ]);
+    expect(composerRow().querySelector(":scope > .rail-surfaces-viewer")).toBeTruthy();
+    expect(scroller().contains(composerRow().querySelector(".rail-surfaces-viewer"))).toBe(false);
   });
 
   it("leaves the scroller holding the conversation and nothing else", async () => {

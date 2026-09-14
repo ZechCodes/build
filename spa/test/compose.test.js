@@ -223,12 +223,12 @@ describe("how long a routed capture stays visible", () => {
 // router entirely and speaks the same two verbs the router's own tools do.
 
 describe("the manual route", () => {
-  it("files an inert issue: the record exists, and nothing runs until the first message", () => {
+  it("turns a retired issue choice into a branch dispatch", () => {
     expect(
       manualRoute({ kind: "issue", projectId: "p1", text: "add a /health endpoint", agentParams: { provider: "codex" } }),
     ).toEqual({
-      method: "issue.create",
-      params: { goal: "add a /health endpoint", project_id: "p1", dispatch: false, provider: "codex" },
+      method: "branch.dispatch",
+      params: { instruction: "add a /health endpoint", project_id: "p1", provider: "codex" },
     });
   });
 
@@ -244,11 +244,7 @@ describe("the manual route", () => {
   });
 
   it("opens what it made", () => {
-    expect(manualRouteDestination("issue", { project_id: "p1", issue_id: "iss-3" }, "p1")).toEqual({
-      name: "issue",
-      projectId: "p1",
-      id: "iss-3",
-    });
+    expect(manualRouteDestination("issue", { project_id: "p1", issue_id: "iss-3" }, "p1")).toBeNull();
     expect(manualRouteDestination("branch", { project_id: "p1", branch: "build/login" }, "p1")).toEqual({
       name: "branch",
       projectId: "p1",

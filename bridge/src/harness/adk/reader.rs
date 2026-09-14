@@ -1,11 +1,10 @@
 use super::activity::{spawn_shell_tail_poller, ActivitySlot};
 use super::protocol::{
     publish_status, ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
-    TOOL_SUMMARY_LIMIT,
 };
 use super::translation::{
-    ended_summary, one_line, result_error_text, spoken, task_description, task_status_is_terminal,
-    tool_call_summary, tool_result_text, unix_millis_now, Voice,
+    bounded_activity_text, ended_summary, result_error_text, spoken, task_description,
+    task_status_is_terminal, tool_call_summary, tool_result_text, unix_millis_now, Voice,
 };
 use crate::harness::surfaces::SurfaceRevision;
 use crate::harness::{
@@ -13,6 +12,7 @@ use crate::harness::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
+use std::process::Child;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -25,6 +25,10 @@ pub(super) struct ProtocolReader {
     pub(super) calls: HashMap<String, RecordedCall>,
     pub(super) revision: SurfaceRevision,
     pub(super) shell_poller: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// The child this reader is reading, for the one thing a reader may do
+    /// to it: end it when its `init` line says it is running a model Build
+    /// did not ask for. `None` for a reader driven from a recording.
+    child: Option<Arc<Mutex<Child>>>,
 }
 
 impl ProtocolReader {
@@ -41,7 +45,13 @@ impl ProtocolReader {
             calls: HashMap::new(),
             revision,
             shell_poller: Arc::new(Mutex::new(None)),
+            child: None,
         }
+    }
+
+    pub(super) fn ending(mut self, child: Arc<Mutex<Child>>) -> ProtocolReader {
+        self.child = Some(child);
+        self
     }
 
     pub(super) fn read_line(&mut self, line: &str) {
@@ -133,22 +143,48 @@ impl ProtocolReader {
 
     /// `init` is when the child can take a turn, and it carries the session id a
     /// respawn resumes by.
+    ///
+    /// It also says what model the child is running, and that is checked
+    /// against what Build asked for the way the codex carrier checks its
+    /// opened thread: a child running something else is ended with that as
+    /// its last words, because an agent that quietly ran on another model
+    /// would report every turn as the model the human chose. The init line
+    /// echoes the `--model` argument verbatim (probed: `claude-haiku-4-5`
+    /// asked, `claude-haiku-4-5` announced, while the messages carry the
+    /// dated id), so an exact comparison is the right one.
     fn read_init(&mut self, event: &Value) {
-        let mut state = self.state.lock().unwrap();
-        state.announced = true;
-        if let Some(id) = event["session_id"].as_str() {
-            state.session_id = Some(id.to_string());
+        let mismatch = {
+            let mut state = self.state.lock().unwrap();
+            state.announced = true;
+            if let Some(id) = event["session_id"].as_str() {
+                state.session_id = Some(id.to_string());
+            }
+            if let Some(model) = event["model"].as_str() {
+                state.model = Some(model.to_string());
+            }
+            if let Some(announced) = event["capabilities"].as_array() {
+                state.capabilities = announced
+                    .iter()
+                    .filter_map(|entry| entry.as_str().map(str::to_string))
+                    .collect();
+            }
+            let mismatch = match (&state.requested_model, &state.model) {
+                (Some(asked), Some(running)) if asked != running => Some(format!(
+                    "claude opened model {running:?}, expected {asked:?}"
+                )),
+                _ => None,
+            };
+            if let Some(reason) = &mismatch {
+                state.reported_error = Some(reason.clone());
+            }
+            publish_status(&self.status_updates, state.live_status());
+            mismatch
+        };
+        if mismatch.is_some() {
+            if let Some(child) = &self.child {
+                let _ = child.lock().unwrap().kill();
+            }
         }
-        if let Some(model) = event["model"].as_str() {
-            state.model = Some(model.to_string());
-        }
-        if let Some(announced) = event["capabilities"].as_array() {
-            state.capabilities = announced
-                .iter()
-                .filter_map(|entry| entry.as_str().map(str::to_string))
-                .collect();
-        }
-        publish_status(&self.status_updates, state.live_status());
     }
 
     /// The child's own statement of what background work is live, which
@@ -306,11 +342,18 @@ impl ProtocolReader {
         }
     }
 
-    /// The child's answer to a `control_request`. Only the outstanding
-    /// interrupt's own id counts: a response naming another request is noise,
-    /// and a session that took it as its own would swallow a real crash.
+    /// The child's answer to a `control_request`. Only a request this session
+    /// made counts: a response naming another request is noise, and a session
+    /// that took it as its own would swallow a real crash.
+    ///
+    /// An interrupt's ack is recorded for the result that follows it to read.
+    /// A `set_model`'s answer is the whole of what says whether the model
+    /// moved: a success moves what the session reports as its active model,
+    /// and an error is the session's last words, the way a codex thread that
+    /// opened on the wrong model is.
     fn read_control_response(&mut self, event: &Value) {
-        let Some(answered) = event["response"]["request_id"]
+        let response = &event["response"];
+        let Some(answered) = response["request_id"]
             .as_str()
             .or_else(|| event["request_id"].as_str())
         else {
@@ -320,6 +363,16 @@ impl ProtocolReader {
         if let Some(pending) = state.pending_interrupt.as_mut() {
             if pending.request_id == answered {
                 pending.acked = true;
+            }
+        }
+        if let Some(model) = state.pending_model_changes.remove(answered) {
+            if response["subtype"].as_str() == Some("error") {
+                let error = response["error"]
+                    .as_str()
+                    .unwrap_or("the child refused without saying why");
+                state.reported_error = Some(format!("claude refused model {model:?}: {error}"));
+            } else {
+                state.model = Some(model);
             }
         }
     }
@@ -370,6 +423,17 @@ impl ProtocolReader {
     /// would put the human's words in the timeline a second time as narration.
     fn read_message(&mut self, event: &Value, voice: Voice) {
         let parent_call_id = event["parent_tool_use_id"].as_str();
+        if voice == Voice::Assistant {
+            if let Some(call_id) = parent_call_id {
+                let moved = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .surfaces
+                    .read_subagent_message(call_id, &event["message"]);
+                self.bump_revision_when(moved);
+            }
+        }
         let Some(blocks) = event["message"]["content"].as_array() else {
             return;
         };
@@ -463,7 +527,7 @@ impl ProtocolReader {
             AgentActivity::ToolResult {
                 call_id,
                 outcome,
-                summary: one_line(&answered_text, TOOL_SUMMARY_LIMIT),
+                summary: bounded_activity_text(&answered_text),
             },
             parent_call_id,
         );

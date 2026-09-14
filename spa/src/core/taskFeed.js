@@ -53,12 +53,16 @@ export function primaryRunIdFor(feed, projectKey) {
 async function tick(context) {
   if (!context || !context.active()) return;
   try {
-    const [board, projectList] = await Promise.all([
+    const [board, projectList, workspaceList] = await Promise.all([
       context.call("board.list"),
       context.call("project.list"),
+      // A workspace-list failure must not take that device's board and agent
+      // rails down with it — a bridge that does not serve the verb still feeds
+      // the board — so it answers none and the next tick asks again.
+      Promise.resolve(context.call("workspace.list")).catch(() => ({ workspaces: [] })),
     ]);
     if (!context.active()) return;
-    byDevice.set(context.deviceId, liveFeedSnapshot(board, projectList, context.deviceId));
+    byDevice.set(context.deviceId, liveFeedSnapshot(board, projectList, workspaceList, context.deviceId));
     deliverFeed();
   } catch {
     /* offline / transient — the next tick retries */
@@ -103,7 +107,8 @@ export function joinFeed(context) {
   // The feed is the board, so `board.changed` is its event and this interval is
   // the safety poll behind it. It owns its own visible-again catch-up above —
   // which reads whether or not anything was pushed — so the registry leaves
-  // that alone rather than reading twice.
+  // that alone rather than reading twice. Board tier (wire spec step 1.6):
+  // feed-level state, realtime, foreground — the only kind board scope carries.
   watchers.set(
     context.deviceId,
     watchChanges({
@@ -111,6 +116,8 @@ export function joinFeed(context) {
       intervalMs: cadenceMs,
       deviceId: context.deviceId,
       catchUpOnVisible: false,
+      kinds: ["state"],
+      mode: "realtime",
     }),
   );
   tick(context);

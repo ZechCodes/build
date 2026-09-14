@@ -150,10 +150,14 @@ function agentDetailsHtml(row) {
 
 export function agentRowHtml(row, { openedAgentKeys = new Set() } = {}) {
   const open = openedAgentKeys.has(row.key) ? " open" : "";
+  const model = row.model
+    ? clippedTextHtml(row.model, { className: "surface-row-model surface-row-head-model", pressable: false })
+    : "";
   return `<details class="surface-row surface-agent" data-key="${esc(row.key)}"${open}>
     <summary class="${ROW_HEAD_CLASS} surface-agent-summary">
       ${stateMarkHtml(row.stateMark)}
       ${clippedTextHtml(row.subject, { className: ROW_LABEL_CLASS, pressable: false })}
+      ${model}
       ${clockHtml(row.clock, row.runningSince)}
     </summary>
     ${agentDetailsHtml(row)}

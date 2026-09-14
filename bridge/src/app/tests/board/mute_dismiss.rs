@@ -79,39 +79,6 @@ fn muting_an_entry_silences_its_badge_and_unmuting_brings_it_back() {
     );
 }
 
-/// An issue is an entry like any other, and mute outlives the daemon: a
-/// silence that reset on restart would be no silence at all.
-#[test]
-fn muting_an_issue_survives_a_restart() {
-    let (dir, repo) = init_repo();
-    let issue_id = {
-        let mut state = qa_state(&repo, dir.path());
-        let plan = state.handle(req("plan.create", json!({ "goal": "quiet issue" })));
-        let issue_id = plan_id_of(&plan);
-        push_to_issue_conversation(&mut state, &issue_id, |thread| {
-            thread.post_agent("a question", None, now_rfc3339());
-        });
-        let entry = board_entry(&mut state, &issue_id);
-        assert_eq!(entry["unread"], true, "{entry:?}");
-
-        let silenced = state.handle(req(
-            "entity.mute",
-            json!({ "entity_id": issue_id, "muted": true }),
-        ));
-        assert_eq!(silenced["ok"], true, "{silenced:?}");
-        issue_id
-    };
-
-    let mut reloaded = qa_state(&repo, dir.path());
-    let entry = board_entry(&mut reloaded, &issue_id);
-    assert_eq!(entry["muted"], true, "{entry:?}");
-    assert_eq!(entry["unread"], false, "{entry:?}");
-    assert_eq!(entry["unread_count"], 0, "{entry:?}");
-    let row = work_item_row_for(&mut reloaded, &issue_id);
-    assert_eq!(row["muted"], true, "{row:?}");
-    assert_eq!(row["unread"], false, "{row:?}");
-}
-
 /// Muted means the phone stays dark. Nothing is spent on the silence, so the
 /// first piece of news after unmuting pushes rather than sitting out a
 /// debounce window it never entered.
@@ -354,7 +321,7 @@ fn an_old_style_dismissal_still_clears_a_single_agent_row() {
 
     // What the old code wrote: the end of the entity's conversation, in one
     // number, with no agent named.
-    let line = primary_thread(&state.plans[&issue_id].agents).last_sequence();
+    let line = primary_thread(&state.runs[&run_id].agents).last_sequence();
     state
         .board
         .attention_mut()
@@ -427,33 +394,6 @@ fn mute_and_dismiss_are_independent() {
     let row = work_item_row_for(&mut state, &run_id);
     assert_eq!(row["muted"], false, "{row:?}");
     assert_eq!(row["unread"], true, "{row:?}");
-    assert_eq!(row["dismissed"], true, "{row:?}");
-}
-
-/// A row cleared away must still be cleared after a restart: one that came
-/// back with the daemon would make the inbox unusable by morning.
-#[test]
-fn a_dismissal_survives_a_restart() {
-    let (dir, repo) = init_repo();
-    let issue_id = {
-        let mut state = qa_state(&repo, dir.path());
-        let plan = state.handle(req("plan.create", json!({ "goal": "cleared issue" })));
-        let issue_id = plan_id_of(&plan);
-        push_to_issue_conversation(&mut state, &issue_id, |thread| {
-            thread.post_agent("a question", None, now_rfc3339());
-        });
-        state.handle(req("entity.seen", json!({ "entity_id": issue_id })));
-        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": issue_id })));
-        assert_eq!(cleared["ok"], true, "{cleared:?}");
-        let row = work_item_row_for(&mut state, &issue_id);
-        assert_eq!(row["dismissed"], true, "{row:?}");
-        issue_id
-    };
-
-    let mut reloaded = qa_state(&repo, dir.path());
-    let entry = board_entry(&mut reloaded, &issue_id);
-    assert_eq!(entry["dismissed"], true, "{entry:?}");
-    let row = work_item_row_for(&mut reloaded, &issue_id);
     assert_eq!(row["dismissed"], true, "{row:?}");
 }
 
@@ -651,7 +591,7 @@ fn one_piece_of_news_reaches_the_push_funnel_once() {
         );
     });
 
-    let conversation = state.plans[&issue_id].agents.sole_thread().clone();
+    let conversation = state.runs[&run_id].agents.sole_thread().clone();
     let news = state.conversation_news(&conversation);
     assert_eq!(news.attention_reason, Some("done"));
     state.push_attention_notify(&run_id, news, None);
@@ -667,12 +607,12 @@ fn one_piece_of_news_reaches_the_push_funnel_once() {
 #[test]
 fn a_restart_announces_nothing_it_already_announced() {
     let (dir, repo) = init_repo();
-    let issue_id = {
+    let run_id = {
         let mut state = qa_state(&repo, dir.path());
-        planned_run_in_review(&mut state, "quiet restart").0
+        planned_run_in_review(&mut state, "quiet restart").1
     };
     let reloaded = qa_state(&repo, dir.path());
-    let conversation = reloaded.plans[&issue_id].agents.sole_thread().clone();
+    let conversation = reloaded.runs[&run_id].agents.sole_thread().clone();
     assert_eq!(
         reloaded.conversation_news(&conversation).attention_reason,
         None

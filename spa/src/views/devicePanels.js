@@ -11,7 +11,7 @@ import { refreshFeed } from "../core/taskFeed.js";
 import { deviceProjectsPanelHtml, mountDeviceProjects } from "./deviceProjects.js";
 import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
-import { ACCOUNT_ISOLATION, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
+import { DEVICE_ISOLATION, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
 import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
 
 /** The panels this machine's bridge owns: each states its own markup and mounts
@@ -19,7 +19,7 @@ import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSettin
 const BRIDGE_PANELS = [
   { html: agentModesPanelHtml, mount: mountAgentModes },
   { html: defaultHarnessPanelHtml, mount: mountDefaultHarness },
-  { html: isolationPanelHtml, mount: (host, options) => mountIsolation(host, { ...options, target: ACCOUNT_ISOLATION }) },
+  { html: isolationPanelHtml, mount: (host, options) => mountIsolation(host, { ...options, target: DEVICE_ISOLATION }) },
   { html: triageSettingPanelHtml, mount: mountTriageSetting },
 ];
 

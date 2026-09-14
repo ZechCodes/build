@@ -4,7 +4,9 @@ use super::reader::ProtocolReader;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
 use crate::harness::{
     ActivityReport, AgentSession, AgentStatus, HarnessError, SessionStatusSnapshot, Turn,
+    TurnChoiceSupport,
 };
+use crate::models::{AgentProvider, ModelChoice};
 use crate::pty::HarnessSpec;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
@@ -16,7 +18,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
 
 pub struct AdkSession {
-    child: Mutex<Child>,
+    /// Shared with the reader and the startup watchdog, the two things
+    /// besides Build that may end this child: a model it was not asked for,
+    /// and a silence that outlasts the deadline.
+    child: Arc<Mutex<Child>>,
     /// `None` once the session has ended — the pipe is dropped so the child
     /// sees EOF and can leave on its own terms before it is killed.
     stdin: Mutex<Option<ChildStdin>>,
@@ -46,6 +51,32 @@ impl AdkSession {
     pub fn spawn(
         spec: &HarnessSpec,
         cwd: Option<PathBuf>,
+        choice: &ModelChoice,
+    ) -> Result<(AdkSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        AdkSession::spawn_with_startup_deadline(
+            spec,
+            cwd,
+            choice,
+            crate::orchestrator::HARNESS_READY_GRACE,
+        )
+    }
+
+    /// [`spawn`](AdkSession::spawn) with the startup deadline chosen by the
+    /// caller — how a test ends a child that never speaks without waiting out
+    /// the real grace.
+    ///
+    /// The deadline is how long the child may go without announcing itself
+    /// AFTER the first turn is written to it: the CLI emits no `init` line
+    /// until it has read a turn, so a session nobody has spoken to yet is
+    /// `Starting` for as long as it likes. A child still silent when it
+    /// expires is ended with that as its last words, instead of holding
+    /// `Starting` until the idle sweep explains the silence as nothing —
+    /// the codex carrier's reconciliation timeout, in this protocol's shape.
+    pub fn spawn_with_startup_deadline(
+        spec: &HarnessSpec,
+        cwd: Option<PathBuf>,
+        choice: &ModelChoice,
+        startup_deadline: Duration,
     ) -> Result<(AdkSession, broadcast::Receiver<ActivityReport>), HarnessError> {
         let mut command = Command::new(crate::pty::resolve_binary(spec)?);
         command.args(&spec.args);
@@ -64,19 +95,24 @@ impl AdkSession {
             .stderr(Stdio::piped())
             .spawn()?;
 
-        let state = Arc::new(Mutex::new(ProtocolState::new()));
+        let state = Arc::new(Mutex::new(ProtocolState::new(choice)));
         let (sender, subscribed) = broadcast::channel(ACTIVITY_BACKLOG);
         let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
         let revision = SurfaceRevision::default();
         let (status_updates, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdin = child.stdin.take();
+        let child = Arc::new(Mutex::new(child));
 
-        if let Some(stdout) = child.stdout.take() {
+        if let Some(stdout) = stdout {
             let mut reader = ProtocolReader::new(
                 Arc::clone(&state),
                 Arc::clone(&activity),
                 revision.clone(),
                 status_updates.clone(),
-            );
+            )
+            .ending(Arc::clone(&child));
             let slot = Arc::clone(&activity);
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines() {
@@ -97,7 +133,7 @@ impl AdkSession {
         // harness that writes more than a pipe buffer's worth of warnings would
         // otherwise block forever mid-turn, and the last line of it is the
         // epitaph of a child that dies before it can report a result.
-        if let Some(stderr) = child.stderr.take() {
+        if let Some(stderr) = stderr {
             let state = Arc::clone(&state);
             std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -109,10 +145,11 @@ impl AdkSession {
             });
         }
 
-        let stdin = child.stdin.take();
+        start_startup_watchdog(Arc::clone(&state), Arc::clone(&child), startup_deadline);
+
         Ok((
             AdkSession {
-                child: Mutex::new(child),
+                child,
                 stdin: Mutex::new(stdin),
                 state,
                 status_updates,
@@ -141,6 +178,43 @@ impl AdkSession {
         Ok(())
     }
 
+    /// Ask the child to run `model` from the next turn on, if it is not what
+    /// was last asked for. One `set_model` control request, recorded before
+    /// the write for the reason the interrupt is; what the child answers is
+    /// read later by the reader thread.
+    fn apply_model(&self, model: Option<&str>) -> Result<(), HarnessError> {
+        let Some(model) = model else {
+            return Ok(());
+        };
+        let request_id = {
+            let mut state = self.state.lock().unwrap();
+            if state.requested_model.as_deref() == Some(model) {
+                return Ok(());
+            }
+            let request_id = uuid::Uuid::new_v4().to_string();
+            state.requested_model = Some(model.to_string());
+            state
+                .pending_model_changes
+                .insert(request_id.clone(), model.to_string());
+            request_id
+        };
+        let line = json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": { "subtype": "set_model", "model": model },
+        })
+        .to_string();
+        if let Err(refused) = self.write_line(&line) {
+            self.state
+                .lock()
+                .unwrap()
+                .pending_model_changes
+                .remove(&request_id);
+            return Err(refused);
+        }
+        Ok(())
+    }
+
     /// The child's exit code once it has exited, cached on first sight.
     ///
     /// `try_wait` reaps the child exactly once, so the status has to be
@@ -164,6 +238,46 @@ impl AdkSession {
     }
 }
 
+/// Watch for a child that was handed a turn and never announced itself.
+///
+/// Polls rather than waits on the child, because reaping is the session's
+/// business alone (`try_wait` collects the status exactly once, and a watchdog
+/// that took it would leave the session reporting a running child forever).
+/// Ending is a `kill` and nothing more: the reader sees the stream close and
+/// performs the death rites, and the session reaps on its next poll. The
+/// thread leaves as soon as the child announces itself, the session is
+/// ended, or the deadline has been spent.
+fn start_startup_watchdog(
+    state: Arc<Mutex<ProtocolState>>,
+    child: Arc<Mutex<Child>>,
+    deadline: Duration,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(20));
+        let expired = {
+            let mut state = state.lock().unwrap();
+            if state.announced || state.closed {
+                return;
+            }
+            let Some(first_turn_at) = state.first_turn_at else {
+                continue;
+            };
+            if first_turn_at.elapsed() < deadline {
+                continue;
+            }
+            state.reported_error = Some(format!(
+                "claude did not announce itself within {deadline:?} of its first turn"
+            ));
+            state.closed = true;
+            true
+        };
+        if expired {
+            let _ = child.lock().unwrap().kill();
+            return;
+        }
+    });
+}
+
 /// The code a child exited with. A child killed by a signal has no code of its
 /// own, so it is reported the way a shell reports one — `128 + signal` — rather
 /// than as the `None` that means "no process behind this session at all".
@@ -181,7 +295,37 @@ impl AgentSession for AdkSession {
     /// what starts the `Working` window — a failed write starts nothing, so the
     /// caller's crashed-versus-wedged check reads a session that never began
     /// the turn.
+    ///
+    /// A frozen choice is applied first, the way the codex carrier applies
+    /// one on its `turn/start`: a model the child is not yet running is
+    /// asked for with a `set_model` control request written ahead of the
+    /// turn, on the same pipe, so the turn runs on it. A choice this child
+    /// cannot take in place — another provider, another effort, a model
+    /// cleared back to the default — is refused with the sentence that says
+    /// where it lives, never dropped on the floor: a turn that silently ran
+    /// on the wrong settings would report itself as the settings the human
+    /// chose.
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
+        if let Some(frozen) = &turn.choice {
+            frozen
+                .model_choice
+                .validate()
+                .map_err(HarnessError::Unsupported)?;
+            if frozen.model_choice.provider != AgentProvider::ClaudeAdk {
+                return Err(HarnessError::Unsupported(format!(
+                    "this is a Claude Code session; a turn choosing {} needs a session on that provider",
+                    frozen.model_choice.provider.label()
+                )));
+            }
+            if self.turn_choice_support(&frozen.model_choice) == TurnChoiceSupport::RestartRequired
+            {
+                return Err(HarnessError::Unsupported(
+                    "this claude session takes a new model in place but not a new effort; start a fresh session with the requested choice"
+                        .to_string(),
+                ));
+            }
+            self.apply_model(frozen.model_choice.model.as_deref())?;
+        }
         let line = json!({
             "type": "user",
             "message": {
@@ -193,6 +337,7 @@ impl AgentSession for AdkSession {
         self.write_line(&line)?;
         let mut state = self.state.lock().unwrap();
         state.turn_open = true;
+        state.first_turn_at.get_or_insert_with(Instant::now);
         // A turn handed over behind an outstanding interrupt is the steering
         // turn: the child runs it once the interrupted one is closed, so the
         // result that closes that one must hand `Working` on to this rather
@@ -218,6 +363,16 @@ impl AgentSession for AdkSession {
     fn can_interrupt(&self) -> bool {
         let state = self.state.lock().unwrap();
         state.turn_open && state.announces_interrupt()
+    }
+
+    /// This carrier has a per-turn settings channel: `set_model`, on the
+    /// same pipe the turns go down.
+    fn accepts_turn_choice(&self) -> bool {
+        true
+    }
+
+    fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
+        self.state.lock().unwrap().turn_choice_support(choice)
     }
 
     /// One `control_request` line on the same pipe the turns go down, and back.
@@ -337,6 +492,7 @@ impl AgentSession for AdkSession {
     /// and the reap follow regardless: killing without collecting the status
     /// leaks one zombie per session on a daemon that never restarts.
     fn end(&self) {
+        self.state.lock().unwrap().closed = true;
         self.stdin.lock().unwrap().take();
         let reaped = {
             let mut child = self.child.lock().unwrap();

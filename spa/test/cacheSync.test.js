@@ -11,6 +11,9 @@ import { patchFor, worktreeOf } from "./gitWireFixture.js";
  *  a new `call` is that bridge answering differently, not another machine. */
 const bridge = { call: null };
 
+/** Every read this layer makes is a warm-up, and rides the wire stamped so. */
+const BACKGROUND = { priority: "background" };
+
 // Real clock, not a frozen one: the syncer partitions active-vs-Recent with
 // Date.now(), so the items' ages must be relative to the same now.
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
@@ -40,6 +43,9 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 
 let registeredWatchers = [];
+// Everything in this file is the legacy contract: a bridge that serves no
+// subscriptions, and the 60 s per-entity loop that is this layer's whole
+// cadence there. The background tier has its own file.
 vi.mock("../src/core/changeEvents.js", () => ({
   watchChanges: (registration) => {
     const watcher = { ...registration, disposed: false };
@@ -50,6 +56,8 @@ vi.mock("../src/core/changeEvents.js", () => ({
       },
     };
   },
+  subscriptionsActive: () => false,
+  onSubscriptionsChange: () => () => {},
 }));
 
 const App = {};
@@ -171,8 +179,8 @@ describe("following every device's feed", () => {
     await twoDevices(secondCall);
     // The same run id on two machines is two rows, each read through its own
     // device's call and written under its own device.
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
-    expect(secondCall).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" }, BACKGROUND);
+    expect(secondCall).toHaveBeenCalledWith("git.status", { run_id: "run-1" }, BACKGROUND);
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" })).toBeTruthy();
     expect((await cache.readCached({ deviceId: "dev-2", entityId: "run-1", kind: "log" })).value.commits[0].hash).toBe("def");
   });
@@ -226,15 +234,15 @@ describe("keeping active branches warm", () => {
     });
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: held.status_key });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: held.status_key }, BACKGROUND);
     expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.files).toEqual(held.files);
   });
 
   it("syncs git status and the commit list for an active branch, run-scoped", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
-    expect(bridge.call).toHaveBeenCalledWith("git.log", { run_id: "run-1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" }, BACKGROUND);
+    expect(bridge.call).toHaveBeenCalledWith("git.log", { run_id: "run-1" }, BACKGROUND);
     const log = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" });
     expect(log.value.commits).toHaveLength(1);
   });
@@ -259,11 +267,12 @@ describe("keeping active branches warm", () => {
     });
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(bridge.call).not.toHaveBeenCalledWith("git.diff", expect.anything());
+    expect(bridge.call).not.toHaveBeenCalledWith("git.diff", expect.anything(), expect.anything());
 
     idle.forEach((work) => work());
     await flush();
-    expect(bridge.call).toHaveBeenCalledWith("git.diff", { run_id: "run-1", paths: ["src/a.js"] });
+    // A warm-up rides the background queue, and says so on the envelope.
+    expect(bridge.call).toHaveBeenCalledWith("git.diff", { run_id: "run-1", paths: ["src/a.js"] }, { priority: "background" });
     const body = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: "src/a.js" });
     expect(body.value.patch).toBe(patchFor("src/a.js", "new line"));
   });
@@ -284,7 +293,7 @@ describe("keeping active branches warm", () => {
     bridge.call.mockClear();
     registeredWatchers.find((watcher) => watcher.entity === "run-1").refresh();
     await flush();
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key }, BACKGROUND);
   });
 
   it("warms only the leading viewport budget instead of every offscreen body", async () => {
@@ -307,7 +316,7 @@ describe("keeping active branches warm", () => {
   it("scopes a checkout Build does not own by project and worktree", async () => {
     sync.startCacheSync();
     await feed([branchItem({ run_id: null })]);
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { project_id: "p1", worktree_id: "wt-1" });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { project_id: "p1", worktree_id: "wt-1" }, BACKGROUND);
   });
 
   it("registers one change watcher per active branch and refreshes on delivery", async () => {
@@ -318,7 +327,7 @@ describe("keeping active branches warm", () => {
     bridge.call.mockClear();
     watcher.refresh();
     await flush();
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key });
+    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key }, BACKGROUND);
   });
 
   it("lets a watcher go, disposed, when its entity leaves the active set", async () => {
@@ -393,12 +402,11 @@ describe("keeping warmed conversations fresh", () => {
     });
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("branch.get", {
-      project_id: "p1",
-      branch: "build/login",
-      agent_id: "ag-1",
-      thread_limit: FIRST_PAGE_ITEMS,
-    });
+    expect(bridge.call).toHaveBeenCalledWith(
+      "branch.get",
+      { project_id: "p1", branch: "build/login", agent_id: "ag-1", thread_limit: FIRST_PAGE_ITEMS },
+      BACKGROUND,
+    );
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" });
     expect(record.value.deliveredSequence).toBe(2);
   });
@@ -417,7 +425,7 @@ describe("keeping warmed conversations fresh", () => {
     await feed([
       { kind: "issue", project_id: "p2", issue_id: "iss-1", state: "plan_review", anchor: ago(2), last_activity: ago(2) },
     ]);
-    expect(bridge.call).toHaveBeenCalledWith("issue.get", { issue_id: "iss-1", thread_limit: FIRST_PAGE_ITEMS });
+    expect(bridge.call).toHaveBeenCalledWith("issue.get", { issue_id: "iss-1", thread_limit: FIRST_PAGE_ITEMS }, BACKGROUND);
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "iss-1", kind: "thread", sub: "" });
     expect(record.value.deliveredSequence).toBe(3);
   });
@@ -507,7 +515,7 @@ describe("keeping file listings warm", () => {
   it("syncs the top-level directory for an active branch", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "" });
+    expect(bridge.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "" }, BACKGROUND);
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" });
     expect(record).toBeTruthy();
   });
@@ -522,7 +530,7 @@ describe("keeping file listings warm", () => {
     });
     sync.startCacheSync();
     await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "src" });
+    expect(bridge.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "src" }, BACKGROUND);
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" });
     expect(record.value.entries).toHaveLength(1);
   });
@@ -546,7 +554,7 @@ describe("keeping a warmed review diff fresh", () => {
     });
     watcher.refresh();
     await flush();
-    expect(bridge.call).toHaveBeenCalledWith("run.diff", { run_id: "run-1" });
+    expect(bridge.call).toHaveBeenCalledWith("run.diff", { run_id: "run-1" }, BACKGROUND);
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" });
     expect(record.value.patch).toBe("diff --git fresh");
   });

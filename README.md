@@ -96,23 +96,84 @@ new repositories and clones; existing repositories and task worktrees stay
 where they are. `BRIDGE_PROJECTS_DIR` supplies the initial default when no
 projects folder has been saved in the bridge configuration.
 
-## Adding projects
+## Projects and workspaces
 
-**Add project** on a device's settings page offers two choices, and adds the
-project to that device. **Use existing folder** starts the directory browser in
-that device's configured projects folder and opens the folder you choose. A
-folder without Git opens in **Files**; it stays an ordinary folder until you
-select **Initialize Git** on **Changes**. Initializing Git leaves your existing
-files untracked so you can review them before committing.
+A project brings together one or more source directories on a device. Add local
+directories, Git repositories, or remote repositories that Build clones. Each
+source keeps its own files and Git state; a project may also include ordinary
+directories that have no Git repository.
 
-**Create new project** asks for a name and an optional Git remote. Build creates
-the repository inside that device's configured projects folder using `main` as
-its initial branch. The optional remote is configured as `origin`; creation does
-not clone or push it.
+When Build creates a workspace, it materializes each source separately. A
+non-Git source is copied using the selected backend: a regular copy with the
+worktree backend, or the installed Rift CLI with the Rift backend, falling
+back to a regular copy when Rift is unavailable or cannot create the copy safely.
+Git sources are checked out independently.
+An older project whose root is itself a Git checkout remains a single-directory
+project represented by `.` and is never moved.
+
+Directory tabs follow the workspace menu and collapse into a directory menu
+on phones. Selecting a directory controls the Files, Changes, and commit views.
+All changes includes unpushed commits and uncommitted edits, using locally known
+remote history as its baseline. A searchable selector above the commit list
+separates branches and tags and identifies remote branches and available pulls.
+Switching a ref performs a real checkout in that source. Compatible
+uncommitted edits remain in place; if a checkout would overwrite or otherwise
+lose local changes, Build leaves the source untouched and reports Git's reason.
+Selecting a tag results in a detached HEAD and the interface says so.
+
+The directory picker can create a new folder while adding project sources.
+From a workspace directory, Initialize Git offers the workspace copy, the
+original project source, or both. Initializing the source enables Git for future
+workspaces; initializing only the copy leaves the original source unchanged.
+When they are separate folders, initializing both creates independent
+repositories and preserves the files in each. If the workspace and source are
+the same folder, Git is initialized there once.
+
+Terminals belong to the workspace, not to the selected source or ref. A new
+terminal starts at the workspace root and remains open when the selected source
+or its ref changes. A terminal that has changed directory stays where its shell
+put it; selecting a source does not change its working directory.
+
+Finishing a workspace verifies that every Git source is pushed to its remote,
+then retains the workspace checkout and all of its files. Build never deletes a
+workspace as part of Finish. It retains per-source recovery state so an
+interrupted operation can resume safely. Later edits to a project's source list
+affect new workspaces only: an existing workspace continues from its recorded
+source configuration.
+
+For the complete workspace behavior, see
+[`planning/v2/workspaces.md`](planning/v2/workspaces.md).
 
 **New project** in the projects rail, and anything you capture with the compose
 box, goes to the **Creation device** on Settings instead — those two are the
 only places that pick a machine for you.
+
+## Work isolation
+
+Build uses Git worktrees by default. For copy-on-write checkouts, install the
+[Rift CLI](https://github.com/anomalyco/rift#install) on the machine running the
+bridge and make `rift` available on the bridge's `PATH`. Select **Rift
+(copy-on-write)** in Work isolation settings, either as the account default or
+as a project override. The choice applies to new checkouts.
+
+Rift owns filesystem cloning and snapshot creation. Build requests full copies
+to retain ignored build caches, skips Rift hooks, and checks out the task's
+branch for Git sources. Workspace completion verifies pushes and retains files
+with either backend. Build does not install or update Rift for you.
+
+The first Rift task initializes its source project. On Btrfs, Rift may convert
+the source directory into a subvolume; on other supported filesystems it
+registers the directory in place. Git sources must have their own `.git`
+directory; ordinary directories need no Git metadata. The checkouts folder
+must be outside the source. Filesystem support and
+initialization errors are reported by Rift when creating the checkout.
+
+Build keeps a private Rift registry under each project's checkouts folder at
+`.rift/registry.sqlite`, so its garbage collection does not touch workspaces
+registered by other Rift users. A project already registered in a different
+Rift registry cannot be initialized in Build's registry; Build leaves its
+marker untouched and reports the conflict. Keep the Rift CLI installed while
+Build has Rift checkouts to manage.
 
 ## Develop
 

@@ -162,6 +162,61 @@ async fn keyed_terminal_create_attach_io_close_roundtrip() {
     assert_eq!(relisted["result"]["terminals"].as_array().unwrap().len(), 0);
 }
 
+#[tokio::test]
+async fn workspace_terminal_starts_at_the_workspace_root_and_survives_source_selection() {
+    let (dir, repo) = init_repo();
+    let expected_root = std::fs::canonicalize(&repo).unwrap();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let workspace_id = format!("legacy-{project_id}");
+
+    let created = handler.call(
+        SessionSender::detached("s1"),
+        req(
+            "term.create",
+            json!({ "workspace_id": workspace_id, "source_id": "selected-a" }),
+        ),
+    );
+    assert_eq!(created["ok"], true, "{created:?}");
+
+    // Changing the selected directory still lists the same workspace-owned PTY.
+    let listed = handler.call(
+        SessionSender::detached("s1"),
+        req(
+            "term.list",
+            json!({ "workspace_id": workspace_id, "source_id": "selected-b" }),
+        ),
+    );
+    assert_eq!(listed["result"]["terminals"][0]["term_id"], "term-1");
+
+    let (sender, mut pushes, key) = SessionSender::observable("s1");
+    let attached = handler.call(
+        sender,
+        req(
+            "term.attach",
+            json!({ "workspace_id": workspace_id, "source_id": "selected-b", "term_id": "term-1" }),
+        ),
+    );
+    assert_eq!(attached["ok"], true, "{attached:?}");
+    let wrote = handler.call(
+        SessionSender::detached("s1"),
+        req(
+            "term.input",
+            json!({ "term_id": "term-1", "data": b64encode(b"pwd\r") }),
+        ),
+    );
+    assert_eq!(wrote["ok"], true, "{wrote:?}");
+    let expected = expected_root.to_string_lossy().into_owned();
+    wait_for_pushes(&mut pushes, &key, |seen| {
+        output_text(seen, "term-1").contains(&expected)
+    })
+    .await;
+    handler.call(
+        SessionSender::detached("s1"),
+        req("term.close", json!({ "term_id": "term-1" })),
+    );
+}
+
 /// `term.ack` is the client's half of flow control: it reports the cursor it
 /// has actually applied, on the same id space every other `term.*` verb
 /// takes. A stale client acking a terminal that is gone gets the same

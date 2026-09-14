@@ -1,0 +1,15 @@
+{
+  "method": "entity.dismiss",
+  "since": "1.0.0",
+  "params": {
+    "entity_id": "run-7"
+  },
+  "result": {
+    "entity_id": "run-7",
+    "dismissed": true
+  },
+  "errors": [
+    "not_found",
+    "invalid_params"
+  ]
+}

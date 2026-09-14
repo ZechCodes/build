@@ -192,7 +192,7 @@ describe("agent rail chat ownership", () => {
     expect(input()).toBe(focusedInput);
     expect(document.activeElement).toBe(focusedInput);
     expect(input().value).toBe("A stays in focus");
-    expect(host().querySelector(".rail-who").textContent).toContain("1");
+    expect(host().querySelector(".rail-who").getAttribute("title")).toContain("1");
 
     bubble("agent-b").click();
     await flush();
@@ -483,7 +483,7 @@ describe("agent rail chat ownership", () => {
 
     expect(input()).toBe(selectedInput);
     expect(input().value).toBe("agent B remains selected");
-    expect(host().querySelector(".rail-who").textContent).toContain("2");
+    expect(host().querySelector(".rail-who").getAttribute("title")).toContain("2");
     expect(host().querySelector(".rail-newagent")).toBeNull();
     expect(bubble("agent-b").classList.contains("active")).toBe(true);
   });

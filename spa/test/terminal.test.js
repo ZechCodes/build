@@ -635,6 +635,32 @@ describe("TerminalSocket", () => {
     expect(out).toEqual([]);
     socket.close();
   });
+
+  it("keeps a user terminal's workspace scope when reconnecting", async () => {
+    const { socket, ws, init } = await connected();
+    const attaching = socket.attachTerminal(
+      "term-4",
+      { workspace_id: "ws-7", source_id: "src-2" },
+      { cols: 90, rows: 30, onSnapshot: () => {} },
+    );
+    attaching.catch(() => {});
+    await tick();
+    let p = lastPayload(ws);
+    expect(p.params).toEqual({ workspace_id: "ws-7", term_id: "term-4", cols: 90, rows: 30 });
+    respond(ws, init, p.id, { snapshot: b64(""), cursor: 0 });
+    await attaching;
+
+    const beforeDrop = FakeWebSocket.instances.length;
+    socket.simulateDrop();
+    const ws2 = await reconnected(beforeDrop);
+    const init2 = await handshake(ws2);
+    p = lastPayload(ws2);
+    expect(p.method).toBe("term.attach");
+    expect(p.params).toEqual({ workspace_id: "ws-7", term_id: "term-4", cols: 90, rows: 30 });
+    respond(ws2, init2, p.id, { snapshot: b64(""), cursor: 0 });
+    await tick();
+    socket.close();
+  });
 });
 
 // The liveness ping shares ONE FIFO with terminal output, so a flooding PTY

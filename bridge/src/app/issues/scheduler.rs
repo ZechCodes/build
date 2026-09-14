@@ -10,24 +10,25 @@ use crate::plan::{
 use crate::run::RunState;
 use serde_json::{json, Value};
 
+fn ensure_issue_scheduler_available() -> Result<(), String> {
+    Err(super::ISSUES_RETIRED_ERROR.to_string())
+}
+
 /// An Issue's scheduler asked, on its way to a stage: it carries on from where
 /// the git stopped it, and answers with the Issue rather than the run — the
 /// scheduler is what the frame called, and the run is an implementation detail
 /// of the stage it was after.
 pub(in crate::app) struct IssueSchedulerWaiting {
     pub(in crate::app) issue_id: String,
-    pub(in crate::app) request: Value,
     /// The stage a failure is recorded against. `None` for run-all, which
     /// blocks on whichever stage the Issue is standing at.
     pub(in crate::app) blocked_stage: Option<String>,
 }
 
 impl ImplementationCaller for IssueSchedulerWaiting {
-    fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String> {
-        match state.dispatch_ready_stage(&self.issue_id, run_id, &self.request) {
-            Ok(()) => state.issue_view_full(&self.issue_id, thread_detail(&self.request)),
-            Err(error) => Err(self.refused(state, error)),
-        }
+    fn opened(self: Box<Self>, _state: &mut AppState, _run_id: &str) -> Result<Value, String> {
+        ensure_issue_scheduler_available()?;
+        Ok(Value::Null)
     }
 
     fn refused(self: Box<Self>, state: &mut AppState, error: String) -> String {
@@ -46,7 +47,7 @@ pub(in crate::app) fn scheduler_request(issue_id: &str, params: &Value) -> Value
 }
 
 impl AppState {
-    pub(in crate::app) fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         self.arm_issue_scheduler(&issue_id, ImplementationIntent::All)?;
         self.implement_issue(&issue_id, params, None)
@@ -93,10 +94,7 @@ impl AppState {
         }
     }
 
-    pub(in crate::app) fn issue_implement_stage(
-        &mut self,
-        params: &Value,
-    ) -> Result<Value, String> {
+    pub(crate) fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let issue = self.plans.get(&issue_id).ok_or("unknown issue_id")?;
@@ -175,22 +173,6 @@ impl AppState {
         }
     }
 
-    /// Reconcile one Issue's durable intent with its implementation lineage,
-    /// and run whatever git that owes right here — for boot, which reconciles
-    /// every armed Issue before the first frame is served and has no drain to
-    /// hand git to. Everything with one uses
-    /// [`AppState::defer_issue_scheduler`] instead.
-    pub(in crate::app) fn advance_issue_scheduler_here(
-        &mut self,
-        issue_id: &str,
-        request: &Value,
-    ) -> Result<(), String> {
-        match self.advance_issue_scheduler(issue_id, request)? {
-            Some(job) => self.run_lifecycle_here(job).map(|_| ()),
-            None => Ok(()),
-        }
-    }
-
     /// Reconcile one Issue's durable intent with its implementation lineage.
     /// This is deliberately idempotent: boot, approval, and completion may all
     /// call it, but the single-active-writer gate prevents duplicate checkouts.
@@ -204,6 +186,7 @@ impl AppState {
         issue_id: &str,
         request: &Value,
     ) -> Result<Option<WorktreeLifecycleJob>, String> {
+        ensure_issue_scheduler_available()?;
         let intent = self
             .plans
             .get(issue_id)
@@ -252,7 +235,7 @@ impl AppState {
         // the job's epilogue resumes this scheduler on the run it opened.
         let Some(run_id) = self.current_issue_implementation_id(issue_id) else {
             self.set_issue_scheduler_activity(issue_id, None, ImplementationActivity::Preparing)?;
-            let waiting = self.issue_scheduler_waiting_on(issue_id, request, &intent);
+            let waiting = self.issue_scheduler_waiting_on(issue_id, &intent);
             return self
                 .open_implementation(issue_id, request, waiting)
                 .map(Some);
@@ -277,7 +260,7 @@ impl AppState {
                 .map(|()| None);
         }
 
-        let waiting = self.issue_scheduler_waiting_on(issue_id, request, &intent);
+        let waiting = self.issue_scheduler_waiting_on(issue_id, &intent);
         if let Some(job) = self.ensure_issue_implementation_worktree(issue_id, &run_id, waiting)? {
             return Ok(Some(job));
         }
@@ -290,12 +273,10 @@ impl AppState {
     pub(in crate::app) fn issue_scheduler_waiting_on(
         &self,
         issue_id: &str,
-        request: &Value,
         intent: &ImplementationIntent,
     ) -> Box<dyn ImplementationCaller> {
         Box::new(IssueSchedulerWaiting {
             issue_id: issue_id.to_string(),
-            request: request.clone(),
             blocked_stage: match intent {
                 ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
                 ImplementationIntent::All | ImplementationIntent::None => None,
@@ -512,10 +493,7 @@ impl AppState {
         self.set_issue_scheduler_activity(issue_id, intent, activity)
     }
 
-    pub(in crate::app) fn issue_set_auto_advance(
-        &mut self,
-        params: &Value,
-    ) -> Result<Value, String> {
+    pub(crate) fn issue_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let run_id = self
             .current_issue_implementation_id(&issue_id)
@@ -529,7 +507,7 @@ impl AppState {
         self.issue_view_full(&issue_id, thread_detail(params))
     }
 
-    pub(in crate::app) fn issue_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn issue_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let stage_id = require_str(params, "stage_id")?;
         // Resolve the lineage that actually owns this immutable boundary, not
@@ -568,7 +546,7 @@ impl AppState {
         self.plan_run_stage_diff(&run_params, Some(issue_id))
     }
 
-    pub(in crate::app) fn issue_run_action(
+    pub(crate) fn issue_run_action(
         &mut self,
         params: &Value,
         action: &str,

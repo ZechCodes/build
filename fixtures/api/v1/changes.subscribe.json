@@ -1,0 +1,19 @@
+{
+  "method": "changes.subscribe",
+  "since": "1.1.0",
+  "params": {
+    "subscription_id": "s-focus",
+    "scope": { "kind": "entity", "id": "run-7" },
+    "kinds": ["state", "thread", "git", "files"],
+    "mode": "realtime",
+    "priority": "foreground"
+  },
+  "result": {
+    "subscription_id": "s-focus",
+    "watch": "live"
+  },
+  "errors": [
+    "invalid_params",
+    "unavailable"
+  ]
+}

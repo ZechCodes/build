@@ -3,7 +3,6 @@ import { coreSourceOf } from "./coreSource.js";
 import {
   EVENT_META,
   STATUS_LINE_EVENTS,
-  completionReportSections,
   isStartupEvent,
   startupEventTitle,
 } from "../src/core/threadEvents.js";
@@ -59,20 +58,3 @@ describe("where the event vocabulary sits", () => {
   });
 });
 
-describe("the completion report", () => {
-  it("keeps the lists that were filled in, in reading order", () => {
-    const sections = completionReportSections({
-      critical_files: ["src/a.rs — holds the change"],
-      risk_notes: [],
-      decisions: ["kept the old name"],
-      skips: ["did not touch the migration"],
-    });
-    expect(sections.map((section) => section.title)).toEqual(["Critical files", "Decisions", "Skipped"]);
-    expect(sections[0].items).toEqual(["src/a.rs — holds the change"]);
-  });
-
-  it("is nothing at all when the agent filled in nothing", () => {
-    expect(completionReportSections({ critical_files: [], risk_notes: [] })).toEqual([]);
-    expect(completionReportSections(null)).toEqual([]);
-  });
-});

@@ -244,9 +244,9 @@ mod tests {
 
     #[test]
     fn shared_browser_contract_matches_receipt_vocabulary() {
-        let contract: Value =
-            serde_json::from_str(include_str!("../../fixtures/chat_operation_contract.json"))
-                .unwrap();
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../fixtures/api/v1/thread.post.json")).unwrap();
+        let contract = &fixture["operations"];
         assert_eq!(contract["post_method"], THREAD_POST_METHOD);
         assert_eq!(contract["status_method"], "thread.operation");
         assert_eq!(contract["operation_id"]["max_bytes"], 128);

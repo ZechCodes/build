@@ -16,6 +16,7 @@ import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, rememberSelectedDevice } from "./app.js";
 import {
+  adoptBridgeSelection,
   adoptDeviceSession,
   canAnswer,
   closeQuietly,
@@ -190,6 +191,12 @@ export function greetLiveBridge(context) {
     // asked for it, not to the one the device is on now.
     isCurrent: () => contextFor(session.deviceId)?.session === session,
     onGreeting: (greeting) => repository?.configureCapabilities(greeting),
+    // The session first, so a gate that lets the app back in finds it there.
+    install: (selection) => {
+      const adapter = session.installAdapter(selection);
+      bridgeSelectedListener(selection);
+      return adapter;
+    },
   }).catch(() => {
     /* the session died mid-greeting; the next one greets again */
   });
@@ -295,11 +302,17 @@ export function syncHome(landed = null) {
 // ---- opening every device ----------------------------------------------------
 
 /** Connect one device and land it. A device that will not answer is marked
- *  offline — its rows stay, greyed — and kept after until it does. */
+ *  offline — its rows stay, greyed — and kept after until it does.
+ *
+ *  A pinned-key mismatch is not an outage: the machine answering is not the one
+ *  this account pinned, and asking it again every few seconds would neither fix
+ *  that nor tell anyone about it. Those errors are rethrown untouched, so the
+ *  caller shows what they say and this layer stops. */
 async function connectDevice(deviceId) {
   try {
     return landSession(await openDeviceSession(deviceId));
   } catch (error) {
+    if (error?.securityCritical) throw error;
     setContextOffline(deviceId);
     scheduleResume(deviceId);
     throw error;
@@ -376,8 +389,11 @@ export async function resume(deviceId) {
   clearTimeout(reconnect.timer);
   try {
     await claimResumedSession(deviceId, reconnect);
-  } catch {
-    scheduleResume(deviceId, reconnect); // the relay is unreachable too — back off
+  } catch (error) {
+    // A machine whose key does not match what this account pinned is a stop,
+    // never a reconnect loop: retrying would keep offering the same pinned key
+    // to the same impostor.
+    if (!error?.securityCritical) scheduleResume(deviceId, reconnect);
   } finally {
     reconnect.resuming = false;
   }

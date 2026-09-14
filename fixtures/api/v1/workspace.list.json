@@ -1,0 +1,67 @@
+{
+  "method": "workspace.list",
+  "since": "1.1.0",
+  "params": {
+    "project_id": "proj-1"
+  },
+  "result": {
+    "workspaces": [
+      {
+        "id": "ws-3f2a91c4",
+        "workspace_id": "ws-3f2a91c4",
+        "project_id": "proj-1",
+        "name": "wire-facade",
+        "root": "/home/ada/.build/workspaces/proj-1/wire-facade",
+        "status": "ready",
+        "directories": [
+          {
+            "id": "ws-3f2a91c4:source-1",
+            "source_id": "source-1",
+            "name": "bridge",
+            "path": "/home/ada/.build/workspaces/proj-1/wire-facade/bridge",
+            "is_git": true,
+            "branch": "build/wire-facade",
+            "isolation": "worktree",
+            "status": "ready",
+            "error": null
+          },
+          {
+            "id": "ws-3f2a91c4:source-2",
+            "source_id": "source-2",
+            "name": "assets",
+            "path": "/home/ada/.build/workspaces/proj-1/wire-facade/assets",
+            "is_git": false,
+            "branch": null,
+            "isolation": "rift",
+            "status": "ready",
+            "error": null
+          }
+        ]
+      },
+      {
+        "id": "legacy-proj-1",
+        "workspace_id": "legacy-proj-1",
+        "project_id": "proj-1",
+        "name": "build",
+        "root": "/home/ada/code/build",
+        "status": "failed",
+        "directories": [
+          {
+            "id": "legacy-proj-1:source-1",
+            "source_id": "source-1",
+            "name": "build",
+            "path": "/home/ada/code/build",
+            "is_git": true,
+            "branch": null,
+            "isolation": null,
+            "status": "failed",
+            "error": "copy assets: Operation not supported (os error 95)"
+          }
+        ]
+      }
+    ]
+  },
+  "errors": [
+    "internal"
+  ]
+}

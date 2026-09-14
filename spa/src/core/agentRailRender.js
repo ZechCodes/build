@@ -1,4 +1,13 @@
 import { QUIET_SHAPE, STARTING_SHAPE, WORKING_SHAPE } from "./agentRailModel.js";
+import { esc } from "./text.js";
+
+/** The head's name slot: the topic the agent set, or a shimmering "Starting"
+ *  until it has. `who` (the harness and its ordinal) rides along as the title,
+ *  so the name the header no longer shows is still one hover away. */
+export function railWhoHtml(who, heading) {
+  const shown = heading && heading.text ? heading : { text: who, starting: false };
+  return `<span class="rail-who${shown.starting ? " rail-who-starting" : ""}" title="${esc(who)}">${esc(shown.text)}</span>`;
+}
 
 const LEAD_CLASS = {
   [WORKING_SHAPE]: "rail-status-lead rail-status-working",

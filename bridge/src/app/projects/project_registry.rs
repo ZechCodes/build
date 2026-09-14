@@ -1,4 +1,4 @@
-use super::Project;
+use super::{Project, ProjectSource};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -92,6 +92,57 @@ impl ProjectRegistry {
             return false;
         };
         project.is_git = true;
+        if let Some(source) = project.sources.first_mut() {
+            source.is_git = true;
+        }
+        true
+    }
+
+    pub(in crate::app) fn mark_source_git(
+        &mut self,
+        project_id: &str,
+        source_id: &str,
+        expected_path: &Path,
+        branch: &str,
+    ) -> Result<bool, String> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        let source = project
+            .sources
+            .iter_mut()
+            .find(|source| source.id == source_id)
+            .ok_or_else(|| format!("unknown source_id {source_id} in project {project_id}"))?;
+        if source.path != expected_path {
+            return Err(format!(
+                "source {source_id} no longer matches the workspace record"
+            ));
+        }
+        source.is_git = true;
+        source.base_branch = branch.to_string();
+        let primary = project.repo_path == source.path;
+        if primary {
+            project.is_git = true;
+            project.base_branch = branch.to_string();
+        }
+        Ok(primary)
+    }
+
+    pub(in crate::app) fn set_sources(
+        &mut self,
+        project_id: &str,
+        sources: Vec<ProjectSource>,
+    ) -> bool {
+        let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        else {
+            return false;
+        };
+        project.sources = sources;
         true
     }
 

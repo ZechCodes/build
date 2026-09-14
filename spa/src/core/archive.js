@@ -17,6 +17,7 @@ import { esc } from "./text.js";
  *  never as nothing. */
 const STATE_LABEL = {
   archived: "Archived",
+  finished: "Finished",
   merged: "Merged",
   abandoned: "Abandoned",
   failed: "Failed",
@@ -61,22 +62,23 @@ export function archiveDateLabel(iso) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(at));
 }
 
-const KIND_LABEL = { issue: "Issue", branch: "Branch" };
+const KIND_LABEL = { issue: "Issue", branch: "Branch", workspace: "Workspace" };
 
 // eslint-disable-next-line complexity -- ratchet: toRow is at 12, cap 10 — reduce it, then drop this line
 function toRow(item, index) {
-  const kind = item.kind === "issue" ? "issue" : "branch";
+  const kind = item.kind === "issue" || item.kind === "workspace" ? item.kind : "branch";
   const branch = text(item.branch);
   const state = text(item.state);
   const action = text(item.action);
   const finishedAt = text(item.finished_at);
   return {
-    key: text(item.run_id) || text(item.issue_id) || text(item.worktree_id) || `row-${index}`,
+    key: text(item.workspace_id) || text(item.run_id) || text(item.issue_id) || text(item.worktree_id) || `row-${index}`,
     kind,
     kindLabel: KIND_LABEL[kind],
     title: text(item.title) || branch || "(untitled)",
     project: text(item.project) || "",
     projectId: text(item.project_id),
+    workspaceId: text(item.workspace_id),
     branch,
     state,
     stateLabel: state === null ? "Ended" : STATE_LABEL[state] || state,

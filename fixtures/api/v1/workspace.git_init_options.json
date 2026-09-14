@@ -1,0 +1,28 @@
+{
+  "method": "workspace.git_init_options",
+  "since": "1.1.0",
+  "params": {
+    "workspace_id": "ws-3f2a91c4",
+    "source_id": "source-2"
+  },
+  "result": {
+    "workspace_id": "ws-3f2a91c4",
+    "source_id": "source-2",
+    "workspace": {
+      "path": "/home/ada/.build/workspaces/proj-1/wire-facade/assets",
+      "available": true,
+      "is_git": false
+    },
+    "source": {
+      "path": "/home/ada/code/assets",
+      "available": false,
+      "is_git": false,
+      "reason": "an invalid .git marker already exists"
+    }
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

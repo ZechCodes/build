@@ -4,6 +4,7 @@ import { $ } from "./dom.js";
 import { routeFromHash, hashFromRoute, withDeviceOrResolve } from "./core/router.js";
 import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
+import { renderWorkspace } from "./views/workspaceView.js";
 import { renderIssue } from "./views/issueView.js";
 import { renderDeviceSettings } from "./views/deviceSettings.js";
 import { renderAccount } from "./views/account.js";
@@ -36,6 +37,7 @@ export const App = {
   routeLeaveGuard: null, // async veto owned by the mounted view (for unsaved work)
 
   gated: true, // gate screens own #root until a session is live
+  updateAvailable: false, // the served-version watcher found a newer bundle than this one
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,
   // Which machines the inbox, the projects face and the project menu list —
@@ -196,6 +198,7 @@ export function initRouter() {
 const VIEWS = {
   inbox: renderInbox,
   branch: renderBranch,
+  workspace: renderWorkspace,
   issue: renderIssue,
   capture: renderCaptureDecision,
   account: renderAccount,

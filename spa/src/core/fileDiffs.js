@@ -115,7 +115,7 @@ export function createFileDiffs({
       const answer = await coordinatedRead({
         key,
         priority: requestPriority,
-        load: () => call("git.diff", params),
+        load: (envelope) => call("git.diff", params, envelope),
       });
       return answer.files || [];
     },

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::limits::TranslatorLimits;
 use super::protocol::{tag_for, ItemLifecycle, ItemNotification, ServerNotification};
-use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
+use crate::harness::adk::bounded_activity_text;
 use crate::harness::{ActivityReport, AgentActivity, ToolOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,7 +409,7 @@ impl CodexActivityTranslator {
         vec![ActivityReport::own_work(AgentActivity::ToolResult {
             call_id: id.to_string(),
             outcome,
-            summary: one_line(&tool_result_detail(item, outcome), TOOL_SUMMARY_LIMIT),
+            summary: bounded_activity_text(&tool_result_detail(item, outcome)),
         })]
     }
 
@@ -520,7 +520,7 @@ fn reasoning_report(item: &Value) -> Option<ActivityReport> {
         .unwrap_or_default();
     (!summary.is_empty()).then(|| {
         ActivityReport::own_work(AgentActivity::Reasoning {
-            summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
+            summary: bounded_activity_text(&summary),
         })
     })
 }
@@ -529,7 +529,7 @@ fn narration_report(item: &Value) -> Option<ActivityReport> {
     let summary = item["text"].as_str().unwrap_or_default().trim();
     (!summary.is_empty()).then(|| {
         ActivityReport::own_work(AgentActivity::Narration {
-            summary: one_line(summary, TOOL_SUMMARY_LIMIT),
+            summary: bounded_activity_text(summary),
         })
     })
 }
@@ -591,7 +591,7 @@ fn tool_summary(category: ToolSummaryCategory, item: &Value) -> String {
         ),
         ToolSummaryCategory::Collaboration => collaboration_summary(item),
     };
-    one_line(&summary, TOOL_SUMMARY_LIMIT)
+    bounded_activity_text(&summary)
 }
 
 fn optional_hint(value: Option<&str>) -> String {

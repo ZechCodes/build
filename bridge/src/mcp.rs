@@ -90,9 +90,6 @@ pub struct DoneOutputs {
     /// Optional on phase=revise/completed: per-comment resolutions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_resolutions: Option<Vec<CommentResolution>>,
-    /// Durable handoff context for reviewers and cold replacement sessions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completion_report: Option<crate::thread::CompletionReport>,
 }
 
 /// The raw `done` arguments as they arrive over the wire, before validation.
@@ -307,6 +304,12 @@ pub enum BridgeAction {
     SearchConversation {
         query: crate::thread::ConversationQuery,
     },
+    /// Name what this conversation is about: a 2-4 word objective the header
+    /// wears in place of the harness name. Already normalized — trimmed, one
+    /// space between words — by the tool boundary.
+    SetTopic {
+        topic: String,
+    },
     /// Every project on this device. Router only.
     ListProjects,
     /// The branches and issues in flight, as a digest. Router only.
@@ -366,6 +369,7 @@ impl BridgeAction {
             BridgeAction::ReadOperationMessages { .. } => "read_unread_messages",
             BridgeAction::PostThreadMessage { .. } => "post_thread_message",
             BridgeAction::SearchConversation { .. } => "search_conversation",
+            BridgeAction::SetTopic { .. } => "set_topic",
             BridgeAction::ListProjects => "list_projects",
             BridgeAction::ListWork => "list_work",
             BridgeAction::ReadConversation { .. } => "read_conversation",
@@ -383,7 +387,8 @@ impl BridgeAction {
             BridgeAction::ReadUnreadMessages
             | BridgeAction::ReadOperationMessages { .. }
             | BridgeAction::PostThreadMessage { .. }
-            | BridgeAction::SearchConversation { .. } => McpSurface::Coding,
+            | BridgeAction::SearchConversation { .. }
+            | BridgeAction::SetTopic { .. } => McpSurface::Coding,
             BridgeAction::ListProjects
             | BridgeAction::ListWork
             | BridgeAction::ReadConversation { .. }
@@ -469,8 +474,8 @@ impl DoneServer {
         })
     }
 
-    /// The router's tools. Read broadly, write in exactly two places (an inert
-    /// issue, a branch dispatch), and one way to ask the user something.
+    /// The router's tools. Read broadly, dispatch branch work, or ask the user
+    /// for the missing routing choice.
     fn router_tools() -> Value {
         json!([{
             "name": "list_projects",
@@ -493,18 +498,6 @@ impl DoneServer {
                 "required": ["entity_id"]
             }
         }, {
-            "name": "create_issue",
-            "description": "File an issue on a project: the capture becomes its goal and a planning agent starts on the primary checkout to work out how it should be done. No branch, no worktree, no code touched. This is the default destination — a wrong guess costs the user one tap, and rerouting takes the issue and its agent back.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project_id": { "type": "string" },
-                    "goal": { "type": "string", "description": "What the user wants done, in their terms. Keep their words; do not turn a sentence into a specification." },
-                    "rationale": { "type": "string", "description": "One line on why this project and why an issue. The user reads it when deciding whether you got it right." }
-                },
-                "required": ["project_id", "goal"]
-            }
-        }, {
             "name": "dispatch_branch",
             "description": "Put an agent on a branch with this instruction, creating or adopting the checkout as needed. Use ONLY when the capture names an existing branch or worktree, or unambiguously continues work already in flight on one — this starts an agent that changes code.",
             "inputSchema": {
@@ -519,7 +512,7 @@ impl DoneServer {
             }
         }, {
             "name": "ask_user",
-            "description": "Ask the user the ONE question that would let you decide, and stop. Reserved for a capture whose project is ambiguous — asking is the friction capture exists to remove, so a best-guess inert issue is nearly always better. The question reaches them as the capture's own inbox entry. Offer up to 3 options when you can name the destinations you are choosing between: each is one tap for the user, and the answer comes back naming the one they picked. They can always type an answer instead, so options are a shortcut and never the whole answer.",
+            "description": "Ask the user the ONE question that would let you decide, and stop. Reserved for a capture whose project is ambiguous — asking is the friction capture exists to remove, so dispatch to the best-guess project when the choice is clear enough. The question reaches them as the capture's own inbox entry. Offer up to 3 options when you can name the destinations you are choosing between: each is one tap for the user, and the answer comes back naming the one they picked. They can always type an answer instead, so options are a shortcut and never the whole answer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -531,9 +524,9 @@ impl DoneServer {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "label": { "type": "string", "description": "What the user taps, in a few words: the destination, not the question again. e.g. \"File as an issue on Build\"." },
+                                "label": { "type": "string", "description": "What the user taps, in a few words: the destination, not the question again. e.g. \"Continue on Build\"." },
                                 "project_id": { "type": "string", "description": "The project this choice routes to, from list_projects." },
-                                "kind": { "type": "string", "enum": ["issue", "branch"], "description": "What this choice would create: an inert issue, or a branch with an agent on it." },
+                                "kind": { "type": "string", "enum": ["branch"], "description": "The branch destination this choice represents." },
                                 "branch": { "type": "string", "description": "The existing branch this choice continues, spelled exactly as it is. Naming one makes the choice a branch." }
                             },
                             "required": ["label"]
@@ -544,7 +537,7 @@ impl DoneServer {
             }
         }, {
             "name": "done",
-            "description": "Report the routing outcome and end the session. Call it after create_issue, dispatch_branch or ask_user — or with status=failed when nothing let you decide.",
+            "description": "Report the routing outcome and end the session. Call it after dispatch_branch or ask_user — or with status=failed when nothing let you decide.",
             "inputSchema": Self::router_done_input_schema()
         }])
     }
@@ -556,7 +549,7 @@ impl DoneServer {
             "properties": {
                 "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate", "triage", "recover"] },
                 "status": { "type": "string", "enum": ["completed", "blocked", "failed"] },
-                "summary": { "type": "string", "description": "One concise sentence stating what was completed. If blocked or failed, state what is needed instead. No file list, changelog, test log, links, or process narration." },
+                "summary": { "type": "string", "description": SUMMARY_DESCRIPTION },
                 "outputs": {
                     "type": "object",
                     "properties": {
@@ -630,16 +623,6 @@ impl DoneServer {
                                 "required": ["comment_id", "response"]
                             }
                         },
-                        "completion_report": {
-                            "type": "object",
-                            "description": "Expected when phase=build or phase=revise and status=completed: the handoff a reviewer reads before the diff, and the only durable context a replacement session gets. One short line per entry; leave a list out rather than padding it.",
-                            "properties": {
-                                "critical_files": { "type": "array", "items": { "type": "string" }, "description": "The few files that carry this change, each with why it matters — \"path — what it now does\"." },
-                                "risk_notes": { "type": "array", "items": { "type": "string" }, "description": "What could break and where it would show, including anything you could not verify." },
-                                "decisions": { "type": "array", "items": { "type": "string" }, "description": "Choices a reviewer would otherwise have to reverse-engineer, each with its reason." },
-                                "skips": { "type": "array", "items": { "type": "string" }, "description": "What you deliberately did not do, and why." }
-                            }
-                        }
                     }
                 }
             },
@@ -778,6 +761,16 @@ impl DoneServer {
                                     "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
                                 }
                             }
+                        }, {
+                            "name": "set_topic",
+                            "description": SET_TOPIC_DESCRIPTION,
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "topic": { "type": "string", "description": "The objective, in 2-4 words. Title-case the first word, no trailing period. Examples: \"Unify prompt delivery\", \"Fix login redirect\"." }
+                                },
+                                "required": ["topic"]
+                            }
                         }]
                     }),
                 )),
@@ -843,6 +836,24 @@ impl DoneServer {
             return match conversation_query(&arguments) {
                 Ok(query) => Handled {
                     action: Some(BridgeAction::SearchConversation { query }),
+                    action_id: Some(id),
+                    ..Handled::default()
+                },
+                Err(message) => Handled {
+                    reply: Some(tool_error(id, message)),
+                    ..Handled::default()
+                },
+            };
+        }
+        if name == "set_topic" {
+            let topic = params
+                .and_then(|p| p.get("arguments"))
+                .and_then(|arguments| arguments.get("topic"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            return match normalized_topic(topic) {
+                Ok(topic) => Handled {
+                    action: Some(BridgeAction::SetTopic { topic }),
                     action_id: Some(id),
                     ..Handled::default()
                 },
@@ -1025,13 +1036,6 @@ impl DoneServer {
                         .clamp(1, MAX_CONVERSATION_LIMIT),
                 })
             }
-            "create_issue" => required("project_id").and_then(|project_id| {
-                Ok(BridgeAction::CreateIssue {
-                    project_id,
-                    goal: required("goal")?,
-                    rationale: text("rationale"),
-                })
-            }),
             "dispatch_branch" => required("project_id").and_then(|project_id| {
                 Ok(BridgeAction::DispatchBranch {
                     project_id,
@@ -1041,10 +1045,14 @@ impl DoneServer {
                 })
             }),
             "ask_user" => required("question").and_then(|question| {
-                Ok(BridgeAction::AskUser {
-                    question,
-                    options: ask_options(&arguments)?,
-                })
+                let options = ask_options(&arguments)?;
+                if options
+                    .iter()
+                    .any(|option| option.kind == Some(crate::capture::CaptureTarget::Issue))
+                {
+                    return Err("router issue destinations have been retired".to_string());
+                }
+                Ok(BridgeAction::AskUser { question, options })
             }),
             "done" => {
                 return match serde_json::from_value::<DoneArgs>(arguments)
@@ -1169,6 +1177,44 @@ fn error(id: Value, code: i64, message: &str) -> String {
 }
 
 /// An MCP tool result reporting success (`isError: false`).
+/// What `done` asks for in `summary`: the whole report, because it is the
+/// one thing the reviewer reads. There used to be a structured
+/// `completion_report` beside a one-sentence summary; the card it drew was
+/// noise under a sentence too short to stand alone, and the detail lived in
+/// the activity log nobody should have to open. Now the summary carries it.
+const SUMMARY_DESCRIPTION: &str = "The full report of this phase, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.";
+
+/// What `set_topic` says about itself on every `tools/list`. The cold prompt
+/// asks for the call; this is what is still in context when the agent makes
+/// it, so it carries the shape rule itself.
+const SET_TOPIC_DESCRIPTION: &str = "Name what this conversation is about, in 2-4 words: the objective you are setting out to achieve, not the steps. The conversation header shows it in place of the harness name, and says \"Starting\" until you call this. Call it first thing in a new conversation, and again if the objective changes.";
+
+/// The most bytes a topic may carry after normalization. Four words leave
+/// room under this; it is the guard against one enormous \"word\".
+const MAX_TOPIC_BYTES: usize = 80;
+
+/// The topic a `set_topic` call names, normalized to one space between words,
+/// or why the call is refused. Two to four words, because the header wears it
+/// where a harness name used to fit.
+fn normalized_topic(raw: &str) -> Result<String, String> {
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    if !(2..=4).contains(&words.len()) {
+        return Err(format!(
+            "topic must be an objective in 2-4 words, got {} word(s): {:?}",
+            words.len(),
+            raw.trim()
+        ));
+    }
+    let topic = words.join(" ");
+    if topic.len() > MAX_TOPIC_BYTES {
+        return Err(format!(
+            "topic must be at most {MAX_TOPIC_BYTES} bytes, got {}",
+            topic.len()
+        ));
+    }
+    Ok(topic)
+}
+
 fn tool_ok(id: Value, text: &str) -> String {
     result(
         id,
@@ -1217,12 +1263,66 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
         assert_eq!(tools[0]["name"], "read_unread_messages");
         assert_eq!(tools[1]["name"], "post_thread_message");
         assert_eq!(tools[2]["name"], "done");
         assert_eq!(tools[3]["name"], "search_conversation");
+        assert_eq!(tools[4]["name"], "set_topic");
         assert!(tools[2]["inputSchema"]["properties"]["phase"].is_object());
+    }
+
+    /// The topic is the agent's own word for what the conversation is about,
+    /// and the header wears it in place of the harness name — so it has to
+    /// be a short objective, not a sentence. Two to four words is the shape;
+    /// anything else comes back as a correctable tool error naming the rule,
+    /// never a silently truncated heading.
+    #[test]
+    fn set_topic_takes_a_two_to_four_word_objective_and_refuses_the_rest() {
+        let call = |topic: &str| {
+            server().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{{"name":"set_topic","arguments":{{"topic":{}}}}}}}"#,
+                serde_json::to_string(topic).unwrap()
+            ))
+        };
+        let h = call("  Unify   prompt delivery ");
+        assert!(
+            h.reply.is_none(),
+            "an accepted call is an action, not a reply"
+        );
+        assert_eq!(
+            h.action,
+            Some(BridgeAction::SetTopic {
+                topic: "Unify prompt delivery".to_string()
+            }),
+            "trimmed, and the spaces between words folded to one"
+        );
+        assert_eq!(
+            call("Add topic tool now").action,
+            Some(BridgeAction::SetTopic {
+                topic: "Add topic tool now".to_string()
+            })
+        );
+
+        for (topic, why) in [
+            ("", "empty"),
+            ("Refactor", "one word"),
+            ("Make the parser handle five", "five words"),
+        ] {
+            let h = call(topic);
+            assert!(h.action.is_none(), "{why}: {topic:?}");
+            let reply = parse(&h.reply.expect(why));
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(
+                reply["result"]["isError"] == true && text.contains("2") && text.contains("4"),
+                "{why}: the refusal names the rule: {text}"
+            );
+        }
+        let missing = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"set_topic","arguments":{}}}"#,
+        );
+        assert!(missing.action.is_none());
+        assert_eq!(parse(&missing.reply.unwrap())["result"]["isError"], true);
     }
 
     /// This description outlives context compaction (it rides every
@@ -1256,17 +1356,49 @@ mod tests {
         }
     }
 
+    /// The summary IS the report: the one thing the reviewer reads, so the
+    /// schema asks for the whole of it rather than a sentence with a card
+    /// of lists under it. And it is the only place a report is asked for.
     #[test]
-    fn summary_schema_asks_for_one_concise_outcome() {
+    fn summary_schema_asks_for_the_full_report_and_nothing_else_does() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
-        let desc = v["result"]["tools"][2]["inputSchema"]["properties"]["summary"]["description"]
+        let schema = &v["result"]["tools"][2]["inputSchema"];
+        let desc = schema["properties"]["summary"]["description"]
             .as_str()
             .unwrap()
             .to_lowercase();
-        assert!(desc.contains("one concise sentence"), "{desc}");
-        assert!(desc.contains("no file list"), "{desc}");
-        assert!(!desc.contains("bullet"), "{desc}");
+        assert!(desc.contains("full report"), "{desc}");
+        assert!(desc.contains("markdown"), "{desc}");
+        for asked in [
+            "what changed and where",
+            "verified",
+            "reverse-engineer",
+            "left out",
+        ] {
+            assert!(desc.contains(asked), "{asked}: {desc}");
+        }
+        assert!(desc.contains("activity log"), "{desc}");
+        assert!(
+            schema["properties"]["outputs"]["properties"]["completion_report"].is_null(),
+            "no structured report beside the summary: {schema}"
+        );
+    }
+
+    /// An agent on an older prompt still sends the structured report. It is
+    /// ignored rather than refused: the `done` it rides is a real outcome.
+    #[test]
+    fn a_done_still_carrying_a_completion_report_is_accepted_without_it() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"done","arguments":{"phase":"revise","status":"completed","summary":"addressed the notes","outputs":{"completion_report":{"decisions":["kept the old name"]}}}}}"#,
+        );
+        let report = h.report.expect("the outcome is kept");
+        assert_eq!(report.summary, "addressed the notes");
+        assert_eq!(
+            serde_json::to_value(&report.outputs).unwrap(),
+            serde_json::json!({}),
+            "nothing of the old report survives onto the record"
+        );
     }
 
     #[test]
@@ -1356,56 +1488,6 @@ mod tests {
             triage["required"].as_array().unwrap(),
             &vec!["based_on", "hunks"]
         );
-    }
-
-    #[test]
-    fn tools_list_schema_asks_for_the_completion_report_on_build_and_revise() {
-        let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
-        let v = parse(&h.reply.unwrap());
-        let completion = &v["result"]["tools"][2]["inputSchema"]["properties"]["outputs"]
-            ["properties"]["completion_report"];
-
-        assert_eq!(completion["type"], "object");
-        let described = completion["description"].as_str().unwrap();
-        assert!(described.contains("build"), "{described}");
-        assert!(described.contains("revise"), "{described}");
-        for field in ["critical_files", "risk_notes", "decisions", "skips"] {
-            assert_eq!(completion["properties"][field]["type"], "array", "{field}");
-            assert_eq!(
-                completion["properties"][field]["items"]["type"], "string",
-                "{field}"
-            );
-            assert!(
-                completion["properties"][field]["description"].is_string(),
-                "{field} says what belongs in it"
-            );
-        }
-    }
-
-    #[test]
-    fn a_partial_completion_report_leaves_the_other_lists_empty() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"done","arguments":{"phase":"revise","status":"completed","summary":"addressed the notes","outputs":{"completion_report":{"decisions":["kept the old name"]}}}}}"#,
-        );
-        let report = h.report.unwrap().outputs.completion_report.unwrap();
-        assert_eq!(report.decisions, vec!["kept the old name"]);
-        assert!(report.critical_files.is_empty());
-        assert!(report.risk_notes.is_empty());
-        assert!(report.skips.is_empty());
-    }
-
-    #[test]
-    fn a_malformed_completion_report_is_a_tool_error_not_a_silent_drop() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build","status":"completed","summary":"done","outputs":{"completion_report":{"critical_files":"src/main.rs"}}}}}"#,
-        );
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        assert!(v["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("invalid done arguments"));
-        assert!(h.report.is_none());
     }
 
     #[test]
@@ -1583,16 +1665,6 @@ mod tests {
             assert!(post.action.is_none(), "{arguments}");
             assert!(post.reply.is_some(), "{arguments}");
         }
-    }
-
-    #[test]
-    fn done_carries_the_structured_completion_report() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build","status":"completed","summary":"done","outputs":{"completion_report":{"critical_files":["src/main.rs"],"risk_notes":["migration"],"decisions":["kept API"],"skips":["load test"]}}}}}"#,
-        );
-        let report = h.report.unwrap().outputs.completion_report.unwrap();
-        assert_eq!(report.critical_files, vec!["src/main.rs"]);
-        assert_eq!(report.skips, vec!["load test"]);
     }
 
     #[test]
@@ -1958,7 +2030,6 @@ mod tests {
                 "list_projects",
                 "list_work",
                 "read_conversation",
-                "create_issue",
                 "dispatch_branch",
                 "ask_user",
                 "done",
@@ -1971,6 +2042,7 @@ mod tests {
                 "post_thread_message",
                 "done",
                 "search_conversation",
+                "set_topic",
             ],
             "the coding surface is unchanged by the router's arrival"
         );
@@ -1982,7 +2054,7 @@ mod tests {
     fn the_routers_done_reports_only_routing() {
         let h = router().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
-        let schema = &v["result"]["tools"][6]["inputSchema"];
+        let schema = &v["result"]["tools"][5]["inputSchema"];
         assert_eq!(schema["properties"]["phase"]["enum"], json!(["route"]));
         assert_eq!(
             schema["properties"]["status"]["enum"],
@@ -2031,12 +2103,6 @@ mod tests {
                 if entity_id == "run-1" && agent_id.as_deref() == Some("agent-2") && limit == 5
         ));
         assert!(matches!(
-            call("create_issue", r#"{"project_id":"proj-1","goal":"fix the redirect","rationale":"no branch names it"}"#).action,
-            Some(BridgeAction::CreateIssue { ref project_id, ref goal, ref rationale })
-                if project_id == "proj-1" && goal == "fix the redirect"
-                    && rationale.as_deref() == Some("no branch names it")
-        ));
-        assert!(matches!(
             call("dispatch_branch", r#"{"project_id":"proj-1","branch":"build/login","instruction":"finish the toast"}"#).action,
             Some(BridgeAction::DispatchBranch { ref project_id, ref branch, ref instruction, rationale: None })
                 if project_id == "proj-1" && branch.as_deref() == Some("build/login")
@@ -2047,6 +2113,12 @@ mod tests {
             Some(BridgeAction::AskUser { ref question, ref options })
                 if question == "which project?" && options.is_empty()
         ));
+        let retired = call(
+            "create_issue",
+            r#"{"project_id":"proj-1","goal":"fix the redirect"}"#,
+        );
+        assert!(retired.action.is_none());
+        assert_eq!(parse(&retired.reply.unwrap())["result"]["isError"], true);
     }
 
     /// The options a router offers beside its question reach the daemon whole:
@@ -2057,7 +2129,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"ask_user","arguments":{
                 "question":"which project?",
                 "options":[
-                    {"label":"File as an issue on Build","project_id":"proj-1","kind":"issue"},
+                    {"label":"New branch on Build","project_id":"proj-1","kind":"branch"},
                     {"label":"New branch on Do","project_id":"proj-2","kind":"branch","branch":"do/login"}
                 ]}}}"#,
         );
@@ -2069,9 +2141,9 @@ mod tests {
             options,
             vec![
                 crate::capture::CaptureOptionDraft {
-                    label: "File as an issue on Build".to_string(),
+                    label: "New branch on Build".to_string(),
                     project_id: Some("proj-1".to_string()),
-                    kind: Some(crate::capture::CaptureTarget::Issue),
+                    kind: Some(crate::capture::CaptureTarget::Branch),
                     branch: None,
                 },
                 crate::capture::CaptureOptionDraft {
@@ -2090,6 +2162,7 @@ mod tests {
     fn an_option_the_parser_cannot_read_is_a_tool_error() {
         for arguments in [
             r#"{"question":"which?","options":[{"kind":"issue"}]}"#,
+            r#"{"question":"which?","options":[{"label":"file it","kind":"issue"}]}"#,
             r#"{"question":"which?","options":[{"label":"go","kind":"pull_request"}]}"#,
             r#"{"question":"which?","options":"the first one"}"#,
         ] {
@@ -2138,7 +2211,7 @@ mod tests {
         assert_eq!(options["items"]["required"], json!(["label"]));
         assert_eq!(
             options["items"]["properties"]["kind"]["enum"],
-            json!(["issue", "branch"])
+            json!(["branch"])
         );
         assert_eq!(
             ask["inputSchema"]["required"],
@@ -2151,7 +2224,6 @@ mod tests {
     fn a_router_tool_call_missing_what_it_needs_is_a_tool_error() {
         for (name, arguments, wanted) in [
             ("read_conversation", "{}", "entity_id"),
-            ("create_issue", r#"{"project_id":"proj-1"}"#, "goal"),
             ("dispatch_branch", r#"{"instruction":"go"}"#, "project_id"),
             ("ask_user", r#"{"question":"   "}"#, "question"),
         ] {

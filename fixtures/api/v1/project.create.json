@@ -1,0 +1,30 @@
+{
+  "method": "project.create",
+  "since": "1.0.0",
+  "params": {
+    "name": "relay",
+    "base_branch": "main",
+    "parent": "~/code",
+    "remote": "git@github.com:ada/relay.git"
+  },
+  "result": {
+    "project_id": "proj-2",
+    "name": "relay",
+    "path": "/home/ada/code/relay",
+    "base_branch": "main",
+    "is_git": true,
+    "remote": "git@github.com:ada/relay.git",
+    "isolation": null,
+    "isolation_default": "worktree",
+    "isolation_effective": "worktree",
+    "isolation_available": {
+      "rift": false,
+      "reason": "rift is not installed on this device"
+    }
+  },
+  "errors": [
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
+}

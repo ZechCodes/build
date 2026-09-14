@@ -53,6 +53,9 @@ function createDeviceContext(deviceId) {
     rpc: (...asked) => (context.call ? context.call(...asked) : Promise.reject(new Error(deviceOfflineMark))),
     cacheScope: scopeFor(deviceId),
     chatRepository: null,
+    adapter: null, // the API adapter this bridge's greeting installed, or null
+    apiVersion: null, // the `api_version` it greeted with
+    unsupported: null, // "app" | "bridge" when no adapter here speaks to it
     offline: false, // written only by setContextOffline (connection.js owns the policy)
     offlineSince: null,
     peerLink: null,
@@ -73,15 +76,40 @@ export function contextFor(deviceId) {
 }
 
 /**
+ * What this device's greeting settled: the adapter its session installed, the
+ * API version it reported, and which side is behind when no adapter here speaks
+ * to it. Written in this one place, so every surface reads the same three
+ * fields whichever machine it is about.
+ */
+export function adoptBridgeSelection(context, selection, adapter) {
+  if (!context) return null;
+  context.adapter = adapter || null;
+  context.apiVersion = selection?.version || null;
+  context.unsupported = selection?.unsupported || null;
+  announceDeviceState(); // an unsupported bridge is a machine that cannot answer
+  return context;
+}
+
+/** A device whose greeting no longer stands: the next one settles it again. */
+function forgetBridgeSelection(context) {
+  context.adapter = null;
+  context.apiVersion = null;
+  context.unsupported = null;
+}
+
+/**
  * Whether this machine can be asked anything right now.
  *
  * Having a context is not the same as being able to reach the machine: one that
  * answered once keeps its context through an outage — the drafts and cached
  * reads held against it outlive the connection — and a link can name a machine
- * this client has never opened at all, which has none. Every surface that would
- * stand a frame up over a device asks here, so the question is asked one way.
+ * this client has never opened at all, which has none. A bridge speaking an API
+ * major nothing here claims is the third way: the socket is up, and every answer
+ * off it would be a guess at a shape. Every surface that would stand a frame up
+ * over a device asks here, so the question is asked one way.
  */
-export const canAnswer = (context) => Boolean(context && context.call && !context.offline);
+export const canAnswer = (context) =>
+  Boolean(context && context.call && !context.offline && !context.unsupported);
 
 /** Every registered device, offline ones included, in App.devices order —
  *  devices the list has not caught up with yet keep their adoption order last. */
@@ -107,6 +135,9 @@ export function adoptDeviceSession(session) {
   context.call = session.call;
   context.offline = false;
   context.offlineSince = null;
+  // A reconnect re-greets, and the bridge answering it may not be the version
+  // that answered last time: what the last greeting settled is not this one's.
+  forgetBridgeSelection(context);
   bindRepository(context, session.call);
   announceDeviceState(); // this device can answer again
   return context;

@@ -8,9 +8,6 @@
 //! outside `.build/`?* — so the UI can flag a planning agent that wrote code.
 
 use std::path::Path;
-use std::time::Duration;
-
-use tokio::sync::mpsc;
 
 /// Where plan-phase work is supposed to stay confined.
 pub const PLAN_SCOPE_PREFIX: &str = ".build/";
@@ -213,7 +210,9 @@ pub fn diff_between_commits(
     let completion = repo.find_commit(git2::Oid::from_str(completion_sha)?)?;
     let start_tree = start.tree()?;
     let completion_tree = completion.tree()?;
-    let diff = repo.diff_tree_to_tree(Some(&start_tree), Some(&completion_tree), None)?;
+    let mut opts = canonical_patch_options();
+    let diff =
+        repo.diff_tree_to_tree(Some(&start_tree), Some(&completion_tree), Some(&mut opts))?;
     worktree_diff_from_git_diff(&diff)
 }
 
@@ -239,14 +238,30 @@ fn delta_path(delta: &git2::DiffDelta) -> String {
         .unwrap_or_default()
 }
 
+/// Pin the patch path vocabulary expected by review clients and hunk parsing.
+pub(crate) fn canonical_patch_options() -> git2::DiffOptions {
+    let mut opts = git2::DiffOptions::new();
+    // Review clients and hunk identity both consume Git's conventional a/b
+    // paths. Repository and global diff prefix settings must not change that
+    // wire format.
+    opts.old_prefix("a/").new_prefix("b/");
+    opts
+}
+
 /// The options both dirty-workdir paths share. `with_untracked_content` is the
 /// one difference: the review surface loads new files so it can print them, the
 /// stat surface never does — it counts their lines off disk instead.
+///
+/// The `a/` and `b/` prefixes are pinned: libgit2 otherwise honours the
+/// machine's own `diff.mnemonicPrefix`, and a hunk id hashed over `i/` and
+/// `w/` would not be the id every other device computes.
 fn dirty_workdir_options(with_untracked_content: bool) -> git2::DiffOptions {
-    let mut opts = git2::DiffOptions::new();
+    let mut opts = canonical_patch_options();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(with_untracked_content)
+        .old_prefix("a")
+        .new_prefix("b")
         .max_size(LARGE_FILE_BYTES as i64);
     opts
 }
@@ -269,6 +284,32 @@ pub fn key_against_base(worktree_path: &Path, base_branch: &str) -> Result<Strin
     let repo = git2::Repository::open(worktree_path)?;
     let tree = base_tree(&repo, base_branch)?;
     dirty_diff_key(&repo, Some(&tree))
+}
+
+/// The complete dirty-worktree delta against an exact commit, or the empty
+/// tree when `base` is absent. This is used by publication-aware review,
+/// whose baseline is resolved from remote-tracking refs rather than a revspec.
+pub fn diff_against_commit(
+    worktree_path: &Path,
+    base: Option<git2::Oid>,
+) -> Result<WorktreeDiff, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let tree = base
+        .map(|oid| repo.find_commit(oid).and_then(|commit| commit.tree()))
+        .transpose()?;
+    diff_tree_to_dirty_workdir(&repo, tree.as_ref())
+}
+
+/// Cheap identity corresponding exactly to [`diff_against_commit`].
+pub fn key_against_commit(
+    worktree_path: &Path,
+    base: Option<git2::Oid>,
+) -> Result<String, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let tree = base
+        .map(|oid| repo.find_commit(oid).and_then(|commit| commit.tree()))
+        .transpose()?;
+    dirty_diff_key(&repo, tree.as_ref())
 }
 
 pub fn key_against_merge_base(
@@ -683,67 +724,6 @@ pub fn hunk_ids(patch: &str) -> Vec<String> {
         .collect()
 }
 
-/// A live, debounced stream of recomputed diffs for a worktree. Holds the fs
-/// watcher and the worker thread alive; dropping it stops watching.
-pub struct DiffWatcher {
-    _watcher: notify::RecommendedWatcher,
-}
-
-/// Begin watching `worktree_path`; every burst of filesystem changes is debounced
-/// by `debounce`, then a freshly recomputed [`WorktreeDiff`] is sent on the
-/// returned channel. The first diff is sent immediately so subscribers start with
-/// current state.
-pub fn watch(
-    worktree_path: &Path,
-    base_branch: &str,
-    debounce: Duration,
-) -> Result<(DiffWatcher, mpsc::UnboundedReceiver<WorktreeDiff>), DiffError> {
-    use notify::Watcher;
-
-    let (raw_tx, raw_rx) = std::sync::mpsc::channel::<()>();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = raw_tx.send(());
-        }
-    })
-    .map_err(notify_to_git)?;
-    watcher
-        .watch(worktree_path, notify::RecursiveMode::Recursive)
-        .map_err(notify_to_git)?;
-
-    let (diff_tx, diff_rx) = mpsc::unbounded_channel();
-
-    // Send the current diff straight away so a subscriber starts from truth.
-    if let Ok(initial) = diff_against_base(worktree_path, base_branch) {
-        let _ = diff_tx.send(initial);
-    }
-
-    let worktree_path = worktree_path.to_path_buf();
-    let base_branch = base_branch.to_string();
-    std::thread::spawn(move || {
-        // Block for the first event of a burst, then drain until quiet for
-        // `debounce`, recompute once, and emit.
-        while raw_rx.recv().is_ok() {
-            while raw_rx.recv_timeout(debounce).is_ok() {}
-            match diff_against_base(&worktree_path, &base_branch) {
-                Ok(diff) => {
-                    if diff_tx.send(diff).is_err() {
-                        break; // receiver dropped
-                    }
-                }
-                Err(_) => continue,
-            }
-        }
-    });
-
-    Ok((DiffWatcher { _watcher: watcher }, diff_rx))
-}
-
-/// notify and git2 errors don't share a type; carry the message through git2's.
-fn notify_to_git(err: notify::Error) -> DiffError {
-    DiffError::Git(git2::Error::from_str(&err.to_string()))
-}
-
 /// The primary checkout's uncommitted delta: HEAD's tree vs the working
 /// directory and index, untracked included — staged + unstaged + new files.
 /// This is the "main worktree" review surface; committed work is upstream's
@@ -1094,6 +1074,61 @@ mod tests {
             "a path nobody asked for: {untracked}"
         );
         assert!(patches[0].patch.contains("-gone"));
+    }
+
+    #[test]
+    fn review_patches_keep_canonical_prefixes_under_local_diff_config() {
+        let mut hunk_ids_by_config = Vec::new();
+        for (key, value) in [("diff.mnemonicPrefix", "true"), ("diff.noprefix", "true")] {
+            let (_dir, repo) = init_repo();
+            git_in(&repo, &["config", "--local", key, value]);
+            let start = run_git(&repo, &["rev-parse", "HEAD"])
+                .unwrap()
+                .trim()
+                .to_string();
+            std::fs::write(repo.join("README.md"), "# project\nline\nreviewed\n").unwrap();
+
+            let aggregate = diff_uncommitted(&repo).unwrap();
+            assert!(
+                aggregate
+                    .patch()
+                    .contains("diff --git a/README.md b/README.md"),
+                "{key} changed the aggregate patch:\n{}",
+                aggregate.patch()
+            );
+            let aggregate_hunks = patch_hunks(aggregate.patch());
+            assert_eq!(aggregate_hunks.len(), 1, "{}", aggregate.patch());
+            assert_eq!(aggregate_hunks[0].path, "README.md");
+
+            let per_file = patch_for_paths(&repo, &["README.md".to_string()]).unwrap();
+            assert_eq!(per_file.len(), 1);
+            assert!(
+                per_file[0]
+                    .patch
+                    .contains("diff --git a/README.md b/README.md"),
+                "{key} changed the per-file patch:\n{}",
+                per_file[0].patch
+            );
+            assert_eq!(hunk_ids(&per_file[0].patch), hunk_ids(aggregate.patch()));
+            hunk_ids_by_config.push(hunk_ids(aggregate.patch()));
+
+            git_in(&repo, &["add", "README.md"]);
+            git_in(&repo, &["commit", "-m", "reviewed"]);
+            let completion = run_git(&repo, &["rev-parse", "HEAD"])
+                .unwrap()
+                .trim()
+                .to_string();
+            let history = diff_between_commits(&repo, &start, &completion).unwrap();
+            assert!(
+                history
+                    .patch()
+                    .contains("diff --git a/README.md b/README.md"),
+                "{key} changed the history patch:\n{}",
+                history.patch()
+            );
+        }
+
+        assert_eq!(hunk_ids_by_config[0], hunk_ids_by_config[1]);
     }
 
     #[test]
@@ -1555,33 +1590,5 @@ diff --git a/app.py b/app.py
                 assert_eq!(hunk.header, want["header"].as_str().unwrap(), "{name}");
             }
         }
-    }
-
-    #[tokio::test]
-    async fn watcher_pushes_a_recomputed_diff_on_change() {
-        let (dir, repo) = init_repo();
-        // Keep the tempdir alive for the whole test.
-        let _keep = &dir;
-
-        let (_watcher, mut rx) = watch(&repo, "main", Duration::from_millis(50)).unwrap();
-
-        // First message is the immediate baseline (empty).
-        let initial = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("baseline diff arrives")
-            .unwrap();
-        assert_eq!(initial.stat(), DiffStat::default());
-
-        // Touch a file; expect a debounced, recomputed diff that sees it.
-        std::fs::write(repo.join("changed.txt"), "x\n").unwrap();
-        let updated = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("change diff arrives")
-            .unwrap();
-        assert!(
-            updated.files().iter().any(|f| f.path == "changed.txt"),
-            "watcher should report the new file, got {:?}",
-            updated.files()
-        );
     }
 }

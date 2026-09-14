@@ -1,4 +1,4 @@
-// Review prioritization is an account choice held by the bridge. The control
+// Review prioritization is a device choice held by the bridge. The control
 // paints only a confirmed value: an older bridge that does not return the
 // setting leaves it unavailable instead of silently turning the feature on.
 

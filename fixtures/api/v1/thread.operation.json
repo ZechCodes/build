@@ -1,0 +1,21 @@
+{
+  "method": "thread.operation",
+  "since": "1.0.0",
+  "params": {
+    "entity_id": "run-7",
+    "operation_id": "operation-91",
+    "agent_id": "agent-1"
+  },
+  "result": {
+    "operation_id": "operation-91",
+    "method": "thread.post",
+    "entity_id": "run-7",
+    "agent_id": "agent-1",
+    "conversation_id": "conversation-3",
+    "choice_revision": 4,
+    "posted_sequence": 39,
+    "message_start_sequence": 39,
+    "status": "delivered"
+  },
+  "errors": ["not_found", "invalid_params", "internal"]
+}

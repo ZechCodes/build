@@ -243,16 +243,11 @@ export function branchOptions(items, projectId) {
  *  exists and nothing runs until the first message; a branch is dispatched in
  *  one call, which is worktree, agent and first message together. */
 export function manualRoute({ kind, projectId, text, branch = "", agentParams = {} }) {
-  if (kind === "branch") {
-    const named = String(branch || "").trim();
-    return {
-      method: "branch.dispatch",
-      params: { project_id: projectId, instruction: text, ...(named ? { branch: named } : {}), ...agentParams },
-    };
-  }
+  void kind; // retained in the input shape for queued legacy drafts
+  const named = String(branch || "").trim();
   return {
-    method: "issue.create",
-    params: { goal: text, project_id: projectId, dispatch: false, ...agentParams },
+    method: "branch.dispatch",
+    params: { project_id: projectId, instruction: text, ...(named ? { branch: named } : {}), ...agentParams },
   };
 }
 
@@ -262,13 +257,10 @@ export function manualRoute({ kind, projectId, text, branch = "", agentParams = 
  *  after this browser has stopped waiting for it; the board carries the row
  *  either way. */
 export function manualRouteDestination(kind, created, projectId) {
+  void kind;
   const made = created || {};
   const project = made.project_id || projectId;
-  if (kind === "branch") {
-    return made.branch ? { name: "branch", projectId: project, branch: made.branch, tab: "changes" } : null;
-  }
-  const issueId = made.issue_id || made.plan_id;
-  return issueId ? { name: "issue", projectId: project, id: issueId } : null;
+  return made.branch ? { name: "branch", projectId: project, branch: made.branch, tab: "changes" } : null;
 }
 
 /** The line the open box asks with: the machine the capture is going to, when

@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::TurnText;
+use crate::operation::{DeliveryIntent, OperationPayload, OperationReceipt, OperationStatus};
 
 fn turn(owner: &str, agent: &str, says: bool, survives_refusal: bool) -> PendingAgentTurn {
     PendingAgentTurn {
@@ -90,6 +91,79 @@ fn held_and_ready_turns_each_keep_their_order() {
             .collect::<Vec<_>>(),
         ["held-1", "held-2"]
     );
+}
+
+fn delivery_receipt(operation_id: &str) -> OperationReceipt {
+    OperationReceipt {
+        operation_id: operation_id.into(),
+        method: crate::operation::THREAD_POST_METHOD.into(),
+        entity_id: "owner".into(),
+        agent_id: "agent".into(),
+        conversation_id: "conversation-agent".into(),
+        choice_revision: 0,
+        posted_sequence: 1,
+        message_start_sequence: 1,
+        status: OperationStatus::Queued,
+        execution_error: None,
+        request_hash: "hash".into(),
+        delivery: Some(DeliveryIntent {
+            root: "/tmp/stage8-queue".into(),
+            owner_id: "owner".into(),
+            agent_id: "agent".into(),
+            model_choice: crate::models::ModelChoice::default(),
+            choice_revision: 0,
+            interrupt: false,
+            payload: Some(OperationPayload {
+                start_sequence: 1,
+                end_sequence: 1,
+                messages: Vec::new(),
+                prior_context: String::new(),
+            }),
+        }),
+    }
+}
+
+#[test]
+fn attaching_an_operation_rebuilds_one_scoped_cold_protocol() {
+    let mut queue = DeliveryQueue::default();
+    let mut pending = turn("owner", "agent", true, false);
+    pending.say = Some(TurnText {
+        cold: crate::orchestrator::conversation_prompt("do planned work"),
+        warm: "do planned work".into(),
+    });
+    queue.enqueue(pending);
+
+    queue
+        .attach_plan_operation(&delivery_receipt("operation-7"))
+        .unwrap();
+
+    let said = queue.queued_last().unwrap().said();
+    assert_eq!(said.cold.matches("Build conversation protocol:").count(), 1);
+    assert!(said.cold.contains("do planned work"), "{}", said.cold);
+    assert!(
+        said.cold.contains("`operation_id` set to `operation-7`"),
+        "{}",
+        said.cold
+    );
+    assert!(!said.cold.contains("process every unread Issue message"));
+    assert_eq!(said.warm.matches("Build conversation protocol:").count(), 0);
+}
+
+#[test]
+fn recovered_operation_keeps_cold_start_protocol_and_a_warm_exact_packet() {
+    let receipt = delivery_receipt("operation-recovered");
+    let turn = PendingAgentTurn::for_delivery_operation(&receipt).unwrap();
+    let said = turn.said();
+    assert!(said.cold.contains("`set_topic`"), "{}", said.cold);
+    assert!(
+        said.cold
+            .contains("`operation_id` set to `operation-recovered`"),
+        "{}",
+        said.cold
+    );
+    assert!(!said.cold.contains("process every unread Issue message"));
+    assert!(!said.warm.contains("Build conversation protocol:"));
+    assert!(said.warm.contains("Process only reviewer operation"));
 }
 
 // Runtime integration retains these existing tests because a callback-free core

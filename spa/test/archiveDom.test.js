@@ -14,6 +14,17 @@ const flush = () => new Promise((done) => setTimeout(done, 0));
 // The account's archive spans the account: every machine is asked what it
 // filed away, and the rows come back in one list, newest first, each carrying
 // the machine that answered for it.
+const workspaceItem = {
+  kind: "workspace",
+  workspace_id: "workspace-1",
+  project_id: "p1",
+  project: "relaydb",
+  title: "Clean checkout",
+  state: "finished",
+  finished_at: "2026-08-13T18:00:00Z",
+  worktree_path: "/work/clean",
+};
+
 const issueItem = {
   kind: "issue",
   project_id: "p2",
@@ -91,6 +102,14 @@ describe("the account archive page", () => {
     expect(rows()[1].textContent).toContain("Archived");
   });
 
+  it("opens a finished workspace on the machine it was filed on", async () => {
+    filed["dev-1"] = [workspaceItem];
+    await renderAccount();
+    await flush();
+    rows()[0].click();
+    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/workspace-1/changes");
+  });
+
   it("keeps the machines' records apart when both name a record the same", async () => {
     filed["dev-2"] = [{ ...issueItem, project: "relaydb", finished_at: "2026-08-11T09:30:00Z" }];
     await renderAccount();
@@ -108,18 +127,18 @@ describe("the account archive page", () => {
   it("opens one record at a time, under its own row", async () => {
     await renderAccount();
     await flush();
-    rows()[1].click();
+    rows()[2].click();
     let record = document.querySelector(".archive-record");
     expect(record.textContent).toContain("/wt/login");
     expect(record.textContent).toContain("abc1234");
     expect(record.querySelector("button")).toBeNull();
 
-    rows()[0].click();
+    rows()[1].click();
     expect(document.querySelectorAll(".archive-record")).toHaveLength(1);
     record = document.querySelector(".archive-record");
     expect(record.textContent).toContain("3 stages");
 
-    rows()[0].click();
+    rows()[1].click();
     expect(document.querySelector(".archive-record")).toBeNull();
   });
 
@@ -140,13 +159,13 @@ describe("the account archive page", () => {
     vi.useFakeTimers();
     await renderAccount();
     await vi.advanceTimersByTimeAsync(0);
-    rows()[1].click(); // a record open under it
-    const row = rows()[1];
+    rows()[2].click(); // a record open under it
+    const row = rows()[2];
     const record = document.querySelector(".archive-record");
 
     await vi.advanceTimersByTimeAsync(15000 + 10);
 
-    expect(rows()[1], "the rows were rebuilt by a tick that changed nothing").toBe(row);
+    expect(rows()[2], "the rows were rebuilt by a tick that changed nothing").toBe(row);
     expect(document.querySelector(".archive-record")).toBe(record);
     vi.useRealTimers();
   });
@@ -160,7 +179,7 @@ describe("the account archive page", () => {
 
     await vi.advanceTimersByTimeAsync(15000 + 10);
 
-    expect(rows()).toHaveLength(1);
+    expect(rows()).toHaveLength(2);
     vi.useRealTimers();
   });
 

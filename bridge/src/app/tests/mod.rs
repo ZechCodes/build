@@ -197,6 +197,7 @@ fn req(method: &str, params: Value) -> Frame {
 mod support;
 use support::*;
 
+mod api_facade;
 mod board;
 mod configuration;
 mod conversations;
@@ -212,3 +213,4 @@ mod rtc;
 mod runtime;
 mod shell;
 mod workflow;
+mod workspaces;

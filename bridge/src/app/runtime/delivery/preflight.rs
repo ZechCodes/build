@@ -9,8 +9,7 @@ use crate::timing::FrameTimer;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
-pub(in crate::app) const NEW_THREAD_MESSAGES_PROMPT: &str =
-    "New reviewer messages are available. Call `read_unread_messages` now, then act on every unread message. Reply with `post_thread_message` only when the conversation policy requires a written response.";
+pub(in crate::app) use crate::orchestrator::NEW_THREAD_MESSAGES_PROMPT;
 
 /// What a read has to tell the agent about the indicator it just started.
 /// Reading stamps `seen_at`, which is what the reviewer sees as "Working" with
@@ -353,7 +352,6 @@ impl AppState {
         crate::orchestrator::append_durable_conversation(
             cold.to_string(),
             &self.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES),
-            thread,
         )
     }
 }

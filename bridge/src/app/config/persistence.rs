@@ -10,7 +10,7 @@ use std::io::Write as _;
 /// with, spelled once so an operator reading the log and a human reading the
 /// thread are told the same thing in the same words.
 pub(in crate::app) fn isolation_downgrade_note(reason: &str) -> String {
-    format!("Created a git worktree: copy-on-write isolation is unavailable here — {reason}")
+    format!("Created a git worktree: Rift isolation is unavailable here — {reason}")
 }
 
 impl AppState {
@@ -41,6 +41,15 @@ impl AppState {
                 let mut entry = json!({
                     "path": p.repo_path.display().to_string(),
                     "base_branch": p.base_branch,
+                    "sources": p.sources.iter().map(|source| json!({
+                        "id": source.id,
+                        "name": source.name,
+                        "mount": source.mount,
+                        "path": source.path.display().to_string(),
+                        "is_git": source.is_git,
+                        "base_branch": source.base_branch,
+                        "remote": source.remote,
+                    })).collect::<Vec<_>>(),
                 });
                 if let Some(isolation) = p.isolation {
                     entry["isolation"] = json!(isolation);

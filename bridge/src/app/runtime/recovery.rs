@@ -1,19 +1,15 @@
 #[cfg(test)]
 use crate::app::OffLockGate;
 use crate::app::{
-    err, finish_git_steps_are_complete, next_unsettled_stage, plan_state_str,
-    recovery_agent_prompt, run_state_str, AppState, ImplementationCaller, OffLockJob,
-    PendingAgentTurn, SESSION_DIED_SUMMARY,
+    err, next_unsettled_stage, plan_state_str, recovery_agent_prompt, run_state_str, AppState,
+    ImplementationCaller, OffLockJob, PendingAgentTurn, SESSION_DIED_SUMMARY,
 };
 use crate::mcp::{DoneReport, DoneStatus};
 use crate::operation::{OperationReceipt, OperationStatus};
 use crate::orchestrator::{ActivePlan, ActiveRun};
 use crate::plan::{ImplementationIntent, PlanEvent};
 use crate::run::{RunEvent, RunState, StageProgressState, StagePublication};
-use crate::store::{
-    now_rfc3339, PersistedArchivedWorktree, PersistedPlan, PersistedRun, Store,
-    WorktreeFinishStatus,
-};
+use crate::store::{now_rfc3339, PersistedArchivedWorktree, PersistedPlan, PersistedRun, Store};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -251,14 +247,13 @@ impl AppState {
                 .collect(),
         );
         self.recover_captures(captures)?;
-        self.recover_completed_worktree_finishes();
         self.restore_plans_before_runs(plans, runs)?;
         self.restore_operations(operations);
         self.seed_conversation_attention_sequences();
         self.seed_anchors_for_records_without_one();
         self.migrate_legacy_dismissals();
         self.close_recovered_working_intervals();
-        self.resume_stored_issue_schedulers()
+        Ok(())
     }
 
     pub(in crate::app) fn restore_operations(&mut self, operations: Vec<OperationReceipt>) {
@@ -281,19 +276,6 @@ impl AppState {
         }
         for record in runs {
             self.recover_run(record)?;
-        }
-        Ok(())
-    }
-
-    pub(in crate::app) fn resume_stored_issue_schedulers(&mut self) -> Result<(), String> {
-        let issue_ids = self
-            .plans
-            .iter()
-            .filter(|(_, issue)| issue.plan.implementation_intent != ImplementationIntent::None)
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        for issue_id in issue_ids {
-            self.advance_issue_scheduler_here(&issue_id, &json!({ "issue_id": issue_id }))?;
         }
         Ok(())
     }
@@ -726,40 +708,6 @@ impl AppState {
         }
     }
 
-    pub(in crate::app) fn recover_completed_worktree_finishes(&mut self) {
-        let recoverable = self
-            .board
-            .archived_values()
-            .filter(|record| {
-                record.status == WorktreeFinishStatus::Pending
-                    && finish_git_steps_are_complete(record)
-            })
-            .map(|record| record.worktree_id.clone())
-            .collect::<Vec<_>>();
-        for worktree_id in recoverable {
-            let mut record = self
-                .board
-                .archived(&worktree_id)
-                .expect("collected archived worktree must remain present")
-                .clone();
-            record.status = WorktreeFinishStatus::Archived;
-            record.archived_at = Some(now_rfc3339());
-            let result = self
-                .store
-                .as_ref()
-                .expect("recovery only runs with a store")
-                .save_archived_worktree(&record);
-            match result {
-                Ok(()) => {
-                    self.board.insert_archived(record);
-                }
-                Err(error) => {
-                    eprintln!("recover worktree finish {worktree_id}: {error}");
-                }
-            }
-        }
-    }
-
     /// Hand a run whose checkout could not be put back to the verified recovery
     /// agent: a nonce-bound attempt on the record, the prompt that asks the
     /// agent to prove the exact lineage, and the Issue told what happened. What
@@ -1121,19 +1069,9 @@ impl AppState {
                     return;
                 }
             }
-            if succeeded {
-                // The stage this recovery was for is next, and reaching it
-                // cuts or puts back a checkout. The socket that carried this
-                // report runs that git with the guard released, as a frame
-                // does; a refusal is already written onto the Issue here.
-                if let Err(error) =
-                    self.defer_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }), None)
-                {
-                    eprintln!("recovery {run_id}: scheduler blocked: {error}");
-                }
-            } else if let Err(error) = self.refresh_issue_scheduler_activity(&issue_id) {
-                eprintln!("recovery {run_id}: scheduler refresh failed: {error}");
-            }
+            // Issue scheduling is retired. Recovery keeps the legacy record
+            // and its checkout outcome, but never starts another stage.
+            let _ = succeeded;
         }
     }
 

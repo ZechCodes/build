@@ -181,13 +181,21 @@ afterEach(() => {
 });
 
 describe("panelHeadHtml's surface menu", () => {
+  it("keeps the title as text beside the selected harness icon", () => {
+    const html = panelHeadHtml("My agent", "chat", { provider: "codex_app_server" });
+    document.body.innerHTML = html;
+
+    expect(document.querySelector(".rail-who").textContent).toBe("My agent");
+    expect(document.querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
+  });
+
   it("writes no menu at all when the agent has nothing to show", () => {
     const html = panelHeadHtml("Claude Code", "chat", { surfaceOptions: [] });
     expect(html).toContain("rail-surface-menu");
     expect(html).not.toContain("splitbtn");
   });
 
-  it("writes one item per kind, beside the remove and collapse buttons", () => {
+  it("places the vertical menu after Done without a collapse control", () => {
     const html = panelHeadHtml("Claude Code", "chat", {
       removable: true,
       surfaceOptions: [{ id: SHELL_ENTRY_KIND, label: "Shells", description: "1 running" }],
@@ -195,8 +203,10 @@ describe("panelHeadHtml's surface menu", () => {
     expect(html).toContain(`data-action="${SHELL_ENTRY_KIND}"`);
     expect(html).toContain("Shells");
     expect(html).toContain("1 running");
-    expect(html.indexOf("rail-surface-menu")).toBeLessThan(html.indexOf("rail-remove"));
-    expect(html.indexOf("rail-remove")).toBeLessThan(html.indexOf("rail-collapse"));
+    expect(html.indexOf("rail-remove")).toBeLessThan(html.indexOf("rail-surface-menu"));
+    expect(html).toContain(">Done</button>");
+    expect(html).toContain("⋮");
+    expect(html).not.toContain("rail-collapse");
   });
 });
 
@@ -271,7 +281,7 @@ describe("the conversation header's menu", () => {
   it("is one plain icon button carrying the three dots alone", async () => {
     await mount();
     expect(menuCaret().classList.contains("iconbtn")).toBe(true);
-    expect(menuCaret().textContent.trim()).toBe("⋯");
+    expect(menuCaret().textContent.trim()).toBe("⋮");
     expect(menuCaret().closest(".splitbtn").classList.contains("splitbtn-icon")).toBe(true);
   });
 
@@ -463,7 +473,7 @@ describe("collapsing the panel a surface stands over", () => {
     await poll(finishedShells());
     expect(timers.count()).toBe(1);
 
-    panel().querySelector(".rail-collapse").click();
+    document.querySelector(".rail-bubble").click();
     await flush();
 
     expect(document.getElementById("rail-panel")).toBe(null);
@@ -481,7 +491,8 @@ describe("the overlay's own height", () => {
     menuItem(SHELL_ENTRY_KIND).click();
 
     expect(overlay().closest(".rail-surfaces-viewer")).toBe(null);
-    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:34vh/);
+    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:min\(46vh, 420px\)/);
+    expect(shellCss).toMatch(/\.surface-popover-body\s*\{[^}]*overflow-y:auto/);
     expect(shellCss).not.toContain(".modal-surface");
     expect(appCss).toMatch(/\.modal\.modal-surface\s*\{[^}]*max-height/);
     expect(appCss).toMatch(/\.modal-surface\s+\.surface-overlay-body\s*\{[^}]*overflow-y:auto/);

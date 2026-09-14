@@ -7,16 +7,16 @@
    Tokens only — this file states geometry, styles.css states the palette. */
 :root {
   --inbox-rail:288px;   /* the inbox rail's docked width */
+  --inbox-space:var(--inbox-rail);
+  --global-head:48px;
   --agent-strip:46px;   /* the bubble strip's width — the rail's always-there half */
   --console-bar:34px;   /* the collapsed console bar, and the open one's head */
   --console-half:38vh;  /* the console at half the view */
   --toolbar-h:38px;     /* the view column's top row — what a full console clears */
   --inbox-toggle:28px;  /* both rail toggles' width — the head's and the floating one */
-  /* What the collapsed toolbar clears: the floating toggle's 10px offset, its
-     box, and the head's own 8px gap — less the name button's inset, so the
-     project name starts the same gap from the toggle that "Build" does when
-     the rail is docked. */
-  --inbox-open-clear:calc(10px + var(--inbox-toggle) + 8px - var(--tbsel-inset));
+  /* What the collapsed toolbar clears: the floating toggle's 12px offset, its
+     box, and the 8px gap before the toolbar content. */
+  --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
 }
 
 /* The frame is viewport-locked (styles.css body): the page never scrolls, each
@@ -25,10 +25,18 @@
 #shell {
   flex:1 1 auto; /* the body is a viewport-locked flex column; the shell is the row that takes all of it */
   display:grid;
-  grid-template-columns:auto minmax(0, 1fr);
+  grid-template-columns:var(--inbox-space) minmax(0, 1fr);
   min-height:0;
-  overflow:hidden;
+  overflow:hidden; position:relative;
+  transition:grid-template-columns 240ms cubic-bezier(.2,.8,.2,1);
 }
+body.inbox-collapsed { --inbox-space:0px; }
+
+#global-controls { position:absolute; z-index:48;
+  top:0; left:env(safe-area-inset-left, 0px);
+  height:var(--toolbar-h); display:flex; align-items:center;
+  padding:0 12px; pointer-events:none; }
+#global-controls > * { pointer-events:auto; }
 
 /* ---- inbox rail (left) ---- */
 /* Track 1 by name, not by order: the rail leaves the flow whenever it is
@@ -38,76 +46,86 @@
 #inbox-rail {
   grid-column:1;
   width:var(--inbox-rail);
+  height:calc(100% - var(--global-head)); margin-top:var(--global-head);
   display:flex; flex-direction:column; min-height:0;
-  background:var(--bg);
-  border-right:1px solid var(--line);
-  padding:calc(10px + env(safe-area-inset-top, 0px)) 10px
+  background:var(--panel);
+  border:1px solid var(--line3, var(--line));
+  padding:10px 10px
     calc(10px + env(safe-area-inset-bottom, 0px))
     calc(10px + env(safe-area-inset-left, 0px));
 }
-body.inbox-collapsed #inbox-rail { display:none; }
-.inbox-head { display:flex; align-items:center; gap:8px; margin:0 2px 10px; }
+body.inbox-collapsed #inbox-rail { position:absolute; z-index:46;
+  top:var(--global-head);
+  left:calc(12px + env(safe-area-inset-left, 0px)); bottom:auto;
+  width:min(var(--inbox-rail), calc(100vw - 24px - env(safe-area-inset-left, 0px)));
+  height:auto; max-height:calc(100dvh - var(--global-head) - 12px); margin:0;
+  padding:10px; border:1px solid var(--line3, var(--line)); border-radius:10px;
+  box-shadow:0 18px 48px var(--shadow); opacity:0; visibility:hidden;
+  transform:translateY(-6px) scale(.985); transform-origin:top left;
+  pointer-events:none; transition:opacity 150ms ease, transform 180ms ease, visibility 0s linear 180ms; }
+body.inbox-collapsed.inbox-popover-open #inbox-rail,
+body.inbox-collapsed.inbox-peek #inbox-rail,
+body.inbox-transitioning #inbox-rail { opacity:1; visibility:visible; transform:none;
+  pointer-events:auto; transition-delay:0s; }
+body.inbox-collapsed.inbox-popover-open #inbox-rail::before,
+body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absolute;
+  left:8px; top:-6px; width:10px; height:10px; transform:rotate(45deg);
+  border-left:1px solid var(--line3, var(--line)); border-top:1px solid var(--line3, var(--line));
+  background:var(--panel); }
+.inbox-head { display:flex; align-items:center; gap:8px; min-height:30px; margin:0 2px 10px; }
 /* One width for the toggle wherever it stands — it is what the collapsed
    toolbar's clearance is derived from. */
 #inbox-open, #inbox-collapse { width:var(--inbox-toggle); }
-.inbox-head .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
+#inbox-open svg, #inbox-collapse svg { display:block; width:17px; height:17px;
+  fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 /* The rail's two faces, one icon each at the head's right edge; the standing
    one is pressed. */
-.inbox-views { margin-left:auto; display:flex; gap:2px; }
+.inbox-views { display:flex; gap:2px; padding:2px; border-radius:8px; background:var(--line); }
 .inbox-view svg { width:16px; height:16px; display:block; }
 .inbox-view.on { color:var(--accent); background:var(--accent-soft); }
+.inbox-new-project { display:flex; align-items:center; justify-content:center; gap:4px;
+  min-width:0; height:28px; margin-left:auto; padding:0 7px; border:1px solid var(--line);
+  border-radius:7px; background:var(--panel); color:var(--dim); font:inherit;
+  font-size:11.5px; cursor:pointer; }
+.inbox-new-project:hover { color:var(--ink2); border-color:var(--dim); }
+.inbox-new-project svg { width:14px; height:14px; flex:none; }
+#inbox-collapse { display:grid; height:var(--inbox-toggle); padding:0; place-items:center; }
 #inbox-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding-bottom:12px; }
 .inbox-foot { border-top:1px solid var(--line); padding-top:8px; display:flex;
   flex-direction:column; gap:8px; }
 .inbox-foot #devpick { max-width:100%; }
 /* The floating reopen toggle, only while the rail is away. */
-#inbox-open { display:none; position:fixed;
-  top:calc(10px + env(safe-area-inset-top, 0px));
-  left:calc(10px + env(safe-area-inset-left, 0px)); z-index:45;
-  height:var(--inbox-toggle); padding:0; overflow:hidden;
-  align-items:center; justify-content:center;
+#inbox-open { position:relative; display:grid;
+  height:var(--inbox-toggle); padding:0; overflow:visible;
+  place-items:center;
   grid-template:1fr / 1fr;
-  background:var(--panel); border:1px solid var(--line);
-  transition:background 180ms ease, border-color 180ms ease, border-radius 220ms ease; }
-body.inbox-collapsed #inbox-open { display:grid; }
+  background:none; border:0;
+  transition:color 180ms ease; }
+#inbox-open:hover { background:none; color:var(--ink2); }
 .inbox-open-icon, .inbox-open-count { grid-area:1 / 1; transition:opacity 180ms ease, transform 220ms ease; }
+.inbox-open-icon { display:grid; place-items:center; }
 .inbox-open-count { display:flex; align-items:center; justify-content:center;
   align-self:stretch; justify-self:stretch; border-radius:50%; opacity:0; transform:scale(.55);
   color:var(--accent-ink); font-size:10px; font-weight:750; letter-spacing:-.03em; }
-body.inbox-collapsed #inbox-open.has-attention {
-  background:var(--accent); border-color:var(--accent); border-radius:50%;
-  animation:inbox-toggle-bubble 220ms ease both; }
-body.inbox-collapsed #inbox-open.has-attention .inbox-open-icon {
-  opacity:0; transform:scale(.55) rotate(-18deg); animation:inbox-icon-away 220ms ease both; }
-body.inbox-collapsed #inbox-open.has-attention .inbox-open-count {
-  opacity:1; transform:scale(1); animation:inbox-count-in 220ms ease both; }
-@keyframes inbox-icon-away {
-  from { opacity:1; transform:scale(1) rotate(0); }
-  to { opacity:0; transform:scale(.55) rotate(-18deg); }
-}
-@keyframes inbox-toggle-bubble {
-  from { background:var(--panel); border-color:var(--line); border-radius:6px; }
-  to { background:var(--accent); border-color:var(--accent); border-radius:50%; }
-}
+#inbox-open.has-attention .inbox-open-count { position:absolute; top:-6px; right:-7px;
+  width:auto; height:16px; min-width:16px; padding:0 3px; align-self:auto; justify-self:auto;
+  border:1px solid var(--panel); border-radius:999px; background:var(--accent-fill, var(--accent));
+  color:var(--accent-ink); opacity:1; transform:none; animation:inbox-count-in 180ms ease both; }
 @keyframes inbox-count-in {
   from { opacity:0; transform:scale(.55); }
   to { opacity:1; transform:scale(1); }
 }
 @media (prefers-reduced-motion: reduce) {
-  #inbox-open, .inbox-open-icon, .inbox-open-count { transition:none; animation:none !important; }
+  #shell, #inbox-rail, #inbox-open, .inbox-open-icon, .inbox-open-count { transition:none; animation:none !important; }
+  body.inbox-collapsed #inbox-rail { transition:none !important; transition-delay:0s !important; }
 }
 /* The hover peek: the pointer resting on the reopen toggle lays the collapsed
    rail over the view without docking it. Above the toggle (z-index 45), so the
    head toggle — sitting where the floating one was — takes the click. */
-body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
-  left:0; top:0; bottom:0; height:auto; z-index:46;
-  box-shadow:8px 0 24px var(--shadow-soft); }
 #inbox-scrim { display:none; }
 
-/* ---- global compose ----
-   Pinned above the entries, on every route: what you want to get done goes in
-   here and the router decides where it goes. */
-#compose { flex:none; margin:0 0 8px; }
+/* ---- legacy global compose internals ----
+   Kept for queued-capture compatibility; the shell no longer mounts it. */
 .compose-prompt { width:100%; text-align:left; cursor:pointer;
   background:var(--panel); border:1px solid var(--line); border-radius:9px;
   padding:9px 10px; font-size:12.5px; color:var(--dim); }
@@ -274,12 +292,15 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
   box-shadow:-8px 0 8px -6px var(--accent-soft); }
 .inbox-entry:hover .inbox-actions, .inbox-entry:focus-within .inbox-actions,
 .inbox-entry.active .inbox-actions,
+.inbox-actions:has(.inbox-workspace-done),
 .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+.inbox-workspace-done { min-width:48px; }
 /* No hover on touch: the selected row shows its actions, one tap behind. */
 @media (hover:none) {
   .inbox-entry:hover .inbox-actions { opacity:0; pointer-events:none; }
   .inbox-entry.active .inbox-actions, .inbox-entry:focus-within .inbox-actions,
-  .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+  .inbox-entry .inbox-actions:has(.inbox-workspace-done),
+  .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
 }
 /* The rail's rows are near the top of the viewport, so the menu drops rather
    than rises, and stays on the row's right edge at every width. */
@@ -300,13 +321,7 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
    The inbox, grouped by project. Each block is a box: its head — fold, name,
    unread, the + that creates — and its rows; the block holding the branch or
    issue the route stands on wears the composer's focused look. The unrouted
-   captures stand above every block on their own, and the new-project control
-   heads the list. */
-.inbox-new-project { display:flex; align-items:center; gap:6px; width:100%; margin:0 0 8px;
-  background:none; border:1px dashed var(--line2); border-radius:9px; padding:7px 10px;
-  cursor:pointer; font:inherit; font-size:12px; color:var(--dim); text-align:left; }
-.inbox-new-project:hover { color:var(--ink2); border-color:var(--dim); }
-.inbox-new-project svg { width:14px; height:14px; flex:none; }
+   captures stand above every block on their own. */
 .inbox-unsorted:not(:empty) { margin-bottom:8px; }
 .inbox-project { border:1px solid var(--line); border-radius:12px; padding:4px 4px 5px;
   margin-bottom:8px; transition:border-color .12s ease, box-shadow .12s ease; }
@@ -356,14 +371,29 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
   grid-template-rows:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; position:relative;
 }
-#toolbar { flex:none; border-bottom:1px solid var(--line); }
-#view-body { display:grid; grid-template-columns:minmax(0, 1fr) auto;
+#toolbar { flex:none; border-bottom:1px solid var(--line3, var(--line)); background:var(--panel);
+  container:toolbar-shell / inline-size; }
+#view-body { display:grid; grid-template-columns:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; }
+#branch-tabs:empty { display:none; }
+#branch-tabs { width:62px; min-height:0; border-right:1px solid var(--line3, var(--line));
+  background:var(--panel); padding:8px 5px; display:flex; flex-direction:column; gap:5px; }
+.branch-tab { position:relative; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:5px; width:100%; min-height:60px; padding:8px 3px;
+  border:1px solid transparent; border-radius:8px; background:none; color:var(--ink2); cursor:pointer;
+  font:inherit; font-size:10.5px; }
+.branch-tab:hover { background:var(--panel2); color:var(--ink); }
+.branch-tab.active { border-color:color-mix(in srgb, var(--accent) 45%, var(--line));
+  background:color-mix(in srgb, var(--accent) 12%, var(--panel)); color:var(--accent); }
+.branch-tab.active::before { content:""; position:absolute; left:-6px; top:9px; bottom:9px;
+  width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
+.branch-tab svg { width:20px; height:20px; display:block; }
 /* #root is a grid cell now, not a flex child: it fills its share. A reading
    page scrolls itself; a view that wants the full-height tab shell adds
    `.surface` and hands scrolling to its own body (that geometry lives in
    styles.css, beside the panes that read it), so it keeps its clip. */
-#shell main#root { min-width:0; min-height:0; }
+#shell main#root { grid-column:2; min-width:0; min-height:0; }
+#agent-rail { grid-column:3; }
 #shell main#root:not(.surface) { overflow-y:auto; }
 
 /* The machine this surface is about went while it was open (core/deviceNotice.js
@@ -382,25 +412,39 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
    The project name is the surface's text column (styles.css, --pane-gutter):
    the bar pays the gutter LESS the button's own inset, so the name itself lands
    on the column the tab labels and the panes below it stand on. */
-.toolbar { display:flex; align-items:center; gap:2px;
+.toolbar { display:flex; align-items:center; gap:4px;
   padding:0 10px 0 var(--toolbar-gutter);
-  height:var(--toolbar-h); min-width:0; }
+  height:var(--toolbar-h); min-width:0;
+  transition:padding-left 240ms cubic-bezier(.2,.8,.2,1); }
 /* With the inbox rail away, its floating reopen toggle (shell.css above)
    floats over exactly where the project name starts — give the bar enough
    left padding to clear it instead. */
 body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
+@media (prefers-reduced-motion: reduce) { .toolbar { transition:none; } }
 .tb-sel { display:flex; align-items:center; gap:5px; min-width:0; max-width:42%;
   font:inherit; font-size:13px; color:var(--ink); background:none; border:none;
   border-radius:6px; padding:4px var(--tbsel-inset); cursor:pointer; }
 .tb-sel:hover { background:var(--panel2); }
-/* The branch/issue half is the one that runs long. It grows to fill whatever
-   the project name and the right side leave it, rather than truncating at a
-   fixed share of the bar while the rest of the row sits empty. */
-.tb-item { flex:1 1 auto; max-width:none; }
-.tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* Leave the workspace name at its natural width so its directory tabs begin
+   immediately after it. Long names still yield before the action cluster. */
+.tb-workspace { flex:0 1 auto; max-width:55%; font-weight:600; }
 .tb-project .tb-name { font-weight:600; }
+.tb-legacy-item { display:flex; align-items:center; min-width:0; padding:4px var(--tbsel-inset);
+  font-size:13px; color:var(--ink); }
+.tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tb-caret { flex:none; font-size:9px; color:var(--dim); }
 .tb-sep { color:var(--line); flex:none; }
+.tb-directories { display:flex; align-self:stretch; align-items:stretch; min-width:0;
+  overflow-x:auto; scrollbar-width:none; margin-left:8px; border-left:1px solid var(--line); }
+.tb-directories::-webkit-scrollbar { display:none; }
+.tb-directory { flex:none; position:relative; max-width:170px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; padding:0 10px; border:0;
+  background:none; color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
+.tb-directory:hover { color:var(--ink); background:var(--panel2); }
+.tb-directory.current { color:var(--ink); }
+.tb-directory.current::after { content:""; position:absolute; left:9px; right:9px;
+  bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent-fill, var(--accent)); }
+.tb-directory-menu { display:none; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized
@@ -448,17 +492,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-none { font-size:12px; padding:2px 8px 6px; }
 .tbmenu-foot { flex:none; border-top:1px solid var(--line); padding-top:4px; margin-top:4px; }
 
-/* ---- the completion report ----
-   The agent's handoff, on its done event: the densest thing in the timeline, so
-   it is boxed away from the event lines around it and reads as a document
-   rather than as another sentence. */
-.completion-report { margin-top:6px; border:1px solid var(--line); border-radius:8px;
-  background:var(--panel2); padding:8px 10px; display:flex; flex-direction:column; gap:8px; }
-.completion-title { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
-  color:var(--dim); }
-.completion-section ul { margin:3px 0 0; padding-left:16px; }
-.completion-section li { color:var(--ink2); font-size:12px; line-height:1.5;
-  overflow-wrap:anywhere; }
 
 /* ---- agent rail (right edge of the view body) ----
    The strip is always there and the panel expands to its left, so the rail is
@@ -539,21 +572,28 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    to the bottom edge: the thread runs under it rather than carrying it along,
    and a box grown by what is being typed takes its room from the thread above
    instead of pushing itself off the panel. */
-.rail-panel { flex:none; width:min(400px, calc(100vw - 120px)); position:relative;
+.rail-panel { flex:none; width:min(420px, calc(100vw - 120px)); position:relative;
   display:flex; flex-direction:column; min-height:0;
   border-left:1px solid var(--line); }
-.rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:6px 8px 6px 12px;
-  height:38px; border-bottom:1px solid var(--line); }
+.rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 9px 8px 14px;
+  min-height:46px; border-bottom:1px solid var(--line); background:var(--panel); }
+.rail-harness-icon { flex:none; width:20px; height:20px; display:grid; place-items:center;
+  color:var(--ink); }
+.rail-harness-icon svg { display:block; width:20px; height:20px; }
+.rail-harness-icon-variant { display:block; }
+.rail-harness-icon-dark { display:none; }
+:root[data-theme="dark"] .rail-harness-icon-light { display:none; }
+:root[data-theme="dark"] .rail-harness-icon-dark { display:block; }
 .rail-who { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; font-size:12.5px; font-weight:600; }
+  white-space:nowrap; font-size:13.5px; font-weight:600; }
 .rail-mode { flex:none; border:1px solid var(--line); border-radius:6px; background:none;
   font:inherit; font-size:11px; color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
 .rail-surface-menu { flex:none; display:inline-flex; }
-.rail-surface-menu .splitmenu { top:calc(100% + 6px); bottom:auto; }
+.rail-surface-menu .splitmenu { top:calc(100% + 6px); bottom:auto; right:0; left:auto;
+  max-width:calc(100vw - 16px); }
 .rail-remove { flex:none; }
 .rail-remove:hover { background:var(--red-bg); color:var(--red); }
-.rail-collapse { flex:none; }
 /* flex:1 — the scroller takes what the pinned composer below leaves it.
    overflow-anchor:none — the conversation grows at the bottom, so a browser
    that adjusts scrollTop to keep whatever it anchored on still is correcting
@@ -561,7 +601,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    nothing on a tick that says nothing; this is the belt beside it. (Chrome and
    Android honour it; Safari ignores the property and loses nothing.) */
 .rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-anchor:none;
-  padding:10px 12px 14px; }
+  padding:14px 16px calc(18px + var(--surface-popover-clearance, 0px));
+  scroll-padding-bottom:var(--surface-popover-clearance, 0px); }
 /* The PTY takes the whole panel: no padding, no scrolling of its own — the
    terminal is its own viewport, and the pane sizes it to this box. The
    composer is gone in TUI mode, so this row is the whole column below the
@@ -574,6 +615,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-body .review-thread { padding:0; }
 .rail-body .thread-title { display:none; }
 .rail-body .thread-revision-view { margin-left:0; }
+.rail-body .thread-timeline { gap:22px; padding:4px 0 16px; }
+.rail-body .thread-message.agent .thread-body { padding-right:8px; }
 /* Where the conversation would be, on a branch that has no agent yet: which
    agent to start one on. Only the layout is said here — the cards stack,
    because the rail is a column 400px wide and three names side by side would
@@ -583,14 +626,23 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    claiming the conversation is empty. */
 .rail-chat-loading { height:100%; display:flex; align-items:center;
   justify-content:center; font-size:12.5px; color:var(--dim); }
-.rail-newagent { display:flex; height:100%; align-items:center; justify-content:center; }
-.rail-newagent .chooser { width:100%; }
-.rail-newagent .chooser-cards { flex-direction:column; }
+.rail-newagent { display:flex; height:100%; flex-direction:column; align-items:center; justify-content:flex-end;
+  gap:10px; padding-bottom:8px; }
+.rail-newagent p { margin:0; color:var(--dim); font-size:12.5px; }
+.rail-harness-picker { display:flex; align-items:stretch; justify-content:center; gap:7px; width:100%; }
+.rail-harness-choice { display:flex; flex:1 1 0; min-width:0; align-items:center; justify-content:center; gap:7px;
+  border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--ink2);
+  padding:8px 10px; font:inherit; font-size:12px; cursor:pointer;
+  transition:border-color 120ms ease, background-color 120ms ease, color 120ms ease; }
+.rail-harness-choice:hover { border-color:var(--line2); color:var(--ink); }
+.rail-harness-choice.chosen { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+.rail-harness-choice .rail-harness-icon { width:16px; height:16px; }
+@media (prefers-reduced-motion: reduce) { .rail-harness-choice { transition:none; } }
 
 /* The pinned box. Out of the scroll entirely, so its bottom edge is the
    panel's. */
-.rail-composer { flex:none; padding:8px 12px 10px; border-top:1px solid var(--line);
-  background:var(--bg); }
+.rail-composer { position:relative; flex:none; padding:9px 14px 13px; border-top:1px solid var(--line);
+  background:var(--panel); }
 .rail-composer .thread-composer { margin-left:0; }
 /* Growing upward has to stop somewhere, or a pasted paragraph would swallow
    the conversation it is a reply to. Past this the box scrolls its own text.
@@ -601,13 +653,14 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .composer-context,.message-viewing-context{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
 .composer-context{padding:7px 8px 0}
 .message-viewing-context{margin:0 0 7px}
-.viewing-context-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:11px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.viewing-context-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--ink2);font-size:11px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .viewing-context-chip.selection{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,var(--line))}
-.viewing-context-chip button{border:0;background:none;color:inherit;padding:0;cursor:pointer;font:inherit}
+.viewing-context-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.viewing-context-chip button{flex:none;border:0;background:none;color:inherit;padding:0;cursor:pointer;font:inherit}
 .viewing-context-detail{position:relative;max-width:100%}
 .viewing-context-detail summary{cursor:pointer;list-style:none}
-.viewing-context-detail pre{max-width:320px;max-height:160px;overflow:auto;margin:5px 0 0;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);white-space:pre-wrap;font-size:11px}
-.viewing-context-detail>button{margin-top:4px;border:0;background:none;color:var(--muted);cursor:pointer;font:inherit;font-size:11px}
+.viewing-context-detail pre{max-width:320px;max-height:160px;overflow:auto;margin:5px 0 0;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);white-space:pre-wrap;font-size:11px}
+.viewing-context-detail>button{margin-top:4px;border:0;background:none;color:var(--ink2);cursor:pointer;font:inherit;font-size:11px}
 /* A row that scrolls sideways rather than wrapping or squeezing what is in it,
    with no scrollbar to show for it. */
 .scrollstrip { overflow-x:auto; scrollbar-width:none; }
@@ -618,7 +671,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    far the branch stands from upstream with its diffstat. Three items, left to
    right, and the pills take whatever room the other two leave. Hidden (not just
    empty) when none of the three has anything to say. */
-.rail-status { display:flex; align-items:center; gap:6px; padding-bottom:6px;
+.rail-status { display:flex; align-items:center; gap:10px; min-height:28px; padding:0 0 7px;
   font-size:11.5px; color:var(--dim); }
 .rail-status[hidden] { display:none; }
 .rail-status-lead { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
@@ -632,6 +685,13 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 @media (prefers-reduced-motion: reduce) {
   .rail-status-working, .surface-row-clock[data-running-since] { animation:none; background-image:none; color:var(--clock-ink); } }
 .rail-status-working { --clock-ink:var(--accent); }
+/* The head before the agent has named its work: the same shimmer the working
+   clock wears, in the dim ink, so "Starting" reads as a state and not a name. */
+.rail-who-starting { --clock-ink:var(--dim); color:transparent; background-clip:text; -webkit-background-clip:text;
+  background-image:linear-gradient(100deg, var(--clock-ink) 0 38%, color-mix(in srgb, var(--clock-ink) 45%, white) 50%, var(--clock-ink) 62% 100%);
+  background-size:220% 100%; animation:clock-shimmer 2.6s linear infinite; font-weight:500; }
+@media (prefers-reduced-motion: reduce) {
+  .rail-who-starting { animation:none; background-image:none; color:var(--dim); } }
 .rail-status-starting { color:var(--dim); }
 /* The one word the row gives up when the pills want the room. It collapses
    along its width, so it needs a box of its own to have a width at all. */
@@ -640,7 +700,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 /* The pills scroll in the middle rather than wrapping the row onto a second
    line. No scrollbar — the mask fading the strip out under the git facts is
    what says there is more of it, and it leaves their text crisp. */
-.rail-status-pills { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:6px;
+.rail-status-pills { flex:1 1 auto; min-width:0; display:flex; align-self:stretch; align-items:stretch; gap:12px;
   -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent);
   mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent); }
 /* Pinned to the row's end, so the ticking timer never shoves the git facts
@@ -663,28 +723,44 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    pass each other in the same place instead of sitting side by side. */
 .rail-status-git .gitglyph-arriving { position:absolute; inset:0; }
 
-/* The viewer a pill opens: the last thing in the conversation column, above the
-   line that tops the composer block. Nothing is drawn between it and the
-   conversation — it is the conversation's own bottom, not a panel bolted under
-   it — and it grows by its height, pushing the thread up as it arrives. */
-.rail-surfaces-viewer { flex:none; max-height:34vh; overflow-y:auto; margin:0 12px 8px;
-  border-radius:8px; background:var(--panel2); }
+/* The viewer a footer category opens. It is anchored to the composer's top
+   edge, so even long inspection detail scrolls inside the card without moving
+   the transcript or the controls it belongs to. */
+.rail-surfaces-viewer { position:absolute; z-index:35; left:10px; right:10px; bottom:100%;
+  max-height:min(46vh, 420px); overflow:hidden; margin:0 0 9px;
+  display:flex; flex-direction:column;
+  border:1px solid var(--line3); border-radius:10px; background:var(--panel);
+  box-shadow:0 14px 34px var(--shadow); }
 .rail-surfaces-viewer[hidden] { display:none; }
+.surface-popover-head { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
+  min-height:42px; padding:8px 10px 7px 14px; border-bottom:1px solid var(--line);
+  background:var(--panel); }
+.surface-popover-head strong { color:var(--ink); font-size:13.5px; font-weight:600; }
+.surface-popover-kind { color:var(--dim); font-size:11px; }
+.surface-popover-body { min-height:0; overflow-y:auto; }
+.surface-popover-close { margin-left:auto; display:grid; place-items:center; width:28px; height:28px;
+  border:0; border-radius:7px; background:none; color:var(--ink2); cursor:pointer; font:20px/1 var(--sans); }
+.surface-popover-close:hover { background:var(--panel2); color:var(--ink); }
 .surface-workflow-choice { display:inline-flex; align-items:center; gap:5px;
   padding:2px 8px; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
   color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
 /* A pill carries no padding of its own: the label wears it, so the count cap
    can sit flush against the pill's end and the pill's own radius clips it. */
-.surface-pill { flex:0 0 auto; display:inline-flex; align-items:center; padding:0; overflow:hidden;
-  white-space:nowrap; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
+.surface-pill { position:relative; flex:0 0 auto; display:inline-flex; align-items:center; padding:0; overflow:hidden;
+  white-space:nowrap; border:0; border-radius:0; background:transparent;
   color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
 .surface-pill[hidden] { display:none; }
 .surface-pill:hover, .surface-workflow-choice:hover { color:var(--ink2); }
-.surface-pill[aria-pressed="true"], .surface-workflow-choice[aria-pressed="true"] {
+.surface-pill[aria-pressed="true"] { color:var(--ink); }
+.surface-pill[aria-pressed="true"]::after { content:""; position:absolute; left:0; right:0; bottom:0;
+  height:1px; background:var(--accent); }
+.surface-workflow-choice[aria-pressed="true"] {
   border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
-.surface-pill-label { padding:2px 8px; }
+.surface-pill-label { padding:5px 0 4px; text-decoration:underline; text-underline-offset:3px;
+  text-decoration-color:var(--line3); }
+.surface-pill[aria-pressed="true"] .surface-pill-label { text-decoration-color:var(--accent); }
 .surface-pill-count { align-self:stretch; display:inline-flex; align-items:center;
-  justify-content:center; min-width:15px; padding:0 6px; background:var(--panel);
+  justify-content:center; min-width:12px; padding:0 0 0 4px; background:transparent;
   font-size:10px; font-weight:650; }
 .surface-pill-count[hidden] { display:none; }
 
@@ -697,6 +773,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font-size:10.5px; }
 .surface-row-line { display:flex; align-items:baseline; gap:6px; min-width:0; }
 .surface-row-model, .surface-row-effort { flex:none; }
+.surface-row-head-model { max-width:40%; }
 .surface-row-detail { flex:1 1 auto; min-width:0; }
 .surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
 .surface-row-error { color:var(--red); }
@@ -755,6 +832,17 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-phase-agents { min-width:0; display:flex; flex-direction:column; gap:2px;
   padding:0 0 2px 10px; }
 
+@media (prefers-reduced-motion: reduce) {
+  .surface-agent-summary::before { transition:none; }
+}
+
+@container toolbar-shell (max-width: 760px) {
+  /* Directory tabs consume the entire toolbar surprisingly quickly. Keep the
+     selected directory in place and put every directory in its popup menu. */
+  .tb-directories { display:none; }
+  .tb-directory-menu { display:flex; flex:0 1 auto; max-width:34%; }
+}
+
 @media (max-width: 760px) {
   /* A phone has no room for two columns, so the panel is laid over the work
      rather than beside it; the strip stays where it is.
@@ -767,6 +855,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     top:calc(var(--toolbar-h) + 1px); bottom:0; z-index:30;
     width:auto; background:var(--bg);
     box-shadow:-8px 0 24px var(--shadow-soft); }
+  .rail-surfaces-viewer { left:6px; right:6px; max-height:min(52vh, 420px); }
 }
 
 /* ---- console (bottom of the view column) ----
@@ -831,29 +920,26 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    beats the display each region states above. */
 #toolbar:empty, #console-region:empty, #agent-rail:empty { display:none; }
 
-/* ---- the gate owns the whole frame, except compose ----
-   Compose works before a device does — what is said there is kept and sent when
-   one answers. So the rail stays as a zero-width carrier for that one control,
-   pinned over the gate screen, and everything else the shell owns is gone. */
+/* ---- the gate owns the whole frame ---- */
+body.gated #global-controls,
 body.gated #inbox-open,
 body.gated #inbox-scrim,
 body.gated #toolbar,
 body.gated #agent-rail,
 body.gated #console-region { display:none !important; }
-body.gated #inbox-rail { display:flex; width:0; padding:0; border-right:0; overflow:visible; background:none; }
-body.gated .inbox-head,
-body.gated #inbox-list,
-body.gated .inbox-foot { display:none !important; }
-body.gated #compose { position:fixed; z-index:50;
-  top:calc(10px + env(safe-area-inset-top, 0px));
-  left:calc(10px + env(safe-area-inset-left, 0px));
-  width:min(92vw, 320px); margin:0; }
+body.gated { --inbox-space:0px; }
+body.gated #inbox-rail { display:none; }
 
 /* ---- narrow viewports: the inbox overlays, as the project rail used to ---- */
 @media (max-width: 900px) {
-  #inbox-rail { position:fixed; left:0; top:0; bottom:0; height:auto; z-index:40;
+  body { --inbox-space:0px; }
+  #inbox-rail { position:absolute; left:0; top:var(--global-head);
+    bottom:0; height:auto; margin:0; z-index:40;
     box-shadow:8px 0 24px var(--shadow-soft); width:min(86vw, 300px); }
+  #inbox-collapse { display:none; }
   body:not(.inbox-collapsed):not(.gated) #inbox-scrim {
+    display:block; position:fixed; inset:0; z-index:35; background:var(--scrim); }
+  body.inbox-collapsed.inbox-popover-open:not(.gated) #inbox-scrim {
     display:block; position:fixed; inset:0; z-index:35; background:var(--scrim); }
 }
 

@@ -76,8 +76,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
   primaryRunIdFor: () => null,
   dropFeedDevice: () => {},
 }));
-const openProjectSettings = vi.fn();
-vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => openProjectSettings(...args) }));
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 const openCreateWork = vi.fn();
@@ -117,7 +115,6 @@ beforeEach(() => {
   ];
   openCreateWork.mockClear();
   notifyError.mockClear();
-  openProjectSettings.mockClear();
   rememberDeviceFilter(null);
   openSession("dev-1", workshopCall);
   openSession("dev-2", laptopCall);
@@ -457,54 +454,6 @@ describe("the unread counters on the two menus", () => {
   });
 });
 
-describe("the ⋯", () => {
-  it("carries what the tab row's right cluster used to", () => {
-    bar().querySelector('[data-select="more"]').click();
-    expect([...menu().querySelectorAll("[data-action]")].map((row) => row.dataset.action)).toEqual(["archive", "settings"]);
-    menu().querySelector('[data-action="settings"]').click();
-    expect(openProjectSettings.mock.calls[0][0]).toBe("p1");
-  });
-
-  // The sheet reads and writes one project on one machine. It is handed that
-  // machine's caller, so it never has to ask which device it is on — and the
-  // project id it sends stays the bare one that machine's daemon minted.
-  it("opens project settings with the scoped device's call", async () => {
-    bar().querySelector('[data-select="more"]').click();
-    menu().querySelector('[data-action="settings"]').click();
-    const [projectId, options] = openProjectSettings.mock.calls.at(-1);
-    expect(projectId).toBe("p1");
-    expect(await callerReaches(options.callRpc, workshopCall)).toBe(true);
-  });
-
-  // A machine that answered once keeps its context through an outage — the
-  // drafts and cached reads on it outlive the connection — but every call the
-  // sheet would make is refused until it is back, so the sheet does not open.
-  it("says which machine is missing rather than opening settings over an offline device", () => {
-    setContextOffline("dev-1");
-    bar().querySelector('[data-select="more"]').click();
-    menu().querySelector('[data-action="settings"]').click();
-    expect(openProjectSettings).not.toHaveBeenCalled();
-    expect(notifyError.mock.calls[0][1]).toContain("workshop isn't connected");
-  });
-
-  it("says which machine is missing rather than opening settings it cannot read", () => {
-    retireDeviceContext("dev-1");
-    bar().querySelector('[data-select="more"]').click();
-    menu().querySelector('[data-action="settings"]').click();
-    expect(openProjectSettings).not.toHaveBeenCalled();
-    expect(notifyError.mock.calls[0][1]).toContain("workshop isn't connected");
-  });
-
-  it("sends Archive to the account page that owns it", () => {
-    bar().querySelector('[data-select="more"]').click();
-    menu().querySelector('[data-action="archive"]').click();
-    expect(location.hash).toBe("#/account/archive");
-  });
-});
-
-// The rail lists every machine's projects and so does the toolbar: the account
-// has one set of projects, and the device is only said out loud where the name
-// alone does not say which machine's project it is.
 describe("an account with more than one device", () => {
   it("offers every device's projects, naming the device on a clash", async () => {
     const mine = {
@@ -558,11 +507,6 @@ describe("an account with more than one device", () => {
     // the workshop, named by the bar and settled by the workshop's own caller.
     expect(App.route).toBe(standing);
     expect(names()).toEqual(["relaydb", "build/login"]);
-    bar().querySelector('[data-select="more"]').click();
-    menu().querySelector('[data-action="settings"]').click();
-    const [projectId, options] = openProjectSettings.mock.calls.at(-1);
-    expect(projectId).toBe("p1");
-    expect(await callerReaches(options.callRpc, workshopCall)).toBe(true);
 
     rememberDeviceFilter(null);
     feed = savedFeed;
@@ -583,5 +527,57 @@ describe("an account with more than one device", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     toolbarRouteChanged();
     expect(openJump("project").querySelector(".mi.current .mt").textContent).toBe("mascot");
+  });
+});
+
+// Main's workspace switcher and directory tabs, on the per-device model: the
+// workspaces of the project the route is standing in are read from that
+// project's own machine.
+describe("the workspace toolbar", () => {
+  const workspace = {
+    id: "ws-1",
+    workspace_id: "ws-1",
+    project_id: "p1",
+    name: "payment-work",
+    status: "ready",
+    directories: [
+      { source_id: "frontend", name: "Frontend", is_git: true },
+      { source_id: "assets", name: "Design assets", is_git: false },
+    ],
+  };
+
+  const standOnWorkspace = async () => {
+    workshopCall.mockImplementation(async (method) =>
+      method === "workspace.list" ? { workspaces: [workspace] } : method === "workspace.get" ? { workspace } : {},
+    );
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
+    toolbarRouteChanged();
+    await flush();
+    await flush();
+  };
+
+  it("keeps legacy deep-link identities readable without an active work menu", () => {
+    expect(names()).toEqual(["relaydb", "build/login"]);
+    expect(bar().querySelector('[data-select="item"]')).toBeNull();
+  });
+
+  it("shows only the workspace switcher before its directory tabs", async () => {
+    await standOnWorkspace();
+    expect(bar().querySelector('[data-select="project"]')).toBeNull();
+    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
+    expect([...bar().children].indexOf(bar().querySelector('[data-select="workspace"]')))
+      .toBeLessThan([...bar().children].indexOf(bar().querySelector(".tb-directories")));
+  });
+
+  it("reads the workspaces from the machine the route names, not another device's", async () => {
+    await standOnWorkspace();
+    expect(workshopCall).toHaveBeenCalledWith("workspace.list", { project_id: "p1" });
+    expect(laptopCall).not.toHaveBeenCalledWith("workspace.list", expect.anything());
+  });
+
+  it("opens a directory on the machine the route is standing on", async () => {
+    await standOnWorkspace();
+    bar().querySelector('[data-directory="assets"]').click();
+    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files");
   });
 });

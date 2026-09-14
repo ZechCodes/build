@@ -1,0 +1,17 @@
+{
+  "method": "capture.cancel",
+  "since": "1.0.0",
+  "params": {
+    "capture_id": "capture-9af2"
+  },
+  "result": {
+    "capture_id": "capture-9af2",
+    "cancelled": true
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
+}

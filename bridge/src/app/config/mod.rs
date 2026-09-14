@@ -36,12 +36,13 @@ pub(in crate::app) fn accept_isolation(
     named: &str,
     available: &IsolationAvailability,
 ) -> Result<Isolation, String> {
-    let asked = Isolation::from_wire(named)
-        .ok_or_else(|| format!("unknown isolation {named:?} (expected \"worktree\" or \"cow\")"))?;
+    let asked = Isolation::from_wire(named).ok_or_else(|| {
+        format!("unknown isolation {named:?} (expected \"worktree\" or \"rift\")")
+    })?;
     match available.lock_reason(asked) {
         None => Ok(asked),
         Some(reason) => Err(format!(
-            "copy-on-write isolation is unavailable: {reason}; locked to worktrees"
+            "Rift isolation is unavailable: {reason}; locked to worktrees"
         )),
     }
 }

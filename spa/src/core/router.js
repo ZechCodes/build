@@ -50,6 +50,20 @@ const termOf = (segment) => (isTermTab(segment) ? { term: segment } : null);
 
 const inbox = () => ({ name: "inbox" });
 
+function workspaceRoute(projectId, parts) {
+  if (!parts[0]) return inbox();
+  const hasDirectory = parts[1] === "directory";
+  const route = {
+    name: "workspace",
+    projectId,
+    workspaceId: parts[0],
+    sourceId: hasDirectory ? parts[2] : undefined,
+    tab: BRANCH_TABS.has(hasDirectory ? parts[3] : parts[1]) ? (hasDirectory ? parts[3] : parts[1]) : "changes",
+  };
+  if (!route.sourceId) delete route.sourceId;
+  return route;
+}
+
 /** A legacy stage deep-link: `<tab>/<stageId>` where the tab is one of the
  *  retired plan tabs (stages, review, conversation…). Returns the stage id, or
  *  undefined when the segments name no stage. */
@@ -127,6 +141,10 @@ function tabPlace(query) {
   return { file: path, ...(Number.isFinite(line) && line > 0 ? { line } : null) };
 }
 
+// The surfaces whose Files tab stands in a file: both are a checkout with a
+// tree, and both carry the file as a query rather than a path segment.
+const FILE_TAB_SURFACES = new Set(["branch", "workspace"]);
+
 /// The route a hash names, and where in it the reader is standing.
 ///
 /// Split before parse: everything up to the `?` is the surface, everything
@@ -134,7 +152,7 @@ function tabPlace(query) {
 export function routeFromHash(hash) {
   const [path, query] = String(hash || "").split("?");
   const route = surfaceFromHashPath(path);
-  const place = route.name === "branch" && route.tab === "files" ? tabPlace(query) : null;
+  const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
   // The place is merged BEFORE the device question is asked: a device-less
   // Files link parks on a resolve route that still knows which file it meant.
   return withDeviceOrResolve(place ? { ...route, ...place } : route);
@@ -196,6 +214,7 @@ function surfaceFromSegments(parts) {
     case "project": {
       if (!parts[1]) return inbox();
       const projectId = parts[1];
+      if (parts[2] === "workspace") return workspaceRoute(projectId, parts.slice(3));
       if (parts[2] === "branch") return branchRoute(projectId, parts.slice(3));
       if (parts[2] === "issue" || parts[2] === "plan") {
         if (!parts[3]) return inbox();
@@ -240,7 +259,7 @@ function projectPrefix(route) {
 
 // The surfaces that are about one machine's checkout, and so cannot be opened
 // until the route says which machine: every device mints a `proj-1`.
-const WORK_SURFACES = new Set(["branch", "issue"]);
+const WORK_SURFACES = new Set(["branch", "issue", "workspace"]);
 
 /// A work route that names no machine is a question, not a destination: park it
 /// on the resolve route that asks the feed which device holds that project, and
@@ -256,6 +275,12 @@ export function withDeviceOrResolve(route) {
 /// The `resolve` routes are the same: a question has no URL, only the URL that
 /// asked it (see withDeviceOrResolve).
 const HASH_WRITERS = Object.freeze({
+  workspace: (route) => {
+    if (!route.projectId || !route.workspaceId) return null;
+    const tab = branchTab(route.tab);
+    const source = route.sourceId ? `/directory/${encode(route.sourceId)}` : "";
+    return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${tabPlaceSuffix(route, tab)}`;
+  },
   branch: (route) => {
     if (!route.projectId || !route.branch) return null;
     const tab = branchTab(route.tab);

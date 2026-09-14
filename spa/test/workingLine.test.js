@@ -15,6 +15,6 @@ describe("the conversation and the clock", () => {
   it("says nothing about working time, however long the agent has had the message", () => {
     const out = threadHtml({ items: [userMsg({ seen_at: "2026-08-08T03:01:00Z" })] });
     expect(out).not.toContain("thread-working");
-    expect(out).toContain("Seen");
+    expect(out).toContain('aria-label="Read"');
   });
 });

@@ -32,7 +32,8 @@ export { createStatusHub };
  * A terminal belongs to the work on screen, so a link that names a device names
  * the device the socket is on; a surface about nowhere in particular — the
  * inbox, an account page — leaves it on the home device, which is where
- * creation goes. Asked here by everyone: nothing else compares device ids.
+ * creation goes. Asked here by everyone: nowhere else works out which machine
+ * that is.
  *
  * App is read lazily (app.js imports this module through connection.js), and so
  * is the device list: it is patched live by the relay's pushes.
@@ -94,8 +95,7 @@ function terminalsRideOn(carrier) {
  * old device — so a move must drop it; the auto-reconnect then re-reads
  * preferDeviceId, attaches to the wanted device, and re-attaches every open tab.
  */
-function retargetTerminals() {
-  const wantedDeviceId = terminalDeviceId();
+function retargetTerminals(wantedDeviceId) {
   if (socket && wantedDeviceId && socket.deviceId !== wantedDeviceId) socket.simulateDrop();
 }
 
@@ -109,6 +109,7 @@ function retargetTerminals() {
  * home move, and a peer link opening or closing on that device.
  */
 export function followTerminalDevice() {
-  terminalsRideOn(contextFor(terminalDeviceId())?.peerLink?.term || null);
-  retargetTerminals();
+  const deviceId = terminalDeviceId();
+  terminalsRideOn(contextFor(deviceId)?.peerLink?.term || null);
+  retargetTerminals(deviceId);
 }

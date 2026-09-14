@@ -587,7 +587,7 @@ dropped in silence.
 The complexity ratchet reads **65** — both sides retired counted functions, the
 integration added no new `eslint-disable-next-line complexity`, and the rail's
 projects face retired one when it stopped painting checkout blocks. The jsdom
-suite is 246 files / 4215 tests, green with lint and build.
+suite is 246 files / 4225 tests, green with lint and build.
 
 After the packages landed, a review pass over the merged tree found and fixed
 these, each with its case first:
@@ -624,6 +624,28 @@ A second review pass, over the tree the first one left:
 - The device picker said "(offline)" off the account list alone, so a machine
   answering in a shape this app cannot read read as plainly online there while
   its rows said "update". It wears the word its rows wear.
+
+A third review pass, over the tree the second one left:
+
+- Every surface asked `canAnswer` before it stood a frame up, but nothing asked
+  it again: a poll already running, a watcher already subscribed and the cache
+  syncer's background tier hold a caller from mount and call it. A bridge
+  updated past this tab re-greets unsupported under them. The refusal now lives
+  at the caller — `context.rpc` and the conversations' caller alike — and says
+  which side is behind in the words `core/deviceAway.js` gives the strip over
+  that surface.
+- A workspace open when its machine went showed no strip naming that machine,
+  where a branch or an issue did. It mounts one, with the frozen sentence held
+  back until the workspace has actually painted.
+- The workspace rail context dropped the device the view handed it, so the route
+  it looks itself up by named no machine while the branch and issue contexts
+  beside it did.
+- `wantsSession` dialled only devices the api lists as online, so an account
+  whose one machine is listed offline while its bridge is up re-read the same
+  stale list every three seconds and never dialled. With nothing else to try,
+  every machine nothing here has asked for yet is now asked once, fast; the
+  backoff a refusal starts is what keeps asking after that, and a dial in flight
+  is what keeps a second socket off the same machine.
 
 ### Verified
 

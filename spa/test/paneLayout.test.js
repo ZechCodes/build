@@ -1210,6 +1210,34 @@ describe("the row of heads across a work surface", () => {
     expect(declaration(headRule(".workspace-refpicker").body, "flex")).toBe("1 1 auto");
     expect(declaration(headRule(".gittoolbar").body, "flex")).toBe("1 1 auto");
   });
+
+  it("centres the ref bar's control in that height instead of padding it to one", () => {
+    // jsdom computes no layout, so this pins the rules the bar's height is made
+    // of rather than measuring it. The bar pays nothing above or below: its one
+    // control is centred in the height the token gives it, so the bar cannot
+    // come out taller than the two beside it whatever that control measures.
+    expect(declaration(headRule(".workspace-refbar").body, "padding")).toBe("0 var(--pane-gutter)");
+  });
+
+  it("keeps the picker's empty status line out of the bar", () => {
+    // The status line is always in the document — a live region has to be there
+    // before it has anything to say, or what it says is never announced — so it
+    // is what it COSTS that has to go while it is empty. It cost 5px of padding,
+    // and that 5px was the whole difference between this bar and the two beside
+    // it.
+    const surfaceRules = rulesIn(strippedSurfaces);
+    const status = surfaceRules.find((rule) => rule.selector === ".workspace-referror");
+    const quiet = surfaceRules.find((rule) => rule.selector === ".workspace-referror:empty");
+    expect(status).toBeTruthy();
+    expect(quiet).toBeTruthy();
+    expect(declaration(status.body, "padding-top")).toBe("5px");
+    expect(declaration(quiet.body, "padding")).toBe("0");
+    // Same specificity as the rule it silences minus the pseudo-class, so it is
+    // the later one that has to win.
+    expect(quiet.at).toBeGreaterThan(status.at);
+    // …and it is still rendered, so it is still a live region.
+    expect(declaration(quiet.body, "display")).toBeNull();
+  });
 });
 
 describe("the git toolbar's menus", () => {

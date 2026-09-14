@@ -251,7 +251,7 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
    (--surface-head, styles/shell.css), so the three bottom borders are one line
    across the frame. */
 .workspace-refbar { position:relative; flex:none; display:flex; align-items:center; min-width:0; max-width:100%;
-  min-height:var(--surface-head); padding:6px var(--pane-gutter); border-bottom:1px solid var(--line); }
+  min-height:var(--surface-head); padding:0 var(--pane-gutter); border-bottom:1px solid var(--line); }
 .workspace-refpicker { position:relative; flex:1 1 auto; min-width:0; max-width:100%; }
 .workspace-reftrigger { width:100%; min-width:0; display:flex; align-items:center; gap:7px; padding:7px 8px; border:1px solid var(--line); border-radius:7px; color:var(--ink); background:var(--panel); cursor:pointer; text-align:left; transition:border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast); }
 .workspace-reftrigger:hover:not(:disabled) { border-color:var(--line3); background:var(--panel2); }
@@ -274,5 +274,11 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .workspace-refpull { color:var(--accent); }
 .workspace-refdiverged { color:var(--amber); }
 .workspace-refempty { padding:14px 8px; color:var(--ink2); font-size:12px; text-align:center; }
+/* What went wrong with a checkout, under the trigger that started it. It is in
+   the document at every moment, empty or not: a live region announces what
+   appears INSIDE it, so one mounted only once there is something to say says
+   nothing. What it costs the bar is what goes instead — an empty status pays no
+   room, and the bar stops on the height the two bars beside it stop on. */
 .workspace-referror { display:block; padding-top:5px; overflow-wrap:anywhere; font-size:11px; }
+.workspace-referror:empty { padding:0; }
 .workspace-gitpane { min-height:0; height:100%; overflow:hidden; }

@@ -558,7 +558,6 @@ function rowTooltip(entry) {
  *  count at the right edge; then what it weighs. `ui`: { activeKey,
  *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
  *  line instead (quietRowHtml). */
-// eslint-disable-next-line complexity -- ratchet: inboxRowHtml is at 12, cap 10 — reduce it, then drop this line
 export function inboxRowHtml(entry, ui = {}) {
   if (entry.kind === "capture") return captureRowHtml(entry, ui);
   if (ui.quiet) return quietRowHtml(entry, ui);

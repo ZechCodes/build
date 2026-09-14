@@ -25,7 +25,9 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // syncDeviceSnapshot.
 // 68 since each route kind writes its own hash: hashFromRoute looks the writer
 // up instead of walking every kind in one chain.
-const RATCHETED_FUNCTIONS = 68;
+// 67 since a row's project tag is one function both row painters call, rather
+// than the same conditional written out in each of them.
+const RATCHETED_FUNCTIONS = 67;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

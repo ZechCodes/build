@@ -29,6 +29,7 @@ vi.mock("../src/connection.js", () => ({
   goOffline: () => {},
   forgetHomeFollow: () => {},
   forgetSecurityStops: () => {},
+  forgetUnconnectedDevices: () => {},
   securityStopText: () => "",
 }));
 

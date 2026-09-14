@@ -63,6 +63,7 @@ vi.mock("../src/connection.js", () => ({
   goOffline: () => {},
   forgetHomeFollow: () => {},
   forgetSecurityStops: () => {},
+  forgetUnconnectedDevices: () => {},
 }));
 // jsdom is neither a Mac nor a Linux desktop; the platform table has its own
 // test, and this one is about what the gate does with the key it is handed.

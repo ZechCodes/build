@@ -312,6 +312,7 @@ export function syncHome(landed = null) {
  *  that nor tell anyone about it. Those errors are rethrown untouched, so the
  *  caller shows what they say and this layer stops. */
 async function connectDevice(deviceId) {
+  dialling.add(deviceId);
   try {
     return landSession(await openDeviceSession(deviceId));
   } catch (error) {
@@ -319,8 +320,17 @@ async function connectDevice(deviceId) {
     setContextOffline(deviceId);
     scheduleResume(deviceId);
     throw error;
+  } finally {
+    dialling.delete(deviceId);
   }
 }
+
+// The machines this layer has a dial in flight at. A bridge that answers is
+// marked online by the relay's own `device_key` push while its socket is still
+// opening, and a machine newly online is one this layer opens — so without this
+// a machine dialled while the account called it offline would be dialled again,
+// at itself, mid-handshake.
+const dialling = new Set();
 
 // A machine this client will not dial again for the life of the tab: the key
 // the relay offered for it was not the key this account pinned, so whatever
@@ -356,8 +366,33 @@ export function forgetSecurityStops() {
  * context that came up. Nothing waits on the slowest device.
  */
 export function openDeviceSessions() {
-  const attempts = App.devices.filter(wantsSession).map((device) => connectDevice(device.id));
+  const wanted = App.devices.filter(wantsSession).map((device) => connectDevice(device.id));
+  const attempts = wanted.length ? wanted : guessAtStaleDevices();
   return { first: handled(firstContext(attempts)), settled: handled(everyContext(attempts)) };
+}
+
+/**
+ * With nothing else to try, dial the machines the account calls offline.
+ *
+ * The api's presence is a snapshot: a bridge that came back since it was taken
+ * is listed offline until the account catches up. While something is open the
+ * relay says so itself — it pushes that bridge's key, and the push opens it —
+ * but an account holding nothing has nobody to hear that from, and the waiting
+ * screen would re-read the same stale list every three seconds for a machine
+ * that is answering. So each such machine is asked once, without waiting on it:
+ * it either answers, or joins the backoff that keeps asking for it.
+ */
+function guessAtStaleDevices() {
+  if (liveContexts().length) return []; // a live session will hear it come back
+  return App.devices.filter(neverAsked).map((device) => connectDevice(device.id));
+}
+
+/** A machine nothing here has asked for yet: it has never answered (no
+ *  context), never refused (no backoff waiting to try it again), has no dial on
+ *  it now, and is not barred. */
+function neverAsked(device) {
+  if (securityStops.has(device.id) || contextFor(device.id)) return false;
+  return !dialling.has(device.id) && !unconnected.get(device.id)?.timer;
 }
 
 /** A device for this call to open: online by the account list, with nothing
@@ -365,10 +400,11 @@ export function openDeviceSessions() {
  *  (canAnswer), asked here the way every surface asks it. A resume is working
  *  on it too — it is parked on the relay's `device_key` for exactly that bridge
  *  and lands the moment it is back, so the push that says so must not start a
- *  second handshake. */
+ *  second handshake; and neither must a dial of this layer's own. */
 function wantsSession(device) {
   const context = contextFor(device.id);
   if (securityStops.has(device.id)) return false; // barred: retrying offers the same key to the same impostor
+  if (dialling.has(device.id)) return false;
   return device.status === "online" && !canAnswer(context) && !context?.reconnect.resuming;
 }
 
@@ -476,6 +512,14 @@ function reconnectFor(deviceId) {
   }
   if (!unconnected.has(deviceId)) unconnected.set(deviceId, { timer: null, delay: 0, resuming: false });
   return unconnected.get(deviceId);
+}
+
+/** Let go of every backoff kept here (sign-out, teardown): they are this
+ *  account's, and a timer left armed dials the relay for an account that has
+ *  gone. Every other machine's backoff is on its context and is retired with
+ *  it. */
+export function forgetUnconnectedDevices() {
+  for (const deviceId of [...unconnected.keys()]) forgetUnconnected(deviceId);
 }
 
 /** Let go of a backoff kept here: the device has a context to keep its own on

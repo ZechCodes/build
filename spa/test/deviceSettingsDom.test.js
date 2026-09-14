@@ -24,6 +24,7 @@ vi.mock("../src/connection.js", () => ({
   goOffline: () => {},
   forgetHomeFollow: () => {},
   forgetSecurityStops: () => {},
+  forgetUnconnectedDevices: () => {},
   securityStopText: () => "",
 }));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));

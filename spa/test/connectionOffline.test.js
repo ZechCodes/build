@@ -664,6 +664,73 @@ describe("per-device connections", () => {
     expect(contextFor("dev-c").session).toBe(lastSession("dev-c"));
   });
 
+  // The api's presence is a snapshot, and a bridge that came back since it was
+  // taken is listed offline until the account catches up. While something is
+  // open the relay says so itself — it pushes that bridge's key and the push
+  // opens it — but an account holding nothing has nobody to hear that from, and
+  // the waiting screen would re-read the same stale list every three seconds
+  // for a machine that is answering.
+  it("dials a machine the account still calls offline when there is nothing else to try", async () => {
+    devices = [away("dev-a", "Laptop")];
+    App.devices = devices;
+
+    const contexts = await connectEveryDevice();
+
+    expect(contexts.map((context) => context.deviceId)).toEqual(["dev-a"]);
+    expect(liveIds()).toEqual(["dev-a"]);
+    // Fast: a stale list is a guess, and the app must not park on one.
+    expect(openedFor("dev-a")).toHaveLength(1);
+    expect(openedFor("dev-a")[0].waitForDevice).toBe(false);
+  });
+
+  // One dial is the guess; what keeps asking after it is the backoff the
+  // refusal starts, which parks on the relay for exactly that bridge. Guessing
+  // again every three seconds would open a second socket for a machine already
+  // being waited for.
+  it("guesses at a machine the account calls offline once, not on every re-read", async () => {
+    devices = [away("dev-a", "Laptop")];
+    App.devices = devices;
+    unreachable.add("dev-a");
+
+    await openDeviceSessions().settled;
+    const guessed = openedFor("dev-a").length;
+    await openDeviceSessions().settled; // the waiting screen re-reads the same stale list
+
+    expect(guessed).toBe(1);
+    expect(openedFor("dev-a")).toHaveLength(1);
+  });
+
+  // A machine that answers is marked online by the relay's own key push while
+  // its socket is still opening, and a machine newly online is one this layer
+  // opens: the guess must not be answered by a second handshake at itself.
+  it("does not open a second socket at the machine it is already dialling", async () => {
+    devices = [away("dev-a", "Laptop")];
+    App.devices = devices;
+    slowMs.set("dev-a", 20);
+
+    const sessions = openDeviceSessions();
+    markDeviceOnline("dev-a"); // the relay's key push lands mid-handshake
+    await vi.advanceTimersByTimeAsync(20);
+    await sessions.settled;
+    await flush();
+
+    expect(openedFor("dev-a")).toHaveLength(1);
+    expect(contextFor("dev-a").session).toBe(lastSession("dev-a"));
+  });
+
+  // Another machine is answering, so the stale one is not a guess anybody has
+  // to make: that session hears the relay say it is back and opens it then.
+  it("leaves a machine the account calls offline alone while another one answers", async () => {
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    await connectEveryDevice();
+
+    await openDeviceSessions().settled;
+
+    expect(openedFor("dev-b")).toHaveLength(0);
+    expect(liveIds()).toEqual(["dev-a"]);
+  });
+
   it("resolves the first success without waiting on the slowest device", async () => {
     slowMs.set("dev-b", 5000);
 

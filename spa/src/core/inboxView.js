@@ -44,15 +44,8 @@ import {
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
-import { homeProjectKey, onDeviceStateChanged } from "./deviceContexts.js";
-import {
-  homeRowsFirst,
-  openableHereBlock,
-  openableHereRows,
-  paintDeviceState,
-  rowFeedView,
-  verbCall,
-} from "./inboxDevices.js";
+import { deviceFeedView, homeProjectKey, onDeviceStateChanged } from "./deviceContexts.js";
+import { homeRowsFirst, openableHereBlock, openableHereRows, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
@@ -170,7 +163,7 @@ function rowUi(showProject) {
   const picker = reroutePicker();
   // A reroute goes to the machine holding the capture, so the destinations it
   // offers are that machine's — its projects, and the branches they have.
-  const destinations = rowFeedView(entryOf(picker.rerouteKey), snapshot);
+  const destinations = deviceFeedView(snapshot, entryOf(picker.rerouteKey)?.deviceId);
   // A route names no device yet, so the row it stands on is looked for among
   // the home device's rows before anybody else's.
   const activeKey = activeEntryKey(App.route, homeRowsFirst(entries));

@@ -61,7 +61,7 @@ import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } 
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { currentCacheScope } from "./cacheScope.js";
-import { homeFeedView } from "./deviceContexts.js";
+import { deviceFeedView } from "./deviceContexts.js";
 import { createConversationCache } from "./conversationCache.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
@@ -703,7 +703,7 @@ export function mountAgentRail(host, context) {
   const unsubscribeFeed = subscribeFeed((feed) => {
     // The home device's rows, not the merge: this work item is on one machine,
     // and every machine mints a `proj-1`.
-    feedRow = toolbarIdentity(feedRoute(), homeFeedView(feed)).row;
+    feedRow = toolbarIdentity(feedRoute(), deviceFeedView(feed)).row;
     paintRailStatus();
   });
 

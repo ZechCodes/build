@@ -13,7 +13,7 @@
 import { $ } from "../dom.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
-import { homeFeedView } from "./deviceContexts.js";
+import { deviceFeedView } from "./deviceContexts.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { isConfirmOpen } from "./confirm.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
@@ -444,7 +444,7 @@ export function initCompose() {
   queue = loadCaptureQueue();
   paintPrompt();
   subscribeFeed((next) => {
-    feed = homeFeedView(next);
+    feed = deviceFeedView(next);
     syncTracked();
   });
   document.addEventListener("keydown", (event) => {

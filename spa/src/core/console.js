@@ -31,7 +31,7 @@ import { patchList } from "./patchList.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
 import { currentCacheScope } from "./cacheScope.js";
-import { homeFeedView } from "./deviceContexts.js";
+import { deviceFeedView } from "./deviceContexts.js";
 import { entityIdOf } from "./entityId.js";
 import { readCached, writeCached } from "./localCache.js";
 import { subscribeFeed } from "./taskFeed.js";
@@ -213,7 +213,7 @@ export function mountConsole(host, context) {
     let row = null;
     const unsubscribe = subscribeFeed((feed) => {
       row =
-        homeFeedView(feed).items.find(
+        deviceFeedView(feed).items.find(
           (item) => item.kind === "branch" && item.project_id === context.projectId && item.branch === context.branch,
         ) || null;
     });

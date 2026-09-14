@@ -161,11 +161,17 @@ export function homeProjectKey(projectId) {
   return home && projectId ? deviceKey(home.deviceId, projectId) : null;
 }
 
-/** The home device's slice of a merged feed snapshot. A surface about where you
- *  are — the toolbar, the capture decision page — is about one machine, so it
- *  reads the feed through this rather than every device's rows at once. */
-export function homeFeedView(snapshot) {
-  const view = deviceView(snapshot, homeContext()?.deviceId);
+/**
+ * One device's slice of a merged feed snapshot: its rows and its projects.
+ *
+ * A surface about where you are — the toolbar, the capture decision page, a
+ * branch — is about one machine, and so is what a row's verb offers: a reroute
+ * names a project by the bare id the daemon holding it minted, and every daemon
+ * mints a `proj-1`. Naming no device means the home device, which is where
+ * creation goes and, until routes carry one, what every route is about.
+ */
+export function deviceFeedView(snapshot, deviceId = null) {
+  const view = deviceView(snapshot, deviceId || homeContext()?.deviceId);
   return { items: view.items || [], projects: view.projects || [] };
 }
 

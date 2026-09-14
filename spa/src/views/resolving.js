@@ -14,7 +14,7 @@ import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 import { resolveLegacyRoute } from "../core/routeResolve.js";
-import { homeContext, homeFeedView } from "../core/deviceContexts.js";
+import { homeContext, deviceFeedView } from "../core/deviceContexts.js";
 import "../styles/shell.css";
 
 export function renderResolving() {
@@ -30,7 +30,7 @@ export function renderResolving() {
   const unsubscribe = subscribeFeed((feed) => {
     if (settled || !answersThisLink(feed)) return;
     settled = true;
-    go(resolveLegacyRoute(reference, homeFeedView(feed).items) || { name: "inbox" });
+    go(resolveLegacyRoute(reference, deviceFeedView(feed).items) || { name: "inbox" });
   });
   App.viewDispose = unsubscribe;
 }

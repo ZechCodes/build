@@ -11,7 +11,7 @@ import {
   adoptDeviceSession,
   contextFor,
   homeContext,
-  homeFeedView,
+  deviceFeedView,
   homeProjectKey,
   knownContexts,
   liveContexts,
@@ -181,9 +181,10 @@ describe("the home device's name for a project", () => {
 });
 
 // The surfaces about where you are — the toolbar, the capture decision page —
-// are about one machine, so they read the home device's slice of the merged
-// feed rather than every device's rows at once.
-describe("the home device's view of the feed", () => {
+// are about one machine, so they read one device's slice of the merged feed
+// rather than every device's rows at once. Which device is the home one unless
+// something names another: a row's verbs are its own machine's.
+describe("one device's view of the feed", () => {
   const mine = { items: [{ id: "a" }], projects: [{ id: "p1" }] };
   const theirs = { items: [{ id: "b" }], projects: [{ id: "p9" }] };
   const merged = { items: [...mine.items, ...theirs.items], devices: { "dev-a": mine, "dev-b": theirs } };
@@ -192,10 +193,17 @@ describe("the home device's view of the feed", () => {
     pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
     adoptDeviceSession(fakeSession("dev-b"));
 
-    expect(homeFeedView(merged)).toEqual({ items: mine.items, projects: mine.projects });
+    expect(deviceFeedView(merged)).toEqual({ items: mine.items, projects: mine.projects });
+  });
+
+  it("reads the device it is given, whoever is home", () => {
+    pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
+    adoptDeviceSession(fakeSession("dev-b"));
+
+    expect(deviceFeedView(merged, "dev-b")).toEqual({ items: theirs.items, projects: theirs.projects });
   });
 
   it("answers empty collections while no device is home", () => {
-    expect(homeFeedView(merged)).toEqual({ items: [], projects: [] });
+    expect(deviceFeedView(merged)).toEqual({ items: [], projects: [] });
   });
 });

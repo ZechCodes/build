@@ -29,7 +29,7 @@ import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
-import { homeFeedView } from "./deviceContexts.js";
+import { deviceFeedView } from "./deviceContexts.js";
 import { notifyError } from "./notify.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openCreateWork } from "./createWork.js";
@@ -425,7 +425,7 @@ export function initToolbar() {
     scopedProjectId = null;
   }
   subscribeFeed((next) => {
-    feed = homeFeedView(next);
+    feed = deviceFeedView(next);
     paint();
   });
   paint({ entering: true });

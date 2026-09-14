@@ -36,7 +36,7 @@ import { createWorktreeReview } from "./worktreeReview.js";
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
-import { homeContext, homeFeedView, homeProjectKey } from "../core/deviceContexts.js";
+import { homeContext, deviceFeedView, homeProjectKey } from "../core/deviceContexts.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
@@ -98,7 +98,7 @@ const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primar
 function seedBranchState(projectId, branch) {
   let snapshot = null;
   const unsubscribe = subscribeFeed((feed) => {
-    snapshot = homeFeedView(feed);
+    snapshot = deviceFeedView(feed);
   });
   unsubscribe();
   if (!snapshot) return { row: null, defaultTab: "changes" };

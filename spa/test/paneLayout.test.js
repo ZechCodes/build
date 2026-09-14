@@ -85,6 +85,10 @@ const narrowQueryAt = strippedSource.indexOf(NARROW_QUERY);
  *  are the same number, which is what makes the transition read as one — the
  *  test below pins that rather than trusting the constant. */
 const STACK_QUERY = "@media (max-width: 900px)";
+
+/** The width a phone reads at: the conversation panel stops sitting beside the
+ *  work and is laid over it. */
+const PHONE_QUERY = "@media (max-width: 760px)";
 const STACK_WIDTH = 900;
 
 /** Custom properties as the cascade leaves them for a viewport: every :root
@@ -964,7 +968,6 @@ describe("the surface's text column", () => {
 // lands on the strip — the divide was painted twice on one pixel. Each divide
 // is stated once now, by the surface that begins at it.
 describe("the view column's seam with the agent rail", () => {
-  const PHONE_QUERY = "@media (max-width: 760px)";
   const SIDE_BORDERS = ["border", "border-left", "border-right"];
 
   /** The rule for a selector outside every media query — the one that holds at
@@ -1170,5 +1173,30 @@ describe("the creation sheet", () => {
     for (const narrowed of rulesFor(".sheet").filter((rule) => rule.at !== sheet.at)) {
       expect(declaration(narrowed.body, "max-height")).toBeNull();
     }
+  });
+});
+
+describe("the console toggle on a phone", () => {
+  const phoneRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === PHONE_QUERY);
+
+  // At 390x844 with a workspace open the conversation panel was laid over the
+  // view column to the bottom of #view at z-index 30 — and the console is a row
+  // of #view, not of the body the panel covers. The composer bar landed exactly
+  // on #console-toggle, so the console could not be opened at all; with it open
+  // the New agent picker, which sits at the foot of the panel, sat on it
+  // instead. The panel stops above whatever the console is showing.
+  it("leaves the console's row uncovered by the conversation panel", () => {
+    const collapsed = phoneRule("#view:has(#console-region[data-size]) .rail-panel");
+    const half = phoneRule('#view:has(#console-region[data-size="half"]) .rail-panel');
+    expect(declaration(collapsed.body, "bottom")).toBe("var(--console-bar)");
+    expect(declaration(half.body, "bottom")).toBe("var(--console-half)");
+
+    // The room reserved is the room the console takes, stated once each.
+    expect(declaration(baseRule("#console-region").body, "height")).toBe("var(--console-bar)");
+    expect(declaration(baseRule('#console-region[data-size="half"]').body, "height")).toBe("var(--console-half)");
+
+    // A surface with no console mounted at all keeps the whole column: the
+    // reservation hangs off the console region being there.
+    expect(declaration(phoneRule(".rail-panel").body, "bottom")).toBe("0");
   });
 });

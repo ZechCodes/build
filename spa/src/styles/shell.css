@@ -853,6 +853,14 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     top:calc(var(--toolbar-h) + 1px); bottom:0; z-index:30;
     width:auto; background:var(--bg);
     box-shadow:-8px 0 24px var(--shadow-soft); }
+  /* The console is a row of #view, not of the body the panel covers, so a panel
+     that ran to the bottom of #view was laid over it: the composer bar landed on
+     #console-toggle and the console could not be opened, and with it open the
+     New agent picker at the foot of the panel sat on the bar instead. The panel
+     stops above whatever the console is showing. `full` needs no rule — it
+     leaves the grid and overlays the panel from above. */
+  #view:has(#console-region[data-size]) .rail-panel { bottom:var(--console-bar); }
+  #view:has(#console-region[data-size="half"]) .rail-panel { bottom:var(--console-half); }
   .rail-surfaces-viewer { left:6px; right:6px; max-height:min(52vh, 420px); }
 }
 

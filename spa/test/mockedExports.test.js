@@ -72,6 +72,21 @@ const MOCKS = readdirSync(resolve("test"))
   .flatMap(mockedModulesIn)
   .filter((mock) => mock.names.length);
 
+/** Every name `src/` imports from the module at `path`, across the whole tree. */
+function namesImportedFromSrc(path) {
+  const names = new Set();
+  const files = readdirSync(resolve("src"), { recursive: true }).filter((file) => String(file).endsWith(".js"));
+  for (const file of files) {
+    const source = readFileSync(resolve("src", String(file)), "utf8");
+    const imports = new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*["'][^"']*${path}["']`, "g");
+    for (let match = imports.exec(source); match; match = imports.exec(source))
+      for (const name of match[1].split(",")) names.add(name.trim().split(/\s+/).pop());
+  }
+  return [...names].filter(Boolean);
+}
+
+const MANAGER = "terminal/manager.js";
+
 describe("every mocked export exists on the module it replaces", () => {
   it("finds the mocks to check at all", () => {
     // A guard on the guard: a regex that stops matching would otherwise pass by
@@ -83,5 +98,26 @@ describe("every mocked export exists on the module it replaces", () => {
     const real = await import(/* @vite-ignore */ resolve("test", mock.module));
     const invented = mock.names.filter((name) => !(name in real));
     expect(invented, `${mock.file} mocks ${mock.module} with exports it does not have`).toEqual([]);
+  });
+});
+
+// The terminal manager is asked something by the app's spine: render() asks it
+// which machine the shells type at, and the connection takes them to the device
+// home moved to. A stand-in that answers only the half its own suite mounts —
+// the tabs, or the moves — throws "not a function" out of the first render of a
+// route that names a device, which is a matter of which cases the suite happens
+// to have. So a stand-in for it answers everything the app asks it.
+describe("a stand-in for the terminal manager answers everything the app asks it", () => {
+  const asked = namesImportedFromSrc(MANAGER);
+  const standIns = MOCKS.filter((mock) => mock.module.endsWith(MANAGER));
+
+  it("finds what the app asks it, and who stands in for it", () => {
+    expect(asked.length).toBeGreaterThan(3);
+    expect(standIns.length).toBeGreaterThan(3);
+  });
+
+  it.each(standIns.map((mock) => [mock.file, mock]))("%s", (_name, mock) => {
+    const unanswered = asked.filter((name) => !mock.names.includes(name));
+    expect(unanswered, `${mock.file} stands in for the terminal manager without it`).toEqual([]);
   });
 });

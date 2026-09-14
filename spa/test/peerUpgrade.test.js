@@ -30,6 +30,10 @@ vi.mock("../src/api.js", () => ({
 vi.mock("../src/terminal/manager.js", () => ({
   followTerminalDevice: (...args) => terminals.followTerminalDevice(...args),
   terminalDeviceId: () => terminals.deviceId,
+  // No terminal tab mounts in this suite; the socket and its status are still
+  // answered, so a surface that asked for one would get a plain no.
+  terminalManager: () => null,
+  subscribeTerminalStatus: () => () => {},
 }));
 vi.mock("../src/core/session.js", () => ({
   openRelaySession: (options) => relay.openRelaySession(options),

@@ -46,6 +46,10 @@ const manager = vi.hoisted(() => ({
 vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => manager,
   subscribeTerminalStatus: status.subscribe,
+  // Which machine the shells type at, and the moves between machines, are the
+  // app spine's business and not this suite's: they answer, and nothing moves.
+  terminalDeviceId: () => null,
+  followTerminalDevice: () => {},
 }));
 
 // No ghostty/wasm under node: the pane is a leaf that performs the attach it was

@@ -27,6 +27,7 @@ const hover = (element, type) =>
 let setInboxCollapsed, initInboxRail;
 let publishInboxAttentionCount;
 let hoverCapability;
+let overlayCapability;
 
 function mediaCapability(matches) {
   const listeners = new Set();
@@ -49,7 +50,14 @@ beforeEach(async () => {
   document.body.className = "";
   localStorage.clear();
   hoverCapability = mediaCapability(true);
-  vi.stubGlobal("matchMedia", vi.fn(() => hoverCapability));
+  // A width query is the other thing the rail asks the media about, and it has
+  // to be able to answer differently: this suite starts wide, where the rail is
+  // a column beside the view rather than a layer over it.
+  overlayCapability = mediaCapability(false);
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query) => (query.includes("max-width") ? overlayCapability : hoverCapability)),
+  );
   ({ setInboxCollapsed, initInboxRail } = await import("../src/core/inboxShell.js"));
   ({ publishInboxAttentionCount } = await import("../src/core/inboxAttention.js"));
   initInboxRail();
@@ -238,6 +246,31 @@ describe("the header toggle beside a pinned rail", () => {
     vi.stubGlobal("innerWidth", 900);
     setInboxCollapsed(false);
     expect(document.getElementById("inbox-open").hidden).toBe(false);
+  });
+
+  it("comes back the moment a resize starts the rail overlaying, with nothing else changed", () => {
+    // Which of its two shapes the rail is in is a question about the width, and
+    // the width changes without any state of ours changing. Dragging 1440 down
+    // to 900 left the rail pinned and lying OVER the view with this toggle —
+    // the only way out of it there, and the only way back to the work — still
+    // hidden, because the sync ran on state changes alone.
+    setInboxCollapsed(false);
+    expect(document.getElementById("inbox-open").hidden).toBe(true);
+
+    vi.stubGlobal("innerWidth", 900);
+    overlayCapability.change(true);
+    expect(document.getElementById("inbox-open").hidden).toBe(false);
+
+    // …and it goes again when the window is dragged back out, where the rail is
+    // a column beside the view and this toggle only stands on top of it.
+    vi.stubGlobal("innerWidth", 1440);
+    overlayCapability.change(false);
+    expect(document.getElementById("inbox-open").hidden).toBe(true);
+  });
+
+  it("watches the one width both the sheet and the rail turn on", () => {
+    expect(matchMedia).toHaveBeenCalledWith("(max-width: 900px)");
+    expect(shellCss).toMatch(/@media \(max-width: 900px\) \{/);
   });
 });
 

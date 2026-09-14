@@ -138,6 +138,16 @@ function syncOpenControl(open, visible, collapsed) {
   open.title = label;
 }
 
+/** Which of its two shapes the rail is in is a question about the width, and
+ *  the width changes with no state of ours changing: a window dragged narrow
+ *  leaves the rail pinned and lying OVER the view, where the header toggle is
+ *  the way out of it again. So the sync every state change runs is run once
+ *  more whenever the width crosses the one number that decides the answer. */
+function watchRailShape() {
+  const overlaying = window.matchMedia?.(`(max-width: ${RAIL_OVERLAYS_AT}px)`);
+  overlaying?.addEventListener?.("change", () => syncInboxControls());
+}
+
 /** The thing this pin docks, as the reader would name it. The conversation
  *  panel's pin names its own (core/agentRail.js); the words around both are
  *  core/pinControl.js's. */
@@ -303,6 +313,7 @@ export function initInboxRail() {
     }
   });
   window.addEventListener("resize", () => transitionCleanup?.());
+  watchRailShape();
   const views = $("#inbox-views");
   views.onclick = (event) => {
     const button = event.target.closest("[data-inbox-view]");

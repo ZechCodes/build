@@ -102,7 +102,7 @@ describe("every mocked export exists on the module it replaces", () => {
     expect(MOCKS.length).toBeGreaterThan(20);
   });
 
-  it.each(MOCKS.map((mock) => [`${mock.file} \u2192 ${mock.module}`, mock]))("%s", async (_name, mock) => {
+  it.each(MOCKS.map((mock) => [`${mock.file} → ${mock.module}`, mock]))("%s", async (_name, mock) => {
     const real = await import(/* @vite-ignore */ resolve("test", mock.module));
     const invented = mock.names.filter((name) => !(name in real));
     expect(invented, `${mock.file} mocks ${mock.module} with exports it does not have`).toEqual([]);

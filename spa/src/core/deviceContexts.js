@@ -55,6 +55,17 @@ export function contextFor(deviceId) {
   return (deviceId && contexts.get(deviceId)) || null;
 }
 
+/**
+ * Whether this machine can be asked anything right now.
+ *
+ * Having a context is not the same as being able to reach the machine: one that
+ * answered once keeps its context through an outage — the drafts and cached
+ * reads held against it outlive the connection — and a link can name a machine
+ * this client has never opened at all, which has none. Every surface that would
+ * stand a frame up over a device asks here, so the question is asked one way.
+ */
+export const canAnswer = (context) => Boolean(context && context.call && !context.offline);
+
 /** Every registered device, offline ones included, in App.devices order —
  *  devices the list has not caught up with yet keep their adoption order last. */
 export function knownContexts() {

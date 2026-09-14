@@ -37,7 +37,7 @@ import { initialBranchState, projectGitState } from "./branchSeed.js";
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
-import { routeContext } from "../core/deviceContexts.js";
+import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { deviceOfflineHtml } from "../core/deviceNotice.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
@@ -111,10 +111,6 @@ export async function renderBranch() {
   // handed its caller, its cache scope, its conversations and its offline mark
   // from here, so no pane has to ask which device it is on.
   const context = routeContext(App.route);
-  // A machine that cannot answer — never opened here, or gone since — has
-  // nothing under this link to read or write, so the surface names it rather
-  // than standing a frame up over calls that can only be refused.
-  const unreachable = !context || context.offline;
   // The account's name for this project — the pair (device, project), since
   // every machine mints a `p1`.
   const projectKey = routeProjectKey(App.route);
@@ -126,7 +122,10 @@ export async function renderBranch() {
   App.focusComposerOnMount = false;
   const openAt = openPlaceOf(App.route);
   root.className = "surface";
-  if (unreachable) {
+  // A machine that cannot answer — never opened here, or gone since — has
+  // nothing under this link to read or write, so the surface names it rather
+  // than standing a frame up over calls that can only be refused.
+  if (!canAnswer(context)) {
     root.innerHTML = deviceOfflineHtml(deviceId);
     return;
   }

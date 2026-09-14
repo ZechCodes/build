@@ -9,6 +9,7 @@ import { App, pointAliasesAt } from "../src/app.js";
 import { currentCacheScope } from "../src/core/cacheScope.js";
 import {
   adoptDeviceSession,
+  canAnswer,
   contextFor,
   homeContext,
   deviceFeedView,
@@ -128,6 +129,34 @@ describe("the device context registry", () => {
 
     expect(deviceIdsOf(liveContexts())).toEqual(["dev-b", "dev-a", "dev-new"]);
     expect(contextFor("dev-b").offlineSince).toBe(null);
+  });
+
+  // Every surface that stands a frame up over a machine — a branch, an issue,
+  // a sheet the toolbar opens — asks the same question before it paints, so the
+  // question is asked in one place and worded once.
+  it("says a context can answer only while it is here and nothing has marked it offline", () => {
+    const context = adoptDeviceSession(fakeSession("dev-a"));
+
+    expect(canAnswer(context)).toBe(true);
+
+    setContextOffline("dev-a", { offline: true });
+
+    expect(canAnswer(context)).toBe(false);
+
+    setContextOffline("dev-a", { offline: false });
+
+    expect(canAnswer(context)).toBe(true);
+
+    retireDeviceContext("dev-a");
+
+    expect(canAnswer(context)).toBe(false);
+  });
+
+  // A link can name a machine this client has never opened: there is no context
+  // to ask, which is the same answer as one that cannot answer.
+  it("says an absent context cannot answer", () => {
+    expect(canAnswer(contextFor("dev-nobody"))).toBe(false);
+    expect(canAnswer(null)).toBe(false);
   });
 
   it("calls home the picked device while it is online, else the first online device, else nothing", () => {

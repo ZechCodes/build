@@ -10,7 +10,7 @@ import { $ } from "../dom.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { deviceOfflineHtml } from "../core/deviceNotice.js";
-import { routeContext } from "../core/deviceContexts.js";
+import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountIssueView } from "../core/issueView.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -30,7 +30,7 @@ export async function renderIssue() {
   // link, so the surface names it instead of painting an empty issue.
   const context = routeContext(App.route);
   root.className = "surface";
-  if (!context || context.offline) {
+  if (!canAnswer(context)) {
     root.innerHTML = deviceOfflineHtml(deviceId);
     return;
   }

@@ -9,7 +9,7 @@
 // machine it came from. A surface that is about one machine rather than one row
 // — the create dialog — asks the same way, by device id.
 
-import { contextFor, homeContext } from "./deviceContexts.js";
+import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
 
 /** What a device that cannot answer offers: nothing to call, and the words its
  *  rows and their menus are titled with. */
@@ -24,7 +24,7 @@ const NO_DEVICE = Object.freeze({ call: null, disabled: "Device offline" });
  */
 export function deviceTarget(deviceId) {
   const context = deviceId ? contextFor(deviceId) : homeContext();
-  if (!context || context.offline || !context.call) return NO_DEVICE;
+  if (!canAnswer(context)) return NO_DEVICE;
   return { call: context.call, disabled: false };
 }
 

@@ -217,6 +217,7 @@ function landSession(session) {
   // A device holds one session: a resume and a device that came back online can
   // both land one, and the socket that lost the race is nobody's.
   if (previous?.session !== session) closeQuietly(previous?.session);
+  cancelScheduledResume(session.deviceId);
   const context = adoptDeviceSession(session);
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
@@ -392,6 +393,14 @@ function stillWaiting(deviceId, waiting) {
   const context = contextFor(deviceId);
   if (waiting) return context === waiting && context.offline;
   return !context; // a device that had never connected still has not
+}
+
+/** A resume still counting down for this device is waiting for exactly what
+ *  just landed. Left armed it fires at a device that is live again: another
+ *  handshake, another greeting, and a session for the bin. */
+function cancelScheduledResume(deviceId) {
+  const reconnect = contextFor(deviceId)?.reconnect || unconnected.get(deviceId);
+  if (reconnect) clearTimeout(reconnect.timer);
 }
 
 function scheduleResume(deviceId, reconnect = reconnectFor(deviceId)) {

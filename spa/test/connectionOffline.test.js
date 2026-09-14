@@ -469,6 +469,23 @@ describe("per-device connections", () => {
     expect(captures.flush).toHaveBeenCalledTimes(1);
   });
 
+  // A device that refused is kept after on a backoff. When it answers some
+  // other way — the user picks it, or the relay says it is back and it joins —
+  // that timer is still armed, and it fires at a device that is already live:
+  // another handshake, another greeting, and a session for the bin.
+  it("drops a resume still scheduled for a device that landed another way", async () => {
+    unreachable.add("dev-b");
+    await connectEveryDevice();
+    unreachable.delete("dev-b");
+
+    await setHomeDevice("dev-b");
+    const landed = openedFor("dev-b").length;
+    await vi.advanceTimersByTimeAsync(30000);
+
+    expect(openedFor("dev-b")).toHaveLength(landed);
+    expect(contextFor("dev-b").session).toBe(lastSession("dev-b"));
+  });
+
   it("pauses only the calls of the device that went offline", async () => {
     await connectEveryDevice();
     const lost = openedFor("dev-a").at(-1);

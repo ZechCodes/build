@@ -83,12 +83,19 @@ export const verbCall = (row) => deviceCall(row && row.deviceId);
  */
 export function paintDeviceState(list, { entryFor, blockFor }) {
   for (const element of list.querySelectorAll(".inbox-entry")) {
-    markAway(element, markDeviceState(element, entryFor(element.dataset.key), ".inbox-menu .mi"));
+    markAway(element, markDeviceState(element, entryFor(element.dataset.key), ROW_CONTROLS));
   }
   for (const element of list.querySelectorAll(".inbox-project")) {
-    markDeviceState(element, blockFor(element.dataset.project), ":scope > .inbox-project-head .inbox-project-create");
+    markDeviceState(element, blockFor(element.dataset.project), BLOCK_CONTROLS);
   }
 }
+
+/** What a row offers that only its own machine can carry out: the actions in
+ *  its menu, and the Done on the row itself. */
+const ROW_CONTROLS = ".inbox-menu .mi, [data-workspace-done]";
+
+/** And what a project block offers: the + that starts work in it. */
+const BLOCK_CONTROLS = ":scope > .inbox-project-head .inbox-project-create";
 
 /** One row or block: greyed while its own device is away, and every control
  *  named by `controls` shut with the reason. A row this client holds itself

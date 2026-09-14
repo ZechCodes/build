@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -274,10 +275,56 @@ describe("an account with more than one device", () => {
   });
 
   it("greys a row whose machine is away and shuts the verbs that would ask it", () => {
-    twoDevices();
+    const clean = { pushes: 0, additions: 0, deletions: 0, clean: true };
+    feed(
+      [
+        workspace({ work_summary: clean }),
+        workspace({ id: "workspace-2", deviceId: "dev-2", name: "Refunds", work_summary: clean }),
+      ],
+      [project("project-1", "Payments", "dev-1"), project("project-1", "Payments", "dev-2")],
+    );
+
     setContextOffline("dev-2", { offline: true });
+
     expect(rows()[1].classList.contains("inbox-offline")).toBe(true);
     expect(rows()[0].classList.contains("inbox-offline")).toBe(false);
+    // Greyed is not shut: the verb that would ask the machine says why instead.
+    const away = rows()[1].querySelector("[data-workspace-done]");
+    expect(away.hasAttribute("disabled")).toBe(true);
+    expect(away.title).toBe(deviceOfflineMark);
+    expect(rows()[0].querySelector("[data-workspace-done]").hasAttribute("disabled")).toBe(false);
+  });
+
+  // Grey on its own says "this matters less", not "the machine holding it is
+  // not here", so the row says the word too — and stops saying it the moment
+  // the machine is back.
+  it("wears the word offline while its machine is away", () => {
+    twoDevices();
+
+    setContextOffline("dev-2", { offline: true });
+
+    expect(rows()[1].querySelector(".inbox-away").textContent).toBe(deviceOfflineWord);
+    expect(rows()[0].querySelector(".inbox-away")).toBeNull();
+
+    setContextOffline("dev-2", { offline: false });
+
+    expect(rows()[1].querySelector(".inbox-away")).toBeNull();
+  });
+
+  it("greys a block whose machine is away and shuts its +", () => {
+    twoDevices();
+    setInboxView("projects");
+
+    setContextOffline("dev-2", { offline: true });
+
+    const away = document.querySelector('[data-project="dev-2/project-1"]');
+    expect(away.classList.contains("inbox-offline")).toBe(true);
+    const create = away.querySelector("[data-project-create]");
+    expect(create.hasAttribute("disabled")).toBe(true);
+    expect(create.title).toBe(deviceOfflineMark);
+    const here = document.querySelector('[data-project="dev-1/project-1"]');
+    expect(here.classList.contains("inbox-offline")).toBe(false);
+    expect(here.querySelector("[data-project-create]").hasAttribute("disabled")).toBe(false);
   });
 
   it("narrows the list to one machine without touching the route", () => {

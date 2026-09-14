@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
+import { sessionAnswering } from "./deviceSessionFixture.js";
 
 // The conversation cache writes through IndexedDB; give the module a fake one
 // before anything imports it.
@@ -209,13 +210,7 @@ beforeEach(async () => {
   App.chatRepository = createChatRepository({ scope: currentCacheScope(), call: (method, params) => App.call(method, params) });
   // The machine the rail is mounted on: its bridge is what the harness catalog
   // comes from.
-  adoptDeviceSession({
-    deviceId: "dev-1",
-    call: (...args) => App.call(...args),
-    close: () => {},
-    peer: () => {},
-    onCarrier: () => {},
-  });
+  adoptDeviceSession(sessionAnswering(App));
 });
 
 afterEach(() => {

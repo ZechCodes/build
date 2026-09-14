@@ -6,6 +6,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { sessionAnswering } from "./deviceSessionFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -106,7 +107,7 @@ beforeEach(async () => {
   });
   App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
   App.selectedDeviceId = "dev-1";
-  homeAnswering();
+  adoptDeviceSession(sessionAnswering(App)); // the device creation goes to
   initCompose();
 });
 
@@ -116,17 +117,6 @@ afterEach(() => {
   App.selectedDeviceId = null;
 });
 
-/** The device creation goes to, answering through whatever App.call is standing
- *  at the time — a test that hands over a new one is that bridge answering
- *  differently, not another machine. */
-const homeAnswering = () =>
-  adoptDeviceSession({
-    deviceId: "dev-1",
-    call: (...args) => App.call(...args),
-    close: () => {},
-    peer: () => {},
-    onCarrier: () => {},
-  });
 
 describe("where compose lives", () => {
   it("is pinned at the inbox rail's top, above the entries", () => {

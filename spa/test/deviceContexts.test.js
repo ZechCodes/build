@@ -20,15 +20,7 @@ import {
   routeContext,
   setContextOffline,
 } from "../src/core/deviceContexts.js";
-
-const fakeSession = (deviceId) => ({
-  deviceId,
-  call: vi.fn(async () => ({})),
-  close: vi.fn(),
-  peer: vi.fn(),
-  onCarrier: vi.fn(),
-  onPush: vi.fn(),
-});
+import { fakeSession } from "./deviceSessionFixture.js";
 
 const deviceIdsOf = (contexts) => contexts.map((context) => context.deviceId);
 

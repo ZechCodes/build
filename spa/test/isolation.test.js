@@ -12,6 +12,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { sessionAnswering } from "./deviceSessionFixture.js";
 import {
   ISOLATIONS,
   isolationLabel,
@@ -391,13 +392,7 @@ describe("the Settings page", () => {
     // this is the account list and the pick that name it.
     App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
     App.selectedDeviceId = "dev-1";
-    adoptDeviceSession({
-      deviceId: "dev-1",
-      call: (...args) => App.call(...args),
-      close: () => {},
-      peer: () => {},
-      onCarrier: () => {},
-    });
+    adoptDeviceSession(sessionAnswering(App));
     await renderSettings();
     await flush();
     return App.call;

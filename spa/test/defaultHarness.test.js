@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defaultHarnessOf, defaultHarnessPanelHtml, mountDefaultHarness } from "../src/core/defaultHarness.js";
+import { sessionAnswering } from "./deviceSessionFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -243,13 +244,7 @@ describe("the Settings page", () => {
     // this is the account list and the pick that name it.
     App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
     App.selectedDeviceId = "dev-1";
-    adoptDeviceSession({
-      deviceId: "dev-1",
-      call: (...args) => App.call(...args),
-      close: () => {},
-      peer: () => {},
-      onCarrier: () => {},
-    });
+    adoptDeviceSession(sessionAnswering(App));
     await renderSettings();
     await flush();
     return App;

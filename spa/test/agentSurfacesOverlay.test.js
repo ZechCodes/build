@@ -3,6 +3,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { surfacesSnapshot } from "./surfacesFixture.js";
 import { motionBeat } from "./motionRecorder.js";
+import { sessionAnswering } from "./deviceSessionFixture.js";
 import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { resolve } from "node:path";
 
@@ -164,13 +165,7 @@ beforeEach(() => {
   });
   // The machine the rail is mounted on, which is the one its harness catalog
   // comes from.
-  adoptDeviceSession({
-    deviceId: "dev-1",
-    call: (...args) => App.call(...args),
-    close: () => {},
-    peer: () => {},
-    onCarrier: () => {},
-  });
+  adoptDeviceSession(sessionAnswering(App));
 });
 
 afterEach(() => {

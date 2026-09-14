@@ -38,6 +38,8 @@ const openCreateWork = vi.fn();
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 const openNewRepo = vi.fn();
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: (...args) => openNewRepo(...args) }));
+const notifyError = vi.fn();
+vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 
 let App;
 let adoptDeviceSession;
@@ -196,6 +198,7 @@ beforeEach(async () => {
   refreshFeed.mockClear();
   openCreateWork.mockClear();
   openNewRepo.mockClear();
+  notifyError.mockClear();
   feedProjects = homeProjects();
   feedItems = [branchRow(), primaryRow(), issueRow(), captureRow()];
   initInboxRail();
@@ -366,11 +369,25 @@ describe("the projects face", () => {
     expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ "dev-1/p1": false });
   });
 
-  it("opens the new-repository sheet from the top, and re-reads the feed once it is made", () => {
+  it("opens the new-repository sheet from the top, on the machine creation goes to", () => {
     list().querySelector("[data-new-project]").click();
     expect(openNewRepo).toHaveBeenCalledTimes(1);
+    // The sheet is handed the creation device's own connection and its name;
+    // it asks nothing about devices itself.
+    expect(openNewRepo.mock.calls[0][1]).toEqual({ callRpc: App.call, deviceName: "workshop" });
     openNewRepo.mock.calls[0][0]();
     expect(refreshFeed).toHaveBeenCalled();
+  });
+
+  it("refuses to add a project while no device can answer", async () => {
+    const { allDevicesOfflineText } = await import("../src/core/text.js");
+    setContextOffline("dev-1", { offline: true });
+    setContextOffline("dev-2", { offline: true });
+
+    list().querySelector("[data-new-project]").click();
+
+    expect(openNewRepo).not.toHaveBeenCalled();
+    expect(notifyError).toHaveBeenCalledWith("No device can take a new project", allDevicesOfflineText());
   });
 
   it("gives each block its own Recent, opened and shut on its own", async () => {

@@ -52,7 +52,6 @@ vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "linux-x86
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser: () => {} }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: () => {} }));
 vi.mock("../src/sheets/setRemote.js", () => ({ openSetRemote: () => {} }));
-vi.mock("../src/sheets/clone.js", () => ({ openClone: () => {} }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 
 const flush = () => new Promise((done) => setTimeout(done, 0));

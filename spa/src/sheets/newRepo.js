@@ -1,15 +1,17 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App } from "../app.js";
 import { openBrowser } from "./browser.js";
 
 const TABS = ["create", "existing"];
 
-export function openNewRepo(onDone) {
+/** Opened with the caller of the machine the project is going on, and that
+ *  machine's name: whoever opens the sheet has already resolved which one that
+ *  is, so nothing here asks. A caller whose machine goes away refuses on its
+ *  own, in that machine's words. */
+export function openNewRepo(onDone, { callRpc, deviceName }) {
   const sheet = $("#sheet");
   const scrim = $("#scrim");
-  const session = App.session;
-  const call = App.call;
+  const title = `New repository on ${deviceName}`;
   const draft = { name: "", remote: "", path: "" };
   let active = true;
   let busy = false;
@@ -22,12 +24,6 @@ export function openNewRepo(onDone) {
     active = false;
     renderVersion += 1;
     scrim.classList.remove("show");
-  };
-  const callRpc = (method, params) => {
-    if (!active || App.session !== session || App.call !== call) {
-      return Promise.reject(new Error("The active device changed. Reopen Add project on the device you want."));
-    }
-    return call(method, params);
   };
   const rememberCreate = () => {
     const name = sheet.querySelector("#nrname");
@@ -49,7 +45,7 @@ export function openNewRepo(onDone) {
     errorElement.textContent = "";
     try {
       const project = await callRpc(method, params);
-      if (!visible(anchor) || App.session !== session) return;
+      if (!visible(anchor)) return;
       close();
       onDone?.(project);
     } catch (error) {
@@ -81,7 +77,7 @@ export function openNewRepo(onDone) {
     });
   };
   const paintCreate = () => {
-    sheet.innerHTML = `<h3>Add project</h3>${tabsHtml()}
+    sheet.innerHTML = `<h3>${esc(title)}</h3>${tabsHtml()}
       <p class="sub">The project will be created in this device's configured projects folder.</p>
       <form id="nrform">
         <div class="field"><label for="nrname">Name</label><input id="nrname" required placeholder="my-project" value="${esc(draft.name)}" /></div>
@@ -134,7 +130,7 @@ export function openNewRepo(onDone) {
   };
   const paintExisting = () => {
     const version = ++renderVersion;
-    sheet.innerHTML = `<h3>Add project</h3>${tabsHtml()}
+    sheet.innerHTML = `<h3>${esc(title)}</h3>${tabsHtml()}
       <p class="sub">Choose a folder on this device to add as a project.</p>
       <div id="nrbrowser"></div>
       <div class="field"><label>Selected folder</label><div class="browse-path" id="nrexistingpath">${draft.path ? esc(draft.path) : "No folder selected"}</div></div>

@@ -7,7 +7,7 @@ import { App, go } from "../app.js";
 import { projectRoute } from "../core/projectModel.js";
 import { refreshDevices } from "../devices.js";
 import { chooseCreationDevice } from "../connection.js";
-import { creationDeviceId } from "../core/devicePolicy.js";
+import { creationDeviceId, deviceNameOf } from "../core/devicePolicy.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
@@ -138,6 +138,7 @@ export async function renderSettings() {
       <div class="adderr" id="deverr"></div>
     </div>`;
 
+  const callRpc = (method, params) => App.call(method, params);
   const refresh = async () => {
     try {
       const { projects } = await App.call("project.list");
@@ -157,7 +158,7 @@ export async function renderSettings() {
         (btn) =>
           (btn.onclick = () => {
             const project = projects.find((p) => p.project_id === btn.dataset.id);
-            openSetRemote(project, refresh);
+            openSetRemote(project, refresh, { callRpc });
           }),
       );
     } catch (e) {
@@ -165,7 +166,6 @@ export async function renderSettings() {
     }
   };
   await refresh();
-  const callRpc = (method, params) => App.call(method, params);
   // What a panel on this page has just saved and had confirmed. The creation
   // defaults below are built from the creation device's catalog, which still
   // reports the old answer until it is re-read — and may refuse to be re-read
@@ -187,10 +187,15 @@ export async function renderSettings() {
   await mountTriageSetting($("#root"), { callRpc });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
-  $("#newrepo").onclick = () => openNewRepo(async (project) => {
-    if (project?.project_id) go(projectRoute(project));
-    else await refresh();
-  });
+  const creationId = creationDeviceId(App.devices, App.selectedDeviceId);
+  $("#newrepo").onclick = () =>
+    openNewRepo(
+      async (project) => {
+        if (project?.project_id) go(projectRoute(project));
+        else await refresh();
+      },
+      { callRpc, deviceName: deviceNameOf(App.devices, creationId) },
+    );
 
   // The agent defaults panel: the same three selectors the New issue sheet hides
   // behind its harness button, saved on every change (there is no Save button —
@@ -234,6 +239,7 @@ export async function renderSettings() {
     openBrowser({
       title: "Choose a projects folder",
       gitOnly: false,
+      callRpc,
       onChoose: async (path) => {
         try {
           await App.call("settings.set", { projects_dir: path });

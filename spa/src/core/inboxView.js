@@ -47,7 +47,7 @@ import { routeProjectKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
 import { filterByDevice } from "./deviceFilter.js";
-import { paintDeviceState, verbCall } from "./inboxDevices.js";
+import { creationTarget, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
@@ -439,13 +439,17 @@ function createInBlock(projectKey) {
   });
 }
 
-/** The one control above every block: a project this device does not have yet. */
+/** The one control above every block: a project the account does not have yet.
+ *  It is made where creation goes, over that machine's own connection; while no
+ *  machine can answer there is nowhere to make it, and the rail says so. */
 function openNewProject() {
+  const target = creationTarget("No device can take a new project");
+  if (!target) return;
   openNewRepo((project) => {
     const route = projectRoute(project);
     if (route) goFromInbox(route);
     refreshFeed();
-  });
+  }, target);
 }
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */

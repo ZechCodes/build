@@ -9,7 +9,11 @@
 // machine it came from. A surface that is about one machine rather than one row
 // — the create dialog — asks the same way, by device id.
 
+import { App } from "../app.js";
 import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
+import { deviceNameOf } from "./devicePolicy.js";
+import { allDevicesOfflineText } from "./text.js";
+import { notifyError } from "./notify.js";
 import { EMPTY_CATALOG } from "./modelCatalog.js";
 
 /** What a device that cannot answer offers: nothing to call, and the words its
@@ -116,4 +120,22 @@ function openControl(control) {
   delete control.dataset.deviceTitle;
   control.removeAttribute("aria-disabled");
   control.removeAttribute("disabled");
+}
+
+/**
+ * Where creation goes, in the shape a creation sheet is opened with: that
+ * machine's caller and the account's name for it.
+ *
+ * Null while no machine can answer — and the reader is told so under
+ * `refusal`, because a control that quietly does nothing is a fault to whoever
+ * pressed it. The sheet itself never learns any of this: it is handed one
+ * caller and asks nothing about devices.
+ */
+export function creationTarget(refusal) {
+  const context = homeContext();
+  if (canAnswer(context)) {
+    return { callRpc: context.call, deviceName: deviceNameOf(App.devices, context.deviceId) };
+  }
+  notifyError(refusal, allDevicesOfflineText());
+  return null;
 }

@@ -1,11 +1,11 @@
-// A host directory browser in the sheet. Optional callRpc and startPath scope
-// browsing to a specific device and initially open its configured folder.
+// A host directory browser in the sheet. The caller it is opened with is the
+// machine whose folders it shows, and startPath opens it at that machine's
+// configured folder.
 // gitOnly → only git repos are "Choose"-able and the footer adds the current
 // repo; otherwise every folder is selectable (used to pick the projects dir).
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App } from "../app.js";
 
 function bindCancel(container, cancel) {
   const button = container.querySelector("#bcancel");
@@ -13,7 +13,7 @@ function bindCancel(container, cancel) {
 }
 
 export async function openBrowser(opts) {
-  const callRpc = opts.callRpc || ((method, params) => App.call(method, params));
+  const { callRpc } = opts;
   const sheet = $("#sheet");
   const container = opts.container || sheet;
   const embedded = container !== sheet;

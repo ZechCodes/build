@@ -5,7 +5,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, render } from "../app.js";
-import { claimHomeContext, greetLiveBridge, openDeviceSessions, setConn } from "../connection.js";
+import { CONNECTION_STATUS, claimHomeContext, greetLiveBridge, openDeviceSessions, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -48,7 +48,7 @@ async function enterApp() {
   }
   setGate(false);
   paintDevicePicker();
-  setConn('<span class="dot"></span>connected');
+  setConn(CONNECTION_STATUS.connected);
   // Before the surfaces mount, so they take the cadence this bridge earns: a
   // bridge that pushes lets them stand down to the safety poll, and one that
   // does not leaves every interval exactly where it has always been.
@@ -160,7 +160,7 @@ function bindPairing() {
 // the same screen, above the code the bridge will print.
 async function renderOnboarding() {
   setGate(true);
-  setConn('<span class="dot" style="background:var(--dim)"></span>no devices');
+  setConn(CONNECTION_STATUS.noDevices);
   $("#root").innerHTML = onboardingStepsHtml();
   bindPairing();
   await mountDownloads($("#root"), {
@@ -189,7 +189,7 @@ function paintWaiting(devices) {
 
 function renderWaiting(devices) {
   setGate(true);
-  setConn('<span class="dot" style="background:var(--amber)"></span>device offline');
+  setConn(CONNECTION_STATUS.deviceOffline);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
       <h1 style="margin:0 0 6px">Waiting for your device</h1>
@@ -207,7 +207,7 @@ function renderWaiting(devices) {
 
 export async function boot() {
   setGate(true);
-  setConn('<span class="dot" style="background:var(--amber)"></span>connecting…');
+  setConn(CONNECTION_STATUS.connecting);
   const devices = await refreshDevices();
   if (!devices.length) {
     await renderOnboarding();

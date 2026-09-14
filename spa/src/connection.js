@@ -39,9 +39,6 @@ import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { joinFeed } from "./core/taskFeed.js";
 import { allDevicesOfflineText, offlineBannerText } from "./core/text.js";
 
-const CONNECTED = '<span class="dot"></span>connected';
-const RECONNECTING = '<span class="dot" style="background:var(--amber)"></span>reconnecting…';
-
 /// Connection status has no chip of its own any more — the status line under the
 /// rail is the device picker and nothing else. Offline still speaks up loudly
 /// through the banner (#offbar), which is the state that actually needs saying.
@@ -50,6 +47,19 @@ export function setConn(html) {
   const el = $("#conn");
   if (el) el.innerHTML = html;
 }
+
+/** Every state the status line can be in, minted here so the gate's wording and
+ *  the running app's cannot drift apart. A dot with no colour is the healthy
+ *  one. */
+const chip = (words, dot) => `<span class="dot"${dot ? ` style="background:${dot}"` : ""}></span>${words}`;
+
+export const CONNECTION_STATUS = {
+  connected: chip("connected"),
+  reconnecting: chip("reconnecting…", "var(--amber)"),
+  connecting: chip("connecting…", "var(--amber)"),
+  deviceOffline: chip("device offline", "var(--amber)"),
+  noDevices: chip("no devices", "var(--dim)"),
+};
 
 /** What every socket to this account's relay needs, whoever is opening it and
  *  whatever they mean to do with it: the endpoint, the crypto, and the device
@@ -401,12 +411,12 @@ export function paintOfflineBanner() {
   const banner = $("#offbar");
   if (banner) banner.hidden = !nothingLive;
   if (!nothingLive) {
-    setConn(CONNECTED);
+    setConn(CONNECTION_STATUS.connected);
     return;
   }
   const text = $("#offbar-text");
   if (text) text.textContent = bannerText(knownContexts());
-  setConn(RECONNECTING);
+  setConn(CONNECTION_STATUS.reconnecting);
 }
 
 /** One device is named, with when it went unreachable; several of them (or none

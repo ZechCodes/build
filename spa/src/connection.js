@@ -16,6 +16,7 @@ import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, pointAliasesAt, render, rememberSelectedDevice } from "./app.js";
+import { cacheDeviceId } from "./core/cacheScope.js";
 import {
   adoptDeviceSession,
   closeQuietly,
@@ -228,14 +229,14 @@ function landSession(session) {
 // The device followHomeContext was last run for. Home itself is derived — the
 // account list and the pick say who it is — so this is not another answer to
 // that question, only the record of which one the side effects below were last
-// carried out for.
-let followedHomeId = null;
+// carried out for. Nor is it a second copy: pointAliasesAt hands the cache
+// alias the very same device, and a torn-down scope forgets it with the rest.
+const followedHomeId = () => cacheDeviceId();
 
 /** Take the home device in hand: what the App.* aliases copy, whose link the
  *  terminals ride, what the picker names, and who is offered the captures
  *  nobody could send. Everything a home move touches happens here, once. */
 function followHomeContext(context) {
-  followedHomeId = context.deviceId;
   pointAliasesAt(context);
   // The terminal socket reads the device it wants only as it connects, and a
   // healthy one never reconnects on its own: home moving is one of the two
@@ -265,8 +266,12 @@ function followHomeContext(context) {
  * already home, because what the aliases copy off it is not what it was.
  */
 export function syncHome(landed = null) {
-  const home = homeContext();
-  if (home && (home.deviceId !== followedHomeId || home === landed)) followHomeContext(home);
+  // Nothing at all is online, so the account names no home: the aliases stay on
+  // the device they were already following and read it again, which is how they
+  // come to say it has gone offline.
+  const followed = followedHomeId();
+  const home = homeContext() || contextFor(followed);
+  if (home && (home.deviceId !== followed || home === landed)) followHomeContext(home);
 }
 
 /** Move home to another device: where creation goes, which context the aliases

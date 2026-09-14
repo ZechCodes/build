@@ -170,6 +170,27 @@ describe("per-device connections", () => {
     expect(App.offlineSince).toBe(contextFor("dev-a").offlineSince);
   });
 
+  // The relay says a bridge went before that session is lost, so the account
+  // lists it offline first — and with nothing else online there is no home left
+  // to name. The aliases still describe that device, and what they have to say
+  // about it now is that it is offline: the alternative is a composer that
+  // thinks it can send and a view that never freezes.
+  it("says the last device is offline, with no home left to name", async () => {
+    await connectEveryDevice();
+    unreachable.add("dev-a");
+    unreachable.add("dev-b");
+
+    markDeviceOffline("dev-b"); // the relay tells us each bridge went…
+    goOffline("dev-b"); // …and each session is lost straight after
+    markDeviceOffline("dev-a");
+    goOffline("dev-a");
+    await flush();
+
+    expect(App.offline).toBe(true);
+    expect(App.offlineSince).toBe(contextFor("dev-a").offlineSince);
+    expect(bannerShown()).toBe(true);
+  });
+
   // The banner's silence is only half the answer: the rail has to keep showing
   // the lost device's work, greyed, or its rows would simply vanish. The grey
   // is not news the feed carries — the rows themselves do not change when a

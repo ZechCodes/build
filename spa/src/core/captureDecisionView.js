@@ -13,6 +13,8 @@
 
 import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { deviceView } from "./feedMerge.js";
+import { homeContext } from "./deviceContexts.js";
 import { confirmAction, isConfirmOpen } from "./confirm.js";
 import { notifyError } from "./notify.js";
 import { branchOptions } from "./compose.js";
@@ -54,8 +56,11 @@ export function mountCaptureDecision(host, captureId) {
 
   host.innerHTML = '<div class="empty">Reading the capture…</div>';
 
+  // A capture is device-scoped: it was taken for the home device, and the
+  // projects it can be routed to are that device's.
   const unsubscribe = subscribeFeed((next) => {
-    feed = { items: next.items || [], projects: next.projects || [] };
+    const view = deviceView(next, homeContext()?.deviceId);
+    feed = { items: view.items || [], projects: view.projects || [] };
     if (record) drawFromPoll();
   });
 

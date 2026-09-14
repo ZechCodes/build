@@ -63,6 +63,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 const openProjectSettings = vi.fn();
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => openProjectSettings(...args) }));
@@ -392,5 +393,40 @@ describe("the ⋯", () => {
     bar().querySelector('[data-select="more"]').click();
     menu().querySelector('[data-action="archive"]').click();
     expect(location.hash).toBe("#/account/archive");
+  });
+});
+
+// The toolbar is about where you are, and where you are is one machine. The
+// feed carries every device once the rail merges them, so the toolbar reads the
+// home device's view out of it — which is what keeps it looking exactly as it
+// does on a one-device account.
+describe("an account with more than one device", () => {
+  it("offers the home device's projects, not every device's", async () => {
+    const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
+    const { pointAliasesAt } = await import("../src/app.js");
+    const home = adoptDeviceSession({
+      deviceId: "dev-1",
+      call: async () => ({}),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
+    pointAliasesAt(home);
+    const mine = { items: [], projects: [{ id: "p1", name: "relaydb", deviceId: "dev-1", projectKey: "dev-1/p1" }] };
+    const theirs = { items: [], projects: [{ id: "p9", name: "laptop notes", deviceId: "dev-2", projectKey: "dev-2/p9" }] };
+    feed = {
+      items: [],
+      projects: [...mine.projects, ...theirs.projects],
+      devices: { "dev-1": mine, "dev-2": theirs },
+    };
+    await refreshFeed();
+    App.route = { name: "inbox" };
+    toolbarRouteChanged();
+    openJump("project");
+
+    expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb"]);
+    feed = savedFeed;
+    resetDeviceContexts();
+    pointAliasesAt(null);
   });
 });

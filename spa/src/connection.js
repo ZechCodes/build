@@ -161,7 +161,7 @@ export function greetLiveBridge() {
 }
 
 export function adoptSession(session) {
-  const previousDeviceId = homeContext()?.deviceId || null;
+  const previousDeviceId = homeContext()?.deviceId;
   dropPeerLink(); // whatever was carrying was carrying the session we just left
   // Reconnects keep this device's controllers/drafts and only replace their
   // transport. A device switch retires the old context before any new view can

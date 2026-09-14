@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App, pointAliasesAt } from "../src/app.js";
+import { currentCacheScope } from "../src/core/cacheScope.js";
 import {
   adoptDeviceSession,
   contextFor,
@@ -134,5 +135,25 @@ describe("the device context registry", () => {
     retireDeviceContext("dev-b");
 
     expect(homeContext()).toBe(null);
+  });
+
+  it("points the ambient cache-scope alias at the home device too", () => {
+    // Surfaces not yet migrated read currentCacheScope() while they mount. It
+    // has to name whichever device the aliases were last pointed at, or those
+    // reads address no cache at all.
+    const first = adoptDeviceSession(fakeSession("dev-a"));
+    const second = adoptDeviceSession(fakeSession("dev-b"));
+
+    pointAliasesAt(first);
+
+    expect(currentCacheScope()).toBe(first.cacheScope);
+
+    pointAliasesAt(second);
+
+    expect(currentCacheScope()).toBe(second.cacheScope);
+
+    pointAliasesAt(null);
+
+    expect(currentCacheScope()).toBe(null);
   });
 });

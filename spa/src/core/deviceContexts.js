@@ -8,7 +8,7 @@
 // reading it at load time would read a half-built module.
 
 import { App } from "../app.js";
-import { releaseScope, scopeFor } from "./cacheScope.js";
+import { adoptCacheScope, releaseScope, scopeFor } from "./cacheScope.js";
 import { createChatRepository } from "./chatRepository.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
@@ -118,9 +118,12 @@ export function homeContext() {
 }
 
 /** Called by pointAliasesAt (app.js) — pointing the aliases at a context and
- *  calling it home are one statement, made in one place. */
+ *  calling it home are one statement, made in one place. That includes
+ *  cacheScope's own home alias, which surfaces still read as
+ *  currentCacheScope() while they mount. */
 export function setHomeContext(context) {
   homeDevice = context?.deviceId || null;
+  adoptCacheScope(homeDevice);
   return context || null;
 }
 

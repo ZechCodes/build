@@ -387,15 +387,32 @@ describe("the projects face", () => {
     expect(refreshFeed).toHaveBeenCalled();
   });
 
-  it("refuses to add a project while no device can answer", async () => {
-    const { allDevicesOfflineText } = await import("../src/core/text.js");
+  // The refusal names the machine the work would have gone to. "All devices are
+  // offline" is a different claim, and it is only true when the account has no
+  // machine to name at all.
+  it("refuses to add a project by naming the machine creation goes to", async () => {
+    const { deviceOfflineText } = await import("../src/core/text.js");
     setContextOffline("dev-1", { offline: true });
     setContextOffline("dev-2", { offline: true });
 
     list().querySelector("[data-new-project]").click();
 
     expect(openNewRepo).not.toHaveBeenCalled();
-    expect(notifyError).toHaveBeenCalledWith("No device can take a new project", allDevicesOfflineText());
+    expect(notifyError).toHaveBeenCalledWith("No device can take a new project", deviceOfflineText("workshop"));
+  });
+
+  // The machine the pick names is up by the account list and has not finished
+  // handshaking — it has no context yet — while the rest of the account is
+  // live. Nothing about that is "all devices are offline".
+  it("names the picked machine that has not landed yet, with others still live", async () => {
+    const { deviceOfflineText } = await import("../src/core/text.js");
+    App.devices = [...App.devices, { id: "dev-3", name: "studio", status: "online" }];
+    App.selectedDeviceId = "dev-3"; // picked, online by the list, no session yet
+
+    list().querySelector("[data-new-project]").click();
+
+    expect(openNewRepo).not.toHaveBeenCalled();
+    expect(notifyError).toHaveBeenCalledWith("No device can take a new project", deviceOfflineText("studio"));
   });
 
   it("gives each block its own Recent, opened and shut on its own", async () => {

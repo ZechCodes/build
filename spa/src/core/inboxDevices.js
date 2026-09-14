@@ -11,8 +11,9 @@
 
 import { App } from "../app.js";
 import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
-import { deviceNameOf } from "./devicePolicy.js";
+import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
 import { allDevicesOfflineText, deviceOfflineMark } from "./text.js";
+import { deviceOfflineNotice } from "./deviceNotice.js";
 import { notifyError } from "./notify.js";
 import { EMPTY_CATALOG } from "./modelCatalog.js";
 
@@ -122,7 +123,7 @@ function openControl(control) {
  * Where creation goes, in the shape a creation sheet is opened with: that
  * machine's caller and the account's name for it.
  *
- * Null while no machine can answer — and the reader is told so under
+ * Null while that machine cannot answer — and the reader is told so under
  * `refusal`, because a control that quietly does nothing is a fault to whoever
  * pressed it. The sheet itself never learns any of this: it is handed one
  * caller and asks nothing about devices.
@@ -132,6 +133,20 @@ export function creationTarget(refusal) {
   if (canAnswer(context)) {
     return { callRpc: context.rpc, deviceName: deviceNameOf(App.devices, context.deviceId) };
   }
-  notifyError(refusal, allDevicesOfflineText());
+  notifyError(refusal, creationRefusal());
   return null;
+}
+
+/**
+ * Why creation cannot go anywhere right now.
+ *
+ * The machine it goes to, named: the account knows which one that is long
+ * before it can answer — a picked device that is up by the list and still
+ * handshaking has no context yet, while every other machine is live, and saying
+ * every device is offline there is simply untrue. That sentence is for the case
+ * it describes: no machine to name at all.
+ */
+function creationRefusal() {
+  const deviceId = creationDeviceId(App.devices, App.selectedDeviceId);
+  return deviceId ? deviceOfflineNotice(deviceId) : allDevicesOfflineText();
 }

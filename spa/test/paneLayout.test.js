@@ -1361,6 +1361,38 @@ describe("the inbox row's actions", () => {
     expect(reveal.selector).toContain(".inbox-actions:has(.inbox-menu:not([hidden]))");
   });
 
+  it("reserves the row's edge from the control the overlay actually holds", () => {
+    // A greyed row keeps the overlay's width out of its first line, so hovering
+    // never covers the one word saying why the row is grey. The reserve was the
+    // ⋯ button's, and a clean workspace's row does not carry the ⋯ — it carries
+    // Done, which is more than twice as wide, so the overlay covered the last
+    // 20px of "offline". jsdom computes no layout: what is pinned is that the
+    // reserve is built from the same numbers the overlay itself is.
+    // The row is stated twice — once as a row of the list, once as the box this
+    // overlay is positioned against. It is the second that carries the reserve.
+    const row = rulesFor(".inbox-entry").find((rule) => declaration(rule.body, "--inbox-actions-room"));
+    const withDone = cssRules().find((rule) => rule.selector === ".inbox-entry:has(.inbox-workspace-done)");
+    expect(withDone).toBeTruthy();
+    const room = (inside) =>
+      `calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(${inside}))`;
+    expect(declaration(row.body, "--inbox-actions-room")).toBe(room("--inbox-menu-width"));
+    expect(declaration(withDone.body, "--inbox-actions-room")).toBe(room("--inbox-done-width"));
+
+    // …and those numbers have one home each: where the overlay sits, the fade it
+    // stands on, and the width of the control it holds.
+    const actions = baseRule(".inbox-actions");
+    expect(declaration(actions.body, "right")).toBe("var(--inbox-actions-inset)");
+    expect(declaration(actions.body, "top")).toBe("var(--inbox-actions-inset)");
+    expect(declaration(actions.body, "padding-left")).toBe("var(--inbox-actions-fade)");
+    expect(declaration(baseRule(".inbox-workspace-done").body, "min-width")).toBe("var(--inbox-done-width)");
+
+    // The room is reserved on the line the word stands on, and nowhere else.
+    const line = cssRules().find(
+      (rule) => rule.selector === ".inbox-offline > .inbox-body > .inbox-line:first-child",
+    );
+    expect(declaration(line.body, "padding-right")).toBe("var(--inbox-actions-room)");
+  });
+
   it("stays reachable where hover does not exist", () => {
     const touch = cssRules().find(
       (rule) =>

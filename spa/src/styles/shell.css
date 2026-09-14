@@ -297,13 +297,23 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    room for buttons. The overlay carries the row's own background so the
    title it covers reads as covered, not collided. The menu reuses the split
    button's popover. */
-/* --inbox-actions-room is what this overlay costs the row's right edge — the
-   ⋯ button and the fade it carries — stated once here, and reserved on a
-   greyed row's first line above. */
-.inbox-entry { position:relative; --inbox-actions-room:34px; }
-.inbox-actions { position:absolute; top:4px; right:4px; display:flex;
+/* --inbox-actions-room is what this overlay costs the row's right edge, and it
+   is reserved on a greyed row's first line above. It is built from the numbers
+   the overlay is built from: where it sits, the fade it stands on, and the one
+   control it holds. Which control that is differs by row — the ⋯ on most, Done
+   on a clean workspace's, which has no ⋯ at all (a workspace's verbs are that
+   one button) and is more than twice as wide as one. */
+.inbox-entry { position:relative;
+  --inbox-actions-inset:4px;  /* how far in from the row's corner the overlay sits */
+  --inbox-actions-fade:6px;   /* the fade it stands on, before its first control */
+  --inbox-menu-width:24px;    /* the ⋯ */
+  --inbox-done-width:56px;    /* Done, and Done… while it is being done */
+  --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-menu-width)); }
+.inbox-entry:has(.inbox-workspace-done) {
+  --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-done-width)); }
+.inbox-actions { position:absolute; top:var(--inbox-actions-inset); right:var(--inbox-actions-inset); display:flex;
   align-items:center; gap:2px; opacity:0; pointer-events:none;
-  background:var(--bg); border-radius:6px; padding-left:6px;
+  background:var(--bg); border-radius:6px; padding-left:var(--inbox-actions-fade);
   box-shadow:-8px 0 8px -6px var(--bg); }
 .inbox-entry:hover .inbox-actions { background:var(--line2);
   box-shadow:-8px 0 8px -6px var(--line2); }
@@ -313,7 +323,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry.active .inbox-actions,
 .inbox-actions:has(.inbox-workspace-done),
 .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
-.inbox-workspace-done { min-width:48px; }
+/* One width for Done and for Done…, so pressing it does not widen it. */
+.inbox-workspace-done { min-width:var(--inbox-done-width); }
 /* No hover on touch: the selected row shows its actions, one tap behind. */
 @media (hover:none) {
   .inbox-entry:hover .inbox-actions { opacity:0; pointer-events:none; }

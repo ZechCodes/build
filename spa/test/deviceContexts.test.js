@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../src/app.js";
 import {
+  adoptBridgeSelection,
   adoptDeviceSession,
   canAnswer,
   contextFor,
@@ -20,7 +21,8 @@ import {
   routeContext,
   setContextOffline,
 } from "../src/core/deviceContexts.js";
-import { fakeSession } from "./deviceSessionFixture.js";
+import { bridgeBehindMark, deviceOfflineMark } from "../src/core/text.js";
+import { callerReaches, fakeSession } from "./deviceSessionFixture.js";
 
 const deviceIdsOf = (contexts) => contexts.map((context) => context.deviceId);
 
@@ -58,7 +60,7 @@ describe("the device context registry", () => {
     expect(first.active()).toBe(true);
   });
 
-  it("keeps a re-adopted device's controllers and drafts, and sends on the new transport", () => {
+  it("keeps a re-adopted device's controllers and drafts, and sends on the new transport", async () => {
     const context = adoptDeviceSession(fakeSession("dev-a"));
     const { cacheScope, chatRepository } = context;
     const controller = chatRepository.controller({
@@ -76,7 +78,9 @@ describe("the device context registry", () => {
     expect(resumed.chatRepository).toBe(chatRepository);
     expect(resumed.call).toBe(reconnected.call);
     expect(resumed.session).toBe(reconnected);
-    expect(chatRepository.currentCall()).toBe(reconnected.call);
+    // The repository's caller is the device's, not the session's spy: it refuses
+    // when the machine cannot answer, so ask through it and see where it lands.
+    expect(await callerReaches(chatRepository.currentCall(), reconnected.call)).toBe(true);
     expect(controller.readDraft().body).toBe("keep this");
     expect(resumed.offline).toBe(false);
   });
@@ -220,6 +224,59 @@ describe("the device context registry", () => {
   it("says an absent context cannot answer", () => {
     expect(canAnswer(contextFor("dev-nobody"))).toBe(false);
     expect(canAnswer(null)).toBe(false);
+  });
+
+  // The caller every surface holds is the one seam they all share: a mount asks
+  // canAnswer before it paints, but a poll already running, a watcher already
+  // subscribed and the cache syncer's background tier ask nothing — they just
+  // call. A machine that cannot answer must refuse at the caller, or a surface
+  // mounted before the greeting settled goes on asking a bridge whose answers
+  // this tab cannot read, and paints whatever comes back.
+  it("refuses a call to a machine that cannot answer, and says which way it cannot", async () => {
+    const session = fakeSession("dev-a");
+    const context = adoptDeviceSession(session);
+
+    expect(await callerReaches(context.rpc, session.call)).toBe(true);
+
+    adoptBridgeSelection(context, { version: "0.9.0", unsupported: "bridge" }, null);
+    const asked = session.call.mock.calls.length;
+
+    await expect(context.rpc("board.list")).rejects.toThrow(bridgeBehindMark);
+    expect(session.call.mock.calls.length).toBe(asked);
+
+    adoptBridgeSelection(context, { version: "1.1.0", unsupported: null }, {});
+    setContextOffline("dev-a", { offline: true });
+
+    await expect(context.rpc("board.list")).rejects.toThrow(deviceOfflineMark);
+    expect(session.call.mock.calls.length).toBe(asked);
+  });
+
+  // The conversations are the other caller a mounted surface holds: the rail
+  // reads and posts through the repository, which is bound to the session that
+  // adopted it so a post finishes where it was accepted. That binding must not
+  // be a way round the refusal.
+  it("refuses the conversations of a machine that cannot answer", async () => {
+    const session = fakeSession("dev-a");
+    const context = adoptDeviceSession(session);
+    adoptBridgeSelection(context, { version: "0.9.0", unsupported: "bridge" }, null);
+
+    await expect(context.chatRepository.currentCall()("branch.get", {})).rejects.toThrow(bridgeBehindMark);
+    expect(session.call).not.toHaveBeenCalled();
+  });
+
+  // A reconnect re-greets, and the bridge that answers may be the one that can
+  // be read: the caller the mounted surface is still holding has to come back
+  // with the device.
+  it("lets a machine be asked again once its next greeting can be read", async () => {
+    const session = fakeSession("dev-a");
+    const context = adoptDeviceSession(session);
+    adoptBridgeSelection(context, { version: "0.9.0", unsupported: "bridge" }, null);
+
+    const resumed = fakeSession("dev-a");
+    adoptDeviceSession(resumed);
+    adoptBridgeSelection(context, { version: "1.1.0", unsupported: null }, {});
+
+    expect(await callerReaches(context.rpc, resumed.call)).toBe(true);
   });
 
   it("calls home the picked device while it is online, else the first online device, else nothing", () => {

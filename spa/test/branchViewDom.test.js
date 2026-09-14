@@ -229,6 +229,28 @@ describe("the branch surface", () => {
     expect(bridge.call).toHaveBeenCalledWith("branch.get", expect.objectContaining({ project_id: "p1" }));
   });
 
+  // A bridge can be updated past this tab while the surface stands over it: the
+  // session drops, re-greets, and settles unsupported. The mount already
+  // happened, so nothing asks canAnswer again — the poll just calls the caller
+  // it captured. It must be refused there, or a 1.x-shaped read goes at a 2.x
+  // bridge and whatever comes back is painted under the update strip.
+  it("stops polling a machine whose greeting settles unsupported under it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { adoptBridgeSelection, contextFor } = await import("../src/core/deviceContexts.js");
+    bridge.call = vi.fn(async () => row);
+    await renderBranch();
+    await flush();
+    expect(bridge.call.mock.calls.some(([method]) => method === "branch.get")).toBe(true);
+
+    adoptBridgeSelection(contextFor("dev-1"), { version: "9.0.0", unsupported: "bridge" }, null);
+    bridge.call.mockClear();
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(bridge.call).not.toHaveBeenCalled();
+    expect(document.querySelector("#view .device-strip")?.textContent).toContain("This device");
+    vi.useRealTimers();
+  });
+
   // This poll runs every 1.6s and again on every change event, and the surface
   // renders no conversation — the rail beside it does, off its own paged read
   // of the same RPC. A read that names no bound is answered with every item the

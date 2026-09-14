@@ -13,7 +13,8 @@ import { App } from "../app.js";
 import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
 import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
 import { allDevicesOfflineText } from "./text.js";
-import { deviceAwayMark, deviceAwayWord, deviceOfflineNotice } from "./deviceNotice.js";
+import { deviceAwayMark, deviceAwayWord } from "./deviceAway.js";
+import { deviceOfflineNotice } from "./deviceNotice.js";
 import { notifyError } from "./notify.js";
 import { EMPTY_CATALOG } from "./modelCatalog.js";
 

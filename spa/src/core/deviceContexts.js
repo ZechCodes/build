@@ -14,7 +14,7 @@ import { createChatRepository } from "./chatRepository.js";
 import { deviceView } from "./feedMerge.js";
 import { createModelCatalog } from "./modelCatalog.js";
 import { disarmChangeEvents } from "./changeEvents.js";
-import { deviceOfflineMark } from "./text.js";
+import { deviceAwayMark } from "./deviceAway.js";
 import { dropFeedDevice } from "./taskFeed.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
@@ -34,23 +34,33 @@ export function onDeviceStateChanged(fn) {
 
 const announceDeviceState = () => stateListeners.forEach((fn) => fn());
 
+/**
+ * A caller to one machine that refuses when that machine cannot answer.
+ *
+ * Every surface asks canAnswer before it stands a frame up, but a poll already
+ * running, a watcher already subscribed and the cache syncer's background tier
+ * ask nobody — they hold a caller from mount and call it. A greeting that
+ * settles unsupported under them (a bridge updated past this tab re-greets on
+ * its next session) would otherwise leave them asking for answers in a shape
+ * this tab cannot read, and painting whatever came back. So the refusal lives
+ * at the caller, where every one of them passes, and says which side is behind
+ * in the same words the strip over that surface says.
+ *
+ * `transport` is which session to ask: the device's current one for the caller
+ * the surfaces hold, and the one that adopted it for the conversations, which
+ * finish on the transport that accepted them. Everything else — `(method,
+ * params, timeoutMs)` — is passed straight through, so an argument the caller
+ * left out stays left out and the session's own defaults apply.
+ */
+const asking = (context, transport) => (...asked) =>
+  (canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context))));
+
 function createDeviceContext(deviceId) {
   const context = {
     deviceId,
     session: null, // { deviceId, call, onPush, peer, onCarrier, close } or null while offline
     call: null, // session.call, retargeted on every re-adoption
-    /** The one spelling of "ask this machine", and the only caller anything
-     *  outside this module holds. A reconnect replaces the transport under a
-     *  surface that is still mounted: a caller captured at mount would go on
-     *  asking a session that is closed, and every call it made would be refused
-     *  for want of a carrier on a surface still claiming to be live. This reads
-     *  whichever session the device is on when the call is made; a call already
-     *  in flight settles on the session that accepted it.
-     *
-     *  Takes what a session's call takes — `(method, params, timeoutMs)` —
-     *  passed straight through, so an argument the caller left out stays left
-     *  out and the session's own defaults apply. */
-    rpc: (...asked) => (context.call ? context.call(...asked) : Promise.reject(new Error(deviceOfflineMark))),
+    rpc: null, // asking this machine; stood up below, over the context itself
     cacheScope: scopeFor(deviceId),
     chatRepository: null,
     adapter: null, // the API adapter this bridge's greeting installed, or null
@@ -64,6 +74,14 @@ function createDeviceContext(deviceId) {
      *  the cache: what a late answer must ask before it writes anything. */
     active: () => contexts.get(deviceId) === context && Boolean(context.cacheScope?.active()),
   };
+  /** The one spelling of "ask this machine", and the only caller anything
+   *  outside this module holds. A reconnect replaces the transport under a
+   *  surface that is still mounted: a caller captured at mount would go on
+   *  asking a session that is closed, and every call it made would be refused
+   *  for want of a carrier on a surface still claiming to be live. This reads
+   *  whichever session the device is on when the call is made; a call already
+   *  in flight settles on the session that accepted it. */
+  context.rpc = asking(context, () => context.call);
   // What this bridge offers to start work with, held here rather than on the
   // app: the machine is what the answer is about (core/modelCatalog.js).
   Object.assign(context, createModelCatalog(context));
@@ -138,7 +156,11 @@ export function adoptDeviceSession(session) {
   // A reconnect re-greets, and the bridge answering it may not be the version
   // that answered last time: what the last greeting settled is not this one's.
   forgetBridgeSelection(context);
-  bindRepository(context, session.call);
+  // The repository is bound to the session that adopted it, not to whichever
+  // session the device is on: a post captures its caller when it is made and
+  // must finish where it was accepted, or a reconnect landing mid-flight sends
+  // it twice. It still refuses when the machine cannot answer.
+  bindRepository(context, asking(context, () => session.call));
   announceDeviceState(); // this device can answer again
   return context;
 }

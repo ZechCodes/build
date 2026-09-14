@@ -4,7 +4,7 @@
 import { $ } from "./dom.js";
 import { esc } from "./core/text.js";
 import { canAnswer, contextFor } from "./core/deviceContexts.js";
-import { deviceAwayWord } from "./core/deviceNotice.js";
+import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_SETTINGS } from "./core/icons.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";

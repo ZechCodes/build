@@ -7,7 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../src/app.js";
-import { deviceAwayMark, deviceAwayWord, deviceOfflineNotice, mountDeviceNotice, mountDeviceStrip } from "../src/core/deviceNotice.js";
+import { deviceAwayMark, deviceAwayWord } from "../src/core/deviceAway.js";
+import { deviceOfflineNotice, mountDeviceNotice, mountDeviceStrip } from "../src/core/deviceNotice.js";
 import { deviceFrozenText, deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
 import {
   adoptBridgeSelection,

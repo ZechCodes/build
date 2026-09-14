@@ -356,6 +356,9 @@ function toEntry(item) {
     projectKey: item.projectKey,
     projectId: item.project_id,
     project: item.project || item.project_id || "",
+    // The machine this row is on, said after the project name — only where two
+    // machines use that name, which the list decides once (core/inboxView.js).
+    deviceName: item.deviceName || null,
     branch: item.branch || null,
     issueId: item.issue_id || null,
     name,
@@ -526,10 +529,29 @@ function menuHtml(entry, open) {
     ${menu}`;
 }
 
+/** The machine something is on, said dim after its name. Minted here because a
+ *  row wears it (projectTagHtml) and so does a project block's head
+ *  (core/inboxProjects.js deviceTagHtml): it is one mark, in one place. */
+export const dimDeviceHtml = (deviceName) => (deviceName ? ` <span class="dim">${esc(deviceName)}</span>` : "");
+
+/** What a row says it is in: its project, and — only where two machines use
+ *  that name — the machine it is on, after it. Whether the name needs its
+ *  machine said is decided once for the whole list and carried on the entry, so
+ *  this prints what it is given. A row under its project's own block has
+ *  already been told which project it is in, and says nothing. */
+function projectTagHtml(entry, ui) {
+  if (ui.showProject === false) return "";
+  return `<span class="inbox-tag">${esc(entry.project || "unknown project")}${dimDeviceHtml(entry.deviceName)}</span>`;
+}
+
+/** The project a row's title names, with the machine after it where two
+ *  machines share the name. */
+const titleProject = (entry) => (entry.deviceName ? `${entry.project} (${entry.deviceName})` : entry.project);
+
 /** Everything the two lines leave out, on the row itself: what the work is for,
  *  which project it lives in, and why it is asking for you. */
 function rowTooltip(entry) {
-  return [entry.title, entry.project, entry.reason].filter(Boolean).join(" — ");
+  return [entry.title, titleProject(entry), entry.reason].filter(Boolean).join(" — ");
 }
 
 /** One inbox row, in two lines: the state dot and what this is, with the unread
@@ -545,7 +567,7 @@ export function inboxRowHtml(entry, ui = {}) {
   // fact it cannot go without, so it leads line one — two rows both named
   // "main" must never read as the same thing. A row painted under its project's
   // own block (`showProject: false`) has already been told.
-  const projectTag = ui.showProject === false ? "" : `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
+  const projectTag = projectTagHtml(entry, ui);
   const classes = [
     "srow",
     "inbox-entry",
@@ -576,7 +598,7 @@ export function inboxRowHtml(entry, ui = {}) {
  *  element shape, so a row going quiet keeps its element. */
 function quietRowHtml(entry, ui) {
   const unread = entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "";
-  const projectTag = ui.showProject === false ? "" : `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
+  const projectTag = projectTagHtml(entry, ui);
   const classes = [
     "srow",
     "inbox-entry",

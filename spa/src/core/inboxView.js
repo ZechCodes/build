@@ -50,7 +50,14 @@ import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
 import { creationTarget, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
-import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
+import {
+  blockIsFolded,
+  newProjectButtonHtml,
+  projectBlockHtml,
+  projectBlocks,
+  projectHeadHtml,
+  rowDeviceNames,
+} from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
@@ -144,7 +151,7 @@ function draw() {
   publishAttentionCount();
   const list = $("#inbox-list");
   if (!list) return;
-  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
+  const shown = withDeviceNames(projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf }));
   const nowMs = Date.now();
   list.onclick = onListClick;
   list.onkeydown = onCaptureKeydown;
@@ -160,6 +167,15 @@ function draw() {
   list.scrollTop = scroll;
   paintErrors(list);
   paintDeviceState(list, { entryFor: entryOf, blockFor: blockOf });
+}
+
+/** Which machine each row is to say it is on: only where two machines use the
+ *  same project name, decided once for the whole list so the row painters print
+ *  what they are given. A rail showing one machine's work names no machine at
+ *  all, which is every account with one device and every filtered rail. */
+function withDeviceNames(rows) {
+  const names = rowDeviceNames({ items: rows, projects, devices: App.devices });
+  return rows.map((row) => ({ ...row, deviceName: names.get(row.projectKey) || null }));
 }
 
 /** What every row is painted with. `showProject` is whether a row names its

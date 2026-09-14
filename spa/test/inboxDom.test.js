@@ -1182,6 +1182,30 @@ describe("a row on another device", () => {
     expect(awayCall).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
   });
 
+  // Two machines both hold a project called relaydb, and both have work in it.
+  // "relaydb | main" on two rows says nothing about which is which, so the row
+  // says the machine after the project — the rule the projects face and the
+  // toolbar's project menu already follow, applied to the rows too.
+  it("says which machine a project is on when two machines share its name", async () => {
+    feed([branchRow(), awayRow({ branch: "main", run_id: "run-5" })]);
+
+    const mine = rowFor("run-1");
+    const theirs = rowFor("run-5");
+    expect(mine.querySelector(".inbox-tag .dim").textContent).toBe("workshop");
+    expect(theirs.querySelector(".inbox-tag .dim").textContent).toBe("laptop");
+    expect(theirs.title).toContain("relaydb (laptop)");
+  });
+
+  // And a name only one machine uses says nothing about machines: a rail with
+  // one machine on it reads exactly as it always has.
+  it("says nothing about machines when one machine holds that name", async () => {
+    feed([branchRow(), issueRow()]);
+
+    expect(rowFor("run-1").querySelector(".inbox-tag").textContent).toBe("relaydb");
+    expect(rowFor("run-1").querySelector(".inbox-tag .dim")).toBeNull();
+    expect(rowFor("run-1").title).toContain("Fix the login flow — relaydb —");
+  });
+
   // Grey on its own is not a mark: a dimmed row reads as "this matters less",
   // not as "this machine is not here". The row says the word, where its own
   // tags go, and the word goes the moment the machine answers again.

@@ -26,7 +26,7 @@
 
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
-import { entryRoute, inboxEntries } from "./inbox.js";
+import { dimDeviceHtml, entryRoute, inboxEntries } from "./inbox.js";
 import { projectRoute } from "./projectModel.js";
 
 /** What a project is called: its name, or the bare id when the device has
@@ -88,8 +88,22 @@ export function deviceTags(projects, devices = []) {
  *  Takes anything carrying `{ clash, deviceName }`: the rail's blocks and the
  *  toolbar's menu rows both wear it, and they wear the same tag. */
 export function deviceTagHtml(project) {
-  if (!project || !project.clash || !project.deviceName) return "";
-  return ` <span class="dim">${esc(project.deviceName)}</span>`;
+  if (!project || !project.clash) return "";
+  return dimDeviceHtml(project.deviceName);
+}
+
+/**
+ * Which machine each project's rows are to say they are on, by project key —
+ * null where the name says which project it is on its own.
+ *
+ * Built from the same set of projects the blocks are, and by the same rule, so
+ * a row and the block it sits in never disagree about whether a name needs its
+ * machine said. Asked once for a whole list, so the row painters are handed the
+ * answer rather than deciding it a row at a time.
+ */
+export function rowDeviceNames({ items = [], projects = [], devices = [] } = {}) {
+  const tags = deviceTags([...projectsNamed(projects, items).values()], devices);
+  return new Map([...tags].map(([key, tag]) => [key, tag.clash ? tag.deviceName : null]));
 }
 
 /** Where a block stands: by its first live row's place on the inbox; failing

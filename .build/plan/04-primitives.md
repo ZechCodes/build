@@ -134,7 +134,13 @@ interface must widen.
   snapshot grows `devices`. `resetFeedScope` (`:36-39`) is deleted in stage 1
   (its only caller is `connection.js:174`).
 - **`primaryRunIdFor`** `core/taskFeed.js:45-48`. Matches `e.project_id ===
-  projectId`; ambiguous under a merge. No `src` caller (three tests stub it).
+  projectId`; ambiguous under a merge. No `src` caller (`taskFeed.js:45` is
+  the only definition); 14 test files stub it (`agentRailDom`,
+  `agentRailIsolation`, `agentSurfacesOverlay`, `cacheConsole`,
+  `captureDecisionDom`, `composeDom`, `composerFocus`, `createWork`,
+  `inboxDom`, `inboxProjectsDom`, `railComposerPinned`, `shellSkeleton`,
+  `threadIdentity`, `toolbarDom`), so a rename or deletion touches every one
+  of those mocks.
   Stage 1 widens it to `primaryRunIdFor(feed, projectKey)` or deletes it.
 - **`watchChanges` / `dispatchChangeEvent` / `armChangeEvents` /
   `changeEventsArmed` / `pollIntervalMs` / `refetchEverything` /
@@ -144,7 +150,7 @@ interface must widen.
   "unchanged in shape" — amended). Callers of `watchChanges` today:
   `taskFeed.js:121`, `cacheSync.js:267`, `gitPane.js:1558`, `issueView.js:833`,
   `changesReview.js:536`, `agentRail.js:2035`, `captureDecision.js:31`,
-  `archive.js:83`, `branchView.js:558`.
+  `views/archive.js:83`, `branchView.js:558`.
 - **`syncContext` / `refreshEntity` / `onSnapshot`** `core/cacheSync.js:39-270`.
   `activeRows`/`entityWatchers` keyed by bare entity id (`:35-37`); the feed
   record is written under `{ deviceId, entityId: "", kind: "feed" }` (`:243`).
@@ -163,8 +169,11 @@ interface must widen.
 
 ### Inbox, projects rail, toolbar
 
-- **`entryRoute`** `core/inbox.js:172-188`. Pure; complexity 9. Stage 2 adds
-  `deviceId: item.deviceId` to the two routes it returns (no new branch). The
+- **`entryRoute`** `core/inbox.js:172-188`. Pure; complexity 9. It returns
+  three route objects: capture (`:182`), issue (`:185`) and branch (`:187`).
+  Stage 2 adds `deviceId: item.deviceId` to the issue and branch routes (no
+  new branch); the capture route stays as it is — `#/capture/<id>` is not
+  per-device (`00-multi-device-design.md:61`, under Decisions). The
   stage 1 read-only rule does NOT go here (amended; section 5).
 - **`entryKeyOf`** `core/inbox.js:199-202`. `capture:<id>`, else the entity
   id, else `issue:<project_id>` / `branch:<project_id>:<branch>`. Stage 1
@@ -172,11 +181,12 @@ interface must widen.
 - **`dismissParamsOf`** `core/inbox.js:211-216`. Wire params stay bare
   (`project_id`), unchanged.
 - **`inboxEntries` / `cacheableEntityIds` / `activeEntryKey`**
-  `core/inbox.js:402-450`. `activeEntryKey` matches a branch route by
-  `projectId + branch` (`:447`); stage 2 adds `deviceId` to that match (one
-  `&&`, the function is not ratcheted: 8 today).
+  `core/inbox.js:402-453` (`activeEntryKey` is `:437-453`). `activeEntryKey`
+  matches a branch route by `projectId + branch` (`:447`); stage 2 adds
+  `deviceId` to that match (one `&&`, the function is not ratcheted: eslint
+  `complexity` reports 7 today).
 - **`inboxRowHtml` / `quietRowHtml` / `captureRowHtml`** `core/inbox.js:513,
-  548, 646`. Give `inbox-unroutable` to a row with `route: null` (`:527`,
+  550, 646`. Give `inbox-unroutable` to a row with `route: null` (`:527`,
   `:559`, `:661`). The tooltip is `rowTooltip(entry)` (`:504`). Stage 1's
   "Opens once this page can name its device" title rides `entry.title`-style
   data set in the wiring, not a new branch in these ratcheted functions.
@@ -192,7 +202,8 @@ interface must widen.
   said", which is acceptable).
 - **`inboxView`** `core/inboxView.js`. `App.call` at `:102,104,540,578,607,609,
   622,623`; `folds`/`blocksPainted` (`:73,76`); `rowUi.activeProjectId` from
-  `App.route.projectId` (`:204`); `toggleFold`/`expandFold` (`:438-451`).
+  `App.route.projectId` (`:204`); `toggleFold` (`:437-443`) / `expandFold`
+  (`:446-452`).
   Stage 1 rewrites the eight call sites to `verbTarget(entry)` (section 2).
 - **`projectRoute`** `core/projectModel.js:3-12`. Stage 2 adds
   `deviceId: project.deviceId`.
@@ -232,7 +243,8 @@ interface must widen.
   App.call` (`:220`), `createAdopters(callRpc)` (`:225`), `isOffline: () =>
   App.offline` (`:342,355`), `project.init_git` (`:402`), and a hand-built
   `markRoute({ name: "branch", projectId, branch, tab: "files", file })`
-  (`:389`) that must carry `deviceId` in stage 2. It already passes
+  (`:391`, the `onFileOpen` option of the `renderFilesTab` bag that starts at
+  `:384`) that must carry `deviceId` in stage 2. It already passes
   `callRpc`/`scope` down to `renderFilesTab`, `mountGitPane`,
   `createTaskReview`, `createWorktreeReview` — stage 2 adds `cacheScope` and
   `chatRepository` to those option bags.
@@ -260,7 +272,9 @@ interface must widen.
   — stage 3 moves these panels to `views/deviceSettings.js`, which already owns
   its transport (`deviceSettings.js:44-49`).
 - **`views/archive.js:55`** `App.call("archived.list")` — not named by any
-  stage doc; stage 3 owns it (amended).
+  stage doc; stage 3 owns it (amended). The rows it fetches go through
+  `archiveRows` → `toRow` in `core/archive.js:66-67` (ratcheted at 12); the
+  view file itself has no ratchet.
 
 ## 2. Primitives to create
 
@@ -526,7 +540,7 @@ Stage 2 reuses the same set in `projectMenuModel`.
 
 ## 4. Seams and hazards
 
-### Files reading the singletons today (`grep -rn "App\.\(session\|call\|cacheScope\|chatRepository\|offline\|offlineSince\)\b" spa/src`, 98 lines)
+### Files reading the singletons today (`grep -rn "App\.\(session\|call\|cacheScope\|chatRepository\|offline\|offlineSince\)\b" spa/src`, 96 lines)
 
 | file | count | stage that migrates it |
 | --- | --- | --- |
@@ -553,7 +567,9 @@ Stage 2 reuses the same set in `projectMenuModel`.
 Readers of `currentCacheScope()` outside those counts: `console.js:155`,
 `changesReview.js:97`, `gitPane.js:389`, `files.js:151`,
 `worktreeReview.js:77,112`, `taskReview.js:88,101`, `agentRail.js:180` —
-stage 2 (all reachable from `branchView.js:34-35,384,403`).
+stage 2 (all reachable from `branchView.js:34-35` (imports), `:384`
+(`renderFilesTab`) and `:421` (`mountGitPane`); `:337`/`:349` mount the
+task and worktree reviews).
 
 ### Ratcheted functions in files the stages edit (`complexityRatchet.test.js` pins 70)
 
@@ -568,7 +584,7 @@ stage 2 (all reachable from `branchView.js:34-35,384,403`).
 | `mountGitPane` | `core/gitPane.js:361` | 21 | 2 | `options.cacheScope` replaces `currentCacheScope()` — no `\|\|` fallback (each `\|\|` is +1) |
 | `createReviewPlug` | `core/changesReview.js:78` | 16 | 2 | same rule at `:97` |
 | callbacks at `agentRail.js:859`, `branchView.js:464`, `console.js:257`, `issueView.js:113,246,539,720` | — | 11–30 | 2 | context is read at the top of the mount, once; no fallbacks |
-| `toRow` | `views/archive.js:66` | 12 | 3 | stamp `deviceId` in the fetch loop, not in `toRow` |
+| `toRow` | `core/archive.js:66` | 12 | 3 | stamp `deviceId` in the fetch loop (`views/archive.js`), not in `toRow` |
 | `composeBoxHtml` | `core/compose.js:196` | 13 | 3 | the placeholder text is computed by the caller |
 | `createRelayLink`, `connect` | `core/relayLink.js:47,108` | 13, 15 | none | do not touch relayLink |
 
@@ -595,7 +611,7 @@ the "no fallback" rule above is why.
 - **`devicePickerDom.test.js:3-6`** mocks `switchDevice` from `connection.js`;
   stage 1's rename to `setHomeDevice` must update the mock; stage 3 removes it.
 - **Hand-built routes** that bypass `entryRoute`/`projectRoute`:
-  `branchView.js:389`, `issueView.js:34-40`, `createWork.js:115-117`,
+  `branchView.js:391`, `issueView.js:34-40`, `createWork.js:115-117`,
   `toolbarModel.js:48-50`. Each must carry `deviceId` in stage 2 or `go` will
   bounce it through `resolve`.
 - **Wire params stay bare.** `dismissParamsOf`, `branchFinishParams`,
@@ -633,7 +649,7 @@ Stage 01 (`01-device-contexts.md`):
 Stage 02 (`02-device-identity-routes.md`):
 6. §1: `resolveLegacyRoute` for `kind: "project"` needs `projects` as well as
    `items` (a plain folder has no `items[]` row, `inboxProjects.js:91-95`).
-7. §2: `branchView.js:389` and `issueView.js:34-40` build routes by hand and
+7. §2: `branchView.js:391` and `issueView.js:34-40` build routes by hand and
    must carry `deviceId`.
 8. §3: the consumer list misses the `currentCacheScope()` readers
    (`gitPane.js:389`, `files.js:151`, `changesReview.js:97`, `console.js:155`,
@@ -644,6 +660,7 @@ Stage 03 (`03-retire-device-switcher.md`):
 9. Context: the model catalog is at `app.js:85-108`, not 71–96.
 10. Context: the alias-reader list after stage 2 also holds `views/archive.js:55`
     (`archived.list` — merge across `liveContexts()`, rows stamped `deviceId`,
-    `toRow` ratcheted), `core/adoption.js:95,123` (comments) and `devices.js:62`.
+    `toRow` in `core/archive.js:66` ratcheted; `views/archive.js` has no
+    ratchet), `core/adoption.js:95,123` (comments) and `devices.js:62`.
 11. §3: `resetFeedScope` is already gone (stage 1); the scan test must strip
     comments and also match `App.offlineSince` and `App.modelCatalog`.

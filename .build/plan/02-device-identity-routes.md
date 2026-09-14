@@ -71,7 +71,7 @@ routes with the device it was scoped to. The toolbar's scope
 (`SCOPE_KEY`) stores a `projectKey`; `toolbarModel.projectMenuModel` lists
 merged projects and shows the device name in `.dim` on a name clash (same rule
 as the rail). The console's `branch.get` and `goFromInbox` pass the device
-through. Routes built by hand — `branchView.js:389` (`markRoute` for the Files
+through. Routes built by hand — `branchView.js:391` (`markRoute` for the Files
 tab) and `issueView.js:34-40` (`syncHash`) — carry `deviceId` too, or `go`
 bounces them through `resolve` (amended per `04-primitives.md` §5.7).
 

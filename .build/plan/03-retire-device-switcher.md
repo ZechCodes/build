@@ -26,7 +26,8 @@ Binding design: `.build/plan/00-multi-device-design.md` §5–§8.
   creation caller), `sheets/newRepo.js`, `sheets/clone.js`, `console.js`, and
   `app.js` (`loadModelCatalog` / `refreshModelCatalog`) — plus
   `views/archive.js:55` (`archived.list`: read every live context, rows
-  stamped `deviceId` in the fetch loop since `toRow` at `:66` is ratcheted),
+  stamped `deviceId` in the fetch loop since `toRow` at `core/archive.js:66`
+  is ratcheted),
   the two prose mentions in `core/adoption.js:95,123`, and `devices.js:62`
   (the picker, rewritten here) (amended per `04-primitives.md` §5.10).
 - **Model catalog** (`app.js:85–108`) is per bridge (`models.list`): it belongs

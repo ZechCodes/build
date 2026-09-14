@@ -7,7 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../src/app.js";
-import { deviceFrozenNotice, deviceOfflineHtml, deviceOfflineNotice, mountDeviceStrip } from "../src/core/deviceNotice.js";
+import { deviceOfflineNotice, mountDeviceNotice, mountDeviceStrip } from "../src/core/deviceNotice.js";
+import { deviceFrozenText } from "../src/core/text.js";
 import { adoptDeviceSession, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 
@@ -28,14 +29,21 @@ describe("what a client says about a machine it cannot reach", () => {
     expect(deviceOfflineNotice("dev-unknown")).toContain("That device isn't connected");
   });
 
+  // A device name comes off the account and is painted as markup, so a hostile
+  // one must not be able to write any.
   it("stands the same sentence up as a surface's empty state, with the name escaped", () => {
     App.devices = [{ id: "dev-1", name: "<script>", status: "offline" }];
+    document.body.innerHTML = '<main id="root"></main>';
+    const root = document.querySelector("#root");
 
-    const html = deviceOfflineHtml("dev-1");
+    mountDeviceNotice(root, "dev-1");
 
-    expect(html).toContain('<div class="empty">');
-    expect(html).toContain("&lt;script&gt;");
-    expect(html).not.toContain("<script>");
+    expect(root.querySelector(".empty")).toBeTruthy();
+    expect(root.textContent).toContain("<script>");
+    expect(root.innerHTML).toContain("&lt;script&gt;");
+    expect(root.querySelector("script")).toBeNull();
+    App.viewDispose?.();
+    App.viewDispose = null;
   });
 });
 
@@ -66,7 +74,7 @@ describe("naming the machine over a surface that is already open", () => {
 
     setContextOffline("dev-1");
 
-    expect(strips().map((strip) => strip.textContent)).toEqual([deviceFrozenNotice("dev-1")]);
+    expect(strips().map((strip) => strip.textContent)).toEqual([deviceFrozenText("workshop")]);
     expect(host.classList.contains("device-away")).toBe(true);
     // What the reader was looking at is still on screen: the strip is over the
     // surface, not instead of it.

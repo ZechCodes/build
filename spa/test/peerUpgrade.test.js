@@ -39,7 +39,6 @@ vi.mock("../src/core/session.js", () => ({
   openRelaySession: (options) => relay.openRelaySession(options),
 }));
 vi.mock("../src/devices.js", () => ({
-  deviceName: () => "Machine",
   markDeviceOnline: () => {},
   markDeviceOffline: () => {},
   paintDevicePicker: () => {},

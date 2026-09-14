@@ -28,10 +28,6 @@ function forgetFilterOnMissingDevice() {
 /** The account's entry for one device, as the list last saw it. */
 const deviceFor = (deviceId) => App.devices.find((device) => device.id === deviceId) || null;
 
-export function deviceName(deviceId) {
-  return deviceNameOf(App.devices, deviceId);
-}
-
 /**
  * The api-pinned transport key for a device — the E2EE trust anchor sessions
  * seal to (never the relay-pushed key). Unknown devices trigger one refresh

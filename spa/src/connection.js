@@ -55,7 +55,7 @@ const relayDial = (deviceId) => ({
  * The relay only ever lands a session on `preferDeviceId`, so the device is
  * known before the socket is and nothing here has to ask who answered.
  */
-export function openDeviceSession(deviceId, { waitForDevice = false } = {}) {
+function openDeviceSession(deviceId, { waitForDevice = false } = {}) {
   return openRelaySession({
     ...relayDial(deviceId),
     waitForDevice,

@@ -17,10 +17,10 @@ export const deviceOfflineNotice = (deviceId) => deviceOfflineText(deviceNameOf(
 /** What this client says over a surface that was already open when its machine
  *  went: it keeps what that machine last said, so it names whose state it is
  *  showing rather than offering to open anything. */
-export const deviceFrozenNotice = (deviceId) => deviceFrozenText(deviceNameOf(App.devices, deviceId));
+const deviceFrozenNotice = (deviceId) => deviceFrozenText(deviceNameOf(App.devices, deviceId));
 
 /** The notice a link to an unreachable device stands in for a surface with. */
-export const deviceOfflineHtml = (deviceId) => `<div class="empty">${esc(deviceOfflineNotice(deviceId))}</div>`;
+const deviceOfflineHtml = (deviceId) => `<div class="empty">${esc(deviceOfflineNotice(deviceId))}</div>`;
 
 /**
  * Stand the notice up where a surface would go, and take it down again the

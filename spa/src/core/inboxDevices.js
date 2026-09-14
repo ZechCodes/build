@@ -32,7 +32,7 @@ const contextOf = (deviceId) => (deviceId ? contextFor(deviceId) : homeContext()
  * is holding itself — a capture taken while no device could take it — names
  * none, and so does a surface that is about nowhere in particular.
  */
-export function deviceTarget(deviceId) {
+function deviceTarget(deviceId) {
   const context = contextOf(deviceId);
   if (!canAnswer(context)) return NO_DEVICE;
   return { call: context.rpc, disabled: false };
@@ -67,7 +67,7 @@ export function deviceCall(deviceId) {
 
 /** The device a row's verbs run against, and the call they make: the row says
  *  which machine answered for it, so no verb site asks whose row it is. */
-export const verbTarget = (row) => deviceTarget(row && row.deviceId);
+const verbTarget = (row) => deviceTarget(row && row.deviceId);
 export const verbCall = (row) => deviceCall(row && row.deviceId);
 
 /**

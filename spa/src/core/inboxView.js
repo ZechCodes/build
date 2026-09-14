@@ -412,39 +412,52 @@ function openMenu(key) {
 // a branch or an issue, on the one create surface, scoped to the block's
 // project. And the one control above every block: a new project.
 
+/** One control per attribute the head paints, in the order a press is read in:
+ *  the innermost control wins, so the fold and the + are asked for before the
+ *  name they sit beside. Each is handed the element that was pressed. */
+const BLOCK_CONTROLS = [
+  ["data-project-fold", (control) => toggleFold(control.dataset.projectFold)],
+  ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
+  ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
+  ["data-new-project", () => openNewProject()],
+];
+
 /** The block controls, answered off the same one listener. True when the press
  *  was one of them. */
 function projectClicked(target) {
-  const fold = target.closest("[data-project-fold]");
-  if (fold) {
-    toggleFold(fold.dataset.projectFold);
-    return true;
-  }
-  const head = target.closest("[data-project-open]");
-  if (head) {
-    const block = blocksPainted.get(head.dataset.projectOpen);
-    if (block && block.route) goFromInbox(block.route);
-    return true;
-  }
-  const create = target.closest("[data-project-create]");
-  if (create) {
-    const block = blocksPainted.get(create.dataset.projectCreate);
-    expandFold(create.dataset.projectCreate);
-    closeMenu();
-    // The create surface talks to one bridge, which knows its projects by the
-    // bare id it minted.
-    if (block) openCreateWork({ projectId: block.id, projectName: block.name, kind: "branch", navigate: goFromInbox });
-    return true;
-  }
-  if (target.closest("[data-new-project]")) {
-    openNewRepo((project) => {
-      const route = projectRoute(project);
-      if (route) goFromInbox(route);
-      refreshFeed();
-    });
-    return true;
+  for (const [attribute, act] of BLOCK_CONTROLS) {
+    const control = target.closest(`[${attribute}]`);
+    if (control) {
+      act(control);
+      return true;
+    }
   }
   return false;
+}
+
+/** The block's name opens the project's checkout, when it has one. */
+function openBlockHead(projectKey) {
+  const block = blocksPainted.get(projectKey);
+  if (block && block.route) goFromInbox(block.route);
+}
+
+/** The + opens the create surface on this block's project, with the block
+ *  unfolded so the new row has somewhere visible to land. The create surface
+ *  talks to one bridge, which knows its projects by the bare id it minted. */
+function createInBlock(projectKey) {
+  const block = blocksPainted.get(projectKey);
+  expandFold(projectKey);
+  closeMenu();
+  if (block) openCreateWork({ projectId: block.id, projectName: block.name, kind: "branch", navigate: goFromInbox });
+}
+
+/** The one control above every block: a project this device does not have yet. */
+function openNewProject() {
+  openNewRepo((project) => {
+    const route = projectRoute(project);
+    if (route) goFromInbox(route);
+    refreshFeed();
+  });
 }
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */

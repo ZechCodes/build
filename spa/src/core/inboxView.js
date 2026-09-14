@@ -46,6 +46,7 @@ import { goFromInbox } from "./inboxShell.js";
 import { routeProjectKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
+import { filterByDevice } from "./deviceFilter.js";
 import { paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
@@ -573,11 +574,13 @@ export function mountInboxList() {
   onDeviceStateChanged(draw);
   subscribePendingCaptures(drawFromFeed);
   subscribeOptimistic(INBOX_SCOPE, draw);
-  subscribeFeed((feed) => {
-    snapshot = feed;
-    items = feed.items || [];
-    pendingLifecycle = feed.pending || [];
-    projects = feed.projects || [];
+  subscribeFeed((next) => {
+    // Which machines the rail lists is the picker's, and it is answered once,
+    // here: everything below paints whatever this snapshot holds.
+    snapshot = filterByDevice(next, App.deviceFilter);
+    items = snapshot.items || [];
+    pendingLifecycle = snapshot.pending || [];
+    projects = snapshot.projects || [];
     const live = new Set(items.map(entryKeyOf));
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
     const merged = mergedItems();

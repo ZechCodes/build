@@ -25,6 +25,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
+  deliverFeed: () => subscriber && subscriber({ items: feedItems, projects: feedProjects }),
   primaryRunIdFor: () => null,
 }));
 
@@ -37,6 +38,7 @@ let adoptDeviceSession;
 let setContextOffline;
 let mountInboxList;
 let markSeen;
+let rememberDeviceFilter;
 let subscribeInboxAttentionCount;
 let attentionCount = 0;
 
@@ -156,6 +158,7 @@ beforeEach(async () => {
   ({ App, adoptApplicationScope } = await import("../src/app.js"));
   ({ adoptDeviceSession, setContextOffline } = await import("../src/core/deviceContexts.js"));
   ({ mountInboxList, markSeen } = await import("../src/core/inboxView.js"));
+  ({ rememberDeviceFilter } = await import("../src/core/deviceFilter.js"));
   ({ subscribeInboxAttentionCount } = await import("../src/core/inboxAttention.js"));
   document.body.innerHTML = bodyHtml;
   document.body.className = "";
@@ -1197,6 +1200,27 @@ describe("a row on another device", () => {
     expect([...captureRowFor("capture-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
       "build/away",
     ]);
+  });
+
+  // The picker narrows what is LISTED and nothing else: the surface you are
+  // standing on is about one machine already, and hiding its rows must not move
+  // you off it.
+  it("the filter hides the other device's rows and never changes the route", async () => {
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
+    location.hash = "#/device/dev-1/project/p1/branch/build%2Flogin/changes";
+    const standing = App.route;
+    feed([branchRow(), awayRow()]);
+    expect(rows().map((row) => row.dataset.entity)).toEqual(["run-1", "run-2"]);
+
+    rememberDeviceFilter("dev-2");
+
+    expect(rows().map((row) => row.dataset.entity)).toEqual(["run-2"]);
+    expect(App.route).toBe(standing);
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
+
+    rememberDeviceFilter(null);
+
+    expect(rows().map((row) => row.dataset.entity)).toEqual(["run-1", "run-2"]);
   });
 
   it("leaves the home device's own rows alone", async () => {

@@ -35,6 +35,7 @@ import { openCreateWork } from "./createWork.js";
 import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
 import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
 import { canAnswer, contextFor } from "./deviceContexts.js";
+import { filterByDevice } from "./deviceFilter.js";
 import { deviceOfflineNotice } from "./deviceNotice.js";
 import { patchList } from "./patchList.js";
 import { projectRoute } from "./projectModel.js";
@@ -42,7 +43,12 @@ import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
 
+// Every machine's rows: where you are standing, and what the work half lists.
 let feed = { items: [], projects: [] };
+// The same snapshot narrowed to the machines the picker is showing. Only the
+// list of places to GO is narrowed — the bar names the project you are in
+// whether or not the filter shows it, and the ⋯ opens that project's settings.
+let shownFeed = feed;
 // The account-wide name of the scoped project (core/deviceKey.js), never the
 // bare id: every machine mints a `proj-1`, and the menu lists them all.
 let scopedProjectKey = null;
@@ -79,10 +85,12 @@ function paintVerb() {
   else host.innerHTML = "";
 }
 
-/** Every machine's projects: the toolbar names one project on one machine, and
- *  it offers all of them to move to. */
-const projectsOf = () => feed.projects || [];
-const projectFor = (projectKey) => projectsOf().find((project) => project.projectKey === projectKey) || null;
+/** The projects the menu offers to move to: every machine's, or one machine's
+ *  while the picker is filtering the rail. */
+const projectsOf = () => shownFeed.projects || [];
+/** A project by its account-wide name, from every machine's — the project you
+ *  are standing in is yours to name whether or not the menu is listing it. */
+const projectFor = (projectKey) => (feed.projects || []).find((project) => project.projectKey === projectKey) || null;
 /** What a project is called (core/inboxProjects.js), and "" for no project at
  *  all. */
 const nameOf = (project) => (project ? projectNameOf(project) : "");
@@ -451,6 +459,7 @@ export function initToolbar() {
   }
   subscribeFeed((next) => {
     feed = next;
+    shownFeed = filterByDevice(next, App.deviceFilter);
     paint();
   });
   paint({ entering: true });

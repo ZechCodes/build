@@ -29,6 +29,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
+  deliverFeed: () => subscriber && subscriber({ items: feedItems, projects: feedProjects }),
   dropFeedDevice: () => {},
   primaryRunIdFor: () => null,
 }));
@@ -43,6 +44,7 @@ let adoptDeviceSession;
 let setContextOffline;
 let initInboxRail;
 let setInboxView;
+let rememberDeviceFilter;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const list = () => document.getElementById("inbox-list");
@@ -172,6 +174,7 @@ beforeEach(async () => {
   ({ adoptDeviceSession, setContextOffline } = await import("../src/core/deviceContexts.js"));
   ({ initInboxRail } = await import("../src/core/inboxShell.js"));
   ({ setInboxView } = await import("../src/core/inboxView.js"));
+  ({ rememberDeviceFilter } = await import("../src/core/deviceFilter.js"));
   document.body.innerHTML = bodyHtml;
   document.body.className = "";
   localStorage.clear();
@@ -480,6 +483,30 @@ describe("the projects face", () => {
 
     create.click();
     expect(openCreateWork).not.toHaveBeenCalled();
+  });
+
+  // The picker narrows the face, not the app: a block that goes with the filter
+  // takes nothing with it, least of all the surface the reader is standing on.
+  it("the filter hides the other device's projects and never changes the route", () => {
+    feedProjects.push({ id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "relaydb" });
+    feed([
+      branchRow(),
+      branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", branch: "build/far", run_id: "run-far" }),
+    ]);
+    App.route = { name: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/far", tab: "changes" };
+    location.hash = "#/device/dev-2/project/p1/branch/build%2Ffar/changes";
+    const standing = App.route;
+
+    rememberDeviceFilter("dev-1");
+
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/p1", "dev-1/p2", "dev-1/p3"]);
+    expect(blockFor("dev-2/p1")).toBeNull();
+    expect(App.route).toBe(standing);
+    expect(location.hash).toBe("#/device/dev-2/project/p1/branch/build%2Ffar/changes");
+
+    rememberDeviceFilter(null);
+
+    expect(rowsIn(blockFor("dev-2/p1"))).toEqual(["run-far"]);
   });
 
   it("opens the checkout of a block on another device, on that device", () => {

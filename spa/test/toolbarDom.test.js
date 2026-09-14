@@ -66,6 +66,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
+  deliverFeed: () => subscribers.forEach((fn) => fn(feed)),
   primaryRunIdFor: () => null,
   dropFeedDevice: () => {},
 }));
@@ -80,6 +81,7 @@ const { App } = await import("../src/app.js");
 const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
 const { adoptDeviceSession, retireDeviceContext, setContextOffline } = await import("../src/core/deviceContexts.js");
+const { rememberDeviceFilter } = await import("../src/core/deviceFilter.js");
 
 /** What each machine answers. A sheet the toolbar opens is handed the caller of
  *  the machine the project it is about lives on, so the two are told apart. */
@@ -110,6 +112,7 @@ beforeEach(() => {
   openCreateWork.mockClear();
   notifyError.mockClear();
   openProjectSettings.mockClear();
+  rememberDeviceFilter(null);
   openSession("dev-1", workshopCall);
   openSession("dev-2", laptopCall);
   App.call = vi.fn(async (method) => {
@@ -521,6 +524,37 @@ describe("an account with more than one device", () => {
     expect(popup.querySelector('[data-project="dev-1/p1"] .mt').textContent).toBe("relaydb workshop");
     expect(popup.querySelector('[data-project="dev-2/p1"] .mt').textContent).toBe("relaydb laptop");
     expect(popup.querySelector('[data-project="dev-1/p2"] .mt .dim')).toBeNull();
+    feed = savedFeed;
+    await refreshFeed();
+  });
+
+  // The picker narrows the list of places to GO. Where you are standing is not
+  // in that list: the bar goes on naming the project you are in and the ⋯ goes
+  // on opening its settings, whichever machine the filter is showing.
+  it("the filter hides the other device's projects from the project menu and never changes the route", async () => {
+    feed = {
+      items: [...savedFeed.items],
+      projects: [...savedFeed.projects, { id: "p1", name: "relaydb", deviceId: "dev-2", projectKey: "dev-2/p1" }],
+    };
+    await refreshFeed();
+    const standing = App.route;
+
+    rememberDeviceFilter("dev-2");
+
+    expect([...openJump("project").querySelectorAll("[data-project]")].map((row) => row.dataset.project)).toEqual([
+      "dev-2/p1",
+    ]);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+
+    // …and the branch the reader is standing on is still a branch of relaydb on
+    // the workshop, named by the bar and settled by the workshop's own caller.
+    expect(App.route).toBe(standing);
+    expect(names()).toEqual(["relaydb", "build/login"]);
+    bar().querySelector('[data-select="more"]').click();
+    menu().querySelector('[data-action="settings"]').click();
+    expect(openProjectSettings).toHaveBeenCalledWith("p1", { callRpc: workshopCall });
+
+    rememberDeviceFilter(null);
     feed = savedFeed;
     await refreshFeed();
   });

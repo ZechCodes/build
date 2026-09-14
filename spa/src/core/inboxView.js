@@ -371,13 +371,7 @@ function closeMenu() {
 /** One control per attribute a row paints, in the order a press is read in:
  *  the innermost control wins. Each is handed the element that was pressed. */
 const ROW_CONTROLS = [
-  [
-    "data-done",
-    (control) => {
-      closeMenu();
-      finishEntry(entryOf(control.dataset.done));
-    },
-  ],
+  ["data-done", (control) => finishRow(control.dataset.done)],
   ["data-mute", (control) => toggleMute(entryOf(control.dataset.mute))],
   ["data-dismiss", (control) => dismissEntry(entryOf(control.dataset.dismiss))],
   ["data-menu", (control) => openMenu(control.dataset.menu)],
@@ -385,6 +379,12 @@ const ROW_CONTROLS = [
   // on the section stays as they left it, whatever the list above it does.
   ["data-recent-toggle", (control) => toggleRecent(control)],
 ];
+
+/** Done is the one row verb that comes off the menu, so the menu shuts with it. */
+function finishRow(key) {
+  closeMenu();
+  finishEntry(entryOf(key));
+}
 
 function toggleRecent(control) {
   recentOpen.set(control.dataset.recentToggle, control.getAttribute("aria-expanded") !== "true");

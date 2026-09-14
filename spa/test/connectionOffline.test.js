@@ -430,6 +430,24 @@ describe("per-device connections", () => {
     expect(contextFor("dev-a")).toBe(null);
   });
 
+  // A device whose very first connect failed has no context to keep its backoff
+  // on, so it is kept off to the side. Revoking that device has to reach it
+  // there too: left armed, the timer keeps asking the relay for a machine the
+  // account no longer has.
+  it("drops the backoff of a device revoked before it ever connected", async () => {
+    devices = [online("dev-a", "Laptop"), online("dev-c", "Studio")];
+    App.devices = devices;
+    unreachable.add("dev-c");
+    await connectEveryDevice();
+    const attempts = openedFor("dev-c").length;
+    expect(attempts).toBeGreaterThan(0);
+
+    retireDevice("dev-c");
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(openedFor("dev-c").length).toBe(attempts);
+  });
+
   it("reopens only the device resume names, waiting for it, and leaves the other session alone", async () => {
     await connectEveryDevice();
     const lost = lastSession("dev-a");

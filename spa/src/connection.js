@@ -158,13 +158,20 @@ function followTerminalsIfTheirs(context) {
  * Let a device go for good: the account no longer has it.
  *
  * The registry forgets the machine and tells every surface standing over it,
- * but the direct connection it may be riding is this layer's — retiring through
- * the registry alone would leave an RTCPeerConnection open for the life of the
- * tab, with both streams still pointed down it. So the streams come back to the
- * relay first, and then the device goes.
+ * but two things it is holding are this layer's. The direct connection it may
+ * be riding: retiring through the registry alone would leave an
+ * RTCPeerConnection open for the life of the tab, with both streams still
+ * pointed down it. And the backoff of a device that never connected at all,
+ * which is kept off to the side and would go on asking the relay for a machine
+ * the account no longer has.
+ *
+ * A resume already parked on the relay's `device_key` for this device is not
+ * reached: openRelaySession has no abort, so that socket is held until the
+ * bridge answers it, and `stillWaiting` closes the session it lands.
  */
 export function retireDevice(deviceId) {
   dropPeerLink(contextFor(deviceId));
+  forgetUnconnected(deviceId);
   return retireDeviceContext(deviceId);
 }
 
@@ -202,6 +209,7 @@ function landSession(session) {
   if (previous?.session !== session) closeQuietly(previous?.session);
   cancelScheduledResume(session.deviceId);
   const context = adoptDeviceSession(session);
+  forgetUnconnected(session.deviceId); // it has a context to keep its backoff on now
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   session.onCarrier(() => greetLiveBridge(context));
@@ -417,9 +425,19 @@ const unconnected = new Map();
 function reconnectFor(deviceId) {
   const context = contextFor(deviceId);
   if (context) {
-    unconnected.delete(deviceId);
+    forgetUnconnected(deviceId);
     return context.reconnect;
   }
   if (!unconnected.has(deviceId)) unconnected.set(deviceId, { timer: null, delay: 0, resuming: false });
   return unconnected.get(deviceId);
+}
+
+/** Let go of a backoff kept here: the device has a context to keep its own on
+ *  now, or it is gone. The timer goes with it — left armed it asks for a
+ *  machine nobody is waiting for. */
+function forgetUnconnected(deviceId) {
+  const reconnect = unconnected.get(deviceId);
+  if (!reconnect) return;
+  clearTimeout(reconnect.timer);
+  unconnected.delete(deviceId);
 }

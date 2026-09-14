@@ -22,6 +22,7 @@ import {
   contextFor,
   homeContext,
   liveContexts,
+  retireDeviceContext,
   setContextOffline,
 } from "./core/deviceContexts.js";
 import {
@@ -174,6 +175,20 @@ function dropPeerLink(context) {
  *  wrong machine, and nothing about the wire theirs rides has changed. */
 function followTerminalsIfTheirs(context) {
   if (context.deviceId === terminalDeviceId()) followTerminalDevice();
+}
+
+/**
+ * Let a device go for good: the account no longer has it.
+ *
+ * The registry forgets the machine and tells every surface standing over it,
+ * but the direct connection it may be riding is this layer's — retiring through
+ * the registry alone would leave an RTCPeerConnection open for the life of the
+ * tab, with both streams still pointed down it. So the streams come back to the
+ * relay first, and then the device goes.
+ */
+export function retireDevice(deviceId) {
+  dropPeerLink(contextFor(deviceId));
+  return retireDeviceContext(deviceId);
 }
 
 /** Greet a device that is live and unpaused: feature-detect push invalidation,

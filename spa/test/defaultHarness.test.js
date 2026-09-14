@@ -19,6 +19,7 @@ const { openSession } = vi.hoisted(() => ({ openSession: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
   openDeviceSettingsSession: openSession,
   chooseCreationDevice: () => {},
+  retireDevice: () => {},
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   syncHome: () => {},
   forgetHomeFollow: () => {},

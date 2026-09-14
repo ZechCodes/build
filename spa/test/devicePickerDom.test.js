@@ -11,6 +11,7 @@ vi.mock("../src/app.js", () => ({ App, go, DEVICE_FILTER_KEY: "build.deviceFilte
 vi.mock("../src/api.js", () => ({ fetchDevices: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
+  retireDevice: () => {},
   openDeviceSessions: vi.fn(),
   syncHome: vi.fn(),
   forgetHomeFollow: vi.fn(),

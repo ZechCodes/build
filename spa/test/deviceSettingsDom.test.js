@@ -17,6 +17,7 @@ const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelC
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
+  retireDevice: () => {},
   openDeviceSettingsSession: openSession,
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   syncHome: () => {},

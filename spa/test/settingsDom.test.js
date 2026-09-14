@@ -16,9 +16,10 @@ const CATALOG = {
   providers: [{ id: "claude", label: "Claude Code", models: [], efforts: [], creatable: true }],
 };
 
-const { App, chooseCreationDevice, revokeDevice } = vi.hoisted(() => ({
+const { App, chooseCreationDevice, retireDevice, revokeDevice } = vi.hoisted(() => ({
   App: { call: null, devices: [], selectedDeviceId: null },
   chooseCreationDevice: vi.fn(),
+  retireDevice: vi.fn(),
   revokeDevice: vi.fn(async () => {}),
 }));
 
@@ -34,6 +35,7 @@ const call = vi.fn(async (method) => {
 vi.mock("../src/app.js", () => ({ App, go: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: (...args) => chooseCreationDevice(...args),
+  retireDevice: (...args) => retireDevice(...args),
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   openDeviceSettingsSession: async () => null,
   syncHome: () => {},
@@ -160,17 +162,19 @@ describe("Settings → what the account keeps", () => {
     expect(links[0].textContent).toContain("Settings");
   });
 
-  it("retires a revoked device's context", async () => {
-    adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
+  // Unpairing is the account's word and the app's: the api is told, and the
+  // machine is let go of through the one function that lets a device go —
+  // which drops the connection it was riding and tells every surface over it
+  // (connection.js retireDevice), rather than only forgetting it.
+  it("lets a revoked device go through the connection layer", async () => {
     await renderSettings();
     await flush();
-    expect(contextFor("dev-1")).not.toBeNull();
 
     devices = devices.filter((device) => device.id !== "dev-1");
     document.querySelector("#devlist .revoke").click();
     await flush();
 
     expect(revokeDevice).toHaveBeenCalledWith("dev-1");
-    expect(contextFor("dev-1")).toBeNull();
+    expect(retireDevice).toHaveBeenCalledWith("dev-1");
   });
 });

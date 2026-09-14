@@ -14,6 +14,7 @@ import {
   deviceFeedView,
   knownContexts,
   liveContexts,
+  onDeviceStateChanged,
   resetDeviceContexts,
   retireDeviceContext,
   routeContext,
@@ -100,6 +101,21 @@ describe("the device context registry", () => {
     expect(contextFor("dev-b")).toBe(staying);
     expect(staying.cacheScope.active()).toBe(true);
     expect(staying.session.close).not.toHaveBeenCalled();
+  });
+
+  // Whether a machine can answer is not news the feed carries, and a device
+  // the account has let go of can answer nothing. The gate counting the live
+  // machines, the strip over an open surface and the rail's greying all hear it
+  // the one way — so retirement says so, exactly as going offline does.
+  it("tells the surfaces a retired device can no longer answer", () => {
+    adoptDeviceSession(fakeSession("dev-a"));
+    const told = vi.fn();
+    const stopListening = onDeviceStateChanged(told);
+
+    retireDeviceContext("dev-a");
+
+    expect(told).toHaveBeenCalledTimes(1);
+    stopListening();
   });
 
   // A controller is addressed against its device's scope: retiring the device

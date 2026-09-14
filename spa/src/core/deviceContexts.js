@@ -126,8 +126,11 @@ function bindRepository(context, call) {
 
 /** Retire a device for good: its controllers and drafts go, its rows leave the
  *  feed, what it pushed stops being anyone's cadence, its scope stops
- *  addressing the cache, and its session is closed. Another device's context is
- *  untouched. */
+ *  addressing the cache, its session is closed, and every surface standing over
+ *  it is told it can answer nothing now. Another device's context is untouched.
+ *
+ *  The transport is all this reaches: a device riding a direct connection is
+ *  retired through connection.js, which hands both streams back first. */
 export function retireDeviceContext(deviceId) {
   const context = contexts.get(deviceId);
   if (!context) return null;
@@ -140,6 +143,7 @@ export function retireDeviceContext(deviceId) {
   closeQuietly(context.session);
   context.session = null;
   context.call = null;
+  announceDeviceState(); // this device can answer nothing, ever again
   return context;
 }
 

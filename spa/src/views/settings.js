@@ -11,9 +11,8 @@ import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { refreshDevices } from "../devices.js";
-import { chooseCreationDevice } from "../connection.js";
+import { chooseCreationDevice, retireDevice } from "../connection.js";
 import { creationDeviceId } from "../core/devicePolicy.js";
-import { retireDeviceContext } from "../core/deviceContexts.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
@@ -210,8 +209,9 @@ export async function renderSettings() {
             try {
               await revokeDevice(btn.dataset.id);
               // A device the account no longer has cannot be asked anything:
-              // its drafts, its cached reads and its session go with it.
-              retireDeviceContext(btn.dataset.id);
+              // its drafts, its cached reads, its link and its session go with
+              // it, and every surface over it is told.
+              retireDevice(btn.dataset.id);
               await refreshDeviceList();
             } catch (e) {
               $("#deverr").textContent = e.message;

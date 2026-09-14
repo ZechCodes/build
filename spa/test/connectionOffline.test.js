@@ -27,11 +27,21 @@ vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => null,
   subscribeTerminalStatus: () => () => {},
 }));
-vi.mock("../src/core/peerLink.js", () => ({
-  openPeerLink: async () => {
+// No peer path in jsdom unless a case stands one up: `peer.open` is what the
+// upgrade gets, and the default refuses the way a browser with no RTC would.
+const peer = vi.hoisted(() => ({
+  open: async () => {
     throw new Error("no peer path in jsdom");
   },
 }));
+vi.mock("../src/core/peerLink.js", () => ({ openPeerLink: (...args) => peer.open(...args) }));
+
+/** A direct connection as the connection layer uses it: two carriers that can
+ *  say they closed, and a way to close the pair. */
+const fakePeerLink = () => {
+  const carrier = () => ({ onClose: vi.fn() });
+  return { app: carrier(), term: carrier(), close: vi.fn() };
+};
 // The route render is not what this file is about; the shell still runs, and
 // the gate handing the app back is one of the things this file is about.
 const routes = vi.hoisted(() => ({ renderInbox: vi.fn() }));
@@ -48,7 +58,9 @@ const { App, resetApplication, rememberSelectedDevice } = await import("../src/a
 const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts } = await import(
   "../src/core/deviceContexts.js"
 );
-const { chooseCreationDevice, goOffline, openDeviceSessions, resume, syncHome } = await import("../src/connection.js");
+const { chooseCreationDevice, goOffline, openDeviceSessions, resume, retireDevice, syncHome } = await import(
+  "../src/connection.js"
+);
 const { markDeviceOffline, markDeviceOnline } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, deviceUnreachableText } = await import("../src/core/text.js");
@@ -59,6 +71,8 @@ const { holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js");
 const flush = () => vi.advanceTimersByTimeAsync(0);
 
 const online = (id, name) => ({ id, name, status: "online", fingerprint: `${id}-fingerprint` });
+/** The same paired device, as the account lists it while its bridge is down. */
+const away = (id, name) => ({ ...online(id, name), status: "offline" });
 
 const openedFor = (deviceId) => opened.filter((options) => options.preferDeviceId === deviceId);
 
@@ -117,6 +131,9 @@ beforeEach(() => {
   App.route = { name: "inbox" };
   terminals.followTerminalDevice.mockClear();
   captures.flush.mockClear();
+  peer.open = async () => {
+    throw new Error("no peer path in jsdom");
+  };
   relay.openRelaySession.mockReset();
   relay.openRelaySession.mockImplementation(async (options) => {
     opened.push(options);
@@ -130,6 +147,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete globalThis.RTCPeerConnection;
   unsubscribe();
   stopFeed();
   resetApplication();
@@ -332,6 +350,44 @@ describe("per-device connections", () => {
     expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");
   });
 
+  // Revoking a device is not the same as losing one: it is not coming back, so
+  // nothing is kept for it. The account can run out of machines this way as
+  // surely as by every bridge going, and the gate hears it the same way.
+  it("holds the app when the last device is revoked", async () => {
+    await connectEveryDevice();
+    startFeed(60000);
+    await flush();
+
+    retireDevice("dev-a");
+    expect(held()).toBe(false); // dev-b still answers
+    retireDevice("dev-b");
+    await flush();
+
+    expect(held()).toBe(true);
+    expect(liveIds()).toEqual([]);
+  });
+
+  // The RTCPeerConnection is the app's, not the registry's: a device let go of
+  // through the registry alone would leave its connection open for the life of
+  // the tab, with both streams still pointed down it.
+  it("closes the direct connection a revoked device was riding", async () => {
+    const link = fakePeerLink();
+    peer.open = async () => link;
+    // The upgrade only runs where a browser could hold one; jsdom has no RTC.
+    globalThis.RTCPeerConnection = function RTCPeerConnectionStub() {};
+    await connectEveryDevice();
+    await flush();
+    const session = lastSession("dev-a");
+    expect(contextFor("dev-a").peerLink).toBe(link);
+
+    retireDevice("dev-a");
+    await flush();
+
+    expect(link.close).toHaveBeenCalledTimes(1);
+    expect(session.peer).toHaveBeenLastCalledWith(null);
+    expect(contextFor("dev-a")).toBe(null);
+  });
+
   it("reopens only the device resume names, waiting for it, and leaves the other session alone", async () => {
     await connectEveryDevice();
     const lost = lastSession("dev-a");
@@ -402,7 +458,7 @@ describe("per-device connections", () => {
   });
 
   it("connects a device that comes online after boot, without a reload", async () => {
-    devices = [online("dev-a", "Laptop"), { id: "dev-b", name: "Desktop", status: "offline" }];
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     await connectEveryDevice();
     expect(liveIds()).toEqual(["dev-a"]);
@@ -585,7 +641,7 @@ describe("per-device connections", () => {
   // what is already pointed, repaints the picker, delivers a second identical
   // snapshot and offers the capture queue twice.
   it("takes a newly opened home device in hand once, not twice", async () => {
-    devices = [online("dev-a", "Laptop"), { id: "dev-b", name: "Desktop", status: "offline" }];
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     await connectEveryDevice();
     captures.flush.mockClear();

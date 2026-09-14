@@ -350,6 +350,13 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
 #shell main#root { min-width:0; min-height:0; }
 #shell main#root:not(.surface) { overflow-y:auto; }
 
+/* The machine this surface is about went while it was open (core/deviceNotice.js
+   mounts it): one line over what that machine last said, naming it. flex:none —
+   a full-height surface is a flex column and #tabbody takes the rest. */
+.device-strip { flex:none; background:var(--amber-bg); color:var(--amber);
+  border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  padding:6px var(--pane-gutter); font-size:12.5px; }
+
 /* ---- the view area's toolbar ----
    Where you are standing, said as one sentence: project / branch-or-issue, each
    half opening the list of its own kind. The right side carries the two facts about the

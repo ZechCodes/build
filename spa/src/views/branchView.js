@@ -39,7 +39,7 @@ import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.j
 import { entityIdOf } from "../core/entityId.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { routeProjectKey } from "../core/deviceKey.js";
-import { mountDeviceNotice } from "../core/deviceNotice.js";
+import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { refreshFeed } from "../core/taskFeed.js";
@@ -131,6 +131,9 @@ export async function renderBranch() {
     return;
   }
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
+  // This machine answers now. If it goes while the surface is open, what was
+  // read stays on screen and the strip says whose state that is.
+  const deviceStrip = mountDeviceStrip(root, context);
   /** Changes/Files, painted into whichever rail the mounted pane just built
    *  (.crail-host or .ftree — both flex columns ending in a slot for exactly
    *  this) and pinned there by CSS (.railtabs). Returns whether a rail was
@@ -520,6 +523,7 @@ export async function renderBranch() {
     pane = null;
     rail?.dispose();
     consolePanel?.dispose();
+    deviceStrip();
   };
   // The feed already carries this branch's row — ids, scope, agents — and the
   // cached snapshot replays synchronously at subscribe. Standing the tabs and

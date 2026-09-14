@@ -842,15 +842,15 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 /* The Account page's light/dark/system switch: the same three segments, sized
    to the words rather than stretched across the panel. */
 #themepick { max-width:340px; margin-bottom:0; }
-/* Mid-session offline: pause bridge-backed actions in the main view. Api-only
-   surfaces stay live — the sheet (add-device dialog) and the devices panel. */
-body.offline #root .btn.primary { opacity: .45; pointer-events: none; }
-body.offline #root #adddev { opacity: 1; pointer-events: auto; }
-/* Copy that claims a live agent ("…working", "diff updating live…") would lie
-   while frozen offline: the polls early-return so the view can't repaint, so the
-   swap is pure CSS — hide the live claim, show "last known state" in its place. */
-body.offline .live-claim { font-size:0 !important; }
-body.offline .live-claim::after { content:"last known state"; font-size:12px; color:var(--dim); }
+/* A surface whose machine went while it was open (core/deviceNotice.js marks it
+   and names the machine over the top). It keeps what that machine last said, so
+   the actions that would ask it something are paused — every one of them would
+   be refused — and copy that claims a live agent ("…working", "diff updating
+   live…") says what it is instead. The polls early-return so the view cannot
+   repaint, which is why the swap is pure CSS. */
+.device-away .btn.primary { opacity: .45; pointer-events: none; }
+.device-away .live-claim { font-size:0 !important; }
+.device-away .live-claim::after { content:"last known state"; font-size:12px; color:var(--dim); }
 
 /* ---- mobile (design brief: every surface usable from a phone) ---- */
 @media (max-width: 720px) {

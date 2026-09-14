@@ -5,7 +5,7 @@
 // here.
 
 import { App, render } from "../app.js";
-import { deviceOfflineText, esc } from "./text.js";
+import { deviceFrozenText, deviceOfflineText, esc } from "./text.js";
 import { deviceNameOf } from "./devicePolicy.js";
 import { canAnswer, onDeviceStateChanged, routeContext } from "./deviceContexts.js";
 
@@ -13,6 +13,11 @@ import { canAnswer, onDeviceStateChanged, routeContext } from "./deviceContexts.
  *  for it — the one sentence, whether a surface prints it or a refused opener
  *  says it out loud. */
 export const deviceOfflineNotice = (deviceId) => deviceOfflineText(deviceNameOf(App.devices, deviceId));
+
+/** What this client says over a surface that was already open when its machine
+ *  went: it keeps what that machine last said, so it names whose state it is
+ *  showing rather than offering to open anything. */
+export const deviceFrozenNotice = (deviceId) => deviceFrozenText(deviceNameOf(App.devices, deviceId));
 
 /** The notice a link to an unreachable device stands in for a surface with. */
 export const deviceOfflineHtml = (deviceId) => `<div class="empty">${esc(deviceOfflineNotice(deviceId))}</div>`;
@@ -34,4 +39,38 @@ export function mountDeviceNotice(root, deviceId) {
   App.viewDispose = onDeviceStateChanged(() => {
     if (canAnswer(routeContext(App.route))) render();
   });
+}
+
+/**
+ * Name the machine over a surface that is open when it goes, and stop naming it
+ * when that machine answers again.
+ *
+ * The surface itself stays exactly as it was read: there is nothing to hand
+ * back — the reader is already standing on it — and the panes below keep the
+ * last state the machine described. All that is missing is whose state it is,
+ * which is one strip over the top and a mark on the host so what claims to be
+ * live can stop claiming it. The mounting surface owns the teardown.
+ */
+export function mountDeviceStrip(host, context) {
+  const paint = () => nameTheMachine(host, canAnswer(context) ? null : deviceFrozenNotice(context.deviceId));
+  paint();
+  const stopListening = onDeviceStateChanged(paint);
+  return () => {
+    stopListening();
+    nameTheMachine(host, null);
+  };
+}
+
+/** One strip or none: the host carries at most one, whatever the account says
+ *  and however often it says it. */
+function nameTheMachine(host, words) {
+  host.classList.toggle("device-away", Boolean(words));
+  const shown = host.querySelector(":scope > .device-strip");
+  if (!words) {
+    shown?.remove();
+    return;
+  }
+  const strip = shown || host.insertAdjacentElement("afterbegin", document.createElement("div"));
+  strip.className = "device-strip";
+  strip.textContent = words;
 }

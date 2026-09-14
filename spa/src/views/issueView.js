@@ -9,7 +9,7 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
-import { mountDeviceNotice } from "../core/deviceNotice.js";
+import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
 import { mountIssueView } from "../core/issueView.js";
@@ -37,6 +37,9 @@ export async function renderIssue() {
   }
   const callRpc = context.call;
   root.innerHTML = '<div id="tabbody" class="flush"></div>';
+  // This machine answers now. If it goes while the surface is open, what was
+  // read stays on screen and the strip says whose state that is.
+  const deviceStrip = mountDeviceStrip(root, context);
 
   // Looking at an issue is seeing it — the dot settles until it moves again.
   callRpc("entity.seen", { entity_id: id }).catch(() => {});
@@ -105,5 +108,6 @@ export async function renderIssue() {
     view.dispose();
     rail.dispose();
     consolePanel.dispose();
+    deviceStrip();
   };
 }

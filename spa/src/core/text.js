@@ -28,6 +28,11 @@ export function offlineBannerText(name, sinceMs) {
 export const deviceOfflineText = (name) =>
   `${name || "That device"} isn't connected, so this can't be opened right now.`;
 
+/** What a work surface says when the machine it is about goes while it is open:
+ *  it keeps what it read, so the only thing missing is whose state that is. */
+export const deviceFrozenText = (name) =>
+  `${name || "That device"} isn't connected — this is what it last said.`;
+
 /** The banner for the state where nothing is reachable: no device to name, and
  *  no time that would mean anything, so it says what is true and what happens. */
 export const allDevicesOfflineText = () =>

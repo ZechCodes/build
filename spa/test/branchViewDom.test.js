@@ -429,6 +429,20 @@ describe("a branch on another device", () => {
     expect((await readCached({ deviceId: "dev-1", entityId: "wt-9", kind: "status" })).value.head).toBe("mine");
   });
 
+  // A machine that goes while its surface is open is a different case from a
+  // link that arrives at one: the reader is already standing on what it read,
+  // and that stays. All that is missing is whose state it is.
+  it("keeps what was read when that machine goes, and names the machine over it", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    await renderBranch();
+    await flush();
+
+    setContextOffline("dev-2");
+
+    expect(document.querySelector("#root > .device-strip").textContent).toContain("Desktop isn't connected");
+    expect(document.getElementById("tabbody")).toBeTruthy();
+  });
+
   it("keeps the device on the tab bar's own links", async () => {
     await renderBranch();
     await flush();

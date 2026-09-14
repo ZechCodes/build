@@ -54,7 +54,7 @@ export function renderArchive() {
       const toggle = () => {
         const row = rows.find((candidate) => candidate.key === card.dataset.key);
         if (row?.kind === "workspace" && row.workspaceId && row.projectId) {
-          go({ name: "workspace", projectId: row.projectId, workspaceId: row.workspaceId, tab: "changes" });
+          go({ name: "workspace", deviceId: row.deviceId, projectId: row.projectId, workspaceId: row.workspaceId, tab: "changes" });
           return;
         }
         openKey = openKey === card.dataset.key ? null : card.dataset.key;

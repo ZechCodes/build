@@ -77,7 +77,7 @@ beforeEach(async () => {
     { id: "dev-1", name: "workshop", status: "online" },
     { id: "dev-2", name: "laptop", status: "online" },
   ];
-  filed = { "dev-1": [issueItem], "dev-2": [branchItem] };
+  filed = { "dev-1": [workspaceItem, issueItem], "dev-2": [branchItem] };
   adoptDeviceSession(answering("dev-1"));
   adoptDeviceSession(answering("dev-2"));
 });
@@ -97,9 +97,9 @@ describe("the account archive page", () => {
     await renderAccount();
     await flush();
     // One list across the account, each row named by the machine it is on.
-    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/issue-1", "dev-2/run-1"]);
-    expect(rows()[1].textContent).toContain("relaydb");
-    expect(rows()[1].textContent).toContain("Archived");
+    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/workspace-1", "dev-1/issue-1", "dev-2/run-1"]);
+    expect(rows()[2].textContent).toContain("relaydb");
+    expect(rows()[2].textContent).toContain("Archived");
   });
 
   it("opens a finished workspace on the machine it was filed on", async () => {
@@ -111,7 +111,7 @@ describe("the account archive page", () => {
   });
 
   it("keeps the machines' records apart when both name a record the same", async () => {
-    filed["dev-2"] = [{ ...issueItem, project: "relaydb", finished_at: "2026-08-11T09:30:00Z" }];
+    filed = { "dev-1": [issueItem], "dev-2": [{ ...issueItem, project: "relaydb", finished_at: "2026-08-11T09:30:00Z" }] };
     await renderAccount();
     await flush();
 
@@ -174,7 +174,7 @@ describe("the account archive page", () => {
     vi.useFakeTimers();
     await renderAccount();
     await vi.advanceTimersByTimeAsync(0);
-    expect(rows()).toHaveLength(2);
+    expect(rows()).toHaveLength(3);
     filed["dev-2"] = [];
 
     await vi.advanceTimersByTimeAsync(15000 + 10);
@@ -197,7 +197,7 @@ describe("the account archive page", () => {
     await renderAccount();
     await flush();
 
-    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/issue-1"]);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/workspace-1", "dev-1/issue-1"]);
   });
 
   it("says so when no device can answer, and keeps what it has", async () => {

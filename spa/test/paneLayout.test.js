@@ -1240,6 +1240,85 @@ describe("the row of heads across a work surface", () => {
   });
 });
 
+// ---- the git bar in a column too narrow for its words -----------------------
+// The git bar is one of the three heads across the top of a work surface, and
+// the only one whose contents can outgrow the line. Its column is not the
+// window: at 1440 with the inbox pinned and the conversation docked it is 386px
+// wide, and a bar that wrapped there stood 104px tall against the 46px the two
+// bars beside it stop on. jsdom computes no layout, so what is pinned here is
+// the rules that decide the height rather than the height: the row never wraps,
+// and a narrow column takes width off the verbs instead of folding them onto a
+// second line.
+describe("the git bar in a column too narrow for its words", () => {
+  const COMPACT = "@container (max-width: 600px)";
+  /** The compact block's rules for THIS bar — the bar itself or the half of it
+   *  the verbs stand in. The diff file header has a compact treatment at the
+   *  same query and is no business of the toolbar's. */
+  const compactRules = () =>
+    cssRules().filter(
+      (rule) => enclosingAtRule(rule.at) === COMPACT && /\.(gittoolbar|gtrest)\b/.test(rule.selector),
+    );
+
+  it("stays one row at every width", () => {
+    for (const selector of [".gittoolbar", ".gtrest"]) {
+      const rule = baseRule(selector);
+      expect([selector, declaration(rule.body, "flex-wrap")]).toEqual([selector, "nowrap"]);
+    }
+    // …and nothing in the compact block gives a part of the bar a line of its
+    // own, which is the wrap written as a width instead of a flex-wrap.
+    for (const rule of compactRules()) {
+      expect([rule.selector, declaration(rule.body, "flex-basis")]).toEqual([rule.selector, null]);
+      expect([rule.selector, declaration(rule.body, "flex-wrap")]).not.toEqual([rule.selector, "wrap"]);
+      expect([rule.selector, declaration(rule.body, "width")]).not.toEqual([rule.selector, "100%"]);
+    }
+  });
+
+  it("drops each repo verb to the icon it already carries", () => {
+    const quiet = compactRules().find((rule) => declaration(rule.body, "font-size") === "0");
+    expect(quiet).toBeTruthy();
+    for (const host of [".gtsync", ".gtstash"]) expect(quiet.selector).toContain(host);
+    // Hidden from the eye, not from the accessibility tree: display:none would
+    // take the word out of the button's name with it, and a button called "↓"
+    // is a button nobody can be told the name of.
+    expect(quiet.body).not.toMatch(/display:\s*none/);
+    // The caret keeps its ▾ — a menu with nothing saying it is one is a button
+    // that appears to do nothing — and the arrow each verb is marked with is
+    // exactly the icon the word gives way to, so it is sized on its own.
+    expect(quiet.selector).toContain(":not(.caret)");
+    const glyph = compactRules().find((rule) => rule.selector.includes("::before"));
+    expect(glyph).toBeTruthy();
+    expect(declaration(glyph.body, "font-size")).toBe("12px");
+    expect(declaration(glyph.body, "margin-right")).toBe("0");
+  });
+
+  it("gives the bar to the selection's verbs where both sets will not fit", () => {
+    // A selection raises three more controls, and no treatment of the words fits
+    // those beside the repository's verbs in 386px. So they take the bar, the
+    // way the mid-merge banner takes it: with files in hand the bar is about
+    // those files, and Clear is right there to hand it back. Nothing may scroll
+    // instead — the bar is a container query's container, which is a containing
+    // block for a fixed descendant, so the split menus lifted out of a scroller
+    // inside it would be placed against the bar rather than the window.
+    const handed = compactRules().find((rule) => declaration(rule.body, "display") === "none");
+    expect(handed).toBeTruthy();
+    expect(handed.selector).toContain(":has(.selbar)");
+    for (const verb of [".gtsync", ".gtstash", ".gtmerge", ".gtdivider"]) {
+      expect([verb, handed.selector.includes(verb)]).toEqual([verb, true]);
+    }
+    for (const rule of compactRules()) {
+      expect([rule.selector, declaration(rule.body, "overflow-x")]).toEqual([rule.selector, null]);
+    }
+
+    // …and what the selection says gives ground before its buttons do, so the
+    // last of them is never clipped at the seam.
+    const count = compactRules().find((rule) => rule.selector.includes(".selcount"));
+    expect(count).toBeTruthy();
+    expect(declaration(count.body, "min-width")).toBe("0");
+    expect(declaration(count.body, "overflow")).toBe("hidden");
+    expect(declaration(count.body, "text-overflow")).toBe("ellipsis");
+  });
+});
+
 describe("the git toolbar's menus", () => {
   // The reviewer's screenshot: the Push menu opened upward from the git bar and
   // the navigation bar above cut it off. The bar sits at the top of its pane,

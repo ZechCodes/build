@@ -10,6 +10,9 @@
 // label or a locked look.
 
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { renderDeviceSettingsPage } from "./deviceSettingsFixture.js";
 
 // The device page opens its own connection to the machine it is about; here it
@@ -38,6 +41,12 @@ import {
   projectIsolationTarget,
   mountIsolation,
 } from "../src/core/isolation.js";
+
+const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
+
+// Re-importing the whole app shell can outrun the default deadline on a loaded
+// machine.
+const SLOW_IMPORT_MS = 30000;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
@@ -385,14 +394,34 @@ describe("the mounted control", () => {
   });
 });
 
+// And where it does not live: the account's own page. How a checkout is made
+// depends on the volume the project sits on and on what that machine has
+// installed, so it is a machine's choice — the account page links to each
+// machine's page and offers none of it itself.
+describe("the account's settings page", () => {
+  it("keeps device-owned isolation out of account settings", async () => {
+    vi.resetModules();
+    document.body.innerHTML = bodyHtml;
+    // The devices panel and the downloads block talk HTTP, not a bridge.
+    // Nothing here is about them, and a real request from jsdom hangs until the
+    // test's own deadline.
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("no network in tests");
+    });
+    const { renderSettings } = await import("../src/views/settings.js");
+
+    await renderSettings();
+    await flush();
+
+    expect(document.querySelector("#root #creationdev")).toBeTruthy(); // the page did stand up
+    expect(document.querySelector("#root [data-isolation=select]")).toBe(null);
+  }, SLOW_IMPORT_MS);
+});
+
 // Where a machine's default lives: its own settings page, directly under the
 // agent it starts new work with, painted from that machine's bridge.
 describe("the device's settings page", () => {
   const renderWith = async (call) => (await renderDeviceSettingsPage(call, openSession)).call;
-
-  // Re-importing the whole app shell can outrun the default deadline on a
-  // loaded machine.
-  const SLOW_IMPORT_MS = 30000;
 
   const settingsCall = (settings, projects = []) => async (method) => {
     if (method === "project.list") return { projects };

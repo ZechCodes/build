@@ -41,9 +41,11 @@ import {
   runOptimistic,
   subscribeOptimistic,
 } from "./optimistic.js";
+import { entityIdOf } from "./entityId.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { homeProjectKey } from "./deviceContexts.js";
+import { openableHere, openableHereRows, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
@@ -101,9 +103,9 @@ const messageOf = (error) => (error instanceof Error ? error.message : String(er
  * otherwise badge its own entry. Whoever runs that verb calls this after it.
  */
 export async function markSeen(entityId, agentId, readFromSequence = null, readThroughSequence = null) {
-  if (!entityId || !App.call) return;
+  if (!entityId) return;
   try {
-    await App.call("entity.seen", {
+    await verbCall(rowHolding(entityId))("entity.seen", {
       entity_id: entityId,
       ...(agentId ? { agent_id: agentId } : {}),
       ...(typeof readFromSequence === "number" ? { read_from_sequence: readFromSequence } : {}),
@@ -113,6 +115,11 @@ export async function markSeen(entityId, agentId, readFromSequence = null, readT
     /* the cursor is the daemon's; a failed clear is re-tried by the next open */
   }
 }
+
+/** The row the rail is holding for an entity. A caller names an entity and
+ *  nothing else — only the feed knows which machine answered for it, and that
+ *  is the machine the read cursor belongs to. */
+const rowHolding = (entityId) => mergedItems().find((row) => entityIdOf(row) === entityId) || null;
 
 /** The entries a mutation from this client just ended, cleared in one call. */
 export function noteSelfAction(...entityIds) {
@@ -185,6 +192,7 @@ function draw() {
   else drawInbox(list, shown, nowMs);
   list.scrollTop = scroll;
   paintErrors(list);
+  paintDeviceState(list, { entryFor: entryOf, blockFor: (projectKey) => blocksPainted.get(projectKey) || null });
 }
 
 /** What every row is painted with. `showProject` is whether a row names its
@@ -219,27 +227,39 @@ function activeProjectKey() {
 /** The inbox face: one list, Recent at its end. */
 function drawInbox(list, shown, nowMs) {
   const partition = inboxEntries({ items: shown, nowMs });
+  const live = openableHereRows(partition.entries);
+  const recent = openableHereRows(partition.recent);
   // Every row on screen, Recent included: what the route stands on and what a
   // click resolves to do not care which section a row sits in.
-  entries = [...partition.entries, ...partition.recent];
+  entries = [...live, ...recent];
   const ui = rowUi(true);
   paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
-  patchList(list, partition.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-  paintRecent(list, partition, ui, "inbox");
+  patchList(list, live, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  paintRecent(list, { recent }, ui, "inbox");
 }
 
 /** The projects face: the new-project control, the unrouted captures on their
  *  own, then a block per project with its rows and its own Recent. */
 function drawProjects(list, shown, nowMs) {
   const face = projectBlocks({ items: shown, projects, devices: App.devices, nowMs });
-  entries = [...face.unsorted, ...face.blocks.flatMap((block) => [...block.entries, ...block.recent])];
-  blocksPainted = new Map(face.blocks.map((block) => [block.projectKey, block]));
-  const folded = new Set(face.blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
+  const unsorted = openableHereRows(face.unsorted);
+  const blocks = face.blocks.map(openableHereBlock);
+  entries = [...unsorted, ...blocks.flatMap((block) => [...block.entries, ...block.recent])];
+  blocksPainted = new Map(blocks.map((block) => [block.projectKey, block]));
+  const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
   const ui = { ...rowUi(false), folded };
   const frame = projectsFrame(list);
-  patchList(frame.unsorted, face.unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-  paintBlocks(frame.blocks, face.blocks, ui);
+  patchList(frame.unsorted, unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  paintBlocks(frame.blocks, blocks, ui);
 }
+
+/** A block and its rows as this page can open them: a block on another device
+ *  opens no checkout, and neither do the rows under it. */
+const openableHereBlock = (block) => ({
+  ...openableHere(block),
+  entries: openableHereRows(block.entries),
+  recent: openableHereRows(block.recent),
+});
 
 /** The projects face's frame, built once: the new-project control, the loose
  *  rows' container, and the blocks'. */
@@ -348,6 +368,41 @@ function closeMenu() {
   draw();
 }
 
+/** One control per attribute a row paints, in the order a press is read in:
+ *  the innermost control wins. Each is handed the element that was pressed. */
+const ROW_CONTROLS = [
+  [
+    "data-done",
+    (control) => {
+      closeMenu();
+      finishEntry(entryOf(control.dataset.done));
+    },
+  ],
+  ["data-mute", (control) => toggleMute(entryOf(control.dataset.mute))],
+  ["data-dismiss", (control) => dismissEntry(entryOf(control.dataset.dismiss))],
+  ["data-menu", (control) => openMenu(control.dataset.menu)],
+  // Recent is one disclosure, and pressing it is the user saying so — from then
+  // on the section stays as they left it, whatever the list above it does.
+  ["data-recent-toggle", (control) => toggleRecent(control)],
+];
+
+function toggleRecent(control) {
+  recentOpen.set(control.dataset.recentToggle, control.getAttribute("aria-expanded") !== "true");
+  draw();
+}
+
+/** The press answered off a table of controls: true when it was one of them. */
+function pressed(controls, target) {
+  for (const [attribute, act] of controls) {
+    const control = target.closest(`[${attribute}]`);
+    if (control) {
+      act(control);
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Every control in the list, answered in one place.
 ///
 /// A row's element survives the paints, but a control inside it does not have
@@ -356,37 +411,12 @@ function closeMenu() {
 /// row was spoken for.
 function onListClick(event) {
   const { target } = event;
-  const done = target.closest("[data-done]");
-  if (done) {
-    closeMenu();
-    finishEntry(entryOf(done.dataset.done));
-    return;
-  }
-  const mute = target.closest("[data-mute]");
-  if (mute) {
-    toggleMute(entryOf(mute.dataset.mute));
-    return;
-  }
-  const dismiss = target.closest("[data-dismiss]");
-  if (dismiss) {
-    dismissEntry(entryOf(dismiss.dataset.dismiss));
-    return;
-  }
-  const menu = target.closest("[data-menu]");
-  if (menu) {
-    openMenu(menu.dataset.menu);
-    return;
-  }
-  // Recent is one disclosure, and pressing it is the user saying so — from then
-  // on the section stays as they left it, whatever the list above it does.
-  const recentToggle = target.closest("[data-recent-toggle]");
-  if (recentToggle) {
-    recentOpen.set(recentToggle.dataset.recentToggle, recentToggle.getAttribute("aria-expanded") !== "true");
-    draw();
-    return;
-  }
+  // A control the row's device cannot answer for is shut, not hidden: the
+  // reader can see the verb and reads why it is unavailable on it.
+  if (target.closest('[aria-disabled="true"]')) return;
+  if (pressed(ROW_CONTROLS, target)) return;
   if (captureClicked(target)) return;
-  if (projectClicked(target)) return;
+  if (pressed(BLOCK_CONTROLS, target)) return;
   // The row's own controls answer for themselves; everything else on it opens.
   const row = target.closest(".inbox-entry");
   if (row && !target.closest(".inbox-actions")) openEntry(entryOf(row.dataset.key));
@@ -421,19 +451,6 @@ const BLOCK_CONTROLS = [
   ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
   ["data-new-project", () => openNewProject()],
 ];
-
-/** The block controls, answered off the same one listener. True when the press
- *  was one of them. */
-function projectClicked(target) {
-  for (const [attribute, act] of BLOCK_CONTROLS) {
-    const control = target.closest(`[${attribute}]`);
-    if (control) {
-      act(control);
-      return true;
-    }
-  }
-  return false;
-}
 
 /** The block's name opens the project's checkout, when it has one. */
 function openBlockHead(projectKey) {
@@ -564,7 +581,7 @@ async function rerouteCapture(captureId, destination) {
   capturesBeingRerouted.add(captureId);
   captureErrors.delete(captureId);
   try {
-    const rerouted = await App.call("capture.reroute", rerouteParams(captureId, destination));
+    const rerouted = await verbCall(entryOf(`capture:${captureId}`))("capture.reroute", rerouteParams(captureId, destination));
     // The answer carries the new routing, and for a capture that has already
     // settled it is the only thing that will: the feed stopped carrying it, so
     // nothing else would ever correct the row's "→ project as issue".
@@ -602,7 +619,7 @@ async function toggleMute(entry) {
   await runOptimistic({
     scope: INBOX_SCOPE,
     records: [patchRecord(entry.key, { muted })],
-    call: () => App.call("entity.mute", { entity_id: entry.entityId, muted }),
+    call: () => verbCall(entry)("entity.mute", { entity_id: entry.entityId, muted }),
     failureSummary: `Couldn't ${muted ? "mute" : "unmute"} ${entry.branch || "this item"}`,
     onRevert: (error) => showRowError(entry.key, error),
   });
@@ -631,9 +648,9 @@ async function dismissEntry(entry) {
       // dismissal controls placement, but preserving read state avoids an
       // obsolete badge if the entry later returns.
       if (entry.state === "unread" && entry.entityId) {
-        await App.call("entity.seen", { entity_id: entry.entityId });
+        await verbCall(entry)("entity.seen", { entity_id: entry.entityId });
       }
-      await App.call("entity.dismiss", params);
+      await verbCall(entry)("entity.dismiss", params);
     },
     failureSummary: `Couldn't clear ${entry.branch || "this item"}`,
     onRevert: (error) => showRowError(entry.key, error),
@@ -646,8 +663,9 @@ async function dismissEntry(entry) {
  *  archives. Neither is refused for the state of the work — what the
  *  destruction costs came down with the row and was confirmed through. */
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
-  if (target.kind === "issue") await App.call("plan.archive", { plan_id: target.issueId });
-  else await App.call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch }));
+  const call = verbCall(target);
+  if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
+  else await call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch }));
   // Done ends the work, and an ending is an attention event. The user did this
   // here, so this entry is already read. The issue an unmerged branch leaves
   // behind is NOT: it comes back to the inbox asking for somebody, and the

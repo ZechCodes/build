@@ -32,12 +32,15 @@ vi.mock("../src/core/taskFeed.js", () => ({
   dropFeedDevice: () => {},
   primaryRunIdFor: () => null,
 }));
+const awayCall = vi.fn(async () => ({ ok: true }));
 const openCreateWork = vi.fn();
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 const openNewRepo = vi.fn();
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: (...args) => openNewRepo(...args) }));
 
 let App;
+let adoptDeviceSession;
+let setContextOffline;
 let initInboxRail;
 let setInboxView;
 
@@ -166,6 +169,7 @@ const churn = (target, act) => {
 beforeEach(async () => {
   vi.resetModules();
   ({ App } = await import("../src/app.js"));
+  ({ adoptDeviceSession, setContextOffline } = await import("../src/core/deviceContexts.js"));
   ({ initInboxRail } = await import("../src/core/inboxShell.js"));
   ({ setInboxView } = await import("../src/core/inboxView.js"));
   document.body.innerHTML = bodyHtml;
@@ -183,6 +187,9 @@ beforeEach(async () => {
   // Every row in the rail names the device it came from; the home device is
   // what a route that names none is about.
   (await import("../src/app.js")).adoptApplicationScope({ deviceId: "dev-1", call: App.call });
+  // The other device on the account answers for its own rows: the rail can only
+  // work a device it holds a session for.
+  adoptDeviceSession({ deviceId: "dev-2", call: awayCall });
   refreshFeed.mockClear();
   openCreateWork.mockClear();
   openNewRepo.mockClear();
@@ -453,6 +460,39 @@ describe("the projects face", () => {
     feed(feedItems);
     blockFor("dev-2/p1").querySelector("[data-project-create]").click();
     expect(openCreateWork.mock.calls[0][0]).toMatchObject({ projectId: "p1", projectName: "relaydb" });
+  });
+
+  // The block of a device that cannot answer stays on the rail — its work has
+  // not gone anywhere — but nothing in it can be worked until the device is
+  // back, and the rail says so rather than failing on the press.
+  it("greys a block whose device is offline and shuts its +", () => {
+    setContextOffline("dev-2", { offline: true });
+    feedProjects.push({ id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "relaydb" });
+    feed([branchRow(), branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", branch: "build/far", run_id: "run-far" })]);
+
+    const away = blockFor("dev-2/p1");
+    expect(away.classList.contains("inbox-offline")).toBe(true);
+    const create = away.querySelector("[data-project-create]");
+    expect(create.disabled).toBe(true);
+    expect(create.title).toBe("Device offline");
+    expect(blockFor("dev-1/p1").classList.contains("inbox-offline")).toBe(false);
+    expect(blockFor("dev-1/p1").querySelector("[data-project-create]").disabled).toBe(false);
+
+    create.click();
+    expect(openCreateWork).not.toHaveBeenCalled();
+  });
+
+  it("opens no checkout from the head of a block on another device", () => {
+    feedProjects.push({ id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "relaydb" });
+    feed([
+      primaryRow(),
+      primaryRow({ deviceId: "dev-2", projectKey: "dev-2/p1", branch: "main", run_id: null, worktree_id: "wt-far" }),
+    ]);
+
+    const head = blockFor("dev-2/p1").querySelector("[data-project-open]");
+    expect(head.classList.contains("inbox-unroutable")).toBe(true);
+    head.click();
+    expect(location.hash).toBe("");
   });
 
   it("touches nothing when the feed repeats what it already said", () => {

@@ -47,17 +47,23 @@ beforeEach(async () => {
   ({ App } = await import("../src/app.js"));
   ({ renderBranch, shouldRetainDirtyFilesPane } = await import("../src/views/branchView.js"));
   // The feed polls device contexts, so this file's one device has one: its call
-  // is whatever the case in hand scripted onto App.call.
+  // is whatever the case in hand scripted onto App.call. It is the home device
+  // too — this surface's branch is on the machine creation goes to — which is
+  // what Done on it asks. (Said here rather than through pointAliasesAt, which
+  // would point App.call at the delegate below and have it call itself.)
   let adoptDeviceSession;
-  ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+  let setHomeContext;
+  ({ adoptDeviceSession, resetDeviceContexts, setHomeContext } = await import("../src/core/deviceContexts.js"));
   App.devices = [{ id: "dev-1", name: "This device", status: "online" }];
-  adoptDeviceSession({
-    deviceId: "dev-1",
-    call: (...args) => App.call(...args),
-    close: () => {},
-    peer: () => {},
-    onCarrier: () => {},
-  });
+  setHomeContext(
+    adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => App.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    }),
+  );
   App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
   // core/toolbar.js isn't mounted in this file — Done paints into its verb
   // slot (setToolbarVerb), so stand in for the one thing branchView.js needs

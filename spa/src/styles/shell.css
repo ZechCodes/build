@@ -223,6 +223,11 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
 /* A muted entry keeps its place and its live status, and stops shouting. */
 .inbox-muted { opacity:.62; }
 .inbox-muted .inbox-reason { color:var(--dim); }
+/* A device the page cannot reach right now. Its work has not gone anywhere, so
+   its rows and blocks keep their places, dimmed; what would have asked it
+   something is shut and says why. */
+.inbox-offline { opacity:.62; }
+.inbox-offline .mi[aria-disabled="true"] { opacity:.55; cursor:default; }
 /* A checkout with no branch is on no URL, so its row opens nothing. */
 .inbox-unroutable { cursor:default; }
 .inbox-entry .warn { font-size:11px; }

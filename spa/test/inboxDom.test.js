@@ -32,10 +32,26 @@ vi.mock("../src/core/taskFeed.js", () => ({
 // each test takes a fresh module graph rather than a reset switch the app would
 // never call.
 let App;
+let adoptApplicationScope;
+let adoptDeviceSession;
+let setContextOffline;
 let mountInboxList;
 let markSeen;
 let subscribeInboxAttentionCount;
 let attentionCount = 0;
+
+/** What the home device answers with. Until stage 3 the App.* aliases ARE the
+ *  home context's fields, so handing the app a call and handing the device one
+ *  are a single act — a test that hands over a new call is a reconnect. */
+const homeAnswersWith = (call) => {
+  adoptApplicationScope({ deviceId: "dev-1", call });
+  return call;
+};
+
+// The other device on the account, answering for its own rows. Every verb in
+// the rail goes to the device whose row it is on, so the rows of this one must
+// never reach the home device's call.
+const awayCall = vi.fn(async () => ({ ok: true }));
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
@@ -137,7 +153,8 @@ const feed = (items, pending = []) => {
 
 beforeEach(async () => {
   vi.resetModules();
-  ({ App } = await import("../src/app.js"));
+  ({ App, adoptApplicationScope } = await import("../src/app.js"));
+  ({ adoptDeviceSession, setContextOffline } = await import("../src/core/deviceContexts.js"));
   ({ mountInboxList, markSeen } = await import("../src/core/inboxView.js"));
   ({ subscribeInboxAttentionCount } = await import("../src/core/inboxAttention.js"));
   document.body.innerHTML = bodyHtml;
@@ -145,7 +162,13 @@ beforeEach(async () => {
   location.hash = "";
   App.route = { name: "inbox" };
   App.gated = false;
-  App.call = vi.fn(async () => ({ ok: true }));
+  App.devices = [
+    { id: "dev-1", name: "workshop", status: "online" },
+    { id: "dev-2", name: "laptop", status: "online" },
+  ];
+  homeAnswersWith(vi.fn(async () => ({ ok: true })));
+  awayCall.mockClear();
+  adoptDeviceSession({ deviceId: "dev-2", call: awayCall });
   refreshFeed.mockClear();
   subscribeInboxAttentionCount((count) => {
     attentionCount = count;
@@ -417,10 +440,10 @@ describe("the inbox rail", () => {
   });
 
   it("takes the row off the list before branch.finish answers, and leaves its neighbours alone", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "branch.finish") return new Promise(() => {});
       return { ok: true };
-    });
+    }));
     const neighbour = rowFor("iss-1");
     menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
@@ -429,10 +452,10 @@ describe("the inbox rail", () => {
   });
 
   it("keeps the row off the list when a feed tick lands while Done is in flight", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "branch.finish") return new Promise(() => {});
       return { ok: true };
-    });
+    }));
     menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
     feed([branchRow(), issueRow()]);
@@ -441,10 +464,10 @@ describe("the inbox rail", () => {
   });
 
   it("restores the row and says why when Done fails", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "branch.finish") throw new Error("worktree is dirty");
       return { ok: true };
-    });
+    }));
     menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
     const row = rowFor("run-1");
@@ -507,10 +530,10 @@ describe("the inbox rail", () => {
   });
 
   it("mutes an entry the instant the menu item is pressed, before entity.mute answers", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "entity.mute") return new Promise(() => {});
       return { ok: true };
-    });
+    }));
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
     menuItem(rowFor("run-1"), "[data-mute]").click();
@@ -526,10 +549,10 @@ describe("the inbox rail", () => {
   });
 
   it("puts the mute back and says why when entity.mute is refused", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "entity.mute") throw new Error("the relay is offline");
       return { ok: true };
-    });
+    }));
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
     menuItem(rowFor("run-1"), "[data-mute]").click();
@@ -593,11 +616,11 @@ describe("the inbox rail", () => {
   // cleared one is off the inbox until something new needs the user. The bridge
   // owns that truth (`dismissed` on the row); the tap only gets there first.
   it("clears an entry from its own menu, and the row leaves before the daemon answers", async () => {
-    App.call = vi.fn(async (method, params) => {
+    homeAnswersWith(vi.fn(async (method, params) => {
       if (method !== "entity.dismiss") return { ok: true };
       feedItems = [branchRow({ dismissed: true }), issueRow()];
       return { entity_id: params.entity_id, dismissed: true };
-    });
+    }));
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
     menuItem(rowFor("run-1"), "[data-dismiss]").click();
@@ -613,10 +636,10 @@ describe("the inbox rail", () => {
   });
 
   it("brings the row back and says why when clearing fails", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "entity.dismiss") throw new Error("the relay is offline");
       return { ok: true };
-    });
+    }));
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
     menuItem(rowFor("run-1"), "[data-dismiss]").click();
@@ -630,10 +653,10 @@ describe("the inbox rail", () => {
   });
 
   it("keeps the row cleared through a feed tick that still carries it", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "entity.dismiss") return new Promise(() => {});
       return { ok: true };
-    });
+    }));
     const neighbour = rowFor("iss-1");
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
@@ -647,10 +670,10 @@ describe("the inbox rail", () => {
   });
 
   it("refuses a second press on a row whose verb is still in flight", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "entity.dismiss") return new Promise(() => {});
       return { ok: true };
-    });
+    }));
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
     menuItem(rowFor("run-1"), "[data-dismiss]").click();
@@ -688,10 +711,10 @@ describe("the inbox rail", () => {
 
   it("says which way the mute was going when it is refused", async () => {
     feed([branchRow({ muted: true, unread: false })]);
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "entity.mute") throw new Error("the relay is offline");
       return { ok: true };
-    });
+    }));
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
     menuItem(rowFor("run-1"), "[data-mute]").click();
@@ -870,10 +893,10 @@ describe("captures on the rail", () => {
   });
 
   it("brings the primary row back and says why when its clear fails", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "entity.dismiss") throw new Error("unknown project p1");
       return { ok: true };
-    });
+    }));
     feed([branchRow({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, unread: false })]);
     document.querySelector('.inbox-entry[data-key="branch:dev-1/p1:main"]').querySelector("[data-menu]").click();
     await flush();
@@ -952,10 +975,10 @@ describe("captures on the rail", () => {
         unread_reason: "routing_failed",
       });
     feed([failed("capture-1"), failed("capture-2")]);
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "capture.reroute") return new Promise(() => {});
       return {};
-    });
+    }));
 
     captureRowFor("capture-1").querySelector("[data-capture-retry]").click();
     await flush();
@@ -1052,15 +1075,87 @@ describe("captures on the rail", () => {
   });
 
   it("says on the row when a reroute is refused", async () => {
-    App.call = vi.fn(async (method) => {
+    homeAnswersWith(vi.fn(async (method) => {
       if (method === "capture.reroute") throw new Error("unknown project_id: p2");
       return { ok: true };
-    });
+    }));
     feed([captureFeedRow({ state: "failed", unread: true, unread_reason: "routing_failed" })]);
     captureRowFor("capture-1").querySelector("[data-capture-retry]").click();
     await flush();
     const error = captureRowFor("capture-1").querySelector("[data-capture-error]");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toContain("unknown project_id");
+  });
+});
+
+// Every row in the rail names the machine that answered for it. A row from
+// another device is the account's row as much as any other — its verbs work,
+// and they work against ITS device — but no route can name a device yet, so it
+// opens nowhere until stage 2 gives routes one.
+describe("a row on another device", () => {
+  const awayRow = (over = {}) =>
+    branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", run_id: "run-2", branch: "build/away", ...over });
+
+  it("is unroutable and titled so the reader knows it is coming", () => {
+    feed([awayRow()]);
+    const row = rowFor("run-2");
+    expect(row.className).toContain("inbox-unroutable");
+    expect(row.title).toContain("Opens once this page can name its device");
+  });
+
+  it("goes nowhere when it is pressed, and is read on its own device", async () => {
+    feed([awayRow()]);
+    rowFor("run-2").click();
+    await flush();
+    expect(location.hash).toBe("");
+    expect(awayCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-2" });
+    expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+  });
+
+  it("clears on its own device", async () => {
+    feed([awayRow()]);
+    menuItem(rowFor("run-2"), "[data-dismiss]").click();
+    await flush();
+    expect(awayCall).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-2" });
+    expect(App.call).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
+  });
+
+  it("finishes and mutes on its own device too", async () => {
+    feed([awayRow(), awayRow({ run_id: "run-3", branch: "build/other" })]);
+    menuItem(rowFor("run-2"), "[data-done]").click();
+    await answerConfirm(true);
+    expect(awayCall).toHaveBeenCalledWith("branch.finish", { project_id: "p1", branch: "build/away", action: "delete" });
+    menuItem(rowFor("run-3"), "[data-mute]").click();
+    await flush();
+    expect(awayCall).toHaveBeenCalledWith("entity.mute", { entity_id: "run-3", muted: true });
+    expect(App.call).not.toHaveBeenCalledWith("branch.finish", expect.anything());
+    expect(App.call).not.toHaveBeenCalledWith("entity.mute", expect.anything());
+  });
+
+  it("is greyed and its verbs are shut while its device is offline", async () => {
+    setContextOffline("dev-2", { offline: true });
+    feed([awayRow()]);
+    const row = rowFor("run-2");
+    expect(row.className).toContain("inbox-offline");
+    const clear = menuItem(row, "[data-dismiss]");
+    expect(clear.getAttribute("aria-disabled")).toBe("true");
+    expect(clear.title).toBe("Device offline");
+
+    clear.click();
+    await flush();
+    expect(awayCall).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
+  });
+
+  it("leaves the home device's own rows alone", async () => {
+    feed([branchRow(), awayRow()]);
+    const home = rowFor("run-1");
+    expect(home.className).not.toContain("inbox-unroutable");
+    expect(home.className).not.toContain("inbox-offline");
+    expect(menuItem(home, "[data-dismiss]").getAttribute("aria-disabled")).toBe(null);
+
+    home.click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
+    expect(location.hash).toBe("#/project/p1/branch/build%2Flogin/changes");
   });
 });

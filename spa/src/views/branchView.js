@@ -36,7 +36,7 @@ import { createWorktreeReview } from "./worktreeReview.js";
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
-import { homeProjectKey } from "../core/deviceContexts.js";
+import { homeContext, homeProjectKey } from "../core/deviceContexts.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
@@ -278,6 +278,9 @@ export async function renderBranch() {
             kind: "branch",
             entityId: entityIdOf(row),
             issueId: row && row.issue_id,
+            // Which machine the branch is on: the verb goes to that device, and
+            // until a route can name one this surface is the home device's.
+            deviceId: homeContext()?.deviceId || null,
             projectId,
             branch: name,
             // The issue ends with the branch only when the work landed;

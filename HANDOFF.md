@@ -737,15 +737,24 @@ each with its case first:
   `.row` — so the ⟳ was clipped at the frame and the buttons crowded the
   sentence.
 
+### Fixed in the bridge
+
+- **A second workspace in a project always failed.** Every workspace mounted the
+  source under the same mount name (`repo`) and a source repository keeps one
+  linked-worktree registry for every checkout cut from it, so the second
+  workspace asked for the record the first held: `failed to make directory
+  '<source>/.git/worktrees/<mount>': directory exists`. A checkout that is one
+  mount of a workspace is named `<workspace directory>--<mount>` now — minted in
+  `checkout_name` (`bridge/src/isolation/mod.rs`), so both backends and every
+  caller follow. A checkout sitting directly under a worktrees root keeps its
+  plain directory name, so every registry already on a machine goes on verifying
+  with no migration. It ships as a bridge release; nothing in the SPA changes.
+
 ### Found on main, not fixed here
 
 Bridge-side, or a product call main has to make. All of these were reproduced in
 this pass; none is the SPA's to fix.
 
-- **A second workspace in a project always fails.** The git worktree is named
-  after the source mount (`bridge/src`'s worktree naming), so every workspace
-  after the first collides: `failed to make directory
-  '<source>/.git/worktrees/<mount>': directory exists`.
 - **A project's user-given name is discarded.** `bridge/src/app/projects/mod.rs`
   `add_project` names the project after its first source's basename, so two
   same-named projects on one machine are indistinguishable.

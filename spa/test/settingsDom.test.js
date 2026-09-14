@@ -17,7 +17,7 @@ const CATALOG = {
 };
 
 const { App, chooseCreationDevice, retireDevice, revokeDevice } = vi.hoisted(() => ({
-  App: { devices: [], selectedDeviceId: null },
+  App: { devices: [], selectedDeviceId: null, viewDispose: null },
   chooseCreationDevice: vi.fn(),
   retireDevice: vi.fn(),
   revokeDevice: vi.fn(async () => {}),
@@ -69,6 +69,7 @@ let renderSettings;
 let adoptDeviceSession;
 let contextFor;
 let resetDeviceContexts;
+let setContextOffline;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -78,9 +79,11 @@ beforeEach(async () => {
   ];
   App.devices = [];
   App.selectedDeviceId = null;
+  App.viewDispose?.();
+  App.viewDispose = null;
   document.body.innerHTML = bodyHtml;
   ({ renderSettings } = await import("../src/views/settings.js"));
-  ({ adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+  ({ adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } = await import("../src/core/deviceContexts.js"));
   resetDeviceContexts();
 });
 
@@ -133,6 +136,55 @@ describe("Settings → Creation device", () => {
 
     expect($("#creationdev").value).toBe("dev-2");
     expect($("#creationfallback").textContent).toBe("Studio is offline; new work waits until a device is back.");
+  });
+
+  // The note is about whichever machine the select is showing, so it is worked
+  // out again every time that changes. Left painted once, it went on naming the
+  // machine the reader had just picked away from.
+  it("says where the work is going about the machine just picked, not the one before it", async () => {
+    devices[0].status = "offline"; // Laptop, the picked one
+    App.selectedDeviceId = "dev-1";
+    await renderSettings();
+    await flush();
+    expect($("#creationfallback").textContent).toBe("Laptop is offline; new work goes to Studio until it returns.");
+
+    const select = $("#creationdev");
+    select.value = "dev-2";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect($("#creationfallback").textContent).toBe("");
+  });
+
+  // Whether a machine is reachable is not news this page asks for — it is told,
+  // the way every other surface that greys what a lost machine holds is told.
+  it("says the machine picked has gone the moment it goes, and stops when it is back", async () => {
+    App.selectedDeviceId = "dev-1";
+    adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
+    await renderSettings();
+    await flush();
+    expect($("#creationfallback").textContent).toBe("");
+
+    devices[0].status = "offline";
+    setContextOffline("dev-1");
+    expect($("#creationfallback").textContent).toBe("Laptop is offline; new work goes to Studio until it returns.");
+
+    devices[0].status = "online";
+    adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
+    expect($("#creationfallback").textContent).toBe("");
+  });
+
+  it("stops listening when the page goes", async () => {
+    App.selectedDeviceId = "dev-1";
+    adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
+    await renderSettings();
+    await flush();
+
+    App.viewDispose();
+    App.viewDispose = null;
+    devices[0].status = "offline";
+    setContextOffline("dev-1");
+
+    expect($("#creationfallback").textContent).toBe("");
   });
 
   it("writes the pick through the one function that owns it", async () => {

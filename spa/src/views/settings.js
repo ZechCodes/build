@@ -22,6 +22,7 @@ import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
 import { chosenProviderId } from "../core/agentChoice.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
+import { onDeviceStateChanged } from "../core/deviceContexts.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -55,9 +56,9 @@ function creationDeviceOptionsHtml(devices, chosenId) {
  *  still has it. A picked machine that is merely away is still the machine new
  *  work is meant for; only a pick the list no longer carries falls back to
  *  whoever is taking the work today. */
-function shownCreationDevice() {
-  const picked = App.devices.find((device) => device.id === App.selectedDeviceId);
-  return picked?.id || homeDeviceId(App.devices, App.selectedDeviceId);
+function shownCreationDevice(devices, pickedId) {
+  const picked = devices.find((device) => device.id === pickedId);
+  return picked?.id || homeDeviceId(devices, pickedId);
 }
 
 /** Where new work is going while the machine the account picked is away.
@@ -73,18 +74,39 @@ function creationFallbackNote(devices, shownId) {
     : `${shown.name} is offline; new work waits until a device is back.`;
 }
 
-/** The one control for home: which machine new projects and captures go to.
- *  Mounted once the account list has been read, since the list is what it
- *  offers. */
+/**
+ * The one control for home: which machine new projects and captures go to.
+ *
+ * Mounted once the account list has been read, since the list is what it
+ * offers — and painted again whenever what it says could have changed. Both
+ * halves are one function of (the account list, the pick), so the note can
+ * never be about a machine the select is not showing: picking another machine
+ * repaints from the new pick, and a machine going or coming back repaints from
+ * the list, the way every other surface that greys what a lost machine holds
+ * is told (core/deviceContexts.js). The listener is this page's teardown.
+ */
 function mountCreationDevice() {
   const select = $("#creationdev");
   if (!select) return;
-  const shownId = shownCreationDevice();
-  select.innerHTML = creationDeviceOptionsHtml(App.devices, shownId);
-  select.disabled = App.devices.length === 0;
-  const note = $("#creationfallback");
-  if (note) note.textContent = creationFallbackNote(App.devices, shownId);
-  select.onchange = () => chooseCreationDevice(select.value);
+  let offered = null; // the options last painted, so a repaint that says the
+  // same thing never rebuilds a list the reader may have open
+  const paint = (pickedId) => {
+    const shownId = shownCreationDevice(App.devices, pickedId);
+    const options = creationDeviceOptionsHtml(App.devices, shownId);
+    if (options !== offered) {
+      offered = options;
+      select.innerHTML = options;
+    }
+    select.disabled = App.devices.length === 0;
+    const note = $("#creationfallback");
+    if (note) note.textContent = creationFallbackNote(App.devices, shownId);
+  };
+  paint(App.selectedDeviceId);
+  select.onchange = () => {
+    chooseCreationDevice(select.value);
+    paint(select.value);
+  };
+  App.viewDispose = onDeviceStateChanged(() => paint(App.selectedDeviceId));
 }
 
 export async function renderSettings() {

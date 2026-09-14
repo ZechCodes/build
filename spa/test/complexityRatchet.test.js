@@ -33,7 +33,12 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // 65 since the rail's projects face lists only workspaces: a project block's
 // head has one kind of surface to open and one create button, and its chevron
 // is its own helper.
-const RATCHETED_FUNCTIONS = 65;
+// 62 since a conversation's reference chips are written from one table of the
+// fields a reference carries: the render reads it forwards, the wiring reads it
+// backwards, and neither walks the fields one `if` at a time. The label a chip
+// wears is a list of the fields it can be named by, and the lines it points at
+// are their own helper.
+const RATCHETED_FUNCTIONS = 62;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

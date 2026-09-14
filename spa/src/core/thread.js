@@ -502,39 +502,72 @@ function harnessLabel(thread, override) {
   return providerLabel(LEGACY_PROVIDER_IDS[raw] || raw);
 }
 
-// eslint-disable-next-line complexity -- ratchet: linkLocation is at 12, cap 10 — reduce it, then drop this line
+/// Everything a reference carries besides its kind, and the dataset key each
+/// rides on. One table, read forwards by the render and backwards by the
+/// wiring, so a field written onto a chip cannot be forgotten on the way back
+/// off it — which is how a reference lost the line it pointed at.
+const LINK_FIELDS = Object.freeze([
+  { field: "path", data: "path" },
+  { field: "issue_id", data: "issueId" },
+  { field: "plan_id", data: "planId" },
+  { field: "stage_id", data: "stageId" },
+  { field: "implementation_id", data: "implementationId" },
+  { field: "run_id", data: "runId" },
+  { field: "worktree_id", data: "worktreeId" },
+  { field: "sha", data: "sha" },
+  { field: "recovery_id", data: "recoveryId" },
+  { field: "line_start", data: "lineStart", number: true },
+  { field: "line_end", data: "lineEnd", number: true },
+]);
+
+/// The attribute a dataset key is written as: `lineStart` rides on
+/// `data-line-start`, which is the one rule the DOM already has for the pair.
+const datasetAttribute = (data) => `data-${data.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+
+/// What a reference is worth writing onto its chip. An empty string and a
+/// missing field say the same nothing; a zero does not, and is kept.
+const linkFieldWritten = (value) => value != null && value !== "";
+
+function linkAttributes(link) {
+  return [
+    `data-kind="${esc(link.kind || "")}"`,
+    ...LINK_FIELDS.filter(({ field }) => linkFieldWritten(link[field])).map(
+      ({ field, data, number }) => `${datasetAttribute(data)}="${number ? Number(link[field]) : esc(link[field])}"`,
+    ),
+  ].join(" ");
+}
+
+/// What a chip reads back off itself when it is pressed — the reference the
+/// render was given, as far as the table carries it.
+const linkFromDataset = (dataset) => LINK_FIELDS.reduce(
+  (link, { field, data, number }) =>
+    dataset[data] ? { ...link, [field]: number ? Number(dataset[data]) : dataset[data] } : link,
+  { kind: dataset.kind },
+);
+
+/// The fields a reference is named by when it is not a file, best first.
+const LABEL_FIELDS = ["path", "implementation_id", "run_id", "worktree_id", "sha", "recovery_id"];
+
+/// Which lines of a file a reference stands on: one line, a span, or none.
+function linkLines(link) {
+  const { line_start: start, line_end: end } = link;
+  if (start == null) return "";
+  return start === end || end == null ? `:${start}` : `:${start}-${end}`;
+}
+
 function linkLocation(link) {
-  if (link.kind !== "file") {
-    return link.path || link.implementation_id || link.run_id || link.worktree_id || link.sha || link.recovery_id || "Open";
-  }
-  const start = link.line_start;
-  const end = link.line_end;
-  const lines = start == null ? "" : start === end || end == null ? `:${start}` : `:${start}-${end}`;
-  return `${link.path || "file"}${lines}`;
+  if (link.kind !== "file") return LABEL_FIELDS.map((field) => link[field]).find(Boolean) || "Open";
+  return `${link.path || "file"}${linkLines(link)}`;
+}
+
+/// One reference, as the chip under a message.
+function linkChipHtml(link) {
+  return `<button type="button" class="thread-reference" ${linkAttributes(link)}>${esc(linkLocation(link))}</button>`;
 }
 
 function linksHtml(links) {
   if (!links || !links.length) return "";
-  return `<div class="thread-references">${links
-    // eslint-disable-next-line complexity -- ratchet: this callback is at 13, cap 10 — reduce it, then drop this line
-    .map((link) => {
-      const attributes = [
-        `data-kind="${esc(link.kind || "")}"`,
-        link.path ? `data-path="${esc(link.path)}"` : "",
-        link.issue_id ? `data-issue-id="${esc(link.issue_id)}"` : "",
-        link.plan_id ? `data-plan-id="${esc(link.plan_id)}"` : "",
-        link.stage_id ? `data-stage-id="${esc(link.stage_id)}"` : "",
-        link.implementation_id ? `data-implementation-id="${esc(link.implementation_id)}"` : "",
-        link.run_id ? `data-run-id="${esc(link.run_id)}"` : "",
-        link.worktree_id ? `data-worktree-id="${esc(link.worktree_id)}"` : "",
-        link.sha ? `data-sha="${esc(link.sha)}"` : "",
-        link.recovery_id ? `data-recovery-id="${esc(link.recovery_id)}"` : "",
-        link.line_start != null ? `data-line-start="${Number(link.line_start)}"` : "",
-        link.line_end != null ? `data-line-end="${Number(link.line_end)}"` : "",
-      ].filter(Boolean).join(" ");
-      return `<button type="button" class="thread-reference" ${attributes}>${esc(linkLocation(link))}</button>`;
-    })
-    .join("")}</div>`;
+  return `<div class="thread-references">${links.map(linkChipHtml).join("")}</div>`;
 }
 
 /// Attachment bytes already fetched, keyed by path — and `null` for a path the
@@ -1705,23 +1738,8 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
 
 export function wireThreadLinks(root, openLink) {
   if (!root) return;
-  root.querySelectorAll(".thread-reference").forEach((button) => {
-    // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
-    button.onclick = () => {
-      const link = { kind: button.dataset.kind };
-      if (button.dataset.path) link.path = button.dataset.path;
-      if (button.dataset.issueId) link.issue_id = button.dataset.issueId;
-      if (button.dataset.planId) link.plan_id = button.dataset.planId;
-      if (button.dataset.stageId) link.stage_id = button.dataset.stageId;
-      if (button.dataset.implementationId) link.implementation_id = button.dataset.implementationId;
-      if (button.dataset.runId) link.run_id = button.dataset.runId;
-      if (button.dataset.worktreeId) link.worktree_id = button.dataset.worktreeId;
-      if (button.dataset.sha) link.sha = button.dataset.sha;
-      if (button.dataset.recoveryId) link.recovery_id = button.dataset.recoveryId;
-      if (button.dataset.lineStart) link.line_start = Number(button.dataset.lineStart);
-      if (button.dataset.lineEnd) link.line_end = Number(button.dataset.lineEnd);
-      openLink(link);
-    };
+  root.querySelectorAll(".thread-reference").forEach((chip) => {
+    chip.onclick = () => openLink(linkFromDataset(chip.dataset));
   });
 }
 

@@ -98,6 +98,23 @@ describe("an issue on another device", () => {
   });
 });
 
+// The machine answered once and has since gone: its context is still here, but
+// nothing can be read through it until it is back.
+describe("an issue on a device that has gone offline", () => {
+  it("an offline route device renders the offline state naming that device", async () => {
+    const contexts = await import("../src/core/deviceContexts.js");
+    contexts.setContextOffline("dev-2");
+
+    await renderIssue();
+    await flush();
+
+    expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
+    expect(document.getElementById("tabbody")).toBeNull();
+    expect(theirCall).not.toHaveBeenCalled();
+    expect(App.call).not.toHaveBeenCalled();
+  });
+});
+
 // A link can name a machine this client has no session with. There is nothing
 // to read and nothing to write until it answers, so the surface says so by name
 // rather than painting an empty issue.

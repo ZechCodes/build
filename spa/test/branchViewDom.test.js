@@ -438,6 +438,23 @@ describe("a branch on another device", () => {
 
     expect(location.hash).toBe("#/device/dev-2/project/p1/branch/main/files");
   });
+
+  // The machine answered once and has since gone. Its context is still here —
+  // the drafts and cached reads on it survive the outage — but nothing can be
+  // read through it, so the surface says which machine is missing instead of
+  // standing a frame up over calls that will only be refused.
+  it("an offline route device renders the offline state naming that device", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    setContextOffline("dev-2");
+
+    await renderBranch();
+    await flush();
+
+    expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
+    expect(document.getElementById("tabbody")).toBeNull();
+    expect(theirCall).not.toHaveBeenCalled();
+    expect(App.call).not.toHaveBeenCalled();
+  });
 });
 
 // A link can name a machine this client has no session with — a phone that has
@@ -454,10 +471,11 @@ describe("a branch on a device this client has not opened", () => {
     await flush();
 
     expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
+    expect(document.getElementById("tabbody")).toBeNull();
     expect(App.call).not.toHaveBeenCalled();
   });
 
-  it("falls back to plain words for a device the account has never listed", async () => {
+  it("a route naming a device this account has no context for renders the offline state and mounts nothing", async () => {
     App.route = { name: "branch", deviceId: "dev-unknown", projectId: "p1", branch: "main", tab: "changes" };
     App.call = vi.fn(async () => ({}));
 
@@ -465,6 +483,8 @@ describe("a branch on a device this client has not opened", () => {
     await flush();
 
     expect(document.getElementById("root").textContent).toContain("That device isn't connected");
+    expect(document.getElementById("tabbody")).toBeNull();
+    expect(App.call).not.toHaveBeenCalled();
   });
 });
 

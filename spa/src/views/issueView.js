@@ -25,10 +25,12 @@ export async function renderIssue() {
   let projectId = App.route.projectId || null;
   let selectedStageId = App.route.stage || null;
   // The machine this link is about: its caller, its cache and its conversations
-  // are what the surface, the rail and the console below are built on.
+  // are what the surface, the rail and the console below are built on. One that
+  // cannot answer — never opened here, or gone since — has nothing under this
+  // link, so the surface names it instead of painting an empty issue.
   const context = routeContext(App.route);
   root.className = "surface";
-  if (!context) {
+  if (!context || context.offline) {
     root.innerHTML = deviceOfflineHtml(deviceId);
     return;
   }

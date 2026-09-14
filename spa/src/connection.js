@@ -148,7 +148,7 @@ function adoptPeerLink(context, session, link) {
     });
   }
   session.peer(link.app);
-  handTerminalsToHome(context);
+  handTerminalsIfHome(context);
 }
 
 /** Idempotent, and the single point where both streams are handed back at once:
@@ -159,17 +159,21 @@ function dropPeerLink(context) {
   if (!link) return;
   context.peerLink = null;
   context.session?.peer(null);
-  handTerminalsToHome(context);
+  handTerminalsIfHome(context);
   link.close();
 }
 
 /** The terminal socket rides the home device's peer channel and nobody else's —
  *  another device's channel carries the stream to the wrong machine. Asked
- *  whenever either half of that pair moves: the home device's link opening or
- *  closing, and home moving to another device. */
-function handTerminalsToHome(context = null) {
-  if (context && homeContext() !== context) return;
+ *  whenever home moves. */
+function handTerminalsToHome() {
   terminalsRideOn(homeContext()?.peerLink?.term || null);
+}
+
+/** One device's peer link opened or closed. The terminals move only when it was
+ *  the home device's: nothing else they ride changed. */
+function handTerminalsIfHome(context) {
+  if (homeContext() === context) handTerminalsToHome();
 }
 
 /** Greet a device that is live and unpaused: feature-detect push invalidation,

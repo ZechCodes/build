@@ -103,42 +103,47 @@ export function workMenuModel({ items = [], projectKey = null, query = "" } = {}
   return fuzzyRank(work, query, (entry) => `${entry.label} ${entry.detail}`);
 }
 
+/** What each kind of work route is: the row it stands on, and what the bar
+ *  calls it. A route names one kind, so the bar reads its answer here rather
+ *  than walking the kinds. */
+const STANDING = {
+  branch: {
+    // The machine and the project together name a branch row: both machines
+    // mint a `proj-1` with a `main` in it, and those are two rows.
+    rowIs: (route) => (item) =>
+      item.kind === "branch" &&
+      item.deviceId === route.deviceId &&
+      item.project_id === route.projectId &&
+      item.branch === route.branch,
+    label: (route) => route.branch || "",
+  },
+  issue: {
+    // An issue id is a uuid: it names one issue wherever it is.
+    rowIs: (route) => (item) => item.kind === "issue" && item.issue_id === route.id,
+    label: (route, row) => (row && row.title) || "Issue",
+  },
+};
+
+/** What the bar says when the route is no work item at all. */
+const NOWHERE = Object.freeze({ projectId: null, projectKey: null, project: "", kind: null, label: "", row: null });
+
 /** Where the toolbar says you are standing: the project, and the branch or
  *  issue inside it. The route is the authority on identity (it is what a deep
  *  link carries, machine included); the feed only supplies the names it knows,
  *  and the row it names is the one on the route's own machine. */
 export function toolbarIdentity(route = {}, { items = [], projects = [] } = {}) {
+  const standing = STANDING[route.name];
+  if (!standing) return NOWHERE;
   const key = routeProjectKey(route);
-  const rowOf = (predicate) => items.find(predicate) || null;
-  if (route.name === "branch") {
-    const row = rowOf(
-      (item) =>
-        item.kind === "branch" &&
-        item.deviceId === route.deviceId &&
-        item.project_id === route.projectId &&
-        item.branch === route.branch,
-    );
-    return {
-      projectId: route.projectId,
-      projectKey: key,
-      project: projectName(key, projects, row),
-      kind: "branch",
-      label: route.branch || "",
-      row,
-    };
-  }
-  if (route.name === "issue") {
-    const row = rowOf((item) => item.kind === "issue" && item.issue_id === route.id);
-    return {
-      projectId: route.projectId,
-      projectKey: key,
-      project: projectName(key, projects, row),
-      kind: "issue",
-      label: (row && row.title) || "Issue",
-      row,
-    };
-  }
-  return { projectId: null, projectKey: null, project: "", kind: null, label: "", row: null };
+  const row = items.find(standing.rowIs(route)) || null;
+  return {
+    projectId: route.projectId,
+    projectKey: key,
+    project: projectName(key, projects, row),
+    kind: route.name,
+    label: standing.label(route, row),
+    row,
+  };
 }
 
 /** The account-wide name of the project a route stands in, or null while the

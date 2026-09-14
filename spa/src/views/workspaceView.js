@@ -17,7 +17,7 @@ import { directoryId, directoryTab, selectedDirectory, workspaceScope } from "..
 import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
-import { mountDeviceNotice } from "../core/deviceNotice.js";
+import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import "../styles/surfaces.css";
 
 const TABS = [
@@ -318,8 +318,14 @@ export async function renderWorkspace() {
   }
   const state = { route, context, callRpc: context.rpc, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, gitInitialization: [] };
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
+  // This machine answers now. If it goes while the workspace is open, what was
+  // read stays on screen and the strip says whose state that is — but only once
+  // there is something to be whose: until the workspace lands this frame says
+  // "loading…", and nothing on it came from that machine at all.
+  const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => Boolean(state.workspace) });
   App.viewDispose = () => {
     state.disposed = true;
+    deviceStrip();
     if (App.routeLeaveGuard === state.pane?.canLeave) App.routeLeaveGuard = null;
     state.pane?.dispose?.();
     state.consolePanel?.dispose?.();

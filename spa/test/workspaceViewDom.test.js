@@ -410,6 +410,40 @@ describe("workspace surface", () => {
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
 
+  // A machine that goes while its workspace is open is a different case from a
+  // link that arrives at one: the reader is already standing on what it read,
+  // and that stays. All that is missing is whose state it is.
+  it("keeps what was read when that machine goes, and names the machine over it", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async () => workspace);
+    await renderWorkspace();
+    await flush();
+
+    setContextOffline("dev-1");
+
+    expect(document.querySelector("#root > .device-strip").textContent).toContain("this machine");
+    expect(document.getElementById("root").classList.contains("device-away")).toBe(true);
+    expect(document.getElementById("tabbody")).toBeTruthy();
+  });
+
+  // The frozen sentence is a promise about what is on screen: this is what that
+  // machine last said. One whose machine went before its first read landed has
+  // nothing to be whose, and says the plain thing instead.
+  it("says the machine cannot be opened while nothing has been painted yet", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", () => new Promise(() => {}));
+    renderWorkspace();
+    await flush();
+
+    setContextOffline("dev-1");
+
+    expect(document.querySelector("#root > .device-strip").textContent).toBe(
+      "this machine isn't connected, so this can't be opened right now.",
+    );
+  });
+
   // A link can name a machine this client has never opened — another device's
   // workspace, pasted in. There is nothing to read under it, so the surface
   // says which machine is missing instead of asking it anything.

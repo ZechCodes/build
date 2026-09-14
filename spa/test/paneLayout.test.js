@@ -38,6 +38,9 @@ const cssRules = () => rulesIn(strippedSource);
 
 const rulesFor = (selector) => cssRules().filter((rule) => rule.selector === selector);
 
+/** The rule as it reads before any media query narrows it. */
+const baseRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === null);
+
 /** The value a rule body settles on for one property, or null. Names are
  *  compared whole, so `width` never reads out of `max-width`, and a repeated
  *  property keeps its last value the way the cascade does. */
@@ -966,7 +969,6 @@ describe("the view column's seam with the agent rail", () => {
 
   /** The rule for a selector outside every media query — the one that holds at
    *  any width, which is where a seam has to be stated. */
-  const baseRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === null);
 
   /** Every vertical border a rule draws, as `property:value`. */
   const sideBorders = (rule) =>
@@ -1145,5 +1147,28 @@ describe("the inbox row's actions", () => {
     );
     expect(touch).toBeTruthy();
     expect(touch.selector).toContain(".inbox-entry .inbox-actions:has(.inbox-workspace-done)");
+  });
+});
+
+describe("the creation sheet", () => {
+  // Add project with two sources added was taller than a 1440x950 frame, and
+  // neither the sheet nor the scrim scrolled, so Create sat below the fold with
+  // no way to reach it. The phone block had bounded the sheet all along; the
+  // bound belongs at every width. The scrim leaves the same room above and
+  // below, and the sheet takes what is left and scrolls inside it.
+  it("is bounded by the frame and scrolls inside it at every width", () => {
+    const scrim = baseRule(".scrim");
+    expect(declaration(scrim.body, "padding-top")).toBe("9vh");
+    expect(declaration(scrim.body, "padding-bottom")).toBe("9vh");
+
+    const sheet = baseRule(".sheet");
+    expect(declaration(sheet.body, "max-height")).toBe("100%");
+    expect(declaration(sheet.body, "overflow-y")).toBe("auto");
+
+    // And the phone block does not bound it a second time, to a number that
+    // would once more be taller than the room the scrim leaves.
+    for (const narrowed of rulesFor(".sheet").filter((rule) => rule.at !== sheet.at)) {
+      expect(declaration(narrowed.body, "max-height")).toBeNull();
+    }
   });
 });

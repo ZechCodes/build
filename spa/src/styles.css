@@ -816,9 +816,14 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .gitfile .fhead .pm + .gitdiscard { margin-left:8px; }
 .btn.danger.armed { background:var(--red); border-color:var(--red); color:var(--danger-ink); }
 /* new task sheet */
-.scrim { position:fixed; inset:0; background:var(--scrim); display:none; align-items:flex-start; justify-content:center; padding-top:9vh; z-index:30; }
+/* The scrim leaves the same room above the sheet and below it, and the sheet
+   takes what is left and scrolls inside it. A sheet that grows — Add project
+   with a second source in it — used to run off the bottom of the frame with
+   nothing scrolling, so its Create button could not be reached at all. */
+.scrim { position:fixed; inset:0; background:var(--scrim); display:none; align-items:flex-start; justify-content:center; padding-top:9vh; padding-bottom:9vh; z-index:30; }
 .scrim.show { display:flex; }
 .sheet { background:var(--panel); width:min(620px,92vw); border-radius:14px; box-shadow:0 24px 60px var(--shadow);
+  max-height:100%; overflow-y:auto; overscroll-behavior:contain;
   padding:22px 24px calc(22px + env(safe-area-inset-bottom, 0px)); }
 .sheet h3 { margin:0 0 3px; font-size:17px; } .sheet .sub { color:var(--ink2); font-size:13px; margin-bottom:14px; }
 textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
@@ -916,7 +921,8 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   /* Three buttons that do not fit side by side: better two lines of whole
      words than three columns of broken ones. */
   .addproj { flex-wrap:wrap; }
-  .sheet { width:94vw; padding:16px 14px calc(16px + env(safe-area-inset-bottom, 0px)); max-height:88vh; overflow-y:auto; }
+  /* Narrower and tighter here; the bound and the scroll are the base rule's. */
+  .sheet { width:94vw; padding:16px 14px calc(16px + env(safe-area-inset-bottom, 0px)); }
   #sheet:has(#nrerr) { padding-bottom:16px; }
   .sheet .field-row { flex-direction:column; gap:0 !important; }
   .comment-pop { max-width:calc(100vw - 16px); }

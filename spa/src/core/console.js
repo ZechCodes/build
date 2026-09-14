@@ -29,10 +29,9 @@ import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
-import { deviceFeedView } from "./deviceContexts.js";
+import { branchRowIn, deviceFeedNow } from "./feedRows.js";
 import { entityIdOf } from "./entityId.js";
 import { readCached, writeCached } from "./localCache.js";
-import { subscribeFeed } from "./taskFeed.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import "../styles/shell.css";
@@ -209,17 +208,7 @@ export function mountConsole(host, context) {
    *  subscribing — the replay-to-late-subscribers path, used synchronously.
    *  One device's rows, not the merge: the checkout this console stands in is
    *  on the machine the link named, and every machine mints a `proj-1`. */
-  const feedRowNow = () => {
-    let row = null;
-    const unsubscribe = subscribeFeed((feed) => {
-      row =
-        deviceFeedView(feed, context.deviceId).items.find(
-          (item) => item.kind === "branch" && item.project_id === context.projectId && item.branch === context.branch,
-        ) || null;
-    });
-    unsubscribe();
-    return row;
-  };
+  const feedRowNow = () => branchRowIn(deviceFeedNow(context.deviceId), context.projectId, context.branch);
 
   /** The local cache's address for this checkout's tab list, or null while the
    *  entity is unknown. Cached tabs paint the head without a round trip. */

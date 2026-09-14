@@ -6,8 +6,7 @@
 // one device's slice of the shared snapshot, asks the machine when the snapshot
 // has nothing, and says which tab the surface opens on.
 
-import { subscribeFeed } from "../core/taskFeed.js";
-import { deviceFeedView } from "../core/deviceContexts.js";
+import { branchRowIn, deviceFeedNow } from "../core/feedRows.js";
 
 /** Nothing to stand up from: the Changes tab, and a live read to fill it. */
 const NO_SEED = { row: null, defaultTab: "changes" };
@@ -23,23 +22,6 @@ const folderRow = (project, projectId, branch) => ({
   is_git: false,
 });
 
-/** One machine's view of the shared snapshot, read off it without subscribing.
- *  A route names one machine's project — every machine mints a `proj-1`, and
- *  the merge holds all of them — so the rows are that machine's. */
-function deviceSnapshot(deviceId) {
-  let snapshot = null;
-  const unsubscribe = subscribeFeed((feed) => {
-    snapshot = deviceFeedView(feed, deviceId);
-  });
-  unsubscribe();
-  return snapshot;
-}
-
-const branchRowIn = (snapshot, projectId, branch) =>
-  (snapshot.items || []).find(
-    (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
-  ) || null;
-
 const folderRowIn = (snapshot, projectId, branch) => {
   const project = (snapshot.projects || []).find((candidate) => candidate.id === projectId);
   return project && project.is_git === false ? folderRow(project, projectId, branch) : null;
@@ -47,7 +29,7 @@ const folderRowIn = (snapshot, projectId, branch) => {
 
 /** The row this surface stands up from, and the tab that row is best seen in. */
 function seedBranchState(deviceId, projectId, branch) {
-  const snapshot = deviceSnapshot(deviceId);
+  const snapshot = deviceFeedNow(deviceId);
   if (!snapshot) return NO_SEED;
   const seeded = branchRowIn(snapshot, projectId, branch);
   if (seeded) return { row: seeded, defaultTab: "changes" };

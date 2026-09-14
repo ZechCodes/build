@@ -436,3 +436,162 @@ cover the same ground on every commit.
    `rpc` rejecting; disabling each verb in place was not built.
 5. **`spa/src/sheets/clone.js` was deleted** rather than migrated — nothing in
    the SPA opened it (the bridge's `project.clone` RPC is untouched).
+
+## 2026-09-14 — Integration with main
+
+Branch `build/combined-interface` took `origin/main` at `d76f088c` — 55 commits
+past the fork point — into the multi-device work at `afd34a4d`. The merge is
+`34ebe614`; the plan every resolution was read against is
+[`.build/plan/05-integration-with-main.md`](.build/plan/05-integration-with-main.md),
+written after reading both sides of all 38 conflicted files.
+
+Three things had landed on main. **Workspaces**: a durable multi-source checkout
+per project, with `workspace.*` RPCs, a `workspace` route, directory tabs in the
+toolbar, the inbox rail listing workspaces rather than branches and issues, and
+issue *creation* retired everywhere. **A versioned wire contract**: a semver
+`api_version` in the greeting, an adapter per major, push subscriptions,
+request priority on the envelope, and two version gates. **New chrome**: a new
+palette, a floating inbox toggle, the rail as a popover when collapsed,
+`#branch-tabs` beside `#root`, no global compose box in the shell, no ⋯ menu.
+
+The shape of the merge is one sentence: **main's product surfaces are the base
+text; our device model is the substrate they sit on.** Where main read a
+singleton (`App.call`, `App.session`) it reads a context; where main keyed by a
+bare bridge id it keys by a device-qualified key; where main had one of
+something per app — adapter, subscriptions, greeting, version gate — it has one
+per device.
+
+### The four decisions
+
+**(a) Workspaces sit on the per-device model.** `workspace.list` is a per-bridge
+RPC exactly like `project.list`, so it is read where `project.list` is read:
+`taskFeed.tick(context)` asks its own device for `board.list`, `project.list`
+and `workspace.list` (the last caught to `{ workspaces: [] }`, so a bridge
+without the verb still feeds the board), and
+`feedMerge.liveFeedSnapshot(board, projectList, workspaceList, deviceId)` stamps
+every workspace with `deviceId`, `projectKey` and `workspaceKey` and joins
+main's `board.workspace_summaries`. `workspaces` joined `WIRE_FIELDS` and
+`FEED_COLLECTIONS`, which is what makes `mergeFeeds` concatenate them in device
+order and the device filter narrow them with no further code. A workspace's
+identity across the account is the pair (device, workspace id); the key is
+minted in the one place the project key is, `core/deviceKey.js`
+(`workspaceKey`, `routeWorkspaceKey`), and every place main keyed a workspace by
+its bare id — the inbox entry key, the toolbar's per-project map, the console
+key — keys by it now. Wire params stay bare: the bridge still needs the id it
+minted. Workspace routes carry the device segment like project routes
+(`#/device/<d>/project/<p>/workspace/<w>/directory/<s>/<tab>`); a device-less
+workspace link parks on `resolve/project` and is resolved across devices. The
+workspace view takes its `rpc`, cache scope and chat repository from
+`routeContext(App.route)`, and a link whose machine cannot answer mounts the
+device notice the way `renderBranch` does.
+
+**(b) The bridge API facade is per device.** Each context greets its own bridge
+and holds its own adapter and api version. `connection.greetLiveBridge(context)`
+passes main's `install` option to `changeEvents.greetBridge`, which still
+selects the adapter itself; `deviceContexts.adoptBridgeSelection` writes
+`context.adapter`, `context.apiVersion` and `context.unsupported`
+(`"app" | "bridge" | null`) and announces the device state, and
+`adoptDeviceSession` clears all three so a reconnect re-greets and re-selects.
+`canAnswer(context)` grew the version clause: a bridge no adapter here speaks to
+is a machine that cannot be asked anything, so its rows grey, its verbs shut,
+and a surface about it mounts the notice with the version wording
+(`deviceAppBehindText` / `deviceBridgeBehindText`) rather than the offline one.
+The version gate is per device: main's single `onBridgeSelected` listener and
+`App.session?.deviceId` are gone, and `views/gate.js` chooses a screen from a
+`VERSION_GATES` table keyed by which side is behind, for the first unsupported
+context — app-behind first, because a reload fixes that one at no cost. The
+whole app gates only when **no** device is usable; one out-of-date bridge among
+usable ones is a device-level notice in its own rows and surfaces.
+
+**(c) Push subscriptions belong to the session that holds them.** Main's
+subscription manager was one bundle of per-session module state; it is now a map
+of one entry per greeted device inside `core/changeEvents.js`, created when that
+device's session is greeted and dropped when it is disarmed. A watcher
+registered with a `deviceId` subscribes on that device alone; a watcher that
+spans devices subscribes on every device whose bridge serves subscriptions,
+under the same subscription id on each — the bridge namespaces ids per session,
+so they cannot collide. Board revisions, sync chains, cadence
+(`pollIntervalMs(fastMs, deviceId)`), `subscriptionsActive(deviceId)` and the
+`onSubscriptionsChange(fn)` listeners — now called with `(deviceId, active)` —
+are all per device, and a reconnect replays that one device's desired map.
+`core/cacheSync.js` is the background tier per device: two all-scope background
+watchers registered per device on first sight, rows looked up by
+`rowKey(deviceId, entityId)`, the sweep and the entity watchers consulting that
+device's subscription state, and every read riding `context.rpc(method, params,
+BACKGROUND)` so main's priority envelope reaches the session untouched.
+
+**(d) `deviceBootstrap.js` does not survive; its two behaviours do.** Main's
+`openFirstReachableDevice` existed so one stalled device could not strand the
+others while the app opened exactly one session. We open every online device
+concurrently with the device pinned per socket, so no device consumes another's
+relay snapshot and there is nothing to rotate through: `core/deviceBootstrap.js`,
+`connection.openBootSession` and `test/deviceBootstrap.test.js` are deleted. Two
+behaviours came over. First, a `securityCritical` error — a pinned-key mismatch
+— is a stop, never a reconnect loop: `connectDevice` rethrows it without marking
+the context offline or scheduling a resume, `resume()` stops on it, and the
+waiting screen shows the message. Second, main's "eventually tries devices whose
+api status is stale offline" needed no rotation here: the relay's `device_key`
+push opens sessions the moment a machine says it is up, and the waiting screen
+re-reads the account's device list every three seconds. The creation device is
+untouched by all of this — it is where creation goes, never which machine the
+app boots on.
+
+### Where main's words and ours disagreed
+
+- **The waiting screen.** Ours wrote one sentence naming what had gone; main's
+  repainted two sentences every three seconds. Neither was picked: the sentence
+  is now chosen from a small table by the situation the account is in —
+  machines the account calls online that this client has not reached yet, one
+  known machine unreachable since a time, or every machine gone — and the
+  repaint writes the same sentence rather than a competing one.
+- **The agent rail head.** Main's `f39b3d90` ("Let agents name their
+  conversation with a `set_topic` tool") made `.rail-who` wear the topic the
+  agent named its work with, moved the harness name to the head's title, and
+  shimmers "Starting" until a topic arrives. Main did not update its own DOM
+  tests for it, so `agentRailDom` and `composerFocus` were red on main's tip
+  too. The product rule is main's; the assertions moved to it, and the shimmer
+  is one CSS rule again rather than the two the commit left.
+- **The Creation device panel.** The conflict resolution dropped the account
+  page's panel markup while keeping the code that wires it. Ours is the base
+  for that file and the panel is ours, so the markup came back verbatim.
+- **Isolation wording.** Main renamed copy-on-write to **Rift
+  (copy-on-write)** and `ACCOUNT_ISOLATION` to `DEVICE_ISOLATION`; main's words
+  won, here and in the README, including the lock line "Rift is unavailable on
+  this device: …".
+- **Branch and issue surfaces.** Main did not retire them — `VIEWS` still maps
+  them — it retired issue *creation*. Our device-aware `renderBranch` and
+  `renderIssue` stay the views those routes render; main's two unwired redirect
+  views are kept, migrated to the route's context, and stay unwired. Wiring
+  them is a product switch main has not thrown.
+- **Device-less work URLs.** A `#/project/<p>/workspace/<w>` link with no device
+  now parks on `resolve/project` by design and is rewritten once a machine
+  claims it, rather than parsing straight through to a surface.
+
+### Suites
+
+Every suite main's three landings touched was moved onto the per-device world
+rather than deleted: the feed merge, task feed, change subscriptions and cache
+sync suites onto per-device snapshots and registered devices; the router,
+console, workspace view, workspace inbox and toolbar suites onto
+device-qualified keys; the capture decision suite onto branch options, since
+issue creation is retired; the archive, compose, settings, device settings and
+gate suites onto the defects listed above. Where a case named something main
+retired, the case was retired with a comment naming the retirement rather than
+dropped in silence.
+
+The complexity ratchet reads **66** — both sides retired counted functions, and
+the integration added no new `eslint-disable-next-line complexity`. The jsdom
+suite is 245 files / 4177 tests, green with lint and build.
+
+### Verified
+
+Automated only: `npm run lint`, the full vitest run, `npm run build`, semgrep
+and gitleaks, on every commit of this integration.
+
+**The two-bridge browser pass is not claimed here.** The multi-device note above
+records a pass run on 2026-09-14 at `4b2e84e8`, before this merge; workspaces,
+the directory tabs, the per-device version gate and main's chrome have not been
+driven in a browser on two bridges since. That pass is the orchestrator's to run
+after this workflow, with
+[`deploy/compose.two-bridges.yml`](deploy/compose.two-bridges.yml) and
+[`web/pair-another.mjs`](web/pair-another.mjs), which are still the recipe.

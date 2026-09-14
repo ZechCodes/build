@@ -79,8 +79,9 @@ app.
 Each device has its own settings page — the settings cog beside a device in the
 dropdown opens it. That page is everything that belongs to that machine: its
 projects folder, its projects list, **Add project**, agent modes, the default
-harness and its isolation and triage settings. The device must be online to
-open its page.
+harness, its **Work isolation** choice — git worktrees or **Rift
+(copy-on-write)**, as below — and its triage settings. The device must be online
+to open its page.
 
 **Settings** (the account page) holds what is not any one machine's: the
 **Creation device** — "New projects and captures go to" — plus agent defaults,
@@ -153,8 +154,8 @@ only places that pick a machine for you.
 Build uses Git worktrees by default. For copy-on-write checkouts, install the
 [Rift CLI](https://github.com/anomalyco/rift#install) on the machine running the
 bridge and make `rift` available on the bridge's `PATH`. Select **Rift
-(copy-on-write)** in Work isolation settings, either as the account default or
-as a project override. The choice applies to new checkouts.
+(copy-on-write)** in Work isolation settings, either as that device's default
+or as a project override. The choice applies to new checkouts.
 
 Rift owns filesystem cloning and snapshot creation. Build requests full copies
 to retain ignored build caches, skips Rift hooks, and checks out the task's

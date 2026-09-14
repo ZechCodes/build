@@ -15,6 +15,15 @@ final for this build unless the reviewer overrides them in the thread.
 
 - **Branch and issue are the only work items.** Worktrees and agents are
   implementation details, reachable only through their branch or issue.
+  - 2026-09-14: workspaces — a durable multi-source checkout per project — are
+    what the rail lists now, and they are per device exactly as projects are.
+    A workspace's identity across the account is the pair (device, workspace
+    id): each bridge mints its own workspace ids and the client never assumes
+    they are unique, so one key is minted for both halves in
+    `spa/src/core/deviceKey.js` and the URL names the machine
+    (`#/device/<device>/project/<project>/workspace/<workspace>/…`). A
+    workspace link with no device in it is resolved across the machines that
+    can answer and rewrites itself.
 - **Branch identity.** A branch work item is identified by
   `(project_id, branch_name)`. The bridge presents branch rows on the feed
   (`board.list`) with `kind: "branch"`, folding what are today runs, adopted

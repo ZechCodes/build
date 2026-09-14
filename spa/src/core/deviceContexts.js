@@ -10,6 +10,8 @@
 import { App } from "../app.js";
 import { adoptCacheScope, releaseScope, scopeFor } from "./cacheScope.js";
 import { createChatRepository } from "./chatRepository.js";
+import { disarmChangeEvents } from "./changeEvents.js";
+import { dropFeedDevice } from "./taskFeed.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
 let homeDevice = null; // the device the App.* aliases were last pointed at
@@ -77,7 +79,8 @@ function bindRepository(context, call) {
   });
 }
 
-/** Retire a device for good: its controllers and drafts go, its scope stops
+/** Retire a device for good: its controllers and drafts go, its rows leave the
+ *  feed, what it pushed stops being anyone's cadence, its scope stops
  *  addressing the cache, and its session is closed. Another device's context is
  *  untouched. */
 export function retireDeviceContext(deviceId) {
@@ -86,6 +89,8 @@ export function retireDeviceContext(deviceId) {
   contexts.delete(deviceId);
   if (homeDevice === deviceId) homeDevice = null;
   context.chatRepository?.dispose();
+  dropFeedDevice(deviceId);
+  disarmChangeEvents(deviceId);
   releaseScope(deviceId);
   closeQuietly(context.session);
   context.session = null;

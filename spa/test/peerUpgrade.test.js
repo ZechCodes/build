@@ -40,6 +40,7 @@ vi.mock("../src/devices.js", () => ({
 vi.mock("../src/core/composeView.js", () => ({ flushCaptures: async () => {} }));
 vi.mock("../src/core/changeEvents.js", () => ({
   dispatchChangeEvent: (...args) => changed.push(args),
+  disarmChangeEvents: () => {},
   greetBridge: (...args) => greetings.greet(...args),
 }));
 const changed = [];
@@ -207,7 +208,9 @@ describe("the upgrade policy", () => {
     options[0].onPush({ type: "entity.changed", id: "run-7" });
 
     expect(deliverCandidate).toEqual({ candidate: "candidate:1 1 udp" });
-    expect(changed).toEqual([[{ type: "entity.changed", id: "run-7" }]]);
+    // Every push carries the device it came from: the session was opened for
+    // one device, and the surfaces it wakes are that device's.
+    expect(changed).toEqual([[{ type: "entity.changed", id: "run-7" }, "dev-a"]]);
   });
 
   it("does not reach for a peer connection a browser does not have", async () => {

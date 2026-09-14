@@ -15,7 +15,7 @@ import { isSignaling } from "./core/sessionSwitch.js";
 import { onlineStickyDeviceId } from "./core/devicePolicy.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, adoptHomeSession, render, rememberSelectedDevice } from "./app.js";
-import { homeContext } from "./core/deviceContexts.js";
+import { contextFor, homeContext } from "./core/deviceContexts.js";
 import {
   deviceName,
   markDeviceOnline,
@@ -27,7 +27,7 @@ import {
 import { retargetTerminals, terminalsRideOn } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
-import { resetFeedScope } from "./core/taskFeed.js";
+import { joinFeed } from "./core/taskFeed.js";
 import { offlineBannerText } from "./core/text.js";
 
 /// Connection status has no chip of its own any more — the status line under the
@@ -39,8 +39,12 @@ export function setConn(html) {
   if (el) el.innerHTML = html;
 }
 
-export function openAppSession({ preferDeviceId = null, waitForDevice = false } = {}) {
-  return openRelaySession({
+export async function openAppSession({ preferDeviceId = null, waitForDevice = false } = {}) {
+  // Which device's events these are, for the surfaces the pushes wake. The
+  // relay only ever lands a session on `preferDeviceId` when one is given; when
+  // none is, the session says which device answered the moment it is open.
+  let deviceId = preferDeviceId;
+  const session = await openRelaySession({
     relayUrl: RELAY_URL,
     transport,
     WebSocketImpl: WebSocket,
@@ -57,9 +61,11 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
     // except the signaling pushes, which belong to the upgrade negotiating
     // them and describe nothing the surfaces show.
     onPush: (payload) => {
-      if (!isSignaling(payload.type)) dispatchChangeEvent(payload);
+      if (!isSignaling(payload.type)) dispatchChangeEvent(payload, deviceId);
     },
   });
+  deviceId = session.deviceId;
+  return session;
 }
 
 /** A settings page owns its connection: it never changes the active workspace,
@@ -149,11 +155,16 @@ function dropPeerLink() {
  *  callers — a slow greeting must not hold up the app, and a surface mounted
  *  before it lands is re-timed the moment it does. */
 export function greetLiveBridge() {
-  const session = App.session;
-  const repository = App.chatRepository;
+  const context = homeContext();
+  const session = context?.session;
   if (!session) return Promise.resolve(false);
+  const repository = context.chatRepository;
   return greetBridge(session.call, {
-    isCurrent: () => App.session === session && App.chatRepository === repository,
+    deviceId: session.deviceId,
+    // The device's context may have been retargeted onto a newer session while
+    // this greeting was in flight; that greeting belongs to the session that
+    // asked for it, not to the one the device is on now.
+    isCurrent: () => contextFor(session.deviceId)?.session === session,
     onGreeting: (greeting) => repository?.configureCapabilities(greeting),
   }).catch(() => {
     /* the session died mid-greeting; the next one greets again */
@@ -161,7 +172,6 @@ export function greetLiveBridge() {
 }
 
 export function adoptSession(session) {
-  const previousDeviceId = homeContext()?.deviceId;
   dropPeerLink(); // whatever was carrying was carrying the session we just left
   // Reconnects keep this device's controllers/drafts and only replace their
   // transport. A device switch retires the old context before any new view can
@@ -170,7 +180,9 @@ export function adoptSession(session) {
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   session.onCarrier(greetLiveBridge);
-  if (previousDeviceId && previousDeviceId !== context.deviceId) resetFeedScope();
+  // A device the feed is not polling yet — the first session, or the one a
+  // switch just opened — gets its own board watcher and reads at once.
+  joinFeed(context);
   paintDevicePicker();
   // Every live session starts here — the gate's first one, a reconnect, a
   // device switch — so this is where captures taken with no device to send them

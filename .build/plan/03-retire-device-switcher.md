@@ -24,8 +24,12 @@ Binding design: `.build/plan/00-multi-device-design.md` §5–§8.
   `capture.create`, `capture.get`), `settings.js` (`project.list`,
   `settings.get/set` on ≈100–203, `App.modelCatalog`), `createWork.js` (the
   creation caller), `sheets/newRepo.js`, `sheets/clone.js`, `console.js`, and
-  `app.js` (`loadModelCatalog` / `refreshModelCatalog`).
-- **Model catalog** (`app.js:71–96`) is per bridge (`models.list`): it belongs
+  `app.js` (`loadModelCatalog` / `refreshModelCatalog`) — plus
+  `views/archive.js:55` (`archived.list`: read every live context, rows
+  stamped `deviceId` in the fetch loop since `toRow` at `:66` is ratcheted),
+  the two prose mentions in `core/adoption.js:95,123`, and `devices.js:62`
+  (the picker, rewritten here) (amended per `04-primitives.md` §5.10).
+- **Model catalog** (`app.js:85–108`) is per bridge (`models.list`): it belongs
   on the context, not on `App`.
 - **Account settings page** (`spa/src/views/settings.js`): the projects folder
   panel, default agent and isolation panels all read one bridge; the per-device
@@ -74,13 +78,16 @@ device it is waiting for.
 - Remove `App.session`, `App.call`, `App.cacheScope`, `App.chatRepository`,
   `App.offline`, `App.offlineSince`, `adoptApplicationScope`,
   `disposeApplicationScope` (fold what `appScope.test.js` proves into
-  `deviceContexts.test.js`), `switchDevice`, `resetFeedScope`, the
+  `deviceContexts.test.js`), `switchDevice` (`setHomeDevice` since stage 1),
+  `resetFeedScope` if it survived stage 1, the
   `cacheScope.js` singleton compatibility exports (`setCacheDevice`,
   `cacheDeviceId`, `currentCacheScope` — keep `adoptCacheScope` only if the
   registry still uses it).
-- `spa/test/noCurrentDevice.test.js`: reads every file under `spa/src` and
-  fails on `App.session`, `App.call`, `App.cacheScope`, `App.chatRepository`,
-  `App.offline` (the same shape as `complexityRatchet.test.js`).
+- `spa/test/noCurrentDevice.test.js`: reads every file under `spa/src`,
+  strips comments, and fails on `App.session`, `App.call`, `App.cacheScope`,
+  `App.chatRepository`, `App.offline`, `App.offlineSince`, `App.modelCatalog`
+  (the same shape as `complexityRatchet.test.js`; amended per
+  `04-primitives.md` §5.11).
 
 ### 4. Offline, finished
 

@@ -76,7 +76,10 @@ scope and repository. `retireDeviceContext` disposes the scope and repository
 and closes the session. `cacheScope.js` gains `scopeFor(deviceId)` backed by a
 map and stops disposing other devices' scopes; `adoptCacheScope` /
 `currentCacheScope` / `clearCacheScope` keep their contract for the **home**
-device (they are the compatibility surface the aliases in §5 ride on). Keep
+device (they are the compatibility surface the aliases in §5 ride on) — except
+that adopting no longer disposes the previous device's scope: `cacheScope.test.js`
+"retires the old scope before adopting another device" becomes "leaves it live;
+`releaseScope` retires it" (amended per `04-primitives.md` §5.1). Keep
 `appScope.test.js` green by routing `adoptApplicationScope` through the new
 registry for the home device.
 
@@ -112,7 +115,10 @@ delivers, with one extra field `devices: { [deviceId]: snapshot }` for
 consumers that need one device's view (the toolbar and capture decision page in
 stage 1 read `devices[homeId]`, so their behaviour is unchanged). `startFeed` /
 `stopFeed` iterate contexts; a retired context's entry is dropped and a merge
-delivered. `resetFeedScope` goes away.
+delivered. `resetFeedScope` goes away here (its only caller is `connection.js:174`;
+stage 3 does not delete it again). The context carries `active()`, and
+`taskFeed.test.js`'s "late snapshot from the session that was replaced" case
+becomes a late answer from a retired context (amended per `04-primitives.md` §5.2).
 
 ### 5. Change events tagged by device
 
@@ -122,32 +128,43 @@ watcher with neither `entity` nor `deviceId` is delivered on **any** device's
 `board.changed` (the merged inbox is such a watcher). `dispatchChangeEvent(payload,
 deviceId)` delivers `board.changed` to that device's board watchers plus the
 any-device ones; `entity.changed` matches by entity id as today.
-`greetBridge(call, …)` is unchanged in shape and is called per context with
+`greetBridge(call, { deviceId, isCurrent, onGreeting })` gains `deviceId` (it
+arms per device) and is called per context with
 `isCurrent: () => contextFor(id)?.session === session`. `openAppSession`'s
-`onPush` closes over the session's `deviceId`.
+`onPush` closes over the `deviceId` it was opened with — relayLink lands only
+on `preferDeviceId` (`relayLink.js:144-148`) (amended per `04-primitives.md` §5.3).
 
 ### 6. Cache sync per device
 
 `syncContext(context)`; the lock is still one per browser; `activeRows` keys
 become `${deviceId}|${entityId}`; each device's feed record is written from its
 own snapshot; the boot paint reads every known device's cached feed and merges
-them the same way. `evictEntity` is already per device.
+them the same way. `evictEntity` is already per device. `onSnapshot` is
+ratcheted at 14 (`cacheSync.js:238`): the per-device loop goes in a new
+`syncDeviceSnapshot(deviceId, view)`, not inside it (amended per `04-primitives.md` §5.4).
 
 ### 7. Inbox and projects rail show the merge
 
-- `entryKeyOf`: entity rows unchanged (uuids); primary rows key
-  `primary:${item.projectKey}` instead of the bare project id; captures
-  unchanged.
+- `entryKeyOf`: entity rows unchanged (uuids); no-entity rows keep their shape
+  with `projectKey` in place of `project_id` (`issue:<projectKey>`,
+  `branch:<projectKey>:<branch>` — the key was never a bare project id; amended
+  per `04-primitives.md` §5.5); captures unchanged.
 - `projectBlocks`: `key: project:${projectKey}`, `id` stays the bare project id,
   block gains `deviceId` and `deviceName` (from `App.devices`, passed in as
   `devices`); `projectsNamed` folds by `projectKey`. When two blocks share a
   name across devices, the head shows the device name after the project name
   in `.dim` — only then, so the single-device rail looks exactly as it does now
-  (`inboxProjectsDom.test.js` pins that).
-- Fold state (`folds`) and the toolbar scope key are keyed by `projectKey`.
-- `entryRoute` returns `null` for a row whose `deviceId` is not the home device
-  (the temporary read-only rule; stage 2 deletes it) and `inboxRowHtml` gives
-  such a row the title above.
+  (`inboxProjectsDom.test.js` pins that). The `data-project`,
+  `data-project-fold/open/create` attributes, `blocksPainted`, `ui.folded` and
+  `ui.activeProjectId` carry `projectKey` — two `proj-1` blocks must not share
+  a selector — and `inboxProjectsDom.test.js:45`'s `blockFor` follows.
+- Fold state (`folds`) is keyed by `projectKey` (the toolbar scope key is
+  stage 2's).
+- The temporary read-only rule lives in `inboxView.js` as one map over the
+  entries (route → `null`, title set) for rows whose `deviceId` is not the
+  home device; stage 2 deletes it. Not in `entryRoute` (pure, no home device,
+  at 9 — the guard would take it over the cap) and not in the ratcheted
+  `inboxRowHtml` (amended per `04-primitives.md` §5.5).
 - Every `App.call` in `inboxView.js` becomes `contextFor(entry.deviceId).call`;
   a missing or offline context disables the menu item with "Device offline".
 

@@ -54,8 +54,10 @@ Binding design: `.build/plan/00-multi-device-design.md` §3, §4, §6, §9.
 - Device-less `#/project/<p>/branch/…` and `#/project/<p>/issue/<id>` parse to
   `{ name: "resolve", kind: "project", projectId, route: <the parsed route> }`.
   Legacy resolve routes are unchanged in shape and gain nothing.
-- `resolveLegacyRoute(ref, items)` now searches merged `items` (which carry
-  `deviceId`) and returns routes with `deviceId`. For `kind: "project"` and any
+- `resolveLegacyRoute(ref, { items, projects }, policy)` now searches merged
+  `items` (which carry `deviceId`) and, for `kind: "project"`, `projects` too
+  — a plain folder has no `items[]` row (`inboxProjects.js:91-95`; amended per
+  `04-primitives.md` §5.6) — and returns routes with `deviceId`. For `kind: "project"` and any
   legacy ref whose candidate rows span several devices: prefer the home
   device, else the first online device in `App.devices` order — a pure
   function `pickDevice(candidates, { homeDeviceId, deviceOrder })` in
@@ -69,7 +71,9 @@ routes with the device it was scoped to. The toolbar's scope
 (`SCOPE_KEY`) stores a `projectKey`; `toolbarModel.projectMenuModel` lists
 merged projects and shows the device name in `.dim` on a name clash (same rule
 as the rail). The console's `branch.get` and `goFromInbox` pass the device
-through.
+through. Routes built by hand — `branchView.js:389` (`markRoute` for the Files
+tab) and `issueView.js:34-40` (`syncHash`) — carry `deviceId` too, or `go`
+bounces them through `resolve` (amended per `04-primitives.md` §5.7).
 
 ### 3. Route consumers take their context from the route
 
@@ -90,7 +94,12 @@ view, with the banner text naming the device.
 
 `agentRail.js` reads `context.cacheScope` / `context.chatRepository` from what
 the view hands it (it already accepts `context.cacheScope` and
-`context.chatRepository` — make the fallback to `App.*` go away here).
+`context.chatRepository` — make the fallback to `App.*` go away here). The
+`currentCacheScope()` readers — `gitPane.js:389`, `files.js:151`,
+`changesReview.js:97`, `console.js:155`, `worktreeReview.js:77,112`,
+`taskReview.js:88,101` — take `cacheScope` from the options `branchView`
+passes them, with no `||` fallback: `mountGitPane` and `createReviewPlug` are
+ratcheted (amended per `04-primitives.md` §5.8).
 
 ### 4. Cache sync and read coordination
 

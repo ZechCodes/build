@@ -8,7 +8,9 @@ const settleHashChange = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("route leave guards", () => {
   beforeEach(() => {
-    history.replaceState(null, "", "#/project/p1/branch/build%2Fedit/files?path=notes.txt");
+    // A work URL names the machine the project is on; a device-less one is a
+    // question the app answers on the resolve hop, not a place to restore to.
+    history.replaceState(null, "", "#/device/dev-1/project/p1/branch/build%2Fedit/files?path=notes.txt");
     App.routeLeaveGuard = null;
   });
 

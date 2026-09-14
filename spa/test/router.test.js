@@ -1,5 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { routeFromHash, hashFromRoute } from "../src/core/router.js";
+import { routeFromHash, hashFromRoute, withDeviceOrResolve } from "../src/core/router.js";
+
+// A work URL that names no device names no machine: every device mints a
+// `proj-1`, so `#/project/proj-1/branch/main` parks on a resolve route carrying
+// the route it meant, and the app looks the project up across the account. The
+// cases below are about that inner route; the parking itself has its own
+// section at the bottom.
+const workRoute = (hash) => {
+  const route = routeFromHash(hash);
+  return route.name === "resolve" && route.route ? route.route : route;
+};
 
 describe("routeFromHash", () => {
   it("lands on the inbox for the empty, bare and unknown hashes", () => {
@@ -18,28 +28,28 @@ describe("routeFromHash", () => {
   });
 
   it("parses a branch work item with its two tabs", () => {
-    expect(routeFromHash("#/project/proj-1/branch/main/changes")).toEqual({
+    expect(workRoute("#/project/proj-1/branch/main/changes")).toEqual({
       name: "branch", projectId: "proj-1", branch: "main", tab: "changes",
     });
-    expect(routeFromHash("#/project/proj-1/branch/main/files").tab).toBe("files");
+    expect(workRoute("#/project/proj-1/branch/main/files").tab).toBe("files");
     // No tab segment is Changes — review is the product.
-    expect(routeFromHash("#/project/proj-1/branch/main")).toEqual({
+    expect(workRoute("#/project/proj-1/branch/main")).toEqual({
       name: "branch", projectId: "proj-1", branch: "main", tab: "changes",
     });
-    expect(routeFromHash("#/project/proj-1/branch/main/bogus").tab).toBe("changes");
+    expect(workRoute("#/project/proj-1/branch/main/bogus").tab).toBe("changes");
   });
 
   it("carries a slashed branch name, encoded or hand-typed", () => {
     const encoded = "#/project/p/branch/build%2Fui-rebuild/files";
-    expect(routeFromHash(encoded)).toEqual({ name: "branch", projectId: "p", branch: "build/ui-rebuild", tab: "files" });
+    expect(workRoute(encoded)).toEqual({ name: "branch", projectId: "p", branch: "build/ui-rebuild", tab: "files" });
     // A hand-typed (unencoded) slash names the same branch.
-    expect(routeFromHash("#/project/p/branch/build/ui-rebuild/files")).toEqual({
+    expect(workRoute("#/project/p/branch/build/ui-rebuild/files")).toEqual({
       name: "branch", projectId: "p", branch: "build/ui-rebuild", tab: "files",
     });
-    expect(routeFromHash("#/project/p/branch/build/ui-rebuild")).toEqual({
+    expect(workRoute("#/project/p/branch/build/ui-rebuild")).toEqual({
       name: "branch", projectId: "p", branch: "build/ui-rebuild", tab: "changes",
     });
-    expect(routeFromHash("#/project/a%20b/branch/a%20branch")).toEqual({
+    expect(workRoute("#/project/a%20b/branch/a%20branch")).toEqual({
       name: "branch", projectId: "a b", branch: "a branch", tab: "changes",
     });
   });
@@ -50,30 +60,30 @@ describe("routeFromHash", () => {
   // and two slashed things in one path cannot be told apart.
   describe("the file the Files tab is open on", () => {
     it("carries the path and the line", () => {
-      expect(routeFromHash("#/project/p/branch/main/files?path=src%2Fapp.js&line=42")).toEqual({
+      expect(workRoute("#/project/p/branch/main/files?path=src%2Fapp.js&line=42")).toEqual({
         name: "branch", projectId: "p", branch: "main", tab: "files", file: "src/app.js", line: 42,
       });
     });
 
     it("carries a path with no line", () => {
-      const route = routeFromHash("#/project/p/branch/main/files?path=src%2Fapp.js");
+      const route = workRoute("#/project/p/branch/main/files?path=src%2Fapp.js");
       expect(route.file).toBe("src/app.js");
       expect(route.line).toBeUndefined();
     });
 
     it("names no file when the tab is open on none", () => {
-      expect(routeFromHash("#/project/p/branch/main/files").file).toBeUndefined();
+      expect(workRoute("#/project/p/branch/main/files").file).toBeUndefined();
     });
 
     it("survives a slashed branch name beside a slashed path", () => {
-      const route = routeFromHash("#/project/p/branch/build%2Fui/files?path=src%2Fcore%2Fapp.js&line=7");
+      const route = workRoute("#/project/p/branch/build%2Fui/files?path=src%2Fcore%2Fapp.js&line=7");
       expect(route.branch).toBe("build/ui");
       expect(route.file).toBe("src/core/app.js");
       expect(route.line).toBe(7);
     });
 
     it("ignores a line that is not a line", () => {
-      expect(routeFromHash("#/project/p/branch/main/files?path=a.js&line=nope").line).toBeUndefined();
+      expect(workRoute("#/project/p/branch/main/files?path=a.js&line=nope").line).toBeUndefined();
     });
 
     it("writes the file back into the hash", () => {
@@ -96,28 +106,28 @@ describe("routeFromHash", () => {
 
     it("round-trips", () => {
       const route = { name: "branch", projectId: "p", branch: "build/ui", tab: "files", file: "src/a b.js", line: 3 };
-      expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+      expect(workRoute(hashFromRoute(route))).toEqual(route);
     });
   });
 
   // A branch may be NAMED after a tab; a lone segment is always the branch.
   it("reads a lone segment as the branch even when it spells a tab", () => {
-    expect(routeFromHash("#/project/p/branch/changes")).toEqual({
+    expect(workRoute("#/project/p/branch/changes")).toEqual({
       name: "branch", projectId: "p", branch: "changes", tab: "changes",
     });
-    expect(routeFromHash("#/project/p/branch/files")).toEqual({
+    expect(workRoute("#/project/p/branch/files")).toEqual({
       name: "branch", projectId: "p", branch: "files", tab: "changes",
     });
   });
 
   it("parses an issue with no tab segment and an optional stage suffix", () => {
-    expect(routeFromHash("#/project/p/issue/plan-1")).toEqual({ name: "issue", projectId: "p", id: "plan-1" });
-    expect(routeFromHash("#/project/p/issue/plan-1/stage/second-half")).toEqual({
+    expect(workRoute("#/project/p/issue/plan-1")).toEqual({ name: "issue", projectId: "p", id: "plan-1" });
+    expect(workRoute("#/project/p/issue/plan-1/stage/second-half")).toEqual({
       name: "issue", projectId: "p", id: "plan-1", stage: "second-half",
     });
     // No stage suffix → no stage key at all, so equality checks stay clean.
-    expect(routeFromHash("#/project/p/issue/plan-1").stage).toBeUndefined();
-    expect(routeFromHash("#/project/a%20b/issue/p%20l/stage/s%20x")).toEqual({
+    expect(workRoute("#/project/p/issue/plan-1").stage).toBeUndefined();
+    expect(workRoute("#/project/a%20b/issue/p%20l/stage/s%20x")).toEqual({
       name: "issue", projectId: "a b", id: "p l", stage: "s x",
     });
   });
@@ -189,11 +199,11 @@ describe("legacy routes canonicalize to the nearest new route", () => {
   });
 
   it("resolves a project-scoped plan URL straight to its issue", () => {
-    expect(routeFromHash("#/project/p/plan/pl-1")).toEqual({ name: "issue", projectId: "p", id: "pl-1" });
-    expect(routeFromHash("#/project/p/plan/pl-1/stages/s2")).toEqual({ name: "issue", projectId: "p", id: "pl-1", stage: "s2" });
-    expect(routeFromHash("#/project/p/issue/pl-1/review/s2")).toEqual({ name: "issue", projectId: "p", id: "pl-1", stage: "s2" });
-    expect(routeFromHash("#/project/p/issue/pl-1/conversation")).toEqual({ name: "issue", projectId: "p", id: "pl-1" });
-    expect(routeFromHash("#/project/p/issue/pl-1/agent")).toEqual({ name: "issue", projectId: "p", id: "pl-1" });
+    expect(workRoute("#/project/p/plan/pl-1")).toEqual({ name: "issue", projectId: "p", id: "pl-1" });
+    expect(workRoute("#/project/p/plan/pl-1/stages/s2")).toEqual({ name: "issue", projectId: "p", id: "pl-1", stage: "s2" });
+    expect(workRoute("#/project/p/issue/pl-1/review/s2")).toEqual({ name: "issue", projectId: "p", id: "pl-1", stage: "s2" });
+    expect(workRoute("#/project/p/issue/pl-1/conversation")).toEqual({ name: "issue", projectId: "p", id: "pl-1" });
+    expect(workRoute("#/project/p/issue/pl-1/agent")).toEqual({ name: "issue", projectId: "p", id: "pl-1" });
   });
 
   // Conversation and Agent are the agent rail now; Stages is the issue view;
@@ -203,21 +213,21 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     for (const tab of ["conversation", "agent", "stages", "diff", "plan", "term-1", "term-12", "bogus"]) {
       expect([tab, routeFromHash(`#/task/r/${tab}`).tab]).toEqual([tab, "changes"]);
       expect([tab, routeFromHash(`#/worktree/p/w/${tab}`).tab]).toEqual([tab, "changes"]);
-      expect([tab, routeFromHash(`#/project/p/branch/main/${tab}`).tab]).toEqual([tab, "changes"]);
+      expect([tab, workRoute(`#/project/p/branch/main/${tab}`).tab]).toEqual([tab, "changes"]);
       // `plan` under a bare project named the plan COLLECTION, not a tab.
       if (tab !== "plan") expect([tab, routeFromHash(`#/project/p/${tab}`).tab]).toEqual([tab, "changes"]);
     }
     expect(routeFromHash("#/project/p/plan")).toEqual({ name: "inbox" });
     // Files is the one entity tab that survived under its own name.
     for (const hash of ["#/task/r/files", "#/worktree/p/w/files", "#/project/p/files", "#/project/p/branch/main/files"]) {
-      expect([hash, routeFromHash(hash).tab]).toEqual([hash, "files"]);
+      expect([hash, workRoute(hash).tab]).toEqual([hash, "files"]);
     }
   });
 
   // A terminal tab named a terminal, and the terminal outlived the tab: the
   // surface is the entity's Changes, with the console open on that terminal.
   it("carries the terminal a term-<n> tab named", () => {
-    expect(routeFromHash("#/project/p/branch/main/term-3")).toEqual({
+    expect(workRoute("#/project/p/branch/main/term-3")).toEqual({
       name: "branch", projectId: "p", branch: "main", tab: "changes", term: "term-3",
     });
     expect(routeFromHash("#/task/r/term-1")).toEqual({ name: "resolve", kind: "run", id: "r", tab: "changes", term: "term-1" });
@@ -228,7 +238,7 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     // Every other tab names no terminal.
     expect(routeFromHash("#/project/p/branch/main/diff").term).toBeUndefined();
     // A branch NAMED like a terminal tab is still a branch.
-    expect(routeFromHash("#/project/p/branch/term-3")).toEqual({
+    expect(workRoute("#/project/p/branch/term-3")).toEqual({
       name: "branch", projectId: "p", branch: "term-3", tab: "changes",
     });
   });
@@ -259,7 +269,7 @@ describe("hashFromRoute", () => {
       { name: "capture", id: "capture-1" },
       { name: "capture", id: "capture 1" },
     ]) {
-      expect([route, routeFromHash(hashFromRoute(route))]).toEqual([route, route]);
+      expect([route, workRoute(hashFromRoute(route))]).toEqual([route, route]);
     }
   });
 
@@ -293,5 +303,101 @@ describe("device settings routes", () => {
     const route = { name: "device", id: "device / 2" };
     expect(hashFromRoute(route)).toBe("#/device/device%20%2F%202/settings");
     expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+  });
+});
+
+// A route names the machine the work is on, in front of the project: the same
+// project id lives on every device the account has.
+describe("device-bearing routes", () => {
+  it("parses and round-trips a branch on a named device", () => {
+    const changes = "#/device/d1/project/p1/branch/main/changes";
+    expect(routeFromHash(changes)).toEqual({ name: "branch", deviceId: "d1", projectId: "p1", branch: "main", tab: "changes" });
+    expect(hashFromRoute(routeFromHash(changes))).toBe(changes);
+
+    const files = "#/device/d%201/project/p1/branch/build%2Fui/files?path=src%2Fapp.js&line=42";
+    expect(routeFromHash(files)).toEqual({
+      name: "branch", deviceId: "d 1", projectId: "p1", branch: "build/ui", tab: "files", file: "src/app.js", line: 42,
+    });
+    expect(hashFromRoute(routeFromHash(files))).toBe(files);
+
+    // A hand-typed slash in the branch name still reads as the branch.
+    expect(routeFromHash("#/device/d1/project/p1/branch/build/ui/files")).toEqual({
+      name: "branch", deviceId: "d1", projectId: "p1", branch: "build/ui", tab: "files",
+    });
+  });
+
+  it("parses and round-trips an issue on a named device, stage and all", () => {
+    const issue = "#/device/d1/project/p1/issue/i-1";
+    expect(routeFromHash(issue)).toEqual({ name: "issue", deviceId: "d1", projectId: "p1", id: "i-1" });
+    expect(hashFromRoute(routeFromHash(issue))).toBe(issue);
+
+    const staged = "#/device/d1/project/p1/issue/i-1/stage/s2";
+    expect(routeFromHash(staged)).toEqual({ name: "issue", deviceId: "d1", projectId: "p1", id: "i-1", stage: "s2" });
+    expect(hashFromRoute(routeFromHash(staged))).toBe(staged);
+  });
+
+  it("keeps the device's own settings page, which names no project", () => {
+    expect(routeFromHash("#/device/d1")).toEqual({ name: "device", id: "d1" });
+    expect(routeFromHash("#/device/d1/settings")).toEqual({ name: "device", id: "d1" });
+  });
+
+  it("stamps the device onto a legacy project URL that carries one", () => {
+    expect(routeFromHash("#/device/d1/project/p1")).toEqual({
+      name: "resolve", kind: "primary", projectId: "p1", tab: "changes", deviceId: "d1",
+    });
+    expect(routeFromHash("#/device/d1/project/p1/worktree/wt-1")).toEqual({
+      name: "resolve", kind: "worktree", projectId: "p1", id: "wt-1", tab: "changes", deviceId: "d1",
+    });
+  });
+});
+
+// Until a device is named, a work URL is a question: which machine's `proj-1`?
+// It parks on the same resolve route every legacy URL parks on, carrying the
+// route it meant so the answer only has to supply the device.
+describe("a work URL with no device parks on a resolve route", () => {
+  it("carries the branch it meant, tab and file included", () => {
+    expect(routeFromHash("#/project/p1/branch/main/changes")).toEqual({
+      name: "resolve", kind: "project", projectId: "p1",
+      route: { name: "branch", projectId: "p1", branch: "main", tab: "changes" },
+    });
+    expect(routeFromHash("#/project/p1/branch/main/files?path=a%2Fb&line=7")).toEqual({
+      name: "resolve", kind: "project", projectId: "p1",
+      route: { name: "branch", projectId: "p1", branch: "main", tab: "files", file: "a/b", line: 7 },
+    });
+  });
+
+  it("carries the issue it meant", () => {
+    expect(routeFromHash("#/project/p1/issue/i-1/stage/s2")).toEqual({
+      name: "resolve", kind: "project", projectId: "p1",
+      route: { name: "issue", projectId: "p1", id: "i-1", stage: "s2" },
+    });
+  });
+
+  // The terminal a `term-<n>` URL named is read where the URL is read, so it
+  // has to survive the parking as well as the resolve hop.
+  it("keeps the terminal a legacy tab named within reach", () => {
+    expect(routeFromHash("#/project/p/branch/main/term-3").term).toBe("term-3");
+  });
+
+  it("is what withDeviceOrResolve makes of a route built by hand", () => {
+    const branch = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
+    expect(withDeviceOrResolve(branch)).toEqual({ name: "resolve", kind: "project", projectId: "p1", route: branch });
+    // Anything that already names a device, names no project, or is not a work
+    // surface is already where it belongs.
+    const onDevice = { ...branch, deviceId: "d1" };
+    expect(withDeviceOrResolve(onDevice)).toBe(onDevice);
+    const inbox = { name: "inbox" };
+    expect(withDeviceOrResolve(inbox)).toBe(inbox);
+    const legacy = { name: "resolve", kind: "run", id: "r" };
+    expect(withDeviceOrResolve(legacy)).toBe(legacy);
+    const nameless = { name: "branch", branch: "main" };
+    expect(withDeviceOrResolve(nameless)).toBe(nameless);
+  });
+
+  // A device is never invented: a route that names none is written without one,
+  // and reading it back asks the question again.
+  it("is written device-less, never with a device made up for it", () => {
+    expect(hashFromRoute({ name: "branch", projectId: "p1", branch: "main", tab: "changes" })).toBe("#/project/p1/branch/main/changes");
+    expect(hashFromRoute({ name: "issue", projectId: "p1", id: "i-1" })).toBe("#/project/p1/issue/i-1");
   });
 });

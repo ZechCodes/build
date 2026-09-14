@@ -45,7 +45,7 @@ import { entityIdOf } from "./entityId.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { homeProjectKey } from "./deviceContexts.js";
-import { openableHere, openableHereRows, paintDeviceState, verbCall } from "./inboxDevices.js";
+import { openableHereBlock, openableHereRows, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
@@ -248,14 +248,6 @@ function drawProjects(list, shown, nowMs) {
   patchList(frame.unsorted, unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
   paintBlocks(frame.blocks, blocks, ui);
 }
-
-/** A block and its rows as this page can open them: a block on another device
- *  opens no checkout, and neither do the rows under it. */
-const openableHereBlock = (block) => ({
-  ...openableHere(block),
-  entries: openableHereRows(block.entries),
-  recent: openableHereRows(block.recent),
-});
 
 /** The projects face's frame, built once: the new-project control, the loose
  *  rows' container, and the blocks'. */

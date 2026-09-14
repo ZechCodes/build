@@ -53,6 +53,14 @@ export function openableHere(row) {
 
 export const openableHereRows = (rows) => rows.map(openableHere);
 
+/** A project block and everything under it, likewise: a block on another device
+ *  opens no checkout, and neither do its rows or its Recent. */
+export const openableHereBlock = (block) => ({
+  ...openableHere(block),
+  entries: openableHereRows(block.entries),
+  recent: openableHereRows(block.recent),
+});
+
 /**
  * After the paint: grey what no device can answer for right now, and shut the
  * controls that would have asked.

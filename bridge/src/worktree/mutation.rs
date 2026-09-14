@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 /// from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
-    /// Git's internal worktree id (also the on-disk directory name) — the slug.
+    /// What the checkout is called: the name every backend keys its record of
+    /// it by, which for a checkout under the worktrees root is its directory
+    /// and its slug both. [`crate::isolation::checkout_name`] is the one place
+    /// it is read off a path.
     pub name: String,
     /// Absolute path to the working directory.
     pub path: PathBuf,

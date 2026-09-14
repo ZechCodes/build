@@ -11,8 +11,7 @@ import { $ } from "../dom.js";
 import { allDevicesOfflineText, deviceUnreachableText, esc, waitingForDeviceText } from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
 import { openDeviceSessions } from "../connection.js";
-import { knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
-import { deviceNameOf } from "../core/devicePolicy.js";
+import { contextFor, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -247,14 +246,19 @@ function paintWaiting(devices) {
   if (list.innerHTML !== html) list.innerHTML = html;
 }
 
-/** Why the page is waiting, in the account's own words: one machine this client
- *  had and lost is named, with when it went unreachable; several of them — or
- *  none this client ever reached — is a sentence about the account. */
+/** Why the page is waiting, in the account's own words: an account with one
+ *  machine names it, and says when it went unreachable; an account with several
+ *  says the thing that is true of all of them.
+ *
+ *  It is the account's own list that decides, not what this client happens to
+ *  hold. A machine that was already down when the page loaded was never opened
+ *  here and has no context, so counting contexts read an account of two
+ *  machines as an account of one — and named whichever of them this client had
+ *  reached. */
 function waitingText() {
-  const contexts = knownContexts();
-  if (contexts.length !== 1) return allDevicesOfflineText();
-  const [context] = contexts;
-  return deviceUnreachableText(deviceNameOf(App.devices, context.deviceId), context.offlineSince || Date.now());
+  if (App.devices.length !== 1) return allDevicesOfflineText();
+  const [device] = App.devices;
+  return deviceUnreachableText(device.name, contextFor(device.id)?.offlineSince || Date.now());
 }
 
 function renderWaiting(devices) {

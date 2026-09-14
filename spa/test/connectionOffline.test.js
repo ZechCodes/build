@@ -333,6 +333,23 @@ describe("per-device connections", () => {
     expect(waitingNote()).toContain(allDevicesOfflineText());
   });
 
+  // Which sentence this is, is the account's question rather than this client's.
+  // A machine that was already down at boot was never opened here and has no
+  // context, so counting contexts called an account of two machines an account
+  // of one — and named whichever one this client happened to hold.
+  it("says every device is offline when one of them was already down at boot", async () => {
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    await connectEveryDevice();
+    unreachable.add("dev-a");
+
+    goOffline("dev-a");
+    await flush();
+
+    expect(held()).toBe(true);
+    expect(waitingNote()).toContain(allDevicesOfflineText());
+  });
+
   it("keeps naming the one device on the account, and when it went unreachable", async () => {
     devices = [online("dev-a", "Laptop")];
     App.devices = devices;

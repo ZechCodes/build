@@ -267,8 +267,8 @@ export async function setHomeDevice(deviceId) {
 
 const hasLiveSession = (deviceId) => liveContexts().some((context) => context.deviceId === deviceId);
 
-/** Connect one device and land it; a device that will not answer is marked
- *  offline and kept after. */
+/** Connect one device and land it. A device that will not answer is marked
+ *  offline — its rows stay, greyed — and kept after until it does. */
 async function connectDevice(deviceId) {
   try {
     return landSession(await openDeviceSession(deviceId));

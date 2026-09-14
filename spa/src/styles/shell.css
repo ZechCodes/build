@@ -905,7 +905,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   #view:has(#console-region[data-size]) { --console-space:var(--console-bar); }
   #view:has(#console-region[data-size="half"]) { --console-space:var(--console-half); }
   #view:has(#console-region[data-size="full"]) { --console-space:0px; }
-  #console-region[data-size="full"] { right:0; bottom:var(--agent-strip); }
 
   /* A column of bubbles down the right edge costs a phone the width the work is
      read in, and puts the one row that says what every agent is doing where a
@@ -961,6 +960,16 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 #console-region[data-size="full"] { position:absolute; left:0; right:var(--agent-strip);
   top:calc(var(--toolbar-h) + 1px); bottom:0; height:auto; z-index:34;
   box-shadow:0 -8px 24px var(--shadow-soft); }
+/* A phone runs the strip across the column's foot instead of down its edge, so
+   the overlay stops on the strip's top rather than on its left. Same selector,
+   so the media query buys no specificity: it holds because it is written after
+   the rule it changes, beside it, where the two can be read as one answer to
+   where this overlay stops. The console still stands ABOVE the strip, as an
+   overlay over the work must — what keeps the strip tappable is that the
+   overlay ends where the strip begins. */
+@media (max-width: 760px) {
+  #console-region[data-size="full"] { right:0; bottom:var(--agent-strip); }
+}
 @media (prefers-reduced-motion: reduce) { #console-region { transition:none; } }
 
 .console { display:grid; grid-template-rows:var(--console-bar) minmax(0, 1fr);

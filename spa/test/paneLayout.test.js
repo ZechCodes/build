@@ -1457,6 +1457,29 @@ describe("the bubble strip on a phone", () => {
       .toBe("calc(var(--console-space) + var(--agent-strip))");
   });
 
+  it("stops the full console at the strip's top edge, in the later of the two rules", () => {
+    // Both rules name the same element with the same selector, and a media
+    // query adds no specificity — so the one that holds is simply the one
+    // written later in the sheet. The desktop rule was the later of the two,
+    // and the phone's full console ran past the strip to the bottom of the
+    // column: at z-index 34 over the strip's 31, elementFromPoint on a bubble
+    // answered with the terminal.
+    const base = baseRule('#console-region[data-size="full"]');
+    const phone = phoneRule('#console-region[data-size="full"]');
+    expect(phone.at).toBeGreaterThan(base.at);
+    // One stop each, on the edge the strip's leading border is on: the column's
+    // right at desktop widths, the column's foot on a phone.
+    expect([declaration(base.body, "right"), declaration(base.body, "bottom")])
+      .toEqual(["var(--agent-strip)", "0"]);
+    expect([declaration(phone.body, "right"), declaration(phone.body, "bottom")])
+      .toEqual(["0", "var(--agent-strip)"]);
+    // Which is what keeps the strip tappable — not the stacking order, where the
+    // console still stands above it, as an overlay over the work must.
+    expect(Number(declaration(base.body, "z-index"))).toBeGreaterThan(
+      Number(declaration(phoneRule(".rail-strip").body, "z-index")),
+    );
+  });
+
   it("opens the unpinned card above the strip, pointing down at its bubble", () => {
     const card = phoneRule("#agent-rail.rail-popover .rail-panel");
     expect(card).toBeTruthy();

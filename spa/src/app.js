@@ -285,8 +285,10 @@ function followRouteDevice() {
   if (App.route.name === "resolve") return;
   const deviceId = terminalDeviceId();
   if (deviceId === terminalRouteDeviceId) return;
-  terminalRouteDeviceId = deviceId;
-  followTerminalDevice();
+  // A machine that cannot answer takes nothing: the shells stay where they are,
+  // and this stays unrecorded so the next render — the one after that machine
+  // lands — takes them.
+  if (followTerminalDevice()) terminalRouteDeviceId = deviceId;
 }
 
 export function render() {

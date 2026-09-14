@@ -9,7 +9,7 @@ import { App } from "../app.js";
 import { fetchGatewayToken } from "../api.js";
 import { pinnedDeviceTransportKey } from "../devices.js";
 import { homeDeviceId } from "../core/devicePolicy.js";
-import { contextFor } from "../core/deviceContexts.js";
+import { canAnswer, contextFor } from "../core/deviceContexts.js";
 import { TerminalSocket } from "./session.js";
 import { createStatusHub } from "./statusHub.js";
 
@@ -99,26 +99,37 @@ function terminalsRideOn(carrier) {
 }
 
 /**
- * Re-point the terminal socket at the device the terminals follow. A healthy
- * socket never reconnects on its own — the liveness ping keeps it pinned to the
- * old device — so a move must drop it; the auto-reconnect then re-reads
- * preferDeviceId, attaches to the wanted device, and re-attaches every open tab.
+ * Re-point the terminal socket at the device the terminals follow, and say
+ * whether the shells are there. A healthy socket never reconnects on its own —
+ * the liveness ping keeps it pinned to the old device — so a move must drop it;
+ * the auto-reconnect then re-reads preferDeviceId, attaches to the wanted
+ * device, and re-attaches every open tab.
+ *
+ * That re-attach is why a machine that cannot answer takes nothing: every tab
+ * would come back against a machine with no session to open a PTY on. The
+ * shells stay where they are, and the caller asks again when the machine can.
  */
 function retargetTerminals(wantedDeviceId) {
-  if (socket && wantedDeviceId && socket.deviceId !== wantedDeviceId) socket.simulateDrop();
+  if (!socket || socket.deviceId === wantedDeviceId) return true;
+  if (!canAnswer(contextFor(wantedDeviceId))) return false;
+  socket.simulateDrop();
+  return true;
 }
 
 /**
- * Take the terminals to the device they now follow: ride that device's peer
- * channel if it has one (and nobody else's — another device's channel carries
- * the stream to the wrong machine), and drop a socket that is still pinned
- * somewhere else so it comes back on the right one.
+ * Take the terminals to the device they now follow: drop a socket that is still
+ * pinned somewhere else so it comes back on the right one, and ride that
+ * device's peer channel if it has one (and nobody else's — another device's
+ * channel carries the stream to the wrong machine).
  *
  * Every way the answer changes ends here: a route change (app.js render), a
- * home move, and a peer link opening or closing on that device.
+ * home move, and a peer link opening or closing on that device. Answers whether
+ * the shells took the move: a machine that cannot answer keeps neither the
+ * socket nor the carrier, and the shells stay on the machine they are on.
  */
 export function followTerminalDevice() {
   const deviceId = terminalDeviceId();
+  if (!retargetTerminals(deviceId)) return false;
   terminalsRideOn(contextFor(deviceId)?.peerLink?.term || null);
-  retargetTerminals(deviceId);
+  return true;
 }

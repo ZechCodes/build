@@ -123,10 +123,10 @@ describe("the device the terminals follow", () => {
     expect(socket.drops).toBe(0);
   });
 
-  // A link to a machine this client cannot reach mounts a notice, not a
+  // A link to a machine this client has never opened mounts a notice, not a
   // surface, and no shell types at a machine that is not there: the terminals
   // stay on the home device rather than being dropped onto an empty one.
-  it("leaves them on the home device when the route's machine cannot answer", () => {
+  it("leaves them on the home device when the route's machine was never opened here", () => {
     live("dev-a");
     const socket = socketOn("dev-a");
     App.route = { name: "branch", deviceId: "dev-c", projectId: "p1" }; // never opened here
@@ -151,6 +151,22 @@ describe("the device the terminals follow", () => {
 
     expect(socket.drops).toBe(0);
     expect(socket.options.preferDeviceId()).toBe("dev-b");
+  });
+
+  // A machine this client HAS opened and cannot reach right now is the machine
+  // the link is about, so the shells go there — but not yet. Dropping the socket
+  // onto it re-attaches every open tab against a machine that cannot answer, and
+  // the tabs come back empty; they stay where they are until it can.
+  it("does not move the socket onto a known device that is offline when the link arrives", () => {
+    live("dev-a");
+    live("dev-b", { offline: true });
+    const socket = socketOn("dev-a");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    expect(followTerminalDevice()).toBe(false);
+
+    expect(socket.drops).toBe(0);
+    expect(socket.carriers).toEqual([]); // nor is dev-a taken off its own carrier
   });
 
   it("followTerminalDevice hands over the route device's peer term channel", () => {

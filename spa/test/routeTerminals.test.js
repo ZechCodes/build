@@ -8,8 +8,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn() }));
 
-// Only the move is stood in for. Which machine the terminals follow is the
-// manager's own question, asked here with its real answer.
+// Only the move is stood in for — and it answers the way the real one does:
+// whether the shells are now typing at the machine the route names. Which
+// machine that is stays the manager's own question, asked here with its real
+// answer.
 vi.mock("../src/terminal/manager.js", async (importOriginal) => ({
   ...(await importOriginal()),
   followTerminalDevice: (...args) => terminals.followTerminalDevice(...args),
@@ -23,9 +25,10 @@ vi.mock("../src/core/inboxShell.js", () => ({ inboxRouteChanged: () => {} }));
 vi.mock("../src/core/toolbar.js", () => ({ toolbarRouteChanged: () => {} }));
 
 const { App, render } = await import("../src/app.js");
-const { adoptDeviceSession, resetDeviceContexts, setContextOffline } = await import(
+const { canAnswer, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } = await import(
   "../src/core/deviceContexts.js"
 );
+const { terminalDeviceId } = await import("../src/terminal/manager.js");
 
 /** A machine with an open session: only one the client can reach is a machine a
  *  surface — and so a shell — can stand on. */
@@ -56,6 +59,7 @@ beforeEach(() => {
   App.route = { name: "inbox" };
   render(); // settle on "no device named", whatever the last case left
   terminals.followTerminalDevice.mockClear();
+  terminals.followTerminalDevice.mockImplementation(() => canAnswer(contextFor(terminalDeviceId())));
 });
 
 describe("the device a rendered route names", () => {
@@ -112,6 +116,26 @@ describe("the device a rendered route names", () => {
     render();
 
     expect(terminals.followTerminalDevice).not.toHaveBeenCalled();
+  });
+
+  // A link to a machine that is known but unreachable is still a link about that
+  // machine: the shells belong there, and go there the moment it can answer. So
+  // the move is not recorded until it has happened — otherwise the machine
+  // coming back would find the app already believing the shells had moved.
+  it("takes the terminals to a route's device once it can answer", () => {
+    setContextOffline("dev-b");
+    App.route = branchOn("dev-b");
+
+    render();
+    render();
+
+    expect(terminals.followTerminalDevice).toHaveBeenCalledTimes(2); // nothing took them
+
+    setContextOffline("dev-b", { offline: false });
+    render();
+    render();
+
+    expect(terminals.followTerminalDevice).toHaveBeenCalledTimes(3); // taken, once
   });
 
   it("takes them back to the home device when the route names none", () => {

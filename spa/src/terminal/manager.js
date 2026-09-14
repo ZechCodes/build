@@ -9,7 +9,7 @@ import { App } from "../app.js";
 import { fetchGatewayToken } from "../api.js";
 import { pinnedDeviceTransportKey } from "../devices.js";
 import { homeDeviceId } from "../core/devicePolicy.js";
-import { contextFor } from "../core/deviceContexts.js";
+import { canAnswer, contextFor } from "../core/deviceContexts.js";
 import { TerminalSocket } from "./session.js";
 import { createStatusHub } from "./statusHub.js";
 
@@ -29,17 +29,20 @@ export { createStatusHub };
 /**
  * The machine the shells type at.
  *
- * A terminal belongs to the work on screen, so a link that names a device names
- * the device the socket is on; a surface about nowhere in particular — the
- * inbox, an account page — leaves it on the home device, which is where
- * creation goes. Asked here by everyone: nowhere else works out which machine
- * that is.
+ * A terminal belongs to the work on screen, so a link that names a device the
+ * client can reach names the device the socket is on. A surface about nowhere in
+ * particular — the inbox, an account page — leaves it on the home device, which
+ * is where creation goes, and so does a link whose machine cannot answer: that
+ * one mounts a notice rather than a surface, and no shell types at a machine
+ * that is not there. Asked here by everyone: nowhere else works out which
+ * machine that is.
  *
  * App is read lazily (app.js imports this module through connection.js), and so
  * is the device list: it is patched live by the relay's pushes.
  */
 export function terminalDeviceId() {
-  return App.route?.deviceId || homeDeviceId(App.devices, App.selectedDeviceId);
+  const routeDevice = contextFor(App.route?.deviceId);
+  return canAnswer(routeDevice) ? routeDevice.deviceId : homeDeviceId(App.devices, App.selectedDeviceId);
 }
 
 /** Subscribe to the terminal socket's connectivity status. The callback fires

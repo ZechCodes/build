@@ -20,7 +20,10 @@ vi.mock("../src/config.js", () => ({ RELAY_URL: "wss://relay.test" }));
 vi.mock("../src/app.js", () => ({ App: { route: { name: "inbox" }, devices: [], selectedDeviceId: null } }));
 vi.mock("../src/api.js", () => ({ fetchGatewayToken: async () => "tok" }));
 vi.mock("../src/devices.js", () => ({ pinnedDeviceTransportKey: async () => "pk" }));
-vi.mock("../src/core/deviceContexts.js", () => ({
+// The registry is stood in for; what counts as a machine that can answer is
+// not — that question has one answer, and this file reads the real one.
+vi.mock("../src/core/deviceContexts.js", async () => ({
+  ...(await vi.importActual("../src/core/deviceContexts.js")),
   contextFor: (deviceId) => contexts.get(deviceId) || null,
 }));
 // The socket itself is another file's subject: what matters here is which
@@ -61,6 +64,9 @@ function socketOn(deviceId) {
 
 const online = (id) => ({ id, status: "online" });
 
+/** A machine with an open session, the way the connection registers one. */
+const live = (deviceId, extra = {}) => contexts.set(deviceId, { deviceId, call: async () => ({}), ...extra });
+
 beforeEach(() => {
   App.devices = [online("dev-a"), online("dev-b")];
   App.selectedDeviceId = "dev-a";
@@ -71,7 +77,7 @@ beforeEach(() => {
 describe("the carrier the terminals are given", () => {
   it("is watched by nobody here", () => {
     const term = { onClose: vi.fn(), onEnvelope: vi.fn(), send: vi.fn(), close: vi.fn() };
-    contexts.set("dev-a", { deviceId: "dev-a", peerLink: { term } });
+    live("dev-a", { peerLink: { term } });
     socketOn("dev-a");
 
     followTerminalDevice();
@@ -82,6 +88,7 @@ describe("the carrier the terminals are given", () => {
 
 describe("the device the terminals follow", () => {
   it("with no route device the terminals follow the home device", () => {
+    live("dev-a");
     const socket = socketOn("dev-a");
 
     expect(socket.options.preferDeviceId()).toBe("dev-a");
@@ -96,6 +103,7 @@ describe("the device the terminals follow", () => {
   });
 
   it("a route change to another device drops the socket once", () => {
+    live("dev-b");
     const socket = socketOn("dev-a");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
@@ -106,6 +114,7 @@ describe("the device the terminals follow", () => {
   });
 
   it("the same device does not drop it", () => {
+    live("dev-b");
     const socket = socketOn("dev-b");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
@@ -114,10 +123,36 @@ describe("the device the terminals follow", () => {
     expect(socket.drops).toBe(0);
   });
 
+  // A link to a machine this client cannot reach mounts a notice, not a
+  // surface, and no shell types at a machine that is not there: the terminals
+  // stay on the home device rather than being dropped onto an empty one.
+  it("leaves them on the home device when the route's machine cannot answer", () => {
+    live("dev-a");
+    const socket = socketOn("dev-a");
+    App.route = { name: "branch", deviceId: "dev-c", projectId: "p1" }; // never opened here
+
+    followTerminalDevice();
+
+    expect(socket.drops).toBe(0);
+    expect(socket.options.preferDeviceId()).toBe("dev-a");
+  });
+
+  it("and the same for a machine that has gone offline since", () => {
+    live("dev-a");
+    live("dev-b", { offline: true });
+    const socket = socketOn("dev-a");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    followTerminalDevice();
+
+    expect(socket.drops).toBe(0);
+    expect(socket.options.preferDeviceId()).toBe("dev-a");
+  });
+
   it("followTerminalDevice hands over the route device's peer term channel", () => {
     const term = { id: "term-b" };
-    contexts.set("dev-a", { deviceId: "dev-a", peerLink: { term: { id: "term-a" } } });
-    contexts.set("dev-b", { deviceId: "dev-b", peerLink: { term } });
+    live("dev-a", { peerLink: { term: { id: "term-a" } } });
+    live("dev-b", { peerLink: { term } });
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
     const socket = socketOn("dev-b");
 
@@ -127,7 +162,8 @@ describe("the device the terminals follow", () => {
   });
 
   it("takes the terminals off a peer channel the device they follow does not own", () => {
-    contexts.set("dev-a", { deviceId: "dev-a", peerLink: { term: { id: "term-a" } } });
+    live("dev-a", { peerLink: { term: { id: "term-a" } } });
+    live("dev-b");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
     const socket = socketOn("dev-b");
 

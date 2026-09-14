@@ -21,7 +21,7 @@ import {
   retireDeviceContext,
 } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
-import { followTerminalDevice } from "./terminal/manager.js";
+import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
@@ -299,7 +299,11 @@ const VIEWS = {
 let terminalRouteDeviceId = null;
 
 function followRouteDevice() {
-  const deviceId = App.route.deviceId || null;
+  // A link still being looked up names no machine yet and mounts no surface:
+  // taking the terminals home for that beat and back again when the feed answers
+  // would drop the socket twice over one navigation.
+  if (App.route.name === "resolve") return;
+  const deviceId = terminalDeviceId();
   if (deviceId === terminalRouteDeviceId) return;
   terminalRouteDeviceId = deviceId;
   followTerminalDevice();

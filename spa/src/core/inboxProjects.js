@@ -67,12 +67,13 @@ export function clashingProjectNames(projects) {
   return new Set([...devicesByName].filter(([, devices]) => devices.size > 1).map(([name]) => name));
 }
 
-/** The device a block is on, said after the project's name — only on a name
- *  two devices share, so a rail with one device reads exactly as it always
- *  has. */
-export function deviceTagHtml(block) {
-  if (!block.clash || !block.deviceName) return "";
-  return ` <span class="dim">${esc(block.deviceName)}</span>`;
+/** The device a project is on, said after its name — only on a name two
+ *  devices share, so an account with one device reads exactly as it always has.
+ *  Takes anything carrying `{ clash, deviceName }`: the rail's blocks and the
+ *  toolbar's menu rows both wear it, and they wear the same tag. */
+export function deviceTagHtml(project) {
+  if (!project || !project.clash || !project.deviceName) return "";
+  return ` <span class="dim">${esc(project.deviceName)}</span>`;
 }
 
 /** Where a block stands: by its first live row's place on the inbox; failing

@@ -9,7 +9,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { createReviewPlug } = await import("../src/core/changesReview.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
@@ -43,6 +43,7 @@ describe("the saved aggregate diff", () => {
   it("tracks the files actually visible in the all-changes scroller", async () => {
     const viewingContext = { setVisibleDiffs: vi.fn(), captureDomSelection: vi.fn(), clearSelection: vi.fn(), clear: vi.fn() };
     plug = createReviewPlug({
+      cacheScope: scopeFor("dev-1"),
       fetchDiff: vi.fn(async () => ({ patch: PATCH })),
       entity: "run-1",
       viewingContext,
@@ -59,7 +60,8 @@ describe("the saved aggregate diff", () => {
 
   it("paints whole — tray included — while the live one is being fetched", async () => {
     await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH, commentable: true });
-    plug = createReviewPlug({ fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1", submit: vi.fn() });
+    plug = createReviewPlug({
+      cacheScope: scopeFor("dev-1"), fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1", submit: vi.fn() });
     plug.mount(host);
     await settle();
     expect(host.textContent).toContain("cached line");
@@ -71,7 +73,8 @@ describe("the saved aggregate diff", () => {
 
   it("stays read-only when the last live paint said so", async () => {
     await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH, commentable: false });
-    plug = createReviewPlug({ fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1", submit: vi.fn() });
+    plug = createReviewPlug({
+      cacheScope: scopeFor("dev-1"), fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1", submit: vi.fn() });
     plug.mount(host);
     await settle();
     expect(host.textContent).toContain("cached line");
@@ -83,7 +86,8 @@ describe("the saved aggregate diff", () => {
     const triage = { based_on: "old-revision", hunks: [] };
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "diff" };
     await writeCached(address, { patch: PATCH, triageEnabled: true, triage });
-    plug = createReviewPlug({ fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1" });
+    plug = createReviewPlug({
+      cacheScope: scopeFor("dev-1"), fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1" });
     plug.mount(host);
     await settle();
 
@@ -98,7 +102,8 @@ describe("the saved aggregate diff", () => {
   it("lets the live diff replace it and writes the change through", async () => {
     await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
     const live = PATCH.replace("cached line", "live line");
-    plug = createReviewPlug({ fetchDiff: vi.fn(async () => ({ patch: live, key: "building" })), entity: "run-1" });
+    plug = createReviewPlug({
+      cacheScope: scopeFor("dev-1"), fetchDiff: vi.fn(async () => ({ patch: live, key: "building" })), entity: "run-1" });
     plug.mount(host);
     await settle();
     expect(host.textContent).toContain("live line");
@@ -107,8 +112,27 @@ describe("the saved aggregate diff", () => {
     plug.unmount();
   });
 
+  // The plug is made for one machine's diff: the scope the surface handed it is
+  // what it is filed under, whoever the ambient alias follows.
+  it("caches under the cacheScope it is handed", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
+    const live = PATCH.replace("cached line", "their line");
+    plug = createReviewPlug({
+      cacheScope: scopeFor("dev-2"),
+      fetchDiff: vi.fn(async () => ({ patch: live })),
+      entity: "run-1",
+    });
+    plug.mount(host);
+    await settle();
+
+    expect((await readCached({ deviceId: "dev-2", entityId: "run-1", kind: "diff" })).value.patch).toBe(live);
+    expect((await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" })).value.patch).toBe(PATCH);
+    plug.unmount();
+  });
+
   it("caches nothing for a surface that names no entity", async () => {
-    plug = createReviewPlug({ fetchDiff: vi.fn(async () => ({ patch: PATCH })), entity: null });
+    plug = createReviewPlug({
+      cacheScope: scopeFor("dev-1"), fetchDiff: vi.fn(async () => ({ patch: PATCH })), entity: null });
     plug.mount(host);
     await settle();
     expect(await readCached({ deviceId: "dev-1", entityId: "", kind: "diff" })).toBeUndefined();

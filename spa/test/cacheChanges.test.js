@@ -30,7 +30,7 @@ const show = () => ({
   truncated: false,
 });
 
-let mountGitPane, cache;
+let mountGitPane, cache, scopeOf;
 
 const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -41,8 +41,9 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = "";
-  const { setCacheDevice } = await import("../src/core/cacheScope.js");
+  const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
   setCacheDevice("dev-1");
+  scopeOf = scopeFor;
   cache = await import("../src/core/localCache.js");
   ({ mountGitPane } = await import("../src/core/gitPane.js"));
 });
@@ -50,7 +51,7 @@ beforeEach(async () => {
 const mountPane = async (callRpc, options = {}) => {
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc, ...options });
+  const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc, cacheScope: scopeOf("dev-1"), ...options });
   await settle();
   return { container, pane };
 };
@@ -79,6 +80,19 @@ describe("the cached first paint", () => {
     const never = vi.fn(() => new Promise(() => {}));
     const { container, pane } = await mountPane(never);
     expect(container.textContent).toContain("loading…");
+    pane.dispose();
+  });
+});
+
+// The pane is mounted for one machine, and the ambient alias follows another:
+// what it syncs is filed under the machine the view handed it.
+describe("the scope the view hands it", () => {
+  it("caches under the cacheScope it is handed", async () => {
+    const { pane } = await mountPane(liveRpc(), { cacheScope: scopeOf("dev-2") });
+    await settle();
+
+    expect((await cache.readCached({ deviceId: "dev-2", entityId: "run-1", kind: "status" })).value.head).toBe("f".repeat(40));
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).toBeUndefined();
     pane.dispose();
   });
 });

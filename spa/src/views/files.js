@@ -9,7 +9,6 @@
 // server fences the scope root and every path; this view never sends host paths.
 
 import { esc } from "../core/text.js";
-import { currentCacheScope } from "../core/cacheScope.js";
 import { readCached, writeCached } from "../core/localCache.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
@@ -147,8 +146,7 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
  * fetches only on navigation/selection. Returns { dispose() }.
  */
-export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen = null, viewingContext = null }) {
-  const cacheScope = currentCacheScope();
+export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt = null, onFileOpen = null, viewingContext = null }) {
   let disposed = false;
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.

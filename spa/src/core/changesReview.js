@@ -14,7 +14,6 @@
 // popover, and typed text, and a rebuild mid-action would wipe a busy button.
 
 import "../styles/surfaces.css";
-import { currentCacheScope } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, pathOf } from "./diff.js";
@@ -78,6 +77,9 @@ export function emptyStackText(totalFiles, changedOnly) {
 // eslint-disable-next-line complexity -- ratchet: createReviewPlug is at 16, cap 10 — reduce it, then drop this line
 export function createReviewPlug({
   fetchDiff,
+  // The cache of the machine the diff is on: the surface that made the plug
+  // hands it down, and a plug made without one caches nothing.
+  cacheScope,
   submit = null,
   submitOverride = null,
   revisionId = () => null,
@@ -94,7 +96,6 @@ export function createReviewPlug({
   viewingContext = null,
 }) {
   const openFile = (navigate && navigate.openFile) || null;
-  const cacheScope = currentCacheScope();
   let host = null;
   let watcher = null;
   let editedTimeWatcher = null;

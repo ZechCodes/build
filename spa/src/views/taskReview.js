@@ -16,7 +16,6 @@ import { currentRevisionId, MUTATION_THREAD_PAGE } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError, notifySuccess } from "../core/notify.js";
-import { currentCacheScope } from "../core/cacheScope.js";
 import { coordinatedRead, rpcReadKey } from "../core/readRequests.js";
 
 export { REVIEW_POLL_MS };
@@ -72,6 +71,8 @@ export function reviewMergeOptions(adopted, base, primary = false) {
 export function createTaskReview({
   taskId,
   callRpc,
+  // The cache and the read-coordination identity of the machine the run is on.
+  cacheScope = null,
   getTask,
   isOffline,
   agentSelection = createAgentSelection(),
@@ -85,9 +86,10 @@ export function createTaskReview({
   // second concurrent run.git_action. It is also the freeze key: while active,
   // the actionbar is left untouched.
   const gitFlight = createSingleFlight();
-  const requestScope = currentCacheScope() || callRpc;
+  const requestScope = cacheScope || callRpc;
 
   const plug = createReviewPlug({
+    cacheScope,
     isOffline,
     viewingContext,
     navigate,
@@ -98,7 +100,7 @@ export function createTaskReview({
       const params = { run_id: taskId, ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}) };
       const diff = await coordinatedRead({
         key: rpcReadKey({
-          deviceId: currentCacheScope()?.deviceId,
+          deviceId: cacheScope?.deviceId,
           requestScope,
           repository: `run:${taskId}`,
           call: callRpc,

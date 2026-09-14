@@ -11,7 +11,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const { mountGitPane } = await import("../src/core/gitPane.js");
 const { createReviewPlug } = await import("../src/core/changesReview.js");
-const { setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
 const { worktreeOf } = await import("./gitWireFixture.js");
 
 const tree = worktreeOf({ "src/a.js": "new line", "uv.lock": "locked" });
@@ -36,7 +36,7 @@ const click = async (element) => {
 
 let errors = [];
 
-async function mount({ clean = false } = {}) {
+async function mount({ clean = false, deviceId = "dev-1" } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const calls = [];
@@ -49,6 +49,7 @@ async function mount({ clean = false } = {}) {
     return {};
   };
   const review = createReviewPlug({
+    cacheScope: scopeFor(deviceId),
     fetchDiff: async () => ({ patch: PATCH, commentable: true }),
     submit: async () => {},
     renderIdleActions: (actions) => {
@@ -60,7 +61,7 @@ async function mount({ clean = false } = {}) {
   // would test a wrapper the app does not have — which is how the real one
   // dropped four methods and took the toolbar down.
   const plug = { ...review, getBase: () => "main" };
-  const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc, review: plug });
+  const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc, cacheScope: scopeFor(deviceId), review: plug });
   await settle();
   return { container, pane, calls };
 }
@@ -79,6 +80,20 @@ afterEach(() => {
 });
 
 describe("the Changes surface, opened on its review aggregate", () => {
+  // Both halves of this surface — the pane and the plug in its rail — file what
+  // they read under the machine the view handed them, not the ambient alias.
+  it("caches under the cacheScope it is handed", async () => {
+    const { readCached, wipeCache } = await import("../src/core/localCache.js");
+    await wipeCache();
+
+    const { pane } = await mount({ deviceId: "dev-2" });
+
+    expect((await readCached({ deviceId: "dev-2", entityId: "run-1", kind: "status" })).value.files).toHaveLength(2);
+    expect(await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).toBeUndefined();
+    pane.dispose();
+  });
+
+
   it("still mounts the git toolbar's own verbs", async () => {
     const { container, pane } = await mount();
     expect(container.querySelector(".gtfetch")).toBeTruthy();

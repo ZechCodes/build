@@ -7,6 +7,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+// The surfaces below write what they read through the local cache, which is
+// keyed by device: give the module a fake IndexedDB to do it in.
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -406,6 +412,21 @@ describe("a branch on another device", () => {
     expect(App.route.deviceId).toBe("dev-2");
     expect(location.hash).toContain("#/device/dev-2/project/p1/branch/main/files");
     expect(location.hash).toContain("path=notes.txt");
+  });
+
+  it("a branch view for device B never reads or writes the cache under device A's key", async () => {
+    const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+    await wipeCache();
+    theirRow = { ...row, branch: "main", worktree_id: "wt-9" };
+    // This machine holds a checkout of the same id, synced earlier.
+    await writeCached({ deviceId: "dev-1", entityId: "wt-9", kind: "status" }, { files: [], head: "mine", status_key: "mine" });
+
+    await renderBranch();
+    await vi.waitFor(async () =>
+      expect((await readCached({ deviceId: "dev-2", entityId: "wt-9", kind: "status" }))?.value.head).toBe("abc"),
+    );
+
+    expect((await readCached({ deviceId: "dev-1", entityId: "wt-9", kind: "status" })).value.head).toBe("mine");
   });
 
   it("keeps the device on the tab bar's own links", async () => {

@@ -9,7 +9,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { renderFilesTab } = await import("../src/views/files.js");
 
@@ -26,10 +26,10 @@ beforeEach(async () => {
   await wipeCache();
 });
 
-const mountFiles = (callRpc) => {
+const mountFiles = (callRpc, deviceId = "dev-1") => {
   const host = document.createElement("div");
   document.body.appendChild(host);
-  const files = renderFilesTab(host, { scope: { run_id: "run-1" }, callRpc });
+  const files = renderFilesTab(host, { scope: { run_id: "run-1" }, callRpc, cacheScope: scopeFor(deviceId) });
   return { host, files };
 };
 
@@ -56,6 +56,30 @@ describe("the cached listing", () => {
     expect(treeNames(host)).toEqual(["fresh.js"]);
     const record = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" });
     expect(record.value.entries[0].name).toBe("fresh.js");
+  });
+
+  // The tab is mounted for one machine, and the ambient alias follows another:
+  // the listing is filed under the machine the view handed it, or a branch on
+  // the desktop would paint the laptop's tree.
+  it("caches under the cacheScope it is handed", async () => {
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" },
+      { path: "", entries: [{ name: "mine.js", kind: "file", size: 1 }] },
+    );
+    await writeCached(
+      { deviceId: "dev-2", entityId: "run-1", kind: "tree", sub: "" },
+      { path: "", entries: [{ name: "theirs.js", kind: "file", size: 1 }] },
+    );
+
+    const { host } = mountFiles(
+      vi.fn(async () => ({ path: "", entries: [{ name: "fresh.js", kind: "file", size: 2 }] })),
+      "dev-2",
+    );
+    await settle();
+
+    expect(treeNames(host)).toEqual(["fresh.js"]);
+    expect((await readCached({ deviceId: "dev-2", entityId: "run-1", kind: "tree", sub: "" })).value.entries[0].name).toBe("fresh.js");
+    expect((await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" })).value.entries[0].name).toBe("mine.js");
   });
 
   it("keeps the saved listing when the machine cannot answer", async () => {

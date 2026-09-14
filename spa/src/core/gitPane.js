@@ -45,7 +45,6 @@ import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
-import { currentCacheScope } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { patchList } from "./patchList.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
@@ -364,6 +363,9 @@ export function mountGitPane(
   {
     scope,
     callRpc,
+    // The cache of the machine this checkout is on, handed down by the view
+    // that mounted the pane. A standalone mount brings none and caches nothing.
+    cacheScope,
     agentCommitOptions = [],
     review = null,
     revisionId = () => null,
@@ -386,7 +388,6 @@ export function mountGitPane(
   const parsedDiffs = createParsedDiffCache();
   const viewport = createDiffViewport({ repaint: () => renderAndFetch() });
   const openFile = (navigate && navigate.openFile) || null;
-  const cacheScope = currentCacheScope();
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
   let bodiesUnpainted = false; // a file body landed while a repaint was held

@@ -440,6 +440,34 @@ describe("a branch on another device", () => {
   });
 });
 
+// A link can name a machine this client has no session with — a phone that has
+// been shut, a link opened on a fresh browser. There is nothing to read and
+// nothing to write until that machine answers, so the surface says so by name
+// rather than painting a frame over an empty checkout.
+describe("a branch on a device this client has not opened", () => {
+  it("names the device and asks it nothing", async () => {
+    App.devices = [...App.devices, { id: "dev-3", name: "Desktop", status: "offline" }];
+    App.route = { name: "branch", deviceId: "dev-3", projectId: "p1", branch: "main", tab: "changes" };
+    App.call = vi.fn(async () => ({}));
+
+    await renderBranch();
+    await flush();
+
+    expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
+    expect(App.call).not.toHaveBeenCalled();
+  });
+
+  it("falls back to plain words for a device the account has never listed", async () => {
+    App.route = { name: "branch", deviceId: "dev-unknown", projectId: "p1", branch: "main", tab: "changes" };
+    App.call = vi.fn(async () => ({}));
+
+    await renderBranch();
+    await flush();
+
+    expect(document.getElementById("root").textContent).toContain("That device isn't connected");
+  });
+});
+
 // The way a branch ends. Before this control the only Done was on the inbox
 // row, so a branch you were standing in could not be closed out from inside it.
 describe("closing the branch out", () => {

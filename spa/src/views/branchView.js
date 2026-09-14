@@ -21,7 +21,7 @@
 // painted.
 
 import { $ } from "../dom.js";
-import { esc, unopenedDeviceText } from "../core/text.js";
+import { esc } from "../core/text.js";
 import { App, go, markRoute } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
 import { tabShellHtml } from "../core/tabshell.js";
@@ -39,7 +39,7 @@ import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.j
 import { entityIdOf } from "../core/entityId.js";
 import { routeContext } from "../core/deviceContexts.js";
 import { routeProjectKey } from "../core/deviceKey.js";
-import { deviceNameOf } from "../core/devicePolicy.js";
+import { unopenedDeviceHtml } from "../core/deviceNotice.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { refreshFeed } from "../core/taskFeed.js";
@@ -97,11 +97,6 @@ const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primar
 /** Where the Files tab is standing: the URL says, so a sent link opens the same
  *  file and a reload keeps the reader's place. Pure. */
 const openPlaceOf = (route) => (route.file ? { path: route.file, line: route.line || null } : null);
-
-/** What a link to a machine this client has no session with can show: its name,
- *  and why there is nothing under it. */
-const unopenedDeviceHtml = (deviceId) =>
-  `<div class="empty">${esc(unopenedDeviceText(deviceNameOf(App.devices, deviceId)))}</div>`;
 
 function mountPlainChanges(host, onInitialize) {
   App.routeLeaveGuard = null;

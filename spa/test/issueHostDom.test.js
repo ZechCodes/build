@@ -97,3 +97,20 @@ describe("an issue on another device", () => {
     expect(App.route.deviceId).toBe("dev-2");
   });
 });
+
+// A link can name a machine this client has no session with. There is nothing
+// to read and nothing to write until it answers, so the surface says so by name
+// rather than painting an empty issue.
+describe("an issue on a device this client has not opened", () => {
+  it("names the device and asks it nothing", async () => {
+    App.devices = [...App.devices, { id: "dev-3", name: "Desktop", status: "offline" }];
+    App.route = { name: "issue", deviceId: "dev-3", projectId: "p1", id: "issue-1" };
+
+    await renderIssue();
+    await flush();
+
+    expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
+    expect(App.call).not.toHaveBeenCalled();
+    expect(theirCall).not.toHaveBeenCalled();
+  });
+});

@@ -8,9 +8,8 @@
 
 import { $ } from "../dom.js";
 import { App, go, loadModelCatalog } from "../app.js";
-import { esc, unopenedDeviceText } from "../core/text.js";
 import { hashFromRoute } from "../core/router.js";
-import { deviceNameOf } from "../core/devicePolicy.js";
+import { unopenedDeviceHtml } from "../core/deviceNotice.js";
 import { routeContext } from "../core/deviceContexts.js";
 import { mountIssueView } from "../core/issueView.js";
 import { mountConsole } from "../core/console.js";
@@ -30,7 +29,7 @@ export async function renderIssue() {
   const context = routeContext(App.route);
   root.className = "surface";
   if (!context) {
-    root.innerHTML = `<div class="empty">${esc(unopenedDeviceText(deviceNameOf(App.devices, deviceId)))}</div>`;
+    root.innerHTML = unopenedDeviceHtml(deviceId);
     return;
   }
   const callRpc = context.call;

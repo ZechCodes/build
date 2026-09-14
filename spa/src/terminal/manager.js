@@ -8,6 +8,8 @@ import { RELAY_URL } from "../config.js";
 import { App } from "../app.js";
 import { fetchGatewayToken } from "../api.js";
 import { pinnedDeviceTransportKey } from "../devices.js";
+import { homeDeviceId } from "../core/devicePolicy.js";
+import { contextFor } from "../core/deviceContexts.js";
 import { TerminalSocket } from "./session.js";
 import { createStatusHub } from "./statusHub.js";
 
@@ -24,6 +26,21 @@ const statusHub = createStatusHub();
 
 export { createStatusHub };
 
+/**
+ * The machine the shells type at.
+ *
+ * A terminal belongs to the work on screen, so a link that names a device names
+ * the device the socket is on; a surface about nowhere in particular — the
+ * inbox, an account page — leaves it on the home device, which is where
+ * creation goes. Asked here by everyone: nothing else compares device ids.
+ *
+ * App is read lazily (app.js imports this module through connection.js), and so
+ * is the device list: it is patched live by the relay's pushes.
+ */
+export function terminalDeviceId() {
+  return App.route?.deviceId || homeDeviceId(App.devices, App.selectedDeviceId);
+}
+
 /** Subscribe to the terminal socket's connectivity status. The callback fires
  *  immediately with the current status if one is already known. Returns an
  *  unsubscribe function. */
@@ -39,10 +56,9 @@ export function terminalManager() {
       WebSocketImpl: WebSocket,
       getToken: fetchGatewayToken,
       getPinnedDeviceKey: pinnedDeviceTransportKey,
-      // The terminals follow the home device's session (falling back to the
-      // user's sticky choice), re-evaluated on every reconnect; every home move
-      // calls retargetTerminals() to force that reconnect.
-      preferDeviceId: () => App.session?.deviceId || App.selectedDeviceId || null,
+      // Re-read on every reconnect; a route change or a home move calls
+      // followTerminalDevice() to force that reconnect.
+      preferDeviceId: terminalDeviceId,
     });
     socket.onStatus((status) => statusHub.set(status));
     // A failed initial connect self-heals: _connect closes the socket, whose
@@ -73,17 +89,26 @@ export function terminalsRideOn(carrier) {
 }
 
 /**
- * Re-point the terminal socket at the home device. A healthy
+ * Re-point the terminal socket at the device the terminals follow. A healthy
  * socket never reconnects on its own — the liveness ping keeps it pinned to the
- * old device — so a home move must drop it; the auto-reconnect then re-reads
- * preferDeviceId, attaches to the new device, and re-attaches every open tab.
- *
- * Called from connection.js's followHomeContext, which is every way home moves:
- * the picker, the picked device landing after another answered first, and a
- * remembered device coming back mid-session.
+ * old device — so a move must drop it; the auto-reconnect then re-reads
+ * preferDeviceId, attaches to the wanted device, and re-attaches every open tab.
  */
 export function retargetTerminals() {
-  if (!socket) return;
-  const wantedDeviceId = App.session?.deviceId || App.selectedDeviceId || null;
-  if (wantedDeviceId && socket.deviceId !== wantedDeviceId) socket.simulateDrop();
+  const wantedDeviceId = terminalDeviceId();
+  if (socket && wantedDeviceId && socket.deviceId !== wantedDeviceId) socket.simulateDrop();
+}
+
+/**
+ * Take the terminals to the device they now follow: ride that device's peer
+ * channel if it has one (and nobody else's — another device's channel carries
+ * the stream to the wrong machine), and drop a socket that is still pinned
+ * somewhere else so it comes back on the right one.
+ *
+ * Every way the answer changes ends here: a route change (app.js render), a
+ * home move, and a peer link opening or closing on that device.
+ */
+export function followTerminalDevice() {
+  terminalsRideOn(contextFor(terminalDeviceId())?.peerLink?.term || null);
+  retargetTerminals();
 }

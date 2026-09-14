@@ -34,18 +34,24 @@ import { projectRoute } from "./projectModel.js";
  *  and the toolbar's menu row all have to agree on the same string. */
 export const projectNameOf = (project) => project.name || project.id;
 
-/** The projects a set of workspace rows is in: every device's listed projects,
- *  plus one for any project a workspace names that its device has not listed. */
-function workspaceProjectsNamed(entries, projects) {
+/** The bare project id a row names, whichever half of the app it came from: a
+ *  feed row carries the wire's `project_id`, a rail entry the `projectId` the
+ *  inbox normalized it to. Read here so the rest of this module never asks. */
+const bareProjectIdOf = (row) => row.project_id || row.projectId || "";
+
+/** The blocks' identity and names: every device's projects in the order they
+ *  arrived, plus one for any project a row names that its device has not
+ *  listed — the row is still work, and it is still somewhere. Work rows and
+ *  workspace rows are named the same way, because they name the same projects.
+ *
+ *  Keyed by the account-wide project key, never the bare id: both machines call
+ *  their first project `proj-1`, and those are two projects. */
+function projectsNamed(projects, rows) {
   const named = new Map(projects.map((project) => [project.projectKey, project]));
-  for (const entry of entries) {
-    if (!entry.projectKey || named.has(entry.projectKey)) continue;
-    named.set(entry.projectKey, {
-      id: entry.projectId,
-      projectKey: entry.projectKey,
-      deviceId: entry.deviceId,
-      name: entry.project || entry.projectId,
-    });
+  for (const row of rows) {
+    if (!row.projectKey || named.has(row.projectKey)) continue;
+    const id = bareProjectIdOf(row);
+    named.set(row.projectKey, { id, projectKey: row.projectKey, deviceId: row.deviceId, name: row.project || id });
   }
   return named;
 }
@@ -77,7 +83,7 @@ function workspaceBlockFor(project, grouped, tag, activeWorkspaceKey) {
  *  `proj-1`, and two projects may share a name — which is what the device tag
  *  on the head is for. */
 export function workspaceProjectBlocks(entries = [], projects = [], activeWorkspaceKey = null, devices = []) {
-  const named = workspaceProjectsNamed(entries, projects);
+  const named = projectsNamed(projects, entries);
   const tags = deviceTags([...named.values()], devices);
   const blocks = [...named.values()].map((project) =>
     workspaceBlockFor(
@@ -90,25 +96,6 @@ export function workspaceProjectBlocks(entries = [], projects = [], activeWorksp
   return { unsorted: entries.filter((entry) => !entry.projectKey), blocks };
 }
 
-/** The blocks' identity and names: every device's projects in the order they
- *  arrived, plus one for any project a row names that its device has not
- *  listed — the row is still work, and it is still somewhere.
- *
- *  Keyed by the account-wide project key, never the bare id: both machines call
- *  their first project `proj-1`, and those are two projects. */
-function projectsNamed(projects, items) {
-  const named = new Map(projects.map((project) => [project.projectKey, project]));
-  for (const item of items) {
-    if (!item.projectKey || named.has(item.projectKey)) continue;
-    named.set(item.projectKey, {
-      id: item.project_id,
-      projectKey: item.projectKey,
-      deviceId: item.deviceId,
-      name: item.project || item.project_id,
-    });
-  }
-  return named;
-}
 
 /** The project names more than one device uses. A name that is the account's
  *  own says which project it is; one two machines both use does not, and its

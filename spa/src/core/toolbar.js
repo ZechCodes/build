@@ -34,7 +34,7 @@ import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openCreateWork } from "./createWork.js";
 import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
 import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
-import { contextFor } from "./deviceContexts.js";
+import { canAnswer, contextFor } from "./deviceContexts.js";
 import { deviceOfflineNotice } from "./deviceNotice.js";
 import { patchList } from "./patchList.js";
 import { projectRoute } from "./projectModel.js";
@@ -423,10 +423,12 @@ function openSurfaceMenu(anchor) {
 /** A project's settings are a read and a write on the machine that project
  *  lives on, so the sheet is handed that machine's caller and asks nothing
  *  about devices itself. The id it sends stays the bare one that machine's
- *  daemon minted. A machine this client cannot reach has nothing to show. */
+ *  daemon minted. A machine this client cannot reach — never opened here, or
+ *  gone since — has nothing to show, so the sheet says which one instead of
+ *  standing over calls that can only be refused. */
 function openSettingsFor(project) {
   const context = contextFor(project.deviceId);
-  if (!context) {
+  if (!canAnswer(context)) {
     notifyError("Project settings can't be opened", deviceOfflineNotice(project.deviceId));
     return;
   }

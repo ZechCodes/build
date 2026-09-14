@@ -79,7 +79,7 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openC
 const { App } = await import("../src/app.js");
 const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
-const { adoptDeviceSession, retireDeviceContext } = await import("../src/core/deviceContexts.js");
+const { adoptDeviceSession, retireDeviceContext, setContextOffline } = await import("../src/core/deviceContexts.js");
 
 /** What each machine answers. A sheet the toolbar opens is handed the caller of
  *  the machine the project it is about lives on, so the two are told apart. */
@@ -463,6 +463,17 @@ describe("the ⋯", () => {
     bar().querySelector('[data-select="more"]').click();
     menu().querySelector('[data-action="settings"]').click();
     expect(openProjectSettings).toHaveBeenCalledWith("p1", { callRpc: workshopCall });
+  });
+
+  // A machine that answered once keeps its context through an outage — the
+  // drafts and cached reads on it outlive the connection — but every call the
+  // sheet would make is refused until it is back, so the sheet does not open.
+  it("says which machine is missing rather than opening settings over an offline device", () => {
+    setContextOffline("dev-1");
+    bar().querySelector('[data-select="more"]').click();
+    menu().querySelector('[data-action="settings"]').click();
+    expect(openProjectSettings).not.toHaveBeenCalled();
+    expect(notifyError.mock.calls[0][1]).toContain("workshop isn't connected");
   });
 
   it("says which machine is missing rather than opening settings it cannot read", () => {

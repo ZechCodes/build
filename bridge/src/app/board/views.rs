@@ -364,29 +364,46 @@ impl AppState {
             .list(None)
             .into_iter()
             .map(|workspace| {
+                let all_git = !workspace.directories.is_empty()
+                    && workspace
+                        .directories
+                        .iter()
+                        .all(|directory| directory.is_git);
                 let repositories = workspace
                     .directories
                     .iter()
                     .filter(|directory| directory.is_git)
                     .map(|directory| directory.path.clone())
                     .collect::<Vec<_>>();
-                (workspace.id.clone(), repositories)
+                (workspace.id.clone(), repositories, all_git)
             })
             .collect::<Vec<_>>();
-        self.sync_workspace_summaries(&workspaces);
+        self.sync_workspace_summaries(
+            &workspaces
+                .iter()
+                .map(|(id, repositories, _)| (id.clone(), repositories.clone()))
+                .collect::<Vec<_>>(),
+        );
         workspaces
             .into_iter()
-            .map(|(workspace_id, repositories)| {
+            .map(|(workspace_id, repositories, all_git)| {
                 let computed_at = self
                     .workspace_summary_of(&workspace_id, &repositories)
                     .map(|(at, _)| at);
                 let refresh = self.workspace_summary_refresh(&workspace_id, repositories.clone());
                 self.refresh_if_stale(computed_at, WORKSPACE_SUMMARY_TTL, refresh);
+                let mut summary = self
+                    .workspace_summary_of(&workspace_id, &repositories)
+                    .map(|(_, summary)| summary.clone())
+                    .unwrap_or(Value::Null);
+                if !all_git {
+                    if let Some(summary) = summary.as_object_mut() {
+                        summary.insert("clean".into(), json!(false));
+                    }
+                }
                 json!({
                     "workspace_id": workspace_id,
-                    "work_summary": self.workspace_summary_of(&workspace_id, &repositories)
-                        .map(|(_, summary)| summary.clone())
-                        .unwrap_or(Value::Null),
+                    "work_summary": summary,
                 })
             })
             .collect()

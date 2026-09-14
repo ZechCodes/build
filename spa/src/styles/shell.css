@@ -271,11 +271,14 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
   box-shadow:-8px 0 8px -6px var(--accent-soft); }
 .inbox-entry:hover .inbox-actions, .inbox-entry:focus-within .inbox-actions,
 .inbox-entry.active .inbox-actions,
+.inbox-actions:has(.inbox-workspace-done),
 .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+.inbox-workspace-done { min-width:48px; }
 /* No hover on touch: the selected row shows its actions, one tap behind. */
 @media (hover:none) {
   .inbox-entry:hover .inbox-actions { opacity:0; pointer-events:none; }
   .inbox-entry.active .inbox-actions, .inbox-entry:focus-within .inbox-actions,
+  .inbox-actions:has(.inbox-workspace-done),
   .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
 }
 /* The rail's rows are near the top of the viewport, so the menu drops rather
@@ -742,6 +745,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font-size:10.5px; }
 .surface-row-line { display:flex; align-items:baseline; gap:6px; min-width:0; }
 .surface-row-model, .surface-row-effort { flex:none; }
+.surface-row-head-model { max-width:40%; }
 .surface-row-detail { flex:1 1 auto; min-width:0; }
 .surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
 .surface-row-error { color:var(--red); }

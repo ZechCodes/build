@@ -423,6 +423,17 @@ impl ProtocolReader {
     /// would put the human's words in the timeline a second time as narration.
     fn read_message(&mut self, event: &Value, voice: Voice) {
         let parent_call_id = event["parent_tool_use_id"].as_str();
+        if voice == Voice::Assistant {
+            if let Some(call_id) = parent_call_id {
+                let moved = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .surfaces
+                    .read_subagent_message(call_id, &event["message"]);
+                self.bump_revision_when(moved);
+            }
+        }
         let Some(blocks) = event["message"]["content"].as_array() else {
             return;
         };

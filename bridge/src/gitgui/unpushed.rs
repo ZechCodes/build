@@ -6,6 +6,10 @@ pub struct WorkSummary {
     pub pushes: u64,
     pub additions: u64,
     pub deletions: u64,
+    /// No local commit, index, worktree, untracked file, or in-progress Git
+    /// operation remains. This is deliberately independent of line counts:
+    /// an empty untracked file or a binary edit can carry a +0/-0 stat.
+    pub clean: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +169,16 @@ pub fn work_summary(repo_path: &Path) -> Result<WorkSummary, String> {
     }
     let base = published_base(&repo)?;
     let pushes = unpublished_commit_count(&repo, base.oid())?;
+    let mut status_options = git2::StatusOptions::new();
+    status_options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true);
+    let clean = pushes == 0
+        && repo.state() == git2::RepositoryState::Clean
+        && repo
+            .statuses(Some(&mut status_options))
+            .map_err(|error| error.to_string())?
+            .is_empty();
     let stat = crate::diff::diff_against_commit(repo_path, base.oid())
         .map_err(|error| error.to_string())?
         .stat();
@@ -172,6 +186,7 @@ pub fn work_summary(repo_path: &Path) -> Result<WorkSummary, String> {
         pushes,
         additions: stat.insertions as u64,
         deletions: stat.deletions as u64,
+        clean,
     })
 }
 
@@ -181,6 +196,7 @@ pub fn aggregate_work_summary(repo_paths: &[std::path::PathBuf]) -> Result<WorkS
             pushes: 0,
             additions: 0,
             deletions: 0,
+            clean: true,
         },
         |total, path| {
             let summary = work_summary(path)?;
@@ -197,6 +213,7 @@ pub fn aggregate_work_summary(repo_paths: &[std::path::PathBuf]) -> Result<WorkS
                     .deletions
                     .checked_add(summary.deletions)
                     .ok_or_else(|| "workspace deletion count exceeds u64".to_string())?,
+                clean: total.clean && summary.clean,
             })
         },
     )

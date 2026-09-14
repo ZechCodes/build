@@ -213,6 +213,14 @@ pub const CATCH_UP_MESSAGES: usize = 40;
 /// and because a packet baked when the turn was queued misses whatever was
 /// said while it waited for the lock.
 pub(crate) fn conversation_prompt(prompt: &str) -> String {
+    conversation_prompt_with_mailbox(
+        prompt,
+        "- Before acting, call `read_unread_messages` and process every unread Issue message.\n\
+         - When Build says new reviewer messages are available, call `read_unread_messages`.",
+    )
+}
+
+fn conversation_prompt_with_mailbox(prompt: &str, mailbox: &str) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
     out.push_str(prompt);
     // This block is the canonical reply policy. The `post_thread_message` tool
@@ -220,19 +228,33 @@ pub(crate) fn conversation_prompt(prompt: &str) -> String {
     // it by reference — never restate these bullets elsewhere, restated copies
     // drift. The ambiguity rule stays above the silent-directive allowance so
     // an in-order reader hits the carve-out before committing to silence.
-    out.push_str(
+    out.push_str(&format!(
         "\n\nBuild conversation protocol:\n\
          - First, call `set_topic` with the objective of this conversation in 2-4 words (e.g. \"Unify prompt delivery\"). The conversation header shows it and says \"Starting\" until you do. Call it again if the objective changes.\n\
-         - Before acting, call `read_unread_messages` and process every unread Issue message.\n\
-         - When Build says new reviewer messages are available, call `read_unread_messages`.\n\
+         {mailbox}\n\
          - If a reviewer message reads as either a question or a directive, post a one-line clarifying reply via `post_thread_message` instead of silently changing code.\n\
          - You may implement an unambiguous directive without replying; the next revision is its acknowledgment.\n\
          - Call `post_thread_message` only for a question, necessary pushback or clarification, or an explicit request for a response.\n\
          - Do not post acknowledgments or diff recaps.\n\
          - When the reply you need is a choice you can enumerate, send `options` with the message: each is a chip the reviewer presses, and what comes back is an ordinary reviewer message. Write each option's `message` as the full instruction it stands for, not a repeat of its label — that text is what a later session sees. Anything said afterwards closes the offer.\n\
          - A message may carry files (`attachments`, each with a `path`). Open every one before acting on that message: the reviewer attached it because the words alone do not carry what they mean.\n",
-    );
+    ));
     out
+}
+
+/// A cold prompt carrying one durable reviewer operation.
+///
+/// Operation delivery is fenced: acknowledging this turn must never turn into
+/// an unrestricted mailbox read that can consume a different operation. Keep
+/// the ordinary cold-session protocol, but state its initial read in the exact
+/// operation-scoped form the receipt requires.
+pub(crate) fn operation_conversation_prompt(prompt: &str, operation_id: &str) -> String {
+    conversation_prompt_with_mailbox(
+        prompt,
+        &format!(
+            "- Before acting, call `read_unread_messages` with `operation_id` set to `{operation_id}` and process exactly that operation's accepted messages. Do not consume another operation's messages."
+        ),
+    )
 }
 
 /// Close a cold prompt with the durable conversation: the catch-up packet the

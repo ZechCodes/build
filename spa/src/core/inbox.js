@@ -64,6 +64,9 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     dismissed: !!activity.dismissed,
     working: !!activity.working,
     canFinish: false,
+    // Only the bridge can establish that every Git directory is clean. A
+    // missing value is unknown and must never expose the one-tap archive.
+    clean: workspace.status === "ready" && workspace.work_summary?.clean === true,
     facts: workspaceFacts(workspace.work_summary),
     route: workspaceRoute(workspace),
     anchorMs: ms(firstText(workspace.created_at, workspace.updated_at)),
@@ -75,7 +78,7 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
   const projectNames = new Map(projects.map((project) => [project.id || project.project_id, project.name]));
   const conversations = new Map(items.filter((item) => item.kind === "branch" && entityIdOf(item))
     .map((item) => [JSON.stringify([item.project_id, entityIdOf(item)]), item]));
-  return workspaces.map((workspace) => {
+  return workspaces.filter((workspace) => workspace.status !== "finished").map((workspace) => {
     const owner = workspace.entity_id || workspace.run_id || workspace.id;
     const conversation = conversations.get(JSON.stringify([workspace.project_id, owner])) || workspaceRun(workspace, items);
     return toWorkspaceEntry(workspace, projectNames, conversation);
@@ -553,6 +556,14 @@ function menuHtml(entry, open) {
     ${menu}`;
 }
 
+/** A clean durable workspace can be put away directly from the row. Finishing
+ * preserves its checkout and stops its agents, so it does not use the branch
+ * deletion menu or confirmation. */
+function workspaceDoneHtml(entry, pending) {
+  if (entry.kind !== "workspace" || !entry.clean) return "";
+  return `<button class="btn mini inbox-workspace-done" type="button" data-workspace-done="${esc(entry.key)}" aria-label="Archive workspace ${esc(entry.name)}"${pending ? " disabled" : ""}>${pending ? "Done…" : "Done"}</button>`;
+}
+
 /** Everything the two lines leave out, on the row itself: what the work is for,
  *  which project it lives in, and why it is asking for you. */
 function rowTooltip(entry) {
@@ -589,9 +600,9 @@ export function inboxRowHtml(entry, ui = {}) {
     <div class="inbox-body">
       <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${unread}</div>
       <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
-      ${entry.kind === "workspace" ? "" : '<span class="warn" data-done-error hidden></span>'}
+      <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+    <div class="inbox-actions">${workspaceDoneHtml(entry, ui.finishingWorkspaces?.has(entry.key))}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
 }
 

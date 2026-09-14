@@ -100,6 +100,10 @@ impl DeliveryQueue {
                 .any(|turn| turn.says_something() && turn.tab_key() == *key)
     }
 
+    pub(in crate::app) fn has_in_flight_at_root(&self, root: &std::path::Path) -> bool {
+        self.agents_in_flight.keys().any(|key| key.root == root)
+    }
+
     pub(in crate::app) fn retain_queued(
         &mut self,
         mut keep: impl FnMut(&PendingAgentTurn) -> bool,
@@ -140,8 +144,13 @@ impl DeliveryQueue {
         let exact_cold = payload.delivery_prompt(&receipt.operation_id, true);
         let exact_warm = payload.delivery_prompt(&receipt.operation_id, false);
         if let Some(say) = turn.say.as_mut() {
-            say.cold.push_str("\n\n");
-            say.cold.push_str(&exact_cold);
+            // The queued lifecycle turn's warm half is its protocol-free work
+            // instruction. Rebuild the cold half from that source so this
+            // operation gets exactly one protocol block, with its mailbox read
+            // fenced to the receipt being attached.
+            let cold = format!("{}\n\n{exact_cold}", say.warm);
+            say.cold =
+                crate::orchestrator::operation_conversation_prompt(&cold, &receipt.operation_id);
             say.warm = exact_warm;
         }
         turn.wants_catch_up = false;

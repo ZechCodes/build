@@ -11,8 +11,8 @@ use crate::harness::HarnessError;
 use crate::mcp::{DonePhase, DoneStatus};
 use crate::models::ModelChoice;
 use crate::orchestrator::{
-    conversation_prompt, mcp_config_path, triage_is_due, ActivePlan, ActiveRun, Agent, AgentTurn,
-    ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
+    conversation_prompt, mcp_config_path, operation_conversation_prompt, triage_is_due, ActivePlan,
+    ActiveRun, Agent, AgentTurn, ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
 };
 use crate::plan::{StageDocState, StageManifestEntry};
 use crate::pty::HarnessSpec;
@@ -675,6 +675,24 @@ fn conversation_prompt_tells_the_agent_to_set_the_topic_first() {
     assert!(
         prompt.contains("2-4 words"),
         "the shape of a topic is stated where the tool is named: {prompt}"
+    );
+}
+
+#[test]
+fn operation_cold_prompt_starts_the_conversation_without_an_unbounded_read() {
+    let prompt = operation_conversation_prompt("exact operation packet", "operation-7");
+    assert!(prompt.contains("`set_topic`"), "{prompt}");
+    assert!(
+        prompt.contains("`operation_id` set to `operation-7`"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("process every unread Issue message"),
+        "an operation-fenced turn must not consume another operation: {prompt}"
+    );
+    assert!(
+        !prompt.contains("When Build says new reviewer messages are available"),
+        "the generic mailbox nudge would weaken the operation fence: {prompt}"
     );
 }
 #[test]

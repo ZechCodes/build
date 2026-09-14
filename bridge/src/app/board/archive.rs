@@ -148,6 +148,35 @@ impl AppState {
             items.push(row);
         }
 
+        for workspace in self
+            .workspaces
+            .list(None)
+            .into_iter()
+            .filter(|workspace| workspace.status == crate::workspace::WorkspaceStatus::Finished)
+        {
+            let project = self.projects.get(&workspace.project_id);
+            items.push(json!({
+                "kind": "workspace",
+                "workspace_id": workspace.id,
+                "project_id": workspace.project_id,
+                "project": project.map(|project| project.name.clone()),
+                "title": workspace.name,
+                "branch": Value::Null,
+                "state": "finished",
+                "action": "archive",
+                "finished_at": workspace.archived_at,
+                "run_id": Value::Null,
+                "issue_id": Value::Null,
+                "stages": Value::Null,
+                "worktree_id": Value::Null,
+                "worktree_path": workspace.root.display().to_string(),
+                "head_sha": Value::Null,
+                "upstream": Value::Null,
+                "unpushed": Value::Null,
+                "dirty_files": Value::Null,
+            }));
+        }
+
         // Newest first; an item whose stamp was never written sorts last rather
         // than jumping the queue.
         items.sort_by(|left, right| {
@@ -173,6 +202,7 @@ impl AppState {
             "issue_id": Value::Null,
             "stages": Value::Null,
             "worktree_id": Value::Null,
+            "workspace_id": Value::Null,
             "worktree_path": Value::Null,
             "head_sha": Value::Null,
             "upstream": Value::Null,

@@ -8,8 +8,8 @@ pub use plans::{ActivePlan, PlanWorkspace};
 pub use reporting::{triage_is_due, AgentTurn, OrchestratorError, ReportConsumed, ReportOutcome};
 pub use runs::{ActiveRun, ImplementableIssue, PreparedImplementation, RunSource};
 pub(crate) use workspace::{
-    append_durable_conversation, conversation_prompt, AgentLaunch, PreparedAgentLaunch,
-    CHECKOUT_REAP_WAIT, HARNESS_READY_GRACE, PROMPT_WRITE_EXIT_GRACE,
+    append_durable_conversation, conversation_prompt, operation_conversation_prompt, AgentLaunch,
+    PreparedAgentLaunch, CHECKOUT_REAP_WAIT, HARNESS_READY_GRACE, PROMPT_WRITE_EXIT_GRACE,
 };
 pub use workspace::{
     gate_plan_message, gate_plan_stage_notes, mcp_config_path, AdoptableCheckout, AdoptionScope,

@@ -558,6 +558,10 @@ pub struct WorkSummaryView {
     pub pushes: u64,
     pub additions: u64,
     pub deletions: u64,
+    /// True only after the complete Git status and unpublished-commit checks
+    /// succeed for every repository in the workspace.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clean: bool,
 }
 
 /// The line census an archived checkout was carrying when it went.
@@ -596,7 +600,7 @@ pub struct ArchiveListResult {
 /// finished thing in: the keys another kind fills are `null` here.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ArchivedItem {
-    /// `issue` or `branch`.
+    /// `issue`, `branch`, or `workspace`.
     pub kind: String,
     pub project_id: Option<String>,
     pub project: Option<String>,
@@ -609,6 +613,8 @@ pub struct ArchivedItem {
     pub issue_id: Option<String>,
     pub stages: Option<u64>,
     pub worktree_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub worktree_path: Option<String>,
     pub head_sha: Option<String>,
     pub upstream: Option<String>,

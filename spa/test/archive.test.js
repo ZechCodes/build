@@ -52,6 +52,18 @@ const issue = (over = {}) => ({
   ...over,
 });
 
+const workspace = (over = {}) => ({
+  kind: "workspace",
+  workspace_id: "workspace-1",
+  project_id: "p1",
+  project: "relaydb",
+  title: "Clean checkout",
+  state: "finished",
+  finished_at: "2026-08-13T18:00:00Z",
+  worktree_path: "/work/clean",
+  ...over,
+});
+
 describe("archiveRows", () => {
   it("reads both kinds off the wire, newest first", () => {
     const rows = archiveRows({ items: [branch(), issue()] });
@@ -60,6 +72,11 @@ describe("archiveRows", () => {
     expect(rows[0].kindLabel).toBe("Issue");
     expect(rows[1].kindLabel).toBe("Branch");
     expect(rows[1].project).toBe("relaydb");
+  });
+
+  it("reads finished workspaces as workspace archive rows", () => {
+    const [row] = archiveRows({ items: [workspace()] });
+    expect(row).toMatchObject({ key: "workspace-1", workspaceId: "workspace-1", kind: "workspace", kindLabel: "Workspace", stateLabel: "Finished" });
   });
 
   it("says how the work ended in words, and when", () => {

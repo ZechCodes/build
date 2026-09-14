@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn first_operation_for_a_user_added_agent_carries_the_cold_start_protocol() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_issue_id, run_id) = planned_run_in_review(&mut state, "new agent operation");
+    let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap();
+
+    let posted = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": run_id,
+            "agent_id": agent_id,
+            "operation_id": "operation-first",
+            "body": "inspect this"
+        }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+
+    let queued = state
+        .delivery_queue
+        .queued_last()
+        .expect("operation queued");
+    assert_eq!(queued.agent_id, agent_id);
+    let said = queued.said();
+    assert!(said.cold.contains("`set_topic`"), "{}", said.cold);
+    assert!(
+        said.cold
+            .contains("`operation_id` set to `operation-first`"),
+        "{}",
+        said.cold
+    );
+    assert!(!said.cold.contains("process every unread Issue message"));
+    assert!(!said.warm.contains("Build conversation protocol:"));
+}
+
+#[test]
 fn thread_post_persists_and_delivers_each_messages_viewing_context() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());

@@ -17,7 +17,7 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => creat
 
 const projects = [{ id: "project-1", name: "Payments" }, { id: "project-2", name: "Website" }];
 const workspace = (overrides = {}) => ({
-  id: "workspace-1", project_id: "project-1", name: "Checkout", root: "/work/checkout", status: "active",
+  id: "workspace-1", project_id: "project-1", name: "Checkout", root: "/work/checkout", status: "ready",
   work_summary: { pushes: 2, additions: 8, deletions: 3 },
   directories: [{ id: "api", source_id: "source-api", is_git: true }], ...overrides,
 });
@@ -50,10 +50,56 @@ describe("workspace inbox", () => {
     expect(rows()[1].textContent).toContain("2 pushes · +8 −3");
   });
 
+  it("keeps an archived workspace out when a refreshed feed still carries it", () => {
+    feed([workspace(), workspace({ id: "workspace-2", status: "finished" })]);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:workspace-1"]);
+    feed([workspace({ status: "finished" }), workspace({ id: "workspace-2", status: "finished" })]);
+    expect(rows()).toHaveLength(0);
+  });
+
   it("opens the canonical workspace route", () => {
     feed([workspace()]);
     rows()[0].click();
     expect(navigate).toHaveBeenCalledWith({ name: "workspace", projectId: "project-1", workspaceId: "workspace-1", sourceId: "source-api", tab: "changes" });
+  });
+
+  it("offers Done only for a workspace the bridge reports clean", () => {
+    feed([
+      workspace({ work_summary: { pushes: 0, additions: 0, deletions: 0, clean: true } }),
+      workspace({ id: "workspace-2", work_summary: { pushes: 0, additions: 0, deletions: 0, clean: false } }),
+      workspace({ id: "workspace-3", work_summary: { pushes: 0, additions: 0, deletions: 0 } }),
+      workspace({ id: "workspace-4", status: "provisioning", work_summary: { pushes: 0, additions: 0, deletions: 0, clean: true } }),
+    ]);
+    expect(rows().map((row) => Boolean(row.querySelector("[data-workspace-done]")))).toEqual([true, false, false, false]);
+    expect(rows()[0].querySelector("[data-workspace-done]").getAttribute("aria-label")).toBe("Archive workspace Checkout");
+  });
+
+  it("finishes a clean workspace without opening it and disables repeat taps while pending", async () => {
+    let resolveFinish;
+    App.call = vi.fn((method) => method === "workspace.finish" ? new Promise((resolve) => { resolveFinish = resolve; }) : Promise.resolve({}));
+    feed([workspace({ work_summary: { pushes: 0, additions: 0, deletions: 0, clean: true } })]);
+    const button = rows()[0].querySelector("[data-workspace-done]");
+    button.click();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(App.call).toHaveBeenCalledWith("workspace.finish", { workspace_id: "workspace-1", require_clean: true });
+    expect(rows()[0].querySelector("[data-workspace-done]").disabled).toBe(true);
+    expect(rows()[0].textContent).toContain("Done…");
+    rows()[0].querySelector("[data-workspace-done]").click();
+    expect(App.call).toHaveBeenCalledTimes(1);
+    resolveFinish({});
+    await vi.waitFor(() => expect(rows()).toHaveLength(0));
+  });
+
+  it("restores a workspace and shows the bridge error when finishing fails", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "workspace.finish") throw new Error("Workspace has local changes");
+      return {};
+    });
+    feed([workspace({ work_summary: { pushes: 0, additions: 0, deletions: 0, clean: true } })]);
+    rows()[0].querySelector("[data-workspace-done]").click();
+    await vi.waitFor(() => expect(rows()[0].querySelector("[data-done-error]").hidden).toBe(false));
+    expect(rows()[0].querySelector("[data-done-error]").textContent).toBe("Workspace has local changes");
+    expect(rows()[0].querySelector("[data-workspace-done]").disabled).toBe(false);
   });
 
   it("marks the workspace named by the route", () => {

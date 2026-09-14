@@ -60,6 +60,8 @@ pub struct Workspace {
     pub name: String,
     pub root: PathBuf,
     pub status: WorkspaceStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
     pub directories: Vec<WorkspaceDirectory>,
     #[serde(default)]
     pub isolation: Isolation,
@@ -184,6 +186,7 @@ impl WorkspaceRegistry {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Workspace>(&bytes).ok());
             workspace.status = if let Some(proof) = proof {
+                workspace.archived_at = proof.archived_at.clone();
                 for directory in &mut workspace.directories {
                     directory.finished_head = proof
                         .directories
@@ -193,6 +196,7 @@ impl WorkspaceRegistry {
                 }
                 WorkspaceStatus::Finished
             } else {
+                workspace.archived_at = None;
                 WorkspaceStatus::Ready
             };
         }
@@ -303,6 +307,7 @@ impl WorkspaceRegistry {
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         if workspace.status == WorkspaceStatus::Finished {
             workspace.status = WorkspaceStatus::Ready;
+            workspace.archived_at = None;
             if workspace.managed {
                 persist(workspace)?;
             } else {
@@ -446,6 +451,7 @@ impl WorkspaceRegistry {
             name: name.to_string(),
             root,
             status: WorkspaceStatus::Provisioning,
+            archived_at: None,
             directories,
             isolation,
             managed: true,
@@ -534,6 +540,41 @@ impl WorkspaceRegistry {
         Ok(result)
     }
 
+    /// Archive a workspace whose repositories have no local work. This is the
+    /// inbox's local-only Done: it records the current heads and leaves every
+    /// checkout and remote untouched.
+    pub fn archive_clean_existing(
+        &self,
+        workspace: &mut Workspace,
+    ) -> Result<WorkspaceFinish, String> {
+        ensure_workspace_clean(workspace)?;
+        let repositories = workspace
+            .directories
+            .iter_mut()
+            .filter(|directory| directory.is_git)
+            .map(|directory| {
+                let head = git_output(&directory.path, &["rev-parse", "HEAD"])?;
+                directory.finished_head = Some(head);
+                Ok(RepositoryFinish {
+                    directory_id: directory.id.clone(),
+                    pushed: true,
+                    reason: None,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        workspace.status = WorkspaceStatus::Finished;
+        workspace.archived_at = Some(crate::store::now_rfc3339());
+        if workspace.managed {
+            persist(workspace)?;
+        } else {
+            self.persist_legacy_finished(workspace)?;
+        }
+        Ok(WorkspaceFinish {
+            complete: true,
+            repositories,
+        })
+    }
+
     pub fn retry_sources(workspace: &Workspace) -> Vec<WorkspaceSource> {
         workspace
             .directories
@@ -587,6 +628,7 @@ impl WorkspaceRegistry {
             name: name.clone(),
             root: path.clone(),
             status,
+            archived_at: proof.as_ref().and_then(|proof| proof.archived_at.clone()),
             directories: vec![WorkspaceDirectory {
                 id: format!("{id}:root"),
                 source_id,
@@ -670,11 +712,48 @@ fn finish_workspace(workspace: &mut Workspace) -> WorkspaceFinish {
         && repositories.iter().all(|repository| repository.pushed);
     if complete {
         workspace.status = WorkspaceStatus::Finished;
+        workspace.archived_at = Some(crate::store::now_rfc3339());
     }
     WorkspaceFinish {
         complete,
         repositories,
     }
+}
+
+/// A definitive local-only predicate for inbox Done. A non-Git directory is
+/// not called clean because Build has no durable baseline from which to prove
+/// that its ordinary files are unchanged.
+pub fn ensure_workspace_clean(workspace: &Workspace) -> Result<(), String> {
+    if workspace.status != WorkspaceStatus::Ready {
+        return Err("workspace.finish require_clean requires a ready workspace".to_string());
+    }
+    if workspace.directories.is_empty() {
+        return Err("workspace.finish cannot verify an empty workspace is clean".to_string());
+    }
+    for directory in &workspace.directories {
+        if directory.status != DirectoryStatus::Ready || !directory.path.is_dir() {
+            return Err("workspace.finish could not verify workspace cleanliness".to_string());
+        }
+        if !directory.is_git {
+            return Err(format!(
+                "workspace.finish cannot verify non-Git directory {} is clean",
+                directory.id
+            ));
+        }
+        let summary = crate::gitgui::work_summary(&directory.path).map_err(|error| {
+            format!(
+                "workspace.finish could not verify {}: {error}",
+                directory.id
+            )
+        })?;
+        if !summary.clean {
+            return Err(format!(
+                "workspace.finish require_clean refused dirty workspace directory {}",
+                directory.id
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_loaded_workspace(

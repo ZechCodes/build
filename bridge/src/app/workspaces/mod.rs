@@ -76,13 +76,29 @@ impl DeferredGitWork for WorkspaceCreateWork {
 struct WorkspaceFinishWork {
     registry_root: PathBuf,
     workspace: Workspace,
+    clean_only: bool,
+    retirements: Vec<crate::reaper::Retirement>,
 }
 
 impl DeferredGitWork for WorkspaceFinishWork {
     fn run(&self, _params: &Value) -> Result<Value, String> {
         let mut workspace = self.workspace.clone();
         let registry = WorkspaceRegistry::load(&self.registry_root)?;
-        let result = registry.finish_existing(&mut workspace)?;
+        let result = if self.clean_only {
+            if self
+                .retirements
+                .iter()
+                .any(|retirement| !retirement.wait(crate::orchestrator::CHECKOUT_REAP_WAIT))
+            {
+                return Err(format!(
+                    "workspace.finish {}: an agent did not stop before the archive deadline",
+                    workspace.id
+                ));
+            }
+            registry.archive_clean_existing(&mut workspace)?
+        } else {
+            registry.finish_existing(&mut workspace)?
+        };
         serde_json::to_value(result).map_err(|error| error.to_string())
     }
 
@@ -296,6 +312,44 @@ impl AppState {
                     .to_string(),
             );
         }
+        if params
+            .get("require_clean")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let workspace = self
+                .workspaces
+                .get(&workspace_id)
+                .expect("checked above")
+                .clone();
+            crate::workspace::ensure_workspace_clean(&workspace)?;
+            let root = Self::canonical_root(&workspace.root);
+            if self.delivery_queue.has_in_flight_at_root(&root) {
+                return Err(
+                    "workspace.finish require_clean refused while an agent turn is in flight"
+                        .to_string(),
+                );
+            }
+
+            // Once the first check says Done is eligible, close every writer
+            // and discard every queued turn at this exact root. Recheck after
+            // retirement so a final write cannot slip between eligibility and
+            // the durable archive record.
+            let retirements = self.retire_workspace_agents(&workspace.root);
+            self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
+                call: Box::new(WorkspaceFinishWork {
+                    registry_root: self.workspaces.root().to_path_buf(),
+                    workspace,
+                    clean_only: true,
+                    retirements,
+                }),
+                params: params.clone(),
+                invalidates: true,
+                #[cfg(test)]
+                gate: None,
+            })));
+            return Ok(json!({ "workspace_id": workspace_id, "pending": true }));
+        }
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(WorkspaceFinishWork {
                 registry_root: self.workspaces.root().to_path_buf(),
@@ -304,6 +358,8 @@ impl AppState {
                     .get(&workspace_id)
                     .expect("checked above")
                     .clone(),
+                clean_only: false,
+                retirements: Vec::new(),
             }),
             params: params.clone(),
             invalidates: true,
@@ -596,13 +652,14 @@ fn canonical_or_existing(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn workspace_json(workspace: &Workspace) -> Value {
-    json!({
+    let mut value = json!({
         "id": workspace.id,
         "workspace_id": workspace.id,
         "project_id": workspace.project_id,
         "name": workspace.name,
         "root": workspace.root.display().to_string(),
         "status": workspace.status,
+        "finished_at": workspace.archived_at,
         "directories": workspace.directories.iter().map(|directory| json!({
             "id": directory.id,
             "source_id": directory.source_id,
@@ -614,5 +671,12 @@ fn workspace_json(workspace: &Workspace) -> Value {
             "status": directory.status,
             "error": directory.error,
         })).collect::<Vec<_>>()
-    })
+    });
+    if workspace.archived_at.is_none() {
+        value
+            .as_object_mut()
+            .expect("workspace_json builds an object")
+            .remove("finished_at");
+    }
+    value
 }

@@ -917,6 +917,110 @@ fn incomplete_finish_reports_one_source_and_can_be_retried() {
 }
 
 #[test]
+fn clean_only_finish_rejects_hidden_dirty_work_then_archives_and_stops_queued_agents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "repo");
+    let mut state = app(tmp.path());
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"].as_str().unwrap();
+    let workspace = create_workspace(&mut state, project_id, "inbox-done");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    let run_id = ensured["result"]["run_id"].as_str().unwrap();
+    let added = state.handle(req("agent.add", json!({"entity_id": run_id})));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap();
+    let posted = state.handle(req(
+        "thread.post",
+        json!({"entity_id": run_id, "agent_id": agent_id, "body": "keep working"}),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    assert_eq!(state.delivery_queue.queued_len(), 1);
+    let stopped = SessionLog::default();
+    insert_agent_tab(
+        &mut state,
+        &root,
+        run_id,
+        agent_id,
+        DictatedSession::reporting(AgentStatus::Working).recording_into(&stopped),
+    );
+
+    let (neighbor_repo, _) = repo_with_origin(tmp.path(), "neighbor-repo");
+    let neighbor_project = state.handle(req("project.add", json!({"path": neighbor_repo})));
+    let neighbor_project_id = neighbor_project["result"]["project_id"].as_str().unwrap();
+    let neighbor = create_workspace(&mut state, neighbor_project_id, "neighbor");
+    let neighbor_id = neighbor["workspace_id"].as_str().unwrap();
+    let neighbor_root = PathBuf::from(neighbor["root"].as_str().unwrap());
+    let neighbor_owner = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": neighbor_id}),
+    ));
+    let neighbor_run = neighbor_owner["result"]["run_id"].as_str().unwrap();
+    let neighbor_agent = state.handle(req("agent.add", json!({"entity_id": neighbor_run})));
+    let neighbor_agent = neighbor_agent["result"]["agent"]["id"].as_str().unwrap();
+    let untouched = SessionLog::default();
+    let neighbor_key = insert_agent_tab(
+        &mut state,
+        &neighbor_root,
+        neighbor_run,
+        neighbor_agent,
+        DictatedSession::reporting(AgentStatus::Working).recording_into(&untouched),
+    );
+
+    // This is +0/-0 and was the false-positive behind offering Done from the
+    // summary counts alone. Refusal happens before the agent queue is touched.
+    let checkout = PathBuf::from(workspace["directories"][0]["path"].as_str().unwrap());
+    std::fs::write(checkout.join("empty.bin"), []).unwrap();
+    let refused = state.handle(req(
+        "workspace.finish",
+        json!({"workspace_id": workspace_id, "require_clean": true}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(refused["error"].as_str().unwrap().contains("dirty"));
+    assert_eq!(state.delivery_queue.queued_len(), 1);
+    assert_eq!(
+        state.workspaces.get(workspace_id).unwrap().status,
+        crate::workspace::WorkspaceStatus::Ready
+    );
+
+    std::fs::remove_file(checkout.join("empty.bin")).unwrap();
+    let finished = state.handle(req(
+        "workspace.finish",
+        json!({"workspace_id": workspace_id, "require_clean": true}),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    assert_eq!(finished["result"]["complete"], true, "{finished:?}");
+    assert!(root.is_dir(), "archive preserves the workspace checkout");
+    assert!(state.delivery_queue.queued_is_empty());
+    assert!(
+        stopped.ended(),
+        "Done waits until its live agent has stopped"
+    );
+    assert!(!untouched.ended(), "Done is scoped to one workspace root");
+    assert!(state.session_registry.contains(&neighbor_key));
+    assert_eq!(
+        state.workspaces.get(workspace_id).unwrap().status,
+        crate::workspace::WorkspaceStatus::Finished
+    );
+
+    let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(detail["result"]["entity_id"], run_id);
+    assert_eq!(detail["result"]["agents"].as_array().unwrap().len(), 1);
+    let archived = state.handle(req("archived.list", json!({})));
+    let archived_workspace = archived["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["workspace_id"] == workspace_id)
+        .unwrap_or_else(|| panic!("finished workspace remains discoverable: {archived:?}"));
+    assert_eq!(archived_workspace["kind"], "workspace");
+    assert!(archived_workspace["finished_at"].as_str().is_some());
+}
+
+#[test]
 fn persisted_workspaces_are_discovered_after_app_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");

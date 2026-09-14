@@ -708,6 +708,31 @@ impl AppState {
             .collect()
     }
 
+    /// Stop every live agent and discard every not-yet-delivered turn scoped
+    /// to one workspace root. Other workspaces may use the same owner shape,
+    /// so the canonical tab root is the boundary rather than an id prefix.
+    #[track_caller]
+    pub(in crate::app) fn retire_workspace_agents(
+        &mut self,
+        root: &std::path::Path,
+    ) -> Vec<Retirement> {
+        let root = Self::canonical_root(root);
+        let ended: Vec<SessionInstance> = self
+            .session_registry
+            .tab_keys()
+            .into_iter()
+            .filter(|key| key.is_agent() && key.root == root)
+            .filter_map(|key| self.session_registry.session_instance(&key))
+            .collect();
+        self.delivery_queue
+            .retain_queued(|turn| turn.tab_key().root != root);
+        let retirements = self.retire_agent_tabs(&root);
+        for instance in ended {
+            self.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
+        }
+        retirements
+    }
+
     /// Remove one tab, tell its clients `reason`, and retire its process.
     ///
     /// The kill and the reap leave for a thread of their own

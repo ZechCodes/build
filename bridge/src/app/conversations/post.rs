@@ -560,7 +560,10 @@ impl AppState {
             .unwrap_or_default();
         let operation_prompt = receipt.and_then(|receipt| {
             delivery.payload.as_ref().map(|payload| TurnText {
-                cold: payload.delivery_prompt(&receipt.operation_id, true),
+                cold: crate::orchestrator::operation_conversation_prompt(
+                    &payload.delivery_prompt(&receipt.operation_id, true),
+                    &receipt.operation_id,
+                ),
                 warm: payload.delivery_prompt(&receipt.operation_id, false),
             })
         });

@@ -122,6 +122,7 @@ describe("agentRowHtml", () => {
       "surface-agent-details",
     ]);
     expect(row.querySelector(".surface-row-label").textContent).toBe("Reader");
+    expect(row.querySelector(".surface-agent-summary > .surface-row-model").textContent).toBe("haiku");
     expect(factValue(row, "Model")).toBe("haiku");
     expect(factValue(row, "Current activity")).toBe("Read bridge/src/app.rs");
     expect(factValue(row, "Tokens")).toBe("1200");
@@ -138,6 +139,25 @@ describe("agentRowHtml", () => {
       "Tool calls",
     ]);
     expect(factValue(row, "State")).toBe("Running");
+  });
+
+  it("places the reported model immediately before the ticker in the agent summary", () => {
+    const row = parseHtml(
+      agentRowHtml(agentRows([{ ...readerEntry, started_at: STARTED_AT }], { nowMs: STARTED_AT + 65000 })[0]),
+    ).firstElementChild;
+    const summary = row.querySelector(".surface-agent-summary");
+
+    expect([...summary.children].slice(1).map((child) => child.className)).toEqual([
+      "surface-clip surface-row-label",
+      "surface-clip surface-row-model surface-row-head-model",
+      "surface-row-clock",
+    ]);
+    expect(summary.querySelector(".surface-row-head-model").title).toBe("haiku");
+  });
+
+  it("does not reserve summary space when an agent reports no model", () => {
+    const row = parseHtml(agentRowHtml(agentRows([{ id: "a1", label: "Reader", state: "running" }])[0]));
+    expect(row.querySelector(".surface-agent-summary > .surface-row-model")).toBe(null);
   });
 
   it("leaves the details list empty when every optional fact is unavailable or blank", () => {

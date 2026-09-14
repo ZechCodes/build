@@ -207,6 +207,7 @@ fn workspace_work_summary(repositories: &[std::path::PathBuf]) -> Value {
         "pushes": summary.pushes,
         "additions": summary.additions,
         "deletions": summary.deletions,
+        "clean": summary.clean,
     })
 }
 

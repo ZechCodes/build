@@ -184,4 +184,21 @@ fn aggregate_work_summary_combines_two_repositories_and_dirty_work() {
     assert_eq!(summary.pushes, 2);
     assert_eq!(summary.additions, 4);
     assert_eq!(summary.deletions, 0);
+    assert!(!summary.clean);
+}
+
+#[test]
+fn zero_line_untracked_work_is_not_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = clone_of_an_origin_carrying_feature_x(dir.path());
+    write(&repo, "empty.bin", "");
+
+    let summary = work_summary(&repo).unwrap();
+
+    assert_eq!(summary.additions, 0);
+    assert_eq!(summary.deletions, 0);
+    assert!(
+        !summary.clean,
+        "status, not line counts, decides cleanliness"
+    );
 }

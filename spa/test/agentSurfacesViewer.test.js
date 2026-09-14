@@ -320,6 +320,32 @@ describe("the clock a running row ticks", () => {
     shells.dispose();
   });
 
+  it("moves a restarted agent from Completed to Running with its new timer", () => {
+    const viewer = mount(AGENT_ENTRY_KIND);
+    viewer.set(
+      surfacesSnapshot({
+        subagents: [{ id: "s2", label: "fixture writer", state: "done", duration_ms: 125_000 }],
+      }),
+    );
+    expect(document.querySelector('.surface-completed-rows > [data-key="s2"] .surface-row-clock').textContent).toBe(
+      "2:05",
+    );
+
+    const restartedAt = LAUNCHED_AT + 60_000;
+    viewer.set(
+      surfacesSnapshot({
+        subagents: [{ id: "s2", label: "fixture writer", state: "running", started_at: restartedAt }],
+      }),
+    );
+
+    expect(document.querySelector('.surface-completed-rows > [data-key="s2"]')).toBe(null);
+    const restarted = document.querySelector('.surface-running > [data-key="s2"]');
+    expect(restarted).not.toBe(null);
+    expect(restarted.querySelector(".surface-row-clock").dataset.runningSince).toBe(String(restartedAt));
+    expect(restarted.querySelector(".surface-row-clock").textContent).toBe("0:05");
+    viewer.dispose();
+  });
+
   it("advances on the next tick without replacing the row it is in", () => {
     const viewer = mount(SHELL_ENTRY_KIND);
     viewer.set(ticking());

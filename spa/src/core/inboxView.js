@@ -78,6 +78,7 @@ let blocksPainted = new Map();
 const capturesBeingRerouted = new Set();
 const errors = new Map(); // row key → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
+const workspacesBeingFinished = new Set();
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
@@ -165,7 +166,7 @@ function draw() {
   const list = $("#inbox-list");
   if (!list) return;
   const shown = workspaceEntries(workspaces, projects, items);
-  list.onclick = onListClick;
+  list.onclick = onWorkspaceOrListClick;
   list.onkeydown = onListKeydown;
   // A different face is a different list: the one is emptied for the other,
   // and every paint after that reconciles in place.
@@ -208,6 +209,7 @@ function rowUi(showProject) {
     // The block holding the branch or issue the route stands on. A capture's
     // route names no project; the row it stands on does.
     activeProjectId: App.route.projectId || (entries.find((entry) => entry.key === activeEntryKey(App.route, entries)) || {}).projectId || null,
+    finishingWorkspaces: workspacesBeingFinished,
   };
 }
 
@@ -348,6 +350,10 @@ function closeMenu() {
 /// to — Done appears the moment the work can be finished — so nothing is wired
 /// to a row or to a button. The list itself listens, and reads off the DOM which
 /// row was spoken for.
+function onWorkspaceOrListClick(event) {
+  if (!workspaceClicked(event.target)) onListClick(event);
+}
+
 function onListClick(event) {
   const { target } = event;
   const done = target.closest("[data-done]");
@@ -384,6 +390,13 @@ function onListClick(event) {
   // The row's own controls answer for themselves; everything else on it opens.
   const row = target.closest(".inbox-entry");
   if (row && !target.closest(".inbox-actions")) openEntry(entryOf(row.dataset.key));
+}
+
+function workspaceClicked(target) {
+  const done = target.closest("[data-workspace-done]");
+  if (!done) return false;
+  finishWorkspace(entryOf(done.dataset.workspaceDone));
+  return true;
 }
 
 /** The row's menu, one step behind the row: it opens, and the next press
@@ -651,6 +664,25 @@ async function finishEntry(entry) {
   await refreshFeed();
 }
 
+/** Archive a clean workspace in one tap. The bridge rechecks cleanliness at
+ * execution time, stops every agent it owns, and preserves the checkout. */
+async function finishWorkspace(entry) {
+  if (!entry || entry.kind !== "workspace" || !entry.clean || workspacesBeingFinished.has(entry.key)) return;
+  workspacesBeingFinished.add(entry.key);
+  errors.delete(entry.key);
+  draw();
+  try {
+    await App.call("workspace.finish", { workspace_id: entry.workspaceId, require_clean: true });
+    workspaces = workspaces.filter((workspace) => workspace.id !== entry.workspaceId);
+  } catch (error) {
+    errors.set(entry.key, messageOf(error));
+  } finally {
+    workspacesBeingFinished.delete(entry.key);
+    draw();
+  }
+  await refreshFeed();
+}
+
 function showRowError(key, error) {
   errors.set(key, messageOf(error));
   draw();
@@ -673,7 +705,7 @@ export function mountInboxList() {
     pendingLifecycle = feed.pending || [];
     projects = feed.projects || [];
     workspaces = feed.workspaces || [];
-    const live = new Set(items.map(entryKeyOf));
+    const live = new Set([...items.map(entryKeyOf), ...workspaces.map((workspace) => `workspace:${workspace.id}`)]);
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
     reconcileOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
     drawFromFeed();

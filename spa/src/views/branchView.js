@@ -150,7 +150,7 @@ function mountPlainChanges(host, onInitialize) {
 
 export async function renderBranch() {
   const root = $("#root");
-  const { projectId, branch } = App.route;
+  const { deviceId, projectId, branch } = App.route;
   let tab = App.route.tab || "changes";
   // Consumed once: only the navigation the toolbar's create form just fired
   // means it, and a later revisit to this same branch must not keep stealing
@@ -399,7 +399,7 @@ export async function renderBranch() {
         viewingContext: App.viewingContext,
         // Moving within the tab: the URL keeps up without the surface being
         // rebuilt around the file it is already showing.
-        onFileOpen: (path) => markRoute({ name: "branch", projectId, branch, tab: "files", file: path }),
+        onFileOpen: (path) => markRoute({ name: "branch", deviceId, projectId, branch, tab: "files", file: path }),
       });
       App.routeLeaveGuard = pane.canLeave;
       ensureTabsPainted();

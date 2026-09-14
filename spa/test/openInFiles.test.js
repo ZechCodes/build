@@ -337,7 +337,9 @@ describe("the file the route names", () => {
   it("writes the file the reader picks into the URL, without a re-render", async () => {
     const asked = [];
     App.call = answering(asked);
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files" };
+    // A branch surface always names the machine the checkout is on; moving
+    // within the tab keeps naming it, or the link stops addressing anything.
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files" };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".ffile")).toBeTruthy());
@@ -345,6 +347,7 @@ describe("the file the route names", () => {
 
     document.querySelector(".ffile").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await vi.waitFor(() => expect(App.route.file).toBe("README.md"));
+    expect(App.route.deviceId).toBe("dev-1");
     expect(location.hash).toContain("path=README.md");
     expect(document.querySelector(".files")).toBe(built); // the same surface, still standing
   });

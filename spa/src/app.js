@@ -1,7 +1,7 @@
 // App shell: shared state, the hash router wiring, and render dispatch.
 
 import { $ } from "./dom.js";
-import { routeFromHash, hashFromRoute } from "./core/router.js";
+import { routeFromHash, hashFromRoute, withDeviceOrResolve } from "./core/router.js";
 import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
 import { renderIssue } from "./views/issueView.js";
@@ -172,7 +172,10 @@ function mayLeaveRoute() {
 function applyRoute(route) {
   App.viewingContext.clear();
   App.routeLeaveGuard = null;
-  App.route = route;
+  // The route as given is what the URL says; the route the app stands on is
+  // that route once it names a machine, or the resolve hop that finds one. A
+  // parked route has no hash of its own, so the link has to be written first.
+  App.route = withDeviceOrResolve(route);
   const hash = hashFromRoute(route);
   if (location.hash !== hash) {
     acceptedHash = hash;
@@ -208,7 +211,7 @@ export function go(route) {
  */
 export function markRoute(route) {
   App.viewingContext.clear();
-  App.route = route;
+  App.route = withDeviceOrResolve(route);
   const hash = hashFromRoute(route);
   if (location.hash === hash) return;
   history.replaceState(null, "", hash);

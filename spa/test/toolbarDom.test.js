@@ -139,7 +139,13 @@ describe("the two menus, one per half", () => {
     feed = { items: [], projects: [{ id: "p1", name: "notes", is_git: false, base_branch: "main" }] };
     await refreshFeed();
     openJump("project").querySelector('[data-project="p1"]').click();
-    expect(App.route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "files" });
+    // The menu still builds its route without a device on it, so the app parks
+    // it on the resolve hop and looks the project up — which lands on the same
+    // folder, and will land on the picked device's once the menu names one.
+    expect(App.route).toEqual({
+      name: "resolve", kind: "project", projectId: "p1",
+      route: { name: "branch", projectId: "p1", branch: "main", tab: "files" },
+    });
     feed = savedFeed;
     await refreshFeed();
   });

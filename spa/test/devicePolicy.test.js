@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { homeDeviceId, onlineStickyDeviceId } from "../src/core/devicePolicy.js";
+import { creationDeviceId, homeDeviceId, onlineStickyDeviceId } from "../src/core/devicePolicy.js";
 
 // The sticky device choice is only honored when that device is actually online.
 // Anything else must fall back to "any device" — pinning a resume to an offline
@@ -51,5 +51,28 @@ describe("homeDeviceId", () => {
   it("answers null when nothing is online", () => {
     expect(homeDeviceId([{ id: "dev-a", status: "offline" }], "dev-a")).toBeNull();
     expect(homeDeviceId([], "dev-a")).toBeNull();
+  });
+});
+
+// Where creation goes, said so a surface can name it: the machine that would
+// take the work right now, and — while nothing can take it — the machine the
+// user picked, so the composer can say whose return it is waiting for.
+describe("creationDeviceId", () => {
+  it("is the device home policy names while something is online", () => {
+    const devices = [
+      { id: "dev-a", status: "online" },
+      { id: "dev-b", status: "online" },
+    ];
+    expect(creationDeviceId(devices, "dev-b")).toBe("dev-b");
+    expect(creationDeviceId(devices, null)).toBe("dev-a");
+  });
+
+  it("keeps naming the picked device while nothing is online", () => {
+    const devices = [{ id: "dev-a", status: "offline" }];
+    expect(creationDeviceId(devices, "dev-a")).toBe("dev-a");
+  });
+
+  it("names nobody when the account has neither a pick nor an online device", () => {
+    expect(creationDeviceId([], null)).toBeNull();
   });
 });

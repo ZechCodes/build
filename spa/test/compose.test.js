@@ -8,6 +8,8 @@ import {
   ROUTED_LINGER_MS,
   branchOptions,
   captureRow,
+  composeOfflineNote,
+  composePlaceholder,
   composeShortcutFires,
   flushCaptureQueue,
   loadCaptureQueue,
@@ -270,5 +272,28 @@ describe("the branches a project already has", () => {
     ];
     expect(branchOptions(items, "p1")).toEqual(["build/login", "main"]);
     expect(branchOptions(items, "p3")).toEqual([]);
+  });
+});
+
+// The box is about one machine — the one creation goes to — so it says which,
+// both in the line it asks with and in what it promises about a capture it
+// cannot send yet. An account whose device this client cannot name yet keeps
+// the plain words.
+describe("what the box says about the machine it sends to", () => {
+  it("asks on the named device, and asks plainly when there is no name", () => {
+    expect(composePlaceholder("Laptop")).toBe("Capture on Laptop");
+    expect(composePlaceholder(null)).toBe("What do you want to get done?");
+    expect(composePlaceholder("")).toBe("What do you want to get done?");
+  });
+
+  it("names the device it is holding a capture for", () => {
+    expect(composeOfflineNote(0, "Laptop")).toBe("Laptop is away — this is kept here and sent when it is back.");
+    expect(composeOfflineNote(1, "Laptop")).toBe("1 capture is waiting for Laptop.");
+    expect(composeOfflineNote(3, "Laptop")).toBe("3 captures are waiting for Laptop.");
+  });
+
+  it("says your device when this client cannot name one", () => {
+    expect(composeOfflineNote(0, null)).toBe("Your device is away — this is kept here and sent when it is back.");
+    expect(composeOfflineNote(2, null)).toBe("2 captures are waiting for your device.");
   });
 });

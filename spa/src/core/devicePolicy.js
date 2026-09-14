@@ -27,3 +27,13 @@ export function homeDeviceId(devices, selectedDeviceId) {
   const known = devices || [];
   return onlineStickyDeviceId(known, selectedDeviceId) || known.find((d) => d.status === "online")?.id || null;
 }
+
+/**
+ * The machine creation goes to, as far as the account can say.
+ *
+ * Home while some device can be home, and otherwise the machine the user picked
+ * — which cannot be home with nothing online, but is still where the work is
+ * going the moment it is back. So a surface about creation can always name it.
+ */
+export const creationDeviceId = (devices, selectedDeviceId) =>
+  homeDeviceId(devices, selectedDeviceId) || selectedDeviceId || null;

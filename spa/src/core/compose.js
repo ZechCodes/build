@@ -256,12 +256,16 @@ export function manualRouteDestination(kind, created, projectId) {
   return issueId ? { name: "issue", projectId: project, id: issueId } : null;
 }
 
-/** What the box says about a capture it cannot send yet. The text is kept
- *  whatever happens, and saying so is the difference between a queue and a
- *  loss. */
-export function composeOfflineNote(queuedCount) {
-  if (!queuedCount) return "Your device is away — this is kept here and sent when it is back.";
-  return queuedCount === 1
-    ? "1 capture is waiting for your device."
-    : `${queuedCount} captures are waiting for your device.`;
+/** The line the open box asks with: the machine the capture is going to, when
+ *  this client can name it, and the plain question when it cannot. */
+export const composePlaceholder = (deviceName) =>
+  deviceName ? `Capture on ${deviceName}` : "What do you want to get done?";
+
+/** What the box says about a capture it cannot send yet: which machine it is
+ *  waiting for, and that the text is kept meanwhile — the difference between a
+ *  queue and a loss. A client that cannot name the machine says whose it is. */
+export function composeOfflineNote(queuedCount, deviceName) {
+  if (!queuedCount) return `${deviceName || "Your device"} is away — this is kept here and sent when it is back.`;
+  const waitingFor = deviceName || "your device";
+  return queuedCount === 1 ? `1 capture is waiting for ${waitingFor}.` : `${queuedCount} captures are waiting for ${waitingFor}.`;
 }

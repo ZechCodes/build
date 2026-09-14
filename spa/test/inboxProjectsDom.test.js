@@ -33,6 +33,9 @@ vi.mock("../src/core/taskFeed.js", () => ({
   dropFeedDevice: () => {},
   primaryRunIdFor: () => null,
 }));
+// The bridge on each device the rail works: the home one a route that names no
+// device is about, and the other machine on the account.
+const homeCall = vi.fn(async () => ({ ok: true }));
 const awayCall = vi.fn(async () => ({ ok: true }));
 const openCreateWork = vi.fn();
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
@@ -188,13 +191,14 @@ beforeEach(async () => {
     { id: "dev-1", name: "workshop", status: "online" },
     { id: "dev-2", name: "laptop", status: "online" },
   ];
-  App.call = vi.fn(async () => ({ ok: true }));
   // Every row in the rail names the device it came from; the home device is
   // what a route that names none is about.
-  adoptDeviceSession({ deviceId: "dev-1", call: App.call });
+  adoptDeviceSession({ deviceId: "dev-1", call: homeCall });
   // The other device on the account answers for its own rows: the rail can only
   // work a device it holds a session for.
   adoptDeviceSession({ deviceId: "dev-2", call: awayCall });
+  homeCall.mockClear();
+  awayCall.mockClear();
   refreshFeed.mockClear();
   openCreateWork.mockClear();
   openNewRepo.mockClear();
@@ -308,7 +312,7 @@ describe("the projects face", () => {
   it("opens a row like the inbox does", async () => {
     rowFor("run-1").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
     expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 
@@ -374,7 +378,7 @@ describe("the projects face", () => {
     expect(openNewRepo).toHaveBeenCalledTimes(1);
     // The sheet is handed the creation device's own connection and its name;
     // it asks nothing about devices itself.
-    expect(openNewRepo.mock.calls[0][1]).toEqual({ callRpc: App.call, deviceName: "workshop" });
+    expect(openNewRepo.mock.calls[0][1]).toEqual({ callRpc: homeCall, deviceName: "workshop" });
     openNewRepo.mock.calls[0][0]();
     expect(refreshFeed).toHaveBeenCalled();
   });
@@ -439,7 +443,7 @@ describe("the projects face", () => {
     expect(relaydb.classList.contains("inbox-folded")).toBe(false);
     expect(rowFor("run-1")).toBeTruthy();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-1" });
+    expect(homeCall).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-1" });
   });
 
   // Every device mints its project ids from its own counter, so both machines

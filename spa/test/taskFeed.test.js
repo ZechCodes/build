@@ -62,20 +62,29 @@ const countingCall = (deviceId = "dev-1") => {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("the shared feed", () => {
-  it("joins board work summaries onto their workspace rows", async () => {
-    App.call = vi.fn(async (method) => {
-      if (method === "project.list") return { projects: [] };
-      if (method === "workspace.list") {
-        return { workspaces: [{ id: "ws-1" }, { workspace_id: "ws-2" }, { id: "ws-3" }] };
-      }
-      return {
-        items: [],
-        workspace_summaries: [
-          { workspace_id: "ws-1", work_summary: { pushes: 2, additions: 8, deletions: 3 } },
-          { workspace_id: "ws-2", work_summary: null },
-        ],
-      };
-    });
+  it("joins board work summaries onto their workspace rows, stamped with the device that answered", async () => {
+    device(
+      "dev-1",
+      vi.fn(async (method) => {
+        if (method === "project.list") return { projects: [] };
+        if (method === "workspace.list") {
+          return {
+            workspaces: [
+              { id: "ws-1", project_id: "proj-1" },
+              { workspace_id: "ws-2", project_id: "proj-1" },
+              { id: "ws-3", project_id: "proj-2" },
+            ],
+          };
+        }
+        return {
+          items: [],
+          workspace_summaries: [
+            { workspace_id: "ws-1", work_summary: { pushes: 2, additions: 8, deletions: 3 } },
+            { workspace_id: "ws-2", work_summary: null },
+          ],
+        };
+      }),
+    );
     let snapshot = null;
     subscribeFeed((feed) => {
       snapshot = feed;
@@ -84,9 +93,30 @@ describe("the shared feed", () => {
     await refreshFeed();
 
     expect(snapshot.workspaces).toEqual([
-      { id: "ws-1", work_summary: { pushes: 2, additions: 8, deletions: 3 } },
-      { workspace_id: "ws-2", work_summary: null },
-      { id: "ws-3" },
+      {
+        id: "ws-1",
+        project_id: "proj-1",
+        deviceId: "dev-1",
+        projectKey: "dev-1/proj-1",
+        workspaceKey: "dev-1/ws-1",
+        work_summary: { pushes: 2, additions: 8, deletions: 3 },
+      },
+      {
+        id: "ws-2",
+        workspace_id: "ws-2",
+        project_id: "proj-1",
+        deviceId: "dev-1",
+        projectKey: "dev-1/proj-1",
+        workspaceKey: "dev-1/ws-2",
+        work_summary: null,
+      },
+      {
+        id: "ws-3",
+        project_id: "proj-2",
+        deviceId: "dev-1",
+        projectKey: "dev-1/proj-2",
+        workspaceKey: "dev-1/ws-3",
+      },
     ]);
   });
 

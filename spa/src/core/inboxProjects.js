@@ -29,10 +29,10 @@ import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
 import { entryRoute, inboxEntries } from "./inbox.js";
 import { projectRoute } from "./projectModel.js";
 
-/** What a project is called on the rail: its name, or the bare id when the
- *  device has given it none. Minted here and read here — the clash set and the
- *  block that looks itself up in it have to agree on the same string. */
-const projectNameOf = (project) => project.name || project.id;
+/** What a project is called: its name, or the bare id when the device has
+ *  given it none. Minted here and read everywhere — the clash set, the block
+ *  and the toolbar's menu row all have to agree on the same string. */
+export const projectNameOf = (project) => project.name || project.id;
 
 /** The blocks' identity and names: every device's projects in the order they
  *  arrived, plus one for any project a row names that its device has not

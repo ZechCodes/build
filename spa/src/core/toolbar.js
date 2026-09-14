@@ -33,7 +33,7 @@ import { notifyError } from "./notify.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openCreateWork } from "./createWork.js";
 import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
-import { deviceTagHtml } from "./inboxProjects.js";
+import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
 import { patchList } from "./patchList.js";
 import { projectRoute } from "./projectModel.js";
 import "../styles/shell.css";
@@ -81,8 +81,9 @@ function paintVerb() {
  *  it offers all of them to move to. */
 const projectsOf = () => feed.projects || [];
 const projectFor = (projectKey) => projectsOf().find((project) => project.projectKey === projectKey) || null;
-/** What a project is called, and "" for no project at all. */
-const nameOf = (project) => (project ? project.name || project.id : "");
+/** What a project is called (core/inboxProjects.js), and "" for no project at
+ *  all. */
+const nameOf = (project) => (project ? projectNameOf(project) : "");
 
 /** The project the menu is scoped to: where you are standing, else the last
  *  place you stood, else the first project the account knows. */

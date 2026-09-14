@@ -8,7 +8,7 @@
 // both names. Everything here is pure; core/toolbar.js renders and wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
-import { deviceTags } from "./inboxProjects.js";
+import { deviceTags, projectNameOf } from "./inboxProjects.js";
 import { routeProjectKey } from "./deviceKey.js";
 
 /** The branch the daemon will cut for a typed name, mirrored for the preview
@@ -74,7 +74,7 @@ export function projectMenuModel({ projects = [], items = [], devices = [], proj
     key: project.projectKey,
     id: project.id,
     deviceId: project.deviceId,
-    name: project.name || project.id,
+    name: projectNameOf(project),
     ...tags.get(project.projectKey),
     current: project.projectKey === projectKey,
     unreadCount: items.reduce((total, item) => total + (item.projectKey === project.projectKey ? unreadOf(item) : 0), 0),
@@ -143,6 +143,6 @@ export function toolbarIdentity(route = {}, { items = [], projects = [] } = {}) 
 
 function projectName(projectKey, projects, row) {
   const project = projects.find((entry) => entry.projectKey === projectKey);
-  if (project) return project.name || project.id;
+  if (project) return projectNameOf(project);
   return (row && row.project) || "";
 }

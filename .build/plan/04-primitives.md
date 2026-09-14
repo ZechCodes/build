@@ -195,7 +195,7 @@ interface must widen.
   `project:<id>` (`:84`), folds by `block.id` (`:110,120,145`), DOM attributes
   `data-project`, `data-project-fold/open/create` carry `block.id`
   (`:126-130,150`). Stage 1 substitutes `projectKey` for `id` in every one of
-  those (amended; section 5). `projectHeadHtml` is ratcheted at 11.
+  those (amended; section 5). `projectHeadHtml` is ratcheted at 12.
 - **`loadProjectFolds` / `persistProjectFolds`** `core/railMode.js:45-64`,
   key `build.inbox.folded` (`:12`). Map keyed by whatever string the wiring
   passes; stage 1 passes `projectKey` (old bare-id entries read as "nothing
@@ -576,7 +576,7 @@ task and worktree reviews).
 | function | line | score | stage | what must not happen |
 | --- | --- | --- | --- | --- |
 | `onSnapshot` | `core/cacheSync.js:238` | 14 | 1 | no per-device loop inside; add `syncDeviceSnapshot` |
-| `projectHeadHtml` | `core/inboxProjects.js:118` | 11 | 1 | clash label is `block.clash ? … : ""` — one ternary is +1 → pull the label into `deviceTagHtml(block)` |
+| `projectHeadHtml` | `core/inboxProjects.js:118` | 12 | 1 | clash label is `block.clash ? … : ""` — one ternary is +1 → pull the label into `deviceTagHtml(block)` |
 | `inboxRowHtml`, `captureRowHtml`, `toEntry`, `toCaptureEntry`, `entryFactsText` | `core/inbox.js:512,645,324,280,230` | 12,14,15,20,14 | 1 | no "foreign" branch; substitutions only |
 | `ensureProject` | `core/captureDecisionView.js:70` | 12 | 1–2 | untouched; the feed subscription changes instead |
 | `surfaceFromHashPath`, `hashFromRoute` | `core/router.js:141,209` | 28, 12 | 2 | peel/prefix helpers; literals replaced, no conditions added |

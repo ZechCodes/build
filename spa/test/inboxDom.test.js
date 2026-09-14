@@ -10,16 +10,18 @@ import { resolve } from "node:path";
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
-/** Every rule whose selector list is exactly `selector`, as one property →
- *  value map in cascade order — the sheet states a selector more than once, and
- *  what the browser ends up with is the merge. Comments go first, so a brace
- *  inside prose is never read as a rule. */
+/** What the sheet sets on `selector`: every rule carrying it as one of its own
+ *  selectors, merged in cascade order. The sheet states a selector on its own
+ *  and inside grouped rules, and what the browser ends up with is the merge, so
+ *  asking for the whole selector list would be asking the test to restate the
+ *  sheet. Comments go first, so a brace inside prose is never read as a rule. */
 function ruleOf(selector) {
+  const named = (list) => list.split(",").some((one) => one.trim().replace(/\s+/g, " ") === selector);
   const blocks = shellCss
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("}")
     .map((part) => part.split("{"))
-    .filter((parts) => parts.length > 1 && parts.at(-2).trim().replace(/\s+/g, " ") === selector)
+    .filter((parts) => parts.length > 1 && named(parts.at(-2)))
     .map((parts) => parts.at(-1));
   if (!blocks.length) throw new Error(`no rule for "${selector}" in styles/shell.css`);
   return Object.fromEntries(
@@ -1344,6 +1346,23 @@ describe("a row on another device", () => {
       expect(ruleOf(".inbox-offline > .inbox-body > .inbox-line:first-child")["padding-right"]).toBe(
         "var(--inbox-actions-room)",
       );
+    });
+
+    // And the other half of the same defect: the ⋯ menu lives inside the row,
+    // so the row's own grey took the popup down with it — an opacity greys
+    // everything under it, and the reader could read the row through the menu.
+    it("greys what the row says rather than the row, so the menu it opens is solid", async () => {
+      const row = rowFor("run-2");
+      menuItem(row, "[data-dismiss]");
+      await flush();
+      expect(row.querySelector(".inbox-menu").closest(".inbox-offline")).toBe(row);
+
+      // Nothing between the popup and the row may fade…
+      expect(shellCss).not.toMatch(/\.inbox-offline\s*\{[^}]*opacity/);
+      expect(ruleOf(".inbox-offline > .inbox-body").opacity).toBe(".62");
+      expect(ruleOf(".inbox-offline > .sdot").opacity).toBe(".62");
+      // …and the item that is shut keeps the treatment that says it is shut.
+      expect(ruleOf('.inbox-offline .mi[aria-disabled="true"]').opacity).toBe(".55");
     });
   });
 

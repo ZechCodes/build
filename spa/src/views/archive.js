@@ -12,7 +12,7 @@ import { App, go } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
 import { liveContexts } from "../core/deviceContexts.js";
 import { deviceKey } from "../core/deviceKey.js";
-import { archiveListHtml, archiveRows, newestFirst } from "../core/archive.js";
+import { archiveDeviceNames, archiveListHtml, archiveRows, newestFirst } from "../core/archive.js";
 
 /** One machine's share of the archive: its rows, each stamped with the machine
  *  that answered for it and keyed by it, since every daemon mints its own
@@ -46,10 +46,11 @@ export function renderArchive() {
     // The archive is history, and the poll reads the same history over and over.
     // A rebuild would drop a selection someone is copying a path out of and the
     // focus they reached a card with, so an unchanged read leaves the page.
-    const source = JSON.stringify([rows, openKey]);
+    const deviceNames = archiveDeviceNames(rows, App.devices);
+    const source = JSON.stringify([rows, openKey, [...deviceNames]]);
     if (painted && source === paintedFrom) return;
     paintedFrom = source;
-    host.innerHTML = archiveListHtml(rows, { openKey });
+    host.innerHTML = archiveListHtml(rows, { openKey, deviceNames });
     host.querySelectorAll(".archive-row").forEach((card) => {
       const toggle = () => {
         const row = rows.find((candidate) => candidate.key === card.dataset.key);

@@ -621,6 +621,21 @@ function menuHtml(entry, open) {
  *  (core/inboxProjects.js deviceTagHtml): it is one mark, in one place. */
 export const dimDeviceHtml = (deviceName) => (deviceName ? ` <span class="dim">${esc(deviceName)}</span>` : "");
 
+/** The names in a list that more than one machine holds. A name the account
+ *  uses once says which thing it is; one two machines both use does not, and
+ *  whatever wears it says its machine after it. The rail's project blocks and
+ *  the archive's rows both ask here, so the two pages agree about when a name
+ *  needs its machine said. */
+export function clashingNames(rows, nameOf) {
+  const devicesByName = new Map();
+  for (const row of rows) {
+    const name = nameOf(row);
+    if (!devicesByName.has(name)) devicesByName.set(name, new Set());
+    devicesByName.get(name).add(row.deviceId);
+  }
+  return new Set([...devicesByName].filter(([, devices]) => devices.size > 1).map(([name]) => name));
+}
+
 /** What a row says it is in: its project, and — only where two machines use
  *  that name — the machine it is on, after it. Whether the name needs its
  *  machine said is decided once for the whole list and carried on the entry, so

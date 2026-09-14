@@ -124,6 +124,32 @@ describe("the account archive page", () => {
     expect(document.querySelector(".archive-record").textContent).toContain("relaydb");
   });
 
+  // Two machines' `repo` are two different checkouts under one word. The rail
+  // says the machine after a project name two machines share; the archive says
+  // it after a title two machines share, by the same rule and in the same dim
+  // words — and says nothing where the title is the account's own.
+  it("says the machine after a title two machines both filed", async () => {
+    filed = {
+      "dev-1": [{ ...workspaceItem, title: "repo" }, issueItem],
+      "dev-2": [{ ...branchItem, title: "repo" }],
+    };
+    await renderAccount();
+    await flush();
+
+    const named = (row) => [...row.querySelectorAll(".title, .title + .dim")].map((node) => node.textContent);
+    expect(named(rows()[0])).toEqual(["repo", "workshop"]);
+    expect(named(rows()[2])).toEqual(["repo", "laptop"]);
+    expect(named(rows()[1])).toEqual(["Split the prompt templates"]);
+  });
+
+  it("says no machine when one machine holds the title", async () => {
+    filed = { "dev-1": [workspaceItem], "dev-2": [] };
+    await renderAccount();
+    await flush();
+
+    expect(rows()[0].querySelector(".dim")).toBeNull();
+  });
+
   it("opens one record at a time, under its own row", async () => {
     await renderAccount();
     await flush();

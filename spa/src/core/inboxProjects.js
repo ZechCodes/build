@@ -13,7 +13,7 @@
 
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
-import { dimDeviceHtml } from "./inbox.js";
+import { clashingNames, dimDeviceHtml } from "./inbox.js";
 
 /** What a project is called: its name, or the bare id when the device has
  *  given it none. Minted here and read everywhere — the clash set, the block
@@ -85,15 +85,7 @@ export function workspaceProjectBlocks(entries = [], projects = [], activeWorksp
 /** The project names more than one device uses. A name that is the account's
  *  own says which project it is; one two machines both use does not, and its
  *  blocks say the device after it. */
-function clashingProjectNames(projects) {
-  const devicesByName = new Map();
-  for (const project of projects) {
-    const name = projectNameOf(project);
-    if (!devicesByName.has(name)) devicesByName.set(name, new Set());
-    devicesByName.get(name).add(project.deviceId);
-  }
-  return new Set([...devicesByName].filter(([, devices]) => devices.size > 1).map(([name]) => name));
-}
+const clashingProjectNames = (projects) => clashingNames(projects, projectNameOf);
 
 /** What each project in a set wears to say which device it is on, by project
  *  key: the `{ clash, deviceName }` deviceTagHtml reads. Whether a name needs

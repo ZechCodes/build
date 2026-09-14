@@ -10,6 +10,7 @@
 // buttons. No DOM, no app imports — views/archive.js wires these.
 
 import { esc } from "./text.js";
+import { clashingNames, dimDeviceHtml } from "./inbox.js";
 
 /** How the work ended, in words. The token is a run state, an issue state, or
  *  the bare `archived` a finished checkout leaves behind. A token this client
@@ -143,10 +144,27 @@ export function archiveRecordHtml(row) {
 }
 
 /** One archived row, and its record when it is the open one. */
+/**
+ * Which machine each row is to say it is on, by row key — null where the title
+ * says which work it is on its own.
+ *
+ * The archive is the account's, so two machines' `repo` are two different
+ * checkouts filed under one word and nothing else on the row tells them apart.
+ * The rule is the rail's (core/inbox.js), so the two pages never disagree about
+ * when a name needs its machine said.
+ */
+export function archiveDeviceNames(rows, devices = []) {
+  const clashes = clashingNames(rows, (row) => row.title);
+  const names = new Map(devices.map((device) => [device.id, device.name]));
+  return new Map(rows.map((row) => [row.key, clashes.has(row.title) ? names.get(row.deviceId) || null : null]));
+}
+
 export function archiveRowHtml(row, ui = {}) {
   const open = ui.openKey === row.key;
   return `<div class="card quiet archive-row" data-key="${esc(row.key)}" role="button" tabindex="0" aria-expanded="${open}">
-    <div class="top"><span class="title">${esc(row.title)}</span><span class="chip work">${esc(row.kindLabel)}</span></div>
+    <div class="top"><span class="title">${esc(row.title)}</span>${dimDeviceHtml(
+      ui.deviceNames?.get(row.key),
+    )}<span class="chip work">${esc(row.kindLabel)}</span></div>
     <div class="meta"><span>${esc(row.project)}</span><span>·</span><span>${esc(row.stateLabel)}</span><span>·</span><span>${esc(
       row.finishedLabel,
     )}</span>${row.branch ? `<span>·</span><span>${esc(row.branch)}</span>` : ""}</div>

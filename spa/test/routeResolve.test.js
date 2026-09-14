@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { pickDevice, resolveLegacyRoute } from "../src/core/routeResolve.js";
+import { routeFromHash } from "../src/core/router.js";
 
 // One feed's worth of rows in the new items[] shape (bridge board.list).
 const items = [
@@ -188,5 +189,19 @@ describe("resolveLegacyRoute for a project with no device named", () => {
 
   it("answers null when no device carries that project at all", () => {
     expect(resolveLegacyRoute(ref, { items: [], projects: [] }, policy)).toBeNull();
+  });
+
+  // A workspace is a checkout on one machine, and a fresh one has no work rows
+  // yet: the feed's workspaces answer for it, exactly as the projects do for a
+  // plain folder. The whole hop, from the URL a reader pasted to the route the
+  // app opens.
+  it("answers a device-less workspace URL from the feed's workspaces", () => {
+    const parked = routeFromHash("#/project/proj-1/workspace/w1/files");
+    expect(parked).toEqual({
+      name: "resolve", kind: "project", projectId: "proj-1",
+      route: { name: "workspace", projectId: "proj-1", workspaceId: "w1", tab: "files" },
+    });
+    const feed = { items: [], projects: [], workspaces: [{ id: "w1", project_id: "proj-1", deviceId: "dev-b" }] };
+    expect(resolveLegacyRoute(parked, feed, policy)).toEqual({ ...parked.route, deviceId: "dev-b" });
   });
 });

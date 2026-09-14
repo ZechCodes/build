@@ -13,16 +13,37 @@ const workRoute = (hash) => {
 
 describe("routeFromHash", () => {
   it("parses workspace directories and their selected tab", () => {
-    expect(routeFromHash("#/project/p/workspace/ws/directory/src/files?path=lib%2Fa.js&line=8")).toEqual({
-      name: "workspace", projectId: "p", workspaceId: "ws", sourceId: "src", tab: "files", file: "lib/a.js", line: 8,
+    const withDirectory = "#/device/d1/project/p/workspace/ws/directory/src/files?path=lib%2Fa.js&line=8";
+    expect(routeFromHash(withDirectory)).toEqual({
+      name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", sourceId: "src", tab: "files",
+      file: "lib/a.js", line: 8,
     });
-    expect(routeFromHash("#/project/a%20b/workspace/w%2Fs/directory/source%201/changes")).toEqual({
-      name: "workspace", projectId: "a b", workspaceId: "w/s", sourceId: "source 1", tab: "changes",
+    expect(hashFromRoute(routeFromHash(withDirectory))).toBe(withDirectory);
+
+    expect(routeFromHash("#/device/d%201/project/a%20b/workspace/w%2Fs/directory/source%201/changes")).toEqual({
+      name: "workspace", deviceId: "d 1", projectId: "a b", workspaceId: "w/s", sourceId: "source 1", tab: "changes",
     });
+    expect(routeFromHash("#/device/d1/project/p/workspace/ws/files")).toEqual({
+      name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "files",
+    });
+    expect(routeFromHash("#/device/d1/project/p/workspace/ws/directory/src/nope").tab).toBe("changes");
+  });
+
+  // A workspace is one machine's checkout, so a workspace URL with no device in
+  // it is the same question a device-less branch URL is, and parks in the same
+  // place — carrying the whole workspace route, directory and file included.
+  it("parks a device-less workspace URL on the resolve route", () => {
     expect(routeFromHash("#/project/p/workspace/ws/files")).toEqual({
-      name: "workspace", projectId: "p", workspaceId: "ws", tab: "files",
+      name: "resolve", kind: "project", projectId: "p",
+      route: { name: "workspace", projectId: "p", workspaceId: "ws", tab: "files" },
     });
-    expect(routeFromHash("#/project/p/workspace/ws/directory/src/nope").tab).toBe("changes");
+    expect(routeFromHash("#/project/p/workspace/ws/directory/src/files?path=lib%2Fa.js&line=8")).toEqual({
+      name: "resolve", kind: "project", projectId: "p",
+      route: {
+        name: "workspace", projectId: "p", workspaceId: "ws", sourceId: "src", tab: "files",
+        file: "lib/a.js", line: 8,
+      },
+    });
   });
   it("lands on the inbox for the empty, bare and unknown hashes", () => {
     expect(routeFromHash("")).toEqual({ name: "inbox" });

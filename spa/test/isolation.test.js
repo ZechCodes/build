@@ -10,9 +10,7 @@
 // label or a locked look.
 
 import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { sessionAnswering } from "./deviceSessionFixture.js";
+import { renderDeviceSettingsPage } from "./deviceSettingsFixture.js";
 
 // The device page opens its own connection to the machine it is about; here it
 // answers with whatever App.call is standing at the time.
@@ -37,8 +35,6 @@ import {
   projectIsolationTarget,
   mountIsolation,
 } from "../src/core/isolation.js";
-
-const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
@@ -389,22 +385,7 @@ describe("the mounted control", () => {
 // Where a machine's default lives: its own settings page, directly under the
 // agent it starts new work with, painted from that machine's bridge.
 describe("the device's settings page", () => {
-  const renderWith = async (call) => {
-    vi.resetModules();
-    document.body.innerHTML = bodyHtml;
-    const { App } = await import("../src/app.js");
-    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
-    const { renderDeviceSettings } = await import("../src/views/deviceSettings.js");
-    App.call = vi.fn(call);
-    App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
-    App.selectedDeviceId = "dev-1";
-    App.route = { name: "device", id: "dev-1" };
-    openSession.mockResolvedValue(sessionAnswering(App));
-    adoptDeviceSession(sessionAnswering(App));
-    await renderDeviceSettings();
-    await flush();
-    return App.call;
-  };
+  const renderWith = async (call) => (await renderDeviceSettingsPage(call, openSession)).call;
 
   // Re-importing the whole app shell can outrun the default deadline on a
   // loaded machine.

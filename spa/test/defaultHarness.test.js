@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defaultHarnessOf, defaultHarnessPanelHtml, mountDefaultHarness } from "../src/core/defaultHarness.js";
 import { sessionAnswering } from "./deviceSessionFixture.js";
+import { renderDeviceSettingsPage } from "./deviceSettingsFixture.js";
 
 // The device page opens its own connection to the machine it is about; here
 // that connection answers with whatever App.call is standing at the time, so a
@@ -244,24 +245,7 @@ describe("the fallback-agent panel", () => {
 // Every panel the bridge owns lives on the page of the machine that bridge
 // runs on, read and written over that page's own connection.
 describe("the device's settings page", () => {
-  const renderWith = async (call) => {
-    vi.resetModules();
-    document.body.innerHTML = bodyHtml;
-    const { App } = await import("../src/app.js");
-    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
-    const { renderDeviceSettings } = await import("../src/views/deviceSettings.js");
-    App.call = vi.fn(call);
-    App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
-    App.selectedDeviceId = "dev-1";
-    App.route = { name: "device", id: "dev-1" };
-    // The page's own connection, and the account's context for the same
-    // machine: both answer with the bridge this test wrote.
-    openSession.mockResolvedValue(sessionAnswering(App));
-    adoptDeviceSession(sessionAnswering(App));
-    await renderDeviceSettings();
-    await flush();
-    return App;
-  };
+  const renderWith = (call) => renderDeviceSettingsPage(call, openSession);
 
   // Each of these re-imports the whole app shell (vi.resetModules), and that
   // transform alone can outrun the default deadline on a loaded machine.

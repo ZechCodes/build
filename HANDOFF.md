@@ -587,7 +587,7 @@ dropped in silence.
 The complexity ratchet reads **65** — both sides retired counted functions, the
 integration added no new `eslint-disable-next-line complexity`, and the rail's
 projects face retired one when it stopped painting checkout blocks. The jsdom
-suite is 246 files / 4196 tests, green with lint and build.
+suite is 246 files / 4215 tests, green with lint and build.
 
 After the packages landed, a review pass over the merged tree found and fixed
 these, each with its case first:
@@ -611,6 +611,19 @@ these, each with its case first:
   workspaces again.
 - Retired with their cases: `projectBlocks` (the projects face's branch-and-issue
   blocks) and `workMenuModel` (the toolbar's item selector).
+
+A second review pass, over the tree the first one left:
+
+- The capture rows were painted and wired again but nothing exercised that
+  wiring through the DOM any more: the reroute picker, the branch field, the
+  retry, the decision page and the per-device destinations are all pinned in
+  `inboxDom.test.js` again, over the device fixture.
+- Three of main's own inbox cases had no counterpart here — Done on the
+  workspace the route stands in, the active workspace marked in its block, and a
+  project with no workspaces — and are restated keyed by device.
+- The device picker said "(offline)" off the account list alone, so a machine
+  answering in a shape this app cannot read read as plainly online there while
+  its rows said "update". It wears the word its rows wear.
 
 ### Verified
 

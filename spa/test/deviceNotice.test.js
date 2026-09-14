@@ -86,6 +86,34 @@ describe("naming the machine over a surface that is already open", () => {
     expect(host.classList.contains("device-away")).toBe(false);
   });
 
+  // "This is what it last said" is a promise about what is on screen. A surface
+  // whose machine went before its first read landed has nothing on it — the
+  // reader is looking at "loading…" over a frame that never filled — so it says
+  // the plain thing instead: this cannot be opened right now.
+  it("says the plain sentence over a surface that never painted anything", () => {
+    mountDeviceStrip(host, context, { hasContent: () => false });
+
+    setContextOffline("dev-1");
+
+    expect(strips().map((strip) => strip.textContent)).toEqual([deviceOfflineNotice("dev-1")]);
+  });
+
+  // And it turns over with the surface: the read that lands while the machine
+  // is away gives the reader something the machine did say.
+  it("says the frozen sentence once the surface has something on it", () => {
+    let painted = false;
+    mountDeviceStrip(host, context, { hasContent: () => painted });
+
+    setContextOffline("dev-1");
+    expect(strips().map((strip) => strip.textContent)).toEqual([deviceOfflineNotice("dev-1")]);
+
+    painted = true;
+    setContextOffline("dev-1", { offline: false });
+    setContextOffline("dev-1");
+
+    expect(strips().map((strip) => strip.textContent)).toEqual([deviceFrozenText("workshop")]);
+  });
+
   it("carries one strip however often the account says the same thing", () => {
     mountDeviceStrip(host, context);
 

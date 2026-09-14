@@ -447,6 +447,24 @@ describe("a branch on another device", () => {
     expect(document.getElementById("tabbody")).toBeTruthy();
   });
 
+  // The frozen sentence is a promise about what is on screen: this is what that
+  // machine last said. A machine that goes before the first read lands has said
+  // nothing here — the reader is looking at "loading…" over a frame that never
+  // filled — so the surface says the plain thing instead.
+  it("says the machine cannot be opened while nothing has been painted yet", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    theirCall.mockImplementation(async (method) => (method === "branch.get" ? new Promise(() => {}) : {}));
+    renderBranch();
+    await flush();
+    expect(document.getElementById("tabbody").textContent).toContain("loading…");
+
+    setContextOffline("dev-2");
+
+    expect(document.querySelector("#root > .device-strip").textContent).toBe(
+      "Desktop isn't connected, so this can't be opened right now.",
+    );
+  });
+
   it("keeps the device on the tab bar's own links", async () => {
     await renderBranch();
     await flush();

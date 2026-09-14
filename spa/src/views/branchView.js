@@ -131,9 +131,6 @@ export async function renderBranch() {
     return;
   }
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
-  // This machine answers now. If it goes while the surface is open, what was
-  // read stays on screen and the strip says whose state that is.
-  const deviceStrip = mountDeviceStrip(root, context);
   /** Changes/Files, painted into whichever rail the mounted pane just built
    *  (.crail-host or .ftree — both flex columns ending in a slot for exactly
    *  this) and pinned there by CSS (.railtabs). Returns whether a rail was
@@ -186,6 +183,11 @@ export async function renderBranch() {
 
   let disposed = false;
   let row = null; // the branch.get payload: the feed row plus `run`
+  // This machine answers now. If it goes while the surface is open, what was
+  // read stays on screen and the strip says whose state that is — but only once
+  // there is something to be whose: until the row lands this frame says
+  // "loading…", and nothing on it came from that machine at all.
+  const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => Boolean(row) });
   let pane = null; // the mounted tab body ({ dispose })
   let mountedKey = null; // what the body was mounted over: tab + review key
   let reviewPlug = null; // ONE instance per backing, so pending comments survive

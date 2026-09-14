@@ -41,6 +41,14 @@ export function mountDeviceNotice(root, deviceId) {
   });
 }
 
+/** What a surface whose machine cannot answer says over itself. The frozen
+ *  sentence is a promise about what is on screen — this is what that machine
+ *  last said — so it is only for a surface with something on it. One whose
+ *  machine went before its first read landed has nothing but "loading…" over a
+ *  frame that never filled, and says the plain thing instead. */
+const awayWords = (deviceId, hasContent) =>
+  hasContent() ? deviceFrozenNotice(deviceId) : deviceOfflineNotice(deviceId);
+
 /**
  * Name the machine over a surface that is open when it goes, and stop naming it
  * when that machine answers again.
@@ -50,9 +58,14 @@ export function mountDeviceNotice(root, deviceId) {
  * last state the machine described. All that is missing is whose state it is,
  * which is one strip over the top and a mark on the host so what claims to be
  * live can stop claiming it. The mounting surface owns the teardown.
+ *
+ * `hasContent` is the surface's own answer to "is there anything on me yet":
+ * one that is only ever stood up over what it read says nothing and takes the
+ * default, and one that can still be sitting on its loading frame answers for
+ * itself.
  */
-export function mountDeviceStrip(host, context) {
-  const paint = () => nameTheMachine(host, canAnswer(context) ? null : deviceFrozenNotice(context.deviceId));
+export function mountDeviceStrip(host, context, { hasContent = () => true } = {}) {
+  const paint = () => nameTheMachine(host, canAnswer(context) ? null : awayWords(context.deviceId, hasContent));
   paint();
   const stopListening = onDeviceStateChanged(paint);
   return () => {

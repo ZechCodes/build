@@ -102,6 +102,39 @@ describe("Settings → Creation device", () => {
     expect($("#creationdev").value).toBe("dev-1");
   });
 
+  // The control is what the account picked, not what the pick currently
+  // resolves to: showing the fallback made a pick that was merely away read as
+  // a pick the user never made, and changing it back was impossible — the
+  // select already said the other machine.
+  it("shows the machine the account picked even while that machine is away", async () => {
+    devices[0].status = "offline"; // Laptop, the picked one
+    App.selectedDeviceId = "dev-1";
+    await renderSettings();
+    await flush();
+
+    expect($("#creationdev").value).toBe("dev-1");
+    // …and where the work is going meanwhile is said, not left to be guessed.
+    expect($("#creationfallback").textContent).toBe("Laptop is offline; new work goes to Studio until it returns.");
+  });
+
+  it("says nothing under the control while the machine picked is the one taking the work", async () => {
+    App.selectedDeviceId = "dev-1";
+    await renderSettings();
+    await flush();
+
+    expect($("#creationfallback").textContent).toBe("");
+  });
+
+  it("says the work waits when the picked machine is away and no other is online", async () => {
+    devices = devices.map((device) => ({ ...device, status: "offline" }));
+    App.selectedDeviceId = "dev-2";
+    await renderSettings();
+    await flush();
+
+    expect($("#creationdev").value).toBe("dev-2");
+    expect($("#creationfallback").textContent).toBe("Studio is offline; new work waits until a device is back.");
+  });
+
   it("writes the pick through the one function that owns it", async () => {
     await renderSettings();
     await flush();

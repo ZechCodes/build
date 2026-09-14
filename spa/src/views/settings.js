@@ -12,7 +12,7 @@ import { App } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { refreshDevices } from "../devices.js";
 import { chooseCreationDevice, retireDevice } from "../connection.js";
-import { creationDeviceId } from "../core/devicePolicy.js";
+import { deviceNameOf, homeDeviceId } from "../core/devicePolicy.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
@@ -51,14 +51,39 @@ function creationDeviceOptionsHtml(devices, chosenId) {
   return options || '<option value="">No devices yet</option>';
 }
 
+/** The machine the control shows: the one the account picked, while the account
+ *  still has it. A picked machine that is merely away is still the machine new
+ *  work is meant for; only a pick the list no longer carries falls back to
+ *  whoever is taking the work today. */
+function shownCreationDevice() {
+  const picked = App.devices.find((device) => device.id === App.selectedDeviceId);
+  return picked?.id || homeDeviceId(App.devices, App.selectedDeviceId);
+}
+
+/** Where new work is going while the machine the account picked is away.
+ *  Nothing to say while that machine is the one taking the work; said plainly
+ *  when it is not, because a control that names one machine and means another
+ *  is a control nobody can act on. */
+function creationFallbackNote(devices, shownId) {
+  const shown = devices.find((device) => device.id === shownId);
+  if (!shown || shown.status === "online") return "";
+  const landing = deviceNameOf(devices, homeDeviceId(devices, shownId));
+  return landing
+    ? `${shown.name} is offline; new work goes to ${landing} until it returns.`
+    : `${shown.name} is offline; new work waits until a device is back.`;
+}
+
 /** The one control for home: which machine new projects and captures go to.
  *  Mounted once the account list has been read, since the list is what it
  *  offers. */
 function mountCreationDevice() {
   const select = $("#creationdev");
   if (!select) return;
-  select.innerHTML = creationDeviceOptionsHtml(App.devices, creationDeviceId(App.devices, App.selectedDeviceId));
+  const shownId = shownCreationDevice();
+  select.innerHTML = creationDeviceOptionsHtml(App.devices, shownId);
   select.disabled = App.devices.length === 0;
+  const note = $("#creationfallback");
+  if (note) note.textContent = creationFallbackNote(App.devices, shownId);
   select.onchange = () => chooseCreationDevice(select.value);
 }
 
@@ -79,6 +104,7 @@ export async function renderSettings() {
       <div class="field" style="max-width:340px">
         <label for="creationdev">New projects and captures go to</label>
         <select id="creationdev" disabled><option>loading…</option></select>
+        <div class="dim" id="creationfallback" style="font-size:12.5px;margin-top:6px" role="status"></div>
       </div>
     </div>
     <div class="panel">

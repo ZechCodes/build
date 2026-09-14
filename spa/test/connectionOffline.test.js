@@ -43,7 +43,7 @@ const { contextFor, knownContexts, liveContexts } = await import("../src/core/de
 const { claimHomeContext, goOffline, openDeviceSessions, resume, setHomeDevice } = await import(
   "../src/connection.js"
 );
-const { markDeviceOnline } = await import("../src/devices.js");
+const { markDeviceOffline, markDeviceOnline } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
@@ -269,6 +269,29 @@ describe("per-device connections", () => {
     expect(late.close).toHaveBeenCalled(); // nothing needs it: the device is live
     expect(contextFor("dev-a").session).toBe(live);
     expect(contextFor("dev-a").offline).toBe(false);
+  });
+
+  // A bridge that drops is heard twice: its own session is lost, and the relay
+  // tells every other live session it went and again when it is back. The
+  // resume already waiting on that device owns it — opening a second socket
+  // costs another handshake, another greeting and a session for the bin.
+  it("leaves a device that is already resuming to its resume", async () => {
+    await connectEveryDevice();
+    markDeviceOffline("dev-a");
+    slowMs.set("dev-a", 1000); // the resume is still waiting on the relay
+    goOffline("dev-a");
+    await flush();
+    const whileWaiting = openedFor("dev-a").length;
+
+    markDeviceOnline("dev-a"); // the other session hears that bridge come back
+    await flush();
+
+    expect(openedFor("dev-a")).toHaveLength(whileWaiting);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(contextFor("dev-a").offline).toBe(false);
+    expect(contextFor("dev-a").session).toBe(lastSession("dev-a"));
+    expect(lastSession("dev-a").close).not.toHaveBeenCalled();
   });
 
   it("connects a device that comes online after boot, without a reload", async () => {

@@ -297,10 +297,17 @@ async function connectDevice(deviceId) {
  * context that came up. Nothing waits on the slowest device.
  */
 export function openDeviceSessions() {
-  const attempts = App.devices
-    .filter((device) => device.status === "online" && !hasLiveSession(device.id))
-    .map((device) => connectDevice(device.id));
+  const attempts = App.devices.filter(wantsSession).map((device) => connectDevice(device.id));
   return { first: handled(firstContext(attempts)), settled: handled(everyContext(attempts)) };
+}
+
+/** A device for this call to open: online by the account list, with nothing
+ *  already working on it. A resume is working on it — it is parked on the
+ *  relay's `device_key` for exactly that bridge and lands the moment it is
+ *  back, so the push that says so must not start a second handshake. */
+function wantsSession(device) {
+  if (device.status !== "online" || hasLiveSession(device.id)) return false;
+  return !contextFor(device.id)?.reconnect.resuming;
 }
 
 /** A caller usually wants one of the two promises. Handling the other here

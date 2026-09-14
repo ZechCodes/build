@@ -169,14 +169,22 @@ function mayLeaveRoute() {
   return pendingLeaveDecision.decision;
 }
 
-function applyRoute(route) {
+/**
+ * Take up a route: hold it, and answer with the link that names it.
+ *
+ * The route as given is what the URL says; the route the app stands on is that
+ * route once it names a machine, or the resolve hop that finds one. A parked
+ * route has no hash of its own, so the link is written from the route as given.
+ */
+function standOn(route) {
   App.viewingContext.clear();
-  App.routeLeaveGuard = null;
-  // The route as given is what the URL says; the route the app stands on is
-  // that route once it names a machine, or the resolve hop that finds one. A
-  // parked route has no hash of its own, so the link has to be written first.
   App.route = withDeviceOrResolve(route);
-  const hash = hashFromRoute(route);
+  return hashFromRoute(route);
+}
+
+function applyRoute(route) {
+  App.routeLeaveGuard = null;
+  const hash = standOn(route);
   if (location.hash !== hash) {
     acceptedHash = hash;
     location.hash = hash; // hashchange re-enters render()
@@ -210,9 +218,7 @@ export function go(route) {
  * losing the reader's place in it.
  */
 export function markRoute(route) {
-  App.viewingContext.clear();
-  App.route = withDeviceOrResolve(route);
-  const hash = hashFromRoute(route);
+  const hash = standOn(route);
   if (location.hash === hash) return;
   history.replaceState(null, "", hash);
 }

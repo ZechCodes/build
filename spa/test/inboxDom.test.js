@@ -146,9 +146,9 @@ const issueRow = (over = {}) => ({
 
 /** Repaint the rail from a fresh set of rows, and whatever the daemon says it
  *  is making or removing right now. */
-const feed = (items, pending = []) => {
+const feed = (items, pending = [], devices = null) => {
   feedItems = items;
-  subscriber({ items, pending, projects: feedProjects });
+  subscriber({ items, pending, projects: feedProjects, ...(devices ? { devices } : {}) });
 };
 
 beforeEach(async () => {
@@ -1144,6 +1144,36 @@ describe("a row on another device", () => {
     clear.click();
     await flush();
     expect(awayCall).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
+  });
+
+  // A reroute goes to the machine holding the capture, and that daemon knows
+  // only the projects it minted itself — every machine has a `p1`. So the
+  // picker offers that device's projects and the branches they already have.
+  it("offers its own device's projects when its capture is rerouted", async () => {
+    const theirProject = { id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "their notes" };
+    const theirCapture = captureFeedRow({
+      deviceId: "dev-2",
+      projectKey: "dev-2/p1",
+      state: "routed",
+      project_id: "p1",
+      project: "their notes",
+      issue_id: "iss-9",
+      routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
+    });
+    const mine = { items: [branchRow()], projects: feedProjects };
+    const theirs = { items: [awayRow(), theirCapture], projects: [theirProject] };
+    feed([...mine.items, ...theirs.items], [], { "dev-1": mine, "dev-2": theirs });
+
+    captureRowFor("capture-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    const picker = captureRowFor("capture-1").querySelector(".reroute-menu");
+    expect([...picker.querySelectorAll(".reroute-project .mt")].map((name) => name.textContent)).toEqual(["their notes"]);
+
+    picker.querySelector('[data-reroute-branch-open="p1"]').click();
+    await flush();
+    expect([...captureRowFor("capture-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
+      "build/away",
+    ]);
   });
 
   it("leaves the home device's own rows alone", async () => {

@@ -15,6 +15,7 @@
 // row still works — it just does not open, and it says why.
 
 import { contextFor, homeContext } from "./deviceContexts.js";
+import { deviceView } from "./feedMerge.js";
 
 /** What a device that cannot answer offers: nothing to call, and the words its
  *  rows and their menus are titled with. */
@@ -39,6 +40,17 @@ export function verbCall(row) {
   const { call, disabled } = verbTarget(row);
   return call || (() => Promise.reject(new Error(disabled)));
 }
+
+/**
+ * The feed as the machine behind a row sees it: that device's own rows and
+ * projects, the same shape as the merge.
+ *
+ * What a row's verb offers has to come from here rather than from the merge —
+ * a reroute names a project by the bare id the daemon holding it minted, and
+ * every daemon mints a `proj-1`. A row this client is holding itself names no
+ * device and belongs where creation goes: home.
+ */
+export const rowFeedView = (row, feed) => deviceView(feed, row?.deviceId || homeContext()?.deviceId);
 
 /** What a row on another device is titled with instead of what it opens. */
 export const AWAY_TITLE = "Opens once this page can name its device";

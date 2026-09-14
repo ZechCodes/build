@@ -45,7 +45,7 @@ import { entityIdOf } from "./entityId.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { homeProjectKey } from "./deviceContexts.js";
-import { openableHereBlock, openableHereRows, paintDeviceState, verbCall } from "./inboxDevices.js";
+import { openableHereBlock, openableHereRows, paintDeviceState, rowFeedView, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
@@ -63,6 +63,9 @@ let items = [];
 // checkout being cut is on the list while its git runs.
 let pendingLifecycle = [];
 let projects = [];
+// The snapshot those arrays were taken from, kept whole for the one thing that
+// is about a single machine: where a capture can be rerouted to.
+let snapshot = null;
 let entries = [];
 let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
 let openMenuKey = null;
@@ -195,14 +198,17 @@ function draw() {
  *  own project — under a project block it has already been told. */
 function rowUi(showProject) {
   const picker = reroutePicker();
+  // A reroute goes to the machine holding the capture, so the destinations it
+  // offers are that machine's — its projects, and the branches they have.
+  const destinations = rowFeedView(entryOf(picker.rerouteKey), snapshot);
   return {
     activeKey: activeEntryKey(App.route, entries),
     openMenuKey,
-    projects,
+    projects: destinations.projects,
     ...picker,
     // The branches that project already has, off the same feed rows the
     // compose panel offers: one source for "which branches are there".
-    rerouteBranches: branchOptions(items, picker.rerouteBranchProject),
+    rerouteBranches: branchOptions(destinations.items, picker.rerouteBranchProject),
     showProject,
     folded: new Set(),
     // The block holding the branch or issue the route stands on. A capture's
@@ -595,6 +601,7 @@ export function mountInboxList() {
   subscribePendingCaptures(drawFromFeed);
   subscribeOptimistic(INBOX_SCOPE, draw);
   subscribeFeed((feed) => {
+    snapshot = feed;
     items = feed.items || [];
     pendingLifecycle = feed.pending || [];
     projects = feed.projects || [];

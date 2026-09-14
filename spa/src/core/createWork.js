@@ -24,6 +24,7 @@
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { deviceCall, deviceCatalog } from "./inboxDevices.js";
+import { UNASKED_CATALOG } from "./modelCatalog.js";
 import { refreshFeed } from "./taskFeed.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
@@ -40,9 +41,6 @@ const CHOICE_PREFIX = "create-choice";
 
 const LEADING_ROW = 0;
 
-/** What the dialog offers to start work with until its machine has answered:
- *  nothing but the harness's own default. */
-const NO_CATALOG = Object.freeze({ providers: [] });
 
 /** What a tab's preload holds before it has been asked for: requested and
  *  done are two facts, and until the answer is in the rows have nothing to say. */
@@ -234,7 +232,8 @@ export function openCreateWork({ projectId, deviceId, projectName, kind = "branc
     busy: false,
     error: "",
     choice: loadAgentDefaults(),
-    catalog: NO_CATALOG,
+    // What this project's machine offers to start work with, until it has said.
+    catalog: UNASKED_CATALOG,
     choiceOpen: false,
     loaded: {},
     highlight: NOTHING_HIGHLIGHTED,

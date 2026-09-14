@@ -15,6 +15,11 @@ import { normalizeModelCatalog } from "./modelPicker.js";
  *  which is exactly what it supports. */
 export const EMPTY_CATALOG = Object.freeze(normalizeModelCatalog({ models: [], efforts: [] }));
 
+/** What a surface offers while the machine it asked has yet to answer — no
+ *  list, and no default named for it. Not the same fact as EMPTY_CATALOG: that
+ *  one is an answer, and this is the wait for one. */
+export const UNASKED_CATALOG = Object.freeze({ default_provider: "", providers: [] });
+
 /**
  * The catalog half of a device context: `modelCatalog()` and
  * `refreshModelCatalog()`, closing over the context so a reconnect's new

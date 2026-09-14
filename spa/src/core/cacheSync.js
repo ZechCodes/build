@@ -215,10 +215,21 @@ async function warmFileDiffs(context, entityId, scope, status) {
   }
 }
 
-/** Re-read one active entity into the cache: a branch's git state and the
- *  bodies it names, and every conversation that was ever warmed on it. The warm
- *  waits for an idle turn, so it runs alongside the refresh rather than inside
- *  it — an entity whose tab never goes idle still syncs on the next tick. */
+/** A branch's git state and the bodies it names: status, trees, diff, and the
+ *  first files of it. The file warm waits for an idle turn, so it runs
+ *  alongside the refresh rather than inside it — an entity whose tab never goes
+ *  idle still syncs on the next tick. */
+async function refreshGitSurfaces(context, entityId, row) {
+  const scope = gitScopeOf(row);
+  if (!scope) return; // an issue has no checkout to read
+  const status = await refreshGitState(context, entityId, scope);
+  await refreshTrees(context, entityId, scope);
+  await refreshDiff(context, entityId, row);
+  if (status && context.active()) void warmFileDiffs(context, entityId, scope, status);
+}
+
+/** Re-read one active entity into the cache: its git surfaces, and every
+ *  conversation that was ever warmed on it. */
 async function refreshEntity(key) {
   const active = activeRows.get(key);
   const context = active && syncContext(contextFor(active.deviceId));
@@ -226,25 +237,25 @@ async function refreshEntity(key) {
   refreshing.add(key);
   const { entityId, row } = active;
   try {
-    const scope = gitScopeOf(row);
-    if (scope) {
-      const status = await refreshGitState(context, entityId, scope);
-      await refreshTrees(context, entityId, scope);
-      await refreshDiff(context, entityId, row);
-      if (status && context.active()) void warmFileDiffs(context, entityId, scope, status);
-    }
+    await refreshGitSurfaces(context, entityId, row);
     await refreshThreads(context, entityId, row);
   } finally {
     refreshing.delete(key);
   }
 }
 
+/** The one walk over the held rows by device: a device's rows are replaced
+ *  wholesale, or leave with it. Another device's rows are never touched. */
+function dropRowsOf(namesDevice) {
+  for (const [key, held] of activeRows) {
+    if (namesDevice(held.deviceId)) activeRows.delete(key);
+  }
+}
+
 /** The rows of one device's view worth keeping records for, replacing whatever
  *  that device named last time and leaving every other device's alone. */
 function keepActiveRows(deviceId, view, active) {
-  for (const [key, held] of activeRows) {
-    if (held.deviceId === deviceId) activeRows.delete(key);
-  }
+  dropRowsOf((held) => held === deviceId);
   for (const row of view.items || []) {
     const entityId = entityIdOf(row);
     if (entityId && active.has(entityId)) activeRows.set(rowKey(deviceId, entityId), { deviceId, entityId, row });
@@ -295,9 +306,7 @@ async function syncDeviceSnapshot(deviceId, view) {
 /** A device that left the feed — retired, signed out — stops being synced: the
  *  rows it named go, and their watchers with them. */
 function forgetDevicesMissingFrom(devices) {
-  for (const [key, held] of activeRows) {
-    if (!(held.deviceId in devices)) activeRows.delete(key);
-  }
+  dropRowsOf((deviceId) => !(deviceId in devices));
   retuneWatchers();
 }
 

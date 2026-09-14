@@ -30,10 +30,19 @@ vi.mock("../src/core/peerLink.js", () => ({
 }));
 // The route render is not what this file is about; the shell still runs.
 vi.mock("../src/views/inbox.js", () => ({ renderInbox: () => {} }));
+// Everything the composer does is its own file's business; what matters here is
+// which device is offered the captures nobody could send yet.
+vi.mock("../src/core/composeView.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  flushCaptures: (...args) => captures.flush(...args),
+}));
+const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 
 const { App, disposeApplicationScope } = await import("../src/app.js");
 const { contextFor, knownContexts, liveContexts } = await import("../src/core/deviceContexts.js");
-const { goOffline, openDeviceSessions, resume, setHomeDevice } = await import("../src/connection.js");
+const { claimHomeContext, goOffline, openDeviceSessions, resume, setHomeDevice } = await import(
+  "../src/connection.js"
+);
 const { markDeviceOnline } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
@@ -91,6 +100,7 @@ beforeEach(() => {
   App.route = { name: "inbox" };
   terminals.terminalsRideOn.mockClear();
   terminals.retargetTerminals.mockClear();
+  captures.flush.mockClear();
   relay.openRelaySession.mockReset();
   relay.openRelaySession.mockImplementation(async (options) => {
     opened.push(options);
@@ -118,6 +128,7 @@ const liveIds = () => liveContexts().map((context) => context.deviceId);
 /** Boot: open every online device and name the first one home, as the gate does. */
 async function connectEveryDevice() {
   const sessions = openDeviceSessions();
+  claimHomeContext(await sessions.first);
   const contexts = await sessions.settled;
   await flush();
   return contexts;
@@ -140,6 +151,10 @@ describe("per-device connections", () => {
     expect(feed.items.map((item) => item.deviceId)).toEqual(["dev-a", "dev-b"]);
     expect(bannerShown()).toBe(false);
     expect(document.body.classList.contains("offline")).toBe(false);
+    // dev-a is home, so the aliases the composer and the frozen views read must
+    // say so — the banner's silence is about the account, not about them.
+    expect(App.offline).toBe(true);
+    expect(App.offlineSince).toBe(contextFor("dev-a").offlineSince);
   });
 
   it("says every device is offline once the last one goes", async () => {
@@ -190,6 +205,7 @@ describe("per-device connections", () => {
     expect(openedFor("dev-b")).toHaveLength(1);
     expect(contextFor("dev-b").session).toBe(other);
     expect(other.close).not.toHaveBeenCalled();
+    expect(App.offline).toBe(false); // home is back, and the aliases say so
   });
 
   it("connects a device that comes online after boot, without a reload", async () => {
@@ -197,12 +213,17 @@ describe("per-device connections", () => {
     App.devices = devices;
     await connectEveryDevice();
     expect(liveIds()).toEqual(["dev-a"]);
+    captures.flush.mockClear(); // home already took the queue when it came up
 
     markDeviceOnline("dev-b");
     await flush();
 
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
     expect(contextFor("dev-b").session).toBe(lastSession("dev-b"));
+    // It joined the account, it did not take it over: home is untouched, and
+    // the captures waiting for a device are not offered to it.
+    expect(App.session).toBe(lastSession("dev-a"));
+    expect(captures.flush).not.toHaveBeenCalled();
   });
 
   it("resolves the first success without waiting on the slowest device", async () => {
@@ -231,6 +252,7 @@ describe("per-device connections", () => {
     expect(App.call).toBe(home.call);
     expect(App.cacheScope).toBe(contextFor("dev-b").cacheScope);
     expect(terminals.retargetTerminals).toHaveBeenCalled();
+    expect(captures.flush).toHaveBeenCalled(); // the new home takes what nobody could send
     expect(stayed.close).not.toHaveBeenCalled();
     expect(contextFor("dev-a").session).toBe(stayed);
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);

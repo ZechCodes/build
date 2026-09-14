@@ -18,7 +18,9 @@ const clean = { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/b
 
 const branchRow = (over = {}) => ({
   kind: "branch",
+  deviceId: "dev-1",
   project_id: "p1",
+  projectKey: "dev-1/p1",
   branch: "build/login",
   state: "review",
   worktree_id: "wt-1",
@@ -146,7 +148,7 @@ describe("what the confirmation promises", () => {
 });
 
 describe("the inbox row this branch is", () => {
-  const urlNames = { projectId: "p1", branch: "build/login" };
+  const urlNames = { projectId: "p1", branch: "build/login", projectKey: "dev-1/p1" };
 
   it("names a run-backed branch the way the inbox names it", () => {
     const backing = branchRow({ run_id: "run-1", worktree_id: "wt-1" });
@@ -163,10 +165,23 @@ describe("the inbox row this branch is", () => {
   it("names a branch with no checkout by its project and its name", () => {
     const backing = branchRow({ run_id: null, worktree_id: null });
     expect(branchInboxKey(backing, urlNames)).toBe(entryKeyOf(backing));
-    expect(branchInboxKey(backing, urlNames)).toBe("branch:p1:build/login");
+    expect(branchInboxKey(backing, urlNames)).toBe("branch:dev-1/p1:build/login");
+  });
+
+  it("keys a no-entity row by the projectKey it is given", () => {
+    // The surface's own read (`branch.get`) is one device's answer and carries
+    // no account-wide name, so the caller says which project this is — and the
+    // key the inbox is holding the same row under matches.
+    const fromTheWire = { kind: "branch", project_id: "p1", branch: "build/login", run_id: null, worktree_id: null };
+    expect(branchInboxKey(fromTheWire, urlNames)).toBe("branch:dev-1/p1:build/login");
+    expect(branchInboxKey(fromTheWire, { ...urlNames, projectKey: "dev-2/p1" })).toBe("branch:dev-2/p1:build/login");
+    // A row that already knows its own project outranks what it is told.
+    expect(branchInboxKey(branchRow({ run_id: null, worktree_id: null }), { ...urlNames, projectKey: "dev-2/p1" })).toBe(
+      "branch:dev-1/p1:build/login",
+    );
   });
 
   it("names the URL's branch when the read has not answered", () => {
-    expect(branchInboxKey(null, urlNames)).toBe("branch:p1:build/login");
+    expect(branchInboxKey(null, urlNames)).toBe("branch:dev-1/p1:build/login");
   });
 });

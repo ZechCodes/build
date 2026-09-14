@@ -13,9 +13,9 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 
 let feedItems = [];
 const feedProjects = [
-  { id: "p1", name: "relaydb" },
-  { id: "p2", name: "dotfiles" },
-  { id: "p3", name: "mascot" },
+  { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb" },
+  { id: "p2", deviceId: "dev-1", projectKey: "dev-1/p2", name: "dotfiles" },
+  { id: "p3", deviceId: "dev-1", projectKey: "dev-1/p3", name: "mascot" },
 ];
 let subscriber = null;
 const refreshFeed = vi.fn(async () => subscriber && subscriber({ items: feedItems, projects: feedProjects }));
@@ -52,7 +52,9 @@ const hoursAgo = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOStri
 
 const branchRow = (over = {}) => ({
   kind: "branch",
+  deviceId: "dev-1",
   project_id: "p1",
+  projectKey: "dev-1/p1",
   project: "relaydb",
   branch: "build/login",
   title: "Fix the login flow",
@@ -75,7 +77,9 @@ const branchRow = (over = {}) => ({
 
 const primaryRow = (over = {}) => ({
   kind: "branch",
+  deviceId: "dev-1",
   project_id: "p1",
+  projectKey: "dev-1/p1",
   project: "relaydb",
   branch: "main",
   title: "relaydb",
@@ -98,7 +102,9 @@ const primaryRow = (over = {}) => ({
 
 const issueRow = (over = {}) => ({
   kind: "issue",
+  deviceId: "dev-1",
   project_id: "p2",
+  projectKey: "dev-1/p2",
   project: "dotfiles",
   branch: null,
   title: "Rework the prompt cache",
@@ -120,6 +126,7 @@ const issueRow = (over = {}) => ({
 
 const captureRow = (over = {}) => ({
   kind: "capture",
+  deviceId: "dev-1",
   capture_id: "cap-1",
   project_id: "",
   project: "",
@@ -220,7 +227,7 @@ describe("the projects face", () => {
     expect(loose).toEqual(["capture:cap-1"]);
     // relaydb's oldest row (the primary, 50h) beats dotfiles' (1h); mascot has nothing.
     expect(blocks().map((block) => block.dataset.project)).toEqual(["p1", "p2", "p3"]);
-    expect(rowsIn(blockFor("p1"))).toEqual(["branch:p1:main", "run-1"]);
+    expect(rowsIn(blockFor("p1"))).toEqual(["branch:dev-1/p1:main", "run-1"]);
     expect(rowsIn(blockFor("p2"))).toEqual(["iss-1"]);
     expect(rowsIn(blockFor("p3"))).toEqual([]);
     // Nothing in mascot at all: flat, no empty line, and nothing to fold.

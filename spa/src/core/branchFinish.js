@@ -73,11 +73,16 @@ export function branchFinishFailureSummary(name) {
   return `Couldn't finish ${name || "this item"}`;
 }
 
-export function branchInboxKey(row, { projectId, branch }) {
+/** The name the inbox is holding this branch's row under. A row with no entity
+ *  of its own is named by its project, and a project is only named once the
+ *  device is said with it — a `branch.get` answer is one device's and carries
+ *  no such name, so the caller says which project key this surface is on. */
+export function branchInboxKey(row, { projectId, branch, projectKey }) {
   return entryKeyOf({
     ...row,
     kind: "branch",
     project_id: (row && row.project_id) || projectId,
+    projectKey: (row && row.projectKey) || projectKey,
     branch: (row && row.branch) || branch,
   });
 }

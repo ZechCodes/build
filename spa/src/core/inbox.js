@@ -116,7 +116,9 @@ const PENDING_LINE = {
 const pendingItem = (row) => ({
   kind: "branch",
   entity_id: row.entity_id,
+  deviceId: row.deviceId,
   project_id: row.project_id,
+  projectKey: row.projectKey,
   project: row.project,
   title: row.title,
   branch: row.branch || null,
@@ -195,10 +197,15 @@ const ms = (iso) => {
 /** What names a row in the DOM — the one name every row has. Usually the
  *  entity id; a project's primary checkout is the repository, which takes no
  *  attention and has no entity, and it is still a row you open and clear.
- *  Exported so the wiring can match a feed row to the keys it is holding. */
+ *
+ *  A row with no entity is named by its project, and a project is only named
+ *  once you also say which device it is on (core/deviceKey.js): two machines
+ *  both call their first project `proj-1`, and their `main` rows are two rows.
+ *  So the key carries the projectKey the feed stamped, in the shape it always
+ *  had. Exported so the wiring can match a feed row to the keys it is holding. */
 export const entryKeyOf = (item) => {
   if (item.kind === "capture") return `capture:${item.capture_id}`;
-  return entityIdOf(item) || (item.kind === "issue" ? `issue:${item.project_id}` : `branch:${item.project_id}:${item.branch}`);
+  return entityIdOf(item) || (item.kind === "issue" ? `issue:${item.projectKey}` : `branch:${item.projectKey}:${item.branch}`);
 };
 
 /**
@@ -287,6 +294,10 @@ function toCaptureEntry(item) {
     kind: "capture",
     captureId: item.capture_id,
     captureState: item.state,
+    // Which machine answered for this row, and the account-wide name of the
+    // project it is on — both stamped by the feed, both carried as they came.
+    deviceId: item.deviceId,
+    projectKey: item.projectKey,
     projectId: item.project_id || "",
     project: item.project || "",
     branch: item.branch || null,
@@ -334,6 +345,8 @@ function toEntry(item) {
     key: entryKeyOf(item),
     entityId,
     kind: item.kind,
+    deviceId: item.deviceId,
+    projectKey: item.projectKey,
     projectId: item.project_id,
     project: item.project || item.project_id || "",
     branch: item.branch || null,

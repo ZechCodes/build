@@ -8,6 +8,7 @@ import {
   branchDoneConfirm,
   dismissParamsOf,
   entryFactsText,
+  entryKeyOf,
   entryRoute,
   entryState,
   inboxEmptyHtml,
@@ -26,7 +27,9 @@ const ago = (hours) => new Date(NOW - hours * 3600 * 1000).toISOString();
 
 const branch = (over = {}) => ({
   kind: "branch",
+  deviceId: "dev-1",
   project_id: "p1",
+  projectKey: "dev-1/p1",
   project: "relaydb",
   branch: "build/login",
   title: "Fix the login flow",
@@ -63,7 +66,9 @@ const branch = (over = {}) => ({
 
 const issue = (over = {}) => ({
   kind: "issue",
+  deviceId: "dev-1",
   project_id: "p2",
+  projectKey: "dev-1/p2",
   project: "dotfiles",
   branch: null,
   title: "Rework the prompt cache",
@@ -173,7 +178,7 @@ describe("the order the list reads in", () => {
       branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, anchor: null }),
       issue({ anchor: ago(1) }),
     ]);
-    expect(entries.map((entry) => entry.key)).toEqual(["iss-1", "branch:p1:main"]);
+    expect(entries.map((entry) => entry.key)).toEqual(["iss-1", "branch:dev-1/p1:main"]);
   });
 });
 
@@ -216,10 +221,10 @@ describe("what the inbox lists", () => {
     // The repository takes no attention, so the row names no entity — and it
     // still has a key to be opened by, and its own menu to be cleared from.
     expect(entries[0].entityId).toBeNull();
-    expect(entries[0].key).toBe("branch:p1:main");
+    expect(entries[0].key).toBe("branch:dev-1/p1:main");
     expect(entries[0].route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "changes" });
     const html = inboxRowHtml(entries[0], {});
-    expect(html).toContain('data-key="branch:p1:main"');
+    expect(html).toContain('data-key="branch:dev-1/p1:main"');
     expect(html).not.toContain("data-entity");
     expect(html).toContain("data-menu");
   });
@@ -369,7 +374,7 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(items).toHaveLength(1);
     const entries = listed(items);
     expect(entries).toHaveLength(1);
-    expect(entries[0].key).toBe("branch:p1:main");
+    expect(entries[0].key).toBe("branch:dev-1/p1:main");
     expect(entries[0].facts).toBe("Creating…");
     expect(entries[0].placeholder).toBe(false);
   });
@@ -546,8 +551,8 @@ describe("a row the user cleared", () => {
     const [entry] = listed([
       branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false }),
     ]);
-    const html = inboxRowHtml(entry, { openMenuKey: "branch:p1:main" });
-    expect(html).toContain('data-dismiss="branch:p1:main"');
+    const html = inboxRowHtml(entry, { openMenuKey: "branch:dev-1/p1:main" });
+    expect(html).toContain('data-dismiss="branch:dev-1/p1:main"');
     expect(html).toContain("Clear from inbox");
     expect(html).not.toContain('data-mute="');
     expect(html).not.toContain('data-done="');
@@ -561,7 +566,7 @@ describe("a row the user cleared", () => {
       branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: true }),
     ]);
     expect(entry.canFinish).toBe(false);
-    const html = inboxRowHtml(entry, { openMenuKey: "branch:p1:main" });
+    const html = inboxRowHtml(entry, { openMenuKey: "branch:dev-1/p1:main" });
     expect(html).not.toContain("data-done=");
   });
 
@@ -826,6 +831,7 @@ describe("the Done confirmations", () => {
 
 const captureItem = (over = {}) => ({
   kind: "capture",
+  deviceId: "dev-1",
   capture_id: "capture-1",
   project_id: "",
   project: "",
@@ -1031,6 +1037,43 @@ describe("capture rows", () => {
     const html = inboxRowHtml(entry, {});
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<script>");
+  });
+});
+
+// ---- what names a row across the account ---------------------------------------
+// Two devices both call their first project `proj-1`, so a row that has no
+// entity of its own — a project's primary checkout, a branch with no checkout —
+// is named by the project key, never the bare project id.
+describe("what names a row", () => {
+  it("keys a no-entity row by its projectKey, in the same shape as before", () => {
+    const primary = branch({ run_id: null, worktree_id: null, branch: "main", primary: true });
+    expect(entryKeyOf(primary)).toBe("branch:dev-1/p1:main");
+    expect(entryKeyOf({ ...primary, deviceId: "dev-2", projectKey: "dev-2/p1" })).toBe("branch:dev-2/p1:main");
+    const plan = issue({ issue_id: null, run_id: null, worktree_id: null });
+    expect(entryKeyOf(plan)).toBe("issue:dev-1/p2");
+  });
+
+  it("keys a row that has an entity by that entity, whichever device it is on", () => {
+    expect(entryKeyOf(branch())).toBe("run-1");
+    expect(entryKeyOf({ ...branch(), deviceId: "dev-2", projectKey: "dev-2/p1" })).toBe("run-1");
+  });
+
+  it("keys a capture by the capture, as it always has", () => {
+    expect(entryKeyOf(captureItem())).toBe("capture:capture-1");
+    expect(entryKeyOf(captureItem({ deviceId: "dev-2" }))).toBe("capture:capture-1");
+  });
+
+  it("carries deviceId and projectKey onto every entry", () => {
+    const entries = listed([branch(), issue(), captureItem()]);
+    expect(entries.map((entry) => entry.deviceId)).toEqual(["dev-1", "dev-1", "dev-1"]);
+    expect(entries.map((entry) => entry.projectKey)).toEqual(["dev-1/p1", "dev-1/p2", undefined]);
+    // The wire's own field is untouched: the bridge still wants the bare id.
+    expect(entries[0].projectId).toBe("p1");
+  });
+
+  it("still names a cleared row on the wire by its bare project id", () => {
+    const [entry] = listed([branch({ run_id: null, worktree_id: null, branch: "main", primary: true })]);
+    expect(dismissParamsOf(entry)).toEqual({ project_id: "p1", primary: true });
   });
 });
 

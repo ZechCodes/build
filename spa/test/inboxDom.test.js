@@ -11,8 +11,8 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 
 let feedItems = [];
 const feedProjects = [
-  { id: "p1", name: "relaydb" },
-  { id: "p2", name: "dotfiles" },
+  { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb" },
+  { id: "p2", deviceId: "dev-1", projectKey: "dev-1/p2", name: "dotfiles" },
 ];
 let subscriber = null;
 const refreshFeed = vi.fn(async () => subscriber && subscriber({ items: feedItems, projects: feedProjects }));
@@ -61,7 +61,9 @@ const hoursAgo = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOStri
 
 const branchRow = (over = {}) => ({
   kind: "branch",
+  deviceId: "dev-1",
   project_id: "p1",
+  projectKey: "dev-1/p1",
   project: "relaydb",
   branch: "build/login",
   title: "Fix the login flow",
@@ -96,7 +98,9 @@ const branchRow = (over = {}) => ({
 
 const issueRow = (over = {}) => ({
   kind: "issue",
+  deviceId: "dev-1",
   project_id: "p2",
+  projectKey: "dev-1/p2",
   project: "dotfiles",
   branch: null,
   title: "Rework the prompt cache",
@@ -330,7 +334,7 @@ describe("the inbox rail", () => {
 
   it("opens a project's primary checkout, which names no entity to read", async () => {
     feed([branchRow({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, unread: false })]);
-    document.querySelector('#inbox-list .inbox-entry[data-key="branch:p1:main"]').click();
+    document.querySelector('#inbox-list .inbox-entry[data-key="branch:dev-1/p1:main"]').click();
     await flush();
     expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
     expect(location.hash).toBe("#/project/p1/branch/main/changes");
@@ -851,14 +855,14 @@ describe("captures on the rail", () => {
   // beside it — there is no voice to mute and nothing to finish.
   it("clears the primary row by naming the project's checkout", async () => {
     feed([branchRow({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, unread: false })]);
-    const row = document.querySelector('.inbox-entry[data-key="branch:p1:main"]');
+    const row = document.querySelector('.inbox-entry[data-key="branch:dev-1/p1:main"]');
     row.querySelector("[data-menu]").click();
     await flush();
-    const open = document.querySelector('.inbox-entry[data-key="branch:p1:main"]');
+    const open = document.querySelector('.inbox-entry[data-key="branch:dev-1/p1:main"]');
     expect(open.querySelector("[data-mute]")).toBeNull();
     expect(open.querySelector("[data-done]")).toBeNull();
     open.querySelector("[data-dismiss]").click();
-    expect(document.querySelector('.inbox-entry[data-key="branch:p1:main"]')).toBeNull();
+    expect(document.querySelector('.inbox-entry[data-key="branch:dev-1/p1:main"]')).toBeNull();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.dismiss", { project_id: "p1", primary: true });
     expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
@@ -871,11 +875,11 @@ describe("captures on the rail", () => {
       return { ok: true };
     });
     feed([branchRow({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, unread: false })]);
-    document.querySelector('.inbox-entry[data-key="branch:p1:main"]').querySelector("[data-menu]").click();
+    document.querySelector('.inbox-entry[data-key="branch:dev-1/p1:main"]').querySelector("[data-menu]").click();
     await flush();
-    document.querySelector('.inbox-entry[data-key="branch:p1:main"]').querySelector("[data-dismiss]").click();
+    document.querySelector('.inbox-entry[data-key="branch:dev-1/p1:main"]').querySelector("[data-dismiss]").click();
     await flush();
-    const row = document.querySelector('.inbox-entry[data-key="branch:p1:main"]');
+    const row = document.querySelector('.inbox-entry[data-key="branch:dev-1/p1:main"]');
     expect(row).toBeTruthy();
     const error = row.querySelector("[data-done-error]");
     expect(error.hidden).toBe(false);

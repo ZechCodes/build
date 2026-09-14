@@ -234,6 +234,53 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// On a phone the panel is not a column beside the work, it is laid over it
+// (styles/shell.css, `@media (max-width: 760px)`). A workspace opened at
+// 390x844 therefore showed the conversation and nothing else — no Files, no
+// Changes, and nothing on screen saying the strip was the way back to them.
+// The panel is out by default only where both fit; the reader's own choice,
+// once made, holds at either width.
+describe("where the conversation panel starts", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+
+  afterEach(() => atWidth(1024));
+
+  it("is out beside the work on a desktop and shut over it on a phone", async () => {
+    atWidth(1024);
+    await mount();
+    expect(panel()).toBeTruthy();
+    rail.dispose();
+
+    atWidth(390);
+    await mount();
+    expect(panel()).toBeNull();
+  });
+
+  it("opens on the strip's bubble on a phone, and shuts on a second press", async () => {
+    atWidth(390);
+    await mount();
+
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBeTruthy();
+
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBeNull();
+  });
+
+  it("holds a phone reader's own choice across mounts", async () => {
+    atWidth(390);
+    await mount();
+    bubbles()[0].click();
+    await flush();
+    rail.dispose();
+
+    await mount();
+    expect(panel()).toBeTruthy();
+  });
+});
+
 describe("the bubble strip", () => {
   it("is one bubble per agent plus the one that adds another", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2, unread_count: 4, working: true })] });

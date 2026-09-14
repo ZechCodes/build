@@ -323,12 +323,24 @@ export function resetAgentRailMemory() {
   // is retired with its account/device scope. Kept for old test harnesses.
 }
 
+/** The width the panel stops sitting beside the work and is laid over it
+ *  instead (styles/shell.css, `@media (max-width: 760px)`). */
+const PANEL_OVERLAYS_BELOW = 761;
+
+/** Whether the panel is out before anyone has said. Beside the work it is: the
+ *  conversation and the work are both on screen and neither costs the other
+ *  anything. Laid over the work it is not, or a workspace opens showing its
+ *  conversation and nothing else — no Files, no Changes, and nothing on screen
+ *  saying the strip is the way back to them. A reader who has made the choice
+ *  keeps it, at either width. */
 const readExpanded = () => {
   try {
-    return localStorage.getItem(EXPANDED_KEY) !== "0";
+    const remembered = localStorage.getItem(EXPANDED_KEY);
+    if (remembered !== null) return remembered !== "0";
   } catch {
-    return true;
+    /* private mode: the default below is the whole answer */
   }
+  return window.innerWidth >= PANEL_OVERLAYS_BELOW;
 };
 
 const writeExpanded = (on) => {

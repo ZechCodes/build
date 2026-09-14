@@ -305,6 +305,13 @@ describe("a work item that keeps losing its agent", () => {
     }
   };
 
+  /** The frame these cases run at. The phone case below moves it, and the panel
+   *  starts shut below 761px, so it is put back for whoever runs next. */
+  const atWidth = (width, height) => {
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: height, configurable: true });
+  };
+
   beforeEach(() => {
     document.body.innerHTML = bodyHtml;
     localStorage.clear();
@@ -315,6 +322,7 @@ describe("a work item that keeps losing its agent", () => {
   afterEach(() => {
     if (rail) rail.dispose();
     rail = null;
+    atWidth(1024, 768);
     vi.useRealTimers();
   });
 
@@ -344,9 +352,13 @@ describe("a work item that keeps losing its agent", () => {
   // work in CSS and changes nothing about what paints — so the guard has to
   // hold at a phone's width for the same reason it holds at a desk's.
   it("keeps it at a phone's width, where losing it costs the keyboard", async () => {
-    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
-    Object.defineProperty(window, "innerHeight", { value: 844, configurable: true });
+    atWidth(390, 844);
+    // The panel is shut by default at this width, so the case opens it the way
+    // a phone reader does — the strip's bubble — before there is a box to type
+    // into at all.
     await mount();
+    document.querySelector(".rail-bubble").click();
+    await flush();
     const input = typeInto();
 
     await flap((tick) => (tick % 2 ? bareCheckout() : withAgent()), 12);

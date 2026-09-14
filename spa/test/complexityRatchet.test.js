@@ -24,7 +24,9 @@ import { describe, it, expect } from "vitest";
 // 69 since the cache syncer follows a device at a time: onSnapshot now only
 // walks the merged snapshot's devices, and the work it used to do inline is
 // syncDeviceSnapshot.
-const RATCHETED_FUNCTIONS = 69;
+// 68 since each route kind writes its own hash: hashFromRoute looks the writer
+// up instead of walking every kind in one chain.
+const RATCHETED_FUNCTIONS = 68;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

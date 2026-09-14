@@ -219,6 +219,8 @@ function surfaceFromSegments(parts) {
   }
 }
 
+const encode = encodeURIComponent;
+
 /// The `?path=…&line=…` a Files route ends with, and nothing at all for every
 /// other tab: only Files stands in a file.
 function tabPlaceSuffix(route, tab) {
@@ -232,33 +234,44 @@ function tabPlaceSuffix(route, tab) {
 /// project is on, when the route names one, and the project itself. A route
 /// that names no device is written without one — a device is never invented.
 function projectPrefix(route) {
-  const encode = encodeURIComponent;
   const project = `project/${encode(route.projectId)}`;
   return route.deviceId ? `#/device/${encode(route.deviceId)}/${project}` : `#/${project}`;
 }
+
+// The surfaces that are about one machine's checkout, and so cannot be opened
+// until the route says which machine: every device mints a `proj-1`.
+const WORK_SURFACES = new Set(["branch", "issue"]);
 
 /// A work route that names no machine is a question, not a destination: park it
 /// on the resolve route that asks the feed which device holds that project, and
 /// keep the route it meant (and the terminal it named) for the answer.
 export function withDeviceOrResolve(route) {
-  if (!route || route.deviceId || !route.projectId) return route;
-  if (route.name !== "branch" && route.name !== "issue") return route;
+  if (!route || route.deviceId || !route.projectId || !WORK_SURFACES.has(route.name)) return route;
   return { name: "resolve", kind: "project", projectId: route.projectId, route, ...termOf(route.term) };
 }
 
-// eslint-disable-next-line complexity -- ratchet: hashFromRoute is at 12, cap 10 — reduce it, then drop this line
-export function hashFromRoute(route) {
-  const encode = encodeURIComponent;
-  if (route.name === "branch" && route.projectId && route.branch) {
+/// How each kind of route is written, one writer per kind. A writer answers
+/// null when the route is missing what its URL is made of — an unwritable route
+/// has no link of its own, and the inbox is where the app lands without one.
+/// The `resolve` routes are the same: a question has no URL, only the URL that
+/// asked it (see withDeviceOrResolve).
+const HASH_WRITERS = Object.freeze({
+  branch: (route) => {
+    if (!route.projectId || !route.branch) return null;
     const tab = branchTab(route.tab);
     return `${projectPrefix(route)}/branch/${encode(route.branch)}/${tab}${tabPlaceSuffix(route, tab)}`;
-  }
-  if (route.name === "issue" && route.projectId && route.id) {
+  },
+  issue: (route) => {
+    if (!route.projectId || !route.id) return null;
     const base = `${projectPrefix(route)}/issue/${encode(route.id)}`;
     return route.stage ? `${base}/stage/${encode(route.stage)}` : base;
-  }
-  if (route.name === "device" && route.id) return `#/device/${encode(route.id)}/settings`;
-  if (route.name === "capture" && route.id) return `#/capture/${encode(route.id)}`;
-  if (route.name === "account") return `#/account/${ACCOUNT_PAGES.has(route.page) ? route.page : "settings"}`;
-  return "#/inbox";
+  },
+  device: (route) => (route.id ? `#/device/${encode(route.id)}/settings` : null),
+  capture: (route) => (route.id ? `#/capture/${encode(route.id)}` : null),
+  account: (route) => `#/account/${ACCOUNT_PAGES.has(route.page) ? route.page : "settings"}`,
+});
+
+export function hashFromRoute(route) {
+  const write = HASH_WRITERS[route.name];
+  return (write && write(route)) || "#/inbox";
 }

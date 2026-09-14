@@ -582,9 +582,33 @@ gate suites onto the defects listed above. Where a case named something main
 retired, the case was retired with a comment naming the retirement rather than
 dropped in silence.
 
-The complexity ratchet reads **66** — both sides retired counted functions, and
-the integration added no new `eslint-disable-next-line complexity`. The jsdom
-suite is 245 files / 4177 tests, green with lint and build.
+The complexity ratchet reads **65** — both sides retired counted functions, the
+integration added no new `eslint-disable-next-line complexity`, and the rail's
+projects face retired one when it stopped painting checkout blocks. The jsdom
+suite is 246 files / 4196 tests, green with lint and build.
+
+After the packages landed, a review pass over the merged tree found and fixed
+these, each with its case first:
+
+- `greetLiveBridge` still called a listener that went with main's
+  `onBridgeSelected`, so `adoptBridgeSelection` was never reached in production
+  while `gateVersionDom` passed by driving it directly; `connectionGreeting`
+  now pins the wiring.
+- A device's settings page opened its own session and issued v1-shaped calls at
+  whatever answered, whatever that machine's greeting had settled. It reads that
+  machine's context first and says which side is behind.
+- A pinned-key mismatch was rethrown but not remembered, so the waiting screen's
+  three-second poll re-dialled the same impostor forever (see (d) above).
+- The feed polled a device whose bridge it cannot read; `tick` asks `canAnswer`
+  now, as every other surface does.
+- A row's Done was left live while its machine was away, and a machine that is
+  version-behind was called "offline" on its rows rather than asked for the
+  update.
+- The rail listed workspaces only, so capture rows — and the whole of
+  `core/inboxCaptures.js` — were wired to nothing. Captures stand above the
+  workspaces again.
+- Retired with their cases: `projectBlocks` (the projects face's branch-and-issue
+  blocks) and `workMenuModel` (the toolbar's item selector).
 
 ### Verified
 

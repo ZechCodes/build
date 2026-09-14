@@ -12,7 +12,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let App;
 let subscribeFeed, refreshFeed, startFeed, stopFeed, joinFeed, dropFeedDevice;
-let adoptDeviceSession, retireDeviceContext, resetDeviceContexts;
+let adoptBridgeSelection, adoptDeviceSession, retireDeviceContext, resetDeviceContexts;
 let armChangeEvents, dispatchChangeEvent, resetChangeEvents, SAFETY_POLL_MS;
 
 beforeEach(async () => {
@@ -23,7 +23,7 @@ beforeEach(async () => {
   ({ subscribeFeed, refreshFeed, startFeed, stopFeed, joinFeed, dropFeedDevice } = await import(
     "../src/core/taskFeed.js"
   ));
-  ({ adoptDeviceSession, retireDeviceContext, resetDeviceContexts } = await import(
+  ({ adoptBridgeSelection, adoptDeviceSession, retireDeviceContext, resetDeviceContexts } = await import(
     "../src/core/deviceContexts.js"
   ));
   ({ armChangeEvents, dispatchChangeEvent, resetChangeEvents, SAFETY_POLL_MS } = await import(
@@ -195,6 +195,28 @@ describe("the shared feed", () => {
     await stale;
 
     expect(seen).toEqual([]);
+  });
+
+  // A bridge speaking an API major no adapter here claims is answering, in a
+  // shape this tab cannot read: every answer off it would be a guess. The rows
+  // it gave while it was readable stay in the merge — the rail greys them —
+  // and nothing asks it for more.
+  it("stops reading a device whose bridge speaks an API this app cannot read", async () => {
+    const call = vi.fn(async (method) => (method === "project.list" ? { projects: [] } : { items: [{ id: "a" }] }));
+    const context = device("dev-a", call);
+    const reads = () => call.mock.calls.filter(([method]) => method === "board.list").length;
+    let snapshot = null;
+    subscribeFeed((feed) => (snapshot = feed));
+    startFeed();
+    await settle();
+    expect(reads()).toBe(1);
+
+    adoptBridgeSelection(context, { version: "2.0.0", unsupported: "app" }, null);
+    await refreshFeed();
+    await refreshFeed("dev-a");
+
+    expect(reads()).toBe(1);
+    expect(snapshot.items.map((item) => item.id)).toEqual(["a"]);
   });
 
   it("takes a retired device's rows out of the merge and delivers what is left", async () => {

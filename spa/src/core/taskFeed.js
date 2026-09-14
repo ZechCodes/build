@@ -8,7 +8,7 @@
 // their answers are kept in, and who is told when one of them moves.
 
 import { App } from "../app.js";
-import { contextFor, liveContexts } from "./deviceContexts.js";
+import { canAnswer, contextFor, liveContexts } from "./deviceContexts.js";
 import { watchChanges } from "./changeEvents.js";
 import { liveFeedSnapshot, mergeFeeds } from "./feedMerge.js";
 import { readCached } from "./localCache.js";
@@ -47,11 +47,14 @@ export function primaryRunIdFor(feed, projectKey) {
   return (entry && entry.run_id) || null;
 }
 
-/** Read one device. A context that was retired (or whose scope stopped
- *  addressing the cache) while its answer was in flight has nothing to say
- *  about now, so its answer is dropped rather than merged. */
+/** Read one device — if it can be asked anything at all. A machine that is away,
+ *  or whose bridge answers in a shape this tab cannot read, is not read: the
+ *  rows it last gave stay in the merge, greyed by the rail, until it can answer
+ *  again. A context that was retired (or whose scope stopped addressing the
+ *  cache) while its answer was in flight has nothing to say about now, so its
+ *  answer is dropped rather than merged. */
 async function tick(context) {
-  if (!context || !context.active()) return;
+  if (!canAnswer(context) || !context.active()) return;
   try {
     const [board, projectList, workspaceList] = await Promise.all([
       context.call("board.list"),

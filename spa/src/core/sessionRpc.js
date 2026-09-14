@@ -142,6 +142,8 @@ export function createSessionRpc({
      * `method` (wire spec step 1.4), so the bridge's dispatcher keeps a cache
      * warm-up out of the focused surface's way. Anything else is foreground
      * and stamps nothing: absence is the default on both ends.
+     * A `null` or zero `timeoutMs` leaves the call pending until an answer or
+     * session failure; it does not create a browser timer.
      */
     async call(
       method,
@@ -189,12 +191,15 @@ export function createSessionRpc({
       });
       // However this settles, nothing is waiting for it any more: a call that
       // timed out must not leave an entry for a later loss to reject at nobody.
-      return Promise.race([
-        answer,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(timedOutError(method, waiting.handoffAttempted)), timeoutMs),
-        ),
-      ]).finally(() => pending.delete(id));
+      const settled = timeoutMs == null || timeoutMs === 0
+        ? answer
+        : Promise.race([
+            answer,
+            new Promise((_, reject) =>
+              setTimeout(() => reject(timedOutError(method, waiting.handoffAttempted)), timeoutMs),
+            ),
+          ]);
+      return settled.finally(() => pending.delete(id));
     },
 
     fail,

@@ -144,6 +144,50 @@ describe("openRelaySession", () => {
     expect(payloads[2]).not.toHaveProperty("priority");
   });
 
+  it("gives workspace detail no default deadline while other calls retain one", async () => {
+    vi.useFakeTimers();
+    try {
+      FakeWebSocket.instances.length = 0;
+      const promise = openRelaySession({
+        relayUrl: "wss://relay.test",
+        transport: fakeTransport,
+        WebSocketImpl: FakeWebSocket,
+        fetchToken: async () => "tok",
+        getPinnedDeviceKey: async () => "pk",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = FakeWebSocket.instances[0];
+      ws.emit("open");
+      await vi.advanceTimersByTimeAsync(0);
+      ws.serverSend({ type: "authenticated" });
+      ws.serverSend({ type: "device_key", device_id: "d", transport_public_key: "pk" });
+      await vi.advanceTimersByTimeAsync(0);
+      const init = ws.sent.find((message) => message.type === "session_init");
+      ws.serverSend({ type: "session_accept", session_id: init.session_id, envelope: {} });
+      const session = await promise;
+
+      const workspace = session.call("workspace.get", { workspace_id: "ws-1" });
+      const ordinary = session.call("project.list", {});
+      workspace.catch(() => {});
+      ordinary.catch(() => {});
+      await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+      await expect(ordinary).rejects.toThrow("project.list timed out");
+
+      const request = ws.sent
+        .map((message) => message.envelope?.frameFields?.payload)
+        .find((payload) => payload?.method === "workspace.get");
+      ws.serverSend({
+        type: "e2ee_envelope",
+        session_id: init.session_id,
+        envelope: { frameFields: { payload: { id: request.id, ok: true, result: { id: "ws-1" } } } },
+      });
+      await expect(workspace).resolves.toEqual({ id: "ws-1" });
+      session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("routes calls and their refusals through the installed adapter", async () => {
     const { promise, ws } = await startOpen();
     const init = await completeHandshake(ws);

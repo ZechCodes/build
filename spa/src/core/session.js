@@ -139,7 +139,10 @@ export async function openRelaySession({
     if (isPaused() && !isSignaling(method)) {
       return Promise.reject(new Error("your device is offline — reconnecting…"));
     }
-    const { timeoutMs = DEFAULT_RPC_TIMEOUT_MS, priority } = callOptions(options);
+    // Workspace detail waits until the bridge answers or the session fails;
+    // every other RPC retains the ordinary browser deadline.
+    const defaultTimeoutMs = method === "workspace.get" ? null : DEFAULT_RPC_TIMEOUT_MS;
+    const { timeoutMs = defaultTimeoutMs, priority } = callOptions(options);
     return rpc.call(method, params, { timeoutMs, priority, carrier: carrierSwitch.wireFor(method) });
   };
 

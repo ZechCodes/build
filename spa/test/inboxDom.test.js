@@ -244,6 +244,23 @@ describe("a workspace's Done", () => {
     await vi.waitFor(() => expect(rows()).toHaveLength(0));
   });
 
+  // Done on the workspace you are standing in leaves you where you are: the
+  // row goes, the surface does not move.
+  it("finishes an already-open clean workspace without navigating", () => {
+    App.route = {
+      name: "workspace",
+      deviceId: "dev-1",
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      sourceId: "source-api",
+      tab: "changes",
+    };
+    feed([workspace({ work_summary: clean })]);
+    rows()[0].querySelector("[data-workspace-done]").click();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(workshopCall).toHaveBeenCalledWith("workspace.finish", { workspace_id: "workspace-1", require_clean: true });
+  });
+
   it("restores the row and shows the bridge's words when finishing fails", async () => {
     workshopCall.mockImplementation(async (method) => {
       if (method === "workspace.finish") throw new Error("Workspace has local changes");
@@ -286,6 +303,34 @@ describe("the projects face", () => {
     expect(rows()[0]).toBe(first);
     expect(rows()[0].textContent).toContain("Checkout updated");
     expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true);
+  });
+
+  it("keeps the active workspace marked in its project and opens only workspace routes", () => {
+    feed([workspace(), workspace({ id: "workspace-2", project_id: "project-2", name: "Marketing", directories: [] })]);
+    setInboxView("projects");
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "project-2", workspaceId: "workspace-2", tab: "changes" };
+    inboxListRouteChanged();
+
+    expect(rows().map((row) => row.classList.contains("active"))).toEqual([false, true]);
+    expect(document.querySelector('[data-project="dev-1/project-2"]').classList.contains("active")).toBe(true);
+
+    document.querySelector('[data-project-open="dev-1/project-2"]').click();
+    expect(navigate).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "workspace", deviceId: "dev-1", projectId: "project-2", workspaceId: "workspace-2" }),
+    );
+  });
+
+  // A project with no workspaces is still one of the account's projects, so it
+  // keeps its block — with nothing to fold, and the chevron shut rather than
+  // missing, so the heads stay in line.
+  it("blocks a project that has no workspaces, with nothing to fold", () => {
+    feed([workspace()]);
+    setInboxView("projects");
+
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]);
+    expect(blocks()[1].querySelectorAll(".inbox-entry")).toHaveLength(0);
+    expect(blocks()[1].querySelector("[data-project-fold]").disabled).toBe(true);
+    expect(blocks()[0].querySelector("[data-project-fold]").disabled).toBe(false);
   });
 
   it("creates a workspace in the project named by its group, on that project's machine", () => {

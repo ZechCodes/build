@@ -451,6 +451,24 @@ describe("per-device connections", () => {
     expect(projectsOffered()).toEqual(["dev-b repo"]);
   });
 
+  // Picking a device that has no session opens one, and the landing already
+  // names it home — the pick is remembered before the connect. Taking it in
+  // hand a second time on the way back re-points what is already pointed,
+  // repaints the picker, delivers a second identical snapshot and offers the
+  // capture queue twice.
+  it("takes a newly opened home device in hand once, not twice", async () => {
+    devices = [online("dev-a", "Laptop"), { id: "dev-b", name: "Desktop", status: "offline" }];
+    App.devices = devices;
+    await connectEveryDevice();
+    App.devices = devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
+    captures.flush.mockClear();
+
+    await setHomeDevice("dev-b");
+
+    expect(App.session).toBe(lastSession("dev-b"));
+    expect(captures.flush).toHaveBeenCalledTimes(1);
+  });
+
   it("pauses only the calls of the device that went offline", async () => {
     await connectEveryDevice();
     const lost = openedFor("dev-a").at(-1);

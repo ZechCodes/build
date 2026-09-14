@@ -276,8 +276,11 @@ export function claimHomeContext(context) {
  *  other device stays live and keeps filling the inbox. */
 export async function setHomeDevice(deviceId) {
   rememberSelectedDevice(deviceId);
-  if (!hasLiveSession(deviceId)) await connectDevice(deviceId);
-  followHomeContext(contextFor(deviceId));
+  // The pick is remembered first, so a device opened here lands as the picked
+  // one and settleHome takes it home on the way in. Following it again would
+  // re-point what is already pointed and offer the capture queue twice.
+  const context = hasLiveSession(deviceId) ? contextFor(deviceId) : await connectDevice(deviceId);
+  if (homeContext() !== context) followHomeContext(context);
   render();
 }
 

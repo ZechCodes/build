@@ -188,7 +188,7 @@ function draw() {
   else drawInbox(list, shown, nowMs);
   list.scrollTop = scroll;
   paintErrors(list);
-  paintDeviceState(list, { entryFor: entryOf, blockFor: (projectKey) => blocksPainted.get(projectKey) || null });
+  paintDeviceState(list, { entryFor: entryOf, blockFor: blockOf });
 }
 
 /** What every row is painted with. `showProject` is whether a row names its
@@ -356,7 +356,11 @@ function paintErrors(list) {
   });
 }
 
+/** The two things the wiring keeps of what it last painted, looked up the same
+ *  way: a row by its key, and a block by its project key. Nothing is ever found
+ *  by a selector built out of an id the daemon minted. */
 const entryOf = (key) => entries.find((entry) => entry.key === key) || null;
+const blockOf = (projectKey) => blocksPainted.get(projectKey) || null;
 
 function closeMenu() {
   if (openMenuKey === null) return;
@@ -453,7 +457,7 @@ function openMenu(key) {
 
 /** The block's name opens the project's checkout, when it has one. */
 function openBlockHead(projectKey) {
-  const block = blocksPainted.get(projectKey);
+  const block = blockOf(projectKey);
   if (block && block.route) goFromInbox(block.route);
 }
 
@@ -461,7 +465,7 @@ function openBlockHead(projectKey) {
  *  unfolded so the new row has somewhere visible to land. The create surface
  *  talks to one bridge, which knows its projects by the bare id it minted. */
 function createInBlock(projectKey) {
-  const block = blocksPainted.get(projectKey);
+  const block = blockOf(projectKey);
   expandFold(projectKey);
   closeMenu();
   if (block) openCreateWork({ projectId: block.id, projectName: block.name, kind: "branch", navigate: goFromInbox });
@@ -478,7 +482,7 @@ function openNewProject() {
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */
 function toggleFold(projectKey) {
-  const block = blocksPainted.get(projectKey);
+  const block = blockOf(projectKey);
   if (!block) return;
   folds.set(projectKey, !blockIsFolded(block, folds));
   persistProjectFolds(folds, localStorage);
@@ -487,7 +491,7 @@ function toggleFold(projectKey) {
 
 /** Creating a branch gives the new row somewhere visible to land. */
 function expandFold(projectKey) {
-  const block = blocksPainted.get(projectKey);
+  const block = blockOf(projectKey);
   if (!block || !blockIsFolded(block, folds)) return;
   folds.set(projectKey, false);
   persistProjectFolds(folds, localStorage);

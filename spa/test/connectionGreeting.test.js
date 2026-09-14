@@ -1,0 +1,95 @@
+// @vitest-environment jsdom
+// What one machine's greeting settles, and where it is written.
+//
+// Every bridge is greeted on its own session, and what that greeting picked is
+// a fact about THAT machine: the adapter its session installed, the API version
+// it reported, and which side is behind when no adapter here speaks to it. The
+// connection layer hands all three to the device's context, because that is
+// what every surface reads to decide whether the machine can be asked anything.
+
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+vi.mock("../src/api.js", () => ({
+  fetchGatewayToken: async () => "tok",
+  fetchIceServers: async () => [],
+  fetchDevices: async () => [],
+}));
+vi.mock("../src/core/session.js", () => ({
+  openRelaySession: async () => {
+    throw new Error("no relay in this suite");
+  },
+}));
+vi.mock("../src/core/peerLink.js", () => ({
+  openPeerLink: async () => {
+    throw new Error("no peer path in jsdom");
+  },
+}));
+vi.mock("../src/terminal/manager.js", () => ({
+  followTerminalDevice: () => {},
+  terminalDeviceId: () => null,
+  terminalManager: () => null,
+  subscribeTerminalStatus: () => () => {},
+}));
+vi.mock("../src/core/composeView.js", () => ({ flushCaptures: async () => {} }));
+
+const { resetApplication } = await import("../src/app.js");
+const { adoptDeviceSession, canAnswer, contextFor, resetDeviceContexts } = await import(
+  "../src/core/deviceContexts.js"
+);
+const { resetChangeEvents } = await import("../src/core/changeEvents.js");
+const { greetLiveBridge } = await import("../src/connection.js");
+
+/** A bridge that answers one greeting and installs whatever the selection
+ *  picked, exactly as core/session.js does. */
+function bridgeAnswering(deviceId, greeting) {
+  let installed = null;
+  return {
+    deviceId,
+    call: vi.fn(async (method) => (method === "session.hello" ? greeting : {})),
+    installAdapter: vi.fn((selection) => {
+      installed = selection.unsupported ? null : selection.create(async () => ({}));
+      return installed;
+    }),
+    adapter: () => installed,
+    onPush: vi.fn(() => () => {}),
+    onCarrier: vi.fn(),
+    peer: vi.fn(),
+    close: vi.fn(),
+  };
+}
+
+const greet = async (deviceId, greeting) => {
+  const session = bridgeAnswering(deviceId, greeting);
+  const context = adoptDeviceSession(session);
+  await greetLiveBridge(context);
+  return { context, session };
+};
+
+beforeEach(() => {
+  resetApplication();
+  resetChangeEvents();
+  resetDeviceContexts();
+});
+
+afterEach(() => {
+  resetChangeEvents();
+  resetDeviceContexts();
+});
+
+describe("what a greeting settles on the device it greeted", () => {
+  it("writes the adapter and the API version onto that machine's context", async () => {
+    const { context, session } = await greet("dev-a", { api_version: "1.0.0", push_events: true });
+    expect(session.installAdapter).toHaveBeenCalledTimes(1);
+    expect(context.adapter).toBe(session.adapter());
+    expect(context.apiVersion).toBe("1.0.0");
+    expect(context.unsupported).toBe(null);
+    expect(canAnswer(context)).toBe(true);
+  });
+
+  it("names the side that is behind, and stops that machine answering", async () => {
+    const { context } = await greet("dev-b", { api_version: "2.0.0", push_events: true });
+    expect(context.adapter).toBe(null);
+    expect(context.unsupported).toBe("app");
+    expect(canAnswer(context)).toBe(false);
+  });
+});

@@ -191,10 +191,12 @@ export function greetLiveBridge(context) {
     // asked for it, not to the one the device is on now.
     isCurrent: () => contextFor(session.deviceId)?.session === session,
     onGreeting: (greeting) => repository?.configureCapabilities(greeting),
-    // The session first, so a gate that lets the app back in finds it there.
+    // The session first, so a gate that lets the app back in finds it there;
+    // then the device's context, which is where every surface reads what this
+    // machine's bridge speaks (core/deviceContexts.js).
     install: (selection) => {
       const adapter = session.installAdapter(selection);
-      bridgeSelectedListener(selection);
+      adoptBridgeSelection(context, selection, adapter);
       return adapter;
     },
   }).catch(() => {

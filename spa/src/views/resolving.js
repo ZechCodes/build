@@ -18,6 +18,12 @@ import { homeDeviceId } from "../core/devicePolicy.js";
 import { liveContexts } from "../core/deviceContexts.js";
 import "../styles/shell.css";
 
+/** How long a link waits for the machines that have not answered yet. A device
+ *  whose session is up but whose board.list keeps failing writes no view at all,
+ *  and a link that waited on it would spin for as long as that bridge stays
+ *  sick; past this, the rows that did arrive are the best answer there is. */
+const WAIT_FOR_DEVICES_MS = 3000;
+
 /** Which device wins a link several of them could open. */
 const devicePolicy = () => ({
   homeDeviceId: homeDeviceId(App.devices, App.selectedDeviceId),
@@ -34,12 +40,29 @@ export function renderResolving() {
     </div>`;
   const reference = App.route;
   let settled = false;
-  const unsubscribe = subscribeFeed((feed) => {
-    if (settled || !answersThisLink(feed)) return;
+  let latest = null; // the merge as it last stood, whether or not everyone has spoken
+  /** Open what this link turns out to mean, once — on the inbox when the feed
+   *  in hand carries nothing by that id. */
+  const land = () => {
+    if (settled) return;
     settled = true;
-    go(resolveLegacyRoute(reference, feed, devicePolicy()) || { name: "inbox" });
+    go(resolveLegacyRoute(reference, latest, devicePolicy()) || { name: "inbox" });
+  };
+  const unsubscribe = subscribeFeed((feed) => {
+    latest = feed;
+    if (answersThisLink(feed)) land();
   });
-  App.viewDispose = unsubscribe;
+  // A snapshot already in hand answers above, before this line: the link has
+  // landed and the surface that took its place owns the teardown now.
+  if (settled) {
+    unsubscribe();
+    return;
+  }
+  const patience = setTimeout(land, WAIT_FOR_DEVICES_MS);
+  App.viewDispose = () => {
+    clearTimeout(patience);
+    unsubscribe();
+  };
 }
 
 /**
@@ -50,7 +73,8 @@ export function renderResolving() {
  * whether another one holds a better answer to the same id. Wait until every
  * device that can answer has — unless none is in a position to, where the boot
  * paint they left behind is everything there is and a link has to land
- * somewhere.
+ * somewhere. The wait itself is bounded by the caller: a machine can be up and
+ * still never answer.
  */
 function answersThisLink(feed) {
   const live = liveContexts();

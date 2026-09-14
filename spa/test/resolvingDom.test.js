@@ -123,6 +123,26 @@ describe("a legacy URL on an account with more than one device", () => {
     expect(App.route).toEqual({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
   });
 
+  // A device whose session is up but whose board.list keeps failing writes no
+  // view at all — taskFeed swallows the error — so a link that waited for every
+  // live device would spin for as long as that bridge stays sick. The wait is
+  // bounded: what the other machines answered is the best answer there is.
+  it("lands on what it has when a live device never answers", () => {
+    vi.useFakeTimers();
+    openSession("dev-1");
+    openSession("dev-2"); // its board.list never lands
+    feedSnapshot = merge({ "dev-1": { items: [primaryRow("dev-1", "main")] } });
+    App.route = { name: "resolve", kind: "primary", projectId: "p1", tab: "changes" };
+
+    renderResolving();
+    expect(App.route.name).toBe("resolve");
+
+    vi.advanceTimersByTime(10_000);
+
+    expect(App.route).toEqual({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
+    vi.useRealTimers();
+  });
+
   // A boot paint is nobody answering — but when no device is in a position to
   // answer, it is everything there is, and a link has to land somewhere rather
   // than spin.

@@ -562,7 +562,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:inherit; font-size:11px; color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
 .rail-surface-menu { flex:none; display:inline-flex; }
-.rail-surface-menu .splitmenu { top:calc(100% + 6px); bottom:auto; }
+.rail-surface-menu .splitmenu { top:calc(100% + 6px); bottom:auto; right:0; left:auto;
+  max-width:calc(100vw - 16px); }
 .rail-remove { flex:none; }
 .rail-remove:hover { background:var(--red-bg); color:var(--red); }
 /* flex:1 — the scroller takes what the pinned composer below leaves it.

@@ -1082,6 +1082,18 @@ describe("the rail status line", () => {
   });
 });
 
+describe("the rail surface menu", () => {
+  // On phones the shared split-menu rule left-aligns menus with their trigger.
+  // This trigger sits at the viewport's right edge, so its menu must grow left.
+  it("anchors its right edge to the header action", () => {
+    const rule = rulesFor(".rail-surface-menu .splitmenu")[0];
+    expect(rule).toBeTruthy();
+    expect(declaration(rule.body, "right")).toBe("0");
+    expect(declaration(rule.body, "left")).toBe("auto");
+    expect(declaration(rule.body, "max-width")).toBe("calc(100vw - 16px)");
+  });
+});
+
 describe("the git toolbar's menus", () => {
   // The reviewer's screenshot: the Push menu opened upward from the git bar and
   // the navigation bar above cut it off. The bar sits at the top of its pane,

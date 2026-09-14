@@ -323,16 +323,19 @@ describe("the Settings page", () => {
       default_harness: "claude_adk",
       agent_modes: { claude: "headless", codex: "tui" },
     };
-    let catalogReads = 0;
+    // The bridge stops answering for its catalog the moment the save lands, so
+    // the page has nothing but the save's own answer to go on.
+    let catalogGone = false;
     await renderWith(async (method, params) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return current;
       if (method === "settings.set") {
         current = { ...current, agent_modes: { ...current.agent_modes, ...params.agent_modes } };
+        catalogGone = true;
         return current;
       }
-      if (method === "models.list" && catalogReads++ < 1) return CATALOG;
-      if (method === "models.list") throw new Error("catalog refresh failed");
+      if (method === "models.list" && catalogGone) throw new Error("catalog refresh failed");
+      if (method === "models.list") return CATALOG;
       return {};
     });
 

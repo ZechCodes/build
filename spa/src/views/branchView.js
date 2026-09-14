@@ -36,8 +36,7 @@ import { createWorktreeReview } from "./worktreeReview.js";
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
-import { deviceKey } from "../core/deviceKey.js";
-import { homeContext } from "../core/deviceContexts.js";
+import { homeProjectKey } from "../core/deviceContexts.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
@@ -240,10 +239,9 @@ export async function renderBranch() {
         autofocusComposer,
       });
   };
-  /** The account-wide name of the project this surface is on. Stage 1's routes
-   *  name no device, so a branch that opens from here is the home device's;
-   *  stage 2 reads the device off the route. */
-  const routeProjectKey = () => deviceKey(homeContext()?.deviceId, projectId);
+  // The account-wide name of the project this surface is on, minted where
+  // every route's is (core/deviceContexts.js).
+  const routeProjectKey = () => homeProjectKey(projectId);
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:
    *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on

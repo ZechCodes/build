@@ -9,6 +9,7 @@
 
 import { App } from "../app.js";
 import { adoptCacheScope, releaseScope, scopeFor } from "./cacheScope.js";
+import { deviceKey } from "./deviceKey.js";
 import { createChatRepository } from "./chatRepository.js";
 import { deviceView } from "./feedMerge.js";
 import { disarmChangeEvents } from "./changeEvents.js";
@@ -129,6 +130,16 @@ function writeOfflineMark(context, { offline = true, sinceMs = null }) {
  *  over homeDeviceId(App.devices, App.selectedDeviceId). */
 export function homeContext() {
   return homeDevice ? contextFor(homeDevice) : null;
+}
+
+/** The account-wide name of a project a route names (core/deviceKey.js). A
+ *  route carries the bare id one bridge minted and every bridge mints a
+ *  `proj-1`, so the device has to come from somewhere: until routes carry one,
+ *  it is the home device's. Answers null when there is no home device or no
+ *  project to name. Stage 2 reads the device off the route and this goes. */
+export function homeProjectKey(projectId) {
+  const home = homeContext();
+  return home && projectId ? deviceKey(home.deviceId, projectId) : null;
 }
 
 /** The home device's slice of a merged feed snapshot. A surface about where you

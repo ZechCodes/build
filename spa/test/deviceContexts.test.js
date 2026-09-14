@@ -12,6 +12,7 @@ import {
   contextFor,
   homeContext,
   homeFeedView,
+  homeProjectKey,
   knownContexts,
   liveContexts,
   resetDeviceContexts,
@@ -156,6 +157,26 @@ describe("the device context registry", () => {
     pointAliasesAt(null);
 
     expect(currentCacheScope()).toBe(null);
+  });
+});
+
+// A route names a project by the bare id one bridge minted, and every device
+// mints a `proj-1`. A surface that has only a route has to say which device it
+// means, and until routes carry one that is the home device.
+describe("the home device's name for a project", () => {
+  it("pairs the home device with the bare id the route names", () => {
+    pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
+
+    expect(homeProjectKey("p1")).toBe("dev-a/p1");
+  });
+
+  it("names no project while no device is home, or with no project to name", () => {
+    expect(homeProjectKey("p1")).toBe(null);
+
+    pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
+
+    expect(homeProjectKey("")).toBe(null);
+    expect(homeProjectKey(undefined)).toBe(null);
   });
 });
 

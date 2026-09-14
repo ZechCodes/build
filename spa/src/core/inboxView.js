@@ -43,8 +43,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { deviceKey } from "./deviceKey.js";
-import { homeContext } from "./deviceContexts.js";
+import { homeProjectKey } from "./deviceContexts.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
@@ -210,13 +209,11 @@ function rowUi(showProject) {
 
 /** The block the route stands in, named the way every block is named. The row
  *  the route opens says which device it is on; a route that matches no row is
- *  the home device's project, because stage 1's routes name no device. Stage 2
- *  reads the device off the route and this goes. */
+ *  the home device's project. */
 function activeProjectKey() {
   const standing = entries.find((entry) => entry.key === activeEntryKey(App.route, entries));
   if (standing) return standing.projectKey || null;
-  const home = homeContext();
-  return home && App.route.projectId ? deviceKey(home.deviceId, App.route.projectId) : null;
+  return homeProjectKey(App.route.projectId);
 }
 
 /** The inbox face: one list, Recent at its end. */

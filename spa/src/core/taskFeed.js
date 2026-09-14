@@ -127,7 +127,15 @@ export function startFeed(intervalMs = 2000) {
   // the safety poll behind it. It owns its own visible-again catch-up above —
   // which reads whether or not anything was pushed — so the registry leaves
   // that alone rather than reading twice.
-  watcher = watchChanges({ refresh: tick, intervalMs, catchUpOnVisible: false });
+  // Board tier (wire spec step 1.6): feed-level state, realtime, foreground —
+  // the only kind board scope carries.
+  watcher = watchChanges({
+    refresh: tick,
+    intervalMs,
+    catchUpOnVisible: false,
+    kinds: ["state"],
+    mode: "realtime",
+  });
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", onVisibilityChange);
   }

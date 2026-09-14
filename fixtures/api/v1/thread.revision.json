@@ -1,0 +1,16 @@
+{
+  "method": "thread.revision",
+  "since": "1.0.0",
+  "params": {
+    "entity_id": "issue-4",
+    "revision_id": "revision-2",
+    "agent_id": "agent-1"
+  },
+  "result": {
+    "revision_id": "revision-2",
+    "artifact": "plan",
+    "created_at": "2026-09-13T09:58:00Z",
+    "contents": "# Stage 2\n\nConvert the thread family.\n"
+  },
+  "errors": ["not_found", "invalid_params", "internal"]
+}

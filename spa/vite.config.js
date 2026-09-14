@@ -78,5 +78,9 @@ export default defineConfig({
     // timeout means something is genuinely stuck.
     hookTimeout: 60_000,
     testTimeout: 20_000,
+    // Node 22+ defines a global `localStorage` that is unusable without
+    // `--localstorage-file`, and its presence stops the jsdom environment
+    // from installing its own. Off, so the DOM suites get jsdom's.
+    execArgv: ["--no-experimental-webstorage"],
   },
 });

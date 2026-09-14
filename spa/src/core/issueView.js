@@ -835,6 +835,9 @@ export function mountIssueView(
     intervalMs: pollMs,
     entity: issueId,
     pausesWhileHidden: false,
+    // Focus tier: an issue is plan, stage and conversation — no checkout.
+    kinds: ["state", "thread"],
+    mode: "realtime",
   });
 
   return {

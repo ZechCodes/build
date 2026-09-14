@@ -1,0 +1,24 @@
+{
+  "method": "settings.get",
+  "since": "1.0.0",
+  "params": {},
+  "result": {
+    "projects_dir": "/home/ada/.build/projects",
+    "default_harness": "claude_adk",
+    "agent_modes": {
+      "claude": "headless",
+      "codex": "tui"
+    },
+    "claude_mode": "headless",
+    "codex_mode": "tui",
+    "isolation": "worktree",
+    "triage_enabled": true,
+    "isolation_available": {
+      "rift": false,
+      "reason": "rift is not installed on this device"
+    }
+  },
+  "errors": [
+    "internal"
+  ]
+}

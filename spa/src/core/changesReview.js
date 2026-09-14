@@ -539,6 +539,9 @@ export function createReviewPlug({
         intervalMs: pollMs,
         entity,
         pausesWhileHidden: false,
+        // Focus tier: the changeset is the working tree and its status.
+        kinds: ["git", "files"],
+        mode: "realtime",
       });
       editedTimeWatcher = watchEditedTimes(host);
     },

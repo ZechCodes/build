@@ -8,6 +8,17 @@
 
 const IDLE_DEADLINE_MS = 2000;
 
+/**
+ * The request-envelope fields a read of this priority rides with (wire spec
+ * step 1.4). Background is stamped so the bridge's dispatcher keeps a cache
+ * warm-up behind the focused surface's reads; foreground stamps nothing,
+ * because absence is what every bridge — this one and the one that predates
+ * the field — reads as foreground.
+ */
+export function requestPriorityFields(priority) {
+  return priority === "background" ? { priority: "background" } : {};
+}
+
 const pending = new Map(); // request key -> { promise, promote }
 const foregroundWaiters = new Set();
 let activeForeground = 0;
@@ -85,8 +96,10 @@ function newRead(priority, load) {
     if (started) return;
     started = true;
     if (asForeground) activeForeground += 1;
+    // A read promoted to foreground crosses the wire as one: the envelope is
+    // stamped where the load starts, not where it was queued.
     Promise.resolve()
-      .then(load)
+      .then(() => load(requestPriorityFields(asForeground ? "foreground" : priority)))
       .then(resolve, reject)
       .finally(() => {
         if (asForeground) finishForeground();
@@ -104,7 +117,8 @@ function newRead(priority, load) {
  * The caller owns the key and must include every field that changes the
  * answer, including the device/session, method, and params. A foreground read
  * starts immediately. A background read waits for active foreground reads and
- * one browser idle turn. Settled reads are forgotten, whether they fulfilled
+ * one browser idle turn. `load` is handed the request-envelope fields its
+ * priority rides with, to pass to the session call it makes. Settled reads are forgotten, whether they fulfilled
  * or rejected, so a later call can refresh or retry.
  */
 export function coordinatedRead({ key, priority = "foreground", load }) {

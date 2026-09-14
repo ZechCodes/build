@@ -1,4 +1,4 @@
-use crate::app::{apply_thread_action, AppState, DeferredWork, DeliveryRunner, SessionRegistry};
+use crate::app::{apply_thread_action, AppState, DeferredJob, DeliveryRunner, SessionRegistry};
 use crate::mcp::{BridgeAction, DoneReport};
 use crate::store::now_rfc3339;
 use crate::timing::{FrameClock, FrameTimer};
@@ -51,7 +51,7 @@ pub(in crate::app) fn authenticated_mcp_owner<'a>(
 pub(in crate::app) async fn apply_off_the_socket(
     state: &Arc<Mutex<AppState>>,
     timer: &FrameTimer,
-    deferred: DeferredWork,
+    deferred: DeferredJob,
 ) -> Result<Value, String> {
     let done = tokio::task::spawn_blocking(move || deferred.run())
         .await
@@ -252,7 +252,7 @@ impl AppState {
         &mut self,
         entity_id: &str,
         report: DoneReport,
-    ) -> Option<DeferredWork> {
+    ) -> Option<DeferredJob> {
         if self.plans.contains_key(entity_id) {
             self.on_plan_agent_done(entity_id, report);
         } else if self.runs.contains_key(entity_id) {
@@ -260,7 +260,7 @@ impl AppState {
         } else {
             eprintln!("on_agent_done: unknown entity {entity_id}");
         }
-        self.deferred_work.take()
+        self.take_deferred()
     }
 
     /// Route a report while retaining the authenticated actor long enough to
@@ -270,7 +270,7 @@ impl AppState {
         entity_id: &str,
         agent_id: &str,
         report: DoneReport,
-    ) -> Option<DeferredWork> {
+    ) -> Option<DeferredJob> {
         self.record_agent_working_since(entity_id, agent_id, None);
         self.done_deferring(entity_id, report)
     }

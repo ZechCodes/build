@@ -1,0 +1,21 @@
+{
+  "method": "capture.list",
+  "since": "1.0.0",
+  "params": {},
+  "result": {
+    "captures": [
+      {
+        "id": "capture-9af2",
+        "text": "remember to bump the relay timeout",
+        "created_at": "2026-09-13T09:40:11.900Z",
+        "anchor_at": "2026-09-13T09:40:11.900Z",
+        "state": "routing",
+        "routing": null,
+        "question": null
+      }
+    ]
+  },
+  "errors": [
+    "internal"
+  ]
+}

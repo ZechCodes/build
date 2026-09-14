@@ -21,7 +21,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use crate::api::clients::ClientRegistry;
 
 /// A frame that takes longer than this, end to end and queue wait included, is
 /// worth one line of stderr on its own. Below it the histograms are the record;
@@ -66,6 +69,64 @@ const BUCKET_CEILINGS_MICROS: [u64; 18] = [
 /// read back under test.
 pub type SlowFrameSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Which of the two dispatch queues a frame rides.
+///
+/// Foreground is what a human is looking at right now; background is the tier
+/// that keeps the rest of the board warm. Absent from an envelope means
+/// foreground: every client and every internal caller that predates the field
+/// keeps the queue it always had.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    #[default]
+    Foreground,
+    Background,
+}
+
+impl Priority {
+    /// The name this queue answers to in `bridge.stats` and on the wire.
+    pub fn label(self) -> &'static str {
+        match self {
+            Priority::Foreground => "foreground",
+            Priority::Background => "background",
+        }
+    }
+
+    /// Its slot in [`FrameClock::queues`].
+    fn slot(self) -> usize {
+        match self {
+            Priority::Foreground => 0,
+            Priority::Background => 1,
+        }
+    }
+}
+
+/// One dispatch queue's own numbers: how many frames wait in it now, and how
+/// long the frames that came through it took. Kept apart per queue because that
+/// is the whole question this tier asks — a slow foreground under a deep
+/// background queue is a bridge problem, and the two numbers together are what
+/// say so.
+struct QueueRecord {
+    depth: AtomicUsize,
+    timing: MethodRecord,
+}
+
+impl QueueRecord {
+    fn new(priority: Priority) -> QueueRecord {
+        QueueRecord {
+            depth: AtomicUsize::new(0),
+            timing: MethodRecord::new(priority.label()),
+        }
+    }
+
+    fn stats(&self) -> Value {
+        json!({
+            "depth": self.depth.load(Ordering::Relaxed),
+            "p95_ms": as_millis(self.timing.quantile_micros(0.95)),
+        })
+    }
+}
+
 /// Every frame's timing, since boot.
 ///
 /// Shared as an `Arc` by the relay's dispatcher (which counts the queue) and
@@ -75,10 +136,14 @@ pub type SlowFrameSink = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct FrameClock {
     methods: RwLock<HashMap<String, Arc<MethodRecord>>>,
     holder: Mutex<Option<Arc<MethodRecord>>>,
-    queued: AtomicUsize,
+    /// The two queues, indexed by [`Priority::slot`].
+    queues: [QueueRecord; 2],
     served: AtomicU64,
     slow: AtomicU64,
     sink: SlowFrameSink,
+    /// What each live session declared in its greeting — its own leaf, read
+    /// by `bridge.stats` beside the counters.
+    clients: ClientRegistry,
 }
 
 impl FrameClock {
@@ -92,10 +157,14 @@ impl FrameClock {
         Arc::new(FrameClock {
             methods: RwLock::new(HashMap::new()),
             holder: Mutex::new(None),
-            queued: AtomicUsize::new(0),
+            queues: [
+                QueueRecord::new(Priority::Foreground),
+                QueueRecord::new(Priority::Background),
+            ],
             served: AtomicU64::new(0),
             slow: AtomicU64::new(0),
             sink,
+            clients: ClientRegistry::new(),
         })
     }
 
@@ -103,18 +172,43 @@ impl FrameClock {
     /// from here until a worker starts it — or until the ticket is dropped,
     /// which is what a read folded into an identical one does.
     pub fn queued(self: &Arc<Self>) -> QueuedFrame {
-        self.queued.fetch_add(1, Ordering::Relaxed);
+        self.queued_at(Priority::Foreground)
+    }
+
+    /// The same, for a frame whose envelope named a queue.
+    pub fn queued_at(self: &Arc<Self>, priority: Priority) -> QueuedFrame {
+        self.queue(priority).depth.fetch_add(1, Ordering::Relaxed);
         QueuedFrame {
             clock: Arc::clone(self),
             since: Instant::now(),
             counted: true,
+            priority,
         }
+    }
+
+    fn queue(&self, priority: Priority) -> &QueueRecord {
+        &self.queues[priority.slot()]
+    }
+
+    /// How many frames wait in both queues together.
+    fn queue_depth(&self) -> usize {
+        self.queues
+            .iter()
+            .map(|queue| queue.depth.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// A frame that never queued: the relay's session-close frame, and the
     /// direct calls tests make.
     pub fn frame(self: &Arc<Self>, method: &str) -> FrameTimer {
         self.queued().start(method)
+    }
+
+    /// The live sessions' declared clients. Lives here because this is the
+    /// one thing every frame can reach without the app mutex, and the stats
+    /// that count them must stay reachable while that mutex is wedged.
+    pub fn clients(&self) -> &ClientRegistry {
+        &self.clients
     }
 
     /// The counters `bridge.stats` answers with.
@@ -129,12 +223,17 @@ impl FrameClock {
         json!({
             "frames_served": self.served.load(Ordering::Relaxed),
             "slow_frames": self.slow.load(Ordering::Relaxed),
-            "queue_depth": self.queued.load(Ordering::Relaxed),
+            "queue_depth": self.queue_depth(),
+            "queues": {
+                Priority::Foreground.label(): self.queues[Priority::Foreground.slot()].stats(),
+                Priority::Background.label(): self.queues[Priority::Background.slot()].stats(),
+            },
             "lock_holder": match self.holder.lock().unwrap().as_ref() {
                 Some(record) => Value::String(record.method.clone()),
                 None => Value::Null,
             },
             "methods": per_method,
+            "clients": self.clients.counts(),
         })
     }
 
@@ -166,13 +265,14 @@ impl FrameClock {
     fn publish(&self, frame: &FrameTimer) {
         let spent = frame.spent();
         frame.method.record(spent.total);
+        self.queue(frame.priority).timing.record(spent.total);
         self.served.fetch_add(1, Ordering::Relaxed);
         if spent.total >= SLOW_FRAME {
             self.slow.fetch_add(1, Ordering::Relaxed);
             (self.sink)(&slow_frame_line(
                 &frame.method.method,
                 &spent,
-                self.queued.load(Ordering::Relaxed),
+                self.queue_depth(),
             ));
         }
     }
@@ -207,6 +307,7 @@ pub struct QueuedFrame {
     clock: Arc<FrameClock>,
     since: Instant,
     counted: bool,
+    priority: Priority,
 }
 
 impl QueuedFrame {
@@ -214,10 +315,14 @@ impl QueuedFrame {
     /// record begins.
     pub fn start(mut self, method: &str) -> FrameTimer {
         self.counted = false;
-        self.clock.queued.fetch_sub(1, Ordering::Relaxed);
+        self.clock
+            .queue(self.priority)
+            .depth
+            .fetch_sub(1, Ordering::Relaxed);
         FrameTimer {
             method: self.clock.record_of(method),
             clock: Arc::clone(&self.clock),
+            priority: self.priority,
             queued: self.since.elapsed(),
             started: Instant::now(),
             lock_wait_micros: AtomicU64::new(0),
@@ -226,10 +331,33 @@ impl QueuedFrame {
     }
 }
 
+impl QueuedFrame {
+    /// Move this waiting frame to the foreground queue: what a background read
+    /// does when a foreground caller folds into it, so the depth counts it where
+    /// it will actually be taken from.
+    pub fn promote(&mut self) {
+        if self.priority == Priority::Foreground {
+            return;
+        }
+        self.clock
+            .queue(Priority::Background)
+            .depth
+            .fetch_sub(1, Ordering::Relaxed);
+        self.clock
+            .queue(Priority::Foreground)
+            .depth
+            .fetch_add(1, Ordering::Relaxed);
+        self.priority = Priority::Foreground;
+    }
+}
+
 impl Drop for QueuedFrame {
     fn drop(&mut self) {
         if self.counted {
-            self.clock.queued.fetch_sub(1, Ordering::Relaxed);
+            self.clock
+                .queue(self.priority)
+                .depth
+                .fetch_sub(1, Ordering::Relaxed);
         }
     }
 }
@@ -242,6 +370,7 @@ impl Drop for QueuedFrame {
 pub struct FrameTimer {
     clock: Arc<FrameClock>,
     method: Arc<MethodRecord>,
+    priority: Priority,
     queued: Duration,
     started: Instant,
     lock_wait_micros: AtomicU64,
@@ -271,6 +400,12 @@ impl FrameTimer {
     /// touches the state the wedge is holding.
     pub fn clock(&self) -> &Arc<FrameClock> {
         &self.clock
+    }
+
+    /// The queue this frame came off, which is also the queue its duration is
+    /// recorded against.
+    pub fn priority(&self) -> Priority {
+        self.priority
     }
 
     fn spent(&self) -> Spent {
@@ -600,6 +735,50 @@ mod tests {
         assert_eq!(record.quantile_micros(0.50), 500);
         assert_eq!(record.quantile_micros(0.95), 500);
         assert_eq!(record.stats()["max_ms"], 900.0);
+    }
+
+    /// The two queues are reported apart, so "the focused surface is slow" and
+    /// "the background tier is backed up" are different sentences in the stats.
+    #[test]
+    fn stats_report_each_queues_depth_and_p95_separately() {
+        let (clock, _) = recording_clock();
+        let foreground = clock.queued();
+        let background = clock.queued_at(Priority::Background);
+
+        let stats = clock.stats();
+        assert_eq!(stats["queues"]["foreground"]["depth"], 1);
+        assert_eq!(stats["queues"]["background"]["depth"], 1);
+        assert_eq!(stats["queue_depth"], 2, "the total still counts both");
+
+        let timer = background.start("git.status");
+        assert_eq!(timer.priority(), Priority::Background);
+        assert_eq!(clock.stats()["queues"]["background"]["depth"], 0);
+        std::thread::sleep(Duration::from_millis(2));
+        drop(timer);
+        drop(foreground);
+
+        let stats = clock.stats();
+        assert!(
+            stats["queues"]["background"]["p95_ms"].as_f64().unwrap() > 0.0,
+            "the background frame is timed on the background queue: {stats}"
+        );
+        assert_eq!(
+            stats["queues"]["foreground"]["p95_ms"], 0.0,
+            "no foreground frame ran: {stats}"
+        );
+    }
+
+    /// Absent priority is foreground: every caller that predates the field keeps
+    /// the queue it always had.
+    #[test]
+    fn a_frame_that_names_no_priority_is_foreground() {
+        let (clock, _) = recording_clock();
+        let timer = clock.frame("board.list");
+        assert_eq!(timer.priority(), Priority::Foreground);
+        drop(timer);
+        assert!(clock.stats()["queues"]["foreground"]["p95_ms"]
+            .as_f64()
+            .is_some());
     }
 
     #[test]

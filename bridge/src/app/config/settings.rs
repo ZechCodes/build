@@ -1,5 +1,6 @@
 use super::SettingsPatch;
 use crate::app::AppState;
+use crate::harness::harness_for;
 use crate::models;
 use serde_json::{json, Value};
 
@@ -7,7 +8,7 @@ impl AppState {
     /// Every account setting this bridge holds. `agent_modes` is independent;
     /// legacy mode aliases keep describing the concrete default harness for
     /// clients that still use those fields to choose that fallback.
-    pub(in crate::app) fn settings_get(&self) -> Value {
+    pub(crate) fn settings_get(&self) -> Value {
         json!({
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
@@ -20,13 +21,27 @@ impl AppState {
         })
     }
 
+    /// The catalog `models.list` answers with. What a start leads with is the
+    /// account's answer, so the default provider is the account's default
+    /// harness; `models`/`efforts` are that harness's catalog, repeated at the
+    /// top level for clients that predate `providers`.
+    pub(crate) fn models_list(&self) -> Value {
+        json!({
+            "models": harness_for(self.default_harness).models(),
+            "efforts": harness_for(self.default_harness).effort_levels(),
+            "default_provider": self.default_harness,
+            "agent_modes": self.agent_modes,
+            "providers": models::provider_catalogs(),
+        })
+    }
+
     /// Set the account settings a client names, and only those: where cloned
     /// repos land (creating the folder), which harness a new agent opens on,
     /// and how a new checkout is isolated.
     ///
     /// Which settings those are is [`SettingsPatch`]'s table; putting an
     /// accepted one to the account is [`AppState::apply_settings`].
-    pub(in crate::app) fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
         let patch = SettingsPatch::parse(params, &self.account_availability())?;
         let agent_modes = patch
             .agent_modes

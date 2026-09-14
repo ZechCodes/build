@@ -36,11 +36,13 @@ vi.mock("../src/api.js", () => ({
 vi.mock("../src/devices.js", () => ({
   refreshDevices: (...args) => refreshDevices(...args),
   paintDevicePicker: () => {},
+  deviceName: () => null,
 }));
 vi.mock("../src/connection.js", () => ({
   openBootSession: (...args) => openBootSession(...args),
   adoptSession: (...args) => adoptSession(...args),
   greetLiveBridge: () => {},
+  onBridgeSelected: () => {},
   setConn: () => {},
 }));
 // jsdom is neither a Mac nor a Linux desktop; the platform table has its own

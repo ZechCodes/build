@@ -1,0 +1,222 @@
+{
+  "method": "board.list",
+  "since": "1.0.0",
+  "params": {},
+  "result": {
+    "items": [
+      {
+        "kind": "branch",
+        "title": "Fix the flaky login test",
+        "state": "review",
+        "project_id": "proj-1",
+        "project": "build",
+        "primary": false,
+        "muted": false,
+        "dismissed": false,
+        "unread": false,
+        "anchor": "2026-09-13T09:12:44.108Z",
+        "resume_at": "2026-09-13T09:20:01.002Z",
+        "last_activity": "2026-09-13T09:31:02.774Z",
+        "unread_count": 0,
+        "unread_reason": null,
+        "branch": "fix-flaky-login",
+        "run_id": "run-31a4",
+        "issue_id": "plan-6f1c",
+        "worktree_id": "wt-d8b221956672",
+        "worktree_path": "/home/ada/.build/worktrees/build/fix-flaky-login",
+        "agents": [],
+        "working": false,
+        "working_time": null,
+        "can_finish": true,
+        "finish": {
+          "warnings": []
+        },
+        "stat": {
+          "files_changed": 3,
+          "insertions": 41,
+          "deletions": 12
+        }
+      },
+      {
+        "kind": "capture",
+        "title": "remember to bump the relay timeout",
+        "state": "routing",
+        "project_id": "",
+        "project": "",
+        "primary": false,
+        "muted": false,
+        "dismissed": false,
+        "unread": false,
+        "anchor": "2026-09-13T09:40:11.900Z",
+        "resume_at": "2026-09-13T09:40:11.900Z",
+        "last_activity": "2026-09-13T09:40:11.900Z",
+        "capture_id": "capture-9af2",
+        "text": "remember to bump the relay timeout",
+        "unread_count": 0,
+        "unread_reason": null,
+        "branch": null,
+        "run_id": null,
+        "issue_id": null,
+        "worktree_id": null,
+        "worktree_path": null,
+        "agents": [],
+        "working": true,
+        "working_time": null,
+        "stat": null,
+        "can_finish": false,
+        "finish": {
+          "warnings": []
+        },
+        "routing": null,
+        "question": null
+      }
+    ],
+    "projects": [
+      {
+        "project_id": "proj-1",
+        "name": "build",
+        "path": "/home/ada/code/build",
+        "base_branch": "main",
+        "is_git": true
+      }
+    ],
+    "runs": [
+      {
+        "run_id": "run-31a4",
+        "branch": "fix-flaky-login",
+        "state": "review",
+        "project_id": "proj-1",
+        "project": "build",
+        "worktree_path": "/home/ada/.build/worktrees/build/fix-flaky-login",
+        "primary": false,
+        "muted": false,
+        "dismissed": false,
+        "unread": false,
+        "needs_attention": false,
+        "unread_count": 0,
+        "unread_reason": null,
+        "issue_id": "plan-6f1c",
+        "plan_id": "plan-6f1c",
+        "implementation_id": "run-31a4",
+        "base_branch": "main",
+        "base_sha": "3d2a1f0b9c8e7d6a5b4c3d2e1f0a9b8c7d6e5f40",
+        "adopted": false,
+        "auto_advance": false,
+        "can_finish": true,
+        "created_at": "2026-09-13T09:20:01.002Z",
+        "updated_at": "2026-09-13T09:31:02.774Z",
+        "state_changed_at": "2026-09-13T09:29:55.310Z",
+        "attention": {
+          "anchor": "2026-09-13T09:12:44.108Z",
+          "resume_at": "2026-09-13T09:12:44.108Z",
+          "interacted": true,
+          "seen": false
+        },
+        "harness": "Claude Code",
+        "provider": "claude_adk",
+        "model": null,
+        "effort": null,
+        "summary": null,
+        "last_error": null,
+        "recovery": null,
+        "stages": [],
+        "current_stage_id": null,
+        "triage": null,
+        "triage_enabled": true,
+        "stat": {
+          "files_changed": 3,
+          "insertions": 41,
+          "deletions": 12
+        }
+      }
+    ],
+    "external_worktrees": [
+      {
+        "worktree_id": "wt-d8b221956672",
+        "project_id": "proj-1",
+        "project": "build",
+        "path": "/home/ada/code/build-hotfix",
+        "base_branch": "main",
+        "isolation": "worktree",
+        "branch": "hotfix-relay",
+        "adoptable": true,
+        "agent_working": false,
+        "can_finish": false,
+        "head_sha": "9c8e7d6a5b4c3d2e1f0a9b8c7d6e5f4031a2b3c4",
+        "head_subject": "Raise the relay read timeout",
+        "head_age_seconds": 4820,
+        "head_committed_at": "2026-09-13T08:00:00Z",
+        "dirty_files": 2,
+        "comparison_ref": "origin/main",
+        "ahead": 1,
+        "behind": 0,
+        "unpushed": 1,
+        "upstream": "origin/hotfix-relay",
+        "diffstat": {
+          "files_changed": 1,
+          "insertions": 4,
+          "deletions": 1
+        },
+        "uncommitted": {
+          "files_changed": 2,
+          "insertions": 9,
+          "deletions": 0
+        },
+        "attention": {
+          "resume_at": null,
+          "interacted": false,
+          "seen": false
+        }
+      }
+    ],
+    "pending": [
+      {
+        "entity_id": "wt-4c1f0a2b3c4d",
+        "project_id": "proj-1",
+        "project": "build",
+        "title": "Fix the flaky login test",
+        "branch": "fix-flaky-login-2",
+        "state": "creating",
+        "checkout_id": "wt-4c1f0a2b3c4d",
+        "primary": false,
+        "implements": "plan-6f1c",
+        "isolation": "worktree",
+        "pending_seconds": 3
+      }
+    ],
+    "primary_changes": [
+      {
+        "project_id": "proj-1",
+        "branch": "main",
+        "upstream": "origin/main",
+        "comparison_ref": "origin/main",
+        "ahead": 0,
+        "behind": 2,
+        "head_sha": "1f0a9b8c7d6e5f4031a2b3c4d5e6f708192a3b4c",
+        "head_committed_at": "2026-09-13T07:41:19Z",
+        "files_changed": 1,
+        "insertions": 6,
+        "deletions": 0,
+        "run_id": null
+      }
+    ],
+    "scanning": false,
+    "workspace_summaries": [
+      {
+        "workspace_id": "ws-1",
+        "work_summary": {
+          "pushes": 3,
+          "additions": 214,
+          "deletions": 61
+        }
+      },
+      {
+        "workspace_id": "ws-2",
+        "work_summary": null
+      }
+    ]
+  },
+  "errors": [
+    "internal"
+  ]
+}

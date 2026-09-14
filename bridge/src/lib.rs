@@ -44,6 +44,7 @@
 
 pub mod agent;
 pub mod agent_modes;
+pub mod api;
 pub mod app;
 pub mod attention;
 pub mod backoff;
@@ -92,5 +93,6 @@ pub mod timing;
 pub mod transport;
 pub mod transport_ledger;
 pub mod transport_report;
+pub mod watch;
 pub mod workspace;
 pub mod worktree;

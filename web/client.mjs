@@ -94,7 +94,12 @@ export async function openSession({ send, recv, transport, preferDeviceId = null
 // production's dedicated terminal socket — one connection carrying both the
 // request/response terminal RPCs and the server-initiated PTY pushes. The main
 // `openSession` stays strictly request-response.
-export async function openPushSession({ send, recv, transport, preferDeviceId = null, onPush = () => {} }) {
+// `onFrame` sees every decrypted payload before the demux, so a harness can
+// assert on the frame the bridge actually sent (an error's `error_code`, a
+// push's shape) and not just on what `call` resolves to. `call`'s third
+// argument merges extra fields into the request envelope beside
+// `id`/`method`/`params` — the wire's optional `"priority": "background"`.
+export async function openPushSession({ send, recv, transport, preferDeviceId = null, onPush = () => {}, onFrame = () => {} }) {
   if (transport.ready) await transport.ready();
 
   const hello = await awaitDeviceKey(recv, preferDeviceId);
@@ -136,6 +141,7 @@ export async function openPushSession({ send, recv, transport, preferDeviceId = 
         continue;
       }
       const p = frame.payload;
+      onFrame(p);
       if (p && p.id !== undefined && p.ok !== undefined) {
         const waiter = pending.get(p.id);
         if (waiter) {
@@ -148,7 +154,7 @@ export async function openPushSession({ send, recv, transport, preferDeviceId = 
     }
   })();
 
-  function call(method, params = {}) {
+  function call(method, params = {}, envelopeFields = {}) {
     const id = "r" + ++reqId;
     let reject;
     const result = new Promise((res, rej) => {
@@ -159,7 +165,7 @@ export async function openPushSession({ send, recv, transport, preferDeviceId = 
       .encryptFrame({
         sessionKeyB64,
         outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
-        frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
+        frameFields: { frame_type: "data", sender: "client", payload: { method, id, params, ...envelopeFields } },
       })
       .then((envelope) => send({ type: "e2ee_envelope", session_id: sessionId, envelope }))
       .catch((e) => {

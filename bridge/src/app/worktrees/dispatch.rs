@@ -44,7 +44,7 @@ impl AppState {
     /// `branch` names where the work goes; with none, the instruction names the
     /// branch it cuts. The agent is always brand new: an instruction is never
     /// dropped into a conversation someone else is having.
-    pub(in crate::app) fn branch_dispatch(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn branch_dispatch(&mut self, params: &Value) -> Result<Value, String> {
         self.dispatch_branch(params, None)
     }
 

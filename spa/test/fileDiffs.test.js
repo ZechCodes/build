@@ -229,6 +229,29 @@ describe("createFileDiffs", () => {
     diffs.dispose();
   });
 
+  it("stamps a background repository's git.diff with the request priority, and a foreground one with nothing", async () => {
+    const envelopes = [];
+    const call = vi.fn(async (method, params, envelope) => {
+      envelopes.push(envelope);
+      return { files: params.paths.map((path) => ({ path, ...bodyFor(path, "key-a") })) };
+    });
+    const background = fileDiffs.createFileDiffs({
+      deviceId: "dev-1",
+      entityId: "run-1",
+      scope: { run_id: "run-1" },
+      call,
+      requestPriority: "background",
+    });
+    await background.warm(TWO, { budget: 1 });
+    background.dispose();
+    const foreground = mountDiffs(call);
+    await foreground.sync({ status: TWO, openPaths: new Set(["b.js"]) });
+    foreground.dispose();
+    expect(envelopes[0]).toEqual({ priority: "background" });
+    expect(envelopes.length).toBeGreaterThan(1);
+    envelopes.slice(1).forEach((envelope) => expect(envelope).toEqual({}));
+  });
+
   it("fetches nothing more once disposed", async () => {
     const calls = [];
     const diffs = mountDiffs(wireOver({ "a.js": "key-a" }, calls));

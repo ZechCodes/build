@@ -1596,7 +1596,15 @@ export function mountGitPane(
     refresh: poll,
     intervalMs: GIT_PANE_POLL_MS,
     entity: scope.workspace_id || scope.run_id || scope.worktree_id || null,
+    // A workspace source is watched at its own cadence rather than standing
+    // down to the safety poll: the bridge does not push for every source in a
+    // multi-source workspace, so the interval stays where it has always been.
     keepPolling: Boolean(scope.workspace_id),
+    // Focus tier. A project's own checkout is no entity the bridge names, so
+    // that scope watches the board — where `state` is all there is, and the
+    // manager trims the ask to it.
+    kinds: ["state", "git", "files"],
+    mode: "realtime",
   });
   const editedTimeWatcher = watchEditedTimes(container);
 

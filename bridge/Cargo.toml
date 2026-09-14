@@ -22,6 +22,10 @@ git2 = "0.20"
 portable-pty = "0.9"
 vt100 = "0.15"
 notify = "6"
+# The gitignore matcher the worktree watcher classifies raw fs events with
+# (`watch.rs`): root `.gitignore`, `.git/info/exclude`, global excludes. Only
+# the matcher is used, never the walker.
+ignore = "0.4"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
 # `rustls-tls-webpki-roots`: outbound wss:// (production relay) via rustls with
 # bundled webpki roots — no OpenSSL/native-tls, works in scratch containers.

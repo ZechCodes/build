@@ -2133,6 +2133,10 @@ export function mountAgentRail(host, context) {
     refresh,
     intervalMs: RAIL_POLL_MS,
     entity: () => [entity.entityId, entity.worktreeId],
+    // Focus tier: the rail paints lifecycle and conversation, so those are the
+    // kinds it asks the bridge for.
+    kinds: ["state", "thread"],
+    mode: "realtime",
   });
   // The elapsed-time clock ticks between feed reads, same as the toolbar's
   // used to.

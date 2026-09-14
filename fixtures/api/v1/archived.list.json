@@ -1,0 +1,50 @@
+{
+  "method": "archived.list",
+  "since": "1.0.0",
+  "params": {},
+  "result": {
+    "items": [
+      {
+        "kind": "issue",
+        "project_id": "proj-1",
+        "project": "build",
+        "title": "Fix the flaky login test",
+        "branch": null,
+        "state": "done",
+        "action": null,
+        "finished_at": "2026-09-12T18:02:10.441Z",
+        "run_id": null,
+        "issue_id": "plan-6f1c",
+        "stages": 3,
+        "worktree_id": null,
+        "worktree_path": null,
+        "head_sha": null,
+        "upstream": null,
+        "unpushed": null,
+        "dirty_files": null
+      },
+      {
+        "kind": "branch",
+        "project_id": "proj-1",
+        "project": "build",
+        "title": "relay-timeout",
+        "branch": "relay-timeout",
+        "state": "archived",
+        "action": "merged",
+        "finished_at": "2026-09-12T18:02:10.441Z",
+        "run_id": "run-1c0d",
+        "issue_id": null,
+        "stages": null,
+        "worktree_id": "wt-7b3e01dd42a1",
+        "worktree_path": "/home/ada/.build/worktrees/build/relay-timeout",
+        "head_sha": "5b4c3d2e1f0a9b8c7d6e5f4031a2b3c4d5e6f708",
+        "upstream": "origin/relay-timeout",
+        "unpushed": 0,
+        "dirty_files": 0
+      }
+    ]
+  },
+  "errors": [
+    "internal"
+  ]
+}

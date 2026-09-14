@@ -34,6 +34,7 @@ if (location.pathname.startsWith("/app")) {
     currentVersion: import.meta.env.VITE_BUILD_VERSION || "dev",
     fetchVersion: fetchServedVersion,
     onStale: () => {
+      App.updateAvailable = true; // what lets the app-behind version gate offer its reload
       $("#verbar").hidden = false;
     },
   });

@@ -9,7 +9,7 @@ import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { rememberDeviceFilter } from "./core/deviceFilter.js";
-import { openDeviceSessions, syncHome } from "./connection.js";
+import { goOffline, openDeviceSessions, syncHome } from "./connection.js";
 
 export async function refreshDevices() {
   App.devices = await fetchDevices();
@@ -73,8 +73,20 @@ export function markDeviceOnline(deviceId) {
   if (markDevice(deviceId, "online")) openDeviceSessions();
 }
 
+/**
+ * The relay says one of our bridges went.
+ *
+ * That push is the account's own word for that machine, and it arrives while
+ * the session on it is still sitting there waiting on a call that will time
+ * out. So it is what takes the machine offline: the list says so, and the
+ * device this client is holding goes offline with it — its rows grey, a surface
+ * open on it says whose state it is showing, and the socket that waits for that
+ * bridge's key is parked at once. A machine this client holds nothing for is
+ * nobody to take offline.
+ */
 export function markDeviceOffline(deviceId) {
   markDevice(deviceId, "offline");
+  goOffline(deviceId);
 }
 
 const ALL_DEVICES = "All devices";

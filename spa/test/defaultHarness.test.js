@@ -26,6 +26,7 @@ vi.mock("../src/connection.js", () => ({
   retireDevice: () => {},
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   syncHome: () => {},
+  goOffline: () => {},
   forgetHomeFollow: () => {},
 }));
 

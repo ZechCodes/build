@@ -252,6 +252,51 @@ describe("per-device connections", () => {
     expect(rowOn("dev-b").classList.contains("inbox-offline")).toBe(false);
   });
 
+  // The relay is the first to know a bridge went: it pushes device_offline to
+  // every other live session while the lost session is still sitting there
+  // waiting on a call that will time out. That push is the account's own word
+  // for that machine, so it is what takes the machine offline here — its rows
+  // grey on the next paint, a surface open on it gets its strip, and the socket
+  // that waits for its device_key is parked at once, rather than half a minute
+  // later when some poll finally fails.
+  it("takes a device offline the moment the relay says its bridge went", async () => {
+    await connectEveryDevice();
+    mountInboxList();
+    startFeed(60000);
+    await flush();
+    const rowOn = (deviceId) =>
+      [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
+    unreachable.add("dev-a");
+    const asked = openedFor("dev-a").length;
+
+    markDeviceOffline("dev-a");
+    await flush();
+
+    expect(contextFor("dev-a").offline).toBe(true);
+    expect(contextFor("dev-a").offlineSince).toBeTypeOf("number");
+    expect(rowOn("dev-a").classList.contains("inbox-offline")).toBe(true);
+    expect(rowOn("dev-b").classList.contains("inbox-offline")).toBe(false);
+    // And it is already being asked for again, on the socket that hears that
+    // bridge's key the moment it is back.
+    expect(openedFor("dev-a").length).toBe(asked + 1);
+    expect(openedFor("dev-a").at(-1).waitForDevice).toBe(true);
+    expect(held()).toBe(false); // dev-b still answers
+  });
+
+  // The same push about a machine this client holds nothing for — one paired
+  // elsewhere, or one already let go of — is news about nobody.
+  it("does nothing with a device_offline for a machine it holds nothing for", async () => {
+    await connectEveryDevice();
+    const asked = opened.length;
+
+    markDeviceOffline("dev-z");
+    await flush();
+
+    expect(contextFor("dev-z")).toBe(null);
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+    expect(opened.length).toBe(asked);
+  });
+
   // And it comes back the same way: a device that answers again ungreys its
   // rows without waiting for one to move.
   it("ungreys a device's rows the moment it answers again", async () => {
@@ -500,9 +545,9 @@ describe("per-device connections", () => {
   // costs another handshake, another greeting and a session for the bin.
   it("leaves a device that is already resuming to its resume", async () => {
     await connectEveryDevice();
-    markDeviceOffline("dev-a");
-    slowMs.set("dev-a", 1000); // the resume is still waiting on the relay
-    goOffline("dev-a");
+    slowMs.set("dev-a", 1000); // the resume the relay's word starts waits on it
+    markDeviceOffline("dev-a"); // the relay says that bridge went…
+    goOffline("dev-a"); // …and its own session is lost straight after
     await flush();
     const whileWaiting = openedFor("dev-a").length;
 

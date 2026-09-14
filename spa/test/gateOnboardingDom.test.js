@@ -49,6 +49,7 @@ vi.mock("../src/connection.js", () => ({
   openDeviceSessions: () => ({ first: Promise.resolve(answering), settled: Promise.resolve([answering]) }),
   openDeviceSettingsSession: async () => answering,
   syncHome: () => {},
+  goOffline: () => {},
   forgetHomeFollow: () => {},
 }));
 // jsdom is neither a Mac nor a Linux desktop; the platform table has its own

@@ -39,6 +39,7 @@ vi.mock("../src/connection.js", () => ({
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   openDeviceSettingsSession: async () => null,
   syncHome: () => {},
+  goOffline: () => {},
   forgetHomeFollow: () => {},
 }));
 vi.mock("../src/api.js", () => ({

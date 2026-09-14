@@ -184,7 +184,6 @@ beforeEach(async () => {
   resetAgentRailMemory();
   resetOptimistic();
   resetDeviceContexts(); // and with them the last test's harness catalog
-  scopeFor("dev-1"); // the machine these reads are addressed to
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];

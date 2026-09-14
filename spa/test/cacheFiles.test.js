@@ -22,7 +22,6 @@ const treeNames = (host) =>
 
 beforeEach(async () => {
   document.body.innerHTML = "";
-  scopeFor("dev-1"); // the machine these reads are addressed to
   await wipeCache();
 });
 
@@ -58,9 +57,9 @@ describe("the cached listing", () => {
     expect(record.value.entries[0].name).toBe("fresh.js");
   });
 
-  // The tab is mounted for one machine, and the ambient alias follows another:
-  // the listing is filed under the machine the view handed it, or a branch on
-  // the desktop would paint the laptop's tree.
+  // The tab is mounted for one machine while the rest of this suite works
+  // another: the listing is filed under the machine the view handed it, or a
+  // branch on the desktop would paint the laptop's tree.
   it("caches under the cacheScope it is handed", async () => {
     await writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" },

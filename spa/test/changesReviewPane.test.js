@@ -68,7 +68,6 @@ async function mount({ clean = false, deviceId = "dev-1" } = {}) {
 
 beforeEach(() => {
   document.body.innerHTML = "";
-  scopeFor("dev-1"); // the machine these reads are addressed to
   errors = [];
   window.addEventListener("error", (event) => errors.push(event.message));
   vi.spyOn(console, "error").mockImplementation((...args) => errors.push(String(args[0])));
@@ -81,7 +80,7 @@ afterEach(() => {
 
 describe("the Changes surface, opened on its review aggregate", () => {
   // Both halves of this surface — the pane and the plug in its rail — file what
-  // they read under the machine the view handed them, not the ambient alias.
+  // they read under the machine the view handed them, and no other.
   it("caches under the cacheScope it is handed", async () => {
     const { readCached, wipeCache } = await import("../src/core/localCache.js");
     await wipeCache();

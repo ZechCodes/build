@@ -41,9 +41,7 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = "";
-  const { scopeFor } = await import("../src/core/cacheScope.js");
-  scopeFor("dev-1"); // the machine these reads are addressed to
-  scopeOf = scopeFor;
+  ({ scopeFor: scopeOf } = await import("../src/core/cacheScope.js"));
   cache = await import("../src/core/localCache.js");
   ({ mountGitPane } = await import("../src/core/gitPane.js"));
 });
@@ -84,8 +82,8 @@ describe("the cached first paint", () => {
   });
 });
 
-// The pane is mounted for one machine, and the ambient alias follows another:
-// what it syncs is filed under the machine the view handed it.
+// The pane is mounted for one machine while the rest of this suite works
+// another: what it syncs is filed under the machine the view handed it.
 describe("the scope the view hands it", () => {
   it("caches under the cacheScope it is handed", async () => {
     const { pane } = await mountPane(liveRpc(), { cacheScope: scopeOf("dev-2") });

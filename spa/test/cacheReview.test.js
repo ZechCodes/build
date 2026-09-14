@@ -32,7 +32,6 @@ let host, plug;
 beforeEach(async () => {
   document.body.innerHTML = "";
   resetChangeEvents();
-  scopeFor("dev-1"); // the machine these reads are addressed to
   await wipeCache();
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -108,7 +107,7 @@ describe("the saved aggregate diff", () => {
   });
 
   // The plug is made for one machine's diff: the scope the surface handed it is
-  // what it is filed under, whoever the ambient alias follows.
+  // what it is filed under, whatever machine the rest of this suite works.
   it("caches under the cacheScope it is handed", async () => {
     await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
     const live = PATCH.replace("cached line", "their line");

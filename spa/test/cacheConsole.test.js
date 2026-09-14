@@ -85,7 +85,6 @@ beforeEach(async () => {
   localStorage.clear();
   resetConsoleMemory();
   feedSnapshot = { items: [homeRow], projects: [] };
-  scopeFor("dev-1"); // the machine these reads are addressed to
   await wipeCache();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });

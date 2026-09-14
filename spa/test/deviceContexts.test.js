@@ -246,7 +246,6 @@ describe("the device context registry", () => {
     expect(routeContext({ name: "branch", deviceId: "dev-z" })).toBe(null);
     expect(routeContext(null)).toBe(null);
   });
-
 });
 
 // The surfaces about where you are — the toolbar, the capture decision page —

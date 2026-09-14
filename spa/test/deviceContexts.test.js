@@ -103,6 +103,20 @@ describe("the device context registry", () => {
     expect(staying.session.close).not.toHaveBeenCalled();
   });
 
+  // One predicate, not two: "the contexts that can answer" and "can this
+  // machine be asked anything" were written separately and could drift.
+  it("answers with exactly the contexts that canAnswer", () => {
+    App.devices = [online("dev-a"), online("dev-b"), online("dev-c")];
+    adoptDeviceSession(fakeSession("dev-a"));
+    adoptDeviceSession(fakeSession("dev-b"));
+    adoptDeviceSession(fakeSession("dev-c"));
+    setContextOffline("dev-b");
+    retireDeviceContext("dev-c");
+
+    expect(deviceIdsOf(liveContexts())).toEqual(knownContexts().filter(canAnswer).map((c) => c.deviceId));
+    expect(deviceIdsOf(liveContexts())).toEqual(["dev-a"]);
+  });
+
   // Whether a machine can answer is not news the feed carries, and a device
   // the account has let go of can answer nothing. The gate counting the live
   // machines, the strip over an open surface and the rail's greying all hear it

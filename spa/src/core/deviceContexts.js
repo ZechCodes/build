@@ -91,9 +91,11 @@ export function knownContexts() {
   return [...contexts.values()].sort((first, second) => rank(first) - rank(second));
 }
 
-/** The contexts that can answer right now: a session and no offline mark. */
+/** The contexts that can answer right now, in the account's own order. Asked
+ *  through canAnswer, so "live" here and "can this machine be asked anything"
+ *  everywhere else are one question with one answer. */
 export function liveContexts() {
-  return knownContexts().filter((context) => context.session && !context.offline);
+  return knownContexts().filter(canAnswer);
 }
 
 /** Create this device's context or retarget the one it already has. A

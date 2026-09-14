@@ -17,6 +17,7 @@ import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, rememberSelectedDevice } from "./app.js";
 import {
   adoptDeviceSession,
+  canAnswer,
   closeQuietly,
   contextFor,
   homeContext,
@@ -285,8 +286,6 @@ export function syncHome(landed = null) {
 
 // ---- opening every device ----------------------------------------------------
 
-const hasLiveSession = (deviceId) => liveContexts().some((context) => context.deviceId === deviceId);
-
 /** Connect one device and land it. A device that will not answer is marked
  *  offline — its rows stay, greyed — and kept after until it does. */
 async function connectDevice(deviceId) {
@@ -312,12 +311,14 @@ export function openDeviceSessions() {
 }
 
 /** A device for this call to open: online by the account list, with nothing
- *  already working on it. A resume is working on it — it is parked on the
- *  relay's `device_key` for exactly that bridge and lands the moment it is
- *  back, so the push that says so must not start a second handshake. */
+ *  already working on it. Already answering is the registry's own question
+ *  (canAnswer), asked here the way every surface asks it. A resume is working
+ *  on it too — it is parked on the relay's `device_key` for exactly that bridge
+ *  and lands the moment it is back, so the push that says so must not start a
+ *  second handshake. */
 function wantsSession(device) {
-  if (device.status !== "online" || hasLiveSession(device.id)) return false;
-  return !contextFor(device.id)?.reconnect.resuming;
+  const context = contextFor(device.id);
+  return device.status === "online" && !canAnswer(context) && !context?.reconnect.resuming;
 }
 
 /** A caller usually wants one of the two promises. Handling the other here

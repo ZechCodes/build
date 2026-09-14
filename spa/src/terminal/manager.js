@@ -40,7 +40,7 @@ export function terminalManager() {
       getToken: fetchGatewayToken,
       getPinnedDeviceKey: pinnedDeviceTransportKey,
       // The terminals follow the home device's session (falling back to the
-      // user's sticky choice), re-evaluated on every reconnect; setHomeDevice
+      // user's sticky choice), re-evaluated on every reconnect; every home move
       // calls retargetTerminals() to force that reconnect.
       preferDeviceId: () => App.session?.deviceId || App.selectedDeviceId || null,
     });
@@ -75,8 +75,12 @@ export function terminalsRideOn(carrier) {
 /**
  * Re-point the terminal socket at the home device. A healthy
  * socket never reconnects on its own — the liveness ping keeps it pinned to the
- * old device — so a device switch must drop it; the auto-reconnect then re-reads
+ * old device — so a home move must drop it; the auto-reconnect then re-reads
  * preferDeviceId, attaches to the new device, and re-attaches every open tab.
+ *
+ * Called from connection.js's followHomeContext, which is every way home moves:
+ * the picker, the picked device landing after another answered first, and a
+ * remembered device coming back mid-session.
  */
 export function retargetTerminals() {
   if (!socket) return;

@@ -238,6 +238,10 @@ function landSession(session) {
 function followHomeContext(context) {
   pointAliasesAt(context);
   handTerminalsToHome();
+  // The terminal socket reads the device it wants only as it connects, and a
+  // healthy one never reconnects on its own: home moving is the one thing that
+  // makes it drop and re-point.
+  retargetTerminals();
   paintDevicePicker();
   // Every surface about "here" — the composer's destinations, the toolbar, the
   // capture decision page, the agent rail — keeps the home device's slice of
@@ -274,7 +278,6 @@ export async function setHomeDevice(deviceId) {
   rememberSelectedDevice(deviceId);
   if (!hasLiveSession(deviceId)) await connectDevice(deviceId);
   followHomeContext(contextFor(deviceId));
-  retargetTerminals(); // the terminal socket follows the home device
   render();
 }
 

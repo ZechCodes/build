@@ -406,7 +406,7 @@ export function openDeviceSessions()
 export function goOffline(deviceId)      // setContextOffline, dropPeerLink(context), close session, paintOfflineBanner, resume(deviceId)
 export function resume(deviceId)         // openDeviceSession(deviceId, { waitForDevice: true }); backoff on context.reconnect
 export function greetLiveBridge(context)
-export function setHomeDevice(deviceId)  // remembers, opens if needed, pointAliasesAt (stages 1–2), retargetTerminals, render; closes nothing
+export function setHomeDevice(deviceId)  // remembers, opens if needed, follows home (pointAliasesAt in stages 1–2, deliverFeed, retargetTerminals), render; closes nothing
 export function paintOfflineBanner()     // hidden when liveContexts().length > 0 unless exactly one known context is offline → offlineBannerText(name, since); none live → allDevicesOfflineText()
 // core/text.js: export const allDevicesOfflineText = () => "All devices are offline — tasks will resume when one reconnects.";
 ```

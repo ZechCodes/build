@@ -380,6 +380,27 @@ describe("per-device connections", () => {
     expect(liveIds()).toEqual(["dev-a", "dev-b"]); // and nothing was closed
   });
 
+  // The picker is not the only way home moves: the picked device landing after
+  // another answered first moves it too, and so does a remembered device coming
+  // back mid-session. The terminal socket reads the device it wants only when it
+  // connects, and a healthy socket never reconnects on its own — so whichever
+  // way home moved, it has to be dropped, or the shells keep typing at the
+  // machine the user just left.
+  it("moves the terminal socket with home, however home moved", async () => {
+    App.selectedDeviceId = "dev-b";
+    slowMs.set("dev-b", 20);
+    const sessions = openDeviceSessions();
+    claimHomeContext(await sessions.first); // the gate names whoever landed first
+    terminals.retargetTerminals.mockClear();
+
+    await vi.advanceTimersByTimeAsync(20);
+    await sessions.settled;
+    await flush();
+
+    expect(App.session).toBe(lastSession("dev-b"));
+    expect(terminals.retargetTerminals).toHaveBeenCalled();
+  });
+
   it("re-points the aliases and the terminals on a new home device, and closes nothing", async () => {
     await connectEveryDevice();
     const stayed = lastSession("dev-a");

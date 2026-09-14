@@ -35,6 +35,11 @@ function setGate(on) {
   }
 }
 
+// Whether the gate is holding the app for want of a machine that can answer,
+// and how it hears that that changed.
+let holding = false;
+let stopWatchingDevices = null;
+
 async function enterApp() {
   if (App._connecting) return;
   App._connecting = true;
@@ -74,10 +79,6 @@ function handBackToReader() {
   setConn(CONNECTION_STATUS.connected);
   startFeed();
 }
-
-// Whether the gate is holding the app for want of a machine that can answer.
-let holding = false;
-let stopWatchingDevices = null;
 
 /**
  * Hold the app whenever nothing can answer, and hand it back when something

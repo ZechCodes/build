@@ -340,17 +340,50 @@ node-environment suites a `localStorage` they never had. The suite is green on
 Node 22 (CI, `spa/.nvmrc`) and on Node 26, with or without
 `--no-experimental-webstorage`.
 
+### Verified in the browser
+
+The two-bridge pass was run on 2026-09-14 against the compose stack — two
+bridges, **Laptop** and **Desktop**, paired to one account — driven with
+Playwright, on this branch at `4b2e84e8`. The recipe is checked in:
+[`deploy/compose.two-bridges.yml`](deploy/compose.two-bridges.yml) stands the
+second bridge up and [`web/pair-another.mjs`](web/pair-another.mjs) pairs it,
+so the pass can be run again.
+
+What passed:
+
+- Both machines' projects and rows in one rail, with the device tag on the
+  project names the two machines shared.
+- The picker filtering the rail to one machine and back, without moving the
+  route the reader was standing on.
+- A Desktop branch opening on Desktop — its device-only commit and file shown
+  in Changes and Files — surviving a reload, and device-less URLs rewriting
+  themselves to the creation device both in-app and on reload.
+- **New project** and captures landing on the chosen creation device, checked
+  in that bridge's own filesystem and task database rather than in the SPA.
+- One bridge stopped: its rows greyed and wearing the offline word within a
+  second, off the relay's `device_offline` push rather than a poll; its verbs
+  shut; the other machine still working; and recovery without a reload and on
+  one relay connection.
+- Both stopped: the waiting screen. One returning: the app back without a
+  reload, rendered once.
+- Each machine's settings page reading its own bridge, and the capture
+  decision page offering only the capture's device's projects.
+
+Four defects it turned up are fixed in the commits below this note: the
+creation-device note painted once, the waiting screen counting contexts rather
+than paired devices, and two greyed-row styles — the away word under the hover
+overlay, and a see-through menu.
+
+One thing the pass could not show directly: which bridge answered a given RPC.
+The bridge logs carry no RPC detail, so every attribution above was read from
+differences between the two machines' repos, filesystems and task databases.
+
+The jsdom suite (232 files / 4104 tests) plus lint, build, semgrep and gitleaks
+cover the same ground on every commit.
+
 ### Unverified
 
-1. **The two-bridge browser pass has not been run — for any of the three
-   stages — and is still owed at the time of writing.** What it owes:
-   two bridges online, both projects lists in one rail; filter to one machine;
-   create a project and a capture and confirm both land on the creation
-   device; stop one bridge — its rows grey and the other keeps working; stop
-   both — the waiting screen; start one — the app returns without a reload.
-   Everything claimed above is verified by the jsdom suite only
-   (232 files / 4087 tests) plus lint, build, semgrep and gitleaks.
-2. **Two real bridges of different releases.** The harness catalog is read per
+1. **Two real bridges of different releases.** The harness catalog is read per
    device precisely so two machines can offer different agents, but no test
    run has had two bridges built from different releases on one account.
 

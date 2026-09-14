@@ -9,24 +9,8 @@ import { $ } from "../dom.js";
 import { deviceOfflineText, esc } from "../core/text.js";
 import { App } from "../app.js";
 import { openDeviceSettingsSession } from "../connection.js";
-import { contextFor } from "../core/deviceContexts.js";
-import { refreshFeed } from "../core/taskFeed.js";
 import { openBrowser } from "../sheets/browser.js";
-import { deviceProjectsPanelHtml, mountDeviceProjects } from "./deviceProjects.js";
-import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
-import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
-import { ACCOUNT_ISOLATION, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
-import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
-
-/** The panels this machine's bridge owns: each states its own markup and mounts
- *  itself on this page's connection, so the page stands them up in one pass and
- *  adding another is a line here. */
-const BRIDGE_PANELS = [
-  { html: agentModesPanelHtml, mount: mountAgentModes },
-  { html: defaultHarnessPanelHtml, mount: mountDefaultHarness },
-  { html: isolationPanelHtml, mount: (host, options) => mountIsolation(host, { ...options, target: ACCOUNT_ISOLATION }) },
-  { html: triageSettingPanelHtml, mount: mountTriageSetting },
-];
+import { standUpDevicePanels } from "./devicePanels.js";
 
 export async function renderDeviceSettings() {
   const device = App.devices.find((item) => item.id === App.route.id);
@@ -74,40 +58,16 @@ export async function renderDeviceSettings() {
     if (!active || !session) return Promise.reject(new Error(deviceOfflineText(device.name)));
     return session.call(...asked);
   };
-  // The account's copy of what this machine offers is what these panels just
-  // changed, so the registry is told to ask again. Guarded twice over: this page
-  // opens its own connection and may be looking at a machine the app holds no
-  // context for, and a refused re-read is the catalog's business, not this
-  // save's — the panel has its confirmation either way.
-  const refreshAccountCatalog = async () => {
-    try {
-      await contextFor(device.id)?.refreshModelCatalog();
-    } catch {
-      // The next surface that asks this machine for its harnesses reads it again.
-    }
-  };
   // Every panel here is this machine's answer, so none of them exists until the
   // machine is answering: a page that cannot connect says that once, in its
-  // status line, rather than standing up six panels that all say it again. The
-  // markup is rebuilt on each connection, so a reconnect starts from what the
-  // machine says now and not from the last one's refusal.
-  const standUpPanels = async () => {
-    const projectsHost = root.querySelector("#device-projects-panel");
-    const bridgeHost = root.querySelector("#device-bridge-panels");
-    projectsHost.innerHTML = deviceProjectsPanelHtml();
-    bridgeHost.innerHTML = BRIDGE_PANELS.map((panel) => panel.html()).join("");
-    const readProjects = mountDeviceProjects(projectsHost, {
+  // status line, rather than standing up six panels that all say it again.
+  const standUpPanels = () =>
+    standUpDevicePanels({
+      projectsHost: root.querySelector("#device-projects-panel"),
+      bridgeHost: root.querySelector("#device-bridge-panels"),
       callRpc,
-      deviceName: device.name,
-      // The rail is where the new project is looked for next: the app's own
-      // context for this machine reads it again. It has none while the machine
-      // has never answered the app itself, and then there is nothing to re-read.
-      onProjectCreated: () => refreshFeed(device.id),
+      device,
     });
-    await readProjects();
-    const options = { callRpc, onSaved: refreshAccountCatalog };
-    for (const panel of BRIDGE_PANELS) await panel.mount(bridgeHost, options);
-  };
   const save = async (path) => {
     const attempt = connectionAttempt;
     const owner = session;

@@ -36,11 +36,12 @@ const projectRowHtml = (project) => `
     ${project.is_git === false ? "" : `<button class="btn mini setremote" data-id="${esc(project.project_id)}">Set remote…</button>`}</div>`;
 
 /**
- * Mount the panel on one machine's caller. Returns the read: the page asks for
- * it again whenever its connection comes back, since a list read over a
- * connection that has gone is a list of what WAS there.
+ * Mount the panel on one machine's caller, and read what that machine holds.
+ *
+ * Mounting is what reads, so a page that reconnects mounts again: a list read
+ * over a connection that has gone is a list of what WAS there.
  */
-export function mountDeviceProjects(host, { callRpc, deviceName, onProjectCreated }) {
+export async function mountDeviceProjects(host, { callRpc, deviceName, onProjectCreated }) {
   const panel = host.querySelector("[data-device-projects]");
   const list = panel.querySelector("#projlist");
 
@@ -74,5 +75,5 @@ export function mountDeviceProjects(host, { callRpc, deviceName, onProjectCreate
       { callRpc, deviceName },
     );
 
-  return refresh;
+  await refresh();
 }

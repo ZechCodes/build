@@ -160,7 +160,11 @@ impl IcePolicy {
     /// `QueryOnly` is the one that decides whether a browser can be reached at
     /// all on a LAN: Chrome and Safari offer `<uuid>.local` host candidates
     /// and nothing else, and an agent with mDNS disabled — the crate's default
-    /// when no setting engine is given — discards every one of them.
+    /// when no setting engine is given — discards every one of them. It is
+    /// also the one knob here no test in this crate can prove: an in-process
+    /// peer offers IP host candidates, never mDNS names, so resolution is
+    /// never exercised. A real browser is what verifies it (stage 06's
+    /// browser pass).
     pub(crate) fn setting_engine(&self) -> SettingEngine {
         let mut engine = SettingEngine::default();
         engine.set_multicast_dns_mode(MulticastDnsMode::QueryOnly);

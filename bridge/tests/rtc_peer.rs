@@ -5,6 +5,12 @@
 //! Nothing leaves the machine. The browser gathers on loopback and the device
 //! is offered no ICE server, so only host candidates pair and no TURN and no
 //! STUN server is ever reached.
+//!
+//! One part of rule 8 is not provable here: the bridge resolves a browser's
+//! mDNS (`<uuid>.local`) host candidates, and the in-process browser offers
+//! IP candidates like every non-browser peer does, so nothing in this file
+//! ever hands it a name to resolve. A real Chrome or Safari is what verifies
+//! that (stage 06's browser pass).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

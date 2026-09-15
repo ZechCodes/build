@@ -16,10 +16,7 @@ const sockets = vi.hoisted(() => []);
 const contexts = vi.hoisted(() => new Map());
 
 vi.mock("@build/secure-transport", () => ({ ready: async () => {} }));
-vi.mock("../src/config.js", () => ({ RELAY_URL: "wss://relay.test" }));
 vi.mock("../src/app.js", () => ({ App: { route: { name: "inbox" }, devices: [], selectedDeviceId: null } }));
-vi.mock("../src/api.js", () => ({ fetchGatewayToken: async () => "tok" }));
-vi.mock("../src/devices.js", () => ({ pinnedDeviceTransportKey: async () => "pk" }));
 // The registry is stood in for; what counts as a machine that can answer is
 // not — that question has one answer, and this file reads the real one.
 vi.mock("../src/core/deviceContexts.js", async () => ({
@@ -27,38 +24,52 @@ vi.mock("../src/core/deviceContexts.js", async () => ({
   contextFor: (deviceId) => contexts.get(deviceId) || null,
 }));
 // The socket itself is another file's subject: what matters here is which
-// device it was told to want, what it was handed to ride, and whether it was
-// dropped so it can re-read the first of those.
+// machine's session it was given, and what it was handed to ride.
 vi.mock("../src/terminal/session.js", () => ({
   TerminalSocket: class {
     constructor(options) {
       this.options = options;
-      this.deviceId = options.preferDeviceId();
-      this.drops = 0;
+      this.deviceId = null;
+      this.adopted = [];
       this.carriers = [];
       sockets.push(this);
     }
     onStatus() {}
-    async start() {}
+    adoptTerminalSession(session) {
+      this.adopted.push(session);
+      this.deviceId = session.deviceId;
+    }
     peer(carrier) {
       this.carriers.push(carrier);
-    }
-    simulateDrop() {
-      this.drops += 1;
     }
   },
 }));
 
 const { App } = await import("../src/app.js");
-const { followTerminalDevice, terminalManager } = await import("../src/terminal/manager.js");
+const { followTerminalDevice, provideTerminalSessions, terminalManager } = await import("../src/terminal/manager.js");
 
-/** The one socket the manager owns, as if it had connected to `deviceId`, with
- *  its counters cleared. */
+/** Every device a terminal session was asked for, and whether the mint answers.
+ *  Minting one is the connection layer's — it owns that device's rendezvous —
+ *  so here it is a double the test drives. */
+const mints = { asked: [], refuse: false };
+provideTerminalSessions(async (deviceId) => {
+  mints.asked.push(deviceId);
+  if (mints.refuse) throw new Error(`cannot reach ${deviceId}`);
+  return { sessionId: `sess-${deviceId}`, sessionKeyB64: `key-${deviceId}`, deviceId };
+});
+
+const settle = async () => {
+  for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
+/** The one socket the manager owns, as if its session were already on
+ *  `deviceId`, with its records cleared. */
 function socketOn(deviceId) {
   const socket = terminalManager();
   socket.deviceId = deviceId;
-  socket.drops = 0;
+  socket.adopted.length = 0;
   socket.carriers.length = 0;
+  mints.asked.length = 0;
   return socket;
 }
 
@@ -72,6 +83,8 @@ beforeEach(() => {
   App.selectedDeviceId = "dev-a";
   App.route = { name: "inbox" };
   contexts.clear();
+  mints.asked.length = 0;
+  mints.refuse = false;
 });
 
 describe("the carrier the terminals are given", () => {
@@ -87,40 +100,72 @@ describe("the carrier the terminals are given", () => {
 });
 
 describe("the device the terminals follow", () => {
-  it("with no route device the terminals follow the home device", () => {
+  it("with no route device the terminals follow the home device", async () => {
     live("dev-a");
-    const socket = socketOn("dev-a");
-
-    expect(socket.options.preferDeviceId()).toBe("dev-a");
-
+    live("dev-b");
+    socketOn("dev-a");
     App.selectedDeviceId = "dev-b";
 
-    expect(socket.options.preferDeviceId()).toBe("dev-b");
+    followTerminalDevice();
+    await settle();
 
-    App.route = { name: "branch", deviceId: "dev-a", projectId: "p1" };
-
-    expect(socket.options.preferDeviceId()).toBe("dev-a"); // the link wins
+    expect(mints.asked).toEqual(["dev-b"]);
   });
 
-  it("a route change to another device drops the socket once", () => {
+  it("a route change to another device mints that device's session, once", async () => {
     live("dev-b");
     const socket = socketOn("dev-a");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
     followTerminalDevice();
+    await settle();
 
-    expect(socket.drops).toBe(1);
-    expect(socket.options.preferDeviceId()).toBe("dev-b"); // what it re-reads as it comes back
+    expect(mints.asked).toEqual(["dev-b"]);
+    expect(socket.adopted).toEqual([{ sessionId: "sess-dev-b", sessionKeyB64: "key-dev-b", deviceId: "dev-b" }]);
   });
 
-  it("the same device does not drop it", () => {
+  it("the same device mints nothing", async () => {
     live("dev-b");
     const socket = socketOn("dev-b");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
     followTerminalDevice();
+    await settle();
 
-    expect(socket.drops).toBe(0);
+    expect(mints.asked).toEqual([]);
+    expect(socket.adopted).toEqual([]);
+  });
+
+  // The session is minted over a relay round trip, and the shells can move
+  // again while it is in flight. One that lands for a machine they have left is
+  // not adopted: it would type the work at the wrong computer.
+  it("drops a session that lands after the shells have moved on", async () => {
+    live("dev-a");
+    live("dev-b");
+    const socket = socketOn("dev-a");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    followTerminalDevice();
+    App.route = { name: "branch", deviceId: "dev-a", projectId: "p1" }; // back before it lands
+    await settle();
+
+    expect(socket.adopted).toEqual([]);
+  });
+
+  // A machine whose rendezvous will not mint is one the connection layer is
+  // about to block. The shells stay on the session they have rather than
+  // ending up with none.
+  it("leaves the shells where they are when the mint is refused", async () => {
+    live("dev-b");
+    mints.refuse = true;
+    const socket = socketOn("dev-a");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    expect(followTerminalDevice()).toBe(true);
+    await settle();
+
+    expect(socket.adopted).toEqual([]);
+    expect(socket.deviceId).toBe("dev-a");
   });
 
   // A link to a machine this client has never opened mounts a notice, not a
@@ -133,8 +178,8 @@ describe("the device the terminals follow", () => {
 
     followTerminalDevice();
 
-    expect(socket.drops).toBe(0);
-    expect(socket.options.preferDeviceId()).toBe("dev-a");
+    expect(mints.asked).toEqual([]);
+    expect(socket.deviceId).toBe("dev-a");
   });
 
   // A machine that has answered before is still the machine the work is on: an
@@ -149,8 +194,8 @@ describe("the device the terminals follow", () => {
 
     followTerminalDevice();
 
-    expect(socket.drops).toBe(0);
-    expect(socket.options.preferDeviceId()).toBe("dev-b");
+    expect(mints.asked).toEqual([]);
+    expect(socket.deviceId).toBe("dev-b");
   });
 
   // A machine this client HAS opened and cannot reach right now is the machine
@@ -165,7 +210,7 @@ describe("the device the terminals follow", () => {
 
     expect(followTerminalDevice()).toBe(false);
 
-    expect(socket.drops).toBe(0);
+    expect(mints.asked).toEqual([]);
     expect(socket.carriers).toEqual([]); // nor is dev-a taken off its own carrier
   });
 

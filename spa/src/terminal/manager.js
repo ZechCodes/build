@@ -1,23 +1,36 @@
 // The per-browser-tab terminal socket owner. ONE TerminalSocket multiplexes
 // every terminal tab (user shells + agent screens) by term_id, kept off the app
 // RPC session so PTY floods never head-of-line-block RPCs. Created lazily on the
-// first terminal/agent tab mount — users who never open one pay no socket.
+// first terminal/agent tab mount — users who never open one pay no session.
+//
+// It owns no socket of its own (spec rule 5): the terminals ride the `term`
+// DataChannel of the device they follow, on a session minted through that
+// device's rendezvous. Minting one is the connection layer's — it owns the
+// rendezvous — and is handed to this module as `mintTerminalSession`.
 
 import * as transport from "@build/secure-transport";
-import { RELAY_URL } from "../config.js";
 import { App } from "../app.js";
-import { fetchGatewayToken } from "../api.js";
-import { pinnedDeviceTransportKey } from "../devices.js";
 import { homeDeviceId } from "../core/devicePolicy.js";
 import { canAnswer, contextFor } from "../core/deviceContexts.js";
 import { TerminalSocket } from "./session.js";
 import { createStatusHub } from "./statusHub.js";
 
 let socket = null;
-// The `term` DataChannel, once the app session's upgrade has one. Remembered at
-// module scope because the socket is lazy: an upgrade can land long before the
+// The `term` DataChannel of the device the terminals follow. Remembered at
+// module scope because the socket is lazy: a peer link can land long before the
 // first terminal tab mounts one.
 let peerCarrier = null;
+
+/** How a terminal session is minted on one device — through that device's
+ *  rendezvous, which the connection layer owns. Until it is provided, nothing
+ *  can type anywhere: a terminal session is not this module's to open. */
+let mintTerminalSession = async () => null;
+
+/** Hand this module the mint. Called once, by the layer that owns the
+ *  rendezvous of every device. */
+export function provideTerminalSessions(mint) {
+  mintTerminalSession = mint;
+}
 
 // One hub for the whole page: the singleton socket's status feeds it, every pane
 // overlay subscribes to it. Lives at module scope so subscribeTerminalStatus
@@ -60,35 +73,24 @@ export function subscribeTerminalStatus(fn) {
 
 export function terminalManager() {
   if (!socket) {
-    socket = new TerminalSocket({
-      url: RELAY_URL,
-      transport,
-      WebSocketImpl: WebSocket,
-      getToken: fetchGatewayToken,
-      getPinnedDeviceKey: pinnedDeviceTransportKey,
-      // Re-read on every reconnect; a route change or a home move calls
-      // followTerminalDevice() to force that reconnect.
-      preferDeviceId: terminalDeviceId,
-    });
+    socket = new TerminalSocket({ transport });
     socket.onStatus((status) => statusHub.set(status));
-    // A failed initial connect self-heals: _connect closes the socket, whose
-    // close event schedules the backoff reconnect. A channel that is already
-    // carrying takes over once the session it re-attaches over exists.
-    socket
-      .start()
-      .then(() => socket.peer(peerCarrier))
-      .catch(() => {});
+    // A session on the device the shells are to type at, and the channel that
+    // device's peer link is already carrying, if it has one. Until both are
+    // there the panes are shown connecting, which is what they are.
+    retargetTerminals(terminalDeviceId());
+    if (peerCarrier) socket.peer(peerCarrier);
   }
   return socket;
 }
 
 /**
- * Ride the peer connection's `term` channel from now on, or `null` to fall back
- * to the relay socket. The app session's upgrade owns both channels, so this is
- * how the terminal stream learns that its half is open — and, when the peer path
- * goes, that it is back on the relay.
+ * Ride this device's `term` channel from now on, or `null` for "there is no
+ * wire". The device's peer link owns both channels, so this is how the terminal
+ * stream learns that its half is open — and, when the peer path goes, that
+ * there is nothing left to type down (rule 2: no relay fallback).
  *
- * Nothing is watched here. "The two channels are one connection and fall back
+ * Nothing is watched here. "The two channels are one connection and go
  * together" is written in `connection.js`, which hears each channel's close and
  * hands both streams back at once; a second listener on the same carrier would
  * run that fallback twice, through two owners of one fact.
@@ -99,11 +101,10 @@ function terminalsRideOn(carrier) {
 }
 
 /**
- * Re-point the terminal socket at the device the terminals follow, and say
- * whether the shells are there. A healthy socket never reconnects on its own —
- * the liveness ping keeps it pinned to the old device — so a move must drop it;
- * the auto-reconnect then re-reads preferDeviceId, attaches to the wanted
- * device, and re-attaches every open tab.
+ * Put the terminal socket on the device the terminals follow, and say whether
+ * the shells took the move. The move is a session: one minted on that device's
+ * rendezvous, adopted by the socket, which re-attaches every open tab over that
+ * device's channel.
  *
  * That re-attach is why a machine that cannot answer takes nothing: every tab
  * would come back against a machine with no session to open a PTY on. The
@@ -112,15 +113,36 @@ function terminalsRideOn(carrier) {
 function retargetTerminals(wantedDeviceId) {
   if (!socket || socket.deviceId === wantedDeviceId) return true;
   if (!canAnswer(contextFor(wantedDeviceId))) return false;
-  socket.simulateDrop();
+  adoptSessionOn(wantedDeviceId);
   return true;
 }
 
 /**
- * Take the terminals to the device they now follow: drop a socket that is still
- * pinned somewhere else so it comes back on the right one, and ride that
- * device's peer channel if it has one (and nobody else's — another device's
- * channel carries the stream to the wrong machine).
+ * Mint a terminal session on one machine and give it to the socket.
+ *
+ * Not awaited: `followTerminalDevice` answers a route change, which cannot wait
+ * on a relay round trip. A mint that fails leaves the shells on the session
+ * they are on — the device it failed for is blocked by the layer that owns its
+ * rendezvous, which is what the panes end up showing — and a mint that lands
+ * after the shells have moved on again is dropped, because the session it
+ * carries is the wrong machine's.
+ */
+function adoptSessionOn(deviceId) {
+  Promise.resolve()
+    .then(() => mintTerminalSession(deviceId))
+    .then((session) => {
+      if (session && socket && terminalDeviceId() === deviceId) socket.adoptTerminalSession(session);
+    })
+    .catch(() => {
+      /* that machine cannot mint one; the shells stay where they are */
+    });
+}
+
+/**
+ * Take the terminals to the device they now follow: a session on that machine
+ * for a socket that is still on another one, and that device's peer channel if
+ * it has one (and nobody else's — another device's channel carries the stream
+ * to the wrong machine).
  *
  * Every way the answer changes ends here: a route change (app.js render), a
  * home move, and a peer link opening or closing on that device. Answers whether

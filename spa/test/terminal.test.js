@@ -1,118 +1,70 @@
+// The terminal socket over the `term` DataChannel it is handed.
+//
+// It owns no socket: a session is minted for it through the followed device's
+// rendezvous and adopted, a wire is handed over, and every open terminal
+// re-attaches on it. Nothing here opens, reconnects or authenticates anything —
+// that is core/rendezvous.js.
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { TerminalSocket } from "../src/terminal/session.js";
 import { createStatusHub } from "../src/terminal/statusHub.js";
 
-class FakeWebSocket {
-  constructor(url) {
-    this.url = url;
-    this.sent = [];
-    this.listeners = {};
-    this.readyState = 1; // OPEN
-    FakeWebSocket.instances.push(this);
-  }
-  addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
-  send(text) { this.sent.push(JSON.parse(text)); }
-  close() { this.readyState = 3; /* CLOSED */ this.emit("close", {}); }
-  emit(type, event = {}) { (this.listeners[type] || []).forEach((fn) => fn(event)); }
-  serverSend(obj) { this.emit("message", { data: JSON.stringify(obj) }); }
-}
-FakeWebSocket.instances = [];
-
 const fakeTransport = {
-  ready: async () => {},
-  createSessionInit: async ({ sessionId, deviceId }) => ({
-    sessionKeyB64: `key-${deviceId}`,
-    sessionInit: { session_id: sessionId, device_id: deviceId },
-  }),
-  openSessionAccept: async () => {},
   encryptFrame: async ({ outerFields, frameFields }) => ({ outerFields, frameFields }),
   decryptEnvelope: async ({ envelope }) => ({ payload: envelope.frameFields.payload }),
 };
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-/** Wait for the reconnect to open a socket beyond the ones already made.
- *
- * The backoff runs on real time, so sleeping a guess at it was a race: under a
- * loaded machine the retry had not fired yet, `instances.at(-1)` was still the
- * dead socket, and the test failed about the clock rather than about the code.
- * This waits for the socket itself, and gives up with a sentence rather than
- * hanging until the runner's timeout says nothing.
- *
- * `seen` is how many sockets existed BEFORE whatever is being waited on — take
- * it before the drop, not after. */
-async function reconnected(seen, within = 4000) {
-  const deadline = Date.now() + within;
-  while (FakeWebSocket.instances.length <= seen) {
-    if (Date.now() > deadline) {
-      throw new Error(`no reconnect within ${within}ms (still ${FakeWebSocket.instances.length} socket(s))`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  return FakeWebSocket.instances.at(-1);
-}
 const b64 = (s) => btoa(s);
 const dec = (bytes) => new TextDecoder().decode(bytes);
 
-function makeSocket(overrides = {}) {
-  return new TerminalSocket({
-    url: "wss://relay.test",
-    transport: fakeTransport,
-    WebSocketImpl: FakeWebSocket,
-    getToken: async () => "tok-9",
-    getPinnedDeviceKey: async (deviceId) => `pk-${deviceId.slice(-1)}`,
-    preferDeviceId: () => "dev-b",
-    ...overrides,
-  });
-}
+/** The session a rendezvous mints for the terminals of one device. */
+const terminalSession = (deviceId = "dev-b", sessionId = "sess-term") => ({
+  sessionId,
+  sessionKeyB64: `key-${sessionId}`,
+  deviceId,
+});
 
-// Drive the E2EE handshake on `ws` to a connected state; returns the session_init.
-// `settle` yields to the socket's own awaits — real timers or fake ones.
-async function handshakeWith(ws, settle, { deviceId = "dev-b", pinned = "pk-b" } = {}) {
-  ws.emit("open");
-  await settle();
-  ws.serverSend({ type: "authenticated" });
-  ws.serverSend({ type: "device_key", device_id: deviceId, transport_public_key: pinned });
-  await settle();
-  const init = ws.sent.find((m) => m.type === "session_init");
-  ws.serverSend({ type: "session_accept", session_id: init.session_id, envelope: {} });
-  await settle();
-  return init;
+/**
+ * One `term` DataChannel, as its owner hands it over.
+ *
+ * Envelopes are recorded in the relay's own message shape so that what a test
+ * reads off a wire reads the same whichever wire carried it.
+ */
+function fakeWire({ sendFails = null } = {}) {
+  const envelopeListeners = new Set();
+  const closeListeners = new Set();
+  const subscribe = (listeners) => (fn) => {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  };
+  const wire = {
+    sent: [],
+    closed: false,
+    async send(envelope) {
+      if (sendFails) throw new Error(sendFails);
+      wire.sent.push({ type: "e2ee_envelope", envelope });
+    },
+    onEnvelope: subscribe(envelopeListeners),
+    onClose: subscribe(closeListeners),
+    close: () => {
+      if (wire.closed) return;
+      wire.closed = true;
+      closeListeners.forEach((fn) => fn());
+    },
+    /** The bridge's half: one message down the channel. */
+    serverSend: (message) => envelopeListeners.forEach((fn) => fn(message.envelope)),
+  };
+  return wire;
 }
-
-const handshake = (ws, opts) => handshakeWith(ws, tick, opts);
-const handshakeOnFakeTimers = (ws, opts) => handshakeWith(ws, () => vi.advanceTimersByTimeAsync(0), opts);
 
 const lastPayload = (ws) => ws.sent.at(-1).envelope.frameFields.payload;
 const respond = (ws, init, id, result) =>
-  ws.serverSend({
-    type: "e2ee_envelope",
-    session_id: init.session_id,
-    envelope: { frameFields: { payload: { id, ok: true, result } } },
-  });
+  ws.serverSend({ type: "e2ee_envelope", envelope: { frameFields: { payload: { id, ok: true, result } } } });
 const rejectCall = (ws, init, id, error) =>
-  ws.serverSend({
-    type: "e2ee_envelope",
-    session_id: init.session_id,
-    envelope: { frameFields: { payload: { id, ok: false, error } } },
-  });
+  ws.serverSend({ type: "e2ee_envelope", envelope: { frameFields: { payload: { id, ok: false, error } } } });
 const push = (ws, init, payload) =>
-  ws.serverSend({ type: "e2ee_envelope", session_id: init.session_id, envelope: { frameFields: { payload } } });
-
-/** connected(), but driven on fake timers, reporting every status it saw. */
-async function connectedOnFakeTimers() {
-  FakeWebSocket.instances.length = 0;
-  const socket = makeSocket();
-  const statuses = [];
-  socket.onStatus((s) => statuses.push(s));
-  const started = socket.start();
-  started.catch(() => {});
-  await vi.advanceTimersByTimeAsync(0);
-  const ws = FakeWebSocket.instances.at(-1);
-  const init = await handshakeOnFakeTimers(ws);
-  await started;
-  return { socket, ws, init, statuses };
-}
+  ws.serverSend({ type: "e2ee_envelope", envelope: { frameFields: { payload } } });
 
 /** Every request of one method sent on `ws`, in order. */
 const callsOn = (ws, method) =>
@@ -120,50 +72,56 @@ const callsOn = (ws, method) =>
     .filter((m) => m.type === "e2ee_envelope" && m.envelope.frameFields.payload.method === method)
     .map((m) => m.envelope.frameFields.payload);
 
-async function connected(overrides) {
-  FakeWebSocket.instances.length = 0;
-  const socket = makeSocket(overrides);
-  const started = socket.start();
-  started.catch(() => {});
-  await tick();
-  const ws = FakeWebSocket.instances.at(-1);
-  const init = await handshake(ws);
-  await started;
-  return { socket, ws, init };
+/** A socket with a session and a wire: what the manager hands over once the
+ *  followed device's channels are open. */
+async function connected({ session = terminalSession(), settle = tick } = {}) {
+  const socket = new TerminalSocket({ transport: fakeTransport });
+  const statuses = [];
+  socket.onStatus((status) => statuses.push(status));
+  socket.adoptTerminalSession(session);
+  const ws = fakeWire();
+  await socket.peer(ws);
+  await settle();
+  return { socket, ws, init: { session_id: session.sessionId }, statuses };
+}
+
+const connectedOnFakeTimers = () => connected({ settle: () => vi.advanceTimersByTimeAsync(0) });
+
+/** The wire goes and another one takes its place — a peer connection that
+ *  failed and came back on an ICE restart. The re-attach is left in flight for
+ *  the caller to answer. */
+function rewire(socket) {
+  socket.peer(null);
+  const next = fakeWire();
+  socket.peer(next);
+  return next;
 }
 
 describe("TerminalSocket", () => {
-  it("completes the handshake without attaching anything (connecting no longer implies attach)", async () => {
+  it("attaches nothing when it is given a session and a wire (adopting is not attaching)", async () => {
     const { ws } = await connected();
-    // No term.attach was sent as part of connecting — the socket just came up.
-    const methods = ws.sent
-      .filter((m) => m.type === "e2ee_envelope")
-      .map((m) => m.envelope.frameFields.payload.method);
+    const methods = ws.sent.map((m) => m.envelope.frameFields.payload.method);
     expect(methods).not.toContain("term.attach");
   });
 
-  it("seals to the api-pinned key and hard-fails on a mismatched relay-pushed key", async () => {
-    FakeWebSocket.instances.length = 0;
-    const sealedTo = [];
-    const spyTransport = {
-      ...fakeTransport,
-      createSessionInit: async (args) => {
-        sealedTo.push(args.deviceTransportPublicKeyB64);
-        return fakeTransport.createSessionInit(args);
-      },
-    };
-    const socket = makeSocket({ transport: spyTransport, getPinnedDeviceKey: async () => "pk-genuine", preferDeviceId: () => "dev-a" });
-    const started = socket.start();
-    started.catch(() => {});
-    await tick();
-    const ws = FakeWebSocket.instances[0];
-    ws.emit("open");
-    await tick();
-    ws.serverSend({ type: "authenticated" });
-    ws.serverSend({ type: "device_key", device_id: "dev-a", transport_public_key: "pk-attacker" });
-    await expect(started).rejects.toThrow(/does not match/);
-    expect(sealedTo).toEqual([]);
-    expect(ws.sent.find((m) => m.type === "session_init")).toBeUndefined();
+  it("is on the machine whose session it was given", async () => {
+    const socket = new TerminalSocket({ transport: fakeTransport });
+    expect(socket.deviceId).toBe(null);
+    socket.adoptTerminalSession(terminalSession("dev-a"));
+    expect(socket.deviceId).toBe("dev-a");
+    socket.close();
+  });
+
+  it("says it is connecting while it has a session and no wire, and lost when told there is none", async () => {
+    const socket = new TerminalSocket({ transport: fakeTransport });
+    const statuses = [];
+    socket.onStatus((status) => statuses.push(status));
+
+    socket.adoptTerminalSession(terminalSession());
+    expect(statuses).toEqual(["connecting"]);
+
+    socket.peer(null); // the device it follows has no `term` channel
+    expect(statuses).toEqual(["connecting", "disconnected"]);
     socket.close();
   });
 
@@ -346,11 +304,11 @@ describe("TerminalSocket", () => {
     expect(lives).toEqual([true]);
 
     // Drop → the socket reconnects with backoff and re-attaches every term.
-    const beforeDrop = FakeWebSocket.instances.length;
-    socket.simulateDrop();
-    const ws2 = await reconnected(beforeDrop);
+    // The channel goes and an ICE restart brings another: every term re-attaches.
+    const ws2 = rewire(socket);
+    await tick();
     expect(ws2).not.toBe(ws);
-    const init2 = await handshake(ws2);
+    const init2 = init;
 
     // First re-attach (user term-1) → rejected as unknown → reaped + deregistered.
     let p = lastPayload(ws2);
@@ -544,10 +502,7 @@ describe("TerminalSocket", () => {
     push(ws, init, { type: "term.output", term_id: "term-8", cursor: 3, data: b64("ghost") });
     await tick();
     expect(outputs).toEqual([]);
-    const beforeDrop = FakeWebSocket.instances.length;
-    socket.simulateDrop();
-    const ws2 = await reconnected(beforeDrop);
-    await handshake(ws2);
+    const ws2 = rewire(socket);
     await tick();
     const reattaches = ws2.sent
       .filter((m) => m.type === "e2ee_envelope")
@@ -567,10 +522,9 @@ describe("TerminalSocket", () => {
     await at;
 
     // The task is deleted while we are away; the re-attach is rejected.
-    const beforeDrop = FakeWebSocket.instances.length;
-    socket.simulateDrop();
-    const ws2 = await reconnected(beforeDrop);
-    const init2 = await handshake(ws2);
+    const ws2 = rewire(socket);
+    await tick();
+    const init2 = init;
     const p = lastPayload(ws2);
     expect(p.method).toBe("agent.attach");
     rejectCall(ws2, init2, p.id, "unknown id");
@@ -578,10 +532,7 @@ describe("TerminalSocket", () => {
     expect(closed).toEqual(["reaped"]);
 
     // Deregistered: the next reconnect does not retry it.
-    const beforeSecondDrop = FakeWebSocket.instances.length;
-    socket.simulateDrop();
-    const ws3 = await reconnected(beforeSecondDrop);
-    await handshake(ws3);
+    const ws3 = rewire(socket);
     await tick();
     const retries = ws3.sent
       .filter((m) => m.type === "e2ee_envelope")
@@ -651,10 +602,9 @@ describe("TerminalSocket", () => {
     respond(ws, init, p.id, { snapshot: b64(""), cursor: 0 });
     await attaching;
 
-    const beforeDrop = FakeWebSocket.instances.length;
-    socket.simulateDrop();
-    const ws2 = await reconnected(beforeDrop);
-    const init2 = await handshake(ws2);
+    const ws2 = rewire(socket);
+    await tick();
+    const init2 = init;
     p = lastPayload(ws2);
     expect(p.method).toBe("term.attach");
     expect(p.params).toEqual({ workspace_id: "ws-7", term_id: "term-4", cols: 90, rows: 30 });
@@ -692,18 +642,22 @@ describe("TerminalSocket liveness", () => {
     socket.close();
   });
 
-  it("still disconnects an idle socket whose ping goes unanswered", async () => {
+  // The wire that did not answer is the one that goes: closing the channel is
+  // how it reports itself gone, and its owner decides what that costs — an ICE
+  // restart, or the device blocked. Nothing here reconnects anything.
+  it("closes an idle wire whose ping goes unanswered and says the shells are lost", async () => {
     const { socket, ws, statuses } = await connectedOnFakeTimers();
+    // Its owner is what hands the channel over and takes it back, exactly as
+    // terminal/manager.js does for the peer link's `term` half.
+    ws.onClose(() => socket.peer(null));
     statuses.length = 0;
 
     await vi.advanceTimersByTimeAsync(2000);
     expect(pingsSentOn(ws).length).toBe(1); // silence → probe
     await vi.advanceTimersByTimeAsync(3000); // the ping's own timeout
-    expect(statuses).toEqual(["disconnected"]);
 
-    const socketsBefore = FakeWebSocket.instances.length;
-    await vi.advanceTimersByTimeAsync(500); // backoff → reconnect
-    expect(FakeWebSocket.instances.length).toBe(socketsBefore + 1);
+    expect(ws.closed).toBe(true);
+    expect(statuses).toEqual(["disconnected"]);
     socket.close();
   });
 
@@ -716,19 +670,19 @@ describe("TerminalSocket liveness", () => {
     expect(statuses).toEqual([]);
   });
 
-  it("stops the liveness loop of a superseded generation (no stray disconnect)", async () => {
+  it("stops the liveness loop of a superseded wire (no stray disconnect)", async () => {
     const { socket, ws, statuses } = await connectedOnFakeTimers();
     statuses.length = 0;
 
-    ws.serverSend({ type: "device_offline", device_id: "dev-b" });
+    socket.peer(null);
     await vi.advanceTimersByTimeAsync(0);
     expect(statuses).toEqual(["disconnected"]);
 
-    // Past the next liveness wake: the old generation's loop must be gone, so
-    // the only status after the loss is the reconnect attempt.
+    // Past the next liveness wake: the old wire's loop must be gone, so nothing
+    // is probed and nothing further is said about a socket with no wire.
     await vi.advanceTimersByTimeAsync(2500);
     expect(pingsSentOn(ws)).toEqual([]);
-    expect(statuses).toEqual(["disconnected", "connecting"]);
+    expect(statuses).toEqual(["disconnected"]);
     socket.close();
   });
 });
@@ -838,13 +792,13 @@ describe("TerminalSocket output acks", () => {
 
     push(ws, init, { type: "term.output", term_id: "term-1", cursor: 9, data: b64("x") });
     await vi.advanceTimersByTimeAsync(0);
-    socket.simulateDrop(); // the ack is still inside its window
+    const ws2 = rewire(socket); // the ack is still inside its window
+    await vi.advanceTimersByTimeAsync(0);
 
-    await vi.advanceTimersByTimeAsync(600); // past the timer AND the backoff
-    const ws2 = FakeWebSocket.instances.at(-1);
+    await vi.advanceTimersByTimeAsync(600); // past the ack's throttle window
     expect(ws2).not.toBe(ws);
-    expect(acksOn(ws)).toEqual([]); // nothing chased the dead socket
-    const init2 = await handshakeOnFakeTimers(ws2);
+    expect(acksOn(ws)).toEqual([]); // nothing chased the dead wire
+    const init2 = init;
     // The re-attach rebases the cursor far past the one that was pending.
     respond(ws2, init2, lastPayload(ws2).id, { snapshot: b64(""), cursor: 500 });
     await vi.advanceTimersByTimeAsync(1000);
@@ -877,100 +831,63 @@ describe("TerminalSocket output acks", () => {
 // the socket dies, every waiter hangs forever, the surfaces that asked never
 // finish, and their retries stack behind a socket that is not coming back on
 // its own. Every wait ends — with a connection, or with a typed loss.
-describe("a caller waiting on a socket that is lost", () => {
-  /** A started-but-not-yet-connected socket, with its first WebSocket. */
-  async function connecting(overrides) {
-    FakeWebSocket.instances.length = 0;
-    const socket = makeSocket(overrides);
+describe("a caller waiting on a wire that never came", () => {
+  /** A socket with a session and no wire yet: what the manager holds between
+   *  minting a terminal session and the device's channels opening. */
+  function waitingForAWire() {
+    const socket = new TerminalSocket({ transport: fakeTransport });
     const statuses = [];
-    socket.onStatus((s) => statuses.push(s));
-    const started = socket.start();
-    started.catch(() => {});
-    await tick();
-    return { socket, started, statuses, ws: FakeWebSocket.instances.at(-1) };
+    socket.onStatus((status) => statuses.push(status));
+    socket.adoptTerminalSession(terminalSession());
+    return { socket, statuses };
   }
 
   it("rejects pending whenConnected waiters with a typed loss instead of hanging", async () => {
-    const { socket, ws } = await connecting();
+    const { socket } = waitingForAWire();
     const waiting = socket.whenConnected();
-    ws.close(); // the relay drops us mid-handshake
+    socket.peer(null); // the device it follows cannot carry them
     await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
     socket.close();
   });
 
-  it("rejects the calls that were waiting on it, so nothing stacks behind a dead socket", async () => {
-    const { socket, ws } = await connecting();
+  it("rejects the calls that were waiting on it, so nothing stacks behind a dead wire", async () => {
+    const { socket } = waitingForAWire();
     const attaching = socket.attachTerminal("term-1", { cols: 80, rows: 24, onSnapshot: () => {} });
     const listing = socket.listTerminals({ run_id: "run-3" });
     const creating = socket.createTerminal({ run_id: "run-3" }, 80, 24);
-    ws.close();
+    socket.peer(null);
     await expect(attaching).rejects.toMatchObject({ name: "TerminalSocketLost" });
     await expect(listing).rejects.toMatchObject({ name: "TerminalSocketLost" });
     await expect(creating).rejects.toMatchObject({ name: "TerminalSocketLost" });
-    // Nothing was ever put on the wire: the socket died before the wait ended.
-    expect(callsOn(ws, "term.attach")).toEqual([]);
     socket.close();
   });
 
-  it("rejects again on the next failed connect, rather than swallowing a later waiter", async () => {
-    const { socket, ws } = await connecting();
-    const beforeClose = FakeWebSocket.instances.length;
-    ws.close();
+  it("rejects again on the next wire that does not come, rather than swallowing a later waiter", async () => {
+    const { socket } = waitingForAWire();
+    socket.peer(null);
     await tick();
-    const waiting = socket.whenConnected(); // asked while the reconnect is in flight
-    const retry = await reconnected(beforeClose);
-    retry.close(); // …and that attempt dies too
+    const waiting = socket.whenConnected(); // asked while the upgrade is in flight
+    socket.peer(null); // …and that attempt failed too
     await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
     socket.close();
   });
 
   it("rejects waiters on close(), and every wait asked of a closed socket", async () => {
-    const { socket } = await connecting();
+    const { socket } = waitingForAWire();
     const waiting = socket.whenConnected();
     socket.close();
     await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "closed" });
     await expect(socket.whenConnected()).rejects.toMatchObject({ reason: "closed" });
   });
 
-  it("reports the loss (and reconnects) when the connect dies before there is a socket to close", async () => {
-    // transport.ready() throws on the first attempt: there is no WebSocket yet,
-    // so no close event will ever arrive to end the waits or trigger a retry.
-    let failing = true;
-    const brittle = {
-      ...fakeTransport,
-      ready: async () => {
-        if (failing) {
-          failing = false;
-          throw new Error("crypto not ready");
-        }
-      },
-    };
-    FakeWebSocket.instances.length = 0;
-    // The retry rides a 400 ms backoff, so this test is about a clock. On real
-    // timers a loaded machine overshoots the wait and the assertions land on
-    // whichever attempt the overshoot reached; fake ones put the backoff where
-    // the rest of the file's timing tests keep it — under the test's control.
-    vi.useFakeTimers();
-    try {
-      const socket = makeSocket({ transport: brittle });
-      const statuses = [];
-      socket.onStatus((s) => statuses.push(s));
-      const started = socket.start();
-      const waiting = socket.whenConnected();
-      await expect(started).rejects.toThrow(/crypto not ready/);
-      await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
-      expect(statuses).toEqual(["connecting", "disconnected"]);
-
-      // …and the socket comes back on its own backoff.
-      await vi.advanceTimersByTimeAsync(600);
-      const ws = FakeWebSocket.instances.at(-1);
-      expect(ws).toBeDefined();
-      await handshakeOnFakeTimers(ws);
-      expect(statuses.at(-1)).toBe("connected");
-      socket.close();
-    } finally {
-      vi.useRealTimers();
-    }
+  it("resolves the wait the moment a wire carries, with every terminal already attached", async () => {
+    const { socket, statuses } = waitingForAWire();
+    const waiting = socket.whenConnected();
+    const ws = fakeWire();
+    await socket.peer(ws);
+    await expect(waiting).resolves.toBeUndefined();
+    expect(statuses).toEqual(["connecting", "connected"]);
+    socket.close();
   });
 });
 

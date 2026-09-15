@@ -28,6 +28,7 @@ import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
+import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import {
   projectMenuModel,
   toolbarIdentity,
@@ -132,7 +133,10 @@ async function workspaceRows(context, projectId, selectedWorkspaceId) {
   if (!selectedWorkspaceId) return rows;
   const selected = rows.find((workspace) => workspace.id === selectedWorkspaceId);
   if (Array.isArray(selected?.directories)) return rows;
-  const detail = workspaceAnswer(await context.rpc("workspace.get", { workspace_id: selectedWorkspaceId }), context.deviceId);
+  const detail = workspaceAnswer(
+    await context.rpc("workspace.get", { workspace_id: selectedWorkspaceId, ...SMALLEST_THREAD_PAGE }),
+    context.deviceId,
+  );
   return detail.id ? [...rows.filter((workspace) => workspace.id !== detail.id), detail] : rows;
 }
 

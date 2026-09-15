@@ -123,6 +123,24 @@ describe("createSessionRpc", () => {
     });
   });
 
+  it("keeps a deadline-free call pending until the session fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const rpc = rpcOn(fakeCarrier());
+      const waiting = rpc.call("workspace.get", {}, { timeoutMs: null });
+      const observed = vi.fn();
+      waiting.catch(observed);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(observed).not.toHaveBeenCalled();
+
+      rpc.fail(new Error("your device went offline"));
+      await expect(waiting).rejects.toThrow("your device went offline");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fails a call whose envelope never crossed the wire, rather than waiting out its timeout", async () => {
     const rpc = rpcOn(fakeCarrier({ sendFails: "the channel closed" }));
     await expect(rpc.call("term.input", {})).rejects.toThrow("the channel closed");

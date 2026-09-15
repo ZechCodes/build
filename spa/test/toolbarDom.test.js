@@ -277,7 +277,7 @@ describe("the workspace toolbar", () => {
     menu().querySelector('[data-project="dev-1/p1"]').click();
     await flush();
 
-    expect(workshopCall).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1" });
+    expect(workshopCall).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1", thread_limit: 1 });
     expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
   });
 

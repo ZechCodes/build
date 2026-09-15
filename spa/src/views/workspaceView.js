@@ -18,6 +18,7 @@ import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
+import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
 import "../styles/surfaces.css";
 
 const TABS = [
@@ -334,7 +335,13 @@ export async function renderWorkspace() {
     clearToolbarVerb(state.toolbarAction);
   };
   try {
-    const response = await state.callRpc("workspace.get", { workspace_id: state.route.workspaceId });
+    // This read mounts workspace metadata; the agent rail opens and pages its
+    // own selected conversation. Ask for the smallest valid thread window so
+    // an old conversation never bloats the surface's initial response.
+    const response = await state.callRpc("workspace.get", {
+      workspace_id: state.route.workspaceId,
+      ...SMALLEST_THREAD_PAGE,
+    });
     mountWorkspace(response.workspace || response, state);
   } catch (error) {
     if (!state.disposed) $("#tabbody").innerHTML = errorHtml(error.message || String(error));

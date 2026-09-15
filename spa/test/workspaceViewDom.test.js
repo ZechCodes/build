@@ -20,6 +20,7 @@ vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 
 import { App } from "../src/app.js";
+import { SMALLEST_THREAD_PAGE } from "../src/core/thread.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
@@ -85,6 +86,17 @@ afterEach(() => {
 });
 
 describe("workspace surface", () => {
+  it("bounds the unused conversation on its initial workspace detail read", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    const call = device("dev-1", async () => workspace);
+
+    await renderWorkspace();
+
+    // The machine the route names is asked, and asked for the smallest thread
+    // window: the rail pages the conversation it opens on its own.
+    expect(call).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1", ...SMALLEST_THREAD_PAGE });
+  });
+
   it("scopes Files to a directory while terminals stay workspace scoped", async () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", async () => workspace);

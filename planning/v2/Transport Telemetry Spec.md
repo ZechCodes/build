@@ -2,20 +2,28 @@
 
 Status: **built** (2026-09-05; stages 1–5 below). Companion to `WebRTC Transport Spec.md`.
 
+Amended 2026-09-15 by `Strict P2P Transport Spec.md`, which is binding where they
+differ: the relay is no longer a data plane, so a session that never carries on a
+peer connection is a session that never reached the device. The event `fell_back`
+is `channels_lost` and the bucket "Relay only" is **Never connected**; the storage
+column `fell_back_count` keeps its name (no migration) and counts the same thing.
+`buildapp/transport_admin.py` cites §Classification below.
+
 ## The question this answers
 
-"How many sessions are reliably on WebRTC, how many had to use TURN, and how many are
-going over the relay?" — asked by the operator, answered nowhere today. The bridge
-writes one stderr line per session naming the first path it carried on; the relay logs
-sockets, not sessions; Cloudflare reports egress, not sessions; the SPA `console.warn`s
-"staying on the relay" where no one reads it. A session that never upgrades, one that
-falls back, and one that re-negotiates after an ICE restart are all invisible.
+"How many sessions are reliably on WebRTC, how many had to use TURN, and how many
+never got a DataChannel at all?" — asked by the operator, answered nowhere (2026-09-05).
+The bridge writes one stderr line per session naming the first path it carried on; the
+relay logs sockets, not sessions; Cloudflare reports egress, not sessions; the SPA
+`console.warn`ed "staying on the relay" where no one read it. A session that never
+upgrades, one that loses its channels, and one that re-negotiates after an ICE restart
+are all invisible.
 
 ## Who knows what
 
 | Party | Knows | Does not know |
 |---|---|---|
-| Bridge | Every session it accepts, every peer it answers, the nominated pair at every (re)connect, every fallback, every end | The browser's own view of its pair (see the `prflx` under-count in the transport spec) |
+| Bridge | Every session it accepts, every peer it answers, the nominated pair at every (re)connect, every lost channel, every end | The browser's own view of its pair (see the `prflx` under-count in the transport spec) |
 | Relay | Sockets and which sessions rode them | Whether a session also rides a DataChannel, or on what |
 | Browser | Its own nominated pair, exactly | Nothing about other sessions |
 | Api | Devices, owners | Nothing about sessions |
@@ -38,7 +46,7 @@ a timestamp. No goal, no task, no repo, no frame.
 |---|---|---|
 | `minted` | A `session_init` the registry admits as a new session (not a carrier re-attach) | — |
 | `carrying` | The peer connection reaches `Connected` — the first time **and after every ICE restart** | `path`: `direct` \| `turn` |
-| `fell_back` | The session's last DataChannel carrier closed while the session lives (it is on the relay again) | — |
+| `channels_lost` | The session's last DataChannel carrier closed while the session lives — an ICE restart is under way, or the session is ending. Nothing carries for it meanwhile; there is no relay underneath. Was `fell_back`, which a bridge one release behind still sends | — |
 | `ended` | The registry ends the session (client `close`, last carrier gone) | — |
 
 `path` is the bridge's `NegotiatedPath`: `turn` when either end is a relay candidate,
@@ -73,8 +81,8 @@ Table `transport_sessions`, one row per `(device_id, session_id)`:
 | `session_id`, `device_id`, `owner_user_id` | Identity; owner copied from the device at mint so a later device deletion does not orphan the count |
 | `minted_at` | `minted` |
 | `first_carrying_at`, `first_path` | The first `carrying` |
-| `current_path` | `relay` \| `direct` \| `turn` — last `carrying`, reset to `relay` by `fell_back` |
-| `carrying_count`, `turn_count`, `fell_back_count` | Counters over the session's life |
+| `current_path` | `relay` \| `direct` \| `turn` — last `carrying`, reset to `relay` by `channels_lost` (`relay` reads "not carrying"; the word is the column's, not a path any traffic takes) |
+| `carrying_count`, `turn_count`, `fell_back_count` | Counters over the session's life. `fell_back_count` counts `channels_lost`; the column name is kept to avoid a migration and is commented in `models.py` |
 | `ended_at` | `ended` |
 
 Out-of-order or duplicate events are absorbed: a `carrying` before `minted` creates the
@@ -89,8 +97,8 @@ Over a window (24 h / 7 d / 30 d, by `minted_at`, default 7 d):
 |---|---|
 | **Direct WebRTC** | `first_path = direct`, `turn_count = 0`, `fell_back_count = 0` — "reliably using WebRTC" |
 | **TURN** | `turn_count > 0` — had to relay through Cloudflare at least once (billed) |
-| **Relay only** | never `carrying` — stayed on the WebSocket relay |
-| **Unstable** | upgraded but `fell_back_count > 0` (and no TURN) — shown beside Direct as its caveat |
+| **Never connected** | never `carrying` — the browser never reached this device over a DataChannel, so nothing carried for it at all |
+| **Unstable** | upgraded but lost its channels at least once (`fell_back_count > 0`, and no TURN) — shown beside Direct as its caveat |
 
 Plus: sessions total, per-device rows (device name, owner, the four buckets), and the
 last 50 sessions with their event trail. The page is `/admin/transport`, guarded like
@@ -99,8 +107,9 @@ the other admin pages (`administrator`), in the admin nav.
 ### Privacy and threat model
 
 The api learns, per session: which device, which owner (already known), when, and which
-of three transport words. It already learns device online/offline from the relay and
-content-free notify kinds from the bridge; this adds no content and no addresses — the
+of three transport words. It already learns device presence (a signed heartbeat since
+`Strict P2P Transport Spec.md` rule 6; from the relay before it) and content-free notify
+kinds from the bridge; this adds no content and no addresses — the
 candidate types are words, never IPs. A hostile client cannot forge a report: it is
 signed by the device identity key the api pinned at pairing. A hostile bridge can only
 lie about its own sessions.
@@ -122,8 +131,8 @@ next.
 
 1. **bridge-ledger** — `transport_ledger.rs`: the event enum, a `TransportLedger` sink
    trait with the stderr implementation, and the four hook points (registry mint/end,
-   peer connect on every `Connected`, DataChannel fallback). The `rtc:` line moves onto
-   the ledger unchanged. Unit tests on the sink; `rtc_peer` asserts the trail.
+   peer connect on every `Connected`, the last DataChannel closing). The `rtc:` line moves
+   onto the ledger unchanged. Unit tests on the sink; `rtc_peer` asserts the trail.
 2. **bridge-reporter** — `transport_report.rs`: the signed request (sibling of
    `notify.rs`), the ordered best-effort sender, wired as a second ledger sink.
    wiremock tests: signature/challenge bytes, ordering, failure is dropped not retried

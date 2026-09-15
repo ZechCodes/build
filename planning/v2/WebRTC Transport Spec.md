@@ -336,9 +336,10 @@ for stage gates.
 ## Decisions taken during the build
 
 - **Transport telemetry** (2026-09-05, `Transport Telemetry Spec.md`): the bridge reports
-  each session's `minted` / `carrying` / `fell_back` / `ended` to the api, content-free and
-  device-signed, and `/admin/transport` buckets sessions as direct / TURN / relay-only /
-  unstable. The api thereby learns, per session, a device, an owner, timestamps and one of
+  each session's `minted` / `carrying` / `channels_lost` / `ended` to the api, content-free
+  and device-signed, and `/admin/transport` buckets sessions as direct / TURN /
+  never-connected / unstable. (The third event was `fell_back` and the third bucket "relay
+  only" until `Strict P2P Transport Spec.md` stopped the relay being a data plane.) The api thereby learns, per session, a device, an owner, timestamps and one of
   three transport words — no addresses, no content — which the threat model absorbs the
   way it absorbs device online/offline and notify kinds.
 

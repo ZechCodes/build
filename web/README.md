@@ -1,12 +1,21 @@
-# Build web client (E2EE)
+# Build web harnesses (E2EE, over the peer connection)
 
-The browser side of Build. `client.mjs` holds the runtime-agnostic E2EE session
-logic; it runs unchanged in a real browser (`index.html`, native WebSocket) and
-in the Node end-to-end harness (`e2e.mjs`, the `ws` package). The crypto comes
-from the audited [`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport)
-JS binding — the browser never reimplements it.
+The Node half of Build's client. `client.mjs` holds the connect sequence the SPA
+runs — find the device, mint its sessions on the relay, negotiate the peer
+connection, **close the relay socket** — and `peer.mjs` holds the WebRTC half:
+the two negotiated DataChannels, the chunked envelope carrier, and one E2EE
+session per carrier. The crypto comes from the audited
+[`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport)
+JS binding; the WebRTC from
+[`node-datachannel`](https://github.com/murat-dogan/node-datachannel)'s
+standard-interface polyfill, so `peer.mjs` is written against the same DOM API
+the SPA is and one read tells you whether the two agree. (`werift` — pure
+TypeScript, and the first choice for needing no prebuilt binary — was tried
+first and got as far as DTLS; its SCTP association never completed against the
+bridge's webrtc-rs.) `web/` is dev-only, which is why a dependency here costs
+nothing shipped.
 
-It depends on that binding as a sibling checkout:
+It depends on the binding as a sibling checkout:
 
 ```
 <parent>/
@@ -14,10 +23,30 @@ It depends on that binding as a sibling checkout:
   build-secure-transport/    ← the audited E2EE binding (js/)
 ```
 
-## End-to-end demo: browser client → relay → bridge → relay → browser
+## How the harness connects
 
-Proves the whole transport path with the real components — the JS client, a
-minimal dev relay, and the real Rust bridge — fully E2E encrypted, relay-blind.
+Every check runs over the DataChannels, because that is the only wire there is
+([`planning/v2/Strict P2P Transport Spec.md`](../planning/v2/Strict%20P2P%20Transport%20Spec.md)):
+
+1. `skrift-auth.mjs` dummy-logs into the api and mints a 5-minute gateway token.
+2. `openRendezvous()` opens `/ws/client` and authenticates. This is the one
+   relay-shaped function in the harness; a future direct-network mode replaces
+   it and nothing above it.
+3. `pinnedDevice()` reads `GET /api/devices` for the device under test and the
+   transport key the api pinned for it. The relay is never asked for a key.
+4. `openDeviceLink()` mints the app session on that socket — and the terminals'
+   second session beside it, when a check wants one — then fetches ICE servers
+   from `POST /api/rtc/ice-servers`, offers, trickles candidates both ways, and
+   settles when the `app` (id 0) and `term` (id 1) channels are open.
+5. Each session sends one frame over its channel, and the relay socket is
+   **closed**. `rendezvous.isClosed()` is a check in `qa.mjs`, not a comment.
+
+`openRelaySignalingSession()` is the exception that proves the rule: a session
+carried by the relay socket itself, kept so one check can offer the bridge app
+RPC over it and watch the refusal —
+`error_code: "unavailable"`, `details.reason: "relay_is_not_a_data_plane"`.
+
+## The suites
 
 ```bash
 # 1. Install (the binding resolves to ../../build-secure-transport/js)
@@ -25,17 +54,21 @@ cd web && npm install
 #    and install the binding's own deps once:
 ( cd ../../build-secure-transport/js && npm install )
 
-# 2. Start the dev relay + in-process bridge device (echo handler)
-( cd ../bridge && cargo run --example dev_relay )   # prints DEV_RELAY_LISTENING
-
-# 3. Run the browser-client logic against it
-npm run e2e        # → "E2E PASS: browser client ↔ relay ↔ bridge round-trip succeeded"
+npm test           # the chunker, against the wire shape the bridge writes — no stack needed
 ```
 
-To drive it from a real browser instead of Node, serve this directory
-(`python3 -m http.server`) and open `index.html` while the dev relay runs.
+The rest need the real stack (`deploy/compose.real.yml`), because the peer
+connection needs a real bridge on the other end of it:
 
-The dev relay (`bridge/examples/dev_relay.rs`) is a minimal stand-in for the
-production `build-relay`: it forwards opaque envelopes between the device and the
-client and never decrypts. Against the deployed relay, the same `client.mjs`
-connects to the real client endpoint over `wss://`.
+```bash
+docker compose -f deploy/compose.real.yml up -d --build
+docker compose -f deploy/compose.real.yml --profile qa run --rm qa    # pairs, then e2e + qa
+
+npm run e2e        # one encrypted round-trip over the `app` channel
+npm run qa         # workspaces, files, git and the terminal, end to end
+node wire-check.mjs  # the 1.1 wire surface, by hand from the host
+```
+
+`PREFER_DEVICE_ID` pins one machine when the account has several
+(`deploy/compose.two-bridges.yml`); without it the harness takes the first
+device the api reports online.

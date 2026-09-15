@@ -5,15 +5,14 @@
   "type": "module",
   "description": "Build v2 web client (E2EE browser client) and end-to-end harness.",
   "scripts": {
+    "test": "node --test",
     "e2e": "node e2e.mjs",
-    "qa": "node qa.mjs",
-    "qa:reconnect": "node qa-reconnect.mjs",
-    "term:verify": "node term-verify.mjs",
-    "term:browser": "node term-browser.mjs"
+    "qa": "node qa.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0",
-    "@build/secure-transport": "file:../../build-secure-transport/js"
+    "@build/secure-transport": "file:../../build-secure-transport/js",
+    "node-datachannel": "^0.33.4"
   },
   "devDependencies": {
     "playwright": "^1.60.0"

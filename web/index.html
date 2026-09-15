@@ -3,66 +3,27 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Build — E2EE client demo</title>
+    <title>Build — the relay-carried demo is retired</title>
     <style>
       body { font: 15px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
       h1 { font-size: 1.2rem; }
-      button { font: inherit; padding: 0.5rem 1rem; }
-      pre { background: #f4f4f5; padding: 0.75rem; border-radius: 6px; white-space: pre-wrap; }
-      .ok { color: #15803d; } .err { color: #b91c1c; }
+      code { background: #f4f4f5; padding: 0.1rem 0.3rem; border-radius: 4px; }
     </style>
-    <!--
-      The build-secure-transport JS binding is browser-native. Map it (and its
-      libsodium dependency) here. For a real deploy these resolve through the app
-      bundler; this import map lets the page run with no build step.
-    -->
-    <script type="importmap">
-      {
-        "imports": {
-          "libsodium-wrappers": "https://esm.sh/libsodium-wrappers@0.7.15",
-          "@build/secure-transport": "https://esm.sh/gh/ZechCodes/build-secure-transport/js/src/index.js"
-        }
-      }
-    </script>
   </head>
   <body>
-    <h1>Build — encrypted round-trip to your bridge</h1>
-    <p>Connects to the dev relay, opens an E2EE session with the bridge device, and pings it.</p>
-    <p><label>Relay URL <input id="url" value="ws://127.0.0.1:8799" size="28" /></label></p>
-    <button id="go">Run encrypted round-trip</button>
-    <pre id="log"></pre>
-
-    <script type="module">
-      import * as transport from "@build/secure-transport";
-      import { runClientSession } from "./client.mjs";
-
-      const logEl = document.getElementById("log");
-      const log = (m) => (logEl.textContent += m + "\n");
-
-      document.getElementById("go").addEventListener("click", async () => {
-        logEl.textContent = "";
-        const url = document.getElementById("url").value;
-        const ws = new WebSocket(`${url}/ws/client`);
-        const queue = [], waiters = [];
-        ws.addEventListener("message", (e) => {
-          const msg = JSON.parse(e.data);
-          waiters.length ? waiters.shift()(msg) : queue.push(msg);
-        });
-        const recv = () => new Promise((res) => (queue.length ? res(queue.shift()) : waiters.push(res)));
-        const send = (obj) => ws.send(JSON.stringify(obj));
-
-        ws.addEventListener("open", async () => {
-          try {
-            const payload = await runClientSession({ send, recv, transport, log });
-            log("✅ round-trip succeeded: " + JSON.stringify(payload));
-            logEl.className = "ok";
-          } catch (err) {
-            log("❌ " + err.message);
-            logEl.className = "err";
-          }
-        });
-        ws.addEventListener("error", () => log("❌ socket error — is the dev relay running?"));
-      });
-    </script>
+    <h1>Build — this page is retired</h1>
+    <p>
+      It ran an encrypted round-trip to a bridge <em>over the relay socket</em>. The relay
+      is a rendezvous now, not a data plane: it carries session setup and WebRTC signaling,
+      and a bridge refuses any other frame offered to it
+      (<code>relay_is_not_a_data_plane</code>). A browser is live only over the two
+      DataChannels it negotiates.
+    </p>
+    <p>
+      The browser client that does that is <code>spa/</code>, served by the app at
+      <code>/app/</code>. The Node half of the same path is <code>web/client.mjs</code> +
+      <code>web/peer.mjs</code>, exercised by <code>npm run e2e</code> and
+      <code>npm run qa</code> against <code>deploy/compose.real.yml</code>.
+    </p>
   </body>
 </html>

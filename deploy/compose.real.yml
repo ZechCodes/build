@@ -23,8 +23,17 @@
 # pairing code below. The QA suite creates temporary Git and folder sources
 # through the bridge and exercises the workspace lifecycle against them.
 #
+# Every check the qa service runs rides a WebRTC DataChannel: the relay is only
+# a rendezvous here too, and the harness closes its socket once the channels are
+# open. Nothing sets CF_TURN_KEY_ID / CF_TURN_KEY_API_TOKEN, so the api answers
+# a STUN-only list — which is all this stack needs, because every container sits
+# on one compose network and the two peers pair host to host without consulting
+# a STUN server at all. A stack whose peers could reach each other by neither
+# route would have no path to the bridge: there is no relay underneath.
+#
 # Ports: app :8090 (api + SPA), relay :18090 (matches the SPA bundle's
-# VITE_RELAY_URL and app.dev.yaml's connect-src).
+# VITE_RELAY_URL and app.dev.yaml's connect-src — a relay on another port needs
+# `up -d --build app` for the bundle AND a widened connect-src in app.dev.yaml).
 
 services:
   app:
@@ -112,7 +121,11 @@ services:
       PAIRING_CODE: ${BUILD_PAIRING_CODE:-COMPOSE-PAIR}
       INVITE_TOKEN: ${BUILD_INVITE_TOKEN:-COMPOSE-INVITE}
       QA_EMAIL: qa@localhost
-    command: ["/bin/sh", "-c", "node pair.mjs && node e2e.mjs && node qa.mjs"]
+    # `node --test` is the harness's own unit tests (the chunker it mirrors from
+    # the SPA and the bridge); they need no stack, so they run before the pairing
+    # that does. The WebRTC dependency (node-datachannel, prebuilt binaries)
+    # comes from package.json with the rest of the image's deps.
+    command: ["/bin/sh", "-c", "node --test && node pair.mjs && node e2e.mjs && node qa.mjs"]
     depends_on:
       - app
       - relay

@@ -1,233 +1,260 @@
-// The browser client's E2EE session logic — runtime-agnostic.
+// The browser client's session logic, as the Node harnesses run it.
 //
-// It depends only on an injected `transport` (the build-secure-transport JS
-// binding) and `send`/`recv` for the relay socket, so the exact same code runs
-// in a real browser (native WebSocket) and in the Node end-to-end harness (ws).
+// The relay is a rendezvous, not a connection (strict P2P transport spec, rule
+// 4): this opens a socket to it, mints the device's sessions on it, negotiates
+// the peer connection over it, and **closes it**. Every check above this line
+// then runs over the two DataChannels, which is the only thing the browser is
+// live over (rule 2) and the only thing the bridge will carry app RPC on (rule
+// 1).
 //
-// Flow: learn the device's transport key → wrap a fresh session key to it →
-// verify the device's session_accept → send an encrypted request → read the
-// encrypted response. The relay only ever sees opaque envelopes.
+// The relay also no longer says who is online or what their keys are (rule 6):
+// the transport key a session is sealed to is the one the api pinned at
+// pairing, read from `GET /api/devices`, and the relay is never asked.
+//
+// Everything relay-shaped lives in `openRendezvous` below. A direct-network
+// mode (LAN, Tailscale) is a second implementation of that one function with
+// nothing above it changed — the seam rule 7 reserves.
 
-// Relay control frames that can arrive interleaved with the protocol flow:
-// the post-authenticate ack and the per-device liveness/key pushes.
-const RELAY_CONTROL_FRAMES = new Set([
-  "authenticated",
-  "device_key",
-  "device_online",
-  "device_offline",
-]);
+import WebSocket from "ws";
 
-// Read frames until something that is NOT a relay control push arrives.
-async function nextProtocolFrame(recv) {
+import { openCarriedSession, openPeerLink, openPeerSession } from "./peer.mjs";
+
+export { openPeerSession };
+
+/** How long the relay has to accept the socket and the device to answer a
+ *  `session_init` it has been offered. */
+const OPEN_TIMEOUT_MS = 10000;
+const ACCEPT_TIMEOUT_MS = 15000;
+
+const newSessionId = () => "sess-" + Math.random().toString(36).slice(2, 10);
+
+/**
+ * The rendezvous: one authenticated relay socket, for however many sessions.
+ *
+ * `onMessage` is a subscription and `recv` is a one-shot wait, because both
+ * readers exist here: a mint waits for its own `session_accept`, and a session
+ * riding this socket reads every envelope that names it. A socket read by a
+ * single-waiter queue would have one session eating another's answer.
+ */
+export async function openRendezvous({ relayUrl, mintGatewayToken, WebSocketImpl = WebSocket, openTimeoutMs = OPEN_TIMEOUT_MS }) {
+  const socket = new WebSocketImpl(`${relayUrl}/ws/client`);
+  const listeners = new Set();
+  const queue = [];
+  const waiters = [];
+
+  socket.on("message", (data) => {
+    const message = JSON.parse(data.toString());
+    for (const listener of [...listeners]) listener(message);
+    waiters.length ? waiters.shift()(message) : queue.push(message);
+  });
+
+  const recv = (timeoutMs = ACCEPT_TIMEOUT_MS) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("recv timeout")), timeoutMs);
+      const deliver = (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      };
+      queue.length ? deliver(queue.shift()) : waiters.push(deliver);
+    });
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("the relay did not answer")), openTimeoutMs);
+    socket.on("open", () => (clearTimeout(timer), resolve()));
+    socket.on("error", (error) => (clearTimeout(timer), reject(error)));
+  });
+
+  socket.send(JSON.stringify({ type: "authenticate", token: await mintGatewayToken() }));
+  const ack = await recv();
+
+  return {
+    socket,
+    ack,
+    authenticated: ack.type === "authenticated",
+    send: (message) => socket.send(JSON.stringify(message)),
+    recv,
+    onMessage(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    /** Nothing is negotiating: the relay is not held open between upgrades.
+     *  Resolves when the socket is actually shut, not when the close was asked
+     *  for — "the relay socket is closed" is a check, and a socket still in
+     *  CLOSING would answer it either way depending on the scheduler. */
+    close: () =>
+      new Promise((resolve) => {
+        if (socket.readyState === 3) return resolve();
+        socket.on("close", resolve);
+        socket.close();
+      }),
+    isClosed: () => socket.readyState === 3,
+  };
+}
+
+/** How long to wait for the device under test to report itself online. A bridge
+ *  approved a moment ago has not attached to the relay yet, and its heartbeat
+ *  is what says it has — the harness's version of the SPA's presence poll,
+ *  which is also how a late device joins (rule 6). */
+const ONLINE_TIMEOUT_MS = 90000;
+const PRESENCE_POLL_MS = 1000;
+
+/**
+ * The device this harness is talking to, and the transport key the api pinned
+ * for it.
+ *
+ * Presence and keys are the api's and only the api's: the relay announces
+ * neither any more, and is never asked for one. `preferDeviceId` pins one
+ * machine when the account has several; otherwise the first one reported
+ * online. It polls, because "online" is derived from a heartbeat and a device
+ * that is coming up has not sent one yet — and a session offered to a device
+ * whose socket is not attached is a `session_init` nobody answers.
+ */
+export async function pinnedDevice({ apiUrl, cookie, preferDeviceId = null, onlineTimeoutMs = ONLINE_TIMEOUT_MS }) {
+  const deadline = Date.now() + onlineTimeoutMs;
   for (;;) {
-    const message = await recv();
-    if (!RELAY_CONTROL_FRAMES.has(message.type)) return message;
+    const response = await fetch(`${apiUrl}/api/devices`, { headers: { Cookie: cookie } });
+    if (!response.ok) throw new Error(`GET /api/devices failed: HTTP ${response.status}`);
+    const { devices } = await response.json();
+    const owned = devices.filter((device) => device.approved && (!preferDeviceId || device.device_id === preferDeviceId));
+    const device = owned.find((candidate) => candidate.status === "online");
+    if (device) {
+      if (!device.transport_public_key_b64) throw new Error(`device ${device.device_id} has no pinned transport key`);
+      return { deviceId: device.device_id, name: device.name, transportPublicKeyB64: device.transport_public_key_b64 };
+    }
+    if (Date.now() >= deadline) {
+      const seen = owned.map((candidate) => `${candidate.name}=${candidate.status}`).join(", ") || "none";
+      throw new Error(`no device online for this account${preferDeviceId ? ` matching ${preferDeviceId}` : ""} (${seen})`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, PRESENCE_POLL_MS));
   }
 }
 
-// Read frames until the device's key push arrives, skipping other relay control
-// frames (the `authenticated` ack, liveness pushes, other devices' keys).
-async function awaitDeviceKey(recv, preferDeviceId = null) {
-  for (;;) {
-    const message = await recv();
-    if (message.type === "device_key" && (!preferDeviceId || message.device_id === preferDeviceId)) {
-      return message;
-    }
-    if (!RELAY_CONTROL_FRAMES.has(message.type)) {
-      throw new Error(`expected device_key, got ${message.type}`);
-    }
-  }
-}
-
-// Open an E2EE session and return an RPC `call(method, params)` over it. This is
-// the real client API the UI uses: bootstrap once, then make many encrypted calls
-// to the bridge's application RPC (workspace.list, workspace.create,
-// fs.read, git.status…).
-export async function openSession({ send, recv, transport, preferDeviceId = null }) {
-  if (transport.ready) await transport.ready();
-
-  const hello = await awaitDeviceKey(recv, preferDeviceId);
-  const deviceId = hello.device_id;
-  const deviceTransportPublicKeyB64 = hello.transport_public_key;
-
-  const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
+/** One session sealed to the pinned key, minted over the rendezvous. The relay
+ *  routes `session_accept` by the session id it was given, which is how several
+ *  sessions mint on one socket (rule 5). */
+async function mint({ rendezvous, transport, device }) {
+  const sessionId = newSessionId();
   const { sessionKeyB64, sessionInit } = await transport.createSessionInit({
     sessionId,
-    deviceId,
-    deviceTransportPublicKeyB64,
+    deviceId: device.deviceId,
+    deviceTransportPublicKeyB64: device.transportPublicKeyB64,
   });
-  send({ type: "session_init", session_id: sessionId, route_to: `device:${deviceId}`, session_init: sessionInit });
-
-  const accept = await nextProtocolFrame(recv);
-  if (accept.type !== "session_accept") {
-    throw new Error(`expected session_accept, got ${accept.type}`);
-  }
-  await transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
-
-  let reqId = 0;
-  async function call(method, params = {}) {
-    const id = "r" + ++reqId;
-    const envelope = await transport.encryptFrame({
-      sessionKeyB64,
-      outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
-      frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
-    });
-    send({ type: "e2ee_envelope", session_id: sessionId, envelope });
-
-    const resp = await nextProtocolFrame(recv);
-    if (resp.type !== "e2ee_envelope") {
-      throw new Error(`expected e2ee_envelope, got ${resp.type}`);
-    }
-    const frame = await transport.decryptEnvelope({ sessionKeyB64, envelope: resp.envelope });
-    if (!frame.payload.ok) {
-      throw new Error(`RPC ${method} failed: ${frame.payload.error}`);
-    }
-    return frame.payload.result;
-  }
-
-  return { sessionId, call };
+  const accepted = accept(rendezvous, sessionId);
+  rendezvous.send({
+    type: "session_init",
+    session_id: sessionId,
+    route_to: `device:${device.deviceId}`,
+    session_init: sessionInit,
+  });
+  await transport.openSessionAccept({ sessionKeyB64, envelope: (await accepted).envelope });
+  return { sessionId, sessionKeyB64, deviceId: device.deviceId };
 }
 
-// Open an E2EE session with a background receive loop that routes decrypted
-// payloads: those with `id`+`ok` resolve pending `call`s, those with a `type`
-// (term.output / term.reset / term.closed) go to `onPush`. This mirrors
-// production's dedicated terminal socket — one connection carrying both the
-// request/response terminal RPCs and the server-initiated PTY pushes. The main
-// `openSession` stays strictly request-response.
-// `onFrame` sees every decrypted payload before the demux, so a harness can
-// assert on the frame the bridge actually sent (an error's `error_code`, a
-// push's shape) and not just on what `call` resolves to. `call`'s third
-// argument merges extra fields into the request envelope beside
-// `id`/`method`/`params` — the wire's optional `"priority": "background"`.
-export async function openPushSession({ send, recv, transport, preferDeviceId = null, onPush = () => {}, onFrame = () => {} }) {
-  if (transport.ready) await transport.ready();
-
-  const hello = await awaitDeviceKey(recv, preferDeviceId);
-  const deviceId = hello.device_id;
-  const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
-  const { sessionKeyB64, sessionInit } = await transport.createSessionInit({
-    sessionId,
-    deviceId,
-    deviceTransportPublicKeyB64: hello.transport_public_key,
-  });
-  send({ type: "session_init", session_id: sessionId, route_to: `device:${deviceId}`, session_init: sessionInit });
-
-  const accept = await nextProtocolFrame(recv);
-  if (accept.type !== "session_accept") {
-    throw new Error(`expected session_accept, got ${accept.type}`);
-  }
-  await transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
-
-  const pending = new Map();
-  let reqId = 0;
-
-  // Background demux: every frame from here on is either an RPC response or a
-  // server push. A recv timeout/close ends the loop and rejects stragglers.
-  (async () => {
-    for (;;) {
-      let msg;
-      try {
-        msg = await recv();
-      } catch {
-        for (const { reject } of pending.values()) reject(new Error("terminal session closed"));
-        pending.clear();
-        return;
-      }
-      if (!msg || msg.type !== "e2ee_envelope") continue;
-      let frame;
-      try {
-        frame = await transport.decryptEnvelope({ sessionKeyB64, envelope: msg.envelope });
-      } catch {
-        continue;
-      }
-      const p = frame.payload;
-      onFrame(p);
-      if (p && p.id !== undefined && p.ok !== undefined) {
-        const waiter = pending.get(p.id);
-        if (waiter) {
-          pending.delete(p.id);
-          p.ok ? waiter.resolve(p.result) : waiter.reject(new Error(p.error));
-        }
-      } else if (p && p.type) {
-        onPush(p);
-      }
-    }
-  })();
-
-  function call(method, params = {}, envelopeFields = {}) {
-    const id = "r" + ++reqId;
-    let reject;
-    const result = new Promise((res, rej) => {
-      reject = rej;
-      pending.set(id, { resolve: res, reject: rej });
+/** This session's `session_accept`, or the reason there is none. */
+function accept(rendezvous, sessionId) {
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => (stop(), reject(new Error(`device did not accept ${sessionId}`))), ACCEPT_TIMEOUT_MS);
+    const stop = rendezvous.onMessage((message) => {
+      if (message.type !== "session_accept" || message.session_id !== sessionId) return;
+      clearTimeout(deadline);
+      stop();
+      resolve(message);
     });
-    transport
-      .encryptFrame({
-        sessionKeyB64,
-        outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
-        frameFields: { frame_type: "data", sender: "client", payload: { method, id, params, ...envelopeFields } },
-      })
-      .then((envelope) => send({ type: "e2ee_envelope", session_id: sessionId, envelope }))
-      .catch((e) => {
-        pending.delete(id);
-        reject(e);
-      });
-    return result;
-  }
-
-  return { sessionId, call };
+  });
 }
 
-export async function runClientSession({
-  send,
-  recv,
+/** One session's lease on the relay socket. It is not the socket's owner: the
+ *  rendezvous mints several sessions on one wire, so letting a carrier go
+ *  leaves the socket to the others. Only the rendezvous closes it. */
+function relayCarrier(rendezvous, sessionId) {
+  return {
+    send: (envelope) => rendezvous.send({ type: "e2ee_envelope", session_id: sessionId, envelope }),
+    onEnvelope: (fn) =>
+      rendezvous.onMessage((message) => {
+        if (message.type !== "e2ee_envelope") return;
+        if (message.session_id && message.session_id !== sessionId) return;
+        fn(message.envelope);
+      }),
+    close: () => {},
+  };
+}
+
+/**
+ * A session whose carrier is the relay socket itself.
+ *
+ * This is the signaling wire — `rtc.*` and nothing else — and it is the one
+ * place a harness can ask the bridge to break rule 1 and watch it refuse.
+ * Nothing else may run over it: the refusal is `error_code: "unavailable"` with
+ * `details.reason === "relay_is_not_a_data_plane"`, and it is not retryable.
+ */
+export async function openRelaySignalingSession({ rendezvous, transport, device, onPush, onFrame }) {
+  const minted = await mint({ rendezvous, transport, device });
+  return openCarriedSession({
+    carrier: relayCarrier(rendezvous, minted.sessionId),
+    transport,
+    ...minted,
+    onPush,
+    onFrame,
+  });
+}
+
+/**
+ * The whole connect sequence for one device, as `spa/src/connection.js` runs it.
+ *
+ * Open the rendezvous → mint this device's sessions on it → negotiate the peer
+ * connection over it → put each session on its channel → **close the relay
+ * socket**. What comes back is carried by the DataChannels and nothing else;
+ * `rendezvous.isClosed()` is true for the rest of the run.
+ *
+ * `terminal` asks for the second session rule 5 describes — the terminals' one,
+ * minted on the same socket and riding this device's `term` channel, never a
+ * socket of its own.
+ */
+export async function openDeviceLink({
+  rendezvous,
   transport,
+  apiUrl,
+  cookie,
   preferDeviceId = null,
-  request = { method: "ping", n: 1 },
-  log = () => {},
+  onPush = () => {},
+  onFrame = () => {},
+  terminal = null,
 }) {
   if (transport.ready) await transport.ready();
+  const device = await pinnedDevice({ apiUrl, cookie, preferDeviceId });
 
-  // 1. The relay hands us the device's transport public key.
-  const hello = await awaitDeviceKey(recv, preferDeviceId);
-  const deviceId = hello.device_id;
-  const deviceTransportPublicKeyB64 = hello.transport_public_key;
-  log(`device transport key: ${deviceTransportPublicKeyB64.slice(0, 12)}…`);
+  const appMint = await mint({ rendezvous, transport, device });
+  const termMint = terminal ? await mint({ rendezvous, transport, device }) : null;
 
-  // 2. Wrap a fresh session key to the device and open the session.
-  const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
-  const { sessionKeyB64, sessionInit } = await transport.createSessionInit({
-    sessionId,
-    deviceId,
-    deviceTransportPublicKeyB64,
+  const signaling = openCarriedSession({
+    carrier: relayCarrier(rendezvous, appMint.sessionId),
+    transport,
+    ...appMint,
   });
-  send({ type: "session_init", session_id: sessionId, route_to: `device:${deviceId}`, session_init: sessionInit });
-
-  // 3. The device proves it unwrapped the key with an encrypted session_accept.
-  const accept = await nextProtocolFrame(recv);
-  if (accept.type !== "session_accept") {
-    throw new Error(`expected session_accept, got ${accept.type}`);
-  }
-  await transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
-  log("session established and verified");
-
-  // 4. Send an encrypted request frame.
-  const envelope = await transport.encryptFrame({
-    sessionKeyB64,
-    outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
-    frameFields: { frame_type: "data", sender: "client", payload: request },
+  const link = await openPeerLink({
+    signal: signaling.call,
+    onSignalPush: signaling.onPush,
+    apiUrl,
+    cookie,
   });
-  send({ type: "e2ee_envelope", session_id: sessionId, envelope });
 
-  // 5. Read and decrypt the device's response.
-  const response = await nextProtocolFrame(recv);
-  if (response.type !== "e2ee_envelope") {
-    throw new Error(`expected e2ee_envelope, got ${response.type}`);
-  }
-  const frame = await transport.decryptEnvelope({
-    sessionKeyB64,
-    envelope: response.envelope,
-  });
-  log(`decrypted response: ${JSON.stringify(frame.payload)}`);
-  return frame.payload;
+  const session = openPeerSession({ carrier: link.app, transport, ...appMint, onPush, onFrame });
+  const terminalSession = termMint
+    ? openPeerSession({ carrier: link.term, transport, ...termMint, onPush: terminal.onPush, onFrame: terminal.onFrame })
+    : null;
+
+  // Each session rides its channel before the socket goes: a session whose last
+  // carrier ends is a session the bridge has ended, and until its first frame
+  // crosses a channel the relay carrier is the only one it has.
+  await session.call("ping");
+  if (terminalSession) await terminalSession.call("ping");
+
+  await rendezvous.close();
+  return { device, session, terminalSession, link, close: () => link.close() };
+}
+
+/** The peer-backed session alone — the harness's `openSession`, for a check
+ *  that needs one device and no terminal. */
+export async function openSession(options) {
+  return (await openDeviceLink(options)).session;
 }

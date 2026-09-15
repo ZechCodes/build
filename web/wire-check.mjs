@@ -8,6 +8,11 @@
 // error codes, and the legacy `board.changed` / `entity.changed` session that
 // must never see a `changes` frame.
 //
+// It rides the same wire the SPA does: the relay socket is a rendezvous that
+// mints this device's session and carries the peer negotiation, and it is shut
+// before the first check runs (strict P2P transport spec, rules 2 and 4). The
+// `changes` pushes below arrive over the `app` DataChannel.
+//
 // It talks to the stack from the host (the relay's and the api's published
 // ports) so it can make the bridge's repository move the way a human would —
 // with a write from outside the daemon:
@@ -21,9 +26,8 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import WebSocket from "ws";
 import * as transport from "@build/secure-transport";
-import { openPushSession } from "./client.mjs";
+import { openDeviceLink, openRendezvous } from "./client.mjs";
 import { loginWithDummy } from "./skrift-auth.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -49,50 +53,28 @@ function check(id, name, ok, evidence) {
 
 // -------------------------------------------------------------- the wire ---
 
-// One authenticated relay socket, adapted to client.mjs's send/recv interface.
-function connect() {
-  const ws = new WebSocket(`${relayUrl}/ws/client`);
-  const queue = [];
-  const waiters = [];
-  ws.on("message", (data) => {
-    const message = JSON.parse(data.toString());
-    waiters.length ? waiters.shift()(message) : queue.push(message);
-  });
-  const recv = () => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("recv timeout")), 15000);
-    const deliver = (message) => {
-      clearTimeout(timer);
-      resolve(message);
-    };
-    queue.length ? deliver(queue.shift()) : waiters.push(deliver);
-  });
-  const ready = new Promise((resolve, reject) => {
-    ws.on("open", resolve);
-    ws.on("error", reject);
-  });
-  return { ws, recv, ready, send: (message) => ws.send(JSON.stringify(message)) };
-}
-
-// A live E2EE session: `call` for RPC, `pushes` for every server-initiated
-// frame, `frames` for every decrypted payload (so an `ok:false` reply can be
-// read as the bridge wrote it, error code and all).
-async function session(mintGatewayToken) {
-  const connection = connect();
-  await connection.ready;
-  connection.send({ type: "authenticate", token: await mintGatewayToken() });
-  const ack = await connection.recv();
-  if (ack.type !== "authenticated") throw new Error(`relay refused the token: ${show(ack)}`);
+// A live E2EE session over this device's `app` channel: `call` for RPC,
+// `pushes` for every server-initiated frame, `frames` for every decrypted
+// payload (so an `ok:false` reply can be read as the bridge wrote it, error
+// code and all). The relay socket that found the device is closed by the time
+// this returns.
+async function session(login) {
+  const rendezvous = await openRendezvous({ relayUrl, mintGatewayToken: login.mintGatewayToken });
+  if (!rendezvous.authenticated) throw new Error(`relay refused the token: ${show(rendezvous.ack)}`);
 
   const pushes = [];
   const frames = [];
-  const { call } = await openPushSession({
-    send: connection.send,
-    recv: connection.recv,
+  const link = await openDeviceLink({
+    rendezvous,
     transport,
+    apiUrl,
+    cookie: login.cookie,
     preferDeviceId,
     onPush: (push) => pushes.push({ at: Date.now(), push }),
     onFrame: (frame) => frames.push(frame),
   });
+  if (!rendezvous.isClosed()) throw new Error("the relay socket is still open under a live peer connection");
+  const { call } = link.session;
 
   // `call` rejects on `ok:false` with the message alone; the raw reply is in
   // `frames`, which is what the error-code checks assert against.
@@ -105,7 +87,7 @@ async function session(mintGatewayToken) {
     return frames.findLast((frame) => frame && frame.ok !== undefined) || null;
   };
 
-  return { call, attempt, pushes, frames, close: () => connection.ws.close() };
+  return { call, attempt, pushes, frames, close: () => link.close() };
 }
 
 // Every `changes` push seen since `from`, newest last.
@@ -254,8 +236,8 @@ async function unsubscribed(s) {
   check("h", "no changes frame arrives within 3s of unsubscribing", seen.length === 0, `saw ${show(seen)}`);
 }
 
-async function legacy(mintGatewayToken, projectId) {
-  const s = await session(mintGatewayToken);
+async function legacy(login, projectId) {
+  const s = await session(login);
   const hello = await s.call("session.hello", {
     client: { name: "wire-check-legacy", version: "0", api_range: API_RANGE },
   });
@@ -285,11 +267,11 @@ async function legacy(mintGatewayToken, projectId) {
 // ------------------------------------------------------------------ main ---
 
 async function main() {
-  const { mintGatewayToken } = await loginWithDummy(apiUrl, {
+  const login = await loginWithDummy(apiUrl, {
     email: process.env.QA_EMAIL || "qa@localhost",
   });
 
-  const s = await session(mintGatewayToken);
+  const s = await session(login);
   await greetingAndProbe(s);
   await stats(s);
 
@@ -314,7 +296,7 @@ async function main() {
   await unsubscribed(s);
   s.close();
 
-  await legacy(mintGatewayToken, project.project_id);
+  await legacy(login, project.project_id);
 
   const failed = results.filter((result) => !result.ok);
   console.log(`\n${results.length - failed.length}/${results.length} wire checks passed`);

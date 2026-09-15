@@ -1,13 +1,18 @@
-// Full-stack QA over the E2EE relay. Exercises multi-source workspaces,
+// Full-stack QA over the peer connection. Exercises multi-source workspaces,
 // source-scoped files/Git, workspace-scoped terminals, and retained finish.
+//
+// Every check below rides this device's DataChannels: the relay socket is a
+// rendezvous that mints the two sessions, carries the negotiation, and is closed
+// before the first check runs (strict P2P transport spec, rules 2 and 4). Two
+// checks are about the transport itself rather than the workspace — that the
+// socket really is shut, and that the bridge refuses app RPC offered to it.
 //
 // Compose provides BRIDGE_REPO=/repo and BRIDGE_WORKTREES=/worktrees. This
 // script creates isolated remote and plain-folder fixtures through a terminal.
 // Usage: API_URL=http://127.0.0.1:8090 RELAY_URL=ws://127.0.0.1:18090 node qa.mjs
 
-import WebSocket from "ws";
 import * as transport from "@build/secure-transport";
-import { openSession, openPushSession } from "./client.mjs";
+import { openDeviceLink, openRelaySignalingSession, openRendezvous } from "./client.mjs";
 import { loginWithDummy } from "./skrift-auth.mjs";
 
 const encode = (text) => Buffer.from(text, "utf8").toString("base64");
@@ -35,34 +40,20 @@ async function waitFor(predicate, timeoutMs = 10000) {
   return null;
 }
 
-function connect() {
-  const ws = new WebSocket(`${relayUrl}/ws/client`);
-  const queue = [];
-  const waiters = [];
-  ws.on("message", (data) => {
-    const message = JSON.parse(data.toString());
-    waiters.length ? waiters.shift()(message) : queue.push(message);
-  });
-  const recv = () => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("recv timeout")), 10000);
-    const deliver = (message) => {
-      clearTimeout(timer);
-      resolve(message);
-    };
-    queue.length ? deliver(queue.shift()) : waiters.push(deliver);
-  });
-  const ready = new Promise((resolve, reject) => {
-    ws.on("open", resolve);
-    ws.on("error", reject);
-  });
-  return { ws, recv, ready, send: (message) => ws.send(JSON.stringify(message)) };
-}
-
-async function authenticate(mintGatewayToken) {
-  const connection = connect();
-  await connection.ready;
-  connection.send({ type: "authenticate", token: await mintGatewayToken() });
-  return { connection, ack: await connection.recv() };
+/** Rule 1, from the client's side: the relay carries `rtc.*` and nothing else,
+ *  and a bridge that is offered app RPC over it answers the refusal rather than
+ *  dispatching. This is the only session in the suite that is not a peer's. */
+async function relayRefusesAppRpc({ mintGatewayToken, device }) {
+  const rendezvous = await openRendezvous({ relayUrl, mintGatewayToken });
+  try {
+    const signaling = await openRelaySignalingSession({ rendezvous, transport, device });
+    await signaling.call("session.hello", { client: { name: "qa", version: "0", api_range: ">=1.0.0 <2.0.0" } });
+    return null;
+  } catch (error) {
+    return error;
+  } finally {
+    rendezvous.close();
+  }
 }
 
 function pushedText(pushes, termId) {
@@ -73,18 +64,44 @@ function pushedText(pushes, termId) {
 }
 
 async function main() {
-  const { mintGatewayToken } = await loginWithDummy(apiUrl, {
+  const { cookie, mintGatewayToken } = await loginWithDummy(apiUrl, {
     email: process.env.QA_EMAIL || "qa@localhost",
   });
-  const { connection: rpcConnection, ack } = await authenticate(mintGatewayToken);
-  check("relay accepts the gateway token", ack.type === "authenticated", `got ${ack.type}`);
-  const { call } = await openSession({
-    send: rpcConnection.send,
-    recv: rpcConnection.recv,
+  const rendezvous = await openRendezvous({ relayUrl, mintGatewayToken });
+  check("relay accepts the gateway token", rendezvous.authenticated, `got ${rendezvous.ack.type}`);
+
+  // One rendezvous, two sessions, one peer connection: the app session rides
+  // the `app` channel and the terminals' rides `term`, exactly as the SPA does.
+  const pushes = [];
+  const link = await openDeviceLink({
+    rendezvous,
     transport,
+    apiUrl,
+    cookie,
     preferDeviceId,
+    terminal: { onPush: (push) => pushes.push(push) },
   });
+  const { call } = link.session;
+  const term = link.terminalSession;
   check("ping round-trips over E2EE", (await call("ping")).pong === true);
+  check(
+    "the relay socket is closed once the channels carry",
+    rendezvous.isClosed(),
+    `readyState=${rendezvous.socket.readyState}`,
+  );
+  check(
+    "the terminals ride a second session on the same rendezvous",
+    !!term && term.sessionId !== link.session.sessionId,
+    `app=${link.session.sessionId} term=${term?.sessionId}`,
+  );
+  const refused = await relayRefusesAppRpc({ mintGatewayToken, device: link.device });
+  check(
+    "app RPC offered to the relay is refused, not carried",
+    refused?.error_code === "unavailable" &&
+      refused?.retryable === false &&
+      refused?.details?.reason === "relay_is_not_a_data_plane",
+    refused ? `${refused.message} (${refused.error_code}, ${JSON.stringify(refused.details)})` : "the relay carried it",
+  );
 
   const projectList = await call("project.list");
   const fixtureProject = projectList.projects?.[0];
@@ -96,17 +113,6 @@ async function main() {
     workspace.directories.some((directory) => directory.path === "/repo"));
   check("workspace.list adopts BRIDGE_REPO", !!primary, primary?.workspace_id || "none");
   if (!primary) throw new Error("the /repo workspace is unavailable");
-
-  const { connection: termConnection, ack: termAck } = await authenticate(mintGatewayToken);
-  check("terminal socket accepts the gateway token", termAck.type === "authenticated");
-  const pushes = [];
-  const term = await openPushSession({
-    send: termConnection.send,
-    recv: termConnection.recv,
-    transport,
-    preferDeviceId,
-    onPush: (push) => pushes.push(push),
-  });
 
   const setupTerm = await term.call("term.create", { workspace_id: primary.workspace_id, cols: 100, rows: 30 });
   await term.call("term.attach", { workspace_id: primary.workspace_id, term_id: setupTerm.term_id, cols: 100, rows: 30 });
@@ -221,7 +227,7 @@ async function main() {
     term_id: workspaceTerm.term_id,
     data: encode(`printf '%s%s\\n' 'qa-term-' '${tag}'\r`),
   });
-  check("workspace terminal echoes over the relay", !!(await waitFor(() => pushedText(pushes, workspaceTerm.term_id).includes(terminalMarker))));
+  check("workspace terminal echoes over the DataChannel", !!(await waitFor(() => pushedText(pushes, workspaceTerm.term_id).includes(terminalMarker))));
   const terminals = await term.call("term.list", { workspace_id: workspace.workspace_id });
   check("term.list uses workspace_id only", terminals.terminals.some((item) => item.term_id === workspaceTerm.term_id));
 
@@ -258,15 +264,14 @@ async function main() {
   try { await call("workspace.get", {}); } catch (error) { missingWorkspaceRejected = /workspace_id/.test(error.message); }
   check("missing workspace_id returns a clean error", missingWorkspaceRejected);
 
-  termConnection.ws.close();
-  rpcConnection.ws.close();
+  link.close();
   const failed = checks.filter((result) => !result.ok);
   console.log(`\n${passed}/${checks.length} checks passed`);
   if (failed.length) {
     console.error("QA FAIL:", failed.map((result) => result.name).join("; "));
     process.exit(1);
   }
-  console.log("QA PASS: workspaces verified end-to-end over E2EE");
+  console.log("QA PASS: workspaces verified end-to-end over the DataChannels");
   process.exit(0);
 }
 

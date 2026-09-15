@@ -1030,7 +1030,7 @@ mod tests {
         let (d_out, _d_rx) = chan();
         state.add_device("dev", "u1", d_out);
 
-        assert!(owner_rx.try_recv().is_err(), "no device_online goes out");
+        assert!(owner_rx.try_recv().is_err(), "nothing is pushed at anybody");
     }
 
     #[test]

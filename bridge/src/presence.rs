@@ -10,8 +10,8 @@
 //! so a bridge that is killed, unplugged or partitioned needs no goodbye — it
 //! simply stops beating.
 //!
-//! Best effort and unkillable, in that order: a refused or unreachable api is
-//! logged and the loop beats on. Nothing above this waits on it.
+//! Best effort and unkillable, in that order: a refused, unreachable or hung
+//! api is logged and the loop beats on. Nothing above this waits on it.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -86,10 +86,27 @@ impl PresenceReporter {
         let beat = Beat {
             url: format!("{}{HEARTBEAT_PATH}", api_url.trim_end_matches('/')),
             identity: identity.clone(),
-            client: reqwest::Client::new(),
+            client: beating_client(interval),
         };
         tokio::spawn(beat.run(interval))
     }
+}
+
+/// The client one beat is posted with. Its request timeout is the beat
+/// interval, because a beat still in flight when the next one is due has
+/// already lost its race: an api that accepts the connection and then answers
+/// nothing — a black-holed connection after a firewall drops its state — would
+/// otherwise park the loop inside one `send()` for good, and presence would go
+/// stale on a bridge that is perfectly healthy. Dropping the beat costs one
+/// interval; two of the three that fit in the api's window are still left.
+fn beating_client(interval: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(interval)
+        .build()
+        // Only fails on a TLS backend that could not be initialised, which
+        // would fail the next `Client::new()` too; a bridge that cannot build a
+        // client cannot beat at all.
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 struct Beat {

@@ -142,3 +142,35 @@ async fn an_unreachable_api_does_not_end_the_loop() {
     );
     beating.abort();
 }
+
+/// The failure a refusal and a connection error do not cover: an api that
+/// accepts the connection and then never answers. Without a request timeout the
+/// beat loop parks inside one `send()` forever — presence goes stale while the
+/// bridge is healthy, and nothing short of a restart recovers it.
+#[tokio::test]
+async fn a_hung_api_does_not_stop_the_beats() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        // Longer than this test could ever wait: the beat must be abandoned,
+        // not waited on.
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+        .up_to_n_times(1)
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&api)
+        .await;
+    let (identity, _) = identity_for("dev-1");
+
+    let beating = PresenceReporter::start_every(&api.uri(), &identity, Duration::from_millis(40));
+    let beats = received(&api, 3).await;
+    beating.abort();
+
+    assert!(
+        beats.len() >= 3,
+        "a beat that hangs past the interval is dropped and the next one goes: {beats:?}"
+    );
+}

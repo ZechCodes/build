@@ -406,7 +406,7 @@ describe("a connection that goes after it was live", () => {
 
 describe("the terminals' session", () => {
   it("is minted on that device's own rendezvous, which closes again after", async () => {
-    const context = await connect("dev-a");
+    await connect("dev-a");
     const before = sockets().length;
 
     const minted = await terminals.mint("dev-a");
@@ -419,7 +419,8 @@ describe("the terminals' session", () => {
     const [appInit] = sockets()[0].sent.filter((message) => message.type === "session_init");
     const [termInit] = sockets().at(-1).sent.filter((message) => message.type === "session_init");
     expect(termInit.session_id).not.toBe(appInit.session_id);
-    expect(context.rendezvous).toBeTruthy();
+    expect(termInit.route_to).toBe(appInit.route_to); // and to the same machine
+    expect(liveSockets()).toEqual([]); // nothing is held open for it (rule 4)
   });
 });
 

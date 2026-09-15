@@ -525,7 +525,6 @@ function landSession(session, link) {
   if (previous?.session && previous.session !== session) closeQuietly(previous.session);
   dropPeerLink(previous); // it was carrying the session this one replaces
   const context = adoptDeviceSession(session);
-  context.rendezvous = rendezvousFor(session.deviceId);
   holdPeerLink(context, link);
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.

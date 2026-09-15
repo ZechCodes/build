@@ -70,9 +70,7 @@ function createDeviceContext(deviceId) {
     offline: false, // written only by setContextOffline (connection.js owns the policy)
     offlineSince: null,
     blocked: null, // why no direct connection could be made, when that is why it is away (rule 3)
-    rendezvous: null, // how this machine is found and its sessions minted (connection.js)
     peerLink: null,
-    reconnect: { timer: null, delay: 0, resuming: false },
     /** Still the registry's context for this device, and still able to address
      *  the cache: what a late answer must ask before it writes anything. */
     active: () => contexts.get(deviceId) === context && Boolean(context.cacheScope?.active()),
@@ -241,7 +239,6 @@ export function retireDeviceContext(deviceId) {
   const context = contexts.get(deviceId);
   if (!context) return null;
   contexts.delete(deviceId);
-  clearTimeout(context.reconnect.timer); // a retired device stops trying to come back
   context.chatRepository?.dispose();
   dropFeedDevice(deviceId);
   disarmChangeEvents(deviceId);

@@ -40,30 +40,29 @@ export function paneDrawerHtml(label) {
  * Returns { open, close, isOpen, dispose } — dispose drops the document
  * listener, so a pane that remounts never leaves one behind.
  */
-// eslint-disable-next-line complexity -- ratchet: initPaneDrawer is at 11, cap 10 — reduce it, then drop this line
 export function initPaneDrawer(split, { list, closeOnSelect }) {
+  // Every part this reaches for is part this module wrote (paneDrawerHtml), or
+  // a column the calling pane always has: there is nothing here to guard
+  // against, and guarding anyway is what put this function over the cap.
   const handle = split.querySelector("[data-pane-handle]");
   const scrim = split.querySelector("[data-pane-scrim]");
-  const label = handle ? handle.dataset.paneLabel || "" : "";
-  if (list && !list.id) list.id = `pane-list-${++listSeq}`;
-  if (handle && list) handle.setAttribute("aria-controls", list.id);
+  const label = handle.dataset.paneLabel;
+  if (!list.id) list.id = `pane-list-${++listSeq}`;
+  handle.setAttribute("aria-controls", list.id);
 
   const isOpen = () => split.classList.contains(OPEN_CLASS);
   const setOpen = (open) => {
     split.classList.toggle(OPEN_CLASS, open);
-    if (!handle) return;
     handle.setAttribute("aria-expanded", open ? "true" : "false");
     handle.setAttribute("aria-label", `${open ? "Hide" : "Show"} ${label}`);
   };
   const close = () => setOpen(false);
 
-  if (handle) handle.addEventListener("click", () => setOpen(!isOpen()));
-  if (scrim) scrim.addEventListener("click", close);
-  if (list && closeOnSelect) {
-    list.addEventListener("click", (event) => {
-      if (event.target.closest(closeOnSelect)) close();
-    });
-  }
+  handle.addEventListener("click", () => setOpen(!isOpen()));
+  scrim.addEventListener("click", close);
+  list.addEventListener("click", (event) => {
+    if (event.target.closest(closeOnSelect)) close();
+  });
   // Escape is the whole-page gesture for "put this overlay away", so it is
   // heard wherever focus happens to be — the same reach the project rail's
   // scrim has.

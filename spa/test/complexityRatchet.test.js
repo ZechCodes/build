@@ -38,7 +38,11 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // backwards, and neither walks the fields one `if` at a time. The label a chip
 // wears is a list of the fields it can be named by, and the lines it points at
 // are their own helper.
-const RATCHETED_FUNCTIONS = 62;
+// 61 since the pane drawer stopped guarding against chrome it writes itself:
+// paneDrawerHtml always emits the scrim and the handle, and both panes always
+// hand initPaneDrawer a list column, so the wiring reads straight down instead
+// of asking whether each of its own parts is there.
+const RATCHETED_FUNCTIONS = 61;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

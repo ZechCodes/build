@@ -475,6 +475,52 @@ describe("per-device connections", () => {
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
   });
 
+  // The account's list is up to a heartbeat window out of date (rule 6), so the
+  // machines under this screen are routinely ones it still calls offline. The
+  // Retry clears every block it finds, and a clear that dials nobody is the
+  // worst of both: the row loses the reason it was wearing and no machine is
+  // asked. What it cleared is what it dials.
+  it("dials the machines it unblocked even while the account lists them offline", async () => {
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    unreachable.add("dev-a");
+    unreachable.add("dev-b");
+    await connectEveryDevice();
+    expect(contextFor("dev-a").blocked).toBe("unreached");
+    expect(contextFor("dev-b").blocked).toBe("unreached");
+    const asked = { a: openedFor("dev-a").length, b: openedFor("dev-b").length };
+
+    unreachable.clear();
+    document.getElementById("retrybtn").click();
+    await flush();
+    await flush();
+
+    expect(openedFor("dev-a").length).toBe(asked.a + 1);
+    expect(openedFor("dev-b").length).toBe(asked.b + 1);
+    expect(held()).toBe(false);
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+  });
+
+  // And when that dial fails too, the machine goes back to wearing a reason:
+  // the clear is only ever as long as the attempt it was made for.
+  it("re-blocks an unblocked machine the account-wide Retry still could not reach", async () => {
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    unreachable.add("dev-a");
+    unreachable.add("dev-b");
+    await connectEveryDevice();
+
+    unreachable.delete("dev-b");
+    unlinkable.add("dev-a");
+    unreachable.delete("dev-a");
+    document.getElementById("retrybtn").click();
+    await flush();
+    await flush();
+
+    expect(contextFor("dev-a").blocked).toBe("timeout");
+    expect(liveIds()).toEqual(["dev-b"]);
+  });
+
   // And one that cannot be reached this time either is blocked again, with the
   // reason it failed with now.
   it("blocks the machines the account-wide Retry still could not reach", async () => {
@@ -600,11 +646,18 @@ describe("per-device connections", () => {
 
     devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
+    // Neither bridge is back yet, so the Retry's own dials find nothing and the
+    // screen stays up with its poll armed — which is the state this is about.
+    unreachable.add("dev-a");
+    unreachable.add("dev-b");
     document.getElementById("retrybtn").click();
     await flush();
+    await flush();
+    expect(held()).toBe(true);
     routes.renderInbox.mockClear();
 
     // The bridge comes back, and a retry on that machine is what lands it.
+    unreachable.clear();
     devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     await connectDevice("dev-a");

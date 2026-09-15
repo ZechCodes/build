@@ -637,24 +637,50 @@ export function syncHome(landed = null) {
  * `retry` is a READER asking — the waiting screen's account-wide Retry — rather
  * than the poll. A block is what keeps this layer from asking for a machine
  * again (rule 3), so it is the very thing a Retry undoes: every blocked machine
- * loses its mark here and is dialled with the rest.
+ * loses its mark here and is dialled, whatever the account list says about it.
+ * The list is derived from a heartbeat and is up to a heartbeat window out of
+ * date (rule 6), so the machines a reader is retrying are routinely ones it
+ * still calls offline — asking only the ones it calls online would clear the
+ * reason off every row and dial nobody.
  */
 export function openDeviceSessions({ retry = false } = {}) {
-  if (retry) askBlockedMachinesAgain();
-  const wanted = App.devices.filter(wantsSession).map((device) => connectDevice(device.id));
-  const attempts = wanted.length ? wanted : guessAtStaleDevices();
-  return { first: handled(firstContext(attempts)), settled: handled(everyContext(attempts)) };
+  const unblocked = retry ? askBlockedMachinesAgain() : [];
+  const wanted = App.devices.filter(wantsSession).map((device) => device.id);
+  const attempts = dialEach([...unblocked, ...wanted]);
+  const dials = attempts.length ? attempts : guessAtStaleDevices();
+  return { first: handled(firstContext(dials)), settled: handled(everyContext(dials)) };
 }
 
-/** Every machine this client blocked is to be asked again: the mark that says
- *  not to ask is cleared before the dial, or the dial is refused by the block
- *  the reader is undoing. How long a machine has been away is not news a Retry
- *  changes, so it keeps the moment it went; what it goes back to wearing is
- *  what this attempt finds out. */
+/** Dial each of these machines once, however many of the lists above named it. */
+function dialEach(deviceIds) {
+  return [...new Set(deviceIds)].map((deviceId) => connectDevice(deviceId));
+}
+
+/**
+ * Every machine this client blocked is to be asked again, and the ids of the
+ * ones whose mark was cleared.
+ *
+ * The mark that says not to ask is cleared before the dial, or the dial is
+ * refused by the block the reader is undoing — and the ids come back because a
+ * cleared machine MUST be dialled: the dial is what puts a reason back on its
+ * row (the failure blocks it again, in whatever words it failed with this
+ * time), so a clear with no dial leaves the row saying nothing at all.
+ *
+ * A machine this client has barred is not one of them: its key was not the key
+ * this account pinned, dialling it again would offer the same key to the same
+ * impostor, and `refused` is the standing answer rather than one attempt's.
+ *
+ * How long a machine has been away is not news a Retry changes, so it keeps the
+ * moment it went; what it goes back to wearing is what this attempt finds out.
+ */
 function askBlockedMachinesAgain() {
+  const cleared = [];
   for (const context of knownContexts()) {
-    if (context.blocked) setContextOffline(context.deviceId, { sinceMs: context.offlineSince, blocked: null });
+    if (!context.blocked || securityStops.has(context.deviceId)) continue;
+    setContextOffline(context.deviceId, { sinceMs: context.offlineSince, blocked: null });
+    cleared.push(context.deviceId);
   }
+  return cleared;
 }
 
 /**

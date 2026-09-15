@@ -61,7 +61,7 @@ const device = (deviceId, answer = async () => ({})) => {
 let elsewhere;
 
 beforeEach(() => {
-  document.body.innerHTML = '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
+  document.body.innerHTML = '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   mountGitPane.mockClear();
   mountConsole.mockClear();
   mountAgentRail.mockClear();
@@ -159,7 +159,24 @@ describe("workspace surface", () => {
     await flush();
     await flush();
     expect(mountGitPane).toHaveBeenCalledTimes(2);
-    expect([...document.querySelectorAll(".railtabs [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
+  });
+
+  it("keeps the two faces on the shell's rail, never inside the pane it switches", async () => {
+    // The reviewer's phone: the tabs used to be painted into the commit/file
+    // list, which on a narrow viewport is a drawer — so they sat at the bottom
+    // of something you had to open to reach them.
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+    device("dev-1", async () => workspace);
+    await renderWorkspace();
+    await flush();
+    expect(document.querySelector("#tabbody [data-tab]")).toBeNull();
+    expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("changes");
+    // The rail belongs to the surface standing on it: leaving hands the shell's
+    // column back empty.
+    App.viewDispose();
+    App.viewDispose = null;
+    expect(document.querySelector("#dir-rail").children).toHaveLength(0);
   });
 
   it("does not remount a Git pane after its source has been left", async () => {
@@ -253,7 +270,7 @@ describe("workspace surface", () => {
     document.querySelector("[data-confirm-init-git]").click();
     await flush();
     expect(call).toHaveBeenCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "workspace" });
-    expect([...document.querySelectorAll(".railtabs [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
     expect(App.route).toMatchObject({ tab: "files", file: "draft.md" });
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
     expect(pane.dispose).not.toHaveBeenCalled();
@@ -418,7 +435,7 @@ describe("workspace surface", () => {
       source: { id: "assets", is_git: false }, results: [{ target: "workspace", status: "initialized", is_git: true }],
     });
     await flush();
-    expect([...document.querySelectorAll(".railtabs [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["files"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["files"]);
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
 

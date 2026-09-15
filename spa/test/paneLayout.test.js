@@ -517,14 +517,6 @@ describe("tab layout primitives", () => {
     expect(declaration(rulesFor(".pane-split")[0].body, "position")).toBe("relative");
   });
 
-  it("gives every branch navigation control the full narrow rail", () => {
-    const [cell] = cssRules().filter((rule) => rule.selector === ".branch-tab");
-    expect(cell).toBeTruthy();
-    expect(declaration(cell.body, "width")).toBe("100%");
-    expect(declaration(cell.body, "justify-content")).toBe("center");
-    expect(declaration(cell.body, "flex-direction")).toBe("column");
-  });
-
   it("drawers both panes from one rule, so neither can drift", () => {
     // The list column belongs to the primitive here, not to Changes and Files
     // separately: two copies of this is how the stacked strip ended up with two
@@ -963,6 +955,49 @@ describe("the surface's text column", () => {
 // The reviewer's screenshot: the work area's right edge and the conversation
 // panel were fenced apart — two hairlines with a strip of page between them.
 // They are two halves of one frame and have to touch across ONE border. The
+// ---- the directory rail ------------------------------------------------------
+// Changes and Files are a column of the shell now, not a row inside the list
+// column of the pane they switch. On the reviewer's phone that row sat at the
+// bottom of a drawer; a column of the shell is never inside what it switches,
+// and it is the same column at every width.
+describe("the directory rail", () => {
+  it("is one narrow column of the shell, stated once, at every width", () => {
+    const rail = baseRule("#dir-rail");
+    expect(rail).toBeTruthy();
+    expect(declaration(rail.body, "width")).toBe("var(--dir-rail)");
+    expect(pixels("var(--dir-rail)", tokensAt(390))).toBe(40);
+    // One number, and no media query narrows or hides the rail: the work's left
+    // edge is in the same place on a phone as on a desktop.
+    expect(stylesSource.match(/--dir-rail:/g) || []).toHaveLength(1);
+    for (const rule of rulesFor("#dir-rail")) {
+      expect(enclosingAtRule(rule.at)).toBeNull();
+    }
+    // The seam with the work is the rail's own, like every other divide in the
+    // shell.
+    expect(declaration(rail.body, "border-right")).toBe("1px solid var(--line3, var(--line))");
+  });
+
+  it("keeps its cells at the head of the column, clear of the phone's bubble strip", () => {
+    // The strip is laid over the FOOT of this same column on a phone
+    // (shell.css, .rail-strip), so nothing tappable may be parked down there.
+    const rail = baseRule("#dir-rail");
+    expect(declaration(rail.body, "flex-direction")).toBe("column");
+    expect(declaration(rail.body, "justify-content")).toBe("flex-start");
+  });
+
+  it("draws an icon and nothing else, with the open face in the accent", () => {
+    const tab = baseRule(".dirtab");
+    expect(pixels(declaration(tab.body, "width"), tokensAt(390))).toBeLessThanOrEqual(
+      pixels("var(--dir-rail)", tokensAt(390)),
+    );
+    // The pack ships a 24x24 intrinsic size; every call site states its own.
+    expect(declaration(baseRule(".dirtab svg").body, "width")).toBe("18px");
+    expect(declaration(baseRule(".dirtab.active").body, "color")).toBe("var(--accent)");
+    // Reachable by keyboard means visible when reached.
+    expect(baseRule(".dirtab:focus-visible")).toBeTruthy();
+  });
+});
+
 // wrapper (#agent-rail) drew the seam while the panel drew a second rule on its
 // other side, and where those two met — the phone's overlay, whose right edge
 // lands on the strip — the divide was painted twice on one pixel. Each divide
@@ -979,7 +1014,7 @@ describe("the view column's seam with the agent rail", () => {
       .filter(([, value]) => value)
       .map(([property, value]) => `${property}:${value}`);
 
-  it("puts branch navigation, the view, and the agent rail side by side with nothing between them", () => {
+  it("puts the directory rail, the view, and the agent rail side by side with nothing between them", () => {
     const body = baseRule("#view-body");
     expect(body).toBeTruthy();
     expect(declaration(body.body, "grid-template-columns")).toBe("auto minmax(0, 1fr) auto");

@@ -24,7 +24,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go, markRoute } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
-import { ICON_FILE, ICON_GIT_BRANCH } from "../core/icons.js";
+import { paintDirectoryRail } from "../core/directoryRail.js";
 import { mountConsole } from "../core/console.js";
 import { setToolbarVerb, clearToolbarVerb } from "../core/toolbar.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -54,11 +54,6 @@ import {
 import { isPending, removeRecord, runOptimistic } from "../core/optimistic.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
-
-const BRANCH_TABS = [
-  { id: "files", label: "Files", icon: ICON_FILE },
-  { id: "changes", label: "git", icon: ICON_GIT_BRANCH },
-];
 
 // The cadence every work surface has always read its entity at: fast enough
 // that a state flip (building → review) moves the actionbar while you watch.
@@ -131,17 +126,17 @@ export async function renderBranch() {
     return;
   }
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
-  /** Changes/Files live in their own narrow rail between the inbox and the
-   *  pane's commit/file list. It is part of the branch shell, so it remains
-   *  available while the pane is loading or has no checkout. */
+  /** Changes/Files live in the shell's own icon rail between the inbox and the
+   *  work (core/directoryRail.js) — the same rail a workspace directory uses,
+   *  because they are the same two faces of one checkout. It is part of the
+   *  shell, so it remains available while the pane is loading or has no
+   *  checkout. */
   const paintTabs = () => {
-    const bar = $("#branch-tabs");
+    const bar = $("#dir-rail");
     if (!bar) return;
-    bar.innerHTML = BRANCH_TABS.map(
-      (item) => `<button class="branch-tab${item.id === tab ? " active" : ""}" data-tab="${item.id}" type="button" aria-current="${item.id === tab ? "page" : "false"}">${item.icon}<span>${item.label}</span></button>`,
-    ).join("");
-    bar.querySelectorAll("[data-tab]").forEach((cell) => {
-      cell.onclick = () => go({ name: "branch", deviceId, projectId, branch, tab: cell.dataset.tab });
+    paintDirectoryRail(bar, {
+      active: tab,
+      onSelect: (next) => go({ name: "branch", deviceId, projectId, branch, tab: next }),
     });
   };
   paintTabs();
@@ -490,8 +485,8 @@ export async function renderBranch() {
     // slot it put it in.
     if (watcher) watcher.dispose();
     watcher = null;
-    const branchTabs = $("#branch-tabs");
-    if (branchTabs) branchTabs.innerHTML = "";
+    const dirRail = $("#dir-rail");
+    if (dirRail) dirRail.innerHTML = "";
     clearToolbarVerb(paintFinish);
     if (pane) pane.dispose();
     pane = null;

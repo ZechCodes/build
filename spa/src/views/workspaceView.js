@@ -6,7 +6,7 @@
 import { $ } from "../dom.js";
 import { App, go, markRoute } from "../app.js";
 import { esc } from "../core/text.js";
-import { tabShellHtml } from "../core/tabshell.js";
+import { DIRECTORY_TABS, paintDirectoryRail } from "../core/directoryRail.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -20,11 +20,6 @@ import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
 import "../styles/surfaces.css";
-
-const TABS = [
-  { id: "changes", label: "Changes" },
-  { id: "files", label: "Files" },
-];
 
 function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext }) {
   body.innerHTML = `<div class="workspace-gitpane"></div>`;
@@ -133,6 +128,7 @@ function paintGitInitialization(rail, state, sourceId, directory) {
     return;
   }
   const canInitialize = directory.is_git === false || state.workspaceNeedsReconciliation || state.sourceGit === false || state.sourceNeedsReconciliation;
+  state.needsInitHost = canInitialize;
   let initHost = rail.querySelector(".workspace-init-host");
   if (!canInitialize) {
     initHost?.remove();
@@ -196,32 +192,39 @@ async function probeSourceGit(state, sourceId) {
   }
 }
 
+/** The pane's list column — the commit rail or the file tree — whichever tab is
+ *  mounted. It is where the git-initialization offer hangs, and it is rebuilt
+ *  from scratch whenever the pane repaints. */
+const paneListColumn = (body) => body.querySelector(".crail-host, .ftree");
+
+/** Paint the directory's two faces onto the SHELL's rail, and hang the
+ *  git-initialization offer off the pane's list column. The rail is not in the
+ *  pane: a pane remount leaves it standing, and a phone — where the list column
+ *  is a drawer — never buries the switch inside one. */
 function directoryTabsPainter(body, state, sourceId) {
   return () => {
     const directory = selectedDirectory(state.workspace, sourceId);
     if (!directory) return false;
-    const rail = body.querySelector(".crail-host, .ftree");
-    if (!rail) return false;
-    let host = rail.querySelector(".railtabs");
-    if (!host) {
-      host = document.createElement("div");
-      host.className = "railtabs";
-      rail.appendChild(host);
-    }
-    const tabs = directory.is_git === false ? TABS.filter((entry) => entry.id === "files") : TABS;
-    host.innerHTML = tabShellHtml({ tabs, active: App.route.tab });
-    host.querySelectorAll("[data-tab]").forEach((control) => {
-      control.onclick = () => go({ ...App.route, tab: control.dataset.tab });
+    const tabs = directory.is_git === false ? DIRECTORY_TABS.filter((entry) => entry.id === "files") : DIRECTORY_TABS;
+    paintDirectoryRail($("#dir-rail"), {
+      tabs,
+      active: App.route.tab,
+      onSelect: (tab) => go({ ...App.route, tab }),
     });
-    paintGitInitialization(rail, state, sourceId, directory);
+    const list = paneListColumn(body);
+    if (list) paintGitInitialization(list, state, sourceId, directory);
     return true;
   };
 }
 
-function observeTabs(body, paintTabs, dispose) {
+/** The offer lives inside the pane, and the pane rewrites itself — on a poll,
+ *  on a ref checkout. Watch for the column coming back without it and put it
+ *  there again; a directory that has nothing to initialize wants nothing put
+ *  back, so it never repaints on its own DOM. */
+function observeTabs(body, state, paintTabs, dispose) {
   const observer = new MutationObserver(() => {
-    const rail = body.querySelector(".crail-host, .ftree");
-    if (rail && !rail.querySelector(".railtabs")) paintTabs();
+    const list = paneListColumn(body);
+    if (state.needsInitHost && list && !list.querySelector(".workspace-init-host")) paintTabs();
   });
   paintTabs();
   observer.observe(body, { childList: true, subtree: true });
@@ -301,7 +304,7 @@ function mountWorkspace(workspace, state) {
   }
 
   state.paintTabs = directoryTabsPainter(mounted.body, state, sourceId);
-  App.viewDispose = observeTabs(mounted.body, state.paintTabs, App.viewDispose);
+  App.viewDispose = observeTabs(mounted.body, state, state.paintTabs, App.viewDispose);
   state.consolePanel = mountWorkspaceConsole(state);
 }
 
@@ -317,7 +320,7 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { route, context, callRpc: context.rpc, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, gitInitialization: [] };
+  const state = { route, context, callRpc: context.rpc, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [] };
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   // This machine answers now. If it goes while the workspace is open, what was
   // read stays on screen and the strip says whose state that is — but only once
@@ -326,6 +329,10 @@ export async function renderWorkspace() {
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => Boolean(state.workspace) });
   App.viewDispose = () => {
     state.disposed = true;
+    // The rail is the shell's column, lent to whichever surface is standing on
+    // it: leaving hands it back empty rather than leaving this workspace's
+    // faces up over the next view.
+    $("#dir-rail").innerHTML = "";
     deviceStrip();
     if (App.routeLeaveGuard === state.pane?.canLeave) App.routeLeaveGuard = null;
     state.pane?.dispose?.();

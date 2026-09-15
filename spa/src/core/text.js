@@ -98,6 +98,13 @@ export const devicesNotReachedYetText = () =>
  *  the inbox, the conversation. */
 export const pinText = (pinned, subject) => `${pinned ? "Unpin" : "Pin"} the ${subject}`;
 
+/** What a checkout's two faces are called on the rail that switches between
+ *  them. The rail draws an icon and nothing else, so these words ARE the
+ *  control's name: they are its tooltip and what a screen reader reads out.
+ *  One says what moved, the other says what is there. */
+export const changesTabLabel = "Changes";
+export const filesTabLabel = "Files";
+
 /** Human-scale age: <60s "just now", <1h "Nm ago", <1d "Nh ago", else "Nd ago". */
 export function humanAge(seconds) {
   const s = Math.max(0, Math.floor(seconds || 0));

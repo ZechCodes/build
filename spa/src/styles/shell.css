@@ -10,6 +10,10 @@
   --inbox-space:var(--inbox-rail);
   --global-head:48px;
   --agent-strip:46px;   /* the bubble strip's width — the rail's always-there half */
+  /* The directory rail on the other side of the work: Changes and Files as
+     icons, the same column at every width, so the work's left edge never
+     moves between a phone and a desktop. */
+  --dir-rail:40px;
   --console-bar:34px;   /* the collapsed console bar, and the open one's head */
   --console-half:38vh;  /* the console at half the view */
   --toolbar-h:38px;     /* the view column's top row — what a full console clears */
@@ -405,19 +409,33 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   container:toolbar-shell / inline-size; }
 #view-body { display:grid; grid-template-columns:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; }
-#branch-tabs:empty { display:none; }
-#branch-tabs { width:62px; min-height:0; border-right:1px solid var(--line3, var(--line));
-  background:var(--panel); padding:8px 5px; display:flex; flex-direction:column; gap:5px; }
-.branch-tab { position:relative; display:flex; flex-direction:column; align-items:center;
-  justify-content:center; gap:5px; width:100%; min-height:60px; padding:8px 3px;
+/* ---- the directory rail: a checkout's two faces, as icons ----
+   A column of the SHELL, between the inbox and the work, at every width — the
+   one number (--dir-rail) is stated here and nothing else sizes it. It was a
+   row of words inside the pane's list column, which on a phone is a drawer:
+   the switch between Changes and Files lived at the bottom of something you
+   had to open to reach it. A column of the shell is never inside what it
+   switches.
+   Icon-only, so the rail costs the work a glyph's width rather than a word's,
+   and the words become the tooltip and the accessible name
+   (core/directoryRail.js). Its cells sit at the TOP of the column: the phone's
+   bubble strip is laid over the foot of this same column, so nothing tappable
+   may be parked down there. */
+#dir-rail:empty { display:none; }
+#dir-rail { width:var(--dir-rail); min-height:0; border-right:1px solid var(--line3, var(--line));
+  background:var(--panel); padding:6px 4px; display:flex; flex-direction:column;
+  align-items:center; justify-content:flex-start; gap:4px; }
+.dirtab { position:relative; display:flex; align-items:center; justify-content:center;
+  width:32px; height:32px; padding:0;
   border:1px solid transparent; border-radius:8px; background:none; color:var(--ink2); cursor:pointer;
-  font:inherit; font-size:10.5px; }
-.branch-tab:hover { background:var(--panel2); color:var(--ink); }
-.branch-tab.active { border-color:color-mix(in srgb, var(--accent) 45%, var(--line));
+  font:inherit; }
+.dirtab:hover { background:var(--panel2); color:var(--ink); }
+.dirtab:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.dirtab.active { border-color:color-mix(in srgb, var(--accent) 45%, var(--line));
   background:color-mix(in srgb, var(--accent) 12%, var(--panel)); color:var(--accent); }
-.branch-tab.active::before { content:""; position:absolute; left:-6px; top:9px; bottom:9px;
+.dirtab.active::before { content:""; position:absolute; left:-5px; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
-.branch-tab svg { width:20px; height:20px; display:block; }
+.dirtab svg { width:18px; height:18px; display:block; }
 /* #root is a grid cell now, not a flex child: it fills its share. A reading
    page scrolls itself; a view that wants the full-height tab shell adds
    `.surface` and hands scrolling to its own body (that geometry lives in

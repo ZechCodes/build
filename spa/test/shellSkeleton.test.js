@@ -92,7 +92,7 @@ afterEach(() => {
 
 describe("the shell's markup", () => {
   it("carries the three panels, the console slot and the chrome that outlives views", () => {
-    for (const id of ["shell", "inbox-rail", "inbox-list", "view", "toolbar", "view-body", "branch-tabs", "root", "agent-rail", "console-region"]) {
+    for (const id of ["shell", "inbox-rail", "inbox-list", "view", "toolbar", "view-body", "dir-rail", "root", "agent-rail", "console-region"]) {
       expect([id, !!document.getElementById(id)]).toEqual([id, true]);
     }
     // The banners, the sheet scrim and the device picker survive the rebuild.
@@ -219,8 +219,12 @@ describe("render dispatch", () => {
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    const tabs = [...document.querySelectorAll("#branch-tabs [data-tab]")].map((cell) => cell.dataset.tab);
-    expect(tabs).toEqual(["files", "changes"]);
+    const tabs = [...document.querySelectorAll("#dir-rail [data-tab]")].map((cell) => cell.dataset.tab);
+    expect(tabs).toEqual(["changes", "files"]);
+    // Icon-only at every width: the words are the tooltip and the accessible
+    // name, and the rail is a tablist rather than a row of links.
+    expect(document.querySelector("#dir-rail").getAttribute("role")).toBe("tablist");
+    expect(document.querySelector('#dir-rail [data-tab="files"]').textContent.trim()).toBe("");
     expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().classList.contains("surface")).toBe(true);
     // The console is reserved and shut.
@@ -239,7 +243,7 @@ describe("render dispatch", () => {
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    document.querySelector('#branch-tabs [data-tab="files"]').click();
+    document.querySelector('#dir-rail [data-tab="files"]').click();
     // The link the tab writes keeps the machine the surface is standing on.
     expect(location.hash).toBe("#/device/dev-1/project/p-1/branch/build%2Flogin/files");
   });
@@ -251,7 +255,7 @@ describe("render dispatch", () => {
     await flush();
     expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().querySelector(".ivsplit")).toBeTruthy();
-    expect(document.querySelector("#branch-tabs").children).toHaveLength(0);
+    expect(document.querySelector("#dir-rail").children).toHaveLength(0);
     expect(root().querySelector('[data-stage="s1"]').textContent).toContain("First half");
   });
 
@@ -282,7 +286,7 @@ describe("render dispatch", () => {
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    expect(document.querySelector("#branch-tabs").children.length).toBeGreaterThan(0);
+    expect(document.querySelector("#dir-rail").children.length).toBeGreaterThan(0);
     App.route = { name: "account", page: "settings" };
     render();
     expect(document.getElementById("console-region").innerHTML).toBe("");

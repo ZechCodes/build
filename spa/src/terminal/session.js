@@ -88,9 +88,6 @@ export class TerminalSocket {
     this.transport = transport;
     // The session this socket is on, once a rendezvous has minted one for it.
     this._session = null;
-    // The wire its owner last handed over, remembered so a session adopted
-    // under a live channel is re-established on that same channel.
-    this._carrier = null;
     this._status = null;
     // Whether the session under this socket is being swapped for another one.
     this._replacing = false;
@@ -151,11 +148,10 @@ export class TerminalSocket {
     this._switch.peer(null);
     this._openSession(session);
     this._replacing = false;
-    this._carrier = carrier || null;
     // Not `_reportLost` when there is no wire: a machine whose channel has yet
     // to open is one the panes are waiting on, which is connecting.
     this._report("connecting");
-    return this._carrier ? this._switch.peer(this._carrier) : undefined;
+    return carrier ? this._switch.peer(carrier) : undefined;
   }
 
   /**
@@ -166,7 +162,6 @@ export class TerminalSocket {
    * caller waiting on one is told so rather than left hanging.
    */
   peer(carrier) {
-    this._carrier = carrier || null;
     const wasCarrying = Boolean(this._switch.active());
     const riding = this._switch.peer(carrier);
     // Losing a wire is the switch's own report. "There is no wire" told to a

@@ -198,6 +198,29 @@ describe("createRelayRendezvous", () => {
     stood.rendezvous.close();
   });
 
+  // Two things can ask for the same session at once — an ICE restart and a
+  // reader's Retry, say. One waiter per session id is all the relay's routing
+  // can answer, so the second is refused rather than quietly taking the first
+  // one's slot: the first's accept deadline would then delete the second's
+  // waiter and the device's answer would reach nobody.
+  it("refuses a second mint of a session id one is already waiting on", async () => {
+    const stood = stand({ acceptTimeoutMs: 40 });
+    const first = stood.rendezvous.mint({ sessionId: "sess-held", sessionKeyB64: "key-held" });
+    first.catch(() => {});
+    const ws = await answering(stood, { accept: false });
+
+    await expect(stood.rendezvous.mint({ sessionId: "sess-held", sessionKeyB64: "key-held" })).rejects.toThrow(
+      /already being minted/,
+    );
+
+    // And the one that was already waiting is untouched: its init stands, and
+    // the device's answer still settles it.
+    expect(ws.all("session_init")).toHaveLength(1);
+    ws.serverSend({ type: "session_accept", session_id: "sess-held", envelope: { for: "sess-held" } });
+    await expect(first).resolves.toEqual({ sessionId: "sess-held", sessionKeyB64: "key-held", deviceId: "dev-a" });
+    stood.rendezvous.close();
+  });
+
   it("re-attaches a session by presenting the id and key it already has", async () => {
     const { rendezvous, session, ws } = await minted();
     rendezvous.close();

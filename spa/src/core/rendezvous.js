@@ -140,9 +140,19 @@ export function createRelayRendezvous({
     return attempt;
   }
 
-  /** The device's answer to one `session_init`, or the reason there is none. */
-  const accepted = (sessionId) =>
-    new Promise((resolve, reject) => {
+  /**
+   * The device's answer to one `session_init`, or the reason there is none.
+   *
+   * One waiter per session id, because that is all the relay's routing can
+   * answer: it forwards the accept under the id it routed by, and a second
+   * waiter under the same id could only take the first one's place — whose
+   * deadline would then delete it, and whose device's answer would reach
+   * nobody. Overlapping mints of one session are refused here, in the words
+   * that say why, rather than silently losing one of them.
+   */
+  const accepted = (sessionId) => {
+    if (awaiting.has(sessionId)) throw new Error(`session ${sessionId} is already being minted on this rendezvous`);
+    return new Promise((resolve, reject) => {
       const deadline = setTimeout(() => {
         awaiting.delete(sessionId);
         reject(new Error("device did not answer"));
@@ -154,6 +164,7 @@ export function createRelayRendezvous({
       };
       awaiting.set(sessionId, { answer: settle(resolve), fail: settle(reject) });
     });
+  };
 
   /**
    * One session with this device, opened over the rendezvous.

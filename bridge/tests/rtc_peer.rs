@@ -17,7 +17,7 @@ use build_bridge::rtc::testing::{
     browser_peer, browser_peer_with, orphan_part, past_one_message, BrowserIce, BrowserPeer,
     RelaySignaling,
 };
-use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
+use build_bridge::rtc::{IceMode, IcePolicy, WebrtcPeerFactory};
 use build_bridge::transport::{self, Envelope};
 use build_bridge::transport_ledger::RecordingLedger;
 use common::{connected_device, device_identity, recv, request_message, session_init_message};
@@ -189,6 +189,19 @@ fn ledgered_peer_bridge(
     mpsc::UnboundedReceiver<String>,
     Arc<RecordingLedger>,
 ) {
+    policy_peer_bridge(state_dir, IcePolicy::default())
+}
+
+/// [`ledgered_peer_bridge`], with the ICE policy every peer it builds gathers
+/// under — what an operator sets `BRIDGE_ICE_*` to (spec rule 8).
+fn policy_peer_bridge(
+    state_dir: &std::path::Path,
+    policy: IcePolicy,
+) -> (
+    Arc<FrameIntake>,
+    mpsc::UnboundedReceiver<String>,
+    Arc<RecordingLedger>,
+) {
     let app = AppState::new_unrooted(
         state_dir.join("worktrees"),
         "main",
@@ -205,7 +218,7 @@ fn ledgered_peer_bridge(
     );
     app.lock()
         .unwrap()
-        .set_peer_factory(WebrtcPeerFactory::new(intake.clone(), IcePolicy::default()));
+        .set_peer_factory(WebrtcPeerFactory::new(intake.clone(), policy));
     (intake, reports, ledger)
 }
 
@@ -475,4 +488,132 @@ async fn a_session_s_transport_trail_reads_minted_carrying_channels_lost_ended()
         ledger.trail_of("sess-trail"),
         vec!["minted", "carrying:direct", "channels_lost", "ended"]
     );
+}
+
+/// Rule 8's ordinary case, end to end: a browser and a bridge that can see
+/// each other pair host candidate to host candidate, and the session's one
+/// `carrying` says so at both ends — `Direct`, and neither end a relay.
+///
+/// The device's end is the claim that needs a peer connection to make: it
+/// gathers on every non-loopback interface this machine has, and the pair the
+/// agent nominated is one of those addresses rather than a server-reflexive
+/// or relayed stand-in for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_and_a_bridge_that_can_see_each_other_pair_host_to_host() {
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, _reports, ledger) = ledgered_peer_bridge(state_dir.path());
+    let (session, _demux) = browser_session("sess-host", intake).await;
+
+    let mut peer = upgraded(&session).await;
+    let greeted = peer.app.call("session.hello", json!({})).await;
+    assert_eq!(greeted["ok"], true, "{greeted}");
+
+    assert_eq!(
+        ledger.trail_of("sess-host"),
+        vec!["minted", "carrying:direct"]
+    );
+    let detail = ledger
+        .carrying_details_of("sess-host")
+        .pop()
+        .expect("the pair the peer carried on");
+    assert!(
+        detail.starts_with("host/"),
+        "the device paired on its own host candidate: {detail}"
+    );
+    assert!(!detail.contains("relay"), "and on nobody's TURN: {detail}");
+    assert_eq!(
+        peer.negotiated_local_candidate_type().await,
+        "host",
+        "and the browser, reading the same pair from its end, on its own"
+    );
+}
+
+/// `direct-only` never lets a TURN server the browser offered reach the peer
+/// connection, and never pairs with a relay candidate the browser trickles.
+///
+/// The list is asserted on the policy itself — that is the one place the
+/// decision is made, and a list is easier to read than an SDP — and then the
+/// same policy carries a real session, so the filtered (here: emptied) list is
+/// one a peer connection can still be built from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn direct_only_offers_the_peer_no_turn_server_and_still_carries() {
+    // A TURN url on an address that routes nowhere (TEST-NET-2): the browser
+    // offers it and never reaches it, so what this test proves is the
+    // bridge's filter rather than somebody's TURN server being up.
+    let minted = vec![json!({
+        "urls": ["turn:198.51.100.7:3478?transport=udp"],
+        "username": "user-1",
+        "credential": "minted-for-this-test",
+    })];
+    let direct_only = IcePolicy {
+        mode: IceMode::DirectOnly,
+        ..IcePolicy::default()
+    };
+
+    assert!(
+        direct_only.allowed_ice_servers(&minted).is_empty(),
+        "a list that was nothing but TURN is nothing under direct-only"
+    );
+    assert_eq!(
+        IcePolicy::default().allowed_ice_servers(&minted),
+        minted.clone(),
+        "and the hosted default is unchanged by any of this"
+    );
+    assert!(!direct_only.allows_remote_candidate(&json!({
+        "candidate": "candidate:1 1 udp 41885439 198.51.100.7 51234 typ relay raddr 0.0.0.0 rport 0",
+        "sdpMid": "0",
+    })));
+
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, _reports, ledger) = policy_peer_bridge(state_dir.path(), direct_only);
+    let (session, _demux) = browser_session("sess-direct-only", intake).await;
+
+    // The browser offers the TURN server it was minted, as it always does.
+    let mut peer = browser_peer_with(
+        &session.session_id,
+        &session.session_key,
+        &session,
+        BrowserIce {
+            servers: minted,
+            relay_only: false,
+        },
+    )
+    .await;
+    let greeted = peer.app.call("session.hello", json!({})).await;
+    assert_eq!(greeted["ok"], true, "{greeted}");
+    assert_eq!(
+        ledger.trail_of("sess-direct-only"),
+        vec!["minted", "carrying:direct"],
+        "a bridge with no server to gather from still has its own interfaces"
+    );
+}
+
+/// An interface allow-list is applied, and a bridge it leaves with nothing to
+/// bind fails closed: the offer is refused, naming the list, and the browser
+/// blocks that device (rule 3) instead of waiting out a deadline on a peer
+/// that could never have gathered a candidate.
+///
+/// The offer carries a placeholder SDP on purpose — the refusal happens where
+/// the sockets are bound, before an offer is parsed at all, so what comes back
+/// says the allow-list rather than "not an SDP".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interface_allow_list_that_names_nothing_refuses_the_offer() {
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, _reports, _ledger) = policy_peer_bridge(
+        state_dir.path(),
+        IcePolicy {
+            interfaces: Some(vec!["bridge-nope0".to_string()]),
+            ..IcePolicy::default()
+        },
+    );
+    let (session, _demux) = browser_session("sess-no-interface", intake).await;
+
+    let refused = session
+        .call("rtc.offer", json!({ "sdp": "v=0", "ice_servers": [] }))
+        .await;
+
+    assert_eq!(refused["ok"], false, "{refused}");
+    let error = refused["error"].as_str().expect("a refusal says why");
+    assert!(error.contains("bridge-nope0"), "{error}");
+    assert!(error.contains("BRIDGE_ICE_INTERFACES"), "{error}");
 }

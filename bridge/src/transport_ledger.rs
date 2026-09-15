@@ -117,11 +117,13 @@ impl TransportLedger for FanOutLedger {
     }
 }
 
-/// A sink that remembers, for tests: the trail as `session:event[:path]`.
+/// A sink that remembers, for tests: every event as it was recorded, read
+/// back as the trail `session:event[:path]` or as what a `carrying` said the
+/// pair was.
 #[cfg(any(test, feature = "testing"))]
 #[derive(Default)]
 pub struct RecordingLedger {
-    trail: Mutex<Vec<String>>,
+    events: Mutex<Vec<(String, TransportEvent)>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -133,7 +135,31 @@ impl RecordingLedger {
     /// Every event so far, oldest first, as `session:name` or
     /// `session:carrying:path`.
     pub fn trail(&self) -> Vec<String> {
-        self.trail.lock().unwrap().clone()
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(session_id, event)| match event.path() {
+                Some(path) => format!("{session_id}:{}:{}", event.name(), path.as_str()),
+                None => format!("{session_id}:{}", event.name()),
+            })
+            .collect()
+    }
+
+    /// What each `carrying` of one session said the pair was — the candidate
+    /// types the trail's one word leaves out, and the only place a test can
+    /// read which kind of path actually won.
+    pub fn carrying_details_of(&self, session_id: &str) -> Vec<String> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(recorded, _)| recorded == session_id)
+            .filter_map(|(_, event)| match event {
+                TransportEvent::Carrying { detail, .. } => Some(detail.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The trail of one session, `name` or `carrying:path`.
@@ -149,11 +175,10 @@ impl RecordingLedger {
 #[cfg(any(test, feature = "testing"))]
 impl TransportLedger for RecordingLedger {
     fn record(&self, session_id: &str, event: TransportEvent) {
-        let line = match event.path() {
-            Some(path) => format!("{session_id}:{}:{}", event.name(), path.as_str()),
-            None => format!("{session_id}:{}", event.name()),
-        };
-        self.trail.lock().unwrap().push(line);
+        self.events
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), event));
     }
 }
 
@@ -201,6 +226,40 @@ mod tests {
         assert_eq!(carrying.name(), "carrying");
         assert_eq!(carrying.path(), Some(TransportPath::Direct));
         assert_eq!(TransportPath::Turn.as_str(), "turn");
+    }
+
+    /// A `carrying` is two facts — which kind of path, and which candidate
+    /// types it won on — and a test that is about rule 8 needs the second.
+    #[test]
+    fn the_recording_sink_keeps_the_pair_a_carrying_named() {
+        let ledger = RecordingLedger::new();
+        ledger.record("sess-1", TransportEvent::Minted);
+        ledger.record(
+            "sess-1",
+            TransportEvent::Carrying {
+                path: TransportPath::Direct,
+                detail: "host/host candidates".to_string(),
+            },
+        );
+        ledger.record(
+            "sess-2",
+            TransportEvent::Carrying {
+                path: TransportPath::Turn,
+                detail: "host/relay candidates (TURN, billed)".to_string(),
+            },
+        );
+
+        assert_eq!(ledger.trail_of("sess-1"), vec!["minted", "carrying:direct"]);
+        assert_eq!(
+            ledger.carrying_details_of("sess-1"),
+            vec!["host/host candidates"],
+            "the detail the trail's one word leaves out"
+        );
+        assert_eq!(
+            ledger.carrying_details_of("sess-2"),
+            vec!["host/relay candidates (TURN, billed)"]
+        );
+        assert!(ledger.carrying_details_of("sess-3").is_empty());
     }
 
     #[test]

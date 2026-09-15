@@ -1,15 +1,20 @@
 """Contract tests for the browser-facing device listing: each device must expose
 ``device_id``, ``approved``, ``status``, and ``transport_public_key_b64`` (per the
-browser<->relay contract) alongside the existing SPA fields."""
+browser<->relay contract) alongside the existing SPA fields.
+
+``status`` is derived from ``last_seen_at`` at read time, so every summary here
+is taken at an explicit ``now``."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from buildapp.devices_controller import device_summary
 from buildapp.models import Device
 from buildapp.pairing_crypto import fingerprint
+
+NOW = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
 
 
 def _device(**overrides) -> Device:
@@ -21,7 +26,7 @@ def _device(**overrides) -> Device:
         "transport_public_key_b64": "dHJhbnNwb3J0",
         "approved": True,
         "status": "online",
-        "last_seen_at": datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc),
+        "last_seen_at": NOW - timedelta(seconds=30),
     }
     defaults.update(overrides)
     return Device(**defaults)
@@ -29,7 +34,7 @@ def _device(**overrides) -> Device:
 
 def test_summary_contains_contract_fields():
     device = _device()
-    summary = device_summary(device)
+    summary = device_summary(device, NOW)
     assert summary["device_id"] == str(device.id)
     assert summary["approved"] is True
     assert summary["status"] == "online"
@@ -38,14 +43,21 @@ def test_summary_contains_contract_fields():
 
 def test_summary_keeps_existing_spa_fields():
     device = _device()
-    summary = device_summary(device)
+    summary = device_summary(device, NOW)
     assert summary["id"] == str(device.id)  # pre-contract key the SPA reads
     assert summary["name"] == "workstation"
     assert summary["fingerprint"] == fingerprint("aWRlbnRpdHk")
-    assert summary["last_seen_at"] == "2026-07-01T12:00:00+00:00"
+    assert summary["last_seen_at"] == "2026-07-01T11:59:30+00:00"
 
 
 def test_summary_handles_never_seen_device():
-    summary = device_summary(_device(last_seen_at=None, status="offline"))
+    summary = device_summary(_device(last_seen_at=None, status="offline"), NOW)
     assert summary["last_seen_at"] is None
     assert summary["status"] == "offline"
+
+
+def test_summary_status_is_derived_not_the_column():
+    """The column may still carry the relay's last write; the heartbeat window
+    is what the browser is told."""
+    stale = _device(status="online", last_seen_at=NOW - timedelta(minutes=2))
+    assert device_summary(stale, NOW)["status"] == "offline"

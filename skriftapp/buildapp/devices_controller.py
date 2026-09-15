@@ -12,7 +12,8 @@ Three audiences, three guard styles:
 
 from __future__ import annotations
 
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from litestar import Controller, Request, get, post
@@ -23,11 +24,11 @@ from litestar.exceptions import (
     NotFoundException,
 )
 from litestar.response import Response
-from litestar.status_codes import HTTP_409_CONFLICT
+from litestar.status_codes import HTTP_200_OK, HTTP_409_CONFLICT
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from buildapp import ephemeral_tokens, pairing_crypto
+from buildapp import ephemeral_tokens, pairing_crypto, presence
 from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.internal_auth import internal_auth_guard
@@ -41,15 +42,52 @@ PENDING_TTL = timedelta(minutes=15)
 GATEWAY_TOKEN_TTL = timedelta(minutes=5)
 GATEWAY_TOKEN_PURPOSE = "gateway"
 GATEWAY_TOKEN_PREFIX = "gw_"
+#: Where a bridge posts its signed liveness beat (``planning/v2/Strict P2P
+#: Transport Spec.md`` rule 6). Public: the signature is the authentication.
+HEARTBEAT_ROUTE_PATH = "/api/devices/heartbeat"
+
+_replay_guard = presence.replay_guard()
 
 
-def device_summary(device: Device) -> dict:
+def reset_replay_guard_for_tests() -> None:
+    """A fresh guard per test app: the guard is process state, as in production."""
+    global _replay_guard
+    _replay_guard = presence.replay_guard()
+
+
+@dataclass(frozen=True)
+class Heartbeat:
+    """One well-formed heartbeat, read out of the body."""
+
+    device_id: UUID
+    timestamp: int
+    signature: str
+
+
+def read_heartbeat(body: dict) -> Heartbeat:
+    """Everything a malformed body can be refused for, in one place — so the
+    handler below only authorizes and stamps."""
+    try:
+        return Heartbeat(
+            device_id=UUID(str(body["device_id"])),
+            timestamp=int(body["timestamp"]),
+            signature=str(body["signature_b64"]),
+        )
+    except (KeyError, ValueError, TypeError) as malformed:
+        raise ClientException("malformed heartbeat") from malformed
+
+
+def device_summary(device: Device, now: datetime) -> dict:
     """Serialize a device for the browser-facing listing.
 
     Carries the browser<->relay contract fields (``device_id``, ``approved``,
     ``status``, ``transport_public_key_b64`` — the SPA seals session keys to the
     transport key) plus the pre-contract SPA fields (``id``, ``name``,
     ``fingerprint``, ``last_seen_at``).
+
+    ``status`` is derived from ``last_seen_at`` at ``now``, never read off the
+    column: a bridge that stops heartbeating writes nothing, so only a derived
+    status can see it go away.
     """
     return {
         "device_id": str(device.id),
@@ -57,7 +95,7 @@ def device_summary(device: Device) -> dict:
         "name": device.name,
         "fingerprint": pairing_crypto.fingerprint(device.identity_public_key_b64),
         "approved": device.approved,
-        "status": device.status,
+        "status": presence.derived_status(device, now),
         "transport_public_key_b64": device.transport_public_key_b64,
         "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
     }
@@ -128,6 +166,39 @@ class DevicesController(Controller):
             existing.pairing_code_hash = code_hash
         await db_session.commit()
         return Response({"device_id": str(device_id), "status": "pending"}, status_code=201)
+
+    # 200, not Litestar's 201: nothing is created for the caller to find, and a
+    # bridge treats any 2xx as delivered.
+    @post(HEARTBEAT_ROUTE_PATH, status_code=HTTP_200_OK)
+    async def heartbeat(self, request: Request, db_session: AsyncSession) -> Response:
+        """A bridge reports that it is alive. Authenticated the way a transport
+        report is — an Ed25519 signature over a timestamped challenge, bounded by
+        the freshness window and the replay guard — and the only thing it writes
+        is ``last_seen_at``; ``GET /api/devices`` derives ``status`` from that."""
+        reported = read_heartbeat(await read_json_object(request))
+        device = await db_session.get(Device, reported.device_id)
+        if device is None or not device.approved or device.owner_user_id is None:
+            raise NotAuthorizedException("heartbeat not authorized")
+        challenge = presence.heartbeat_challenge(
+            str(reported.device_id), reported.timestamp
+        )
+        if not pairing_crypto.verify_registration(
+            device.identity_public_key_b64, challenge, reported.signature
+        ):
+            raise NotAuthorizedException("heartbeat signature invalid")
+        now = utc_now()
+        if not presence.heartbeat_timestamp_fresh(reported.timestamp, now):
+            raise NotAuthorizedException("heartbeat timestamp out of window")
+        if not _replay_guard.check_and_record(
+            str(reported.device_id), reported.timestamp, reported.signature, now
+        ):
+            raise NotAuthorizedException("heartbeat replayed")
+        device.last_seen_at = now
+        # The column is kept coherent while the relay still writes it; nothing
+        # reads it for liveness any more.
+        device.status = presence.ONLINE
+        await db_session.commit()
+        return Response({"ok": True})
 
     @get("/api/devices/{device_id:uuid}/status")
     async def status(self, device_id: UUID, db_session: AsyncSession) -> Response:
@@ -210,7 +281,8 @@ class DevicesController(Controller):
                 .order_by(Device.created_at.desc())
             )
         ).scalars().all()
-        return Response({"devices": [device_summary(d) for d in rows]})
+        now = utc_now()
+        return Response({"devices": [device_summary(d, now) for d in rows]})
 
     @post("/api/devices/{device_id:uuid}/revoke", guards=[build_auth_guard])
     async def revoke(

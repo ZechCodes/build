@@ -142,7 +142,10 @@ export function createReassembler() {
 
 /** One channel as a wire for envelopes: the chunking, the reassembly and the
  *  close report, and nothing about sessions. Mirrors `channelCarrier` in
- *  `spa/src/core/carrier.js`. */
+ *  `spa/src/core/carrier.js`, minus its `DC_BUFFERED_HIGH` drain — a check only
+ *  ever sends small requests, and what the *bridge* sends back is held by the
+ *  bridge's own backpressure. A harness that starts pushing megabytes at a
+ *  device needs that waiting ported too. */
 function channelCarrier(channel) {
   const listeners = new Set();
   const reassembler = createReassembler();
@@ -231,9 +234,9 @@ export async function openPeerLink({ signal, onSignalPush, apiUrl, cookie, openT
   // The bridge builds this session's peer connection when the offer arrives, so
   // a candidate that gets there first is answered "no peer connection" and
   // lost. A browser is saved from that by timing — gathering is slower than the
-  // round trip — but werift gathers inside `setLocalDescription` and has its
-  // host candidate ready before the offer has even been sent. So the first ones
-  // wait for the answer, and every one after it goes straight out.
+  // round trip — and a Node implementation on a container's one interface is
+  // not: its host candidate is ready before the offer has been sent. So the
+  // first ones wait for the answer, and every one after it goes straight out.
   let offered = false;
   const waiting = [];
   const trickle = (candidate) =>

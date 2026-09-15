@@ -7,9 +7,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../src/app.js";
-import { deviceAwayMark, deviceAwayWord } from "../src/core/deviceAway.js";
+import { blockedMark, blockedText, deviceAwayMark, deviceAwayWord } from "../src/core/deviceAway.js";
 import { deviceOfflineNotice, mountDeviceNotice, mountDeviceStrip } from "../src/core/deviceNotice.js";
-import { deviceFrozenText, deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
+import { deviceBlockedMark, deviceBlockedWord, deviceFrozenText, deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
 import {
   adoptBridgeSelection,
   adoptDeviceSession,
@@ -164,5 +164,54 @@ describe("naming the machine over a surface that is already open", () => {
 
     expect(strips()).toHaveLength(0);
     expect(host.classList.contains("device-away")).toBe(false);
+  });
+});
+
+// A machine whose bridge is up and whose direct connection could not be made is
+// not offline: the account lists it online and it answered the relay. It is
+// blocked (spec rule 3), and every length the app has room for says so — the
+// sentence a surface stands up, the mark a refused call carries, and the one
+// word its greyed rows wear.
+describe("a machine whose direct connection could not be made", () => {
+  const blocked = (reason) => {
+    const context = adoptDeviceSession(fakeSession("dev-1"));
+    setContextOffline("dev-1", blockedMark(reason));
+    return context;
+  };
+
+  it("keeps the reason on the machine's own context", () => {
+    const context = blocked("ice-servers");
+
+    expect(context.offline).toBe(true);
+    expect(context.blocked).toBe("ice-servers");
+    expect(context.offlineSince).toBeTypeOf("number");
+  });
+
+  it("says why in one sentence, in the account's name for the machine", () => {
+    blocked("ice-servers");
+
+    expect(deviceOfflineNotice("dev-1")).toBe(
+      "workshop's direct connection could not be made: the connection servers could not be reached.",
+    );
+  });
+
+  it("wears blocked as its word and its mark, whichever reason it was", () => {
+    for (const reason of ["no-webrtc", "ice-servers", "refused", "timeout", "failed", "lost", "unreached"]) {
+      const context = blocked(reason);
+      expect(deviceAwayWord(context)).toBe(deviceBlockedWord);
+      expect(deviceAwayMark(context)).toBe(deviceBlockedMark);
+      // Every reason has words of its own; none of them falls through to a
+      // blank or to the word "undefined".
+      expect(blockedText(reason)).toMatch(/^This machine's direct connection could not be made: \S.+\.$/);
+    }
+  });
+
+  it("says a plain away word again once the machine answers", () => {
+    const context = blocked("timeout");
+
+    setContextOffline("dev-1", { offline: false });
+
+    expect(context.blocked).toBe(null);
+    expect(deviceAwayWord(context)).toBe(deviceOfflineWord);
   });
 });

@@ -15,6 +15,7 @@ import {
   deviceFeedView,
   knownContexts,
   liveContexts,
+  knownDeviceContext,
   onDeviceStateChanged,
   resetDeviceContexts,
   retireDeviceContext,
@@ -318,6 +319,26 @@ describe("the device context registry", () => {
 
     expect(homeContext()).toBe(null);
     expect(contextFor("dev-b")).toBe(second);
+  });
+
+  // A machine that never answered still has something to say about itself: the
+  // connect sequence can fail before any session lands, and rule 3 says that
+  // machine is blocked rather than silent. So it is given a context of its own
+  // to wear the mark on — one that can answer nothing, and is not live.
+  it("registers a machine that has never answered, so it has somewhere to be marked", () => {
+    App.devices = [online("dev-a"), online("dev-b")];
+    const answered = adoptDeviceSession(fakeSession("dev-a"));
+
+    const never = knownDeviceContext("dev-b");
+
+    expect(contextFor("dev-b")).toBe(never);
+    expect(never.session).toBe(null);
+    expect(canAnswer(never)).toBe(false);
+    expect(knownContexts()).toEqual([answered, never]);
+    expect(liveContexts()).toEqual([answered]);
+    // And it is the same context the next time, session or no session.
+    expect(knownDeviceContext("dev-b")).toBe(never);
+    expect(knownDeviceContext("dev-a")).toBe(answered);
   });
 
   // A work surface is about the machine its link names, whoever is home.

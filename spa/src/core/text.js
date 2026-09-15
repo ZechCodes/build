@@ -65,6 +65,22 @@ export const deviceOfflineMark = "Device offline";
 export const appBehindMark = "App is out of date";
 export const bridgeBehindMark = "Bridge is out of date";
 
+/** What a machine the browser could not open a direct connection to says, in
+ *  the one sentence a surface has room for (spec rule 3). Its bridge is up and
+ *  the account lists it online — it is the connection between here and there
+ *  that could not be made — so it never says the machine is offline. `why` is
+ *  the plain-words half, one per reason (core/deviceAway.js). */
+export const deviceBlockedText = (name, why) =>
+  `${name || "This machine"}'s direct connection could not be made: ${why}.`;
+
+/** The short mark a control shut for want of a direct connection wears, and the
+ *  words a call to that machine is refused with. */
+export const deviceBlockedMark = "Device not reachable";
+
+/** And the one word its greyed rows carry. Not "offline": the machine is there,
+ *  this browser cannot get to it. */
+export const deviceBlockedWord = "blocked";
+
 /** The one word a greyed row and the device picker both wear to say a machine
  *  is not here. Lower case: it is a mark on something else, never a sentence of
  *  its own. */
@@ -85,6 +101,13 @@ export const waitingForDeviceText = (deviceCount) =>
  *  would mean anything, so it says what is true and what happens. */
 export const allDevicesOfflineText = () =>
   "All devices are offline — tasks will resume when one reconnects.";
+
+/** What the waiting screen says when every machine the account lists is online
+ *  and none of them could be reached directly (spec rule 3). Nothing is
+ *  offline, so nothing is said to be: what failed is the connection, and each
+ *  machine's own row offers the retry. */
+export const devicesBlockedText = () =>
+  "Your machines are online but none could be reached directly — retry one of them below.";
 
 /** What it says while the account calls a machine online and this client has
  *  not got through to it yet — a boot still in the handshake, or one that

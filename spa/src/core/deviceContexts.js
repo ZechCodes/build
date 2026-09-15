@@ -69,6 +69,8 @@ function createDeviceContext(deviceId) {
     greeted: null, // this session's greeting, once one is in flight (connection.js)
     offline: false, // written only by setContextOffline (connection.js owns the policy)
     offlineSince: null,
+    blocked: null, // why no direct connection could be made, when that is why it is away (rule 3)
+    rendezvous: null, // how this machine is found and its sessions minted (connection.js)
     peerLink: null,
     reconnect: { timer: null, delay: 0, resuming: false },
     /** Still the registry's context for this device, and still able to address
@@ -92,6 +94,20 @@ function createDeviceContext(deviceId) {
 
 export function contextFor(deviceId) {
   return (deviceId && contexts.get(deviceId)) || null;
+}
+
+/**
+ * This machine's context, created empty if it has never had one.
+ *
+ * A device gets a context by answering — but a machine whose connect sequence
+ * failed has answered nothing and still has something to say about itself: rule
+ * 3 blocks it, by name, with a reason, and its rows grey like any other away
+ * machine's. So it is registered with no session: it can answer nothing
+ * (`canAnswer` is false), it is in `knownContexts` and never in `liveContexts`,
+ * and the session it eventually lands retargets this same context.
+ */
+export function knownDeviceContext(deviceId) {
+  return contextFor(deviceId) || createDeviceContext(deviceId);
 }
 
 /**
@@ -187,6 +203,7 @@ export function adoptDeviceSession(session) {
   context.call = session.call;
   context.offline = false;
   context.offlineSince = null;
+  context.blocked = null; // a machine that is answering is not one nothing could reach
   // A reconnect re-greets, and the bridge answering it may not be the version
   // that answered last time: what the last greeting settled is not this one's.
   forgetBridgeSelection(context);
@@ -258,10 +275,12 @@ export function setContextOffline(deviceId, mark = {}) {
 }
 
 // Going offline without a stamp means "as of now"; coming back online has no
-// time to keep.
-function writeOfflineMark(context, { offline = true, sinceMs = null }) {
+// time to keep. A mark that names no reason is a machine that is merely away —
+// its bridge has gone — rather than one nothing could reach (rule 3).
+function writeOfflineMark(context, { offline = true, sinceMs = null, blocked = null }) {
   context.offline = Boolean(offline);
   context.offlineSince = context.offline ? sinceMs || Date.now() : null;
+  context.blocked = context.offline ? blocked : null;
 }
 
 /**

@@ -453,6 +453,46 @@ describe("per-device connections", () => {
     expect(liveIds()).toEqual(["dev-a"]);
   });
 
+  // The screen's account-wide Retry is for exactly the state it is standing in:
+  // every machine the account calls online is blocked, and a block is what
+  // stops this layer asking for one again (rule 3). Pressing it has to clear
+  // them and dial — routing through a boot that refuses every blocked machine
+  // it finds asks nothing of anybody.
+  it("dials every blocked machine again when the reader presses Retry now", async () => {
+    unlinkable.add("dev-a");
+    unlinkable.add("dev-b");
+    await connectEveryDevice();
+    expect(held()).toBe(true);
+    const asked = openedFor("dev-a").length;
+
+    unlinkable.clear();
+    document.getElementById("retrybtn").click();
+    await flush();
+    await flush();
+
+    expect(openedFor("dev-a").length).toBeGreaterThan(asked);
+    expect(held()).toBe(false);
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+  });
+
+  // And one that cannot be reached this time either is blocked again, with the
+  // reason it failed with now.
+  it("blocks the machines the account-wide Retry still could not reach", async () => {
+    unlinkable.add("dev-a");
+    unlinkable.add("dev-b");
+    await connectEveryDevice();
+    unlinkable.delete("dev-b");
+    unreachable.add("dev-b");
+
+    document.getElementById("retrybtn").click();
+    await flush();
+    await flush();
+
+    expect(held()).toBe(true);
+    expect(contextFor("dev-a").blocked).toBe("timeout");
+    expect(contextFor("dev-b").blocked).toBe("unreached");
+  });
+
   // A retry that fails again leaves the reader on the same screen, with the
   // machine wearing whatever reason it was this time.
   it("repaints the waiting screen when a retry could not reach the machine either", async () => {

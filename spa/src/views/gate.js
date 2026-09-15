@@ -56,12 +56,12 @@ let stopWatchingDevices = null;
 let gateGeneration = 0;
 let connectingPromise = null;
 
-async function connectToApp() {
+async function connectToApp(asked) {
   // Every online device is opened at once; the app comes up on whichever
   // answers first rather than waiting out the slowest one. The gate names no
   // home: which device that is, the account list and the user's pick already
   // say, and each device takes it in hand as it lands.
-  await openDeviceSessions().first;
+  await openDeviceSessions(asked).first;
   gateGeneration += 1;
   stopWatchingForOnline();
   handBackToReader();
@@ -173,10 +173,10 @@ function stopWatchingForOnline() {
 
 /** One boot at a time: a second call while the first is still opening devices
  *  waits on the same promise rather than starting a second handshake. */
-async function enterApp() {
+async function enterApp(asked) {
   if (connectingPromise) return connectingPromise;
   App._connecting = true;
-  connectingPromise = connectToApp();
+  connectingPromise = connectToApp(asked);
   try {
     return await connectingPromise;
   } finally {
@@ -382,7 +382,10 @@ function renderWaiting(devices) {
   // account pinned — is the one thing on this screen that waiting will not fix,
   // so it is said where the screen says what went wrong.
   $("#oerr").textContent = securityStopText();
-  $("#retrybtn").onclick = () => boot();
+  // The account-wide Retry: every machine on this screen is one this client
+  // could not reach, so it asks for all of them again rather than for whatever
+  // a plain boot would think was worth asking (rule 3).
+  $("#retrybtn").onclick = () => boot({ retry: true });
   $("#addmore").onclick = () => openAddDevice(boot);
 }
 
@@ -443,7 +446,7 @@ async function showBridgeBehindGate(context) {
   }
 }
 
-export async function boot() {
+export async function boot({ retry = false } = {}) {
   const generation = ++gateGeneration;
   if (App._watch) {
     clearInterval(App._watch);
@@ -457,7 +460,7 @@ export async function boot() {
     return;
   }
   try {
-    await enterApp();
+    await enterApp({ retry });
     return;
   } catch {
     /* API presence is only a hint; the relay is not ready yet → waiting */

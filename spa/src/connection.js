@@ -29,6 +29,7 @@ import {
   closeQuietly,
   contextFor,
   homeContext,
+  knownContexts,
   knownDeviceContext,
   liveContexts,
   onDeviceStateChanged,
@@ -623,11 +624,28 @@ export function syncHome(landed = null) {
  * This is also how a late device joins: the presence poll calls it after every
  * refresh (rule 6), and a machine that has just come online is one nothing is
  * holding a session for.
+ *
+ * `retry` is a READER asking — the waiting screen's account-wide Retry — rather
+ * than the poll. A block is what keeps this layer from asking for a machine
+ * again (rule 3), so it is the very thing a Retry undoes: every blocked machine
+ * loses its mark here and is dialled with the rest.
  */
-export function openDeviceSessions() {
+export function openDeviceSessions({ retry = false } = {}) {
+  if (retry) askBlockedMachinesAgain();
   const wanted = App.devices.filter(wantsSession).map((device) => connectDevice(device.id));
   const attempts = wanted.length ? wanted : guessAtStaleDevices();
   return { first: handled(firstContext(attempts)), settled: handled(everyContext(attempts)) };
+}
+
+/** Every machine this client blocked is to be asked again: the mark that says
+ *  not to ask is cleared before the dial, or the dial is refused by the block
+ *  the reader is undoing. How long a machine has been away is not news a Retry
+ *  changes, so it keeps the moment it went; what it goes back to wearing is
+ *  what this attempt finds out. */
+function askBlockedMachinesAgain() {
+  for (const context of knownContexts()) {
+    if (context.blocked) setContextOffline(context.deviceId, { sinceMs: context.offlineSince, blocked: null });
+  }
 }
 
 /**

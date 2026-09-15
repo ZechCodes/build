@@ -2,7 +2,7 @@
 // peer connection and by nothing else (spec rules 1 and 2).
 
 import { describe, it, expect, vi } from "vitest";
-import { DEFAULT_RPC_TIMEOUT_MS, openRelaySession, openSession, replyOrNothing } from "../src/core/session.js";
+import { DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
 import { ApiError, selectAdapter } from "../src/core/bridgeApi/index.js";
 
 // ---- fakes -------------------------------------------------------------------
@@ -424,120 +424,5 @@ describe("a reply the browser stopped waiting for", () => {
 
   it("hands a reply that did arrive straight through", async () => {
     await expect(replyOrNothing(Promise.resolve({ branch: "build/x" }))).resolves.toEqual({ branch: "build/x" });
-  });
-});
-
-// ---- the relay adapter -------------------------------------------------------
-// What the connect sequence is still written against until stage 06 gives it a
-// rendezvous of its own: one relay rendezvous per session, opened and closed
-// with it.
-
-class FakeWebSocket {
-  constructor(url) {
-    this.url = url;
-    this.sent = [];
-    this.listeners = {};
-    this.readyState = 1; // OPEN
-    FakeWebSocket.instances.push(this);
-  }
-  addEventListener(type, fn) {
-    (this.listeners[type] ||= []).push(fn);
-  }
-  send(text) {
-    this.sent.push(JSON.parse(text));
-  }
-  close() {
-    if (this.readyState === 3) return;
-    this.readyState = 3; // CLOSED
-    this.emit("close", {});
-  }
-  emit(type, event = {}) {
-    (this.listeners[type] || []).forEach((fn) => fn(event));
-  }
-  serverSend(obj) {
-    this.emit("message", { data: JSON.stringify(obj) });
-  }
-}
-FakeWebSocket.instances = [];
-
-async function overTheRelay(overrides = {}) {
-  FakeWebSocket.instances.length = 0;
-  const opening = openRelaySession({
-    relayUrl: "wss://relay.test",
-    transport: fakeTransport,
-    WebSocketImpl: FakeWebSocket,
-    fetchToken: async () => "tok-1",
-    getPinnedDeviceKey: async (deviceId) => `pk-${deviceId}`,
-    preferDeviceId: "dev-a",
-    ...overrides,
-  });
-  opening.catch(() => {});
-  await tick();
-  const ws = FakeWebSocket.instances.at(-1);
-  ws.emit("open");
-  await tick();
-  const init = ws.sent.find((message) => message.type === "session_init");
-  if (init) ws.serverSend({ type: "session_accept", session_id: init.session_id, envelope: {} });
-  return { opening, ws, init };
-}
-
-describe("openRelaySession", () => {
-  it("authenticates, mints the session for its device and rides the channel it opens", async () => {
-    const { opening, ws, init } = await overTheRelay();
-    const session = await opening;
-
-    expect(ws.url).toBe("wss://relay.test/ws/client");
-    expect(ws.sent[0]).toEqual({ type: "authenticate", token: "tok-1" });
-    expect(init.route_to).toBe("device:dev-a");
-    expect(session.deviceId).toBe("dev-a");
-
-    const peer = fakeCarrier();
-    await session.peer(peer);
-    const reply = session.call("ping", {});
-    await tick();
-    expect(replyTo(peer).method).toBe("ping");
-    answer(peer, { pong: true });
-    await expect(reply).resolves.toEqual({ pong: true });
-    session.close();
-  });
-
-  it("keeps signaling on the relay socket while the channel carries", async () => {
-    const { opening, ws, init } = await overTheRelay();
-    const session = await opening;
-    await session.peer(fakeCarrier());
-
-    const offered = session.call("rtc.offer", { sdp: "v=0" });
-    await tick();
-    const sent = ws.sent.at(-1);
-    expect(sent.type).toBe("e2ee_envelope");
-    expect(sent.session_id).toBe(init.session_id);
-    ws.serverSend({
-      type: "e2ee_envelope",
-      session_id: init.session_id,
-      envelope: { frameFields: { payload: { id: sent.envelope.frameFields.payload.id, ok: true, result: { sdp: "a" } } } },
-    });
-    await expect(offered).resolves.toEqual({ sdp: "a" });
-    session.close();
-  });
-
-  it("closes the relay socket with the session, and leaves none behind a failed open", async () => {
-    const { opening, ws } = await overTheRelay();
-    (await opening).close();
-    expect(ws.readyState).toBe(3);
-
-    const failed = await overTheRelay({ getPinnedDeviceKey: async () => null });
-    await expect(failed.opening).rejects.toThrow(/no pinned transport key/);
-    expect(failed.ws.readyState).toBe(3);
-  });
-
-  it("requires a pinned-key source instead of silently trusting the relay", async () => {
-    await expect(
-      openRelaySession({
-        relayUrl: "wss://relay.test",
-        transport: fakeTransport,
-        WebSocketImpl: FakeWebSocket,
-        fetchToken: async () => "tok",
-      }),
-    ).rejects.toThrow(/getPinnedDeviceKey/);
   });
 });

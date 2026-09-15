@@ -1,19 +1,29 @@
 // @vitest-environment jsdom
-// One session per online device, each with its own offline state. A device that
-// goes unreachable keeps its place — its rows stay in the merge, greyed, and the
-// rest of the account carries on — so the banner only speaks when nothing at all
-// is reachable.
+// One session per device, each live over that device's own direct connection
+// and blocked on its own when that connection cannot be made (spec rule 3). A
+// device that goes keeps its place — its rows stay in the merge, greyed, and
+// the rest of the account carries on — so the account-wide screen only speaks
+// when nothing at all can answer.
+//
+// What is stood in for here is the wire: the rendezvous, the session it mints
+// and the peer link it negotiates. What is real is the policy over them — which
+// machines are opened, what a failure costs that machine, where home is, and
+// when the gate takes the app back.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const relay = vi.hoisted(() => ({ openRelaySession: vi.fn() }));
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDeviceId: vi.fn(() => null) }));
+const wire = vi.hoisted(() => ({ openSession: vi.fn(), openPeerLink: vi.fn() }));
 
 let devices = [];
 
-vi.mock("../src/core/session.js", () => ({
-  openRelaySession: (options) => relay.openRelaySession(options),
+vi.mock("../src/core/rendezvous.js", () => ({
+  createRelayRendezvous: (options) => makeRendezvous(options),
 }));
+vi.mock("../src/core/session.js", () => ({
+  openSession: (options) => wire.openSession(options),
+}));
+vi.mock("../src/core/peerLink.js", () => ({ openPeerLink: (options) => wire.openPeerLink(options) }));
 const account = vi.hoisted(() => ({ fetchDevices: null }));
 vi.mock("../src/api.js", () => ({
   fetchGatewayToken: async () => "tok",
@@ -23,26 +33,14 @@ vi.mock("../src/api.js", () => ({
 vi.mock("../src/terminal/manager.js", () => ({
   followTerminalDevice: (...args) => terminals.followTerminalDevice(...args),
   terminalDeviceId: (...args) => terminals.terminalDeviceId(...args),
+  provideTerminalSessions: (mint) => {
+    mints.provided = mint;
+  },
   // No terminal tab mounts in this suite; the socket and its status are still
   // answered, so a surface that asked for one would get a plain no.
   terminalManager: () => null,
   subscribeTerminalStatus: () => () => {},
 }));
-// No peer path in jsdom unless a case stands one up: `peer.open` is what the
-// upgrade gets, and the default refuses the way a browser with no RTC would.
-const peer = vi.hoisted(() => ({
-  open: async () => {
-    throw new Error("no peer path in jsdom");
-  },
-}));
-vi.mock("../src/core/peerLink.js", () => ({ openPeerLink: (...args) => peer.open(...args) }));
-
-/** A direct connection as the connection layer uses it: two carriers that can
- *  say they closed, and a way to close the pair. */
-const fakePeerLink = () => {
-  const carrier = () => ({ onClose: vi.fn() });
-  return { app: carrier(), term: carrier(), close: vi.fn() };
-};
 // The route render is not what this file is about; the shell still runs, and
 // the gate handing the app back is one of the things this file is about.
 const routes = vi.hoisted(() => ({ renderInbox: vi.fn() }));
@@ -54,17 +52,22 @@ vi.mock("../src/core/composeView.js", async (importOriginal) => ({
   flushCaptures: (...args) => captures.flush(...args),
 }));
 const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
+const mints = vi.hoisted(() => ({ provided: null }));
 
 const { App, resetApplication, rememberSelectedDevice } = await import("../src/app.js");
 const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts } = await import(
   "../src/core/deviceContexts.js"
 );
-const { chooseCreationDevice, goOffline, openDeviceSessions, resume, retireDevice, syncHome } = await import(
-  "../src/connection.js"
-);
-const { initDevicePicker, markDeviceOffline, markDeviceOnline, paintDevicePicker } = await import(
-  "../src/devices.js"
-);
+const {
+  chooseCreationDevice,
+  connectDevice,
+  deviceWentAway,
+  goOffline,
+  openDeviceSessions,
+  retireDevice,
+  syncHome,
+} = await import("../src/connection.js");
+const { initDevicePicker, paintDevicePicker } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, deviceUnreachableText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
@@ -77,18 +80,22 @@ const online = (id, name) => ({ id, name, status: "online", fingerprint: `${id}-
 /** The same paired device, as the account lists it while its bridge is down. */
 const away = (id, name) => ({ ...online(id, name), status: "offline" });
 
-const openedFor = (deviceId) => opened.filter((options) => options.preferDeviceId === deviceId);
+/** Every time this machine was asked for a session. */
+const openedFor = (deviceId) => opened.filter((options) => options.deviceId === deviceId);
 
 /** How many times this machine's bridge has been asked for its board. */
 const boardReads = (deviceId) =>
   (lastSession(deviceId)?.call.mock.calls || []).filter(([method]) => method === "board.list").length;
 
 let opened = [];
-let unreachable = new Set();
-// Machines the relay offers a key for that is not the key this account pinned.
+let unreachable = new Set(); // machines whose rendezvous will not find their bridge
+let unlinkable = new Set(); // machines whose direct connection will not open
+// Machines offering a key that is not the key this account pinned.
 let impostors = new Set();
 let slowMs = new Map();
 const handedOut = new Map(); // deviceId → the sessions that device was given, newest last
+const rendezvousFor = new Map(); // deviceId → the one rendezvous this layer made for it
+const linksFor = new Map(); // deviceId → the direct connection it is riding
 
 const lastSession = (deviceId) => (handedOut.get(deviceId) || []).at(-1);
 
@@ -97,9 +104,42 @@ const lastSession = (deviceId) => (handedOut.get(deviceId) || []).at(-1);
 // predates it does. Unnamed machines answer at once.
 const greetings = new Map(); // deviceId → () => Promise
 
+/** One machine's rendezvous, as the connection layer holds it: minting is the
+ *  whole of what this file asks of it, and whether it is open. */
+function makeRendezvous({ deviceId }) {
+  const rendezvous = {
+    deviceId,
+    open: vi.fn(async () => {}),
+    mint: vi.fn(async () => ({ sessionId: `sess-${deviceId}`, sessionKeyB64: "key", deviceId })),
+    signalCarrier: vi.fn(() => ({ onClose: vi.fn(), close: vi.fn() })),
+    isOpen: () => rendezvous.opened,
+    onClosed: () => () => {},
+    opened: true,
+    close: vi.fn(() => {
+      rendezvous.opened = false;
+    }),
+  };
+  rendezvousFor.set(deviceId, rendezvous);
+  return rendezvous;
+}
+
+/** A direct connection as the connection layer uses it: two channels that can
+ *  say they closed, and a way to close the pair. */
+function fakePeerLink(deviceId) {
+  const carrier = () => {
+    const listeners = new Set();
+    return { onClose: (fn) => listeners.add(fn), drop: () => listeners.forEach((fn) => fn()) };
+  };
+  const link = { app: carrier(), term: carrier(), close: vi.fn() };
+  linksFor.set(deviceId, link);
+  return link;
+}
+
 /** A bridge session as the connection layer uses it: something to call, a
- *  carrier to hand over, and a way to say it is gone. */
-function fakeSession(deviceId) {
+ *  channel to ride, and a way to say it is gone. Taken off its channel — by the
+ *  channel closing, or by the layer handing it back — it reports the loss
+ *  exactly as the real session does: nothing else ever carried it. */
+function fakeSession(deviceId, onLost = () => {}) {
   const session = {
     deviceId,
     call: vi.fn(async (method) => {
@@ -110,12 +150,19 @@ function fakeSession(deviceId) {
       // all: each one keeps a checkout of the project both machines name.
       if (method === "workspace.list")
         return { workspaces: [{ workspace_id: `${deviceId}-workspace`, project_id: "proj-1", title: "Work", state: "running" }] };
-      return {};
+      return { deviceId };
     }),
-    peer: vi.fn(),
+    peer: vi.fn((carrier) => {
+      if (!carrier && !session.closed) onLost();
+    }),
+    fail: vi.fn(),
     onPush: () => () => {},
     onCarrier: vi.fn(),
-    close: vi.fn(),
+    reattachSignaling: vi.fn(async () => {}),
+    closed: false,
+    close: vi.fn(() => {
+      session.closed = true; // a session its client closed reports nothing more
+    }),
   };
   handedOut.set(deviceId, [...(handedOut.get(deviceId) || []), session]);
   return session;
@@ -135,16 +182,20 @@ beforeEach(() => {
   App.gated = false;
   App.poll = null;
   App.viewDispose = null;
+  globalThis.RTCPeerConnection = function RTCPeerConnectionStub() {};
   routes.renderInbox.mockClear();
   // The app is entered: the gate is listening for the account running out of
   // machines to answer, which is what holds it and what hands it back.
   holdAppWhileNoDeviceAnswers();
   opened = [];
   unreachable = new Set();
+  unlinkable = new Set();
   impostors = new Set();
   slowMs = new Map();
   greetings.clear();
   handedOut.clear();
+  rendezvousFor.clear();
+  linksFor.clear();
   feed = null;
   devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
   App.devices = devices;
@@ -152,22 +203,26 @@ beforeEach(() => {
   App.route = { name: "inbox" };
   terminals.followTerminalDevice.mockClear();
   captures.flush.mockClear();
-  peer.open = async () => {
-    throw new Error("no peer path in jsdom");
-  };
   account.fetchDevices = vi.fn(async () => devices);
-  relay.openRelaySession.mockReset();
-  relay.openRelaySession.mockImplementation(async (options) => {
+  wire.openSession.mockReset();
+  wire.openSession.mockImplementation(async (options) => {
     opened.push(options);
-    const deviceId = options.preferDeviceId;
+    const deviceId = options.deviceId;
     if (impostors.has(deviceId))
-      throw Object.assign(new Error("relay-supplied device key does not match the api-pinned key — possible tampering"), {
+      throw Object.assign(new Error("no pinned transport key for device — refusing to open a session"), {
         securityCritical: true,
       });
-    if (unreachable.has(deviceId)) throw new Error(`${deviceId} is unreachable`);
+    if (unreachable.has(deviceId)) throw new Error("device did not answer");
     const wait = slowMs.get(deviceId);
     if (wait) await new Promise((done) => setTimeout(done, wait));
-    return fakeSession(deviceId);
+    return fakeSession(deviceId, options.onLost);
+  });
+  wire.openPeerLink.mockReset();
+  wire.openPeerLink.mockImplementation(async ({ signal, onConnected }) => {
+    const { deviceId } = await signal("rtc.offer", { sdp: "v=0" });
+    if (unlinkable.has(deviceId)) throw Object.assign(new Error("no channels"), { blockedReason: "timeout" });
+    await onConnected();
+    return fakePeerLink(deviceId);
   });
   unsubscribe = subscribeFeed((snapshot) => (feed = snapshot));
 });
@@ -203,10 +258,17 @@ const liveIds = () => liveContexts().map((context) => context.deviceId);
  *  device takes it in hand as it lands, if the account calls it home. */
 async function connectEveryDevice() {
   const sessions = openDeviceSessions();
-  await sessions.first;
+  await sessions.first.catch(() => {});
   const contexts = await sessions.settled;
   await flush();
   return contexts;
+}
+
+/** A live machine whose direct connection goes: the channels close, which is
+ *  the only signal this layer ever had that a live machine has gone. */
+async function loseTheLink(deviceId) {
+  linksFor.get(deviceId).app.drop();
+  await flush();
 }
 
 describe("per-device connections", () => {
@@ -248,16 +310,26 @@ describe("per-device connections", () => {
     expect(boardReads("dev-a")).toBeGreaterThan(0);
   });
 
-  it("keeps a lost device known and offline while another device answers", async () => {
+  it("gives every machine one rendezvous, and closes it once the channels carry", async () => {
+    await connectEveryDevice();
+
+    expect([...rendezvousFor.keys()]).toEqual(["dev-a", "dev-b"]);
+    for (const rendezvous of rendezvousFor.values()) expect(rendezvous.close).toHaveBeenCalled();
+    // And the terminals' mint is this layer's, on the same rendezvous.
+    expect(mints.provided).toBeTypeOf("function");
+    await mints.provided("dev-a");
+    expect(rendezvousFor.get("dev-a").mint).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a lost device known and blocked while another device answers", async () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
-    unreachable.add("dev-a");
 
-    goOffline("dev-a");
-    await flush();
+    await loseTheLink("dev-a");
 
     expect(contextFor("dev-a").offline).toBe(true);
+    expect(contextFor("dev-a").blocked).toBe("lost");
     expect(knownContexts().map((context) => context.deviceId)).toEqual(["dev-a", "dev-b"]);
     expect(liveIds()).toEqual(["dev-b"]);
     // Its rows are still the account's rows — greyed by the rail, not removed.
@@ -269,33 +341,22 @@ describe("per-device connections", () => {
     expect(homeContext().offline).toBe(true);
   });
 
-  // The relay says a bridge went before that session is lost, so the account
-  // lists it offline first — and with nothing else online there is no home left
-  // to name. Every device the app holds is still held, marked offline and
-  // stamped with when it went: the composer queues, the views freeze, and
-  // nothing is thrown away.
-  it("says the last device is offline, with no home left to name", async () => {
+  // Rule 3 is per device and nothing else: a machine nothing could reach is
+  // blocked, and the account carries on over the ones that answered.
+  it("does not hold the app for a blocked device while another one is live", async () => {
+    unlinkable.add("dev-b");
+
     await connectEveryDevice();
-    unreachable.add("dev-a");
-    unreachable.add("dev-b");
 
-    markDeviceOffline("dev-b"); // the relay tells us each bridge went…
-    goOffline("dev-b"); // …and each session is lost straight after
-    markDeviceOffline("dev-a");
-    goOffline("dev-a");
-    await flush();
-
-    expect(homeContext()).toBe(null);
-    expect(contextFor("dev-a").offline).toBe(true);
-    expect(contextFor("dev-a").offlineSince).toBeTypeOf("number");
-    expect(held()).toBe(true);
+    expect(liveIds()).toEqual(["dev-a"]);
+    expect(contextFor("dev-b").blocked).toBe("timeout");
+    expect(held()).toBe(false);
   });
 
   // The banner's silence is only half the answer: the rail has to keep showing
   // the lost device's work, greyed, or its rows would simply vanish. The grey
   // is not news the feed carries — the rows themselves do not change when a
-  // device goes — so the rail hears it from the registry and repaints at once,
-  // rather than waiting out a poll that under push is 60 seconds long.
+  // device goes — so the rail hears it from the registry and repaints at once.
   it("keeps painting a lost device's rows, greyed the moment it goes", async () => {
     await connectEveryDevice();
     mountInboxList();
@@ -305,62 +366,15 @@ describe("per-device connections", () => {
       [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
     expect(rowOn("dev-a")).toBeTruthy();
 
-    unreachable.add("dev-a");
-    goOffline("dev-a");
-    await flush();
+    await loseTheLink("dev-a");
 
     expect(rowOn("dev-a").classList.contains("inbox-offline")).toBe(true);
     expect(rowOn("dev-b").classList.contains("inbox-offline")).toBe(false);
-  });
-
-  // The relay is the first to know a bridge went: it pushes device_offline to
-  // every other live session while the lost session is still sitting there
-  // waiting on a call that will time out. That push is the account's own word
-  // for that machine, so it is what takes the machine offline here — its rows
-  // grey on the next paint, a surface open on it gets its strip, and the socket
-  // that waits for its device_key is parked at once, rather than half a minute
-  // later when some poll finally fails.
-  it("takes a device offline the moment the relay says its bridge went", async () => {
-    await connectEveryDevice();
-    mountInboxList();
-    startFeed(60000);
-    await flush();
-    const rowOn = (deviceId) =>
-      [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
-    unreachable.add("dev-a");
-    const asked = openedFor("dev-a").length;
-
-    markDeviceOffline("dev-a");
-    await flush();
-
-    expect(contextFor("dev-a").offline).toBe(true);
-    expect(contextFor("dev-a").offlineSince).toBeTypeOf("number");
-    expect(rowOn("dev-a").classList.contains("inbox-offline")).toBe(true);
-    expect(rowOn("dev-b").classList.contains("inbox-offline")).toBe(false);
-    // And it is already being asked for again, on the socket that hears that
-    // bridge's key the moment it is back.
-    expect(openedFor("dev-a").length).toBe(asked + 1);
-    expect(openedFor("dev-a").at(-1).waitForDevice).toBe(true);
-    expect(held()).toBe(false); // dev-b still answers
-  });
-
-  // The same push about a machine this client holds nothing for — one paired
-  // elsewhere, or one already let go of — is news about nobody.
-  it("does nothing with a device_offline for a machine it holds nothing for", async () => {
-    await connectEveryDevice();
-    const asked = opened.length;
-
-    markDeviceOffline("dev-z");
-    await flush();
-
-    expect(contextFor("dev-z")).toBe(null);
-    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
-    expect(opened.length).toBe(asked);
   });
 
   // And it comes back the same way: a device that answers again ungreys its
-  // rows without waiting for one to move.
-  it("ungreys a device's rows the moment it answers again", async () => {
+  // rows without waiting for anything to move.
+  it("ungreys a device's rows the moment a retry lands it", async () => {
     await connectEveryDevice();
     mountInboxList();
     startFeed(60000);
@@ -368,26 +382,41 @@ describe("per-device connections", () => {
     const rowOn = (deviceId) =>
       [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
 
-    unreachable.add("dev-a");
-    goOffline("dev-a");
-    await flush();
+    await loseTheLink("dev-a");
     expect(rowOn("dev-a").classList.contains("inbox-offline")).toBe(true);
 
-    unreachable.delete("dev-a");
-    await resume("dev-a");
+    await connectDevice("dev-a");
     await flush();
 
     expect(rowOn("dev-a").classList.contains("inbox-offline")).toBe(false);
+    expect(contextFor("dev-a").blocked).toBe(null);
+  });
+
+  // A machine that could not be reached is not asked for again on a cadence:
+  // there is nothing under it to fall back to and nothing that would change
+  // between one try and the next (rule 3).
+  it("does not dial a blocked machine again until a reader or the account asks", async () => {
+    unlinkable.add("dev-b");
+    await connectEveryDevice();
+    const dialled = openedFor("dev-b").length;
+
+    await openDeviceSessions().settled;
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(openedFor("dev-b")).toHaveLength(dialled);
+
+    unlinkable.delete("dev-b");
+    await connectDevice("dev-b");
+    await flush();
+
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
   });
 
   it("says every device is offline once the last one goes", async () => {
     await connectEveryDevice();
-    unreachable.add("dev-a");
-    unreachable.add("dev-b");
 
-    goOffline("dev-a");
-    goOffline("dev-b");
-    await flush();
+    await loseTheLink("dev-a");
+    await loseTheLink("dev-b");
 
     expect(held()).toBe(true);
     expect(waitingNote()).toContain(allDevicesOfflineText());
@@ -401,10 +430,8 @@ describe("per-device connections", () => {
     devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     await connectEveryDevice();
-    unreachable.add("dev-a");
 
-    goOffline("dev-a");
-    await flush();
+    await loseTheLink("dev-a");
 
     expect(held()).toBe(true);
     expect(waitingNote()).toContain(allDevicesOfflineText());
@@ -414,10 +441,8 @@ describe("per-device connections", () => {
     devices = [online("dev-a", "Laptop")];
     App.devices = devices;
     await connectEveryDevice();
-    unreachable.add("dev-a");
 
-    goOffline("dev-a");
-    await flush();
+    await loseTheLink("dev-a");
 
     expect(held()).toBe(true);
     expect(waitingHeading()).toBe("Waiting for your device");
@@ -426,9 +451,7 @@ describe("per-device connections", () => {
 
   // Every surface is about a machine, so an account with none has nothing to
   // stand on: the gate takes the app back rather than leaving a dead route
-  // under a banner. The view goes with it — its poll and its own teardown —
-  // and nothing is started to watch for a device, because every device is
-  // already being asked for.
+  // under a banner. The view goes with it — its poll and its own teardown.
   it("holds the app on the waiting screen when the last device goes", async () => {
     await connectEveryDevice();
     startFeed(60000);
@@ -437,12 +460,9 @@ describe("per-device connections", () => {
     const viewDispose = vi.fn();
     App.poll = poll;
     App.viewDispose = viewDispose;
-    unreachable.add("dev-a");
-    unreachable.add("dev-b");
 
-    goOffline("dev-a");
-    goOffline("dev-b");
-    await flush();
+    await loseTheLink("dev-a");
+    await loseTheLink("dev-b");
 
     expect(held()).toBe(true);
     // Two machines are listed under it, and either of them hands the app back.
@@ -456,19 +476,13 @@ describe("per-device connections", () => {
   });
 
   // The screen's foot is one line about what the app is doing and the two things
-  // a reader can do about it. It was no row at all — nothing styles a bare
-  // `.row`, so the ⟳ was pinned against the frame and the buttons crowded the
-  // sentence, and the button's inline `margin-left:auto` did nothing to an
-  // element that was never in a flex row. It is a row now, and says so.
+  // a reader can do about it.
   it("lays the waiting screen's foot out as one row", async () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
-    unreachable.add("dev-a");
-    unreachable.add("dev-b");
-    goOffline("dev-a");
-    goOffline("dev-b");
-    await flush();
+    await loseTheLink("dev-a");
+    await loseTheLink("dev-b");
     expect(held()).toBe(true);
 
     const foot = document.getElementById("watchmsg").parentElement;
@@ -479,19 +493,15 @@ describe("per-device connections", () => {
   });
 
   // "Retry now" starts the waiting screen polling for a device. A machine that
-  // comes back some other way — a resume landing through the hold listener —
-  // hands the app straight back, and the poll left armed re-enters the app over
-  // a reader already standing in it: the rail, the toolbar and the route are
-  // all built again, and whatever was mounted is dropped.
+  // comes back some other way — a retry landing through the hold listener —
+  // hands the app straight back, and the poll left armed would re-enter the app
+  // over a reader already standing in it.
   it("stops the waiting screen's poll when a device lands another way", async () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
-    unreachable.add("dev-a");
-    unreachable.add("dev-b");
-    goOffline("dev-a");
-    goOffline("dev-b");
-    await flush();
+    await loseTheLink("dev-a");
+    await loseTheLink("dev-b");
     expect(held()).toBe(true);
 
     devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
@@ -500,11 +510,10 @@ describe("per-device connections", () => {
     await flush();
     routes.renderInbox.mockClear();
 
-    // The bridge comes back, and its own resume is what lands it.
-    unreachable.delete("dev-a");
+    // The bridge comes back, and a retry on that machine is what lands it.
     devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
-    await resume("dev-a");
+    await connectDevice("dev-a");
     await flush();
     expect(held()).toBe(false);
     expect(routes.renderInbox).toHaveBeenCalledTimes(1);
@@ -522,16 +531,12 @@ describe("per-device connections", () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
-    unreachable.add("dev-a");
-    unreachable.add("dev-b");
-    goOffline("dev-a");
-    goOffline("dev-b");
-    await flush();
+    await loseTheLink("dev-a");
+    await loseTheLink("dev-b");
     expect(held()).toBe(true);
     routes.renderInbox.mockClear();
 
-    unreachable.delete("dev-a");
-    await resume("dev-a");
+    await connectDevice("dev-a");
     await flush();
 
     expect(held()).toBe(false);
@@ -558,17 +563,13 @@ describe("per-device connections", () => {
     expect(liveIds()).toEqual([]);
   });
 
-  // The RTCPeerConnection is the app's, not the registry's: a device let go of
-  // through the registry alone would leave its connection open for the life of
-  // the tab, with both streams still pointed down it.
-  it("closes the direct connection a revoked device was riding", async () => {
-    const link = fakePeerLink();
-    peer.open = async () => link;
-    // The upgrade only runs where a browser could hold one; jsdom has no RTC.
-    globalThis.RTCPeerConnection = function RTCPeerConnectionStub() {};
+  // The RTCPeerConnection and the rendezvous are the app's, not the registry's:
+  // a device let go of through the registry alone would leave both open for the
+  // life of the tab, with both streams still pointed down the connection.
+  it("closes the direct connection and the rendezvous a revoked device was riding", async () => {
     await connectEveryDevice();
-    await flush();
     const session = lastSession("dev-a");
+    const link = linksFor.get("dev-a");
     expect(contextFor("dev-a").peerLink).toBe(link);
 
     retireDevice("dev-a");
@@ -576,44 +577,29 @@ describe("per-device connections", () => {
 
     expect(link.close).toHaveBeenCalledTimes(1);
     expect(session.peer).toHaveBeenLastCalledWith(null);
+    expect(session.close).toHaveBeenCalled();
+    expect(rendezvousFor.get("dev-a").close).toHaveBeenCalled();
     expect(contextFor("dev-a")).toBe(null);
   });
 
-  // A device whose very first connect failed has no context to keep its backoff
-  // on, so it is kept off to the side. Revoking that device has to reach it
-  // there too: left armed, the timer keeps asking the relay for a machine the
-  // account no longer has.
-  it("drops the backoff of a device revoked before it ever connected", async () => {
-    devices = [online("dev-a", "Laptop"), online("dev-c", "Studio")];
-    App.devices = devices;
-    unreachable.add("dev-c");
-    await connectEveryDevice();
-    const attempts = openedFor("dev-c").length;
-    expect(attempts).toBeGreaterThan(0);
-
-    retireDevice("dev-c");
-    await vi.advanceTimersByTimeAsync(5000);
-
-    expect(openedFor("dev-c").length).toBe(attempts);
-  });
-
-  // The key the relay offered for this machine is not the key the account
-  // pinned, so the machine answering is not the one that was paired. Asking
-  // again every few seconds would offer the same pinned key to the same
-  // impostor and tell nobody: this one error stops the client dead.
+  // The key offered for this machine is not the key the account pinned, so the
+  // machine answering is not the one that was paired. Asking again every few
+  // seconds would offer the same pinned key to the same impostor and tell
+  // nobody: this one error stops the client dead.
   it("stops for good on a device whose key is not the one this account pinned", async () => {
     impostors.add("dev-b");
 
     await connectEveryDevice();
 
     expect(liveIds()).toEqual(["dev-a"]); // the account's other machine is untouched
-    // A stop is not an outage: nothing was stood up for it to be offline on.
-    expect(contextFor("dev-b")).toBeNull();
+    // It is blocked like any other machine nothing could reach — and barred.
+    expect(contextFor("dev-b").blocked).toBe("refused");
     const dialled = openedFor("dev-b").length;
     expect(dialled).toBe(1);
 
-    await vi.advanceTimersByTimeAsync(60000); // no backoff was scheduled
-    await openDeviceSessions().settled; // and the waiting screen's poll does not re-dial it
+    await vi.advanceTimersByTimeAsync(60000);
+    await openDeviceSessions().settled;
+    await connectDevice("dev-b").catch(() => {});
     expect(openedFor("dev-b")).toHaveLength(dialled);
   });
 
@@ -621,31 +607,26 @@ describe("per-device connections", () => {
     await connectEveryDevice();
     impostors.add("dev-a");
 
-    goOffline("dev-a");
-    await flush();
+    await loseTheLink("dev-a");
+    await connectDevice("dev-a").catch(() => {});
     const dialled = openedFor("dev-a").length;
 
     await vi.advanceTimersByTimeAsync(60000);
+    await connectDevice("dev-a").catch(() => {});
 
     expect(openedFor("dev-a")).toHaveLength(dialled);
     expect(contextFor("dev-a").offline).toBe(true);
   });
 
-  it("reopens only the device resume names, waiting for it, and leaves the other session alone", async () => {
+  it("reopens only the device a retry names, and leaves the other session alone", async () => {
     await connectEveryDevice();
     const lost = lastSession("dev-a");
     const other = lastSession("dev-b");
-    unreachable.add("dev-a");
-    goOffline("dev-a");
-    await flush();
-    unreachable.delete("dev-a");
 
-    await resume("dev-a");
+    await loseTheLink("dev-a");
+    await connectDevice("dev-a");
     await flush();
 
-    const reopened = openedFor("dev-a").at(-1);
-    expect(reopened.preferDeviceId).toBe("dev-a");
-    expect(reopened.waitForDevice).toBe(true);
     expect(contextFor("dev-a").offline).toBe(false);
     expect(contextFor("dev-a").session).not.toBe(lost);
     // Nothing was asked of the device that never left.
@@ -655,59 +636,18 @@ describe("per-device connections", () => {
     expect(homeContext()).toBe(contextFor("dev-a")); // and it is home again
   });
 
-  // A device that has never answered here has no context to keep a resume off,
-  // so the account opening every online device can race the resume that is
-  // already waiting for it. Whichever lands second is nobody's.
-  it("hands back a resumed session for a device that came back another way", async () => {
-    unreachable.add("dev-b");
-    await connectEveryDevice(); // dev-b refused, and is kept after on a backoff
-    unreachable.delete("dev-b");
-    slowMs.set("dev-b", 1000);
-    await vi.advanceTimersByTimeAsync(2000); // its resume is waiting on the relay
-    slowMs.delete("dev-b");
-
-    await openDeviceSessions().settled; // a connect that does not wait gets there first
-    const live = lastSession("dev-b");
-    await vi.advanceTimersByTimeAsync(1000);
-
-    const late = lastSession("dev-b");
-    expect(late).not.toBe(live);
-    expect(late.close).toHaveBeenCalled(); // nothing needs it: the device is live
-    expect(contextFor("dev-b").session).toBe(live);
-    expect(contextFor("dev-b").offline).toBe(false);
-  });
-
-  // A bridge that drops is heard twice: its own session is lost, and the relay
-  // tells every other live session it went and again when it is back. The
-  // resume already waiting on that device owns it — opening a second socket
-  // costs another handshake, another greeting and a session for the bin.
-  it("leaves a device that is already resuming to its resume", async () => {
-    await connectEveryDevice();
-    slowMs.set("dev-a", 1000); // the resume the relay's word starts waits on it
-    markDeviceOffline("dev-a"); // the relay says that bridge went…
-    goOffline("dev-a"); // …and its own session is lost straight after
-    await flush();
-    const whileWaiting = openedFor("dev-a").length;
-
-    markDeviceOnline("dev-a"); // the other session hears that bridge come back
-    await flush();
-
-    expect(openedFor("dev-a")).toHaveLength(whileWaiting);
-
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(contextFor("dev-a").offline).toBe(false);
-    expect(contextFor("dev-a").session).toBe(lastSession("dev-a"));
-    expect(lastSession("dev-a").close).not.toHaveBeenCalled();
-  });
-
-  it("connects a device that comes online after boot, without a reload", async () => {
+  // The account's list is all the gate has to go on, and a machine that came
+  // online after boot is opened without a reload.
+  it("connects a device that comes online after boot", async () => {
     devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     await connectEveryDevice();
     expect(liveIds()).toEqual(["dev-a"]);
     captures.flush.mockClear(); // home already took the queue when it came up
 
-    markDeviceOnline("dev-b");
+    devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
+    App.devices = devices;
+    await openDeviceSessions().settled;
     await flush();
 
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
@@ -718,30 +658,9 @@ describe("per-device connections", () => {
     expect(captures.flush).not.toHaveBeenCalled();
   });
 
-  // Paired in another tab: the relay pushes that device's key before this tab's
-  // list has ever heard of it. Reading the list is only half of joining it —
-  // without the open it shows in the picker as online and contributes no rows
-  // until it reconnects.
-  it("connects a device paired in another tab, once the list has caught up", async () => {
-    devices = [online("dev-a", "Laptop")];
-    App.devices = devices;
-    await connectEveryDevice();
-    expect(liveIds()).toEqual(["dev-a"]);
-
-    devices = [online("dev-a", "Laptop"), online("dev-c", "Studio")];
-    markDeviceOnline("dev-c");
-    await flush();
-
-    expect(liveIds()).toEqual(["dev-a", "dev-c"]);
-    expect(contextFor("dev-c").session).toBe(lastSession("dev-c"));
-  });
-
-  // The api's presence is a snapshot, and a bridge that came back since it was
-  // taken is listed offline until the account catches up. While something is
-  // open the relay says so itself — it pushes that bridge's key and the push
-  // opens it — but an account holding nothing has nobody to hear that from, and
-  // the waiting screen would re-read the same stale list every three seconds
-  // for a machine that is answering.
+  // The api derives presence from a heartbeat, so a bridge that came back since
+  // the last one is listed offline until the account catches up. An account
+  // holding nothing has nothing else to try, so it asks anyway — once.
   it("dials a machine the account still calls offline when there is nothing else to try", async () => {
     devices = [away("dev-a", "Laptop")];
     App.devices = devices;
@@ -750,15 +669,9 @@ describe("per-device connections", () => {
 
     expect(contexts.map((context) => context.deviceId)).toEqual(["dev-a"]);
     expect(liveIds()).toEqual(["dev-a"]);
-    // Fast: a stale list is a guess, and the app must not park on one.
     expect(openedFor("dev-a")).toHaveLength(1);
-    expect(openedFor("dev-a")[0].waitForDevice).toBe(false);
   });
 
-  // One dial is the guess; what keeps asking after it is the backoff the
-  // refusal starts, which parks on the relay for exactly that bridge. Guessing
-  // again every three seconds would open a second socket for a machine already
-  // being waited for.
   it("guesses at a machine the account calls offline once, not on every re-read", async () => {
     devices = [away("dev-a", "Laptop")];
     App.devices = devices;
@@ -770,28 +683,29 @@ describe("per-device connections", () => {
 
     expect(guessed).toBe(1);
     expect(openedFor("dev-a")).toHaveLength(1);
+    expect(contextFor("dev-a").blocked).toBe("unreached");
   });
 
-  // A machine that answers is marked online by the relay's own key push while
-  // its socket is still opening, and a machine newly online is one this layer
-  // opens: the guess must not be answered by a second handshake at itself.
-  it("does not open a second socket at the machine it is already dialling", async () => {
+  // A machine already being dialled must not be dialled again at itself: one
+  // connect in flight is one connect, whoever asks for it.
+  it("does not open a second session at the machine it is already dialling", async () => {
     devices = [away("dev-a", "Laptop")];
     App.devices = devices;
     slowMs.set("dev-a", 20);
 
     const sessions = openDeviceSessions();
-    markDeviceOnline("dev-a"); // the relay's key push lands mid-handshake
+    const pressedRetry = connectDevice("dev-a"); // a reader, mid-handshake
     await vi.advanceTimersByTimeAsync(20);
     await sessions.settled;
+    await pressedRetry;
     await flush();
 
     expect(openedFor("dev-a")).toHaveLength(1);
     expect(contextFor("dev-a").session).toBe(lastSession("dev-a"));
   });
 
-  // Another machine is answering, so the stale one is not a guess anybody has
-  // to make: that session hears the relay say it is back and opens it then.
+  // Another machine is answering, so the stale one is nobody's guess to make:
+  // the presence poll opens it when the account says it is back.
   it("leaves a machine the account calls offline alone while another one answers", async () => {
     devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
@@ -839,12 +753,9 @@ describe("per-device connections", () => {
   });
 
   // The picker is not the only way home moves: the picked device landing after
-  // another answered first moves it too, and so does a remembered device coming
-  // back mid-session. The terminal socket reads the device it wants only when it
-  // connects, and a healthy socket never reconnects on its own — so whichever
-  // way home moved, it has to be dropped, or the shells keep typing at the
-  // machine the user just left.
-  it("moves the terminal socket with home, however home moved", async () => {
+  // another answered first moves it too. The terminals ride the home device's
+  // channel, so whichever way home moved they have to be sent looking again.
+  it("moves the terminals with home, however home moved", async () => {
     App.selectedDeviceId = "dev-b";
     slowMs.set("dev-b", 20);
     const sessions = openDeviceSessions();
@@ -860,21 +771,24 @@ describe("per-device connections", () => {
   });
 
   // Home is not a pointer anybody holds: it is what the account list and the
-  // pick say. The relay saying the picked bridge went is news about home, so
+  // pick say. The picked machine's bridge going is news about home, so
   // everything that follows home — the terminals, the picker, the surfaces
   // about here — moves to the device that can still answer.
-  it("home falls back to the first online device when the picked one is marked offline by the relay", async () => {
+  it("home falls back to the first online device when the picked one goes away", async () => {
     App.selectedDeviceId = "dev-b";
     await connectEveryDevice();
     expect(homeContext()?.session).toBe(lastSession("dev-b"));
     terminals.followTerminalDevice.mockClear();
 
-    unreachable.add("dev-b");
-    markDeviceOffline("dev-b"); // another live session hears that bridge go
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    deviceWentAway("dev-b");
     await flush();
 
     expect(homeContext()).toBe(contextFor("dev-a"));
     expect(homeContext().offline).toBe(false); // the device home moved to is answering
+    // Away is not blocked: nothing here failed to reach it, its bridge has gone.
+    expect(contextFor("dev-b").blocked).toBe(null);
     expect(terminals.followTerminalDevice).toHaveBeenCalled();
   });
 
@@ -897,11 +811,9 @@ describe("per-device connections", () => {
   });
 
   // The account has one control for home — Settings → Creation device — and it
-  // is the only writer of the pick. It remembers the machine and takes it in
-  // hand; it opens nothing, because every device that can answer is already up.
-  // The picker is a filter over the account's list — which machines the rail
-  // shows — and says nothing about where creation goes. Repainting it on a home
-  // move shut it in the reader's hand for nothing.
+  // is the only writer of the pick. The picker is a filter over the account's
+  // list and says nothing about where creation goes, so a home move must not
+  // shut it in the reader's hand.
   it("leaves an open device picker open when home moves", async () => {
     await connectEveryDevice();
     initDevicePicker();
@@ -930,10 +842,9 @@ describe("per-device connections", () => {
 
   // Home is what every surface about "here" is about: the composer's
   // destinations, the toolbar's projects, the capture decision page, the agent
-  // rail. Each of them reads the home device's slice out of a snapshot as it
-  // arrives and keeps it, so a home move that delivers nothing leaves them all
-  // on the device the user just moved away from until some device's next tick —
-  // a full minute while pushes are carrying the news.
+  // rail. Each reads the home device's slice out of a snapshot as it arrives
+  // and keeps it, so a home move that delivers nothing leaves them all on the
+  // device the user just moved away from.
   it("delivers a snapshot when home moves, so the surfaces about here follow", async () => {
     await connectEveryDevice();
     startFeed(60000);
@@ -973,41 +884,51 @@ describe("per-device connections", () => {
     captures.flush.mockClear();
     rememberSelectedDevice("dev-b"); // creation is to go to the device that is away
 
-    markDeviceOnline("dev-b"); // …and the relay says it is back
+    devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
+    App.devices = devices;
+    await openDeviceSessions().settled;
     await flush();
 
     expect(homeContext()?.session).toBe(lastSession("dev-b"));
     expect(captures.flush).toHaveBeenCalledTimes(1);
   });
 
-  // A device that refused is kept after on a backoff. When it answers some
-  // other way — the relay says it is back and it joins — that timer is still
-  // armed, and it fires at a device that is already live: another handshake,
-  // another greeting, and a session for the bin.
-  it("drops a resume still scheduled for a device that landed another way", async () => {
-    unreachable.add("dev-b");
-    await connectEveryDevice();
-    unreachable.delete("dev-b");
-
-    await openDeviceSessions().settled;
-    const landed = openedFor("dev-b").length;
-    await vi.advanceTimersByTimeAsync(30000);
-
-    expect(openedFor("dev-b")).toHaveLength(landed);
-    expect(contextFor("dev-b").session).toBe(lastSession("dev-b"));
-  });
-
   it("pauses only the calls of the device that went offline", async () => {
     await connectEveryDevice();
     const lost = openedFor("dev-a").at(-1);
     const kept = openedFor("dev-b").at(-1);
-    unreachable.add("dev-a");
 
-    lost.onLost(); // the session says it is gone, the way relayLink does
-    await flush();
+    await loseTheLink("dev-a");
 
     expect(lost.isPaused()).toBe(true);
     expect(kept.isPaused()).toBe(false);
     expect(contextFor("dev-b").offline).toBe(false);
+  });
+
+  // What was waiting on a wire that is not coming is refused in the words the
+  // surfaces over that machine show, rather than held for a channel that will
+  // never carry (rule 3).
+  it("refuses what the blocked device was holding, in its own words", async () => {
+    await connectEveryDevice();
+    const session = lastSession("dev-a");
+
+    await loseTheLink("dev-a");
+
+    expect(session.fail).toHaveBeenCalledTimes(1);
+    expect(session.fail.mock.calls[0][0].message).toBe("Device not reachable");
+    expect(session.close).toHaveBeenCalled();
+  });
+
+  it("marks a machine plainly away when its bridge is simply gone", async () => {
+    await connectEveryDevice();
+    const session = lastSession("dev-a");
+
+    deviceWentAway("dev-a");
+    await flush();
+
+    expect(contextFor("dev-a").offline).toBe(true);
+    expect(contextFor("dev-a").blocked).toBe(null);
+    expect(session.fail.mock.calls[0][0].message).toBe("Device offline");
+    expect(goOffline("dev-a")).toBe(undefined); // and losing it again is no news
   });
 });

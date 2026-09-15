@@ -15,8 +15,8 @@ vi.mock("../src/api.js", () => ({
   fetchDevices: async () => [],
 }));
 vi.mock("../src/core/session.js", () => ({
-  openRelaySession: async () => {
-    throw new Error("no relay in this suite");
+  openSession: async () => {
+    throw new Error("no rendezvous in this suite");
   },
 }));
 vi.mock("../src/core/peerLink.js", () => ({
@@ -29,6 +29,9 @@ vi.mock("../src/terminal/manager.js", () => ({
   terminalDeviceId: () => null,
   terminalManager: () => null,
   subscribeTerminalStatus: () => () => {},
+  // Minting a terminal session is the connection layer's (spec rule 5); no
+  // suite here opens one.
+  provideTerminalSessions: () => {},
 }));
 vi.mock("../src/core/composeView.js", () => ({ flushCaptures: async () => {} }));
 

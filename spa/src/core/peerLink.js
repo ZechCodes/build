@@ -111,6 +111,11 @@ export async function openPeerLink({
   return { app, term, close: tearDown };
 }
 
+/** The two ways this deadline ends, named in rule 3's words for a blocked
+ *  device: the caller shows one of them over that machine, so which failure it
+ *  was is said where the failure is, not guessed at from a message. */
+const blockedBy = (reason, message) => Object.assign(new Error(message), { blockedReason: reason });
+
 /** One offer/answer round over the relay carrier, ICE servers and all. */
 async function offer(peer, signal, iceServers, options) {
   const local = await peer.createOffer(options);
@@ -138,11 +143,11 @@ function bothOpen(peer, channels, openTimeoutMs) {
     };
     const giveUpOnFailure = () => {
       if (peer.connectionState === "failed" || peer.connectionState === "closed") {
-        settle(() => reject(new Error(`the peer connection ${peer.connectionState} before its channels opened`)));
+        settle(() => reject(blockedBy("failed", `the peer connection ${peer.connectionState} before its channels opened`)));
       }
     };
     const deadline = setTimeout(
-      () => settle(() => reject(new Error("the peer connection did not open its channels"))),
+      () => settle(() => reject(blockedBy("timeout", "the peer connection did not open its channels"))),
       openTimeoutMs,
     );
     peer.addEventListener("connectionstatechange", giveUpOnFailure);

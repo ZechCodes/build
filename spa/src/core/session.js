@@ -15,7 +15,6 @@
 // session id and key: a session is minted once, not once per socket, and
 // re-keying under a live channel would strand every frame in flight on it.
 
-import { createRelayRendezvous } from "./rendezvous.js";
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 
@@ -203,49 +202,4 @@ export async function openSession({
       signaling?.close(); // the rendezvous is the caller's; this lease on it is ours
     },
   };
-}
-
-/**
- * A session over a relay rendezvous of its own.
- *
- * The adapter the connect sequence is still written against: it opens one
- * rendezvous, mints one session on it and ties the two lifetimes together.
- * Stage 06 replaces it — `connectDevice` owns its device's rendezvous, closes
- * it once the channels are open and reopens it for an ICE restart, and the
- * terminal session is minted on the same one. The options this ignores
- * (`waitForDevice`, `deviceWaitMs`, `onDeviceKey`, `onDeviceOffline`) are the
- * relay presence the api owns now (rule 6).
- */
-export async function openRelaySession({
-  relayUrl,
-  transport,
-  WebSocketImpl,
-  fetchToken,
-  getPinnedDeviceKey,
-  preferDeviceId = null,
-  acceptTimeoutMs,
-  isPaused,
-  onLost,
-  onPush,
-}) {
-  const rendezvous = createRelayRendezvous({
-    deviceId: preferDeviceId,
-    relayUrl,
-    transport,
-    WebSocketImpl,
-    fetchToken,
-    getPinnedDeviceKey,
-    acceptTimeoutMs,
-  });
-  let session;
-  try {
-    session = await openSession({ rendezvous, transport, deviceId: preferDeviceId, isPaused, onLost, onPush });
-  } catch (error) {
-    rendezvous.close(); // a handshake the caller is told about leaves no socket behind
-    throw error;
-  }
-  return { ...session, close: () => {
-    session.close();
-    rendezvous.close();
-  } };
 }

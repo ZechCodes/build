@@ -16,7 +16,7 @@ import { toolbarRouteChanged } from "./core/toolbar.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
-import { forgetHomeFollow, forgetSecurityStops, forgetUnconnectedDevices } from "./connection.js";
+import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "./connection.js";
 import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
@@ -38,7 +38,7 @@ export const App = {
 
   gated: true, // gate screens own #root until a session is live
   updateAvailable: false, // the served-version watcher found a newer bundle than this one
-  devices: [], // last GET /api/devices, statuses patched live by relay pushes
+  devices: [], // last GET /api/devices, re-read by the presence poll (devices.js)
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,
   // Which machines the inbox, the projects face and the project menu list —
   // null for all of them. It narrows lists and nothing else: no route, no
@@ -76,7 +76,7 @@ export function resetApplication() {
   terminalRouteDeviceId = null;
   forgetHomeFollow();
   forgetSecurityStops();
-  forgetUnconnectedDevices();
+  forgetRendezvousSockets();
   clearCacheScope();
 }
 

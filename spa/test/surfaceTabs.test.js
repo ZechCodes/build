@@ -23,6 +23,9 @@ vi.mock("../src/terminal/manager.js", () => ({
   // app spine's business and not this suite's: they answer, and nothing moves.
   terminalDeviceId: () => null,
   followTerminalDevice: () => {},
+  // Minting a terminal session is the connection layer's (spec rule 5); no
+  // suite here opens one.
+  provideTerminalSessions: () => {},
 }));
 vi.mock("../src/terminal/pane.js", () => ({
   mountTerminalPane: async (host, opts) => {

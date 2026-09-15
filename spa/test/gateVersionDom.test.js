@@ -44,7 +44,7 @@ vi.mock("../src/connection.js", () => ({
   syncHome: () => {},
   forgetHomeFollow: () => {},
   forgetSecurityStops: () => {},
-  forgetUnconnectedDevices: () => {},
+  forgetRendezvousSockets: () => {},
   securityStopText: () => "",
 }));
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "macos-arm64" }));

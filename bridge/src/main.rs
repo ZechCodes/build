@@ -28,6 +28,13 @@
 //! - `BRIDGE_DEVICE_NAME` device name shown during pairing (default: hostname)
 //! - `BRIDGE_PAIRING_CODE` dev/compose only: pair with this fixed code instead of
 //!   a random one, so a scripted approver can complete the flow
+//! - `BRIDGE_ICE_POLICY` `all` (default) or `direct-only`: `direct-only` strips
+//!   the browser's TURN servers and refuses relay candidates, for a bridge on
+//!   the same LAN or Tailnet as the browser
+//! - `BRIDGE_ICE_RELAY_MIN_WAIT_MS` how long a TURN pair waits before it may be
+//!   accepted, so a slower direct pair can win (default 1500; `0` for no wait)
+//! - `BRIDGE_ICE_INTERFACES` comma-separated interfaces to gather host
+//!   candidates on, e.g. `tailscale0,eth0` (unset: every non-loopback one)
 //!
 //! `build-bridge pair` runs the pairing flow on its own — register, print the
 //! pairing code, wait for the human to approve it in the web app, persist — then

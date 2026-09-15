@@ -83,6 +83,26 @@ too: peers that cannot hole-punch simply keep working over the relay.
 
 TURN egress is billed, so it has a monthly check in [`OPS.md`](OPS.md).
 
+### LAN / Tailscale
+
+When the browser and the bridge share a network — an office LAN, a Tailnet, a
+laptop reaching its own machine — set `BRIDGE_ICE_POLICY=direct-only` on the
+bridge. It then strips every `turn:`/`turns:` url out of the list the browser
+offers and refuses the relay candidates the browser trickles, so the pair that
+carries is host to host and no TURN allocation is made at either end. STUN is
+kept: it is free, and it is how a peer learns the address it puts in a host
+candidate. Nothing changes in the browser — it fetches and forwards the same
+minted list either way — and nothing changes on the api.
+
+Two knobs go with it. `BRIDGE_ICE_INTERFACES` (e.g. `tailscale0,eth0`) binds
+only the named interfaces, which is how a bridge is kept off a network it
+should not be reachable on; a name no address answers to refuses the offer
+rather than quietly gathering everywhere, so a typo is loud. And
+`BRIDGE_ICE_RELAY_MIN_WAIT_MS` (default 1500, `0` to disable) is how long a
+TURN pair waits before this agent may accept it — the "prefer direct" margin
+on a hosted bridge, irrelevant under `direct-only`, where there is no TURN
+pair to wait for.
+
 ## Releasing the bridge
 
 The bridge is the one piece that runs on someone else's machine, so it ships as

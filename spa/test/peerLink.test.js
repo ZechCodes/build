@@ -184,17 +184,26 @@ describe("openPeerLink", () => {
     expect(signalled.map(([method]) => method)).toContain("rtc.close");
   });
 
-  it("rejects when the channels never open", async () => {
+  // The two ways this deadline ends are two of rule 3's seven reasons, and the
+  // device strip shows whichever it was. Which failure it was is said HERE,
+  // where the failure is, so the error carries it rather than being guessed at
+  // from a message: a reason the caller cannot read is a machine reported as
+  // "it failed" when it never opened in time.
+  it("rejects when the channels never open, and blames the deadline", async () => {
     const { link } = stand({ openTimeoutMs: 10 });
-    await expect(link).rejects.toThrow(/open/);
+    const refused = await link.catch((error) => error);
+    expect(refused.message).toMatch(/open/);
+    expect(refused.blockedReason).toBe("timeout");
     expect(FakePeerConnection.instances.at(-1).closed).toBe(true);
   });
 
-  it("rejects when the connection fails before the channels open", async () => {
+  it("rejects when the connection fails before the channels open, and blames the connection", async () => {
     const { link, peer } = stand();
     await tick();
     peer().fail();
-    await expect(link).rejects.toThrow(/failed/);
+    const refused = await link.catch((error) => error);
+    expect(refused.message).toMatch(/failed/);
+    expect(refused.blockedReason).toBe("failed");
   });
 
   it("restarts ICE with fresh credentials when a live connection fails", async () => {

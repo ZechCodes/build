@@ -129,3 +129,18 @@ def test_the_template_renders_the_four_figures_and_the_caveat():
     for label in ["Direct WebRTC", "TURN", "Never connected", "Unstable", "Cloudflare"]:
         assert label in html, label
     assert "prflx" in html, "the under-count caveat is on the page, under the TURN figure"
+
+
+def test_the_page_never_says_fallback():
+    """One event, one word. The stat cards, the bucket labels and the OPS grep
+    all say a session lost its channels; the recent-sessions column headed
+    "Fallbacks" was the one place the retired word survived, over the very count
+    the rename is about (``fell_back_count``, a column name kept to avoid a
+    migration and commented as such)."""
+    env = admin_template_environment()
+    dashboard = build_transport_dashboard(
+        [session(first_path="direct", carrying_count=1, fell_back_count=2)], [], window="7d", now=NOW
+    )
+    html = env.get_template("admin/transport.html").render(dashboard=dashboard, site_name=lambda: "Build")
+    assert "Channels lost" in html, "the column says what the number counts"
+    assert "allback" not in html, "no surface of this page says fallback any more"

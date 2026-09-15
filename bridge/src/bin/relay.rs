@@ -66,17 +66,11 @@ struct Shared {
 }
 
 impl Shared {
-    /// A GET to an internal api endpoint, carrying `X-Internal-Secret` when configured.
+    /// A GET to an internal api endpoint, carrying `X-Internal-Secret` when
+    /// configured. Reads only: the relay asks the api who a device is and whether a
+    /// gateway token is good, and tells it nothing.
     fn internal_get(&self, url: &str) -> reqwest::RequestBuilder {
-        self.attach_internal_secret(self.http.get(url))
-    }
-
-    /// A POST to an internal api endpoint, carrying `X-Internal-Secret` when configured.
-    fn internal_post(&self, url: &str) -> reqwest::RequestBuilder {
-        self.attach_internal_secret(self.http.post(url))
-    }
-
-    fn attach_internal_secret(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let builder = self.http.get(url);
         match &self.config.internal_secret {
             Some(secret) => builder.header("X-Internal-Secret", secret),
             None => builder, // dev mode: the api trusts localhost instead
@@ -364,25 +358,16 @@ async fn serve_device(
         }
     };
 
-    let registration = {
+    // A reconnect severs any sessions from this device's previous connection (their
+    // keys died with the old process). Nobody is notified: presence is the api's, and
+    // a browser mints a fresh session when its poll sees the device online.
+    let conn_id = {
         let mut state = shared.state.lock().await;
         state.add_device(&device_id, &owner, out_tx.clone())
     };
-    // A reconnect severed any sessions from this device's previous connection (their
-    // keys died with the old process) — nudge those clients to re-handshake first…
-    let stale_notice = json!({"type":"device_offline","device_id":device_id}).to_string();
-    for client in &registration.displaced_clients {
-        let _ = client.send(stale_notice.clone());
-    }
-    // …then tell every one of the owner's browsers the device is online.
-    let online_notice = json!({"type":"device_online","device_id":device_id}).to_string();
-    for client in &registration.owner_clients {
-        let _ = client.send(online_notice.clone());
-    }
     let _ = out_tx.send(
         json!({"type":"authenticated","device_id":device_id,"heartbeat_interval_s":HEARTBEAT_INTERVAL_S}).to_string(),
     );
-    report_status(shared, &device_id, true).await;
     eprintln!("device {device_id}: authenticated (owner {owner})");
 
     // Auth happens once at connect, so revocation must be re-checked while the
@@ -401,7 +386,7 @@ async fn serve_device(
     // was stuck — frames alone said "alive" as the socket filled with unread
     // data and browsers hung on "Waiting for your device". Whichever signal
     // goes silent past the window severs the device, which also gets it
-    // deregistered and reported offline below.
+    // deregistered below.
     let liveness_timeout = shared.config.device_liveness_timeout;
     let mut frame_deadline = tokio::time::Instant::now() + liveness_timeout;
     let mut pong_deadline = tokio::time::Instant::now() + liveness_timeout;
@@ -449,27 +434,6 @@ async fn serve_device(
             continue;
         };
         match msg.get("type").and_then(Value::as_str).unwrap_or("") {
-            "transport_key" => {
-                let key = msg
-                    .get("transport_public_key")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let clients = {
-                    let mut state = shared.state.lock().await;
-                    state.set_device_transport_key(&device_id, &key)
-                };
-                eprintln!(
-                    "device {device_id}: transport key → fan-out to {} client(s)",
-                    clients.len()
-                );
-                let notice =
-                    json!({"type":"device_key","device_id":device_id,"transport_public_key":key})
-                        .to_string();
-                for client in clients {
-                    let _ = client.send(notice.clone());
-                }
-            }
             "heartbeat" => {}
             "session_accept" | "e2ee_envelope" => {
                 if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
@@ -486,23 +450,12 @@ async fn serve_device(
         }
     }
 
-    // The device is gone: drop it, then tell the owner's browsers immediately so
-    // they can degrade gracefully (and reconnect on the next device_online) instead
-    // of hanging on a dead session. Guarded by conn_id: if the device already
-    // reconnected, this stale cleanup is a no-op — nobody is notified and the api
-    // is NOT told the (live, routable) device went offline.
-    let removal = {
-        let mut state = shared.state.lock().await;
-        state.remove_device(&device_id, registration.conn_id)
-    };
-    let Some(clients) = removal else {
-        return; // stale disconnect: a newer connection owns this device now
-    };
-    let notice = json!({"type":"device_offline","device_id":device_id}).to_string();
-    for client in clients {
-        let _ = client.send(notice.clone());
-    }
-    report_status(shared, &device_id, false).await;
+    // The device is gone: drop it and its sessions. Guarded by conn_id, so a stale
+    // socket's late cleanup after a reconnect is a no-op. Nothing is announced —
+    // the owner's browsers derive the device's status from the api, whose 90 s
+    // last-seen window closes on its own once the bridge stops heartbeating.
+    let mut state = shared.state.lock().await;
+    state.remove_device(&device_id, conn_id);
 }
 
 #[allow(clippy::cognitive_complexity)] // ratchet: serve_client is at 26, threshold 15 — bring it under, then remove
@@ -544,25 +497,17 @@ async fn serve_client(
         state.add_client(&user_id, out_tx.clone())
     };
     eprintln!("client {client_id}: connected (user {user_id})");
+    // The browser's whole greeting. Which devices exist, which are online and what
+    // key to seal to are all the api's answers (`GET /api/devices`); this socket is
+    // a rendezvous, and says only that it knows who is on it.
     let _ = out_tx.send(json!({"type":"authenticated"}).to_string());
-    // Advertise transport keys of the user's already-connected devices.
-    let keys = {
-        let state = shared.state.lock().await;
-        state.device_keys_for_user(&user_id)
-    };
-    for (device_id, key) in keys {
-        let _ = out_tx.send(
-            json!({"type":"device_key","device_id":device_id,"transport_public_key":key})
-                .to_string(),
-        );
-    }
 
     // A browser is held to the pong deadline alone: a quiet one sends no frame
     // for as long as it likes, but its WS stack answers every ping as long as
     // the page is there. Unanswered pings past the window are a client that
     // went away without a close — a suspended tab, a socket a load balancer
     // keeps established for a browser that is gone — and until it is severed,
-    // its sessions pin the device's keys and its socket counts as a live client.
+    // its sessions pin the device's per-session state.
     let liveness_timeout = shared.config.device_liveness_timeout;
     let mut pong_deadline = tokio::time::Instant::now() + liveness_timeout;
 
@@ -704,18 +649,6 @@ async fn lookup_gateway_token(shared: &Arc<Shared>, token: &str) -> Option<Strin
     body.get("user_id")
         .and_then(Value::as_str)
         .map(str::to_string)
-}
-
-async fn report_status(shared: &Arc<Shared>, device_id: &str, online: bool) {
-    let url = format!(
-        "{}/internal/devices/{device_id}/status",
-        shared.config.api_url
-    );
-    let _ = shared
-        .internal_post(&url)
-        .json(&json!({ "online": online }))
-        .send()
-        .await;
 }
 
 fn unix_now() -> u64 {

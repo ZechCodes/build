@@ -770,3 +770,51 @@ this pass; none is the SPA's to fix.
   `bridge/src/app/workspaces/mod.rs` `adopt_legacy_workspaces` adopts only
   projects with exactly one source (since `1f68c44e`), so a fresh multi-source
   project has nothing to open until a workspace is created by hand.
+
+## 2026-09-14 — Review follow-ups on the integrated branch
+
+Asked for in review of `build/combined-interface` after the integration with
+main, each measured in the two-bridge browser stack before it was called done.
+
+### Shipped
+
+- **A second workspace in a project works.** The bridge fix is recorded under
+  "Fixed in the bridge" above; three workspaces per machine now materialize on
+  one project (`ws-a--repo`, `ws-b--repo`, `ws-c--repo` in the source repo's
+  registry) and the pre-existing checkout keeps its plain name.
+- **File references under a message are links** (`spa/src/core/threadLinks.js`,
+  `core/thread.js`, `core/agentRail.js`). A `kind: "file"` link renders as an
+  anchor whose href is the Files route of the conversation's workspace or
+  branch, with the file and `line_start`; a plain click opens it in place, a
+  middle- or modifier-click opens it in a new tab, and in a workspace with
+  several directories a path prefixed with another directory's mount name
+  opens that directory with the prefix stripped. Retired three functions from
+  the complexity ratchet on the way (65 → 62).
+- **One header height across a work surface** (`--surface-head`, 46px): the
+  ref picker, the git action bar and the conversation head share it. The ref
+  bar's always-present status line costs nothing while empty, and the git bar
+  holds one row in a narrow column by going icon-only and folding the
+  selection controls in, rather than wrapping. Measured at 1440 and 1200 with
+  the inbox pinned: all three bottoms at 85px.
+- **A pinned inbox takes the whole column**, and the header's inbox toggle is
+  hidden while it does nothing. At widths where the rail overlays the view
+  (≤900px) the toggle stays, and it comes back on a resize without a reload.
+- **The conversation panel has the inbox's pin** (`spa/src/core/pinControl.js`,
+  one control for both). Pinned it docks beside the surface; unpinned it
+  collapses to the bubble strip and opens as a popover anchored to the
+  selected agent's bubble with the pointer notch (measured within 0px of the
+  bubble's centre), dismissed by the scrim, Escape or navigation. The choice
+  is remembered under `build.rail.expanded`, which now means "pinned";
+  desktop pins by default, a phone does not.
+- **On a phone the bubble strip runs across the foot of the viewport**, above
+  the console bar, scrolling sideways when it overflows; the unpinned popover
+  opens above it pointing down at its bubble; the console at full size stops
+  on the strip so the bubbles stay tappable; the popover's height leaves room
+  for whatever the console takes.
+- **A greyed row keeps its whole offline word** beside a Done button: the
+  room the row reserves for its edge control is the control's real width.
+
+### Suites
+
+247 files / 4297 tests; lint, build, semgrep and gitleaks green; ratchet 62.
+Bridge: 2303 tests, clippy and fmt clean.

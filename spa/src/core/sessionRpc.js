@@ -44,7 +44,7 @@ function uncertainDeliveryError(reason) {
 
 /**
  * @param transport the injected crypto layer (`@build/secure-transport`).
- * @param sessionId, sessionKeyB64, deviceId what the relay handshake minted:
+ * @param sessionId, sessionKeyB64, deviceId what the rendezvous minted:
  *   this session's identity, key, and the device it was sealed to. They outlive
  *   every carrier.
  * @param noCarrier what a call fails with when nothing is carrying. Its owner

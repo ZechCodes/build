@@ -37,8 +37,8 @@ const ORPHAN_FRAME_LIMIT = 64;
 
 /** How long a decrypted frame vouches for the connection.
  *
- *  Every frame for this client rides ONE FIFO (bridge → relay → browser), so a
- *  terminal flooding output queues the pong behind its bytes: pinging a busy
+ *  Every frame for this session rides ONE channel, in order, so a terminal
+ *  flooding output queues the pong behind its bytes: pinging a busy
  *  stream measures the backlog, not the connection, and times out on a path
  *  that is plainly alive. Any frame we decrypted is itself proof the bridge is
  *  reachable, so within this window we skip the probe entirely — busy is not
@@ -582,11 +582,11 @@ export class TerminalSocket {
     }
   }
 
-  // Application-level liveness: a relay/bridge/network outage does NOT always
-  // close our socket, so we actively ping WHEN NOTHING ELSE IS ARRIVING. A
-  // recently decrypted frame already proves the path, so it suppresses the
-  // probe (see FRAME_PROOF_OF_LIFE_MS); only silence is probed, and a failed
-  // ping means the path to the bridge is down → show disconnected and reconnect.
+  // Application-level liveness: a bridge or network outage does NOT always close
+  // the channel, so we actively ping WHEN NOTHING ELSE IS ARRIVING. A recently
+  // decrypted frame already proves the path, so it suppresses the probe (see
+  // FRAME_PROOF_OF_LIFE_MS); only silence is probed, and a failed ping means the
+  // path to the bridge is down → the wire goes and the shells are lost.
   async _watchLiveness() {
     const mine = (this._liveness = {}); // one watch per connection, the newest
     while (this._liveness === mine && !this._closed) {
@@ -599,9 +599,8 @@ export class TerminalSocket {
         await this._call("ping", {}, 3000);
       } catch {
         // The wire that did not answer is the one that goes: closing a carrier
-        // is how either kind reports itself gone, and the switch decides what
-        // that costs — a channel falls back to the relay, a relay socket
-        // reconnects.
+        // is how it reports itself gone, and its owner decides what that costs
+        // — an ICE restart, or the device blocked.
         if (this._liveness === mine) wire.close();
         return;
       }

@@ -57,7 +57,7 @@ export { createStatusHub };
  * everyone: nowhere else works out which machine that is.
  *
  * App is read lazily (app.js imports this module through connection.js), and so
- * is the device list: it is patched live by the relay's pushes.
+ * is the device list: it is refreshed live by the presence poll.
  */
 export function terminalDeviceId() {
   const routeDevice = contextFor(App.route?.deviceId);

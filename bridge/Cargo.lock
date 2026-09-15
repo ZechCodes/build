@@ -293,6 +293,7 @@ dependencies = [
  "portable-pty",
  "rcgen 0.13.2",
  "reqwest",
+ "rtc",
  "rusqlite",
  "rustls",
  "semver",

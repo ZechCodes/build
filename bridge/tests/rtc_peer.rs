@@ -17,7 +17,7 @@ use build_bridge::rtc::testing::{
     browser_peer, browser_peer_with, orphan_part, past_one_message, BrowserIce, BrowserPeer,
     RelaySignaling,
 };
-use build_bridge::rtc::WebrtcPeerFactory;
+use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::transport::{self, Envelope};
 use build_bridge::transport_ledger::RecordingLedger;
 use common::{connected_device, device_identity, recv, request_message, session_init_message};
@@ -205,7 +205,7 @@ fn ledgered_peer_bridge(
     );
     app.lock()
         .unwrap()
-        .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
+        .set_peer_factory(WebrtcPeerFactory::new(intake.clone(), IcePolicy::default()));
     (intake, reports, ledger)
 }
 

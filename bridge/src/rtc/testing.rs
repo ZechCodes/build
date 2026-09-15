@@ -172,7 +172,8 @@ pub fn orphan_part() -> String {
 const LOOPBACK_ONLY: &str = "127.0.0.1:0";
 
 /// Where a browser given ICE servers gathers from: every interface, the way
-/// the device does (`GATHER_FROM`), so a STUN or TURN server can be reached.
+/// the device does (`policy::EVERY_INTERFACE`), so a STUN or TURN server can
+/// be reached.
 const EVERY_INTERFACE: &str = "0.0.0.0:0";
 
 /// The browser's peer connection, with the same two negotiated channels the

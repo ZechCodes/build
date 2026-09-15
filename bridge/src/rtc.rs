@@ -13,6 +13,12 @@
 //! Everything else the client asks for rides the channels this module
 //! negotiates. A client whose channels never open has no data path at all —
 //! there is no relay to stay on — so it fails closed and blocks that device.
+//!
+//! How a peer built here reaches a browser is one value, [`IcePolicy`]
+//! (`policy.rs`, spec rule 8): mDNS resolution, the interfaces it gathers on,
+//! how long a TURN pair waits before it may be accepted, and whether TURN is
+//! allowed at all. It is resolved once at startup and read here; nothing in
+//! this module decides any of it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -32,13 +38,17 @@ use crate::carrier::{self, CarrierHandle, FrameIntake, OutboundEnvelope, Session
 use crate::transport_ledger::{TransportEvent, TransportLedger, TransportPath};
 
 pub(crate) mod chunk;
+mod policy;
+
+pub use policy::{IceMode, IcePolicy, ICE_INTERFACES_ENV, ICE_POLICY_ENV, ICE_RELAY_MIN_WAIT_ENV};
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-/// What a peer connection could not do. Never fatal to the session: a refused
-/// offer leaves the client working over the relay carrier, which the spec's
-/// upgrade policy already treats as the failure case.
+/// What a peer connection could not do. Fatal to the client's data path, not
+/// to the session: a refused offer leaves the session alive on its rendezvous
+/// with nothing carrying for it, which is the case rule 3 has the browser
+/// block that device on.
 #[derive(Debug, thiserror::Error)]
 pub enum RtcError {
     #[error("no peer connection for session {0}")]
@@ -257,11 +267,6 @@ pub(crate) fn negotiated_channel(id: u16) -> RTCDataChannelInit {
     }
 }
 
-/// Where a peer's own candidates are gathered from. Every interface, an
-/// ephemeral port: the browser's offer decides whether a direct pair or a TURN
-/// relay carries, and the device offers every path it has.
-const GATHER_FROM: &str = "0.0.0.0:0";
-
 impl From<webrtc::error::Error> for RtcError {
     fn from(err: webrtc::error::Error) -> Self {
         RtcError::Refused(err.to_string())
@@ -276,13 +281,19 @@ impl From<webrtc::error::Error> for RtcError {
 /// string.
 pub struct WebrtcPeerFactory {
     intake: Arc<FrameIntake>,
+    policy: Arc<IcePolicy>,
 }
 
 impl WebrtcPeerFactory {
     /// The one construction point of a real peer, holding the intake every
-    /// channel it opens delivers through.
-    pub fn new(intake: Arc<FrameIntake>) -> Arc<Self> {
-        Arc::new(WebrtcPeerFactory { intake })
+    /// channel it opens delivers through and the [`IcePolicy`] every one of
+    /// them gathers under — resolved once at startup, so every session of a
+    /// run reaches its browser the same way.
+    pub fn new(intake: Arc<FrameIntake>, policy: IcePolicy) -> Arc<Self> {
+        Arc::new(WebrtcPeerFactory {
+            intake,
+            policy: Arc::new(policy),
+        })
     }
 }
 
@@ -291,6 +302,7 @@ impl SessionPeerFactory for WebrtcPeerFactory {
         Ok(Arc::new(WebrtcPeer {
             session_id: session_id.to_string(),
             intake: self.intake.clone(),
+            policy: self.policy.clone(),
             signaling: Arc::new(LatestSignaling::default()),
             negotiation: tokio::sync::Mutex::new(None),
         }))
@@ -300,6 +312,7 @@ impl SessionPeerFactory for WebrtcPeerFactory {
 struct WebrtcPeer {
     session_id: String,
     intake: Arc<FrameIntake>,
+    policy: Arc<IcePolicy>,
     signaling: Arc<LatestSignaling>,
     negotiation: tokio::sync::Mutex<Option<Negotiation>>,
 }
@@ -329,8 +342,9 @@ impl SessionPeer for WebrtcPeer {
         signaling: SessionSender,
     ) -> Result<String, RtcError> {
         self.signaling.hold(signaling);
+        let allowed = self.policy.allowed_ice_servers(ice_servers);
         let configuration = RTCConfigurationBuilder::new()
-            .with_ice_servers(ice_servers.iter().map(offered_server).collect())
+            .with_ice_servers(allowed.iter().map(offered_server).collect())
             .build();
         let mut negotiation = self.negotiation.lock().await;
         let connection = match negotiation.as_ref() {
@@ -354,6 +368,13 @@ impl SessionPeer for WebrtcPeer {
     }
 
     async fn add_remote_candidate(&self, candidate: Value) -> Result<(), RtcError> {
+        if !self.policy.allows_remote_candidate(&candidate) {
+            eprintln!(
+                "rtc: session {} dropped a relay candidate ({ICE_POLICY_ENV}=direct-only)",
+                self.session_id
+            );
+            return Ok(());
+        }
         let trickled: RTCIceCandidateInit = serde_json::from_value(candidate)
             .map_err(|e| RtcError::Refused(format!("not an ICE candidate: {e}")))?;
         let negotiation = self.negotiation.lock().await;
@@ -383,13 +404,14 @@ impl WebrtcPeer {
         let connection: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::new()
                 .with_configuration(configuration)
+                .with_setting_engine(self.policy.setting_engine())
                 .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
                 .with_handler(Arc::new(PeerEvents {
                     session_id: self.session_id.clone(),
                     signaling: self.signaling.clone(),
                     connected,
                 }))
-                .with_udp_addrs(vec![GATHER_FROM.to_string()])
+                .with_udp_addrs(self.policy.gather_from()?)
                 .build()
                 .await?,
         );
@@ -600,17 +622,8 @@ pub(crate) fn negotiated_path(report: &RTCStatsReport) -> NegotiatedPath {
 /// device with no TURN key configured answers a bare STUN url, and both are
 /// the same array to everything above the peer.
 pub(crate) fn offered_server(offered: &Value) -> RTCIceServer {
-    let urls = match offered.get("urls") {
-        Some(Value::String(url)) => vec![url.clone()],
-        Some(Value::Array(urls)) => urls
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
-    };
     RTCIceServer {
-        urls,
+        urls: policy::offered_urls(offered),
         username: field_or_empty(offered, "username"),
         credential: field_or_empty(offered, "credential"),
     }

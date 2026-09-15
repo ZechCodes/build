@@ -54,7 +54,7 @@ use build_bridge::harness::HarnessContext;
 use build_bridge::notify::Notifier;
 use build_bridge::presence::PresenceReporter;
 use build_bridge::relay::{self, DeviceIdentity};
-use build_bridge::rtc::WebrtcPeerFactory;
+use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
 use build_bridge::transport_ledger::{FanOutLedger, StderrLedger};
 use build_bridge::transport_report::TransportReporter;
@@ -176,6 +176,10 @@ fn adopt_login_path() {
 
 struct RuntimePaths {
     config: BridgeConfig,
+    /// How this bridge's ICE agent reaches a browser (`BRIDGE_ICE_*`).
+    /// Resolved at startup so a mistyped value stops the daemon here rather
+    /// than at the first offer.
+    ice_policy: IcePolicy,
     device_url: String,
     worktrees: String,
     tasks_dir: std::path::PathBuf,
@@ -216,7 +220,9 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
         .unwrap_or_else(|| std::path::Path::new("."));
     let harness_context = HarnessContext::resolved(config.mcp_socket.clone(), state_root.into())
         .map_err(|error| format!("cannot resolve harness runtime: {error}"))?;
+    let ice_policy = IcePolicy::resolve(|key| std::env::var(key).ok())?;
     Ok(RuntimePaths {
+        ice_policy,
         device_url,
         worktrees,
         config_path: env(
@@ -465,9 +471,10 @@ async fn run_daemon(
     let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
     // The peer transport a browser upgrades to. It is built last because it is
     // built from the intake, which runs the app's own handler.
-    app.lock()
-        .unwrap()
-        .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
+    app.lock().unwrap().set_peer_factory(WebrtcPeerFactory::new(
+        intake.clone(),
+        runtime.ice_policy.clone(),
+    ));
 
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
     // become a tight reconnect loop hammering the server. A connection that lasted

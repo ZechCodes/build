@@ -200,7 +200,8 @@ browser's TURN servers and refuse relay candidates), `BRIDGE_ICE_RELAY_MIN_WAIT_
 (how long a TURN pair waits before it may be accepted so a slower direct pair can
 win; default `1500`, `0` for no wait) and `BRIDGE_ICE_INTERFACES` (a comma list of
 interfaces to gather host candidates on, e.g. `tailscale0,eth0`; unset means every
-non-loopback interface). Every `BRIDGE_*` variable is listed in `bridge/src/main.rs`.
+non-loopback interface, IPv4 and — where the machine has an address of its own —
+IPv6). Every `BRIDGE_*` variable is listed in `bridge/src/main.rs`.
 
 Full local stack (app + relay + bridge + scripted QA) via podman compose:
 see [`deploy/README.md`](deploy/README.md). Production deploy:

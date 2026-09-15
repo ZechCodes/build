@@ -2,8 +2,9 @@
 //!
 //! One value, resolved once at startup, that every peer connection is built
 //! from (strict P2P transport spec, rule 8): resolve the browser's mDNS host
-//! candidates, gather UDP4/UDP6 on every non-loopback interface — or only on
-//! the ones an operator named — and make a TURN pair wait before it may be
+//! candidates, gather UDP4 and (where the machine has one) UDP6 on every
+//! non-loopback interface — or only on the ones an operator named — and make a
+//! TURN pair wait before it may be
 //! accepted, so a slower direct pair can still win.
 //!
 //! **Hides** which knobs of the webrtc crate say those things, and where a
@@ -73,12 +74,19 @@ impl Default for IcePolicy {
     }
 }
 
-/// Where a peer gathers host candidates from when no interface is named:
+/// Where a peer gathers IPv4 host candidates from when no interface is named:
 /// every non-loopback interface the machine has. The webrtc crate expands
 /// this wildcard at bind time — one socket per interface address that exists
 /// *then* — which is what makes an ICE restart after a network handover pick
 /// up the interfaces the device has now.
-pub(crate) const EVERY_INTERFACE: &str = "0.0.0.0:0";
+pub(crate) const EVERY_IPV4_INTERFACE: &str = "0.0.0.0:0";
+
+/// The same for IPv6. A wildcard is expanded into the addresses of its **own**
+/// family only (`driver.rs::expand_wildcard` skips every address whose family
+/// differs), so this is the only way an IPv6 host candidate is ever gathered —
+/// and rule 8's "gathers over UDP4/UDP6" needs it on any network whose shared
+/// path is IPv6 (an IPv6-only LAN, a Tailnet).
+pub(crate) const EVERY_IPV6_INTERFACE: &str = "[::]:0";
 
 impl IcePolicy {
     /// Read the policy from the environment, refusing anything it cannot
@@ -133,18 +141,18 @@ impl IcePolicy {
     /// that is not on the list is never bound at all.
     pub(crate) fn gather_from(&self) -> Result<Vec<String>, RtcError> {
         let Some(named) = &self.interfaces else {
-            return Ok(vec![EVERY_INTERFACE.to_string()]);
+            // The enumeration only chooses which family wildcards to hand over;
+            // the crate does the expansion itself, at bind time. One that
+            // cannot be read here leaves the IPv4 wildcard, which is what this
+            // bridge gathered on before and is still a path.
+            return Ok(every_interface(&reported_interfaces().unwrap_or_default()));
         };
-        let reported = ifaces().map_err(|e| {
+        let reported = reported_interfaces().map_err(|e| {
             RtcError::Refused(format!(
                 "cannot enumerate the local interfaces {ICE_INTERFACES_ENV} names ({}): {e}",
                 named.join(",")
             ))
         })?;
-        let reported: Vec<(String, SocketAddr)> = reported
-            .into_iter()
-            .filter_map(|interface| Some((interface.name, interface.addr?)))
-            .collect();
         let addrs = gathered_on(named, &reported);
         if addrs.is_empty() {
             return Err(RtcError::Refused(format!(
@@ -232,6 +240,37 @@ fn interfaces_of(configured: Option<String>) -> Result<Option<Vec<String>>, Stri
         ));
     }
     Ok(Some(named))
+}
+
+/// Every address the OS reports an interface on, named. The interfaces with no
+/// address at all (a down link, a tunnel with nothing on it) are not addresses
+/// anything could bind.
+fn reported_interfaces() -> Result<Vec<(String, SocketAddr)>, String> {
+    Ok(ifaces()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter_map(|interface| Some((interface.name, interface.addr?)))
+        .collect())
+}
+
+/// The wildcards that mean "every non-loopback interface" on this machine.
+///
+/// The IPv4 one is always handed over: with no address to expand into, the
+/// crate binds it verbatim and the connection can still come up over STUN or
+/// TURN, which is the failure this bridge already had. The IPv6 one is added
+/// only where there is an address to expand into, because that same verbatim
+/// fallback would bind `[::]` and put `::` — an address no peer can dial — in
+/// a host candidate, and point a STUN query at a socket that cannot reach the
+/// server.
+fn every_interface(reported: &[(String, SocketAddr)]) -> Vec<String> {
+    let mut wildcards = vec![EVERY_IPV4_INTERFACE.to_string()];
+    let has_ipv6 = reported
+        .iter()
+        .any(|(_, addr)| addr.is_ipv6() && is_reachable(&addr.ip()));
+    if has_ipv6 {
+        wildcards.push(EVERY_IPV6_INTERFACE.to_string());
+    }
+    wildcards
 }
 
 /// The bind addresses an allow-list picks out of what the OS reported, in the
@@ -503,14 +542,60 @@ mod tests {
         );
     }
 
-    /// Without an allow-list nothing is enumerated here: the wildcard is the
-    /// crate's own "every interface that exists at bind time", which is what
-    /// makes an ICE restart follow a network handover.
+    /// Without an allow-list the bind list is wildcards: the crate's own
+    /// "every interface that exists at bind time", which is what makes an ICE
+    /// restart follow a network handover.
     #[test]
     fn no_allow_list_gathers_from_the_wildcard() {
+        let gathering = IcePolicy::default().gather_from().expect("the wildcard");
+        assert_eq!(gathering[0], EVERY_IPV4_INTERFACE.to_string());
+        assert!(gathering.len() <= 2 && gathering.iter().all(|addr| addr.ends_with(":0")));
+    }
+
+    /// The crate expands a wildcard into the interface addresses of its **own
+    /// family** and skips every other one, so the IPv4 wildcard alone gathers
+    /// no IPv6 host candidate at all — and `set_network_types` promising UDP6
+    /// would be a promise nothing keeps. A machine with no IPv6 address to
+    /// expand into is not handed the IPv6 wildcard: the crate would bind `[::]`
+    /// verbatim and every candidate off that socket names `::`, which no peer
+    /// can dial.
+    #[test]
+    fn every_interface_adds_the_ipv6_wildcard_only_where_ipv6_exists() {
+        let reported = |addrs: &[(&str, &str)]| -> Vec<(String, SocketAddr)> {
+            addrs
+                .iter()
+                .map(|(name, addr)| (name.to_string(), addr.parse().expect("a bind address")))
+                .collect()
+        };
+
         assert_eq!(
-            IcePolicy::default().gather_from().expect("the wildcard"),
-            vec![EVERY_INTERFACE.to_string()]
+            every_interface(&reported(&[("eth0", "192.168.1.9:0")])),
+            vec![EVERY_IPV4_INTERFACE.to_string()],
+            "an IPv4-only machine"
+        );
+        assert_eq!(
+            every_interface(&reported(&[
+                ("eth0", "192.168.1.9:0"),
+                ("eth0", "[2001:db8::5]:0"),
+            ])),
+            vec![
+                EVERY_IPV4_INTERFACE.to_string(),
+                EVERY_IPV6_INTERFACE.to_string()
+            ],
+            "a dual-stack machine gathers on both families"
+        );
+        assert_eq!(
+            every_interface(&reported(&[("lo", "[::1]:0"), ("eth0", "[fe80::1]:0")])),
+            vec![EVERY_IPV4_INTERFACE.to_string()],
+            "loopback and link-local are addresses the crate would skip anyway"
+        );
+        assert_eq!(
+            every_interface(&reported(&[("tailscale0", "[fd7a:115c::1]:0")])),
+            vec![
+                EVERY_IPV4_INTERFACE.to_string(),
+                EVERY_IPV6_INTERFACE.to_string()
+            ],
+            "a Tailnet's IPv6 is a path even with no IPv4 beside it"
         );
     }
 

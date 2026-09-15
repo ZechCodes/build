@@ -235,6 +235,106 @@ async fn upgraded(session: &RelaySession) -> BrowserPeer {
     browser_peer(&session.session_id, &session.session_key, session).await
 }
 
+/// One session's signaling with a copy kept of every candidate the device
+/// trickled. The browser still gets each one — this only reads what went past,
+/// which is the one place the wire shape of an `rtc.ice` push is visible.
+struct Recorded<'a> {
+    session: &'a RelaySession,
+    candidates: Mutex<Vec<Value>>,
+}
+
+impl<'a> Recorded<'a> {
+    fn over(session: &'a RelaySession) -> Self {
+        Recorded {
+            session,
+            candidates: Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn trickled_by_the_device(&self) -> Vec<Value> {
+        self.candidates.lock().await.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl RelaySignaling for Recorded<'_> {
+    async fn offer(&self, sdp: String, ice_servers: &[Value]) -> String {
+        self.session.offer(sdp, ice_servers).await
+    }
+
+    async fn trickle(&self, candidate: Value) {
+        self.session.trickle(candidate).await
+    }
+
+    async fn device_candidate(&self) -> Value {
+        let candidate = self.session.device_candidate().await;
+        self.candidates.lock().await.push(candidate.clone());
+        candidate
+    }
+}
+
+/// The address family of one trickled candidate, read off the attribute the
+/// way a peer does.
+fn candidate_address(candidate: &Value) -> std::net::IpAddr {
+    candidate["candidate"]
+        .as_str()
+        .expect("a candidate attribute")
+        .split_whitespace()
+        .nth(4)
+        .expect("`candidate:<foundation> <component> <transport> <priority> <address>`")
+        .parse()
+        .expect("a candidate address")
+}
+
+/// Whether this machine has an IPv6 address a peer could send to — the
+/// premise of the test below, and the same question `every_interface` asks
+/// before it hands the crate the IPv6 wildcard.
+fn machine_has_ipv6() -> bool {
+    rtc::shared::ifaces::ifaces()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|interface| interface.addr)
+        .any(|addr| match addr.ip() {
+            std::net::IpAddr::V6(v6) => {
+                !v6.is_loopback() && !v6.is_unspecified() && v6.segments()[0] & 0xffc0 != 0xfe80
+            }
+            std::net::IpAddr::V4(_) => false,
+        })
+}
+
+/// Rule 8 says the bridge gathers over UDP4 **and UDP6**, and the crate honours
+/// that only for a wildcard of each family: it expands one into the interface
+/// addresses of its own family and skips every other. A bridge handed the IPv4
+/// wildcard alone therefore has no IPv6 host candidate at all, and a browser
+/// and a device whose only shared path is IPv6 — an IPv6-only LAN, a Tailnet —
+/// never pair; under `direct-only` there is then no path at all.
+///
+/// Nothing to prove on a machine with no IPv6 address: the policy does not ask
+/// for the wildcard there, because the crate would bind `[::]` verbatim and
+/// name `::` in a candidate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_on_an_ipv6_machine_trickles_an_ipv6_host_candidate() {
+    if !machine_has_ipv6() {
+        return;
+    }
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, _reports) = peer_bridge(state_dir.path());
+    let (session, _demux) = browser_session("sess-ipv6", intake).await;
+
+    let recorded = Recorded::over(&session);
+    let mut peer = browser_peer(&session.session_id, &session.session_key, &recorded).await;
+    assert_eq!(peer.app.call("session.hello", json!({})).await["ok"], true);
+
+    let trickled = recorded.trickled_by_the_device().await;
+    assert!(
+        trickled
+            .iter()
+            .map(candidate_address)
+            .any(|ip| ip.is_ipv6()),
+        "the device gathered on both families: {trickled:?}"
+    );
+}
+
 /// The spec's whole claim about the carriers: one session, two channels
 /// answering alike, a rendezvous that refuses to be one of them (rule 1), and
 /// a session that outlives the peer it negotiated.

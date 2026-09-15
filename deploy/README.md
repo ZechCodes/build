@@ -13,6 +13,11 @@ deterministic QA agent. No gateway, no Redis: browsers talk straight to the
 relay with an api-minted gateway token, and the relay validates everything
 against the app over `/internal/*` with `X-Internal-Secret`.
 
+The relay is a rendezvous, not a data plane: a client opens it to mint its
+sessions and negotiate, then closes it and runs everything over the WebRTC
+DataChannels. That works inside compose with no Cloudflare account — see
+[ICE servers](#ice-servers-the-webrtc-upgrade) below.
+
 ```bash
 podman compose -f deploy/compose.real.yml up -d --build
 podman compose -f deploy/compose.real.yml --profile qa run --rm qa
@@ -25,7 +30,7 @@ podman compose -f deploy/compose.real.yml down
 | `app`   | skriftapp: dummy auth (dev), devices api, gateway tokens, SPA | 8090 |
 | `relay` | ciphertext-only broker (`/ws/client`, `/ws/device`, `/health`) | 18090 |
 | `bridge`| device daemon on a sample `/repo`, `BRIDGE_QA_AGENT=1` | — |
-| `qa`    | one-shot: pairs the bridge, then `e2e.mjs` + `qa.mjs` (16 checks) | — |
+| `qa`    | one-shot: the harness unit tests, then pairs the bridge, then `e2e.mjs` + `qa.mjs` over the DataChannels | — |
 
 Pairing is the real device-initiated flow: the bridge registers *pending* with
 a deterministic code (`BRIDGE_PAIRING_CODE`, default `COMPOSE-PAIR`) and the
@@ -57,13 +62,30 @@ API_URL=http://localhost:8090 PAIRING_CODE=COMPOSE-PAIR-2 node web/pair-another.
 approved by [`../web/pair-another.mjs`](../web/pair-another.mjs) — the same
 lookup→approve flow without that guard.
 
+Each machine gets its own rendezvous and its own peer connection, so pin the one
+under test with `PREFER_DEVICE_ID` (`GET /api/devices` lists both ids); without
+it the harness takes the first device the api reports online. `web/wire-check.mjs`
+is the by-hand pass over this stack:
+
+```bash
+cd web && PREFER_DEVICE_ID=<id> node wire-check.mjs
+```
+
+Two things bite when the stack is not on the default ports. The app image bakes
+the SPA, so `VITE_RELAY_URL` is a build arg — a moved relay port needs
+`up -d --build app`. And `skriftapp/app.dev.yaml`'s CSP `connect-src` hard-codes
+`ws://localhost:18090`, so a browser pass against a moved relay needs that
+widened or the socket never opens. Recreating `app` also resets its sqlite while
+the bridges keep their identities, so both bridge containers must be
+`--force-recreate`d before pairing again.
+
 ## ICE servers (the WebRTC upgrade)
 
-Once a browser session is live over the relay it upgrades to a direct WebRTC
-DataChannel to the bridge, and falls back to Cloudflare TURN when neither peer
-can hole-punch. The browser fetches the server list from the api
-(`POST /api/rtc/ice-servers`, session-cookie authenticated) and forwards it to
-the bridge inside the sealed session, so the bridge needs no Cloudflare access.
+A browser reaches its bridge over WebRTC DataChannels and nothing else, falling
+back to Cloudflare TURN when neither peer can hole-punch. The browser fetches the
+server list from the api (`POST /api/rtc/ice-servers`, session-cookie
+authenticated) and forwards it to the bridge inside the sealed session, so the
+bridge needs no Cloudflare access.
 
 | Env key | Where it comes from | What it is |
 |---|---|---|
@@ -74,12 +96,18 @@ Both are optional (`optional: true` in [`k8s/app.yaml`](k8s/app.yaml);
 [`k8s/bootstrap-secrets.sh`](k8s/bootstrap-secrets.sh) patches them in when
 they are exported and reports their absence instead of failing). With
 neither set — which is how `compose.real.yml` runs — the route answers a
-STUN-only list and direct host candidates carry localhost sessions, so the
-local stack needs no Cloudflare account. That STUN-only list is
+STUN-only list, and that is all the local stack needs: every container is on one
+compose network, so the browser or the qa harness and the bridge pair **host to
+host** with no STUN server involved at all. That STUN-only list is
 `stun:stun.cloudflare.com:3478` — unauthenticated, no account, and
-unreachable-tolerant: with it down or the machine offline, host candidates
-still carry localhost sessions. A deployment without the key is supported
-too: peers that cannot hole-punch simply keep working over the relay.
+unreachable-tolerant: with it down or the machine offline, host candidates still
+carry localhost sessions.
+
+A deployment without the key is **not** a deployment that degrades gracefully:
+there is no relay underneath the peer connection any more. A browser and a
+bridge that can reach each other neither directly nor through TURN show that
+machine as blocked, with the reason and a Retry. Over the open internet — the
+two behind different NATs — that is what the TURN key is for.
 
 TURN egress is billed, so it has a monthly check in [`OPS.md`](OPS.md).
 
@@ -215,7 +243,15 @@ is created only if missing and every asset uploads with `--clobber`).
 
 ## Known-stale harnesses
 
-`web/qa-reconnect.mjs`, `web/term-verify.mjs`, `web/term-browser.mjs` still
-speak the pre-auth gateway protocol (no `authenticate` first frame) and need
-updating before they run against this stack. `web/e2e.mjs`, `web/qa.mjs`,
-`web/skrift-flow.mjs`, and `web/pair.mjs` are current.
+`web/qa-reconnect.mjs` and `web/real-agent.mjs` still speak the pre-auth gateway
+protocol (no `authenticate` first frame) and still call `openSession` with its
+pre-peer signature; both need updating before they run against this stack.
+`web/e2e.mjs`, `web/qa.mjs`, `web/wire-check.mjs`, `web/pair.mjs`,
+`web/pair-another.mjs` and `web/skrift-flow.mjs` are current.
+
+The relay-carried terminal clients — `web/terminal.mjs`, `web/terminal.html` and
+their drivers `term-verify.mjs`, `term-browser.mjs`, `term-perf.mjs`,
+`term-size-check.mjs` — were **deleted** rather than updated. A terminal stream
+over a relay socket is the one thing the strict-P2P rules make impossible, so
+there was nothing to port; the terminal now rides the `term` DataChannel, which
+`web/qa.mjs` exercises and `spa/` is the real client for.

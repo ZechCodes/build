@@ -12,12 +12,16 @@
   diff are batched into notes the agent receives at phase boundaries. Free-form
   back-and-forth chat is deliberately out — review is the product, and the
   terminal drawer is the escape hatch when direct interaction is truly needed.
-- **Broker topology: one merged Rust broker.** The relay
+- **Broker topology: one merged Rust broker, and it is a rendezvous.** The relay
   (`bridge/src/bin/relay.rs`) terminates both `/ws/device` (Ed25519 challenge
   auth) and `/ws/client` (api-minted gateway-token auth). The separate
   `gateway` tier and Redis frame bus described in §2 are **retired**; browsers
   connect straight to the relay, which validates against the api over
-  `/internal/*` with `X-Internal-Secret`.
+  `/internal/*` with `X-Internal-Secret`. Since 2026-09-15 it is not a data
+  plane at all (`Strict P2P Transport Spec.md`, binding): it carries session
+  setup and `rtc.*` signaling, the browser closes the socket once the
+  DataChannels are open, and the bridge refuses any other frame offered to it
+  over a relay carrier. Presence is the api's, from a device-signed heartbeat.
 - **`api` language: Python on the Skrift framework** (`skriftapp/`), with
   Skrift's passkey auth in production. **relay: Rust** (shares the transport
   binding with the bridge).

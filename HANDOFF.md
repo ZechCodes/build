@@ -14,11 +14,23 @@ push, the zechcodes teardown the user runs by hand) — see
 ┌─────────┐  HTTPS ┌────────────┐  /internal/*  ┌────────────┐  wss ┌─────────┐
 │ browser │◄──────►│ skriftapp  │◄──────────────│ Rust relay │◄────►│ bridge  │
 │  (SPA)  │        │ api + SPA  │ X-Internal-   │ ciphertext │      │ (user's │
-└────┬────┘        └─────┬──────┘    Secret     │    only    │      │  box)   │
-     │                   ▼                      └────────────┘      └─────────┘
-     │             Postgres 16                        ▲
-     └────────── wss /ws/client ──────────────────────┘
+└──┬─┬────┘        └─────┬──────┘    Secret     │ rendezvous │      │  box)   │
+   │ │                   ▼                      └────────────┘      └────┬────┘
+   │ │             Postgres 16                        ▲                  │
+   │ └────── wss /ws/client (while negotiating) ──────┘                  │
+   └╌╌╌╌╌╌╌ WebRTC DataChannels — every byte of the app ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
 ```
+
+The relay is **authentication + rendezvous and nothing else**
+([`planning/v2/Strict P2P Transport Spec.md`](planning/v2/Strict%20P2P%20Transport%20Spec.md),
+binding). A browser opens a relay socket per device to mint that device's
+sessions and negotiate its peer connection, and closes it once both channels are
+open; it reopens it only for an ICE restart or another mint. Every application
+frame — RPC, pushes, the terminal stream — rides the `app` / `term`
+DataChannels, and a bridge refuses anything else offered to it over a relay
+carrier. A device that cannot be reached directly (or through TURN) is
+**blocked**, with a reason and a Retry: there is no relay underneath to fall
+back to.
 
 - **skriftapp/** — the Python app server on the Skrift framework: passkey auth
   (dummy auth is dev-only), device registry + approval/pairing, 5-min gateway
@@ -46,14 +58,27 @@ talk straight to the relay. `frontend/` (dead React scaffold) is deleted.
 
 1. `POST /api/gateway-token` (Skrift-session authed) → `{token}`, 5-min TTL.
 2. `GET /api/devices` → `[{device_id, approved, status, transport_public_key_b64, …}]`.
+   This is where presence and transport keys come from, and the only place: the
+   relay reports neither. The SPA polls it (3 s on the gate, 15 s while the app
+   is open, immediately on `visibilitychange`); `status` is `online` iff the
+   bridge's heartbeat landed within 90 s.
 3. WS `/ws/client`; first frame `{"type":"authenticate","token":…}`; relay
    validates via the api and replies `{"type":"authenticated"}` or closes.
 4. Client seals a fresh session key to the **api-pinned** device transport key
    and sends `session_init` with `route_to: "device:<id>"`; the device answers
-   `session_accept` (protocol unchanged).
-5. Relay pushes `device_online`/`device_offline` to that user's clients.
-6. App frames are opaque encrypted envelopes; the relay never decrypts.
+   `session_accept` (protocol unchanged). One socket per device context mints
+   however many sessions that device needs — the app's and, when the terminals
+   follow it, the terminals'.
+5. The only frames that socket then carries are E2EE envelopes whose inner
+   method is `rtc.*` — the offer/answer and trickled candidates. A bridge
+   answers anything else with `error_code: "unavailable"`,
+   `details: {reason: "relay_is_not_a_data_plane"}` and never dispatches it. The
+   client closes the socket once both DataChannels are open, and reopens it for
+   an ICE restart or another mint.
+6. App frames are opaque encrypted envelopes; the relay never decrypts. A relay
+   frame is capped at 64 KiB; a DataChannel reassembly at 8 MiB.
 7. Relay→api internal calls carry `X-Internal-Secret: $INTERNAL_API_SECRET`.
+8. `POST /api/devices/heartbeat` — device-signed, every 30 s, the bridge's own.
 
 ## The browser↔bridge contract (inside the E2EE session)
 
@@ -150,9 +175,13 @@ gated behind that workflow's checks, so a red commit builds no image.
    the deterministic scripted agent (`BRIDGE_QA_AGENT=1`).
 2. **External crypto audit** — the Rust transport is a port of the audited
    protocol and is interop-verified (Rust↔Python↔JS), but is not itself audited.
-3. **Stale QA harnesses** — `web/qa-reconnect.mjs`, `web/term-verify.mjs`,
-   `web/term-browser.mjs` still speak the pre-auth protocol (see
-   `deploy/README.md`).
+3. **Stale QA harnesses** — `web/qa-reconnect.mjs` and `web/real-agent.mjs`
+   still speak the pre-auth protocol (no `authenticate` frame) and call
+   `openSession` with its pre-peer signature (see `deploy/README.md`). The
+   relay-carried terminal clients (`web/terminal.mjs` and its four drivers) were
+   deleted rather than ported: a terminal over a relay socket is the one thing
+   rule 1 makes impossible, and `web/qa.mjs` covers the terminal over the `term`
+   channel instead.
 4. **Bridge re-pairing after cutover** — the v2 registry starts empty; every
    existing bridge re-pairs against `https://getbuild.ing`.
 
@@ -392,7 +421,10 @@ What passed:
 - One bridge stopped: its rows greyed and wearing the offline word within a
   second, off the relay's `device_offline` push rather than a poll; its verbs
   shut; the other machine still working; and recovery without a reload and on
-  one relay connection.
+  one relay connection. (Superseded 2026-09-15: the relay pushes no presence at
+  all. A stopped bridge is seen by its peer connection ending — a *blocked*
+  device with a reason and a Retry — and, once the api's 90 s window lapses, by
+  the presence poll marking it away.)
 - Both stopped: the waiting screen. One returning: the app back without a
   reload, rendered once.
 - Each machine's settings page reading its own bridge, and the capture
@@ -425,10 +457,12 @@ cover the same ground on every commit.
 2. **Account-wide capture routing.** A capture goes to the creation device and
    that machine's router answers it. Fan-in across machines is still a
    follow-on, as `UX Redesign Decisions.md` says.
-3. **Per-device terminal sockets.** The shells are one socket that follows one
-   machine at a time — the route's device, else home — and the WebRTC terminal
-   channel rides that machine's link. Each device does upgrade its own app
-   channel; only the terminal stream is single-machine.
+3. **Per-device terminal sessions.** The shells are one terminal session that
+   follows one machine at a time — the route's device, else home — riding that
+   machine's `term` channel. (There is no terminal *socket* any more: rule 5
+   mints the terminal session on the followed device's own rendezvous.) Each
+   device does carry its own app session; only the terminal stream is
+   single-machine.
 4. **In-surface verb disabling.** Amendment 12's call was to keep the notice
    for an *arrival* at a machine that cannot answer, and to name the machine
    over a surface that was already open when its device went. Inside such a

@@ -1,11 +1,18 @@
 # WebRTC Transport Spec
 
-Status: **draft for review** (2026-09-02). Branch: `build/webrtc`.
+Status: **shipped, and superseded in part** (2026-09-02; amended 2026-09-15).
+[`Strict P2P Transport Spec.md`](Strict%20P2P%20Transport%20Spec.md) is binding
+and replaces this document's §SPA carrier and migration policy (items 1, 2, 4,
+5) — the relay is no longer transport #1, carries no fallback, and reports no
+presence. Everything else here (envelope, carrier boundary, chunking,
+backpressure, session registry, bridge peer) stays binding and is what shipped.
 
 Decision taken 2026-09-02: Cloudflare TURN plus direct WebRTC DataChannels between
 browser and bridge. Direct (host/srflx) ICE candidates are allowed, so the two peers may
-learn each other's IP. The WebSocket relay stays as transport #1 for authentication,
-presence, signaling, and fallback. The Cloudflare Realtime SFU is not used.
+learn each other's IP. The WebSocket relay was to stay as transport #1 for
+authentication, presence, signaling, and fallback; as of 2026-09-15 it keeps
+authentication and signaling and loses the other two. The Cloudflare Realtime SFU
+is not used.
 
 ## Problem
 

@@ -25,18 +25,27 @@ See [`planning/v2/`](planning/v2/) for the full scope, UI design brief, and road
                     getbuild.ing                relay.getbuild.ing
 ┌─────────┐  HTTPS ┌────────────┐  /internal/*  ┌────────────┐  wss ┌─────────┐
 │ browser │◄──────►│ skriftapp  │◄──────────────│ Rust relay │◄────►│ bridge  │
-│  (SPA)  │        │ api + SPA  │               │ ciphertext │      │ (user's │
+│  (SPA)  │        │ api + SPA  │               │ rendezvous │      │ (user's │
 └──┬─┬────┘        └─────┬──────┘               │    only    │      │  box)   │
    │ │                   ▼                      └────────────┘      └────┬────┘
    │ │             Postgres 16                        ▲                  │
-   │ └────────── wss /ws/client ──────────────────────┘                  │
-   └╌╌╌╌╌╌╌ WebRTC DataChannel (direct; Cloudflare TURN fallback) ╌╌╌╌╌╌╌┘
+   │ └────── wss /ws/client (while negotiating) ──────┘                  │
+   └╌╌╌╌╌╌ WebRTC DataChannels (direct; Cloudflare TURN fallback) ╌╌╌╌╌╌╌┘
 ```
+
+Build hosts **authentication and rendezvous, and nothing else.** Conversations,
+commits, diffs and files are large, and relaying any meaningful share of them is
+the cost a hosted service must not carry. So the relay finds your machine and
+carries the WebRTC negotiation; the browser closes that socket once the
+DataChannels are open, and every application byte goes peer to peer from then
+on. A machine that cannot be reached directly (or through TURN) is shown as
+blocked, with the reason and a Retry — there is nothing underneath to fall back
+to.
 
 | Component | Where | What |
 |---|---|---|
 | `bridge/` | user machines | Rust device daemon: worktree-per-task, full-PTY harnesses, single `done` MCP tool, git-diff watcher, durable task store, E2EE transport, device pairing |
-| `bridge/src/bin/relay.rs` | relay.getbuild.ing | Rust ciphertext-only broker: `/ws/device` (Ed25519 auth) + `/ws/client` (gateway-token auth); once a session upgrades to its DataChannel the relay carries signaling, presence and fallback only |
+| `bridge/src/bin/relay.rs` | relay.getbuild.ing | Rust ciphertext-only broker: `/ws/device` (Ed25519 auth) + `/ws/client` (gateway-token auth). Carries session setup and `rtc.*` signaling and refuses everything else; presence and transport keys are the api's |
 | `skriftapp/` | getbuild.ing | Python app server (Skrift): passkey auth, device registry/approval, gateway tokens, web push, the admin transport page (how sessions reach bridges: direct / TURN / relay), serves the SPA |
 | `spa/` | built into skriftapp | Vite vanilla-ES-module web client — task board, plan/diff review, terminal drawer; all deps self-hosted, zero CDN |
 | `desktop/` | user desktops | Sandboxed Electron client for the hosted SPA; connects to a separately installed bridge through the E2EE relay |
@@ -47,12 +56,12 @@ The E2EE crypto layer lives in the separate
 [`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport) repo
 (Python + JS bindings; the bridge carries an interop-verified Rust port).
 
-**A second infrastructure party.** Browser and bridge negotiate a direct WebRTC DataChannel and
+**A second infrastructure party.** Browser and bridge negotiate direct WebRTC DataChannels and
 use Cloudflare TURN only when neither peer can hole-punch, which makes Cloudflare a second
 infrastructure party beside the relay. Cloudflare sees TURN allocation source IPs and DTLS
-ciphertext; under that DTLS is the same secretbox envelope the relay carries, so even a broken
-DTLS session exposes no more than the relay already sees — session ids, sizes, timing — and
-never plaintext or session keys. The peer's DTLS fingerprint travels inside the sealed session,
+ciphertext; under that DTLS is the same secretbox envelope the relay carries during negotiation,
+so even a broken DTLS session exposes no more than the relay already saw — session ids, sizes,
+timing — and never plaintext or session keys. The peer's DTLS fingerprint travels inside the sealed session,
 so neither Cloudflare nor anyone else on the path can substitute a peer. The direct path adds
 the one exposure the relay path hid: each peer learns the other's IP. TURN credentials are
 short-lived — their lifetime is `TTL_SECONDS` in `skriftapp/buildapp/ice_servers.py` — minted

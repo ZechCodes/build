@@ -60,9 +60,11 @@ email code, or the pod fails with `CreateContainerConfigError` and, under the
 `CF_TURN_KEY_ID` and `CF_TURN_KEY_API_TOKEN` — the Cloudflare TURN key the
 ICE-servers route mints per-user credentials from — cannot be invented either,
 but they are optional on the Deployment: export them to have the script patch
-them in, and without them the route answers a STUN-only list and peers that
-cannot hole-punch keep working over the relay. Their egress has a monthly check
-in [`../OPS.md`](../OPS.md). Verify with:
+them in, and without them the route answers a STUN-only list — which is enough
+for peers that can hole-punch and nothing at all for peers that cannot. There is
+no relay underneath the peer connection: a browser that cannot reach its bridge
+shows that machine as blocked. Their egress has a monthly check in
+[`../OPS.md`](../OPS.md). Verify with:
 
 ```bash
 kubectl --context do-nyc1-production-hosting -n 8ly get secret build-app \

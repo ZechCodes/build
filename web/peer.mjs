@@ -277,13 +277,13 @@ export async function openPeerLink({ signal, onSignalPush, apiUrl, cookie, openT
 
 /** A trickled candidate as `addIceCandidate` will take it.
  *
- * The bridge names its candidates `sdpMid: ""` — webrtc-rs's empty default —
- * and an empty mid is a mid no media section has, so a strict implementation
- * refuses the whole candidate rather than falling back to the index beside it.
- * A browser survives that by accident: it drops the bridge's candidates too,
- * and pairs on the peer-reflexive candidate the bridge's own connectivity
- * checks create. Here the m-line index is what places it, which is what the
- * bridge means.
+ * A bridge names its candidates for the one BUNDLE section they belong to
+ * (`placed_in_bundle` in `bridge/src/rtc.rs`), so this normally passes them
+ * through untouched. It stays for the bridge that predates that fix, which
+ * sends `sdpMid: ""` — webrtc-rs's empty default, a mid no media section has,
+ * which a strict implementation refuses outright rather than falling back to
+ * the index beside it. Dropping the mid leaves the m-line index to place it,
+ * which is what such a bridge means. The SPA needs none of this.
  */
 const placed = (candidate) => (candidate?.sdpMid ? candidate : { ...candidate, sdpMid: undefined });
 

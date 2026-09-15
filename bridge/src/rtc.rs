@@ -303,7 +303,7 @@ impl SessionPeerFactory for WebrtcPeerFactory {
             session_id: session_id.to_string(),
             intake: self.intake.clone(),
             policy: self.policy.clone(),
-            signaling: Arc::new(LatestSignaling::default()),
+            signaling: Arc::new(Trickling::default()),
             negotiation: tokio::sync::Mutex::new(None),
         }))
     }
@@ -313,7 +313,7 @@ struct WebrtcPeer {
     session_id: String,
     intake: Arc<FrameIntake>,
     policy: Arc<IcePolicy>,
-    signaling: Arc<LatestSignaling>,
+    signaling: Arc<Trickling>,
     negotiation: tokio::sync::Mutex<Option<Negotiation>>,
 }
 
@@ -364,6 +364,9 @@ impl SessionPeer for WebrtcPeer {
         let answer = connection.create_answer(None).await?;
         let sdp = answer.sdp.clone();
         connection.set_local_description(answer).await?;
+        // Before the answer goes back, because the browser may trickle — and
+        // this peer may gather — the moment it lands.
+        self.signaling.answered(&sdp);
         Ok(sdp)
     }
 
@@ -436,23 +439,70 @@ impl WebrtcPeer {
     }
 }
 
-/// The carrier the latest offer arrived on. A peer that captured one at
-/// construction would trickle into a relay socket generation that has since
-/// been replaced, so only the newest is kept.
+/// What one of this peer's own candidates needs to reach the browser: the
+/// carrier the latest offer arrived on, and the mid of the section it belongs
+/// to. A peer that captured a carrier at construction would trickle into a
+/// relay socket generation that has since been replaced, so only the newest of
+/// each is kept.
 #[derive(Default)]
-struct LatestSignaling(Mutex<Option<SessionSender>>);
+struct Trickling {
+    signaling: Mutex<Option<SessionSender>>,
+    bundle_mid: Mutex<Option<String>>,
+}
 
-impl LatestSignaling {
+impl Trickling {
     fn hold(&self, signaling: SessionSender) {
-        *self.0.lock().unwrap() = Some(signaling);
+        *self.signaling.lock().unwrap() = Some(signaling);
+    }
+
+    /// The answer this peer just sent, which is the document its candidates
+    /// belong to and the only statement of what that section is called.
+    fn answered(&self, answer_sdp: &str) {
+        *self.bundle_mid.lock().unwrap() = bundle_mid_of(answer_sdp);
     }
 
     fn trickle(&self, candidate: Value) {
-        let signaling = self.0.lock().unwrap().clone();
+        let signaling = self.signaling.lock().unwrap().clone();
+        let mid = self.bundle_mid.lock().unwrap().clone();
         if let Some(signaling) = signaling {
-            trickle_candidate(&signaling, candidate);
+            trickle_candidate(&signaling, placed_in_bundle(candidate, mid.as_deref()));
         }
     }
+}
+
+/// One of this peer's own candidates, named so a browser will take it.
+///
+/// The crate stamps every candidate it gathers `sdpMid: ""` (`rtc`'s
+/// `RTCIceCandidate::to_json`, a hard-coded default). An empty mid is a mid no
+/// m-section has, and `addIceCandidate` rejects a non-null `sdpMid` that
+/// matches no section rather than falling back to the `sdpMLineIndex` beside
+/// it — so a spec-conformant browser drops every candidate this bridge
+/// gathers, and pairs, if at all, only on the peer-reflexive candidate this
+/// agent's own connectivity checks create at the far end. Where those checks do
+/// not arrive first (asymmetric NAT, TURN-only) there is no pair at all.
+///
+/// A data-only session has one m-section and BUNDLE puts every candidate on it,
+/// so naming it is the whole fix. A mid this peer does not know yet is written
+/// `null`, never `""`: a null mid is what tells the browser to place the
+/// candidate by the index instead.
+fn placed_in_bundle(candidate: Value, bundle_mid: Option<&str>) -> Value {
+    let Value::Object(mut candidate) = candidate else {
+        return candidate;
+    };
+    candidate.insert(
+        "sdpMid".to_string(),
+        bundle_mid.map_or(Value::Null, Value::from),
+    );
+    candidate.insert("sdpMLineIndex".to_string(), Value::from(0));
+    Value::Object(candidate)
+}
+
+/// The mid of the one BUNDLE m-section an SDP describes, as `a=mid:` states it.
+fn bundle_mid_of(sdp: &str) -> Option<String> {
+    sdp.lines()
+        .filter_map(|line| line.trim().strip_prefix("a=mid:"))
+        .map(str::to_string)
+        .next()
 }
 
 /// What the peer connection tells this session about itself: its own gathered
@@ -460,7 +510,7 @@ impl LatestSignaling {
 /// carrying.
 struct PeerEvents {
     session_id: String,
-    signaling: Arc<LatestSignaling>,
+    signaling: Arc<Trickling>,
     connected: mpsc::UnboundedSender<()>,
 }
 
@@ -1017,6 +1067,66 @@ mod channel_writer_tests {
 #[cfg(test)]
 mod trickle_tests {
     use super::*;
+
+    /// What the crate hands this module is `sdpMid: ""` — its own hard-coded
+    /// default (`rtc`'s `RTCIceCandidate::to_json`) — and an empty mid is a mid
+    /// no m-section has. `addIceCandidate` rejects a non-null `sdpMid` that
+    /// matches no section, so a spec-conformant browser drops the candidate
+    /// whole rather than falling back to the index beside it. The one BUNDLE
+    /// section this session negotiated is what places it, read off the answer
+    /// this peer sent.
+    #[test]
+    fn a_trickled_candidate_names_the_bundle_section_the_answer_gave_it() {
+        let gathered = json!({
+            "candidate": "candidate:1 1 udp 2130706431 192.168.1.9 48861 typ host",
+            "sdpMid": "",
+            "sdpMLineIndex": 0,
+            "usernameFragment": Value::Null,
+        });
+
+        let placed = placed_in_bundle(gathered.clone(), Some("0"));
+
+        assert_eq!(placed["sdpMid"], "0");
+        assert_eq!(placed["sdpMLineIndex"], 0);
+        assert_eq!(placed["candidate"], gathered["candidate"]);
+        assert_eq!(
+            placed_in_bundle(gathered.clone(), Some("data"))["sdpMid"],
+            "data",
+            "whatever the browser's offer named the section"
+        );
+        assert_eq!(
+            placed_in_bundle(gathered, None)["sdpMid"],
+            Value::Null,
+            "a mid this peer does not know yet is null, never the empty string: \
+             a null mid is what says `place it by the index`"
+        );
+    }
+
+    /// The mid comes off the answer this peer sent, because that is the
+    /// document the candidate belongs to. One m-section is all a data-only
+    /// session has, and BUNDLE puts every candidate on it.
+    #[test]
+    fn the_bundle_mid_is_the_one_the_local_description_states() {
+        let answer = "v=0\r\n\
+                      o=- 1 1 IN IP4 0.0.0.0\r\n\
+                      s=-\r\n\
+                      t=0 0\r\n\
+                      a=group:BUNDLE 0\r\n\
+                      m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+                      a=mid:0\r\n\
+                      a=sctp-port:5000\r\n";
+
+        assert_eq!(bundle_mid_of(answer).as_deref(), Some("0"));
+        assert_eq!(
+            bundle_mid_of(&answer.replace("a=mid:0", "a=mid:data")).as_deref(),
+            Some("data")
+        );
+        assert_eq!(
+            bundle_mid_of("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"),
+            None,
+            "an SDP with no mid at all places nothing"
+        );
+    }
 
     #[test]
     fn a_bridge_candidate_reaches_the_client_as_an_rtc_ice_push() {

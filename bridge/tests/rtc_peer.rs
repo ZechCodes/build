@@ -302,6 +302,39 @@ fn machine_has_ipv6() -> bool {
         })
 }
 
+/// Every candidate this device trickles names the section it belongs to, so a
+/// browser will take it.
+///
+/// The crate stamps its own candidates `sdpMid: ""`, and `addIceCandidate`
+/// rejects a non-null mid that matches no m-section outright — it does not fall
+/// back to the `sdpMLineIndex` beside it. A browser therefore dropped every one
+/// of this bridge's candidates and paired only on the peer-reflexive candidate
+/// this agent's checks created at its end; on any path where those checks do
+/// not arrive first (asymmetric NAT, TURN-only) there was no pair at all and
+/// the device went blocked. The in-process peer here takes an empty mid
+/// happily, which is why this is asserted on the wire shape rather than on
+/// whether the session came up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_trickled_candidate_names_the_section_it_belongs_to() {
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, _reports) = peer_bridge(state_dir.path());
+    let (session, _demux) = browser_session("sess-mid", intake).await;
+
+    let recorded = Recorded::over(&session);
+    let mut peer = browser_peer(&session.session_id, &session.session_key, &recorded).await;
+    assert_eq!(peer.app.call("session.hello", json!({})).await["ok"], true);
+
+    let trickled = recorded.trickled_by_the_device().await;
+    assert!(!trickled.is_empty(), "the device gathered something");
+    for candidate in &trickled {
+        assert_eq!(
+            candidate["sdpMid"], "0",
+            "the mid of the one BUNDLE section the answer gave: {candidate}"
+        );
+        assert_eq!(candidate["sdpMLineIndex"], 0, "{candidate}");
+    }
+}
+
 /// Rule 8 says the bridge gathers over UDP4 **and UDP6**, and the crate honours
 /// that only for a wildcard of each family: it expands one into the interface
 /// addresses of its own family and skips every other. A bridge handed the IPv4

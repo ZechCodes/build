@@ -148,9 +148,13 @@ describe("openPeerLink", () => {
     expect(signalled.filter(([method]) => method === "rtc.ice")).toEqual([
       ["rtc.ice", { candidate: { candidate: "candidate:1 1 udp" } }],
     ]);
-    candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: "candidate:2 1 udp" } });
+    // The bridge's push, verbatim: it names the one BUNDLE section its
+    // candidate belongs to (bridge/src/rtc.rs, `placed_in_bundle`), so what
+    // reaches `addIceCandidate` is what arrived — the SPA normalises nothing.
+    const fromTheBridge = { candidate: "candidate:2 1 udp", sdpMid: "0", sdpMLineIndex: 0 };
+    candidateSinks[0]({ type: "rtc.ice", candidate: fromTheBridge });
     await tick();
-    expect(peer.remoteCandidates).toEqual([{ candidate: "candidate:2 1 udp" }]);
+    expect(peer.remoteCandidates).toEqual([fromTheBridge]);
   });
 
   it("rejects when the ICE servers cannot be minted, and never builds a peer", async () => {

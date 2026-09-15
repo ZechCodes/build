@@ -85,11 +85,25 @@ function carrierCore() {
   };
 }
 
+/**
+ * One session's lease on a relay socket.
+ *
+ * The socket belongs to the rendezvous that opened it, and one rendezvous mints
+ * several sessions on it (spec rule 5), so this carrier is neither the only
+ * reader of the wire nor allowed to end it: it takes the frames that name its
+ * session and, when it is let go, stops reading and leaves the socket to the
+ * others. Only the rendezvous closes the socket.
+ */
 function relayCarrier(socket, sessionId) {
   const core = carrierCore();
   socket.addEventListener("message", (event) => {
+    if (core.gone()) return;
     const message = JSON.parse(typeof event.data === "string" ? event.data : event.data.toString());
-    if (message.type === "e2ee_envelope") core.deliver(message.envelope);
+    if (message.type !== "e2ee_envelope") return;
+    // The relay names the session on every envelope it forwards; an unnamed one
+    // is nobody else's, so it goes to whoever is reading.
+    if (message.session_id && message.session_id !== sessionId) return;
+    core.deliver(message.envelope);
   });
   socket.addEventListener("close", core.end);
   return {
@@ -97,7 +111,6 @@ function relayCarrier(socket, sessionId) {
     send: (envelope) => sendOverSocket(socket, JSON.stringify({ type: "e2ee_envelope", session_id: sessionId, envelope })),
     close: () => {
       core.end();
-      socket.close();
     },
   };
 }

@@ -86,15 +86,54 @@ describe("the relay carrier", () => {
     expect(seen).toEqual([envelope]);
   });
 
-  it("reports the wire gone once, whether the socket dropped or we closed it", () => {
+  it("takes only its own session's envelopes off a socket that carries several", () => {
+    const socket = new FakeSocket();
+    const mine = [];
+    const theirs = [];
+    openCarrier({ socket, sessionId: "sess-1" }).onEnvelope((e) => mine.push(e));
+    openCarrier({ socket, sessionId: "sess-2" }).onEnvelope((e) => theirs.push(e));
+    socket.emit("message", { data: JSON.stringify({ type: "e2ee_envelope", session_id: "sess-2", envelope }) });
+    expect(mine).toEqual([]);
+    expect(theirs).toEqual([envelope]);
+  });
+
+  it("reports the wire gone once, whether the socket dropped or we let it go", () => {
     const socket = new FakeSocket();
     const carrier = openCarrier({ socket, sessionId: "sess-1" });
     const closed = vi.fn();
     carrier.onClose(closed);
     carrier.close();
     socket.emit("close");
-    expect(socket.closed).toBe(true);
     expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  // The socket belongs to the rendezvous that opened it, and one rendezvous
+  // mints several sessions on it (spec rule 5). A session letting its signaling
+  // carrier go must not take the wire out from under the others.
+  it("leaves the socket to whoever else is riding it", () => {
+    const socket = new FakeSocket();
+    const mine = openCarrier({ socket, sessionId: "sess-1" });
+    const theirs = openCarrier({ socket, sessionId: "sess-2" });
+    const stillThere = [];
+    theirs.onEnvelope((e) => stillThere.push(e));
+
+    mine.close();
+
+    expect(socket.closed).toBe(false);
+    socket.emit("message", { data: JSON.stringify({ type: "e2ee_envelope", session_id: "sess-2", envelope }) });
+    expect(stillThere).toEqual([envelope]);
+  });
+
+  it("stops delivering to a carrier that has been let go", () => {
+    const socket = new FakeSocket();
+    const carrier = openCarrier({ socket, sessionId: "sess-1" });
+    const seen = [];
+    carrier.onEnvelope((e) => seen.push(e));
+
+    carrier.close();
+    socket.emit("message", { data: JSON.stringify({ type: "e2ee_envelope", session_id: "sess-1", envelope }) });
+
+    expect(seen).toEqual([]);
   });
 });
 

@@ -59,6 +59,12 @@ export function createRelayRendezvous({
 
   let socket = null;
   let opening = null;
+  // Which dial this rendezvous is on. Closing it — or the socket going — moves
+  // it on, so a dial still in flight knows the answer it is about to give is
+  // nobody's: it opens no socket, and a socket it did open is shut. The relay
+  // is held open only while something is negotiating (rule 4), and an
+  // authenticated socket nothing owns would be held open by nothing at all.
+  let era = 0;
   const carriers = new Set();
   const closedListeners = new Set();
   // sessionId → what the mint waiting for that device's answer is settled with.
@@ -70,6 +76,7 @@ export function createRelayRendezvous({
     if (socket !== ws) return; // a socket this rendezvous has already replaced
     socket = null;
     opening = null;
+    era += 1;
     for (const carrier of [...carriers]) carrier.close();
     carriers.clear();
     for (const settle of [...awaiting.values()]) settle.fail(new Error("the rendezvous closed"));
@@ -85,11 +92,14 @@ export function createRelayRendezvous({
     awaiting.get(message.session_id)?.answer(message);
   };
 
-  async function dial() {
+  async function dial(dialledIn) {
     await transport.ready?.();
     // The api mints a short-lived gateway token for our logged-in session; the
     // relay validates it and routes us only to devices we own.
     const token = await fetchToken();
+    // Called off while that token was in flight: the socket this would have
+    // opened has no owner, so it is not opened at all.
+    if (dialledIn !== era) throw new Error("the rendezvous closed");
     const ws = new WebSocketImpl(`${relayUrl}/ws/client`);
     socket = ws;
     ws.addEventListener("message", (event) => {
@@ -102,6 +112,7 @@ export function createRelayRendezvous({
     ws.addEventListener("close", () => dropped(ws));
     try {
       await openedWithin(ws, openTimeoutMs);
+      if (dialledIn !== era) throw new Error("the rendezvous closed"); // shut below, with nothing sent on it
       sendOverSocket(ws, JSON.stringify({ type: "authenticate", token }));
     } catch (error) {
       try {
@@ -117,11 +128,17 @@ export function createRelayRendezvous({
 
   /** The socket, opened if it is not there. A second caller joins the attempt
    *  in flight rather than starting another. */
-  const open = () =>
-    (opening ||= dial().catch((error) => {
-      opening = null;
+  const open = () => (opening ||= startDial());
+
+  function startDial() {
+    // Only this attempt's own failure clears the slot: one that was called off
+    // must not throw away the dial that replaced it.
+    const attempt = dial(era).catch((error) => {
+      if (opening === attempt) opening = null;
       throw error;
-    }));
+    });
+    return attempt;
+  }
 
   /** The device's answer to one `session_init`, or the reason there is none. */
   const accepted = (sessionId) =>
@@ -198,6 +215,8 @@ export function createRelayRendezvous({
 
     /** Nothing is negotiating: the relay is not held open between upgrades. */
     close() {
+      era += 1; // whatever is being dialled is nobody's now
+      opening = null;
       const ws = socket;
       if (!ws) return;
       dropped(ws, { deliberate: true });

@@ -235,6 +235,44 @@ describe("createRelayRendezvous", () => {
     stood.rendezvous.close();
   });
 
+  // Rule 4: the relay is held open only while something is negotiating, so a
+  // dial nobody is waiting for any more must not land an authenticated socket
+  // with no owner — there is nothing that would ever close it.
+  it("cancels a dial the caller closed while the gateway token was in flight", async () => {
+    let handOver;
+    const stood = stand({ fetchToken: () => new Promise((settle) => { handOver = settle; }) });
+    const opening = stood.rendezvous.open().catch((error) => error);
+    await tick();
+
+    stood.rendezvous.close();
+    handOver("tok-late");
+
+    expect((await opening).message).toMatch(/closed/);
+    expect(FakeWebSocket.instances).toHaveLength(0); // no socket was ever dialled
+    expect(stood.rendezvous.isOpen()).toBe(false);
+  });
+
+  it("dials again after a cancelled one, rather than holding the attempt that was called off", async () => {
+    let handOver;
+    const stood = stand({
+      fetchToken: () => (handOver ? Promise.resolve("tok-2") : new Promise((settle) => { handOver = settle; })),
+    });
+    const cancelled = stood.rendezvous.open().catch((error) => error);
+    await tick();
+    stood.rendezvous.close();
+    handOver("tok-1");
+    await cancelled;
+
+    const again = stood.rendezvous.open();
+    await tick();
+    stood.socket().emit("open");
+    await again;
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(stood.socket().sent[0]).toEqual({ type: "authenticate", token: "tok-2" });
+    stood.rendezvous.close();
+  });
+
   it("gives up on a relay that does not answer at all", async () => {
     const stood = stand({ openTimeoutMs: 20 });
     const refused = stood.rendezvous.open().catch((error) => error);

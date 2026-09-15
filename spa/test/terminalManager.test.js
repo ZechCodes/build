@@ -214,6 +214,43 @@ describe("the device the terminals follow", () => {
     expect(socket.carriers).toEqual([]); // nor is dev-a taken off its own carrier
   });
 
+  // The move is a session and then a wire, in that order. A socket handed the
+  // new machine's channel while it still holds the old machine's session
+  // re-attaches that session's terminals over a bridge that has never heard of
+  // it — and reports itself connected on a wire carrying nothing.
+  it("gives the socket the new machine's session before it gives it the channel", async () => {
+    const term = { id: "term-b" };
+    live("dev-a", { peerLink: { term: { id: "term-a" } } });
+    live("dev-b", { peerLink: { term } });
+    const socket = socketOn("dev-a");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    expect(followTerminalDevice()).toBe(true);
+    expect(socket.carriers).toEqual([]); // nothing is handed over while the mint is in flight
+
+    await settle();
+
+    expect(socket.adopted).toEqual([{ sessionId: "sess-dev-b", sessionKeyB64: "key-dev-b", deviceId: "dev-b" }]);
+    expect(socket.carriers).toEqual([term]);
+  });
+
+  // And a machine that could not mint one takes neither: the shells stay on the
+  // machine they are on, riding the channel they are already riding.
+  it("leaves the shells on their own machine's channel when the mint is refused", async () => {
+    live("dev-a", { peerLink: { term: { id: "term-a" } } });
+    live("dev-b", { peerLink: { term: { id: "term-b" } } });
+    mints.refuse = true;
+    const socket = socketOn("dev-a");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    followTerminalDevice();
+    await settle();
+
+    expect(socket.adopted).toEqual([]);
+    expect(socket.carriers).toEqual([]);
+    expect(socket.deviceId).toBe("dev-a");
+  });
+
   it("followTerminalDevice hands over the route device's peer term channel", () => {
     const term = { id: "term-b" };
     live("dev-a", { peerLink: { term: { id: "term-a" } } });

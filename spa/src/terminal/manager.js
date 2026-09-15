@@ -78,7 +78,7 @@ export function terminalManager() {
     // A session on the device the shells are to type at, and the channel that
     // device's peer link is already carrying, if it has one. Until both are
     // there the panes are shown connecting, which is what they are.
-    retargetTerminals(terminalDeviceId());
+    followTerminalDevice();
     if (peerCarrier) socket.peer(peerCarrier);
   }
   return socket;
@@ -101,37 +101,49 @@ function terminalsRideOn(carrier) {
 }
 
 /**
- * Put the terminal socket on the device the terminals follow, and say whether
- * the shells took the move. The move is a session: one minted on that device's
- * rendezvous, adopted by the socket, which re-attaches every open tab over that
- * device's channel.
+ * Take the terminal socket to another machine, and say whether the shells took
+ * the move. The move is a session: one minted on that device's rendezvous,
+ * adopted by the socket, which re-attaches every open tab over that device's
+ * channel.
  *
  * That re-attach is why a machine that cannot answer takes nothing: every tab
  * would come back against a machine with no session to open a PTY on. The
  * shells stay where they are, and the caller asks again when the machine can.
  */
-function retargetTerminals(wantedDeviceId) {
-  if (!socket || socket.deviceId === wantedDeviceId) return true;
-  if (!canAnswer(contextFor(wantedDeviceId))) return false;
-  adoptSessionOn(wantedDeviceId);
+function moveTerminalsTo(deviceId) {
+  if (!canAnswer(contextFor(deviceId))) return false;
+  adoptSessionOn(deviceId);
   return true;
 }
 
+/** The `term` channel one machine's peer link is carrying, or null when it has
+ *  none. Nobody else's: another device's channel carries the stream to the
+ *  wrong machine. */
+const termChannelOf = (deviceId) => contextFor(deviceId)?.peerLink?.term || null;
+
 /**
- * Mint a terminal session on one machine and give it to the socket.
+ * Mint a terminal session on one machine, give it to the socket, and only then
+ * give the socket that machine's channel.
+ *
+ * That order is the whole of it: a socket handed the new machine's wire while
+ * it still holds the old machine's session re-attaches THAT session's terminals
+ * over a bridge which has never heard of it, and reports itself connected on a
+ * wire carrying nothing.
  *
  * Not awaited: `followTerminalDevice` answers a route change, which cannot wait
- * on a relay round trip. A mint that fails leaves the shells on the session
- * they are on — the device it failed for is blocked by the layer that owns its
- * rendezvous, which is what the panes end up showing — and a mint that lands
- * after the shells have moved on again is dropped, because the session it
+ * on a relay round trip. A mint that fails leaves the shells on the session and
+ * the wire they are on — the device it failed for is blocked by the layer that
+ * owns its rendezvous, which is what the panes end up showing — and a mint that
+ * lands after the shells have moved on again is dropped, because the session it
  * carries is the wrong machine's.
  */
 function adoptSessionOn(deviceId) {
   Promise.resolve()
     .then(() => mintTerminalSession(deviceId))
     .then((session) => {
-      if (session && socket && terminalDeviceId() === deviceId) socket.adoptTerminalSession(session);
+      if (!session || !socket || terminalDeviceId() !== deviceId) return;
+      socket.adoptTerminalSession(session);
+      terminalsRideOn(termChannelOf(deviceId));
     })
     .catch(() => {
       /* that machine cannot mint one; the shells stay where they are */
@@ -151,7 +163,9 @@ function adoptSessionOn(deviceId) {
  */
 export function followTerminalDevice() {
   const deviceId = terminalDeviceId();
-  if (!retargetTerminals(deviceId)) return false;
-  terminalsRideOn(contextFor(deviceId)?.peerLink?.term || null);
+  // Another machine: the session goes first and takes the wire with it when it
+  // lands. The shells keep the channel they are riding until then.
+  if (socket && socket.deviceId !== deviceId) return moveTerminalsTo(deviceId);
+  terminalsRideOn(termChannelOf(deviceId));
   return true;
 }

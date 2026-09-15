@@ -721,6 +721,42 @@ describe("per-device connections", () => {
     expect(lastSession("dev-b").close).toHaveBeenCalled();
   });
 
+  // Retiring a machine calls its dial off, and the account can hand the same
+  // machine back — a revoke undone, an api list that still names it — while
+  // that dial is still in flight. What the late one lands is one dial's
+  // business: the session and the connection IT opened, closed, and not a
+  // thing belonging to the machine as the account now has it.
+  it("closes only what it opened when a newer dial has already landed the machine", async () => {
+    devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
+    App.devices = devices;
+    slowMs.set("dev-b", 20);
+    const late = connectDevice("dev-b").catch((error) => error);
+    await flush();
+
+    retireDevice("dev-b"); // the dial at dev-b is called off, and it is let go
+
+    slowMs.set("dev-b", 5); // the account has it again, and this dial lands first
+    const fresh = connectDevice("dev-b");
+    await vi.advanceTimersByTimeAsync(5);
+    await fresh;
+    const landed = lastSession("dev-b");
+    const landedLink = linksFor.get("dev-b");
+    expect(contextFor("dev-b").session).toBe(landed);
+
+    await vi.advanceTimersByTimeAsync(20);
+    await late;
+    await flush();
+
+    const stale = lastSession("dev-b");
+    expect(stale).not.toBe(landed);
+    expect(stale.close).toHaveBeenCalled();
+    expect(linksFor.get("dev-b").close).toHaveBeenCalled();
+    // …and the machine the account has is left exactly as it was landed.
+    expect(contextFor("dev-b")?.session).toBe(landed);
+    expect(landed.close).not.toHaveBeenCalled();
+    expect(landedLink.close).not.toHaveBeenCalled();
+  });
+
   // The key offered for this machine is not the key the account pinned, so the
   // machine answering is not the one that was paired. Asking again every few
   // seconds would offer the same pinned key to the same impostor and tell

@@ -176,8 +176,16 @@ function openDirectLink(deviceId, session) {
   });
 }
 
-/** Find this machine, open its connection, and put the session on it. */
-async function connectOverChannels(deviceId) {
+/**
+ * Find this machine, open its connection, and put the session on it.
+ *
+ * `stillWanted` is asked once more with the connection open and before anything
+ * is landed: a dial runs for as long as a relay round trip and two handshakes,
+ * and the account can let the machine go in that time. What this dial opened is
+ * this dial's to close — and nothing else is, because by then the machine may
+ * have been handed back and a newer dial may have landed a session at it.
+ */
+async function connectOverChannels(deviceId, stillWanted = () => true) {
   if (!globalThis.RTCPeerConnection) {
     throw becauseOf(new Error("this browser cannot open a direct connection"), "no-webrtc");
   }
@@ -189,6 +197,13 @@ async function connectOverChannels(deviceId) {
   } catch (error) {
     closeQuietly(session); // nothing ever carried it
     throw error;
+  }
+  if (!stillWanted()) {
+    // Closed before the link is dropped, so the session reports no loss on the
+    // way out: this machine is not offline, it is one this dial no longer has.
+    closeQuietly(session);
+    link.close();
+    throw new Error(`device ${deviceId} is no longer on this account`);
   }
   session.peer(link.app); // rule 2: the channel is the carrier, and the first one
   return landSession(session, link);
@@ -241,15 +256,10 @@ async function connectOnce(deviceId, era) {
   // would neither fix that nor tell anyone about it.
   if (securityStops.has(deviceId)) throw new Error(securityStops.get(deviceId));
   try {
-    const context = await connectOverChannels(deviceId);
-    // It answered after the account let it go: the session it opened and the
-    // connection under it are this layer's to close, and the context it landed
-    // is not one the account has.
-    if (!stillAsking(deviceId, era)) {
-      retireDevice(deviceId);
-      throw new Error(`device ${deviceId} is no longer on this account`);
-    }
-    return context;
+    // It may answer after the account has let it go, and the machine it answers
+    // for is not the machine this dial was started for any more: nothing it
+    // opened is landed, and nothing that outlived it is touched.
+    return await connectOverChannels(deviceId, () => stillAsking(deviceId, era));
   } catch (error) {
     // A machine the account has let go of is not blocked: blocking it would put
     // it back in the rail, greyed, with a Retry that dials a device nobody has.

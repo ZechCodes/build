@@ -91,6 +91,8 @@ export class TerminalSocket {
     // under a live channel is re-established on that same channel.
     this._carrier = null;
     this._status = null;
+    // Whether the session under this socket is being swapped for another one.
+    this._replacing = false;
     // This session's crypto and correlation: the pending calls, the frames and
     // the demux, over whichever carrier the switch has it riding. A fresh
     // session is a fresh one of these.
@@ -137,8 +139,12 @@ export class TerminalSocket {
   adoptTerminalSession(session) {
     this._closed = false;
     const carrier = this._carrier;
-    this._switch.peer(null); // the old session's calls end with the old session
+    // A session being replaced is not one being lost: the old session's calls
+    // end with it, and nobody is told the shells are gone when they are moving.
+    this._replacing = true;
+    this._switch.peer(null);
     this._openSession(session);
+    this._replacing = false;
     this._report("connecting");
     return carrier ? this._switch.peer(carrier) : undefined;
   }
@@ -447,6 +453,10 @@ export class TerminalSocket {
    * terminal is already attached over, not one it has to race.
    */
   async _nowCarrying() {
+    // A wire handed over before this socket has a session carries nothing: the
+    // channel of a device whose mint is still in flight. Adopting that session
+    // re-takes the wire, and that is the connection.
+    if (!this._rpc) return;
     await this._reattachAll();
     this._connected = true;
     this._report("connected");
@@ -623,6 +633,7 @@ export class TerminalSocket {
     for (const entry of this._terms.values()) this._cancelPendingAck(entry);
     this._connected = false;
     this._rpc?.fail(new TerminalSocketLost("disconnected"));
+    if (this._replacing) return;
     this._failConnectWaiters("disconnected");
     this._report("disconnected");
   }

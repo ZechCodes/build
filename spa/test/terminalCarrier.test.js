@@ -190,6 +190,28 @@ describe("a terminal socket on the wire it was handed", () => {
     socket.close();
   });
 
+  // The manager hands the channel over as soon as the device's peer link has
+  // one, which can be before the mint it asked for has landed. A wire with no
+  // session carries nothing: saying otherwise would resolve a pane's wait and
+  // then refuse the attach it made.
+  it("says nothing about a wire it was handed before its session", async () => {
+    const socket = new TerminalSocket({ transport: fakeTransport });
+    const statuses = [];
+    socket.onStatus((status) => statuses.push(status));
+    const carrier = fakeCarrier();
+
+    await socket.peer(carrier);
+    const waiting = socket.whenConnected();
+    expect(statuses).toEqual([]);
+
+    await socket.adoptTerminalSession(terminalSession("sess-1"));
+
+    await expect(waiting).resolves.toBeUndefined();
+    expect(statuses).toEqual(["connecting", "connected"]);
+    await expect(socket.input("term-1", "x")).resolves.toBeUndefined();
+    socket.close();
+  });
+
   it("fails a call whose envelope never crossed the wire, rather than waiting out its timeout", async () => {
     const { socket } = standing();
     await socket.peer(fakeCarrier({ sendFails: "the channel closed" }));

@@ -2,10 +2,17 @@
 //! session, handed the browser's offer and its candidates, trickling its own
 //! back.
 //!
-//! Signaling is the one thing pinned to the relay carrier (spec §Signaling).
-//! `rtc.offer`, `rtc.ice` and `rtc.close` ride the carrier the client sent them
-//! on and the bridge's candidates go back over that same carrier — never over
-//! the channels they negotiate, which do not exist yet when they are needed.
+//! Signaling rides the rendezvous carrier, and is the only thing that may
+//! (strict P2P transport spec, rule 1): `rtc.offer`, `rtc.ice` and `rtc.close`
+//! ride the carrier the client sent them on and the bridge's candidates go back
+//! over that same carrier — never over the channels they negotiate, which do
+//! not exist yet when they are needed. Which wire that carrier is, is not this
+//! module's business: today it is the relay socket, and a future direct-network
+//! rendezvous is the same path (`carrier.rs`, rule 7).
+//!
+//! Everything else the client asks for rides the channels this module
+//! negotiates. A client whose channels never open has no data path at all —
+//! there is no relay to stay on — so it fails closed and blocks that device.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -207,8 +214,10 @@ fn awaited<T>(work: impl std::future::Future<Output = T>) -> T {
     tokio::runtime::Handle::current().block_on(work)
 }
 
-/// A bridge with no peer transport built in. Every offer is refused, so the
-/// client logs the failed upgrade and stays on the relay carrier.
+/// A bridge with no peer transport built in. Every offer is refused, and a
+/// refused offer is the end of the road: the client has no data path to this
+/// device (rule 3) and blocks it, rather than falling back to a relay that
+/// carries no application traffic.
 pub struct NoPeerFactory;
 
 impl SessionPeerFactory for NoPeerFactory {

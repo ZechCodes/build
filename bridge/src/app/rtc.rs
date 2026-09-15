@@ -46,8 +46,11 @@ pub(in crate::app) fn rtc_ice(
     Ok(json!({}))
 }
 
-/// The browser gave up on the peer carrier: tear this session's peer down and
-/// leave the session working over the relay.
+/// The browser gave up on the peer carrier: tear this session's peer down. The
+/// session itself lives on — its rendezvous still carries the signaling of the
+/// next offer — but it has no data path until one opens again (rule 1), which
+/// is why a browser sends this only when it is done with the device or about
+/// to renegotiate.
 pub(in crate::app) fn rtc_close(
     state: &Arc<Mutex<AppState>>,
     session_id: &str,

@@ -5,6 +5,16 @@
 //! DataChannel is another. Everything above this line — the session key, the
 //! encrypted frames, dispatch and teardown — is the same on either, so nothing
 //! above it learns which wire is carrying.
+//!
+//! **The seam** (strict P2P transport spec, rule 7). A session is minted by a
+//! `session_init` arriving on some carrier, and `FrameIntake::open` answers
+//! it on that same carrier: the rendezvous is whichever wire asked, and no
+//! caller hands the accept anywhere else. That is what a future direct-network
+//! mode (LAN, Tailscale) plugs into — a bridge-local listener becomes a second
+//! rendezvous with no relay in the process, and needs no new path through this
+//! module. `CarrierKind` gains no variant for it, and the one thing in the
+//! crate that may ask whether a wire is the relay is rule 1's refusal below:
+//! the relay carries the negotiation and never application traffic.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -28,7 +38,7 @@ use dispatch::Dispatcher;
 /// init that arrived on that carrier. The carrier that takes it decides how to
 /// frame it — the relay writer wraps a frame as `{"type":"e2ee_envelope",…}`, a
 /// DataChannel sends the envelope JSON directly, and both send an accept as
-/// [`session_accept_message`].
+/// `session_accept_message`.
 ///
 /// Two variants and no third: everything else a client asks for is a frame,
 /// and everything a wire needs to say for itself is that wire's own business

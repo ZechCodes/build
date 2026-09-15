@@ -1,0 +1,7 @@
+# The heartbeat challenge the bridge signs and the api verifies, byte for byte.
+# Read by bridge/tests/presence.rs and skriftapp/buildapp/test_presence.py: the
+# two implementations have no shared code, so this file is the contract.
+# Format: key=value, one per line; `#` and blank lines are comments.
+device_id=7b2a4f6c-9d1e-4a3b-8c5d-0e1f2a3b4c5d
+timestamp=1750000000
+challenge=heartbeat.7b2a4f6c-9d1e-4a3b-8c5d-0e1f2a3b4c5d.1750000000

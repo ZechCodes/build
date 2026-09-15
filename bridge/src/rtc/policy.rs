@@ -15,7 +15,7 @@
 //! not the relay; nothing else about it is new.
 
 use std::borrow::Cow;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use rtc::ice::mdns::MulticastDnsMode;
@@ -80,14 +80,51 @@ impl Default for IcePolicy {
 /// this wildcard at bind time — one socket per interface address that exists
 /// *then* — which is what makes an ICE restart after a network handover pick
 /// up the interfaces the device has now.
-pub(crate) const EVERY_IPV4_INTERFACE: &str = "0.0.0.0:0";
+pub(crate) const EVERY_IPV4_INTERFACE: SocketAddr =
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
 /// The same for IPv6. A wildcard is expanded into the addresses of its **own**
 /// family only (`driver.rs::expand_wildcard` skips every address whose family
 /// differs), so this is the only way an IPv6 host candidate is ever gathered —
 /// and rule 8's "gathers over UDP4/UDP6" needs it on any network whose shared
 /// path is IPv6 (an IPv6-only LAN, a Tailnet).
-pub(crate) const EVERY_IPV6_INTERFACE: &str = "[::]:0";
+pub(crate) const EVERY_IPV6_INTERFACE: SocketAddr =
+    SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0);
+
+/// Where one peer connection binds, as `with_udp_addrs` takes it — **a
+/// question, not an answer**.
+///
+/// The crate resolves what it is given on every bind, at startup and again on
+/// every ICE-restart rebind, and that late resolution is what lets a rebind
+/// follow a network change instead of asking for an address that has gone
+/// away. A wildcard gets that for free; a literal address does not, it is
+/// rebound verbatim. So an allow-list travels as the names an operator wrote
+/// and is enumerated at each bind, exactly like the wildcard beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GatherAddr {
+    /// Every non-loopback interface, as the family wildcards the crate expands.
+    EveryInterface,
+    /// Only the interfaces `BRIDGE_ICE_INTERFACES` named.
+    Named(Vec<String>),
+}
+
+impl ToSocketAddrs for GatherAddr {
+    type Iter = std::vec::IntoIter<SocketAddr>;
+
+    /// Enumerated here rather than stored, because this runs again on every
+    /// rebind. An enumeration that fails leaves the wildcard — the crate binds
+    /// it as given and the connection can still come up over STUN or TURN —
+    /// and leaves an allow-list with nothing, which is the only honest answer
+    /// to "bind these interfaces" when the interfaces cannot be read.
+    fn to_socket_addrs(&self) -> std::io::Result<Self::Iter> {
+        let reported = reported_interfaces().unwrap_or_default();
+        let addrs = match self {
+            GatherAddr::EveryInterface => every_interface(&reported),
+            GatherAddr::Named(named) => gathered_on(named, &reported),
+        };
+        Ok(addrs.into_iter())
+    }
+}
 
 impl IcePolicy {
     /// Read the policy from the environment, refusing anything it cannot
@@ -167,37 +204,43 @@ impl IcePolicy {
         }
     }
 
-    /// The local addresses a peer under this policy binds, as
-    /// `PeerConnectionBuilder::with_udp_addrs` takes them.
+    /// Where a peer under this policy binds, as
+    /// `PeerConnectionBuilder::with_udp_addrs` takes it — one
+    /// [`GatherAddr`], resolved by the crate at every bind.
     ///
     /// This is where an interface allow-list is applied. The pinned webrtc
     /// crate (0.20.4) has no interface filter — `SettingEngine`'s is still a
-    /// `TODO` in `rtc`'s source — but it does enumerate interfaces itself to
-    /// expand a wildcard, so naming the addresses of the allowed interfaces
-    /// does the same job one bind earlier, and does it strictly: an interface
-    /// that is not on the list is never bound at all.
-    pub(crate) fn gather_from(&self) -> Result<Vec<String>, RtcError> {
+    /// `TODO` in `rtc`'s source — but it resolves what it is given on every
+    /// bind, so a value that enumerates by name does the filtering one step
+    /// earlier and does it strictly: an interface that is not on the list is
+    /// never bound at all, and one that changed address since the last bind is
+    /// bound at the address it has now.
+    ///
+    /// Fallible for one reason: an allow-list that answers to no address on
+    /// this machine right now. That bridge would bind nothing and could not be
+    /// reached at all, so the offer is refused loudly (rule 3 blocks the
+    /// device, naming the list) rather than gathered quietly from nowhere.
+    pub(crate) fn gather_from(&self) -> Result<Vec<GatherAddr>, RtcError> {
         let Some(named) = &self.interfaces else {
-            // The enumeration only chooses which family wildcards to hand over;
-            // the crate does the expansion itself, at bind time. One that
-            // cannot be read here leaves the IPv4 wildcard, which is what this
-            // bridge gathered on before and is still a path.
-            return Ok(every_interface(&reported_interfaces().unwrap_or_default()));
+            return Ok(vec![GatherAddr::EveryInterface]);
         };
+        // Enumerated once here as well, and only to fail closed: a list that
+        // answers to nothing now would bind nothing, and a bridge with no
+        // socket has no path to a browser at all. What the peer is given is
+        // still the names.
         let reported = reported_interfaces().map_err(|e| {
             RtcError::Refused(format!(
                 "cannot enumerate the local interfaces {ICE_INTERFACES_ENV} names ({}): {e}",
                 named.join(",")
             ))
         })?;
-        let addrs = gathered_on(named, &reported);
-        if addrs.is_empty() {
+        if gathered_on(named, &reported).is_empty() {
             return Err(RtcError::Refused(format!(
                 "{ICE_INTERFACES_ENV} names no interface this machine has an address on ({})",
                 named.join(",")
             )));
         }
-        Ok(addrs)
+        Ok(vec![GatherAddr::Named(named.clone())])
     }
 
     /// The agent knobs rule 8 asks for, as the webrtc crate spells them.
@@ -302,13 +345,13 @@ fn reported_interfaces() -> Result<Vec<(String, SocketAddr)>, String> {
 /// fallback would bind `[::]` and put `::` — an address no peer can dial — in
 /// a host candidate, and point a STUN query at a socket that cannot reach the
 /// server.
-fn every_interface(reported: &[(String, SocketAddr)]) -> Vec<String> {
-    let mut wildcards = vec![EVERY_IPV4_INTERFACE.to_string()];
+fn every_interface(reported: &[(String, SocketAddr)]) -> Vec<SocketAddr> {
+    let mut wildcards = vec![EVERY_IPV4_INTERFACE];
     let has_ipv6 = reported
         .iter()
         .any(|(_, addr)| addr.is_ipv6() && is_reachable(&addr.ip()));
     if has_ipv6 {
-        wildcards.push(EVERY_IPV6_INTERFACE.to_string());
+        wildcards.push(EVERY_IPV6_INTERFACE);
     }
     wildcards
 }
@@ -317,12 +360,12 @@ fn every_interface(reported: &[(String, SocketAddr)]) -> Vec<String> {
 /// order the names were given. Loopback, unspecified and link-local addresses
 /// are skipped for the same reason the crate skips them when it expands a
 /// wildcard: no peer can use one.
-fn gathered_on(named: &[String], reported: &[(String, SocketAddr)]) -> Vec<String> {
+fn gathered_on(named: &[String], reported: &[(String, SocketAddr)]) -> Vec<SocketAddr> {
     let mut addrs = Vec::new();
     for name in named {
         for (interface, addr) in reported {
             if interface == name && is_reachable(&addr.ip()) {
-                let addr = SocketAddr::new(addr.ip(), 0).to_string();
+                let addr = SocketAddr::new(addr.ip(), 0);
                 if !addrs.contains(&addr) {
                     addrs.push(addr);
                 }
@@ -617,19 +660,20 @@ mod tests {
             .map(|(name, addr)| (name.to_string(), addr.parse().expect("a bind address")))
             .collect();
 
+        let bind = |addr: &str| -> SocketAddr { addr.parse().expect("a bind address") };
         assert_eq!(
             gathered_on(&["tailscale0".into(), "eth0".into()], &reported),
-            vec!["100.101.102.103:0".to_string(), "192.168.1.9:0".to_string()],
+            vec![bind("100.101.102.103:0"), bind("192.168.1.9:0")],
             "the link-local address of a named interface is no use to a peer"
         );
         assert_eq!(
             gathered_on(&["lo".into()], &reported),
-            Vec::<String>::new(),
+            Vec::<SocketAddr>::new(),
             "loopback is not a path to a browser"
         );
         assert_eq!(
             gathered_on(&["wg0".into()], &reported),
-            Vec::<String>::new(),
+            Vec::<SocketAddr>::new(),
             "an interface this machine does not have"
         );
     }
@@ -640,8 +684,14 @@ mod tests {
     #[test]
     fn no_allow_list_gathers_from_the_wildcard() {
         let gathering = IcePolicy::default().gather_from().expect("the wildcard");
-        assert_eq!(gathering[0], EVERY_IPV4_INTERFACE.to_string());
-        assert!(gathering.len() <= 2 && gathering.iter().all(|addr| addr.ends_with(":0")));
+
+        assert_eq!(gathering, vec![GatherAddr::EveryInterface]);
+        let bound: Vec<SocketAddr> = gathering[0]
+            .to_socket_addrs()
+            .expect("the wildcards")
+            .collect();
+        assert_eq!(bound[0], EVERY_IPV4_INTERFACE);
+        assert!(bound.iter().all(|addr| addr.ip().is_unspecified()));
     }
 
     /// The crate expands a wildcard into the interface addresses of its **own
@@ -662,7 +712,7 @@ mod tests {
 
         assert_eq!(
             every_interface(&reported(&[("eth0", "192.168.1.9:0")])),
-            vec![EVERY_IPV4_INTERFACE.to_string()],
+            vec![EVERY_IPV4_INTERFACE],
             "an IPv4-only machine"
         );
         assert_eq!(
@@ -670,24 +720,59 @@ mod tests {
                 ("eth0", "192.168.1.9:0"),
                 ("eth0", "[2001:db8::5]:0"),
             ])),
-            vec![
-                EVERY_IPV4_INTERFACE.to_string(),
-                EVERY_IPV6_INTERFACE.to_string()
-            ],
+            vec![EVERY_IPV4_INTERFACE, EVERY_IPV6_INTERFACE],
             "a dual-stack machine gathers on both families"
         );
         assert_eq!(
             every_interface(&reported(&[("lo", "[::1]:0"), ("eth0", "[fe80::1]:0")])),
-            vec![EVERY_IPV4_INTERFACE.to_string()],
+            vec![EVERY_IPV4_INTERFACE],
             "loopback and link-local are addresses the crate would skip anyway"
         );
         assert_eq!(
             every_interface(&reported(&[("tailscale0", "[fd7a:115c::1]:0")])),
-            vec![
-                EVERY_IPV4_INTERFACE.to_string(),
-                EVERY_IPV6_INTERFACE.to_string()
-            ],
+            vec![EVERY_IPV4_INTERFACE, EVERY_IPV6_INTERFACE],
             "a Tailnet's IPv6 is a path even with no IPv4 beside it"
+        );
+    }
+
+    /// The allow-list is handed to the crate as the **names**, not the
+    /// addresses they have right now.
+    ///
+    /// `resolve_bind_addrs` runs again on every ICE-restart rebind, but it only
+    /// re-enumerates wildcards: a literal address is rebound verbatim. So an
+    /// allow-list resolved once at build time would, after the named interface
+    /// changed address (a DHCP lease, a Tailnet re-address), rebind an address
+    /// that no longer exists — every bind skipped, the restart unable to
+    /// recover, and only a fresh peer connection able to. Resolving at bind
+    /// time is the property the wildcard already had; this is the allow-list
+    /// keeping it.
+    #[test]
+    fn an_allow_list_is_bound_by_name_so_every_rebind_enumerates_again() {
+        let reported = reported_interfaces().expect("this machine reports its interfaces");
+        let Some((name, addr)) = reported
+            .iter()
+            .find(|(_, addr)| is_reachable(&addr.ip()))
+            .cloned()
+        else {
+            return; // a machine with no usable interface proves nothing here
+        };
+        let policy = IcePolicy {
+            interfaces: Some(vec![name.clone()]),
+            ..IcePolicy::default()
+        };
+
+        let gathering = policy
+            .gather_from()
+            .expect("a name this machine answers to");
+
+        assert_eq!(gathering, vec![GatherAddr::Named(vec![name])]);
+        assert!(
+            gathering[0]
+                .to_socket_addrs()
+                .expect("the names resolve")
+                .any(|bind| bind.ip() == addr.ip()),
+            "and resolving it — which the crate does at every bind — gives the \
+             address that interface has now"
         );
     }
 

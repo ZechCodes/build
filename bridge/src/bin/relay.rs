@@ -312,28 +312,24 @@ fn websocket_limits() -> WebSocketConfig {
     }
 }
 
-#[allow(clippy::cognitive_complexity)] // ratchet: serve_device is at 32, threshold 15 — bring it under, then remove
-async fn serve_device(
-    shared: &Arc<Shared>,
-    upgrade: &Upgrade,
-    out_tx: Outbound,
-    source: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
-    shutdown: &mut broadcast::Receiver<()>,
-    writer_gone: &mut tokio::sync::oneshot::Receiver<()>,
-) {
+/// The `/ws/device` upgrade's signed challenge, checked against the device's record
+/// at the api: unreplayed, in the skew window, signed by the key the api pinned, and
+/// approved. Returns `(device_id, owner_user_id)`, or `None` having said why —
+/// every refusal path, so the socket loop below starts from an authorized device.
+async fn authenticate_device(shared: &Arc<Shared>, upgrade: &Upgrade) -> Option<(String, String)> {
     let (device_id, timestamp, signature) = match (
         upgrade.device_id.clone(),
         upgrade.timestamp.clone(),
         upgrade.signature.clone(),
     ) {
         (Some(d), Some(t), Some(s)) => (d, t, s),
-        _ => return, // structurally rejected already; defensive.
+        _ => return None, // structurally rejected already; defensive.
     };
 
     // Look up the device record at the api. An unreachable api fails closed.
     let Some(record) = lookup_device(shared, &device_id).await else {
         eprintln!("device {device_id}: unknown to api or api unreachable; refused (fail closed)");
-        return;
+        return None;
     };
 
     // Replay + signature/approval/skew checks.
@@ -342,7 +338,7 @@ async fn serve_device(
         let mut replay = shared.replay.lock().await;
         if !replay.check_and_record(&device_id, &timestamp, &signature, Instant::now()) {
             eprintln!("device {device_id}: replayed challenge; refused");
-            return;
+            return None;
         }
     }
     let auth = DeviceAuth {
@@ -350,12 +346,150 @@ async fn serve_device(
         timestamp,
         signature,
     };
-    let owner = match relay_server::authorize_device(&auth, &record, now_unix, AUTH_SKEW) {
-        AuthOutcome::Ok { owner_user_id } => owner_user_id,
+    match relay_server::authorize_device(&auth, &record, now_unix, AUTH_SKEW) {
+        AuthOutcome::Ok { owner_user_id } => Some((device_id, owner_user_id)),
         AuthOutcome::Reject(why) => {
             eprintln!("device {device_id}: refused ({why})");
-            return;
+            None
         }
+    }
+}
+
+/// One frame from an authenticated device. `session_accept` and `e2ee_envelope` go
+/// to the client that owns the session; `heartbeat` is liveness and needs nothing;
+/// anything else is not a frame this relay knows.
+async fn device_frame(shared: &Arc<Shared>, device_id: &str, msg: &Value, text: String) {
+    match msg.get("type").and_then(Value::as_str).unwrap_or("") {
+        "session_accept" | "e2ee_envelope" => {
+            let Some(session_id) = msg.get("session_id").and_then(Value::as_str) else {
+                return;
+            };
+            let target = {
+                let state = shared.state.lock().await;
+                state.client_out_for_device_frame(session_id, device_id)
+            };
+            if let Some(client) = target {
+                let _ = client.send(text);
+            }
+        }
+        _ => {} // "heartbeat" (liveness, nothing to do) and anything unknown
+    }
+}
+
+/// Everything a device's read loop waits on besides the socket itself: the signals
+/// that end the connection, and the clocks that say when silence has lasted too
+/// long. Held apart from [`serve_device`] so that loop reads as "frames until the
+/// connection ends" — which of the four ways it ended is this type's business.
+struct DeviceWatch<'a> {
+    shutdown: &'a mut broadcast::Receiver<()>,
+    writer_gone: &'a mut tokio::sync::oneshot::Receiver<()>,
+    /// Auth happens once at connect, so revocation must be re-checked while the
+    /// connection lives — otherwise "Revoke" in the app never cuts off a
+    /// compromised device until it happens to reconnect.
+    revalidate: tokio::time::Interval,
+    liveness_timeout: Duration,
+    /// Text frames prove the device's send side, pongs prove its read loop, and
+    /// the device is held to BOTH. The 2026-08-13 wedge sent heartbeats from a
+    /// healthy task while the read loop was stuck — frames alone said "alive" as
+    /// the socket filled with unread data and browsers hung on "Waiting for your
+    /// device". Whichever signal goes silent past the window severs the device.
+    frame_deadline: tokio::time::Instant,
+    pong_deadline: tokio::time::Instant,
+}
+
+impl<'a> DeviceWatch<'a> {
+    fn new(
+        shutdown: &'a mut broadcast::Receiver<()>,
+        writer_gone: &'a mut tokio::sync::oneshot::Receiver<()>,
+        liveness_timeout: Duration,
+    ) -> Self {
+        let mut revalidate = tokio::time::interval_at(
+            tokio::time::Instant::now() + DEVICE_REVALIDATION_INTERVAL,
+            DEVICE_REVALIDATION_INTERVAL,
+        );
+        revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let deadline = tokio::time::Instant::now() + liveness_timeout;
+        DeviceWatch {
+            shutdown,
+            writer_gone,
+            revalidate,
+            liveness_timeout,
+            frame_deadline: deadline,
+            pong_deadline: deadline,
+        }
+    }
+
+    /// The device's next frame, or `None` because this connection is over: the
+    /// stream ended, it went silent past the liveness window, its writer stalled,
+    /// the api says it is no longer authorized, or the relay is shutting down.
+    async fn next_frame(
+        &mut self,
+        shared: &Arc<Shared>,
+        device_id: &str,
+        owner: &str,
+        source: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+                  + Unpin),
+    ) -> Option<Message> {
+        loop {
+            tokio::select! {
+                next = source.next() => return match next {
+                    Some(Ok(message)) => Some(message),
+                    _ => None,
+                },
+                _ = self.revalidate.tick() => {
+                    // Fail open only on an unreachable api (a blip must not drop every
+                    // device); an affirmative "not approved / unknown" severs now.
+                    if device_authorization(shared, device_id, owner).await == Some(false) {
+                        eprintln!("device {device_id}: no longer authorized; severing");
+                        return None;
+                    }
+                }
+                _ = tokio::time::sleep_until(self.frame_deadline.min(self.pong_deadline)) => {
+                    eprintln!(
+                        "device {device_id}: {} for {}s; severing",
+                        self.starved(),
+                        self.liveness_timeout.as_secs()
+                    );
+                    return None;
+                }
+                _ = &mut *self.writer_gone => {
+                    eprintln!("device {device_id}: writer severed (stalled or failed write); severing");
+                    return None;
+                }
+                _ = self.shutdown.recv() => return None,
+            }
+        }
+    }
+
+    /// Which half of the device went quiet, for the severance log line.
+    fn starved(&self) -> &'static str {
+        if self.pong_deadline < self.frame_deadline {
+            "pings unanswered (read loop dead)"
+        } else {
+            "no frames (send side dead)"
+        }
+    }
+
+    /// A frame proves the send side; a pong proves the read loop.
+    fn saw_frame(&mut self) {
+        self.frame_deadline = tokio::time::Instant::now() + self.liveness_timeout;
+    }
+
+    fn saw_pong(&mut self) {
+        self.pong_deadline = tokio::time::Instant::now() + self.liveness_timeout;
+    }
+}
+
+async fn serve_device(
+    shared: &Arc<Shared>,
+    upgrade: &Upgrade,
+    out_tx: Outbound,
+    source: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
+    shutdown: &mut broadcast::Receiver<()>,
+    writer_gone: &mut tokio::sync::oneshot::Receiver<()>,
+) {
+    let Some((device_id, owner)) = authenticate_device(shared, upgrade).await else {
+        return;
     };
 
     // A reconnect severs any sessions from this device's previous connection (their
@@ -370,84 +504,22 @@ async fn serve_device(
     );
     eprintln!("device {device_id}: authenticated (owner {owner})");
 
-    // Auth happens once at connect, so revocation must be re-checked while the
-    // connection lives — otherwise "Revoke" in the app never cuts off a
-    // compromised device until it happens to reconnect.
-    let mut revalidate = tokio::time::interval_at(
-        tokio::time::Instant::now() + DEVICE_REVALIDATION_INTERVAL,
-        DEVICE_REVALIDATION_INTERVAL,
-    );
-    revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    // The device promised a heartbeat every HEARTBEAT_INTERVAL_S, and its read
-    // loop answers the writer's WebSocket pings with pongs. Hold it to BOTH:
-    // text frames prove the device's send side, pongs prove its read loop. The
-    // 2026-08-13 wedge sent heartbeats from a healthy task while the read loop
-    // was stuck — frames alone said "alive" as the socket filled with unread
-    // data and browsers hung on "Waiting for your device". Whichever signal
-    // goes silent past the window severs the device, which also gets it
-    // deregistered below.
-    let liveness_timeout = shared.config.device_liveness_timeout;
-    let mut frame_deadline = tokio::time::Instant::now() + liveness_timeout;
-    let mut pong_deadline = tokio::time::Instant::now() + liveness_timeout;
-
-    loop {
-        let message = tokio::select! {
-            next = source.next() => match next {
-                Some(Ok(message)) => message,
-                _ => break,
-            },
-            _ = revalidate.tick() => {
-                // Fail open only on an unreachable api (a blip must not drop every
-                // device); an affirmative "not approved / unknown" severs now.
-                if device_authorization(shared, &device_id, &owner).await == Some(false) {
-                    eprintln!("device {device_id}: no longer authorized; severing");
-                    break;
-                }
-                continue;
-            }
-            _ = tokio::time::sleep_until(frame_deadline.min(pong_deadline)) => {
-                let starved = if pong_deadline < frame_deadline { "pings unanswered (read loop dead)" } else { "no frames (send side dead)" };
-                eprintln!(
-                    "device {device_id}: {starved} for {}s; severing",
-                    liveness_timeout.as_secs()
-                );
-                break;
-            }
-            _ = &mut *writer_gone => {
-                eprintln!("device {device_id}: writer severed (stalled or failed write); severing");
-                break;
-            }
-            _ = shutdown.recv() => break,
-        };
+    let mut watch = DeviceWatch::new(shutdown, writer_gone, shared.config.device_liveness_timeout);
+    while let Some(message) = watch.next_frame(shared, &device_id, &owner, source).await {
         let Message::Text(text) = message else {
             if matches!(message, Message::Pong(_)) {
-                pong_deadline = tokio::time::Instant::now() + liveness_timeout;
+                watch.saw_pong();
             }
             if matches!(message, Message::Close(_)) {
                 break;
             }
             continue;
         };
-        frame_deadline = tokio::time::Instant::now() + liveness_timeout;
+        watch.saw_frame();
         let Ok(msg) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        match msg.get("type").and_then(Value::as_str).unwrap_or("") {
-            "heartbeat" => {}
-            "session_accept" | "e2ee_envelope" => {
-                if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
-                    let target = {
-                        let state = shared.state.lock().await;
-                        state.client_out_for_device_frame(session_id, &device_id)
-                    };
-                    if let Some(client) = target {
-                        let _ = client.send(text);
-                    }
-                }
-            }
-            _ => {}
-        }
+        device_frame(shared, &device_id, &msg, text).await;
     }
 
     // The device is gone: drop it and its sessions. Guarded by conn_id, so a stale
@@ -458,7 +530,147 @@ async fn serve_device(
     state.remove_device(&device_id, conn_id);
 }
 
-#[allow(clippy::cognitive_complexity)] // ratchet: serve_client is at 26, threshold 15 — bring it under, then remove
+/// The `/ws/client` handshake: a browser gets exactly one frame while
+/// unauthenticated, and it must be a text `authenticate` carrying a gateway token
+/// the api minted — sent promptly, or the connection ends (a silent socket must not
+/// pin this task forever). Returns the owning user id, or `None` having said why.
+async fn authenticate_client(
+    shared: &Arc<Shared>,
+    source: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
+    shutdown: &mut broadcast::Receiver<()>,
+) -> Option<String> {
+    let first_frame = tokio::select! {
+        next = tokio::time::timeout(CLIENT_AUTH_DEADLINE, source.next()) => match next {
+            Ok(frame) => frame,
+            Err(_) => {
+                eprintln!("client: no authenticate frame within the deadline; refused");
+                return None;
+            }
+        },
+        _ = shutdown.recv() => return None,
+    };
+    let Some(Ok(Message::Text(first_text))) = first_frame else {
+        eprintln!("client: first frame was not text; refused");
+        return None;
+    };
+    let Some(token) = relay_server::parse_authenticate_token(&first_text) else {
+        eprintln!("client: first frame was not a valid authenticate; refused");
+        return None;
+    };
+    let user_id = lookup_gateway_token(shared, &token).await;
+    if user_id.is_none() {
+        eprintln!("client: invalid gateway token or api unreachable; refused (fail closed)");
+    }
+    user_id
+}
+
+/// One frame from an authenticated browser. `session_init` mints a session against
+/// a device the same user owns; `e2ee_envelope` rides a session that client already
+/// holds. Both are forwarded verbatim — the relay reads no further into either.
+async fn client_frame(
+    shared: &Arc<Shared>,
+    client_id: u64,
+    user_id: &str,
+    msg: &Value,
+    text: String,
+) {
+    let Some(session_id) = msg.get("session_id").and_then(Value::as_str) else {
+        return;
+    };
+    match msg.get("type").and_then(Value::as_str).unwrap_or("") {
+        "session_init" => {
+            // Contract: outer `route_to: "device:<id>"`; legacy fallback is the
+            // device_id inside the session_init payload.
+            let Some(device_id) = relay_server::session_target_device(msg) else {
+                eprintln!("client {client_id}: session_init without a valid device target");
+                return;
+            };
+            let target = {
+                let mut state = shared.state.lock().await;
+                state.open_session(session_id, client_id, &device_id)
+            };
+            match target {
+                Some(device) => {
+                    let _ = device.send(text);
+                }
+                None => eprintln!("client {user_id}: rejected session to device {device_id}"),
+            }
+        }
+        "e2ee_envelope" => {
+            let target = {
+                let state = shared.state.lock().await;
+                state.device_out_for_client_frame(session_id, client_id)
+            };
+            if let Some(device) = target {
+                let _ = device.send(text);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [`DeviceWatch`]'s counterpart for a browser, and a shorter list: a browser is
+/// held to the pong deadline alone. A quiet one sends no frame for as long as it
+/// likes, but its WS stack answers every ping as long as the page is there.
+/// Unanswered pings past the window are a client that went away without a close —
+/// a suspended tab, a socket a load balancer keeps established for a browser that
+/// is gone — and until it is severed, its sessions pin the device's per-session
+/// state.
+struct ClientWatch<'a> {
+    shutdown: &'a mut broadcast::Receiver<()>,
+    writer_gone: &'a mut tokio::sync::oneshot::Receiver<()>,
+    liveness_timeout: Duration,
+    pong_deadline: tokio::time::Instant,
+}
+
+impl<'a> ClientWatch<'a> {
+    fn new(
+        shutdown: &'a mut broadcast::Receiver<()>,
+        writer_gone: &'a mut tokio::sync::oneshot::Receiver<()>,
+        liveness_timeout: Duration,
+    ) -> Self {
+        ClientWatch {
+            shutdown,
+            writer_gone,
+            liveness_timeout,
+            pong_deadline: tokio::time::Instant::now() + liveness_timeout,
+        }
+    }
+
+    /// The browser's next frame, or `None` because this connection is over: the
+    /// stream ended, its pings went unanswered, its writer stalled, or the relay
+    /// is shutting down.
+    async fn next_frame(
+        &mut self,
+        client_id: u64,
+        source: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+                  + Unpin),
+    ) -> Option<Message> {
+        tokio::select! {
+            next = source.next() => match next {
+                Some(Ok(message)) => Some(message),
+                _ => None,
+            },
+            _ = tokio::time::sleep_until(self.pong_deadline) => {
+                eprintln!(
+                    "client {client_id}: pings unanswered for {}s; severing",
+                    self.liveness_timeout.as_secs()
+                );
+                None
+            }
+            _ = &mut *self.writer_gone => {
+                eprintln!("client {client_id}: writer severed (stalled or failed write); severing");
+                None
+            }
+            _ = self.shutdown.recv() => None,
+        }
+    }
+
+    fn saw_pong(&mut self) {
+        self.pong_deadline = tokio::time::Instant::now() + self.liveness_timeout;
+    }
+}
+
 async fn serve_client(
     shared: &Arc<Shared>,
     out_tx: Outbound,
@@ -466,29 +678,7 @@ async fn serve_client(
     shutdown: &mut broadcast::Receiver<()>,
     writer_gone: &mut tokio::sync::oneshot::Receiver<()>,
 ) {
-    // The browser gets exactly one frame while unauthenticated: it must be a text
-    // `authenticate` frame carrying a valid gateway token — sent promptly — or the
-    // connection ends (a silent socket must not pin this task forever).
-    let first_frame = tokio::select! {
-        next = tokio::time::timeout(CLIENT_AUTH_DEADLINE, source.next()) => match next {
-            Ok(frame) => frame,
-            Err(_) => {
-                eprintln!("client: no authenticate frame within the deadline; refused");
-                return;
-            }
-        },
-        _ = shutdown.recv() => return,
-    };
-    let Some(Ok(Message::Text(first_text))) = first_frame else {
-        eprintln!("client: first frame was not text; refused");
-        return;
-    };
-    let Some(token) = relay_server::parse_authenticate_token(&first_text) else {
-        eprintln!("client: first frame was not a valid authenticate; refused");
-        return;
-    };
-    let Some(user_id) = lookup_gateway_token(shared, &token).await else {
-        eprintln!("client: invalid gateway token or api unreachable; refused (fail closed)");
+    let Some(user_id) = authenticate_client(shared, source, shutdown).await else {
         return;
     };
 
@@ -502,37 +692,11 @@ async fn serve_client(
     // a rendezvous, and says only that it knows who is on it.
     let _ = out_tx.send(json!({"type":"authenticated"}).to_string());
 
-    // A browser is held to the pong deadline alone: a quiet one sends no frame
-    // for as long as it likes, but its WS stack answers every ping as long as
-    // the page is there. Unanswered pings past the window are a client that
-    // went away without a close — a suspended tab, a socket a load balancer
-    // keeps established for a browser that is gone — and until it is severed,
-    // its sessions pin the device's per-session state.
-    let liveness_timeout = shared.config.device_liveness_timeout;
-    let mut pong_deadline = tokio::time::Instant::now() + liveness_timeout;
-
-    loop {
-        let message = tokio::select! {
-            next = source.next() => match next {
-                Some(Ok(message)) => message,
-                _ => break,
-            },
-            _ = tokio::time::sleep_until(pong_deadline) => {
-                eprintln!(
-                    "client {client_id}: pings unanswered for {}s; severing",
-                    liveness_timeout.as_secs()
-                );
-                break;
-            }
-            _ = &mut *writer_gone => {
-                eprintln!("client {client_id}: writer severed (stalled or failed write); severing");
-                break;
-            }
-            _ = shutdown.recv() => break,
-        };
+    let mut watch = ClientWatch::new(shutdown, writer_gone, shared.config.device_liveness_timeout);
+    while let Some(message) = watch.next_frame(client_id, source).await {
         let Message::Text(text) = message else {
             if matches!(message, Message::Pong(_)) {
-                pong_deadline = tokio::time::Instant::now() + liveness_timeout;
+                watch.saw_pong();
             }
             if matches!(message, Message::Close(_)) {
                 break;
@@ -542,39 +706,7 @@ async fn serve_client(
         let Ok(msg) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        let Some(session_id) = msg.get("session_id").and_then(Value::as_str) else {
-            continue;
-        };
-        match msg.get("type").and_then(Value::as_str).unwrap_or("") {
-            "session_init" => {
-                // Contract: outer `route_to: "device:<id>"`; legacy fallback is the
-                // device_id inside the session_init payload.
-                let Some(device_id) = relay_server::session_target_device(&msg) else {
-                    eprintln!("client {client_id}: session_init without a valid device target");
-                    continue;
-                };
-                let target = {
-                    let mut state = shared.state.lock().await;
-                    state.open_session(session_id, client_id, &device_id)
-                };
-                match target {
-                    Some(device) => {
-                        let _ = device.send(text);
-                    }
-                    None => eprintln!("client {user_id}: rejected session to device {device_id}"),
-                }
-            }
-            "e2ee_envelope" => {
-                let target = {
-                    let state = shared.state.lock().await;
-                    state.device_out_for_client_frame(session_id, client_id)
-                };
-                if let Some(device) = target {
-                    let _ = device.send(text);
-                }
-            }
-            _ => {}
-        }
+        client_frame(shared, client_id, &user_id, &msg, text).await;
     }
 
     eprintln!("client {client_id}: disconnected");

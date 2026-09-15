@@ -9,14 +9,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The baseline includes 14 application functions, 2 each in the relay binary
-/// and Codex app-server tests, and one each in MCP, RTC testing, thread paging,
-/// Pi extension tests, and real-store migration tests. Module extraction does
-/// not change this budget. Retiring the issue workflow removed five exemptions.
-/// The earlier isolation refactor also removed one from the original baseline:
-/// `worktree.rs`'s `parse_worktree_block` is a path-only porcelain parser now
-/// that the isolation seam owns what it used to describe, and needs no allow.
-const RATCHETED_FUNCTIONS: usize = 23;
+/// The baseline includes 14 application functions, 2 in Codex app-server tests,
+/// and one each in MCP, RTC testing, thread paging, Pi extension tests, and
+/// real-store migration tests. Module extraction does not change this budget.
+/// Retiring the issue workflow removed five exemptions. The earlier isolation
+/// refactor also removed one from the original baseline: `worktree.rs`'s
+/// `parse_worktree_block` is a path-only porcelain parser now that the isolation
+/// seam owns what it used to describe, and needs no allow. Shrinking the relay to
+/// a rendezvous retired the last two: `serve_device` and `serve_client` lost the
+/// presence fan-out and were split around `DeviceWatch` / `ClientWatch`.
+const RATCHETED_FUNCTIONS: usize = 21;
 
 const ALLOW: &str = "#[allow(clippy::cognitive_complexity)]";
 

@@ -21,7 +21,7 @@ import { connectDevice, openDeviceSessions, securityStopText } from "../connecti
 import { deviceAwayWord } from "../core/deviceAway.js";
 import { contextFor, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
-import { refreshDevices, paintDevicePicker, stopWatchingPresence, watchPresence } from "../devices.js";
+import { paintDevicePicker, readPresence, refreshDevices, stopWatchingPresence, watchPresence } from "../devices.js";
 import { renderAppBehindBridgeGate, renderBridgeBehindAppGate } from "./versionGate.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -120,9 +120,13 @@ export function holdAppWhileNoDeviceAnswers() {
 /** Nothing can answer: the mounted view goes, and the screen says why. A
  *  machine whose bridge speaks an API major nothing here claims is answering —
  *  in a shape this tab cannot read — so it gets the version gate rather than
- *  the waiting screen. Otherwise nothing is started to watch for a device:
- *  every one of them is already being asked for on its own backoff, and the
- *  first to land hands the app straight back. */
+ *  the waiting screen.
+ *
+ *  The waiting screen carries the account's presence with it: nothing retries
+ *  on its own any more (spec rule 3), so this is the reader that hears a
+ *  machine come back — on the gate's own three seconds rather than the app's
+ *  fifteen, because a page that can do nothing else is waiting for exactly
+ *  this. */
 function holdForDevices() {
   if (holding && holdIsOnScreen()) {
     // The screen is up and what the machines say has changed under it: one of
@@ -134,8 +138,12 @@ function holdForDevices() {
   holding = true;
   unmountView();
   const behind = gatedContext();
-  if (behind) showVersionGate(behind);
-  else renderWaiting(App.devices);
+  if (behind) {
+    showVersionGate(behind);
+    return;
+  }
+  renderWaiting(App.devices);
+  watchForOnline();
 }
 
 /** Whether the screen this hold stands on is still on the page. A hold is only
@@ -177,12 +185,16 @@ async function enterApp() {
   }
 }
 
-// Poll for a device to come online, then connect automatically.
+// Poll for a device to come online, then connect automatically. It is the same
+// read the app makes on its own cadence (devices.js): a machine the account has
+// started calling online again is opened by it, and one whose bridge has gone
+// is marked away — which is what lets a machine that was blocked be asked for
+// again when it comes back.
 function watchForOnline() {
   stopWatchingForOnline();
   const generation = gateGeneration;
   App._watch = setInterval(async () => {
-    const devices = await refreshDevices();
+    const devices = (await readPresence()) || [];
     if (generation !== gateGeneration) return;
     if (!devices.length) {
       stopWatchingForOnline();

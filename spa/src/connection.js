@@ -321,11 +321,14 @@ export function goOffline(deviceId) {
  *
  * Its bridge has gone, so it is plainly away rather than blocked: nothing here
  * failed to reach it, and there is nothing for a reader to retry until the api
- * says it is back.
+ * says it is back. A machine that WAS blocked and has now gone is written over
+ * for the same reason — and because a block is what keeps this layer from
+ * asking for a machine again, so one that is only away is asked for the moment
+ * the account calls it online.
  */
 export function deviceWentAway(deviceId) {
   const context = contextFor(deviceId);
-  if (!context || context.offline) return;
+  if (!context || (context.offline && !context.blocked)) return;
   standDown(deviceId, {});
 }
 

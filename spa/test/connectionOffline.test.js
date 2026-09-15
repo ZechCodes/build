@@ -947,26 +947,51 @@ describe("per-device connections", () => {
     expect(captures.flush).toHaveBeenCalledTimes(1);
   });
 
+  // Nothing retries on its own any more (rule 3), so the screen the account is
+  // held on is the reader that hears a machine come back: it re-reads presence
+  // on the gate's own three seconds, marks what has gone away — which is what
+  // clears a block — and opens whatever the account starts calling online.
+  it("watches for a machine while it holds the app, and lets one back in", async () => {
+    unlinkable.add("dev-a");
+    unlinkable.add("dev-b");
+    await connectEveryDevice();
+    expect(held()).toBe(true);
+    expect(contextFor("dev-a").blocked).toBe("timeout");
+    account.fetchDevices.mockClear();
+
+    // The bridge went, and the account says so…
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(account.fetchDevices).toHaveBeenCalled();
+    expect(contextFor("dev-a").blocked).toBe(null); // away, not blocked: nothing failed to reach it
+
+    // …and then it is back, and its connection can be made this time.
+    unlinkable.clear();
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    await vi.advanceTimersByTimeAsync(3000);
+    await flush();
+
+    expect(held()).toBe(false);
+    expect(liveIds()).toEqual(["dev-a"]);
+  });
+
   // Presence is the api's while the app is open (rule 6), and the app being
   // open is what the gate says: it starts the poll when it hands the page back
   // and stops it when it takes the page again.
-  it("follows the account's presence while the app is open, and stops when the gate takes it", async () => {
+  it("follows the account's presence on the app's own cadence while the app is open", async () => {
     await connectEveryDevice();
     account.fetchDevices.mockClear();
 
-    await vi.advanceTimersByTimeAsync(15000);
+    // Not the gate's three seconds: a page that is standing on a machine reads
+    // the account far less often than one that is waiting for one.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(account.fetchDevices).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(12000);
     expect(account.fetchDevices).toHaveBeenCalledTimes(1);
 
-    await loseTheLink("dev-a");
-    await loseTheLink("dev-b");
-    expect(held()).toBe(true);
-    account.fetchDevices.mockClear();
-    // The waiting screen's own 3 s poll is the gate's, and this case is not
-    // about it: what must not happen is the app's 15 s one going on underneath.
-    document.getElementById("watchmsg"); // the waiting screen is up
     await vi.advanceTimersByTimeAsync(15000);
-
-    expect(account.fetchDevices).not.toHaveBeenCalled();
+    expect(account.fetchDevices).toHaveBeenCalledTimes(2);
   });
 
   // The whole of the late join, end to end: the account says a machine that was

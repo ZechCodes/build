@@ -636,6 +636,51 @@ describe("per-device connections", () => {
     expect(contextFor("dev-a")).toBe(null);
   });
 
+  // A device let go of while this layer was dialling it: the account no longer
+  // has that machine, so nothing the dial goes on to say about it is news. A
+  // block would put the retired machine back in the rail — greyed, with a Retry
+  // that dials a device the account does not have — for the life of the tab.
+  it("does not resurrect a machine the account let go of while it was being dialled", async () => {
+    devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
+    App.devices = devices;
+    slowMs.set("dev-b", 20);
+    unlinkable.add("dev-b");
+    const dial = connectDevice("dev-b").catch((error) => error);
+    await flush();
+
+    retireDevice("dev-b");
+    devices = [online("dev-a", "Laptop")];
+    App.devices = devices;
+
+    await vi.advanceTimersByTimeAsync(20);
+    await dial;
+    await flush();
+
+    expect(contextFor("dev-b")).toBe(null);
+    expect(knownContexts().map((context) => context.deviceId)).toEqual([]);
+  });
+
+  // And a dial that LANDS on a retired machine lands nothing: the session it
+  // opened is closed rather than adopted into a context for a device nobody has.
+  it("closes a session that answers for a machine the account let go of mid-dial", async () => {
+    devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
+    App.devices = devices;
+    slowMs.set("dev-b", 20);
+    const dial = connectDevice("dev-b").catch((error) => error);
+    await flush();
+
+    retireDevice("dev-b");
+    devices = [online("dev-a", "Laptop")];
+    App.devices = devices;
+
+    await vi.advanceTimersByTimeAsync(20);
+    await dial;
+    await flush();
+
+    expect(contextFor("dev-b")).toBe(null);
+    expect(lastSession("dev-b").close).toHaveBeenCalled();
+  });
+
   // The key offered for this machine is not the key the account pinned, so the
   // machine answering is not the one that was paired. Asking again every few
   // seconds would offer the same pinned key to the same impostor and tell

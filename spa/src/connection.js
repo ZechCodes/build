@@ -198,6 +198,21 @@ async function connectOverChannels(deviceId) {
 // flight rather than opening a second session at the same machine.
 const dialling = new Map(); // deviceId → the connect in flight
 
+// Which dial at one machine is the one this layer is still waiting on. Retiring
+// a device moves its count on, so a connect in flight at a machine the account
+// has let go of lands nothing and blocks nothing: whatever it says is about a
+// machine nobody has.
+const dialEra = new Map(); // deviceId → which dial
+
+/** Whether the account still has the machine this dial was started for. */
+const stillAsking = (deviceId, era) => dialEra.get(deviceId) === era;
+
+/** Call off whatever is being dialled at this machine. */
+function stopDialling(deviceId) {
+  dialEra.set(deviceId, (dialEra.get(deviceId) || 0) + 1);
+  dialling.delete(deviceId);
+}
+
 /**
  * Connect one device and land it (spec rule 3's sequence).
  *
@@ -211,22 +226,36 @@ export function connectDevice(deviceId) {
   handTerminalsTheirMint();
   const inFlight = dialling.get(deviceId);
   if (inFlight) return inFlight;
-  const attempt = connectOnce(deviceId).finally(() => {
+  const era = (dialEra.get(deviceId) || 0) + 1;
+  dialEra.set(deviceId, era);
+  const attempt = connectOnce(deviceId, era).finally(() => {
     if (dialling.get(deviceId) === attempt) dialling.delete(deviceId);
   });
   dialling.set(deviceId, attempt);
   return attempt;
 }
 
-async function connectOnce(deviceId) {
+async function connectOnce(deviceId, era) {
   // Barred for good: offering the same pinned key to the same impostor again
   // would neither fix that nor tell anyone about it.
   if (securityStops.has(deviceId)) throw new Error(securityStops.get(deviceId));
   try {
-    return await connectOverChannels(deviceId);
+    const context = await connectOverChannels(deviceId);
+    // It answered after the account let it go: the session it opened and the
+    // connection under it are this layer's to close, and the context it landed
+    // is not one the account has.
+    if (!stillAsking(deviceId, era)) {
+      retireDevice(deviceId);
+      throw new Error(`device ${deviceId} is no longer on this account`);
+    }
+    return context;
   } catch (error) {
-    barredBySecurity(deviceId, error);
-    blockDevice(deviceId, reasonOf(error));
+    // A machine the account has let go of is not blocked: blocking it would put
+    // it back in the rail, greyed, with a Retry that dials a device nobody has.
+    if (stillAsking(deviceId, era)) {
+      barredBySecurity(deviceId, error);
+      blockDevice(deviceId, reasonOf(error));
+    }
     throw error;
   }
 }
@@ -366,6 +395,9 @@ function standDown(deviceId, mark) {
  */
 export function retireDevice(deviceId) {
   const context = contextFor(deviceId);
+  // A dial in flight at this machine is called off first: whatever it lands or
+  // fails at is about a machine the account no longer has.
+  stopDialling(deviceId);
   // Closed first: this machine is not lost, it is gone, and nothing is to be
   // blocked on the way out.
   closeQuietly(context?.session);

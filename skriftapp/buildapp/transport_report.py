@@ -2,7 +2,8 @@
 Telemetry Spec.md``).
 
 A bridge reports four content-free events per client session: ``minted``,
-``carrying`` (with a path, ``direct`` or ``turn``), ``fell_back`` and ``ended``.
+``carrying`` (with a path, ``direct`` or ``turn``), ``channels_lost`` and
+``ended``.
 Each is signed by the device identity key over a challenge that binds every
 field — ``bridge/src/transport_report.rs`` produces the same bytes — and the
 freshness window and replay guard are the push notify's, one scheme for every
@@ -21,9 +22,15 @@ from buildapp import web_push
 
 MINTED = "minted"
 CARRYING = "carrying"
+#: The session's last DataChannel closed while the session lives — an ICE
+#: restart is under way, or the session is about to end.
+CHANNELS_LOST = "channels_lost"
+#: What that event was called while the relay was still a data plane. A bridge
+#: one release behind sends this word; it counts in the same column, and the
+#: next release may drop it.
 FELL_BACK = "fell_back"
 ENDED = "ended"
-ALLOWED_EVENTS = frozenset({MINTED, CARRYING, FELL_BACK, ENDED})
+ALLOWED_EVENTS = frozenset({MINTED, CARRYING, CHANNELS_LOST, FELL_BACK, ENDED})
 
 DIRECT = "direct"
 TURN = "turn"
@@ -57,6 +64,8 @@ class SessionRow:
     minted_at: datetime | None = None
     first_carrying_at: datetime | None = None
     first_path: str | None = None
+    #: The path the session is carrying on, ``relay`` meaning "no channel" —
+    #: the column's word since before the relay stopped being a data plane.
     current_path: str = RELAY
     carrying_count: int = 0
     turn_count: int = 0
@@ -91,7 +100,7 @@ def apply_event(  # noqa: C901 — ratchet: at 13, cap 10; a handler table keyed
         row.carrying_count += 1
         if path == TURN:
             row.turn_count += 1
-    elif event == FELL_BACK:
+    elif event in (CHANNELS_LOST, FELL_BACK):
         row.current_path = RELAY
         row.fell_back_count += 1
     elif event == ENDED:

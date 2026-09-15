@@ -3,7 +3,7 @@
 //!
 //! Four events, one line each, content-free — a session id, a word, and for a
 //! `carrying` the candidate types the pair won on. The registry records the
-//! session's life (`minted`, `fell_back`, `ended`); the peer transport records
+//! session's life (`minted`, `channels_lost`, `ended`); the peer transport records
 //! every path it carries on (`carrying`), the first time and after every ICE
 //! restart. Where the events go is a sink behind [`TransportLedger`]: stderr
 //! on every bridge, and whatever else is installed beside it.
@@ -42,8 +42,10 @@ pub enum TransportEvent {
     /// (`host/relay candidates (TURN, billed)`), for the log line.
     Carrying { path: TransportPath, detail: String },
     /// The session's last DataChannel carrier closed while the session lives:
-    /// it is on the relay again.
-    FellBack,
+    /// an ICE restart is under way, or the session is about to end. It is not a
+    /// fallback — the relay carries no application traffic to fall back to
+    /// (strict P2P transport spec, rule 1).
+    ChannelsLost,
     /// The registry ended the session — its client said so, or its last
     /// carrier is gone.
     Ended,
@@ -55,7 +57,7 @@ impl TransportEvent {
         match self {
             TransportEvent::Minted => "minted",
             TransportEvent::Carrying { .. } => "carrying",
-            TransportEvent::FellBack => "fell_back",
+            TransportEvent::ChannelsLost => "channels_lost",
             TransportEvent::Ended => "ended",
         }
     }
@@ -82,8 +84,8 @@ pub fn render(session_id: &str, event: &TransportEvent) -> String {
         TransportEvent::Carrying { detail, .. } => {
             format!("rtc: session {session_id} carrying over {detail}")
         }
-        TransportEvent::FellBack => {
-            format!("transport: session {session_id} fell back to the relay")
+        TransportEvent::ChannelsLost => {
+            format!("transport: session {session_id} lost its last channel")
         }
         TransportEvent::Ended => format!("transport: session {session_id} ended"),
     }
@@ -178,8 +180,8 @@ mod tests {
             "rtc: session sess-1 carrying over host/relay candidates (TURN, billed)"
         );
         assert_eq!(
-            render("sess-1", &TransportEvent::FellBack),
-            "transport: session sess-1 fell back to the relay"
+            render("sess-1", &TransportEvent::ChannelsLost),
+            "transport: session sess-1 lost its last channel"
         );
         assert_eq!(
             render("sess-1", &TransportEvent::Ended),
@@ -190,7 +192,7 @@ mod tests {
     #[test]
     fn the_wire_words_are_the_four_the_api_accepts() {
         assert_eq!(TransportEvent::Minted.name(), "minted");
-        assert_eq!(TransportEvent::FellBack.name(), "fell_back");
+        assert_eq!(TransportEvent::ChannelsLost.name(), "channels_lost");
         assert_eq!(TransportEvent::Ended.name(), "ended");
         let carrying = TransportEvent::Carrying {
             path: TransportPath::Direct,

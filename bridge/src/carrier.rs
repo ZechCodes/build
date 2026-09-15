@@ -258,9 +258,10 @@ fn not_a_data_plane() -> ApiError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CarrierId(u64);
 
-/// Which kind of wire a carrier is. Nothing above the wire is told — a session
-/// is a session on either — but the ledger is: "its last channel closed while
-/// the relay still carries" is a fallback, and only the kind says so.
+/// Which kind of wire a carrier is. Nothing above the wire is told which wire
+/// carries a session — but two things here are: the ledger ("its last channel
+/// closed while the rendezvous still carries" is a `channels_lost`), and rule
+/// 1's refusal. Nothing else in the crate may match on `Relay`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CarrierKind {
     Relay,
@@ -356,7 +357,7 @@ struct SessionEnd {
 struct SessionRegistry {
     sessions: Mutex<HashMap<String, OpenSession>>,
     minted: AtomicU64,
-    /// Where a session's life is written: minted, fell back, ended. The peer
+    /// Where a session's life is written: minted, channels lost, ended. The peer
     /// transport writes `carrying` to the same ledger.
     ledger: Arc<dyn TransportLedger>,
 }
@@ -384,10 +385,10 @@ impl SessionRegistry {
     }
 
     /// A carrier left a session that still lives: if it was the session's last
-    /// channel, the session is back on the relay, and that is a fallback.
+    /// channel, the session is carrying nothing, and the ledger says so once.
     fn note_carrier_left(&self, session_id: &str, left: CarrierKind, open: &OpenSession) {
         if left == CarrierKind::Channel && !open.rides_a_channel() {
-            self.ledger.record(session_id, TransportEvent::FellBack);
+            self.ledger.record(session_id, TransportEvent::ChannelsLost);
         }
     }
 
@@ -756,11 +757,12 @@ mod registry_tests {
         assert_eq!(ledger.trail_of("s-1"), vec!["minted", "ended"]);
     }
 
-    /// The relay carrier stays; the session's channels go: it is back on the
-    /// relay, and that is a fallback — once, when the LAST channel goes, not
-    /// once per channel. A relay carrier going while a channel carries is not.
+    /// The rendezvous stays; the session's channels go: the session is carrying
+    /// nothing, and that is one `channels_lost` — when the LAST channel goes,
+    /// not once per channel. A relay carrier going while a channel carries is
+    /// not.
     #[test]
-    fn losing_the_last_channel_while_the_relay_carries_is_a_fallback() {
+    fn losing_the_last_channel_while_the_relay_carries_is_one_channels_lost() {
         let ledger = RecordingLedger::new();
         let key = transport::generate_session_key();
         let registry = SessionRegistry::with_ledger(ledger.clone());
@@ -772,7 +774,7 @@ mod registry_tests {
         registry.open("s-1", key.clone(), &term).unwrap();
         assert!(registry.release_session("s-1", &app).is_empty());
         assert!(registry.release_session("s-1", &term).is_empty());
-        assert_eq!(ledger.trail_of("s-1"), vec!["minted", "fell_back"]);
+        assert_eq!(ledger.trail_of("s-1"), vec!["minted", "channels_lost"]);
 
         // The mirror image: the relay drops under a live channel. Not a
         // fallback — the channel is still the better wire.
@@ -787,7 +789,7 @@ mod registry_tests {
     }
 
     /// A channel that was the session's last carrier ends the session: that is
-    /// an end, not a fallback, and the ledger says so once.
+    /// an end, not a `channels_lost`, and the ledger says so once.
     #[test]
     fn a_channel_that_carried_last_ends_the_session_not_falls_it_back() {
         let ledger = RecordingLedger::new();

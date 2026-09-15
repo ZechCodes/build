@@ -100,7 +100,7 @@ def rows(client: TestClient) -> list[TransportSession]:
 
 def test_a_signed_trail_becomes_one_session_row(client):
     bridge = paired_bridge(client)
-    for event, path in [("minted", NO_PATH), ("carrying", "turn"), ("fell_back", NO_PATH), ("ended", NO_PATH)]:
+    for event, path in [("minted", NO_PATH), ("carrying", "turn"), ("channels_lost", NO_PATH), ("ended", NO_PATH)]:
         response = client.post(REPORT_ROUTE_PATH, json=bridge.report("sess-1", event, path))
         assert response.status_code == HTTP_200_OK, response.text
     (row,) = rows(client)

@@ -1,6 +1,6 @@
 """The admin transport page — how many sessions ride WebRTC directly, how many
-had to relay through Cloudflare TURN, and how many never left the WebSocket
-relay (``planning/v2/Transport Telemetry Spec.md`` §Classification).
+had to relay through Cloudflare TURN, and how many never got a DataChannel at
+all (``planning/v2/Transport Telemetry Spec.md`` §Classification).
 
 One read-only page at ``/admin/transport``, in the admin nav behind the
 ``administrator`` permission, over the rows ``/api/transport/report`` keeps.
@@ -27,9 +27,12 @@ from buildapp.models import Device, TransportSession
 
 DIRECT = "direct"
 TURN = "turn"
-RELAY_ONLY = "relay_only"
+#: A session that never carried on a peer connection. It used to mean "it
+#: stayed on the relay", which was a working session; since the relay stopped
+#: being a data plane it means the browser never reached this device at all.
+NEVER_CONNECTED = "never_connected"
 UNSTABLE = "unstable"
-BUCKETS = (DIRECT, TURN, RELAY_ONLY, UNSTABLE)
+BUCKETS = (DIRECT, TURN, NEVER_CONNECTED, UNSTABLE)
 
 WINDOWS: dict[str, timedelta] = {
     "24h": timedelta(hours=24),
@@ -43,13 +46,13 @@ UNKNOWN_DEVICE = "unknown device"
 
 def classify(row: TransportSession) -> str:
     """The bucket one session falls in (spec §Classification). TURN anywhere in
-    its life is TURN — that is the billed one — else a fallback makes an
+    its life is TURN — that is the billed one — else a lost channel makes an
     upgraded session UNSTABLE, else it is DIRECT, and one that never carried
-    is RELAY_ONLY."""
+    is NEVER_CONNECTED."""
     if row.turn_count > 0:
         return TURN
     if row.first_path is None:
-        return RELAY_ONLY
+        return NEVER_CONNECTED
     if row.fell_back_count > 0:
         return UNSTABLE
     return DIRECT
@@ -120,13 +123,13 @@ def build_transport_dashboard(
         "totals": totals,
         "direct_share": _share(totals[DIRECT], totals["sessions"]),
         "turn_share": _share(totals[TURN], totals["sessions"]),
-        "relay_share": _share(totals[RELAY_ONLY], totals["sessions"]),
+        "never_connected_share": _share(totals[NEVER_CONNECTED], totals["sessions"]),
         "devices": device_rows,
         "recent": recent,
         "labels": {
             DIRECT: "Direct WebRTC",
             TURN: "TURN",
-            RELAY_ONLY: "Relay only",
+            NEVER_CONNECTED: "Never connected",
             UNSTABLE: "Unstable",
         },
     }

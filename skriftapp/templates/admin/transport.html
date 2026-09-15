@@ -24,7 +24,7 @@
     <article class="sk-stat-card">
         <div class="sk-stat-label">{{ dashboard.labels.direct }}</div>
         <div class="sk-stat-value">{{ dashboard.totals.direct }}</div>
-        <div class="sk-stat-sub">{{ dashboard.direct_share }} — reliably on a DataChannel, never fell back</div>
+        <div class="sk-stat-sub">{{ dashboard.direct_share }} — reliably on a DataChannel, never lost it</div>
     </article>
     <article class="sk-stat-card">
         <div class="sk-stat-label">{{ dashboard.labels.turn }}</div>
@@ -32,14 +32,14 @@
         <div class="sk-stat-sub">{{ dashboard.turn_share }} — relayed through Cloudflare at least once (billed)</div>
     </article>
     <article class="sk-stat-card">
-        <div class="sk-stat-label">{{ dashboard.labels.relay_only }}</div>
-        <div class="sk-stat-value">{{ dashboard.totals.relay_only }}</div>
-        <div class="sk-stat-sub">{{ dashboard.relay_share }} — never left the WebSocket relay</div>
+        <div class="sk-stat-label">{{ dashboard.labels.never_connected }}</div>
+        <div class="sk-stat-value">{{ dashboard.totals.never_connected }}</div>
+        <div class="sk-stat-sub">{{ dashboard.never_connected_share }} — no DataChannel ever opened</div>
     </article>
     <article class="sk-stat-card">
         <div class="sk-stat-label">{{ dashboard.labels.unstable }}</div>
         <div class="sk-stat-value">{{ dashboard.totals.unstable }}</div>
-        <div class="sk-stat-sub">upgraded, then fell back to the relay</div>
+        <div class="sk-stat-sub">upgraded, then lost its channels at least once</div>
     </article>
 </section>
 
@@ -60,7 +60,7 @@
                     <th>Sessions</th>
                     <th>{{ dashboard.labels.direct }}</th>
                     <th>{{ dashboard.labels.turn }}</th>
-                    <th>{{ dashboard.labels.relay_only }}</th>
+                    <th>{{ dashboard.labels.never_connected }}</th>
                     <th>{{ dashboard.labels.unstable }}</th>
                 </tr>
             </thead>
@@ -71,7 +71,7 @@
                     <td>{{ row.sessions }}</td>
                     <td>{{ row.direct }}</td>
                     <td>{{ row.turn }}</td>
-                    <td>{{ row.relay_only }}</td>
+                    <td>{{ row.never_connected }}</td>
                     <td>{{ row.unstable }}</td>
                 </tr>
                 {% else %}

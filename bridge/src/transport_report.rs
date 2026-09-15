@@ -30,7 +30,10 @@ pub const NO_PATH: &str = "-";
 pub struct TransportReport {
     pub device_id: String,
     pub session_id: String,
-    /// `minted` | `carrying` | `fell_back` | `ended`.
+    /// `minted` | `carrying` | `channels_lost` | `ended`. The api also takes
+    /// this event's retired word — the one it had while the relay was still a
+    /// data plane — for one release, so a fleet mid-upgrade reports one number
+    /// (`buildapp/transport_report.py`).
     pub event: String,
     /// `direct` | `turn` for a `carrying`, else [`NO_PATH`].
     pub path: String,

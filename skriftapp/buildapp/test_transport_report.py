@@ -37,8 +37,12 @@ def test_the_challenge_is_byte_for_byte_what_the_bridge_signs():
     )
 
 
-def test_the_words_are_the_four_events_and_two_paths_the_bridge_sends():
-    assert ALLOWED_EVENTS == frozenset({"minted", "carrying", "fell_back", "ended"})
+def test_the_words_are_the_events_and_two_paths_the_bridge_sends():
+    # ``channels_lost`` is what a bridge sends now; ``fell_back`` is what one a
+    # release behind still sends, and the api takes both for that release.
+    assert ALLOWED_EVENTS == frozenset(
+        {"minted", "carrying", "channels_lost", "fell_back", "ended"}
+    )
     assert ALLOWED_PATHS == frozenset({"direct", "turn"})
     assert NO_PATH == "-"
 
@@ -63,19 +67,31 @@ def test_a_turn_session_counts_every_turn_carry_and_keeps_its_first_path():
     assert (row.carrying_count, row.turn_count) == (2, 1)
 
 
-def test_a_fallback_puts_the_session_back_on_the_relay():
+def test_losing_the_last_channel_puts_the_session_back_on_no_path():
     row = SessionRow()
     apply_event(row, "minted", NO_PATH, at(0))
     apply_event(row, "carrying", "direct", at(1))
-    apply_event(row, "fell_back", NO_PATH, at(5))
+    apply_event(row, "channels_lost", NO_PATH, at(5))
     assert row.current_path == "relay"
     assert row.fell_back_count == 1
-    # …and carries again after.
+    # …and carries again after (an ICE restart brought the channels back).
     apply_event(row, "carrying", "direct", at(9))
     assert (row.current_path, row.carrying_count, row.fell_back_count) == ("direct", 2, 1)
 
 
-def test_a_session_that_never_carries_is_relay_only():
+def test_the_retired_word_for_that_event_counts_in_the_same_column():
+    # One release of tolerance: a bridge that has not been updated says
+    # ``fell_back`` and lands in the column ``channels_lost`` lands in, so the
+    # admin page reads one number over a mixed fleet.
+    row = SessionRow()
+    apply_event(row, "minted", NO_PATH, at(0))
+    apply_event(row, "carrying", "direct", at(1))
+    apply_event(row, "fell_back", NO_PATH, at(5))
+    apply_event(row, "channels_lost", NO_PATH, at(7))
+    assert (row.current_path, row.fell_back_count) == ("relay", 2)
+
+
+def test_a_session_that_never_carries_never_connected():
     row = SessionRow()
     apply_event(row, "minted", NO_PATH, at(0))
     apply_event(row, "ended", NO_PATH, at(10))
@@ -91,7 +107,7 @@ def test_events_out_of_order_or_repeated_are_absorbed():
     # A second minted is a no-op; an event after ended does not unset the end.
     apply_event(row, "minted", NO_PATH, at(2))
     apply_event(row, "ended", NO_PATH, at(10))
-    apply_event(row, "fell_back", NO_PATH, at(11))
+    apply_event(row, "channels_lost", NO_PATH, at(11))
     assert row.minted_at == at(0)
     assert row.ended_at == at(10)
     assert row.fell_back_count == 1

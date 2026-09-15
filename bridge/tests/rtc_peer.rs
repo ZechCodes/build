@@ -413,11 +413,11 @@ async fn a_browser_that_can_only_relay_rides_cloudflare_turn() {
 }
 
 /// The trail the telemetry spec promises for one ordinary session: minted over
-/// the relay, carrying direct once the peer connects, back on the relay when
-/// its channels close under a live relay carrier, ended when the client says
-/// so. Read off the same ledger the daemon writes to stderr and reports.
+/// the rendezvous, carrying direct once the peer connects, carrying nothing
+/// when its channels close under a live relay carrier, ended when the client
+/// says so. Read off the same ledger the daemon writes to stderr and reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_session_s_transport_trail_reads_minted_carrying_fell_back_ended() {
+async fn a_session_s_transport_trail_reads_minted_carrying_channels_lost_ended() {
     let state_dir = tempfile::tempdir().expect("a state dir");
     let (intake, _reports, ledger) = ledgered_peer_bridge(state_dir.path());
     let (session, _demux) = browser_session("sess-trail", intake).await;
@@ -446,8 +446,8 @@ async fn a_session_s_transport_trail_reads_minted_carrying_fell_back_ended() {
     .await;
     assert_eq!(
         ledger.trail_of("sess-trail"),
-        vec!["minted", "carrying:direct", "fell_back"],
-        "the last channel closing under a live relay carrier is one fallback"
+        vec!["minted", "carrying:direct", "channels_lost"],
+        "the last channel closing under a live relay carrier is one channels_lost"
     );
 
     // The client closes the session outright over the relay.
@@ -473,6 +473,6 @@ async fn a_session_s_transport_trail_reads_minted_carrying_fell_back_ended() {
     .await;
     assert_eq!(
         ledger.trail_of("sess-trail"),
-        vec!["minted", "carrying:direct", "fell_back", "ended"]
+        vec!["minted", "carrying:direct", "channels_lost", "ended"]
     );
 }

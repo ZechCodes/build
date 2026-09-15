@@ -46,7 +46,7 @@ async fn every_event_arrives_signed_and_in_order() {
             detail: "host/host candidates".to_string(),
         },
     );
-    reporter.record("sess-1", TransportEvent::FellBack);
+    reporter.record("sess-1", TransportEvent::ChannelsLost);
     reporter.record("sess-1", TransportEvent::Ended);
 
     let reports = received(&api, 4).await;
@@ -55,7 +55,7 @@ async fn every_event_arrives_signed_and_in_order() {
             .iter()
             .map(|r| format!("{}:{}", r.event, r.path))
             .collect::<Vec<_>>(),
-        vec!["minted:-", "carrying:direct", "fell_back:-", "ended:-"]
+        vec!["minted:-", "carrying:direct", "channels_lost:-", "ended:-"]
     );
     for report in &reports {
         assert_eq!(report.device_id, "dev-1");

@@ -15,7 +15,7 @@ from buildapp.db_test_support import admin_template_environment
 from buildapp.models import Device, TransportSession
 from buildapp.transport_admin import (
     DIRECT,
-    RELAY_ONLY,
+    NEVER_CONNECTED,
     TURN,
     UNSTABLE,
     WINDOWS,
@@ -50,7 +50,7 @@ def test_the_four_buckets_are_the_ones_the_operator_asked_for():
     assert classify(session(first_path="turn", carrying_count=1, turn_count=1)) == TURN
     # TURN at any point in the session's life is TURN, even after a direct restart.
     assert classify(session(first_path="direct", carrying_count=2, turn_count=1)) == TURN
-    assert classify(session()) == RELAY_ONLY
+    assert classify(session()) == NEVER_CONNECTED
     assert classify(session(first_path="direct", carrying_count=2, fell_back_count=1)) == UNSTABLE
 
 
@@ -77,7 +77,7 @@ def test_the_dashboard_counts_within_the_window_and_per_device():
         "sessions": 4,
         DIRECT: 1,
         TURN: 1,
-        RELAY_ONLY: 1,
+        NEVER_CONNECTED: 1,
         UNSTABLE: 1,
     }
     by_name = {row["device"]: row for row in dashboard["devices"]}
@@ -85,10 +85,11 @@ def test_the_dashboard_counts_within_the_window_and_per_device():
     assert by_name["laptop"][TURN] == 1
     assert by_name["mini"][UNSTABLE] == 1
     assert dashboard["direct_share"] == "25%"
+    assert dashboard["never_connected_share"] == "25%"
 
     week = build_transport_dashboard(rows, [laptop, phone_bridge], window="7d", now=NOW)
     assert week["totals"]["sessions"] == 5
-    assert week["totals"][RELAY_ONLY] == 2
+    assert week["totals"][NEVER_CONNECTED] == 2
 
 
 def test_recent_sessions_are_newest_first_with_their_path_words():
@@ -125,6 +126,6 @@ def test_the_template_renders_the_four_figures_and_the_caveat():
         [session(first_path="turn", carrying_count=1, turn_count=1)], [], window="7d", now=NOW
     )
     html = env.get_template("admin/transport.html").render(dashboard=dashboard, site_name=lambda: "Build")
-    for label in ["Direct WebRTC", "TURN", "Relay only", "Unstable", "Cloudflare"]:
+    for label in ["Direct WebRTC", "TURN", "Never connected", "Unstable", "Cloudflare"]:
         assert label in html, label
     assert "prflx" in html, "the under-count caveat is on the page, under the TURN figure"

@@ -21,7 +21,7 @@ either.
 3. If egress is climbing, ask how many sessions are actually being relayed.
    **The admin transport page** (`/admin/transport`, administrator permission)
    answers first: sessions in the window bucketed as Direct WebRTC / TURN /
-   Relay only / Unstable, per device, with the newest sessions' trails. Every
+   Never connected / Unstable, per device, with the newest sessions' trails. Every
    bridge reports each session's transport events to the api
    (`POST /api/transport/report`, device-signed, content-free), and the page
    counts a session as TURN when any of its carries was relayed. The bridge's
@@ -32,7 +32,7 @@ either.
    ```
    transport: session <session_id> minted over the relay
    rtc: session <session_id> carrying over host/relay candidates (TURN, billed)
-   transport: session <session_id> fell back to the relay
+   transport: session <session_id> lost its last channel
    transport: session <session_id> ended
    ```
 

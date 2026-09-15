@@ -4,6 +4,11 @@
 //! between the real bridge relay-client and a simulated browser. The browser
 //! bootstraps an encrypted session, sends a request frame, and reads the bridge's
 //! encrypted response — proving the whole transport path works, relay-blind.
+//!
+//! The relay carries signaling and nothing else (strict P2P transport spec,
+//! rule 1), so every request here is `rtc.*`: what is under test is the socket
+//! and the session, not the verb, and a verb the bridge really serves would be
+//! refused before it reached a handler — which is its own test, below.
 
 use build_bridge::carrier::testing::{reporting_handler, within_patience};
 use build_bridge::carrier::FrameHandler;
@@ -60,7 +65,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
         .send(request_message(
             &session_key,
             session_id,
-            json!({ "method": "ping", "n": 1 }),
+            json!({ "method": "rtc.ice", "n": 1 }),
         ))
         .await
         .unwrap();
@@ -73,7 +78,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
     assert_eq!(frame.sender, "device");
     assert_eq!(
         frame.payload,
-        json!({ "echo": { "method": "ping", "n": 1 }, "ok": true })
+        json!({ "echo": { "method": "rtc.ice", "n": 1 }, "ok": true })
     );
 
     // Tear down: dropping the browser sender lets the bridge/relay wind down.
@@ -87,11 +92,12 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_slow_handler_does_not_stall_the_socket() {
     let identity = device_identity();
-    // `slow` is the board.list-with-a-libgit2-diff of the incident.
+    // The slow one is the board.list-with-a-libgit2-diff of the incident,
+    // wearing a signaling name because the relay carries no other kind.
     let handler: FrameHandler = FrameHandler::new(
         build_bridge::timing::FrameClock::new(),
         |_sender, frame, _timer| {
-            if frame.payload["method"] == "slow" {
+            if frame.payload["method"] == "rtc.slow" {
                 std::thread::sleep(std::time::Duration::from_millis(1500));
             }
             json!({ "id": frame.payload["id"] })
@@ -126,9 +132,9 @@ async fn a_slow_handler_does_not_stall_the_socket() {
         )
     };
 
-    to_device.send(ask(0, "slow")).await.unwrap();
+    to_device.send(ask(0, "rtc.slow")).await.unwrap();
     for id in 1..=5u64 {
-        to_device.send(ask(id, "cheap")).await.unwrap();
+        to_device.send(ask(id, "rtc.cheap")).await.unwrap();
     }
 
     // The five cheap answers come back first — the read loop kept draining.
@@ -189,7 +195,7 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
         .send(request_message(
             &session_key,
             session_id,
-            json!({ "method": "ping" }),
+            json!({ "method": "rtc.ice" }),
         ))
         .await
         .unwrap();
@@ -221,7 +227,7 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
         .send(request_message(
             &session_key,
             session_id,
-            json!({ "method": "ping" }),
+            json!({ "method": "rtc.ice" }),
         ))
         .await
         .unwrap();
@@ -284,7 +290,7 @@ async fn a_session_init_under_a_different_key_is_refused() {
         .send(request_message(
             &session_key,
             session_id,
-            json!({ "method": "ping" }),
+            json!({ "method": "rtc.ice" }),
         ))
         .await
         .unwrap();
@@ -327,7 +333,7 @@ async fn a_cancelled_run_ends_the_sessions_that_rode_its_socket() {
         .send(request_message(
             &session_key,
             session_id,
-            json!({ "method": "ping" }),
+            json!({ "method": "rtc.ice" }),
         ))
         .await
         .unwrap();
@@ -345,4 +351,64 @@ async fn a_cancelled_run_ends_the_sessions_that_rode_its_socket() {
         format!("close:{session_id}"),
         "the session that rode the cancelled socket ended with it"
     );
+}
+
+/// Rule 1, over the real relay client: an app verb that arrives on the
+/// rendezvous is answered with the wire spec's refusal and never reaches the
+/// app. The SPA never sends one; a client that does is told why rather than
+/// quietly served.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_app_verb_over_the_relay_is_refused_and_reaches_no_handler() {
+    let identity = device_identity();
+    let (handler, mut frames) = reporting_handler();
+    let ConnectedDevice {
+        to_device,
+        mut from_device,
+        transport_public_key,
+        bridge,
+        relay_socket: _,
+    } = connected_device(test_intake(handler), &identity).await;
+    let session_id = "sess-refused";
+    let session_key = transport::generate_session_key();
+    to_device
+        .send(session_init_message(
+            session_id,
+            &transport_public_key,
+            &session_key,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(recv(&mut from_device).await["type"], "session_accept");
+
+    to_device
+        .send(request_message(
+            &session_key,
+            session_id,
+            json!({ "id": 3, "method": "board.list", "params": {} }),
+        ))
+        .await
+        .unwrap();
+
+    let response = recv(&mut from_device).await;
+    assert_eq!(response["type"], "e2ee_envelope");
+    let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
+    let frame = transport::decrypt_envelope(&session_key, &envelope).unwrap();
+    assert_eq!(
+        frame.payload,
+        json!({
+            "id": 3,
+            "ok": false,
+            "error": "the relay is not a data plane",
+            "error_code": "unavailable",
+            "retryable": false,
+            "details": { "reason": "relay_is_not_a_data_plane" },
+        })
+    );
+    assert!(
+        frames.try_recv().is_err(),
+        "the refused frame reached no handler"
+    );
+
+    drop(to_device);
+    bridge.abort();
 }

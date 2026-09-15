@@ -6,13 +6,14 @@
 //! encrypted frames, dispatch and teardown — is the same on either, so nothing
 //! above it learns which wire is carrying.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::api::ApiError;
 use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionInit};
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
@@ -222,6 +223,31 @@ pub(crate) fn drop_frame_error(err: &CarrierError) {
         eprintln!(
             "carrier: session_init for {session_id} refused: the session is open under another key"
         );
+    }
+}
+
+/// Whether this frame is the negotiation the relay exists for. `rtc.*` and
+/// nothing else, prefix-matched on the method the wire spec names: the verb
+/// table (`app/rpc.rs`) owns which of them exist, and a signaling verb added
+/// there needs nothing added here.
+fn is_signaling(frame: &Frame) -> bool {
+    frame
+        .payload
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| method.starts_with(SIGNALING_PREFIX))
+}
+
+/// The method namespace a relay carrier may carry (spec rule 1).
+const SIGNALING_PREFIX: &str = "rtc.";
+
+/// The refusal rule 1 names, word for word. `unavailable` from the closed
+/// `ApiError` set of `Bridge Wire Protocol Spec.md` — extending that set is a
+/// major bump, so the reason rides in `details` instead.
+fn not_a_data_plane() -> ApiError {
+    ApiError::Unavailable {
+        message: "the relay is not a data plane".into(),
+        details: Some(serde_json::json!({ "reason": "relay_is_not_a_data_plane" })),
     }
 }
 
@@ -503,6 +529,11 @@ pub struct FrameIntake {
     /// to advertise the public half reads it back from here, so the key a
     /// client wraps to is the key the device unwraps with by construction.
     transport: KeyPairB64,
+    /// The sessions that have already been told the relay is not a data plane,
+    /// so the log says it once per session however long the client keeps
+    /// asking. Cleared when the session ends: the next opening of that id is a
+    /// different client, and worth hearing about.
+    refused: Mutex<HashSet<String>>,
 }
 
 impl FrameIntake {
@@ -521,6 +552,7 @@ impl FrameIntake {
             registry: Arc::new(SessionRegistry::with_ledger(ledger)),
             dispatcher: Dispatcher::new(handler),
             transport,
+            refused: Mutex::new(HashSet::new()),
         })
     }
 
@@ -572,8 +604,9 @@ impl FrameIntake {
     }
 
     /// One envelope arrived on this carrier: admit it through the registry,
-    /// honour a `close` frame, else dispatch it. A frame for a session the
-    /// device does not know is refused, and the carrier carries on.
+    /// honour a `close` frame, refuse what the wire it came in on may not
+    /// carry, else dispatch it. A frame for a session the device does not know
+    /// is refused, and the carrier carries on.
     pub(crate) async fn accept(
         &self,
         envelope: Envelope,
@@ -584,8 +617,50 @@ impl FrameIntake {
             self.close_ended(self.registry.end(&envelope.session_id));
             return Ok(());
         }
+        if carrier.kind == CarrierKind::Relay && !is_signaling(&frame) {
+            self.refuse_as_not_a_data_plane(&sender, &frame);
+            return Ok(());
+        }
         self.dispatcher.dispatch(sender, frame).await;
         Ok(())
+    }
+
+    /// Rule 1 of the strict P2P transport spec, enforced here because this is
+    /// the one place that holds both the decrypted frame and the wire it
+    /// arrived on: **the relay never carries application traffic**. The client
+    /// is told, in the closed `ApiError` vocabulary of the wire spec, and the
+    /// frame is not dispatched.
+    ///
+    /// Not fatal to anything. The session keeps working — its next `rtc.offer`
+    /// is carried as before — and the answer it gets is the one a browser can
+    /// act on: `retryable: false`, so it blocks the device rather than
+    /// re-sending.
+    fn refuse_as_not_a_data_plane(&self, sender: &SessionSender, frame: &Frame) {
+        if self.first_refusal_of(sender.session_id()) {
+            eprintln!(
+                "carrier: session {} tried to run {} over the relay: the relay is not a data plane",
+                sender.session_id(),
+                frame
+                    .payload
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("a frame with no method")
+            );
+        }
+        let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+        sender.push(not_a_data_plane().into_reply(id));
+    }
+
+    /// Whether this session's refusal is the first one — the one worth a log
+    /// line. Every refusal is answered; only the first is said out loud.
+    fn first_refusal_of(&self, session_id: &str) -> bool {
+        self.refused.lock().unwrap().insert(session_id.to_string())
+    }
+
+    /// A session ended: whatever it was told about the relay, the next client
+    /// on that id is owed the line again.
+    fn forget_refusals(&self, session_id: &str) {
+        self.refused.lock().unwrap().remove(session_id);
     }
 
     /// This carrier stops carrying this session — the relay's `session_closed`,
@@ -600,6 +675,7 @@ impl FrameIntake {
 
     fn close_ended(&self, ended: Vec<SessionEnd>) {
         for end in ended {
+            self.forget_refusals(&end.session_id);
             let registry = self.registry.clone();
             let session_id = end.session_id.clone();
             self.dispatcher
@@ -1143,6 +1219,9 @@ mod intake_tests {
         ));
     }
 
+    /// The `close` frame is a frame type, not a method, and it is honoured on
+    /// the relay carrier before rule 1 looks at anything: a browser that is
+    /// finished with a session says so over the rendezvous it minted it on.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_close_frame_ends_the_session_outright() {
         let (intake, mut seen) = watching_intake();
@@ -1218,7 +1297,7 @@ mod intake_tests {
     async fn a_relay_session_closed_leaves_a_session_a_second_carrier_still_rides() {
         let (intake, mut seen) = watching_intake();
         let (relay, _relay_out) = CarrierHandle::open();
-        let (peer, _peer_out) = CarrierHandle::open();
+        let (peer, _peer_out) = CarrierHandle::open_channel();
         let key = transport::generate_session_key();
         intake
             .open("s-1", &session_init("s-1", &key), &relay)
@@ -1245,7 +1324,7 @@ mod intake_tests {
     /// A session's synthetic `close` runs after the frames queued ahead of it,
     /// which can be arbitrarily long behind a slow terminal handler. The same id
     /// may be opened again meanwhile — the browser re-presenting its session
-    /// after a relay reconnect — and the earlier opening's close is not that
+    /// over its next carrier — and the earlier opening's close is not that
     /// session's to receive.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_late_close_from_an_earlier_opening_leaves_the_reopened_session_alone() {
@@ -1261,8 +1340,8 @@ mod intake_tests {
             response
         });
         let intake = FrameIntake::new(handler, TRANSPORT.clone());
-        let (first, _first_out) = CarrierHandle::open();
-        let (second, _second_out) = CarrierHandle::open();
+        let (first, _first_out) = CarrierHandle::open_channel();
+        let (second, _second_out) = CarrierHandle::open_channel();
         let key = transport::generate_session_key();
         intake
             .open("s-1", &session_init("s-1", &key), &first)
@@ -1348,5 +1427,121 @@ mod intake_tests {
             seen.try_recv().is_err(),
             "nothing runs for a session after its close"
         );
+    }
+
+    /// Rule 1: the relay carries the negotiation and nothing else. An app verb
+    /// arriving on a relay carrier is refused with the wire spec's closed
+    /// `ApiError` shape and never reaches a handler.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_app_verb_on_the_relay_carrier_is_refused_and_never_dispatched() {
+        let (intake, mut seen) = watching_intake();
+        let (relay, mut out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &relay)
+            .unwrap();
+        out.try_recv().expect("the accept rode the carrier");
+
+        intake
+            .accept(
+                client_request(
+                    &key,
+                    "s-1",
+                    "data",
+                    json!({ "id": 7, "method": "session.hello", "params": {} }),
+                ),
+                &relay,
+            )
+            .await
+            .expect("the frame is answered, not fatal to the carrier");
+
+        let refusal = SessionSender::decrypt_push(
+            &key,
+            &out.try_recv().expect("the refusal rode the carrier back"),
+        );
+        assert_eq!(
+            refusal,
+            json!({
+                "id": 7,
+                "ok": false,
+                "error": "the relay is not a data plane",
+                "error_code": "unavailable",
+                "retryable": false,
+                "details": { "reason": "relay_is_not_a_data_plane" },
+            })
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(seen.try_recv().is_err(), "nothing was dispatched");
+    }
+
+    /// The other side of rule 1: `rtc.*` is what the relay is for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signaling_on_the_relay_carrier_is_dispatched() {
+        let (intake, mut seen) = watching_intake();
+        let (relay, _out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &relay)
+            .unwrap();
+
+        intake
+            .accept(
+                client_request(
+                    &key,
+                    "s-1",
+                    "data",
+                    json!({ "id": 1, "method": "rtc.offer", "params": {} }),
+                ),
+                &relay,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(within_patience(seen.recv()).await, "data:s-1");
+    }
+
+    /// A channel is the data plane: every verb rides it, signaling included.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_app_verb_on_a_channel_is_dispatched() {
+        let (intake, mut seen) = watching_intake();
+        let (channel, _out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &channel)
+            .unwrap();
+
+        intake
+            .accept(
+                client_request(
+                    &key,
+                    "s-1",
+                    "data",
+                    json!({ "id": 1, "method": "session.hello", "params": {} }),
+                ),
+                &channel,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(within_patience(seen.recv()).await, "data:s-1");
+    }
+
+    /// The log is one line per session, not one per frame: a client that keeps
+    /// sending app traffic over the relay is answered every time and said out
+    /// loud once. A session that ended and was minted again is a new client,
+    /// and is worth saying again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refusal_is_worth_logging_once_per_session() {
+        let (handler, _seen) = reporting_handler();
+        let intake = FrameIntake::new(handler, TRANSPORT.clone());
+
+        assert!(intake.first_refusal_of("s-1"));
+        assert!(!intake.first_refusal_of("s-1"));
+        assert!(intake.first_refusal_of("s-2"));
+
+        intake.forget_refusals("s-1");
+
+        assert!(intake.first_refusal_of("s-1"));
+        assert!(!intake.first_refusal_of("s-2"));
     }
 }

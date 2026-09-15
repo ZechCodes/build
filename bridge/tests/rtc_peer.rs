@@ -56,6 +56,20 @@ impl RelaySession {
         }
     }
 
+    /// Send one app verb over the relay and read the refusal rule 1 owes it:
+    /// the rendezvous carries the negotiation and nothing else.
+    async fn refused_app_call(&self, method: &str) -> Value {
+        let refused = self.call(method, json!({})).await;
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["error_code"], "unavailable", "{refused}");
+        assert_eq!(refused["retryable"], false, "{refused}");
+        assert_eq!(
+            refused["details"]["reason"], "relay_is_not_a_data_plane",
+            "{refused}"
+        );
+        refused
+    }
+
     /// Send one request and leave its reply to whoever reads next — what a
     /// trickled candidate is: it has no answer worth waiting for.
     async fn ask(&self, method: &str, params: Value) -> u64 {
@@ -202,11 +216,11 @@ async fn upgraded(session: &RelaySession) -> BrowserPeer {
     browser_peer(&session.session_id, &session.session_key, session).await
 }
 
-/// The spec's whole claim about the second carrier: one session, two wires,
-/// the same answers over either, and the relay still carrying when the peer is
-/// gone.
+/// The spec's whole claim about the carriers: one session, two channels
+/// answering alike, a rendezvous that refuses to be one of them (rule 1), and
+/// a session that outlives the peer it negotiated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_session_answers_the_same_over_the_relay_and_over_the_peer() {
+async fn one_session_answers_over_both_channels_and_the_relay_refuses_app_traffic() {
     let state_dir = tempfile::tempdir().expect("a state dir");
     let (intake, _reports) = peer_bridge(state_dir.path());
     let (session, _demux) = browser_session("sess-peer", intake).await;
@@ -219,29 +233,35 @@ async fn one_session_answers_the_same_over_the_relay_and_over_the_peer() {
     assert_eq!(greeted["ok"], true, "{greeted}");
     assert_eq!(greeted["result"]["push_events"], true);
 
-    let over_the_relay = session.call("project.list", json!({})).await;
     let over_the_peer = peer.app.call("project.list", json!({})).await;
-    assert_eq!(over_the_relay["ok"], true, "{over_the_relay}");
-    assert_eq!(
-        over_the_peer["result"], over_the_relay["result"],
-        "the same session answers the same over either carrier"
-    );
-
+    assert_eq!(over_the_peer["ok"], true, "{over_the_peer}");
     let over_the_terminal_channel = peer.term.call("project.list", json!({})).await;
     assert_eq!(
-        over_the_terminal_channel["result"], over_the_relay["result"],
+        over_the_terminal_channel["result"], over_the_peer["result"],
         "both channels carry the one session"
     );
 
+    // The same verb over the rendezvous is refused, by the same live session:
+    // the refusal comes back encrypted under its key, so this is the session
+    // saying no, not a wire that lost it.
+    session.refused_app_call("project.list").await;
+
     // The browser gives up on the peer: the relay carrier is still riding the
-    // session, so the session did not end with it.
+    // session, so the session did not end with it — and it still carries the
+    // one thing it is for.
     let closed = session.call("rtc.close", json!({})).await;
     assert_eq!(closed["ok"], true, "{closed}");
-    let after_the_peer = session.call("project.list", json!({})).await;
+    let signaling_again = session.call("rtc.close", json!({})).await;
     assert_eq!(
-        after_the_peer["result"], over_the_relay["result"],
-        "the relay path still works once the peer is gone"
+        signaling_again["error"],
+        json!(format!(
+            "no peer connection for session {}",
+            session.session_id
+        )),
+        "the rendezvous still carries signaling to the app once the peer is gone: \
+         only the app has nothing left to close"
     );
+    session.refused_app_call("project.list").await;
 }
 
 /// A request and its reply, both past what one DataChannel message carries.
@@ -281,10 +301,10 @@ async fn a_part_of_a_message_that_never_started_closes_the_channel() {
         peer.app.closed().await,
         "the channel a reassembly was lost on is closed"
     );
-    let after = session.call("project.list", json!({})).await;
+    let after = session.call("rtc.close", json!({})).await;
     assert_eq!(
         after["ok"], true,
-        "the session did not end with the channel it lost"
+        "the session did not end with the channel it lost: {after}"
     );
 }
 

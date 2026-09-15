@@ -52,6 +52,7 @@ use build_bridge::carrier::FrameIntake;
 use build_bridge::config::BridgeConfig;
 use build_bridge::harness::HarnessContext;
 use build_bridge::notify::Notifier;
+use build_bridge::presence::PresenceReporter;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::rtc::WebrtcPeerFactory;
 use build_bridge::service::ServiceManager;
@@ -451,6 +452,12 @@ async fn run_daemon(
             &identity.identity_private_key_b64,
         ),
     ]);
+    // Presence is the api's (`planning/v2/Strict P2P Transport Spec.md` rule 6):
+    // this daemon says it is alive, signed, every 30 s. Liveness is a property
+    // of the device, not of a socket the relay happens to hold, so it outlives
+    // the relay socket a browser closes once its channels are open. Started
+    // beside the transport reporter and against the same configured api.
+    let _presence_beats = PresenceReporter::start(&runtime.config.api_url, &identity);
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
     // on. The peer's channels deliver through this same intake, so a session

@@ -72,6 +72,7 @@ pub mod operation;
 pub mod orchestrator;
 pub mod pairing;
 pub mod plan;
+pub mod presence;
 pub mod pty;
 pub mod reaper;
 pub mod relay;

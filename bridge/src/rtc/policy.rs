@@ -176,6 +176,15 @@ impl IcePolicy {
         engine.set_include_loopback_candidate(false);
         // Always `Some`: `None` would restore the crate's own 2 s default,
         // and `Duration::ZERO` is how this policy says "no wait".
+        //
+        // What it binds, honestly: rtc-ice consults the acceptance waits in
+        // its CONTROLLING selector, and with a browser offering, the browser
+        // controls and this agent is controlled — so today the wait governs
+        // an ICE role conflict and the future direct mode (where this side
+        // offers), while Chrome's own prioritisation is what usually keeps a
+        // TURN pair from winning. Set here because it is this agent's half of
+        // rule 8 and it is the half that becomes load-bearing the moment a
+        // rendezvous that is not the relay has the bridge offer.
         engine.set_relay_acceptance_min_wait(Some(self.relay_min_wait));
         engine
     }

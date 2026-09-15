@@ -42,7 +42,12 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // paneDrawerHtml always emits the scrim and the handle, and both panes always
 // hand initPaneDrawer a list column, so the wiring reads straight down instead
 // of asking whether each of its own parts is there.
-const RATCHETED_FUNCTIONS = 61;
+// 59 since core/relayLink.js is gone: the relay is a rendezvous rather than a
+// connection (Strict P2P Transport Spec, rule 4), so `createRelayLink` and its
+// `connect` — the device-key wait, the pin check, the re-attach test and the
+// backoff reconnect in one function each — left the tree with both of their
+// exemptions.
+const RATCHETED_FUNCTIONS = 59;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

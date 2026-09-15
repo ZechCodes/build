@@ -242,6 +242,57 @@ describe("openPeerLink", () => {
     expect(signalled.map(([method]) => method)).toContain("rtc.close");
   });
 
+  // Rule 4: the rendezvous is closed once both channels are open and reopened
+  // when the connection reports `failed`. peerLink says when; what the caller
+  // does about it is the caller's.
+  it("says when it is connected: once the channels open, and after every restart", async () => {
+    const connected = [];
+    const { peer } = await upgrade({ onConnected: () => connected.push("up") });
+    expect(connected).toEqual(["up"]);
+
+    peer.fail();
+    await tick();
+    await tick();
+    expect(connected).toEqual(["up", "up"]);
+  });
+
+  it("waits for the caller to reopen the rendezvous before it offers a restart", async () => {
+    const order = [];
+    const { peer, signalled } = await upgrade({
+      onFailed: async () => {
+        await tick();
+        order.push("reopened");
+      },
+      onConnected: () => order.push("connected"),
+    });
+    order.length = 0;
+
+    peer.fail();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(order).toEqual(["reopened", "connected"]);
+    expect(signalled.filter(([method]) => method === "rtc.offer")).toHaveLength(2);
+  });
+
+  it("closes the link when the caller cannot reopen the rendezvous", async () => {
+    const { peer, resolved } = await upgrade({
+      onFailed: async () => {
+        throw new Error("the relay is unreachable");
+      },
+    });
+    const lost = [];
+    resolved.app.onClose(() => lost.push("app"));
+
+    peer.fail();
+    await tick();
+    await tick();
+
+    expect(peer.closed).toBe(true);
+    expect(lost).toEqual(["app"]);
+  });
+
   it("takes the bridge's candidates off the push stream and leaves everything else alone", async () => {
     const { peer, candidateSinks } = await upgrade();
 

@@ -1,21 +1,21 @@
 // The app's E2EE session, as everything above the wire holds it.
 //
-// Three primitives and nothing else: `RelayLink` owns the relay socket (the
-// handshake that mints this session, and the reconnect that keeps it),
-// `SessionRpc` owns the key, the frames and the pending calls, and
-// `SessionSwitch` owns which carrier is riding. What is written here is the
-// interface the app calls them through — `{ deviceId, call, peer, onCarrier,
-// close }` — and nothing about a socket. Which wire a call rides is the
-// switch's rule, asked once, in `call`.
+// Three primitives and nothing else: a `Rendezvous` mints the session and hands
+// it the wire its signaling rides (core/rendezvous.js), `SessionRpc` owns the
+// key, the frames and the pending calls, and `SessionSwitch` owns which carrier
+// is riding. What is written here is the interface the app calls them through —
+// `{ deviceId, call, peer, onCarrier, close }` — and nothing about a socket.
+// Which wire a call rides is the switch's rule, asked once, in `call`.
 //
-// The socket the handshake ran on is this session's FIRST carrier, not its only
-// one: `peer(carrier)` hands it a DataChannel to ride instead, and the session
-// ends when its last carrier is gone (see sessionSwitch.js). A relay socket
-// lost under a live channel is not the end of anything: the link reconnects in
-// the background and re-presents the same session (spec §SPA carrier and
-// migration policy, 6).
+// The session's only carrier is the peer connection (spec rules 1 and 2): the
+// rendezvous carries `rtc.*` and nothing else, and closes once the channels are
+// open. A session with no channel is a session nothing is carrying — there is
+// no relay to fall back to — so `onLost` is the switch going idle and nothing
+// else. Re-attaching signaling over a reopened rendezvous keeps the same
+// session id and key: a session is minted once, not once per socket, and
+// re-keying under a live channel would strand every frame in flight on it.
 
-import { createRelayLink } from "./relayLink.js";
+import { createRelayRendezvous } from "./rendezvous.js";
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 
@@ -53,19 +53,23 @@ function callOptions(options) {
   return options && typeof options === "object" ? options : {};
 }
 
-export async function openRelaySession({
-  relayUrl,
+/**
+ * One E2EE session with one device, over the rendezvous that found it.
+ *
+ * @param rendezvous that device's `Rendezvous` — the relay one today, a direct
+ *   one when that mode is built. This module never learns which.
+ * @param isPaused whether the user's calls are being held back. Signaling runs
+ *   either way: the pause holds the user's actions, and `rtc.*` is the
+ *   machinery looking for a better wire under them.
+ * @param onLost nothing is carrying this session any more. The peer connection
+ *   is the only thing that ever was, so this is the channel going — never a
+ *   relay socket, which is not a carrier.
+ */
+export async function openSession({
+  rendezvous,
   transport,
-  WebSocketImpl,
-  fetchToken,
-  getPinnedDeviceKey,
-  preferDeviceId = null,
-  waitForDevice = false,
-  deviceWaitMs,
-  acceptTimeoutMs,
+  deviceId,
   isPaused = () => false,
-  onDeviceKey = () => {},
-  onDeviceOffline = () => {},
   onLost = () => {},
   onPush = () => {},
 }) {
@@ -75,12 +79,18 @@ export async function openRelaySession({
   /** The API adapter the last greeting selected (wire spec step 2.5), or
    *  null before one has, and for a bridge no adapter here speaks to. */
   let adapter = null;
+  /** This session's lease on the rendezvous, while one is open. */
+  let signaling = null;
 
   /** Nothing is carrying this session any more. The caller hears it once. */
   const severSession = () => {
     if (severed) return;
     severed = true;
-    rpc?.fail(new Error("your device went offline"));
+    const gone = new Error("your device went offline");
+    rpc?.fail(gone);
+    // Nothing is coming back on this session: the caller connects again, which
+    // is a new one. A call made after this is refused rather than held.
+    carrierSwitch.fail(gone);
     onLost();
   };
 
@@ -93,39 +103,23 @@ export async function openRelaySession({
     onIdle: severSession,
   });
 
-  const link = createRelayLink({
-    relayUrl,
-    transport,
-    WebSocketImpl,
-    fetchToken,
-    getPinnedDeviceKey,
-    preferDeviceId: () => preferDeviceId,
-    waitForDevice,
-    deviceWaitMs,
-    acceptTimeoutMs,
-    carrying: () => carrierSwitch.active(),
-    onDeviceKey,
-    onDeviceOffline,
-    onSession: (opened) => {
-      if (severed) return; // this session ended; its caller is opening another
-      // Whatever was riding the session before this one is not riding this one.
-      carrierSwitch.peer(null);
-      rpc = createSessionRpc({
-        transport,
-        ...opened,
-        noCarrier: () => new Error("your device went offline"),
-      });
-      rpc.onPush(onPush);
-    },
-    onRelay: (carrier) => carrierSwitch.relay(carrier),
-  });
+  /** Take this session's `rtc.*` wire off the rendezvous as it stands now. A
+   *  rendezvous that closes takes the wire with it, and the switch holds the
+   *  next signaling call until one is back. */
+  const takeSignalingWire = (minted) => {
+    signaling = rendezvous.signalCarrier(minted.sessionId);
+    signaling.onClose(() => carrierSwitch.signaling(null));
+    carrierSwitch.signaling(signaling);
+  };
 
-  try {
-    await link.start();
-  } catch (error) {
-    link.close(); // a handshake the caller is told about is not one to retry under it
-    throw error;
-  }
+  const minted = await rendezvous.mint({});
+  rpc = createSessionRpc({
+    transport,
+    ...minted,
+    noCarrier: () => new Error("your device went offline"),
+  });
+  rpc.onPush(onPush);
+  takeSignalingWire(minted);
 
   /**
    * One RPC over whichever wire this method belongs on — the switch's rule,
@@ -147,7 +141,7 @@ export async function openRelaySession({
   };
 
   return {
-    deviceId: link.deviceId(),
+    deviceId,
     /** The raw rpc through the installed adapter, when there is one: every
      *  refusal a caller sees is then an `ApiError` with a code, whichever
      *  1.x bridge answered. Before a greeting, the raw rpc. */
@@ -168,12 +162,37 @@ export async function openRelaySession({
     /** Subscribe to what the bridge says without being asked — the upgrade's
      *  own trickled candidates among it. Returns the unsubscribe. */
     onPush: (fn) => rpc.onPush(fn),
-    /** Ride this DataChannel instead of the relay, or `null` to fall back. */
+    /** Ride this DataChannel, or `null` when it has gone. Nothing carries this
+     *  session in between. */
     peer: (peerCarrier) => carrierSwitch.peer(peerCarrier),
+
+    /**
+     * Put this session's signaling back on the rendezvous, which the caller
+     * has reopened to ask for an ICE restart (rule 4).
+     *
+     * The same id and key are presented, so the bridge takes it as a carrier
+     * re-attach rather than a second session, and whatever `rtc.*` was queued
+     * while there was no rendezvous is answered with the new wire.
+     */
+    reattachSignaling: async () => {
+      await rendezvous.mint({ sessionId: minted.sessionId, sessionKeyB64: minted.sessionKeyB64 });
+      takeSignalingWire(minted);
+    },
+
+    /**
+     * This device cannot be reached: refuse everything that was waiting for a
+     * wire, in the caller's own words (rule 3's blocked reason). The caller is
+     * the one telling us, so nothing is reported back to it.
+     */
+    fail: (error) => {
+      severed = true;
+      carrierSwitch.fail(error);
+      rpc.fail(error);
+    },
     /** What re-establishes this session on a carrier it has just taken —
-     *  `session.hello` and a read of every mounted surface. Registered after
-     *  the session is handed over, so the first relay attach is the caller's
-     *  own greeting, not a second one. */
+     *  `session.hello` and a read of every mounted surface. Nothing is
+     *  dispatched to the user's surfaces before the channels are open (rule 2),
+     *  so the first one to run is the first time this session is live. */
     onCarrier: (fn) => (onCarrierChange = fn),
     /** Sever this session deliberately — the device was let go of, or a newer
      *  session for it landed and this one lost the race — with no onLost. */
@@ -181,7 +200,52 @@ export async function openRelaySession({
       carrierSwitch.close();
       severed = true;
       rpc.close(new Error("session closed"));
-      link.close();
+      signaling?.close(); // the rendezvous is the caller's; this lease on it is ours
     },
   };
+}
+
+/**
+ * A session over a relay rendezvous of its own.
+ *
+ * The adapter the connect sequence is still written against: it opens one
+ * rendezvous, mints one session on it and ties the two lifetimes together.
+ * Stage 06 replaces it — `connectDevice` owns its device's rendezvous, closes
+ * it once the channels are open and reopens it for an ICE restart, and the
+ * terminal session is minted on the same one. The options this ignores
+ * (`waitForDevice`, `deviceWaitMs`, `onDeviceKey`, `onDeviceOffline`) are the
+ * relay presence the api owns now (rule 6).
+ */
+export async function openRelaySession({
+  relayUrl,
+  transport,
+  WebSocketImpl,
+  fetchToken,
+  getPinnedDeviceKey,
+  preferDeviceId = null,
+  acceptTimeoutMs,
+  isPaused,
+  onLost,
+  onPush,
+}) {
+  const rendezvous = createRelayRendezvous({
+    deviceId: preferDeviceId,
+    relayUrl,
+    transport,
+    WebSocketImpl,
+    fetchToken,
+    getPinnedDeviceKey,
+    acceptTimeoutMs,
+  });
+  let session;
+  try {
+    session = await openSession({ rendezvous, transport, deviceId: preferDeviceId, isPaused, onLost, onPush });
+  } catch (error) {
+    rendezvous.close(); // a handshake the caller is told about leaves no socket behind
+    throw error;
+  }
+  return { ...session, close: () => {
+    session.close();
+    rendezvous.close();
+  } };
 }

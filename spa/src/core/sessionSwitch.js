@@ -1,13 +1,12 @@
 // Which carrier one session rides, and what runs on every change.
 //
+// There is one carrier: the peer connection. The relay is a rendezvous, not a
+// data plane (spec rules 1 and 4), so its slot here is `signaling` — the wire
+// `rtc.*` rides while something is negotiating — and a session with no peer is
+// a session nothing is carrying, whether or not a rendezvous is open.
+//
 // The browser end of the teardown rule the bridge's SessionRegistry owns: a
-// session ends when its last carrier is gone, or when its client says so. A
-// relay socket loss, a DataChannel close and an upgrade are each one slot
-// changing here, and migration in either direction is the one code path below.
-
-/** The rule, stated once: a peer carrier carries while it is there, the relay
- *  carries otherwise, and nothing carrying is the end of the session. */
-const carrying = (relay, peer) => peer ?? relay;
+// session ends when its last carrier is gone, or when its client says so.
 
 /** Signaling, and the one place that word is spelled. `rtc.*` never rides the
  *  channel it negotiates (spec §Signaling), and it is not the user's traffic,
@@ -21,66 +20,91 @@ export const isSignaling = (method) => method.startsWith("rtc.");
  * @param onActive what re-establishes this session on the wire it just took
  *   (`session.hello`, a terminal re-attach). Whatever it returns is handed
  *   back, so a caller can wait for it.
- * @param onIdle the session's last carrier is gone.
+ * @param onIdle the session's carrier is gone.
  */
 export function createSessionSwitch({ session, onActive = () => {}, onIdle = () => {} }) {
-  let relay = null;
-  let peer = null;
+  const slots = { signaling: null, peer: null };
+  // Calls made before the wire they belong on was there. Held rather than
+  // refused: the upgrade is in flight, and what fails them is the upgrade
+  // failing (`fail`), not the moment they were asked.
+  const queued = { signaling: [], peer: [] };
   let active = null;
   let closed = false;
-  const waitingForRelay = [];
+  // Why there will be no wire, once somebody has said so. Latched: a session
+  // whose upgrade failed does not hold the next call for a channel that is not
+  // coming either.
+  let failure = null;
 
-  const answerRelayWaiters = () => waitingForRelay.splice(0).forEach((answer) => answer(relay));
+  const answer = (slot) => queued[slot].splice(0).forEach(({ resolve }) => resolve(slots[slot]));
 
   const settle = () => {
-    const next = carrying(relay, peer);
-    if (closed || next === active) return undefined;
-    active = next;
-    session.rideOn(next);
-    return next ? onActive() : onIdle();
+    if (closed || slots.peer === active) return undefined;
+    active = slots.peer;
+    session.rideOn(active);
+    return active ? onActive() : onIdle();
+  };
+
+  const take = (slot, carrier) => {
+    slots[slot] = carrier ?? null;
+    if (!slots[slot]) return undefined;
+    failure = null; // a wire that is here is not one that will never come
+    // Read from it whether or not it carries: the rendezvous carries this
+    // session's signaling answers, and they still have to arrive.
+    session.readFrom(slots[slot]);
+    answer(slot);
+    return undefined;
   };
 
   return {
-    relay(carrier) {
-      relay = carrier ?? null;
-      if (relay) {
-        // Read from it whether or not it ends up carrying: a relay that
-        // re-attaches under a live channel carries this session's signaling
-        // answers and nothing else, and they still have to arrive.
-        session.readFrom(relay);
-        answerRelayWaiters();
-      }
-      return settle();
+    /** The wire `rtc.*` rides while the rendezvous is open, `null` once it is
+     *  closed. It never carries the session. */
+    signaling(carrier) {
+      return take("signaling", carrier);
     },
+
+    /** The DataChannel this session rides, or `null` when it has none. */
     peer(carrier) {
-      peer = carrier ?? null;
-      if (peer) session.readFrom(peer);
+      take("peer", carrier);
       return settle();
     },
+
     active: () => active,
+
     /**
-     * Which wire one call rides: the relay for signaling, whatever is active
-     * for everything else. The one routing rule, in the one place that knows
-     * both slots.
+     * Which wire one call rides: the rendezvous for signaling, the peer for
+     * everything else. The one routing rule, in the one place that knows both
+     * slots.
      *
-     * A signaling call made while the relay is detached WAITS for the
-     * re-attach rather than failing: the link is already reconnecting, and an
-     * ICE restart asked for in that window is exactly what policy 6 keeps the
-     * session alive for. The wait is the caller's own timeout, and a session
-     * its client has closed answers it with nothing.
+     * A call made while its wire is not there WAITS for it: a user's call
+     * during the upgrade rides the channel it is waiting for rather than the
+     * relay, and an ICE restart asked for after the rendezvous closed waits for
+     * the caller to reopen it. The wait is the caller's own timeout; `fail`
+     * ends it when the wire is not coming, and a session its client has closed
+     * answers it with nothing.
      */
     wireFor(method) {
-      if (!isSignaling(method)) return active;
-      if (relay || closed) return relay;
-      return new Promise((resolve) => waitingForRelay.push(resolve));
+      const slot = isSignaling(method) ? "signaling" : "peer";
+      if (slots[slot] || closed) return slots[slot];
+      if (failure) return Promise.reject(failure);
+      return new Promise((resolve, reject) => queued[slot].push({ resolve, reject }));
     },
+
+    /** The wire nothing was waiting on is not coming: this device is blocked.
+     *  Everything held for it is refused in those words. */
+    fail(error) {
+      failure = error;
+      for (const slot of Object.keys(queued)) queued[slot].splice(0).forEach(({ reject }) => reject(error));
+    },
+
     /** The client said so: no later carrier loss is this session's end. */
     close() {
       closed = true;
-      relay = null;
-      peer = null;
+      failure = null; // a client that closed a session is told nothing more about it
+      slots.signaling = null;
+      slots.peer = null;
       active = null;
-      answerRelayWaiters();
+      answer("signaling");
+      answer("peer");
     },
   };
 }

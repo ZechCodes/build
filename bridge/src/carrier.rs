@@ -22,26 +22,63 @@ pub mod testing;
 
 use dispatch::Dispatcher;
 
-/// One encrypted frame bound for one client session, before any wire wrapper
-/// exists. The carrier that takes it decides how to frame it: the relay writer
-/// wraps it as `{"type":"e2ee_envelope",…}`, a DataChannel sends the envelope
-/// JSON directly. The session it is bound for is the envelope's own — one fact,
-/// stamped once, by `encrypt_frame`.
+/// One thing bound for a carrier's wire, before any wire wrapper exists: an
+/// encrypted frame for a client session, or the `session_accept` answering an
+/// init that arrived on that carrier. The carrier that takes it decides how to
+/// frame it — the relay writer wraps a frame as `{"type":"e2ee_envelope",…}`, a
+/// DataChannel sends the envelope JSON directly, and both send an accept as
+/// [`session_accept_message`].
+///
+/// Two variants and no third: everything else a client asks for is a frame,
+/// and everything a wire needs to say for itself is that wire's own business
+/// (the relay's heartbeat never reaches here).
 #[derive(Debug, Clone)]
-pub struct OutboundEnvelope(Envelope);
+pub enum OutboundEnvelope {
+    /// An encrypted frame. The session it is bound for is the envelope's own —
+    /// one fact, stamped once, by `encrypt_frame`.
+    Frame(Envelope),
+    /// The device's answer to a `session_init`, on the carrier the init arrived
+    /// on. The session id rides beside the envelope because the wire shape
+    /// names it (and a client reads it before it holds anything to decrypt
+    /// with).
+    SessionAccept {
+        session_id: String,
+        envelope: Envelope,
+    },
+}
 
 impl OutboundEnvelope {
     pub(crate) fn new(envelope: Envelope) -> Self {
-        OutboundEnvelope(envelope)
+        OutboundEnvelope::Frame(envelope)
     }
 
     pub fn session_id(&self) -> &str {
-        &self.0.session_id
+        match self {
+            OutboundEnvelope::Frame(envelope) => &envelope.session_id,
+            OutboundEnvelope::SessionAccept { session_id, .. } => session_id,
+        }
     }
 
+    /// The envelope either variant carries. Test-only: a writer matches on the
+    /// variant, because what it does with the envelope depends on which it is.
+    #[cfg(test)]
     pub(crate) fn envelope(&self) -> &Envelope {
-        &self.0
+        match self {
+            OutboundEnvelope::Frame(envelope) => envelope,
+            OutboundEnvelope::SessionAccept { envelope, .. } => envelope,
+        }
     }
+}
+
+/// The JSON an accept goes out as, written once so every carrier sends the
+/// same object: the relay puts it on the socket as a text frame, a channel
+/// sends it as a message. A client reads one shape whichever wire it minted on.
+pub(crate) fn session_accept_message(session_id: &str, envelope: &Envelope) -> Value {
+    serde_json::json!({
+        "type": "session_accept",
+        "session_id": session_id,
+        "envelope": envelope,
+    })
 }
 
 /// A handle the app uses to push encrypted frames to a specific client session —
@@ -502,24 +539,36 @@ impl FrameIntake {
 
     /// A client opened a session on this carrier: unwrap its `session_init`
     /// with the device's transport key, register the session key it carried,
-    /// and answer with the encrypted `session_accept` that proves the device
-    /// holds it. The wrapped key comes in and only the proof goes out, so no
-    /// carrier ever names key material.
+    /// and answer — **on that same carrier** — with the encrypted
+    /// `session_accept` that proves the device holds it. The wrapped key comes
+    /// in and only the proof goes out, so no carrier ever names key material.
+    ///
+    /// The accept goes out through the carrier rather than back to the caller
+    /// (rule 7): a rendezvous is whatever wire an init arrived on, so a
+    /// channel-borne init in a future direct mode is answered with no
+    /// relay-specific control path in the process.
     pub(crate) fn open(
         &self,
         session_id: &str,
         init: &SessionInit,
         carrier: &CarrierHandle,
-    ) -> Result<Envelope, CarrierError> {
+    ) -> Result<(), CarrierError> {
         let opened = transport::open_session_init(&self.transport.private_key_b64, init)?;
         self.registry
             .open(session_id, opened.session_key_b64.clone(), carrier)?;
-        Ok(transport::build_session_accept(
+        let envelope = transport::build_session_accept(
             &opened.session_key_b64,
             session_id,
             &session_route(session_id),
             None,
-        )?)
+        )?;
+        // A carrier already gone takes its accept with it; the session it just
+        // opened ends with that carrier by the teardown rule.
+        let _ = carrier.out.send(OutboundEnvelope::SessionAccept {
+            session_id: session_id.to_string(),
+            envelope,
+        });
+        Ok(())
     }
 
     /// One envelope arrived on this carrier: admit it through the registry,
@@ -992,19 +1041,78 @@ mod intake_tests {
         testing::session_init(session_id, &TRANSPORT.public_key_b64, session_key)
     }
 
+    /// The accept the client verifies comes back on the carrier the init
+    /// arrived on, as a `session_accept` the carrier's writer shapes for its
+    /// own wire.
+    fn accepted(outbound: &OutboundEnvelope) -> (&str, &Envelope) {
+        match outbound {
+            OutboundEnvelope::SessionAccept {
+                session_id,
+                envelope,
+            } => (session_id, envelope),
+            OutboundEnvelope::Frame(_) => panic!("the carrier was handed a frame, not an accept"),
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn opening_a_session_answers_with_an_accept_the_client_can_verify() {
         let (intake, _seen) = watching_intake();
-        let (carrier, _out) = CarrierHandle::open();
+        let (carrier, mut out) = CarrierHandle::open();
         let key = transport::generate_session_key();
 
-        let accept = intake
+        intake
             .open("s-1", &session_init("s-1", &key), &carrier)
             .expect("a fresh session opens");
 
-        transport::verify_session_accept(&key, &accept, "s-1")
+        let outbound = out.try_recv().expect("the accept rode the carrier");
+        let (session_id, accept) = accepted(&outbound);
+        assert_eq!(session_id, "s-1");
+        transport::verify_session_accept(&key, accept, "s-1")
             .expect("the accept proves the device unwrapped the key");
         assert_eq!(accept.route_to, "session:s-1");
+    }
+
+    /// Rule 7: the accept goes back over the carrier the `session_init` arrived
+    /// on, whatever kind of wire that is. A channel-borne init — what a future
+    /// direct-network rendezvous mints over — is answered on that channel, with
+    /// no relay in the process.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_init_over_a_channel_is_accepted_over_that_channel() {
+        let (intake, _seen) = watching_intake();
+        let (channel, mut out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+
+        intake
+            .open("s-direct", &session_init("s-direct", &key), &channel)
+            .expect("a fresh session opens over a channel");
+
+        let outbound = out.try_recv().expect("the accept rode the channel");
+        let (session_id, accept) = accepted(&outbound);
+        assert_eq!(session_id, "s-direct");
+        transport::verify_session_accept(&key, accept, "s-direct")
+            .expect("the accept proves the device unwrapped the key");
+    }
+
+    /// A refused init answers nothing: the session is open under another key,
+    /// and the carrier that asked is told by silence (the frame is dropped).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_init_under_another_key_puts_no_accept_on_the_carrier() {
+        let (intake, _seen) = watching_intake();
+        let (carrier, mut out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &carrier)
+            .unwrap();
+        out.try_recv().expect("the first accept rode the carrier");
+
+        let refused = intake.open(
+            "s-1",
+            &session_init("s-1", &transport::generate_session_key()),
+            &carrier,
+        );
+
+        assert!(matches!(refused, Err(CarrierError::KeyMismatch(id)) if id == "s-1"));
+        assert!(out.try_recv().is_err(), "nothing was accepted");
     }
 
     /// A `session_init` wrapped to some other device's key unwraps to nothing

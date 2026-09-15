@@ -656,7 +656,7 @@ async fn write_envelopes(
     mut envelopes: mpsc::UnboundedReceiver<OutboundEnvelope>,
 ) {
     while let Some(outbound) = envelopes.recv().await {
-        let Ok(json) = serde_json::to_string(outbound.envelope()) else {
+        let Some(json) = as_channel_text(&outbound) else {
             continue;
         };
         for message in chunk::split(&json) {
@@ -664,6 +664,20 @@ async fn write_envelopes(
                 return;
             }
         }
+    }
+}
+
+/// What one outbound goes onto a channel as: a frame is the envelope itself —
+/// the channel adds no wrapper — and an accept is the same
+/// `{"type":"session_accept",…}` object the relay sends, so a session minted
+/// over a channel (a future direct-network rendezvous) reads the one shape.
+fn as_channel_text(outbound: &OutboundEnvelope) -> Option<String> {
+    match outbound {
+        OutboundEnvelope::Frame(envelope) => serde_json::to_string(envelope).ok(),
+        OutboundEnvelope::SessionAccept {
+            session_id,
+            envelope,
+        } => Some(carrier::session_accept_message(session_id, envelope).to_string()),
     }
 }
 
@@ -925,6 +939,56 @@ pub mod recording {
                 .insert(session_id.to_string(), peer.clone());
             Ok(peer)
         }
+    }
+}
+
+#[cfg(test)]
+mod channel_writer_tests {
+    use super::*;
+    use crate::transport::Envelope;
+
+    fn envelope(session_id: &str) -> Envelope {
+        Envelope {
+            version: 1,
+            session_id: session_id.into(),
+            route_to: format!("session:{session_id}"),
+            nonce: "bm9uY2U=".into(),
+            ciphertext: "Y2lwaGVy".into(),
+        }
+    }
+
+    /// A channel is the wire that adds nothing: the envelope is the message.
+    #[test]
+    fn a_frame_goes_onto_the_channel_as_the_envelope_itself() {
+        let outbound = OutboundEnvelope::new(envelope("s-1"));
+
+        let text = as_channel_text(&outbound).expect("the channel carries it");
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            serde_json::to_value(envelope("s-1")).unwrap()
+        );
+    }
+
+    /// Rule 7's other half: an accept is representable on a channel, and it is
+    /// the same object the relay sends — a direct-mode rendezvous reading this
+    /// wire needs no second shape.
+    #[test]
+    fn an_accept_goes_onto_the_channel_as_the_same_session_accept_the_relay_sends() {
+        let outbound = OutboundEnvelope::SessionAccept {
+            session_id: "s-1".into(),
+            envelope: envelope("s-1"),
+        };
+
+        let text = as_channel_text(&outbound).expect("the channel carries it");
+
+        let wire: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(wire["type"], "session_accept");
+        assert_eq!(wire["session_id"], "s-1");
+        assert_eq!(
+            wire["envelope"],
+            serde_json::to_value(envelope("s-1")).unwrap()
+        );
     }
 }
 

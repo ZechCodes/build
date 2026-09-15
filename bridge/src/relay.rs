@@ -279,9 +279,11 @@ impl<'a> RelayConnection<'a> {
         self.deadline = silence_deadline(interval);
     }
 
-    /// A client opened a session: parse its `session_init` off the relay wire,
-    /// hand it to the intake, and send back the `session_accept` the intake
-    /// built. The wrapped key passes through here unopened.
+    /// A client opened a session: parse its `session_init` off the relay wire
+    /// and hand it to the intake. The `session_accept` goes back through this
+    /// carrier's own queue, not through this socket's control channel — the
+    /// intake answers whichever wire asked (`carrier.rs`, rule 7). The wrapped
+    /// key passes through here unopened.
     fn open_session(&self, msg: &Value) -> Result<(), RelayError> {
         let session_id = field_str(msg, "session_id")?;
         let init: SessionInit = serde_json::from_value(
@@ -291,15 +293,7 @@ impl<'a> RelayConnection<'a> {
         )
         .map_err(|e| RelayError::Protocol(format!("bad session_init: {e}")))?;
 
-        let accept = self.intake.open(&session_id, &init, &self.carrier)?;
-        send(
-            &self.control_tx,
-            json!({
-                "type": "session_accept",
-                "session_id": session_id,
-                "envelope": accept,
-            }),
-        );
+        self.intake.open(&session_id, &init, &self.carrier)?;
         Ok(())
     }
 
@@ -349,18 +343,18 @@ fn spawn_heartbeat(
 }
 
 fn as_relay_wire_message(outbound: &OutboundEnvelope) -> Message {
-    Message::Text(
-        json!({
+    let wire = match outbound {
+        OutboundEnvelope::Frame(envelope) => json!({
             "type": "e2ee_envelope",
-            "session_id": outbound.session_id(),
-            "envelope": outbound.envelope(),
-        })
-        .to_string(),
-    )
-}
-
-fn send(control_tx: &mpsc::UnboundedSender<Message>, value: Value) {
-    let _ = control_tx.send(Message::Text(value.to_string()));
+            "session_id": envelope.session_id,
+            "envelope": envelope,
+        }),
+        OutboundEnvelope::SessionAccept {
+            session_id,
+            envelope,
+        } => carrier::session_accept_message(session_id, envelope),
+    };
+    Message::Text(wire.to_string())
 }
 
 fn field_str(msg: &Value, key: &str) -> Result<String, RelayError> {
@@ -406,6 +400,33 @@ mod writer_tests {
             wire["envelope"],
             serde_json::to_value(outbound.envelope()).unwrap(),
             "the envelope crosses the wire byte-identical"
+        );
+    }
+
+    /// An accept is a carrier's message too, and the relay's shape for it is
+    /// the one the browser has always read off this socket.
+    #[test]
+    fn the_writer_sends_an_accept_as_the_relay_s_session_accept() {
+        let outbound = OutboundEnvelope::SessionAccept {
+            session_id: "s-1".into(),
+            envelope: Envelope {
+                version: 1,
+                session_id: "s-1".into(),
+                route_to: "session:s-1".into(),
+                nonce: "bm9uY2U=".into(),
+                ciphertext: "Y2lwaGVy".into(),
+            },
+        };
+
+        let Message::Text(text) = as_relay_wire_message(&outbound) else {
+            panic!("the relay carries text frames");
+        };
+        let wire: Value = serde_json::from_str(&text).expect("the accept is JSON");
+        assert_eq!(wire["type"], "session_accept");
+        assert_eq!(wire["session_id"], "s-1");
+        assert_eq!(
+            wire["envelope"],
+            serde_json::to_value(outbound.envelope()).unwrap()
         );
     }
 }

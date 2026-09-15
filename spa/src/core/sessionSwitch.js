@@ -47,7 +47,6 @@ export function createSessionSwitch({ session, onActive = () => {}, onIdle = () 
   const take = (slot, carrier) => {
     slots[slot] = carrier ?? null;
     if (!slots[slot]) return undefined;
-    failure = null; // a wire that is here is not one that will never come
     // Read from it whether or not it carries: the rendezvous carries this
     // session's signaling answers, and they still have to arrive.
     session.readFrom(slots[slot]);
@@ -62,8 +61,15 @@ export function createSessionSwitch({ session, onActive = () => {}, onIdle = () 
       return take("signaling", carrier);
     },
 
-    /** The DataChannel this session rides, or `null` when it has none. */
+    /** The DataChannel this session rides, or `null` when it has none.
+     *
+     *  The one thing that lifts the latch: a session failed closed is failed
+     *  closed until something is CARRYING it. The rendezvous re-attaching
+     *  mid-restart is not that — it carries `rtc.*` and nothing else (rule 1) —
+     *  and a user's call let back into the queue on it would wait out its whole
+     *  deadline instead of being refused in the blocked device's own words. */
     peer(carrier) {
+      if (carrier) failure = null;
       take("peer", carrier);
       return settle();
     },

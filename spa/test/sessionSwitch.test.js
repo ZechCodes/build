@@ -166,6 +166,24 @@ describe("the wire one call rides", () => {
     expect(carrierSwitch.wireFor("board.list")).toBe(peer);
   });
 
+  // A device failed closed stays failed closed while its ICE restart
+  // negotiates: the rendezvous coming back is not a channel coming back. A
+  // user's call held for one would hang out its whole RPC deadline instead of
+  // being refused in the words the strip over that machine shows (rule 3).
+  it("keeps refusing user calls while only the signaling wire is back", async () => {
+    const { carrierSwitch, signal, peer } = stand();
+    carrierSwitch.fail(new Error("this device is blocked"));
+
+    carrierSwitch.signaling(signal); // the upgrade reopened the rendezvous to offer a restart
+
+    await expect(carrierSwitch.wireFor("board.list")).rejects.toThrow("this device is blocked");
+    expect(carrierSwitch.wireFor("rtc.offer")).toBe(signal); // and the restart rides it
+
+    // Something carrying is what the failure being over means.
+    carrierSwitch.peer(peer);
+    expect(carrierSwitch.wireFor("board.list")).toBe(peer);
+  });
+
   it("answers a queued call with nothing once the session is closed", async () => {
     const { carrierSwitch } = stand();
     const waiting = carrierSwitch.wireFor("rtc.close");

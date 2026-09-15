@@ -72,7 +72,7 @@ pub(in crate::app) use self::runs::reporting::run_outcome_mirrors_to_issue;
 pub(in crate::app) use self::runs::reporting::{
     abandoned_branch_summary, append_plan_stage_announcements, close_abandoned_run_conversations,
     open_session_id, record_current_stage_started, record_idle_in_thread, record_report_in_thread,
-    recovery_agent_prompt, HarnessExit,
+    recovery_agent_prompt, run_report_conversation, HarnessExit,
 };
 #[cfg(test)]
 pub(in crate::app) use self::runs::review::{merge_cleanup_from, MergeCleanup};

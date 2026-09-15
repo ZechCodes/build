@@ -3,7 +3,7 @@ use crate::app::{
     DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey,
     TAB_CLOSED_UNDER_A_TURN,
 };
-use crate::harness::{AgentStatus, Turn, TurnChoiceSupport};
+use crate::harness::{AgentStatus, Turn, TurnChoiceSupport, TurnReceiptSupport};
 use crate::store::now_rfc3339;
 use crate::timing::FrameTimer;
 use serde_json::Value;
@@ -178,8 +178,8 @@ pub(in crate::app) fn deliver(
     // sweep wait on that lock, and how long a session takes to accept a turn is
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
-    let (session, instance) = {
-        let s = timer.lock(state);
+    let (session, instance, legacy_payload) = {
+        let mut s = timer.lock(state);
         if !s.queued_agent_target_exists(turn) {
             return Ok(DeliveryOutcome::Delivered(None));
         }
@@ -213,11 +213,25 @@ pub(in crate::app) fn deliver(
                 },
             );
         }
+        let legacy_payload = if turn.operation_id.is_none() && turn.wants_catch_up {
+            s.legacy_delivery_payload(owner, agent_id)?
+        } else {
+            None
+        };
+        if let Some(payload) = legacy_payload.as_ref() {
+            s.record_legacy_delivery_status(
+                owner,
+                agent_id,
+                payload,
+                crate::thread::MessageDeliveryStatus::Submitted,
+            )?;
+        }
         (
             Arc::clone(&tab.session),
             tab.instance
                 .clone()
                 .expect("an exact delivery tab has its session instance"),
+            legacy_payload,
         )
     };
     if *interrupt && spawned == Spawned::Warm {
@@ -226,19 +240,40 @@ pub(in crate::app) fn deliver(
         }
     }
     let reports_turn_boundaries = session.status_changed().is_some();
-    if let Err(error) = session.send_turn(&Turn::with_choice(
-        prompt,
-        model_choice.clone(),
-        *choice_revision,
-    )) {
+    let prompt = match legacy_payload.as_ref() {
+        Some(payload) => format!("{prompt}\n\n{}", payload.legacy_delivery_prompt(false)),
+        None => prompt.clone(),
+    };
+    let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);
+    native_turn.operation_id = turn.operation_id.clone().or_else(|| {
+        legacy_payload.as_ref().map(|payload| {
+            let sequences = payload
+                .messages
+                .iter()
+                .map(|message| message.sequence.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("@legacy/{sequences}")
+        })
+    });
+    if let Err(error) = session.send_turn(&native_turn) {
         // A harness that exits immediately still owns its tab: PTYs return EIO
         // once the child's side is closed, and the child closes it BEFORE the
         // OS makes its exit status reapable, so a single poll here races the
         // kernel. The bounded wait covers that lag; a genuinely wedged session
         // (live but unwritable) still surfaces its error.
-        if !session.exited_within(crate::orchestrator::PROMPT_WRITE_EXIT_GRACE) {
-            return Err(error.to_string());
+        session.exited_within(crate::orchestrator::PROMPT_WRITE_EXIT_GRACE);
+        if let Some(payload) = legacy_payload.as_ref() {
+            if let Err(record_error) = timer.lock(state).record_legacy_delivery_status(
+                owner,
+                agent_id,
+                payload,
+                crate::thread::MessageDeliveryStatus::Uncertain,
+            ) {
+                eprintln!("record legacy delivery failure {owner}/{agent_id}: {record_error}");
+            }
         }
+        return Err(error.to_string());
     }
     // The quiescence clock restarts here: whatever the agent was silent about
     // before, it now has something to answer for. A tab that closed while the
@@ -246,6 +281,29 @@ pub(in crate::app) fn deliver(
     // travelled, so that is not a delivery failure to report.
     let now = now_rfc3339();
     let mut app = timer.lock(state);
+    if let Some(payload) = legacy_payload
+        .as_ref()
+        .filter(|_| session.turn_receipt_support() == TurnReceiptSupport::Sent)
+    {
+        if let Err(error) = app.record_legacy_delivery_status(
+            owner,
+            agent_id,
+            payload,
+            crate::thread::MessageDeliveryStatus::Sent,
+        ) {
+            eprintln!("record legacy delivery status {owner}/{agent_id}: {error}");
+        }
+    }
+    if let Some(operation_id) = turn.operation_id.as_deref() {
+        if session.turn_receipt_support() == TurnReceiptSupport::Sent {
+            if let Err(error) = app.record_operation_delivery_status(
+                operation_id,
+                crate::thread::MessageDeliveryStatus::Sent,
+            ) {
+                eprintln!("record delivery status {operation_id}: {error}");
+            }
+        }
+    }
     if still_pumping_instance(&app, &key, &session, &instance) {
         let was_working = app
             .entity_agents(owner)

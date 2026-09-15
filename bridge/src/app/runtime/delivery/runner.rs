@@ -68,6 +68,7 @@ impl DeliveryRunner {
     /// already open.
     pub(in crate::app) fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
         let timer = turns.clock.frame(AGENT_DELIVERY_METHOD);
+        let mut completed_delivery_freed_capacity = false;
         while let Some((turn, mark)) = turns.next_turn() {
             // A triage turn may have left the app queue before the account setting
             // was switched off. Recheck at the last point before delivery; a turn
@@ -76,6 +77,7 @@ impl DeliveryRunner {
                 let mut app = timer.lock(state);
                 if !app.triage_enabled {
                     mark.settle(&mut app);
+                    completed_delivery_freed_capacity = true;
                     continue;
                 }
             }
@@ -90,6 +92,7 @@ impl DeliveryRunner {
                     Ok(true) => {}
                     Ok(false) => {
                         mark.settle(&mut timer.lock(state));
+                        completed_delivery_freed_capacity = true;
                         continue;
                     }
                     Err(error) => {
@@ -102,6 +105,7 @@ impl DeliveryRunner {
                 }
             }
             let delivered = deliver(state, &turn, &timer);
+            let completed = !matches!(&delivered, Ok(DeliveryOutcome::Deferred));
             let mut s = timer.lock(state);
             if let Some(operation_id) = turn.operation_id.as_deref() {
                 let next = match &delivered {
@@ -134,10 +138,9 @@ impl DeliveryRunner {
                 Ok(DeliveryOutcome::Deferred) => {
                     s.delivery_queue.requeue(turn);
                 }
-                // The turn stays durable on the thread — the agent picks it up
-                // with `read_unread_messages` the next time a tab opens — but
-                // nothing is reading that thread right now, so the entity
-                // itself has to carry the reason. The idle sweep finishes the
+                // The message stays durable with its delivery failure, so the
+                // entity carries the reason without silently replaying an
+                // input whose handoff may have succeeded. The idle sweep finishes the
                 // job: an entity left working with no agent tab is demoted on
                 // the next pass.
                 Err(error) => {
@@ -148,6 +151,10 @@ impl DeliveryRunner {
             // Off the queue and out of flight: from here the entity's agent tab
             // is the whole truth about whether an agent is there.
             mark.settle(&mut s);
+            completed_delivery_freed_capacity |= completed;
+        }
+        if completed_delivery_freed_capacity {
+            DeliveryRunner::drain(state, &timer);
         }
     }
 }

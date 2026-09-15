@@ -1824,13 +1824,22 @@ export function mountAgentRail(host, context) {
       body: message.body || "",
       attachments: message.attachments || [],
       created_at: new Date().toISOString(),
+      delivery_status: "queued",
     },
   });
 
-  const rekeyPostedMessage = (handle, messageKey, provisional, posted) => {
+  const provisionalDeliveryStatus = (submission, posted) => {
+    if (posted?.operation_status === "uncertain") return "uncertain";
+    return submission.threadPostOperations ? "queued" : "sent";
+  };
+
+  const rekeyPostedMessage = (handle, messageKey, provisional, posted, submission) => {
     const sequence = (posted && posted.posted_sequence) ?? null;
     if (sequence === null) handle.drop(messageKey);
-    else handle.rekey(messageKey, String(sequence), { ...provisional, data: { ...provisional.data, sequence } });
+    else handle.rekey(messageKey, String(sequence), {
+      ...provisional,
+      data: { ...provisional.data, sequence, delivery_status: provisionalDeliveryStatus(submission, posted) },
+    });
   };
 
   /** Put the message on the conversation, and settle the provisional row under
@@ -1849,7 +1858,7 @@ export function mountAgentRail(host, context) {
       if (!error.uncertain) throw error;
       posted = null;
     }
-    if (posted) rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
+    if (posted) rekeyPostedMessage(handle, messageKey, provisionalMessage, posted, submission);
   };
 
   /** Put an agent on this entity's message, and say which agent got it.

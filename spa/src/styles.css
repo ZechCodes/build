@@ -1289,6 +1289,8 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-outcome.blocked .thread-outcome-icon { background:color-mix(in srgb, var(--red) 15%, var(--panel)); color:var(--red); }
 .thread-outcome.blocked strong { color:var(--red); }
 .thread-status, .thread-anchor { color:var(--dim); font-size:11px; }
+.delivery-status.uncertain { color:var(--amber); }
+.delivery-status.failed { color:var(--red); }
 .thread-anchor { padding:7px 12px 0; font-family:var(--mono); overflow-wrap:anywhere; }
 .thread-body { padding:12px; color:var(--ink2); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
 .thread-body > :first-child { margin-top:0; }

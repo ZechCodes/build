@@ -227,6 +227,87 @@ fn agent_add_gives_a_branch_a_second_conversation() {
     assert_eq!(mailbox.id, format!("thread:{second_agent}"));
 }
 
+#[test]
+fn done_records_on_the_authenticated_agents_canonical_conversation() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (issue_id, run_id) = planned_run_in_review(&mut state, "route each completion");
+    let primary_agent = primary_agent_id(&state, &run_id);
+    let added = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": run_id, "provider": "codex", "model": "gpt-5.6-sol" }),
+    ));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let secondary_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+    let report = |summary: &str| DoneReport {
+        phase: DonePhase::Build,
+        status: DoneStatus::Completed,
+        summary: summary.to_string(),
+        outputs: DoneOutputs::default(),
+    };
+    state.done_deferring_for_agent(
+        &run_id,
+        &secondary_agent,
+        report("secondary finished its instruction"),
+    );
+
+    let issue_thread = serde_json::to_value(state.plans[&issue_id].agents.sole_thread()).unwrap();
+    let secondary_thread = serde_json::to_value(
+        &state.runs[&run_id]
+            .agents
+            .by_id(&secondary_agent)
+            .unwrap()
+            .thread,
+    )
+    .unwrap();
+    assert!(
+        !issue_thread
+            .to_string()
+            .contains("secondary finished its instruction"),
+        "a secondary report must not be attributed to the Issue agent: {issue_thread}"
+    );
+    assert!(
+        secondary_thread
+            .to_string()
+            .contains("secondary finished its instruction"),
+        "the reporter's own conversation carries its completion: {secondary_thread}"
+    );
+
+    state.done_deferring_for_agent(
+        &run_id,
+        &primary_agent,
+        report("primary finished its instruction"),
+    );
+    let primary_thread = serde_json::to_value(
+        &state.runs[&run_id]
+            .agents
+            .by_id(&primary_agent)
+            .unwrap()
+            .thread,
+    )
+    .unwrap();
+    assert!(
+        primary_thread
+            .to_string()
+            .contains("primary finished its instruction"),
+        "the primary implementation agent's canonical conversation carries its completion: {primary_thread}"
+    );
+
+    state.on_run_agent_done(
+        &run_id,
+        None,
+        report("legacy completion kept its Issue lineage"),
+    );
+    let issue_thread = serde_json::to_value(state.plans[&issue_id].agents.sole_thread()).unwrap();
+    assert!(
+        issue_thread
+            .to_string()
+            .contains("legacy completion kept its Issue lineage"),
+        "a legacy report with no authenticated agent keeps the planned-run fallback: {issue_thread}"
+    );
+}
+
 /// Legacy issue records stay intact, but their agent roster cannot be changed.
 #[test]
 fn agent_add_is_refused_on_a_retired_issue() {

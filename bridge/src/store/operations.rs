@@ -5,7 +5,7 @@ use super::{
 use crate::agent::Agent;
 use crate::operation::OperationReceipt;
 use crate::operation::OperationStatus;
-use crate::thread::ThreadItem;
+use crate::thread::{MessageDeliveryStatus, ThreadItem};
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use std::path::Path;
@@ -75,6 +75,57 @@ impl Store {
         end_sequence: u64,
         now: &str,
     ) -> Result<u64, StoreError> {
+        self.acknowledge_operation_messages_with_working(
+            conversation_id,
+            Some(operation_id),
+            start_sequence,
+            end_sequence,
+            now,
+            true,
+        )
+    }
+    pub fn acknowledge_native_operation_messages(
+        &self,
+        conversation_id: &str,
+        operation_id: &str,
+        start_sequence: u64,
+        end_sequence: u64,
+        now: &str,
+    ) -> Result<u64, StoreError> {
+        self.acknowledge_operation_messages_with_working(
+            conversation_id,
+            Some(operation_id),
+            start_sequence,
+            end_sequence,
+            now,
+            false,
+        )
+    }
+    pub fn acknowledge_native_legacy_messages(
+        &self,
+        conversation_id: &str,
+        start_sequence: u64,
+        end_sequence: u64,
+        now: &str,
+    ) -> Result<u64, StoreError> {
+        self.acknowledge_operation_messages_with_working(
+            conversation_id,
+            None,
+            start_sequence,
+            end_sequence,
+            now,
+            false,
+        )
+    }
+    fn acknowledge_operation_messages_with_working(
+        &self,
+        conversation_id: &str,
+        operation_id: Option<&str>,
+        start_sequence: u64,
+        end_sequence: u64,
+        now: &str,
+        mark_working: bool,
+    ) -> Result<u64, StoreError> {
         self.in_transaction(|tx| {
             let raw_agent: String = tx.query_row(
                 "SELECT record FROM agents WHERE id = ?1",
@@ -110,10 +161,31 @@ impl Store {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            agent
-                .thread
-                .read_operation_messages(operation_id, start_sequence, end_sequence, now);
-            agent.thread.note_operation_read(now);
+            match (operation_id, mark_working) {
+                (Some(operation_id), true) => {
+                    agent.thread.read_operation_messages(
+                        operation_id,
+                        start_sequence,
+                        end_sequence,
+                        now,
+                    );
+                    agent.thread.note_operation_read(now);
+                }
+                (Some(operation_id), false) => {
+                    agent.thread.read_native_operation_messages(
+                        operation_id,
+                        start_sequence,
+                        end_sequence,
+                        now,
+                    );
+                }
+                (None, false) => {
+                    agent
+                        .thread
+                        .read_native_legacy_messages(start_sequence, end_sequence, now);
+                }
+                (None, true) => unreachable!("legacy acknowledgement never starts work"),
+            }
             let acknowledged_sequence = agent
                 .thread
                 .items
@@ -144,13 +216,123 @@ impl Store {
             Ok(acknowledged_sequence)
         })
     }
+    /// Persist one delivery-state transition across a bounded operation span,
+    /// including messages older than the resident in-memory tail.
+    pub fn set_operation_delivery_status(
+        &self,
+        conversation_id: &str,
+        operation_id: &str,
+        start_sequence: u64,
+        end_sequence: u64,
+        status: MessageDeliveryStatus,
+    ) -> Result<u64, StoreError> {
+        self.set_delivery_status(
+            conversation_id,
+            Some(operation_id),
+            start_sequence,
+            end_sequence,
+            status,
+        )
+    }
+    /// Persist a delivery transition for unmanaged reviewer messages only.
+    pub fn set_legacy_delivery_status(
+        &self,
+        conversation_id: &str,
+        start_sequence: u64,
+        end_sequence: u64,
+        status: MessageDeliveryStatus,
+    ) -> Result<u64, StoreError> {
+        self.set_delivery_status(conversation_id, None, start_sequence, end_sequence, status)
+    }
+    fn set_delivery_status(
+        &self,
+        conversation_id: &str,
+        operation_id: Option<&str>,
+        start_sequence: u64,
+        end_sequence: u64,
+        status: MessageDeliveryStatus,
+    ) -> Result<u64, StoreError> {
+        self.in_transaction(|tx| {
+            let raw_agent: String = tx.query_row(
+                "SELECT record FROM agents WHERE id = ?1",
+                [conversation_id],
+                |row| row.get(0),
+            )?;
+            let mut agent: Agent =
+                serde_json::from_str(&raw_agent).map_err(|source| StoreError::Corrupt {
+                    path: PathBuf::from(format!("agents/{conversation_id}")),
+                    source,
+                })?;
+            let mut statement = tx.prepare(
+                "SELECT item FROM thread_items WHERE agent_id = ?1 \
+                 AND sequence BETWEEN ?2 AND ?3 ORDER BY sequence",
+            )?;
+            agent.thread.items = statement
+                .query_map(
+                    rusqlite::params![
+                        conversation_id,
+                        i64::try_from(start_sequence).unwrap_or(i64::MAX),
+                        i64::try_from(end_sequence).unwrap_or(i64::MAX)
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(|raw| {
+                    serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+                        path: PathBuf::from(format!("thread_items/{conversation_id}")),
+                        source,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            match operation_id {
+                Some(operation_id) => agent.thread.set_operation_delivery_status(
+                    operation_id,
+                    start_sequence,
+                    end_sequence,
+                    status,
+                ),
+                None => {
+                    agent
+                        .thread
+                        .set_legacy_delivery_status(start_sequence, end_sequence, status)
+                }
+            }
+            let resulting_sequence = agent.thread.last_sequence();
+            for item in &agent.thread.items {
+                tx.execute(
+                    "UPDATE thread_items SET item = ?3, updated_sequence = ?4 \
+                     WHERE agent_id = ?1 AND sequence = ?2",
+                    rusqlite::params![
+                        conversation_id,
+                        i64::try_from(item.sequence()).unwrap_or(i64::MAX),
+                        serde_json::to_string(item).expect("a thread item always serializes"),
+                        i64::try_from(item.latest_sequence()).unwrap_or(i64::MAX),
+                    ],
+                )?;
+            }
+            agent.thread.items.clear();
+            tx.execute(
+                "UPDATE agents SET record = ?2 WHERE id = ?1",
+                rusqlite::params![
+                    conversation_id,
+                    serde_json::to_string(&agent).expect("an agent always serializes")
+                ],
+            )?;
+            Ok(resulting_sequence)
+        })
+    }
     /// Boot recovery for provider delivery intents. A queued intent never left
     /// this database and is safe to replay. A durable claim might have crossed
     /// the provider boundary before the process died, so it becomes uncertain
     /// and is intentionally not made replayable again.
     pub fn recover_operations(&self) -> Result<Vec<OperationReceipt>, StoreError> {
-        self.in_transaction(|tx| {
+        let (operations, interrupted, submitted_legacy) = self.in_transaction(|tx| {
             let now = now_rfc3339();
+            let interrupted =
+                read_operations_with_statuses(tx, &["claimed", "delivered", "uncertain"])?;
+            let submitted_legacy = read_submitted_legacy_messages(tx)?;
             tx.execute(
                 "UPDATE operations SET status = 'uncertain', \
                  execution_error = 'provider handoff outcome unknown after restart', \
@@ -177,8 +359,36 @@ impl Store {
                         Some("legacy delivery has no bounded operation payload".to_string());
                 }
             }
-            Ok(operations)
-        })
+            Ok((operations, interrupted, submitted_legacy))
+        })?;
+        for receipt in interrupted {
+            if receipt.status == OperationStatus::Delivered && receipt.execution_error.is_some() {
+                continue;
+            }
+            let Some(payload) = receipt
+                .delivery
+                .as_ref()
+                .and_then(|delivery| delivery.payload.as_ref())
+            else {
+                continue;
+            };
+            self.set_operation_delivery_status(
+                &receipt.conversation_id,
+                &receipt.operation_id,
+                payload.start_sequence,
+                payload.end_sequence,
+                MessageDeliveryStatus::Uncertain,
+            )?;
+        }
+        for (conversation_id, sequence) in submitted_legacy {
+            self.set_legacy_delivery_status(
+                &conversation_id,
+                sequence,
+                sequence,
+                MessageDeliveryStatus::Uncertain,
+            )?;
+        }
+        Ok(operations)
     }
     /// Advance an intent only from the state its caller observed. The compare
     /// in SQL keeps two delivery workers from claiming the same operation.
@@ -388,6 +598,46 @@ pub(super) fn read_recoverable_operations(
     );
     let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map([], decode_operation_row)?;
+    rows.collect::<Result<_, _>>().map_err(StoreError::from)
+}
+
+fn read_operations_with_statuses(
+    conn: &Connection,
+    statuses: &[&str],
+) -> Result<Vec<OperationReceipt>, StoreError> {
+    let placeholders = (1..=statuses.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {OPERATION_COLUMNS} FROM operations \
+         WHERE status IN ({placeholders}) \
+           AND EXISTS (SELECT 1 FROM agents WHERE agents.id = operations.conversation_id) \
+         ORDER BY created_at, operation_id"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(statuses.iter()),
+        decode_operation_row,
+    )?;
+    rows.collect::<Result<_, _>>().map_err(StoreError::from)
+}
+
+fn read_submitted_legacy_messages(conn: &Connection) -> Result<Vec<(String, u64)>, StoreError> {
+    let mut statement = conn.prepare(
+        "SELECT agent_id, sequence FROM thread_items \
+         WHERE json_extract(item, '$.type') = 'message' \
+           AND json_extract(item, '$.data.role') = 'user' \
+           AND json_extract(item, '$.data.operation_id') IS NULL \
+           AND json_extract(item, '$.data.delivery_status') = 'submitted' \
+           AND EXISTS (SELECT 1 FROM agents WHERE agents.id = thread_items.agent_id) \
+         ORDER BY agent_id, sequence",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let conversation_id: String = row.get(0)?;
+        let sequence = row.get::<_, i64>(1)?.max(0) as u64;
+        Ok((conversation_id, sequence))
+    })?;
     rows.collect::<Result<_, _>>().map_err(StoreError::from)
 }
 

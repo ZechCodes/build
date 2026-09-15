@@ -424,21 +424,35 @@ pub(in crate::app) fn append_operation_reviewer_messages(
     let previous_sequence = thread.last_sequence();
     let prior_context = thread.operation_prior_context(crate::orchestrator::CATCH_UP_MESSAGES);
     let posted_sequence = append_reviewer_messages(thread, messages, attachments, choice);
-    let payload = operation_id
-        .zip(posted_sequence)
-        .map(|(operation_id, end_sequence)| {
-            let messages =
-                thread.bind_operation_messages(operation_id, previous_sequence, end_sequence);
-            OperationPayload {
-                start_sequence: messages
-                    .first()
-                    .map(|message| message.sequence)
-                    .unwrap_or(end_sequence),
-                end_sequence,
-                messages,
-                prior_context,
-            }
-        });
+    let payload = posted_sequence.map(|end_sequence| {
+        let messages = if let Some(operation_id) = operation_id {
+            thread.bind_operation_messages(operation_id, previous_sequence, end_sequence)
+        } else {
+            thread
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    crate::thread::ThreadItem::Message(message)
+                        if message.role == crate::thread::MessageRole::User
+                            && message.sequence > previous_sequence
+                            && message.sequence <= end_sequence =>
+                    {
+                        Some(message.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        OperationPayload {
+            start_sequence: messages
+                .first()
+                .map(|message| message.sequence)
+                .unwrap_or(end_sequence),
+            end_sequence,
+            messages,
+            prior_context,
+        }
+    });
     (posted_sequence, payload)
 }
 

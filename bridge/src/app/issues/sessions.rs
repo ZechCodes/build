@@ -285,7 +285,12 @@ impl AppState {
     }
 
     /// A plan agent reported `done`: ingest + advance on the plan's orchestrator.
-    pub(in crate::app) fn on_plan_agent_done(&mut self, plan_id: &str, report: DoneReport) {
+    pub(in crate::app) fn on_plan_agent_done(
+        &mut self,
+        plan_id: &str,
+        reporting_agent_id: Option<&str>,
+        report: DoneReport,
+    ) {
         let Some(mut active) = self.plans.remove(plan_id) else {
             return;
         };
@@ -315,8 +320,24 @@ impl AppState {
                 .collect();
             append_plan_stage_announcements(active.agents.sole_thread_mut(), plan_id, &new_stages);
         }
+        let conversation = match reporting_agent_id {
+            None => active.agents.sole_thread_mut(),
+            Some(reporting_agent_id) => {
+                let conversation_id = active
+                    .agents
+                    .by_id(reporting_agent_id)
+                    .expect("authenticated reporting agent belongs to the Issue")
+                    .conversation_id()
+                    .to_string();
+                &mut active
+                    .agents
+                    .by_id_mut(&conversation_id)
+                    .expect("Issue reporting agent's canonical conversation exists")
+                    .thread
+            }
+        };
         record_report_in_thread(
-            active.agents.sole_thread_mut(),
+            conversation,
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );

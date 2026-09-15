@@ -77,10 +77,7 @@ impl PendingAgentTurn {
             choice_revision: delivery.choice_revision,
             interrupt: delivery.interrupt,
             say: Some(TurnText {
-                cold: crate::orchestrator::operation_conversation_prompt(
-                    &payload.delivery_prompt(&receipt.operation_id, true),
-                    &receipt.operation_id,
-                ),
+                cold: payload.delivery_prompt(&receipt.operation_id, true),
                 warm: payload.delivery_prompt(&receipt.operation_id, false),
             }),
             phase: "revive",

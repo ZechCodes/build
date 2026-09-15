@@ -1070,19 +1070,18 @@ fn a_delivery_that_panics_gives_its_in_flight_marks_back() {
     );
 }
 
-/// A harness already on its way is the one that reads the next message,
-/// and the guard that says so has to see a turn in every state a turn can
-/// be in.
+/// A harness already on its way has a frozen native payload. A message posted
+/// after that freeze needs a follow-up turn of its own.
 ///
 /// The queue is emptied under the frame's own acquisition and the spawn
 /// claim is taken on a thread of the delivery's, so between the two there
 /// is a stretch — a thread-pool handoff for the first turn, the whole of
 /// every earlier turn's cold spawn for the rest — in which a turn on its
 /// way is in neither the queue nor the claim set. A second message landing
-/// there queues a duplicate turn: the claim still stops a second harness,
-/// but nothing stops the duplicate `read_unread_messages` nudge.
+/// there queues a follow-up turn: the claim still stops a second harness,
+/// and the later message remains visible after the first payload is sent.
 #[test]
-fn a_second_message_queues_nothing_while_the_first_is_mid_delivery() {
+fn a_second_message_queues_a_follow_up_while_the_first_is_mid_delivery() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     insert_run(
@@ -1121,9 +1120,20 @@ fn a_second_message_queues_nothing_while_the_first_is_mid_delivery() {
         second["ok"], true,
         "the message is durable on the thread either way: {second:?}"
     );
+    let s = state.lock().unwrap();
+    s.delivery_queue
+        .queued_last()
+        .expect("the message posted after the freeze has its own turn");
+    let agent_id = primary_agent_id(&s, "run-nudged");
+    let payload = s
+        .legacy_delivery_payload("run-nudged", &agent_id)
+        .expect("legacy messages can be snapshotted")
+        .expect("the later message is pending native delivery");
+    let prompt = payload.legacy_delivery_prompt(false);
     assert!(
-        state.lock().unwrap().delivery_queue.queued_is_empty(),
-        "a second turn was queued behind the one already coming"
+        prompt.contains("and this") && !prompt.contains("read_unread_messages"),
+        "the follow-up carries the later message natively: {}",
+        prompt
     );
 }
 

@@ -1,3 +1,4 @@
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -26,13 +27,79 @@ use super::translator::CodexActivityTranslator;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
 use crate::harness::{
     ActivityReport, AgentSession, AgentStatus, HarnessError, SessionStatusSnapshot, Turn,
-    TurnChoiceSupport,
+    TurnChoiceSupport, TurnReceiptSnapshot, TurnReceiptSupport,
 };
 use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
 
 const ACTIVITY_BACKLOG: usize = 1024;
 const STATUS_WHILE_TERMINAL_SOURCES_SETTLE: AgentStatus = AgentStatus::Working;
+
+#[derive(Default)]
+struct PendingTurnReceipts {
+    next_token: u64,
+    turns: VecDeque<PendingTurnReceipt>,
+    observed_item_ids: HashSet<String>,
+}
+
+struct PendingTurnReceipt {
+    token: u64,
+    text: String,
+    operation_id: Option<String>,
+}
+
+impl PendingTurnReceipts {
+    fn register(&mut self, turn: &Turn) -> u64 {
+        let token = self.next_token;
+        self.next_token = self.next_token.wrapping_add(1);
+        self.turns.push_back(PendingTurnReceipt {
+            token,
+            text: turn.text.clone(),
+            operation_id: turn.operation_id.clone(),
+        });
+        token
+    }
+
+    fn cancel(&mut self, token: u64) {
+        if let Some(index) = self.turns.iter().position(|turn| turn.token == token) {
+            self.turns.remove(index);
+        }
+    }
+
+    fn take_operation_ids(&mut self) -> Vec<String> {
+        let operation_ids = self
+            .turns
+            .drain(..)
+            .filter_map(|turn| turn.operation_id)
+            .collect();
+        self.observed_item_ids.clear();
+        operation_ids
+    }
+
+    fn observe(&mut self, item: &super::protocol::ItemNotification, text: &str) -> Option<String> {
+        if let Some(item_id) = item.item["id"].as_str() {
+            if !self.observed_item_ids.insert(item_id.to_string()) {
+                return None;
+            }
+        } else if item.lifecycle != super::protocol::ItemLifecycle::Started {
+            return None;
+        }
+        let index = self.turns.iter().position(|turn| turn.text == text)?;
+        self.turns.remove(index)?.operation_id
+    }
+}
+
+fn user_message_text(item: &Value) -> Option<String> {
+    if let Some(text) = item.get("text").and_then(Value::as_str) {
+        return Some(text.to_string());
+    }
+    let content = item.get("content")?.as_array()?;
+    let text: String = content
+        .iter()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect();
+    (!text.is_empty()).then_some(text)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoordinatorTerminalEvent {
@@ -165,6 +232,8 @@ struct SessionCore {
     surfaces_revision: SurfaceRevision,
     activity: Mutex<Option<broadcast::Sender<ActivityReport>>>,
     status: watch::Sender<SessionStatusSnapshot>,
+    receipts: watch::Sender<TurnReceiptSnapshot>,
+    pending_receipts: Mutex<PendingTurnReceipts>,
     terminal: Mutex<TerminalSnapshot>,
     published: Mutex<Option<TerminalOutcome>>,
     last_message: Mutex<Instant>,
@@ -199,6 +268,7 @@ impl CodexAppServerSession {
         ));
         let (sender, receiver) = broadcast::channel(ACTIVITY_BACKLOG);
         let (status, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));
+        let (receipts, _) = watch::channel(TurnReceiptSnapshot::default());
         let core = Arc::new(SessionCore {
             connection,
             process: Arc::new(process),
@@ -213,6 +283,8 @@ impl CodexAppServerSession {
             surfaces_revision: SurfaceRevision::default(),
             activity: Mutex::new(Some(sender)),
             status,
+            receipts,
+            pending_receipts: Mutex::new(PendingTurnReceipts::default()),
             terminal: Mutex::new(TerminalSnapshot::default()),
             published: Mutex::new(None),
             last_message: Mutex::new(Instant::now()),
@@ -533,6 +605,7 @@ impl SessionCore {
             }
             ServerNotification::Item(item) => {
                 self.apply_state(SessionEvent::TurnStarted(item.turn_id.clone()))?;
+                self.observe_user_message(item);
                 self.translate(&notification)
             }
             ServerNotification::Error(error) => {
@@ -551,6 +624,24 @@ impl SessionCore {
             ServerNotification::Delta => Ok(()),
             ServerNotification::Unknown => self.translate(&notification),
         }
+    }
+
+    fn observe_user_message(&self, item: &super::protocol::ItemNotification) {
+        if item.item["type"].as_str() != Some("userMessage") {
+            return;
+        }
+        let Some(text) = user_message_text(&item.item) else {
+            return;
+        };
+        let operation_id = self.pending_receipts.lock().unwrap().observe(item, &text);
+        let Some(operation_id) = operation_id else {
+            return;
+        };
+        self.receipts.send_modify(|snapshot| {
+            if !snapshot.seen_operation_ids.contains(&operation_id) {
+                snapshot.seen_operation_ids.push(operation_id.clone());
+            }
+        });
     }
 
     fn translate(&self, notification: &ServerNotification) -> Result<(), HarnessError> {
@@ -660,6 +751,16 @@ impl SessionCore {
             self.surfaces_revision.bump();
         }
         self.report_all(self.translator.lock().unwrap().close_all());
+        let uncertain = self.pending_receipts.lock().unwrap().take_operation_ids();
+        if !uncertain.is_empty() {
+            self.receipts.send_modify(|snapshot| {
+                for operation_id in &uncertain {
+                    if !snapshot.uncertain_operation_ids.contains(operation_id) {
+                        snapshot.uncertain_operation_ids.push(operation_id.clone());
+                    }
+                }
+            });
+        }
         self.close_activity();
     }
 
@@ -765,12 +866,21 @@ impl AgentSession for CodexAppServerSession {
                 ));
             }
         }
+        let receipt_token = self.core.pending_receipts.lock().unwrap().register(turn);
         let event = if turn.choice.is_some() {
             SessionEvent::SendChosenTurn(turn.clone())
         } else {
             SessionEvent::SendTurn(turn.text.clone())
         };
-        self.core.apply_state(event)
+        let result = self.core.apply_state(event);
+        if result.is_err() {
+            self.core
+                .pending_receipts
+                .lock()
+                .unwrap()
+                .cancel(receipt_token);
+        }
+        result
     }
 
     fn accepts_turn_choice(&self) -> bool {
@@ -797,6 +907,14 @@ impl AgentSession for CodexAppServerSession {
 
     fn status_changed(&self) -> Option<watch::Receiver<SessionStatusSnapshot>> {
         Some(self.core.status.subscribe())
+    }
+
+    fn turn_receipt_support(&self) -> TurnReceiptSupport {
+        TurnReceiptSupport::Seen
+    }
+
+    fn turn_receipts(&self) -> Option<watch::Receiver<TurnReceiptSnapshot>> {
+        Some(self.core.receipts.subscribe())
     }
 
     fn quiet_for(&self) -> Duration {
@@ -1142,6 +1260,180 @@ mod tests {
     };
     use crate::harness::AgentSession;
     use crate::pty::HarnessSpec;
+
+    fn user_message(id: &str, text: &str, lifecycle: ItemLifecycle) -> ItemNotification {
+        ItemNotification {
+            lifecycle,
+            thread_id: THREAD_ID.to_string(),
+            turn_id: TURN_ID.to_string(),
+            item: json!({
+                "id": id,
+                "type": "userMessage",
+                "content": [{"type": "text", "text": text}]
+            }),
+        }
+    }
+
+    #[test]
+    fn native_receipts_wait_for_a_matching_user_message_echo() {
+        let mut receipts = PendingTurnReceipts::default();
+        receipts.register(&Turn::new("start input").with_operation_id("start-operation"));
+
+        assert_eq!(
+            receipts.observe(
+                &user_message("echo-start", "different input", ItemLifecycle::Started),
+                "different input"
+            ),
+            None
+        );
+        assert_eq!(
+            receipts.observe(
+                &user_message("echo-start", "start input", ItemLifecycle::Started),
+                "start input"
+            ),
+            None,
+            "an already observed item id cannot be reused to manufacture a receipt"
+        );
+        assert_eq!(
+            receipts.observe(
+                &user_message("matching-echo", "start input", ItemLifecycle::Started),
+                "start input"
+            ),
+            Some("start-operation".to_string())
+        );
+    }
+
+    #[test]
+    fn queued_and_steered_inputs_stay_correlated_and_item_duplicates_are_inert() {
+        let mut receipts = PendingTurnReceipts::default();
+        receipts.register(&Turn::new("first").with_operation_id("operation-first"));
+        receipts.register(&Turn::new("steer").with_operation_id("operation-steer"));
+        receipts.register(&Turn::new("queued").with_operation_id("operation-queued"));
+
+        let first = user_message("echo-first", "first", ItemLifecycle::Started);
+        assert_eq!(
+            receipts.observe(&first, "first").as_deref(),
+            Some("operation-first")
+        );
+        let duplicate = user_message("echo-first", "first", ItemLifecycle::Completed);
+        assert_eq!(receipts.observe(&duplicate, "first"), None);
+        assert_eq!(
+            receipts
+                .observe(
+                    &user_message("echo-steer", "steer", ItemLifecycle::Completed),
+                    "steer"
+                )
+                .as_deref(),
+            Some("operation-steer")
+        );
+        assert_eq!(
+            receipts
+                .observe(
+                    &user_message("echo-queued", "queued", ItemLifecycle::Started),
+                    "queued"
+                )
+                .as_deref(),
+            Some("operation-queued")
+        );
+    }
+
+    #[test]
+    fn turn_start_response_does_not_publish_seen_without_the_user_message_item() {
+        let root = tempfile::tempdir().unwrap();
+        let turn_response = json!({"id":3,"result":{"turn":{"id":TURN_ID}}});
+        let script = opened_thread_script(
+            root.path(),
+            &format!("read turn; printf '%s\\n' '{}'; read hold", turn_response),
+        );
+        let (session, _activity) = scripted_session(root.path(), &script);
+        wait_until("opened its thread", || session.session_id().is_some());
+        let receipts = session.turn_receipts().unwrap();
+        assert_eq!(session.turn_receipt_support(), TurnReceiptSupport::Seen);
+        session
+            .send_turn(&Turn::new("go").with_operation_id("operation-go"))
+            .unwrap();
+        wait_until("accepted turn/start response", || {
+            session.core.state.lock().unwrap().diagnostic_phase() == "working"
+        });
+        assert!(receipts.borrow().seen_operation_ids.is_empty());
+
+        session
+            .core
+            .dispatch_notification(ServerNotification::Item(user_message(
+                "echo-go",
+                "go",
+                ItemLifecycle::Started,
+            )))
+            .unwrap();
+        assert_eq!(
+            receipts.borrow().seen_operation_ids,
+            vec!["operation-go".to_string()]
+        );
+
+        session
+            .send_turn(&Turn::new("steer").with_operation_id("operation-steer"))
+            .unwrap();
+        assert_eq!(receipts.borrow().seen_operation_ids.len(), 1);
+        session
+            .core
+            .handle_connection(ConnectionEvent::Response {
+                operation: PendingOperation::SteerTurn {
+                    thread_id: THREAD_ID.to_string(),
+                    turn_id: TURN_ID.to_string(),
+                    input: "steer".to_string(),
+                },
+                result: Ok(OperationResult::TurnSteered(
+                    super::super::protocol::TurnSteerResult {
+                        turn_id: TURN_ID.to_string(),
+                    },
+                )),
+            })
+            .unwrap();
+        assert_eq!(
+            receipts.borrow().seen_operation_ids.len(),
+            1,
+            "a successful steer response is not model-consumption evidence"
+        );
+        session
+            .core
+            .dispatch_notification(ServerNotification::Item(user_message(
+                "echo-steer",
+                "steer",
+                ItemLifecycle::Started,
+            )))
+            .unwrap();
+        assert_eq!(
+            receipts.borrow().seen_operation_ids,
+            vec!["operation-go".to_string(), "operation-steer".to_string()]
+        );
+        session.end();
+    }
+
+    #[test]
+    fn accepted_turn_becomes_uncertain_when_the_session_dies_before_its_echo() {
+        let root = tempfile::tempdir().unwrap();
+        let script = opened_thread_script(root.path(), "read turn");
+        let (session, _activity) = scripted_session(root.path(), &script);
+        wait_until("opened its thread", || session.session_id().is_some());
+        let receipts = session.turn_receipts().unwrap();
+        session
+            .send_turn(&Turn::new("unseen").with_operation_id("operation-unseen"))
+            .unwrap();
+
+        wait_until("published terminal uncertainty", || {
+            receipts
+                .borrow()
+                .uncertain_operation_ids
+                .iter()
+                .any(|id| id == "operation-unseen")
+        });
+        let snapshot = receipts.borrow().clone();
+        assert!(snapshot.seen_operation_ids.is_empty());
+        assert_eq!(
+            snapshot.uncertain_operation_ids,
+            vec!["operation-unseen".to_string()]
+        );
+    }
 
     #[test]
     fn one_reconciliation_timer_generation_serves_repeated_pending_events() {

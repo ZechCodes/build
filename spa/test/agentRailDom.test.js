@@ -3259,6 +3259,7 @@ describe("sending to an agent that is already there", () => {
     await press("look at the login flow");
 
     expect(timeline().textContent).toContain("look at the login flow");
+    expect(timeline().querySelector('[data-delivery-status="queued"]').textContent).toBe("Queued");
     expect(composer().value).toBe("");
     expect(railHost().querySelector("#railsend").disabled).toBe(false);
     expect(callsTo("thread.post")).toHaveLength(1);

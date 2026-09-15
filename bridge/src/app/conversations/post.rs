@@ -547,7 +547,16 @@ impl AppState {
     ) {
         let operation_id = receipt.map(|receipt| receipt.operation_id.clone());
         let root = Self::canonical_root(&delivery.root);
-        if operation_id.is_none() && self.agent_is_on_its_way(&root, &delivery.agent_id) {
+        // A queued legacy turn snapshots pending messages just before sending.
+        // An in-flight turn already froze its input, so a later post needs its
+        // own follow-up even while the same session is still opening/writing.
+        if operation_id.is_none()
+            && self.delivery_queue.queued().any(|turn| {
+                turn.operation_id.is_none()
+                    && turn.owner == delivery.owner_id
+                    && turn.agent_id == delivery.agent_id
+            })
+        {
             return;
         }
         let conversation_id = receipt
@@ -560,10 +569,7 @@ impl AppState {
             .unwrap_or_default();
         let operation_prompt = receipt.and_then(|receipt| {
             delivery.payload.as_ref().map(|payload| TurnText {
-                cold: crate::orchestrator::operation_conversation_prompt(
-                    &payload.delivery_prompt(&receipt.operation_id, true),
-                    &receipt.operation_id,
-                ),
+                cold: payload.delivery_prompt(&receipt.operation_id, true),
                 warm: payload.delivery_prompt(&receipt.operation_id, false),
             })
         });
@@ -641,6 +647,18 @@ impl AppState {
                 execution_error,
             ) {
                 self.note_entity_changed(&entity_id);
+            }
+            let status = match (next, execution_error) {
+                (OperationStatus::Uncertain, _) => {
+                    Some(crate::thread::MessageDeliveryStatus::Uncertain)
+                }
+                (_, Some(_)) => Some(crate::thread::MessageDeliveryStatus::Failed),
+                _ => None,
+            };
+            if let Some(status) = status {
+                if let Err(error) = self.record_operation_delivery_status(operation_id, status) {
+                    eprintln!("record delivery status {operation_id}: {error}");
+                }
             }
         }
         Ok(changed)

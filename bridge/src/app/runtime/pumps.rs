@@ -22,6 +22,7 @@ pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey,
         screen,
         output,
     } = pumps;
+    super::delivery::receipts::spawn_receipt_pump(state, &session, session_instance.clone());
     spawn_tab_pump(
         state,
         key.clone(),

@@ -190,6 +190,13 @@ pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<Store
         Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
         Err(error) => return Err(format!("store import failed: {error}")),
     }
+    // Recovery mutates operation-owned messages and the thread sequence kept
+    // in each agent skeleton. Read plans and runs only after those writes, or
+    // restoration would hydrate the pre-recovery copies and later overwrite
+    // the recovered status with stale state.
+    let operations = store
+        .recover_operations()
+        .map_err(|error| error.to_string())?;
     Ok(StoredTasks {
         plans: store.load_all_plans().map_err(|error| error.to_string())?,
         runs: store.load_all_runs().map_err(|error| error.to_string())?,
@@ -200,9 +207,7 @@ pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<Store
             .load_all_captures()
             .map_err(|error| error.to_string())?,
         attention: store.load_attention(),
-        operations: store
-            .recover_operations()
-            .map_err(|error| error.to_string())?,
+        operations,
         store,
     })
 }
@@ -903,6 +908,7 @@ impl AppState {
     pub(in crate::app) fn consume_recovery_report(
         &mut self,
         run_id: &str,
+        reporting_agent_id: Option<&str>,
         mut active: ActiveRun,
         report: DoneReport,
     ) {
@@ -1030,6 +1036,26 @@ impl AppState {
             }
         };
         let succeeded = event == crate::thread::ThreadEventKind::RecoverySucceeded;
+        let reporting_conversation_id = reporting_agent_id
+            .and_then(|id| active.agents.by_id(id))
+            .map(|agent| agent.conversation_id().to_string());
+        let report_belongs_to_run = reporting_conversation_id
+            .as_deref()
+            .is_some_and(|id| active.agents.by_id(id).is_some());
+        if report_belongs_to_run {
+            let conversation =
+                crate::app::run_report_conversation(run_id, reporting_agent_id, &mut active, None);
+            conversation.push_event_with_links(
+                event,
+                Some(summary.clone()),
+                None,
+                None,
+                vec![crate::thread::ThreadLink::Recovery {
+                    recovery_id: recovery_id.clone(),
+                }],
+                &now,
+            );
+        }
         let persisted = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(error) = persisted {
             eprintln!("recovery {run_id}: run persist failed: {error}");
@@ -1055,14 +1081,16 @@ impl AppState {
                         path: stage.path.clone(),
                     });
                 }
-                issue.agents.sole_thread_mut().push_event_with_links(
-                    event,
-                    Some(summary),
-                    None,
-                    None,
-                    links,
-                    &now,
-                );
+                if !report_belongs_to_run {
+                    issue.agents.sole_thread_mut().push_event_with_links(
+                        event,
+                        Some(summary),
+                        None,
+                        None,
+                        links,
+                        &now,
+                    );
+                }
                 let persisted = self.finish_plan_mutation(issue_id.clone(), issue);
                 if let Err(error) = persisted {
                     eprintln!("recovery {run_id}: Issue persist failed: {error}");

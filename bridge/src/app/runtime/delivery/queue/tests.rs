@@ -141,7 +141,7 @@ fn attaching_an_operation_rebuilds_one_scoped_cold_protocol() {
     assert_eq!(said.cold.matches("Build conversation protocol:").count(), 1);
     assert!(said.cold.contains("do planned work"), "{}", said.cold);
     assert!(
-        said.cold.contains("`operation_id` set to `operation-7`"),
+        said.cold.contains("reviewer operation `operation-7`"),
         "{}",
         said.cold
     );
@@ -157,13 +157,38 @@ fn recovered_operation_keeps_cold_start_protocol_and_a_warm_exact_packet() {
     assert!(said.cold.contains("`set_topic`"), "{}", said.cold);
     assert!(
         said.cold
-            .contains("`operation_id` set to `operation-recovered`"),
+            .contains("reviewer operation `operation-recovered`"),
         "{}",
         said.cold
     );
     assert!(!said.cold.contains("process every unread Issue message"));
     assert!(!said.warm.contains("Build conversation protocol:"));
     assert!(said.warm.contains("Process only reviewer operation"));
+}
+
+#[test]
+fn an_in_flight_agent_holds_its_followup_while_another_agent_proceeds() {
+    let mut queue = DeliveryQueue::default();
+    let delivering = turn("owner-a", "agent-a", true, false);
+    let ticket = queue.start(&delivering);
+    queue.enqueue(turn("owner-a", "agent-a", true, false));
+    queue.enqueue(turn("owner-b", "agent-b", true, false));
+
+    let ready = queue.take_ready(|_| false);
+    assert_eq!(
+        ready
+            .iter()
+            .map(|turn| turn.agent_id.as_str())
+            .collect::<Vec<_>>(),
+        ["agent-b"]
+    );
+    assert_eq!(queue.queued().next().unwrap().agent_id, "agent-a");
+
+    queue.settle(ticket);
+    let released = queue.take_ready(|_| false);
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0].agent_id, "agent-a");
+    assert!(queue.queued_is_empty());
 }
 
 // Runtime integration retains these existing tests because a callback-free core

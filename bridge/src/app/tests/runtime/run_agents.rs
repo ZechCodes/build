@@ -281,10 +281,10 @@ async fn a_message_to_an_agent_whose_harness_exited_revives_it() {
             "and the message that revived it was written into it"
         );
     }
-    let screen = wait_for_agent_screen(&state, &root, "read_unread_messages").await;
+    let screen = wait_for_agent_screen(&state, &root, "are you still on this?").await;
     assert!(
-        screen.contains("read_unread_messages"),
-        "the revived agent is told to read what was said while it was down: {screen:?}"
+        screen.contains("are you still on this?") && !screen.contains("read_unread_messages"),
+        "the revived agent receives what was said while it was down: {screen:?}"
     );
 }
 
@@ -292,10 +292,8 @@ async fn a_message_to_an_agent_whose_harness_exited_revives_it() {
 /// to hear a message must not get a second one. Two harnesses in one
 /// checkout both report `done` for the same owner, and the second report
 /// is an illegal transition that lands on the conversation as a bogus
-/// failure. The turn already mid-delivery is the one that reads this
-/// message: it opens on the cold prompt, which tells it to call
-/// `read_unread_messages`, and the post made the message durable before
-/// the harness could ask.
+/// failure. A follow-up waits for the current delivery to finish, then uses
+/// that same agent's session to carry any newly accepted reviewer messages.
 #[test]
 fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
     let (dir, repo) = init_repo();
@@ -323,10 +321,14 @@ fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
     ));
 
     assert_eq!(posted["ok"], true, "{posted:?}");
+    assert_eq!(
+        state.delivery_queue.queued_len(),
+        1,
+        "a post arriving after input was frozen needs a follow-up"
+    );
     assert!(
-        state.delivery_queue.queued_is_empty(),
-        "the harness already starting is the one that reads this; {} turns were queued",
-        state.delivery_queue.queued_len()
+        state.take_pending_turns().is_empty(),
+        "the follow-up must wait for this agent's in-flight delivery"
     );
 
     // …and with nothing in flight, the same message is what brings the
@@ -429,8 +431,8 @@ async fn revived_agents_without_exact_lineage_never_guess_by_checkout() {
 
 /// Starting an agent by hand must not strand what is already waiting for
 /// it. The reviewer's words are durable on the thread, and the ONLY way an
-/// agent learns of them is being told to call `read_unread_messages` — a
-/// fresh harness has no reason to. Without this, pressing Restart after a
+/// agent learns of them is receiving them in its prompt. Without this,
+/// pressing Restart after a
 /// crash brings back an agent that silently ignores every message posted
 /// while it was down.
 #[tokio::test]
@@ -450,10 +452,10 @@ async fn agent_start_tells_a_fresh_agent_what_is_waiting_for_it() {
 
     let started = call(&handler, "agent.start", json!({ "id": "run-waiting" }));
     assert_eq!(started["ok"], true, "{started:?}");
-    let screen = wait_for_agent_screen(&state, &root, "read_unread_messages").await;
+    let screen = wait_for_agent_screen(&state, &root, "look at the migration").await;
     assert!(
-        screen.contains("read_unread_messages"),
-        "a started agent must be told to read what is waiting: {screen:?}"
+        screen.contains("look at the migration") && !screen.contains("read_unread_messages"),
+        "a started agent must receive what is waiting: {screen:?}"
     );
 }
 
@@ -473,7 +475,7 @@ async fn agent_start_says_nothing_when_nothing_is_waiting() {
     tokio::time::sleep(Duration::from_millis(400)).await;
     let screen = agent_screen_text(&state, &root);
     assert!(
-        !screen.contains("read_unread_messages"),
+        !screen.contains("Exact accepted messages:") && !screen.contains("read_unread_messages"),
         "an agent with nothing waiting must be left alone: {screen:?}"
     );
 }

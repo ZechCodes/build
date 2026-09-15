@@ -23,6 +23,40 @@ describe("conversation thread rendering", () => {
       .toEqual(["SPAN", "TIME"]);
   });
 
+  it("renders each persisted native delivery state on the user's message", () => {
+    const statuses = ["queued", "submitted", "sent", "seen", "uncertain", "failed"];
+    document.body.innerHTML = threadHtml({
+      items: statuses.map((delivery_status, index) => ({
+        type: "message",
+        data: { sequence: index + 1, role: "user", body: delivery_status, delivery_status },
+      })),
+    });
+
+    const markers = [...document.querySelectorAll(".delivery-status")];
+    expect(markers.map((marker) => marker.dataset.deliveryStatus)).toEqual(statuses);
+    expect(markers.map((marker) => marker.textContent)).toEqual([
+      "Queued", "Queued", "Sent", "Seen", "Delivery uncertain", "Failed",
+    ]);
+    expect(markers.map((marker) => marker.getAttribute("aria-label"))).toEqual([
+      "Queued for the agent",
+      "Queued for the agent",
+      "Sent to the agent",
+      "Seen by the agent",
+      "Message delivery is uncertain",
+      "Message delivery failed",
+    ]);
+  });
+
+  it("keeps the historical seen marker when native delivery status is absent", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "message", data: { role: "user", body: "legacy", seen_at: "now" } }],
+    });
+
+    expect(document.querySelector(".thread-status").getAttribute("aria-label")).toBe("Read");
+    expect(document.querySelector(".delivery-status")).toBeNull();
+
+  });
+
   it("renders messages, zero-token events, seen state, and revision resolution", async () => {
     const thread = {
       revisions: [{ id: "diff-revision-2-abcd", artifact: "diff" }],

@@ -2,7 +2,7 @@ use super::{empty_agent, CompletionReport, ItemMetadata, WorktreeScope};
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     Plan,
@@ -402,6 +402,10 @@ pub struct ThreadMessage {
     /// the legacy catch-all unread mailbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
+    /// Durable progress of an operation-managed reviewer message through the
+    /// provider handoff. Legacy and unmanaged messages omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_status: Option<MessageDeliveryStatus>,
     /// The UI state the reviewer deliberately sent with these words. Kept as
     /// structured message metadata so rendering can show it without rewriting
     /// the body, and old records remain byte-compatible when it is absent.
@@ -478,6 +482,19 @@ pub struct ThreadMessage {
     /// said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answers_options_of: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageDeliveryStatus {
+    Queued,
+    /// Reserved for native handoff and awaiting a correlated input receipt.
+    /// The UI continues to show Queued; recovery must not replay this input.
+    Submitted,
+    Sent,
+    Seen,
+    Uncertain,
+    Failed,
 }
 
 pub const MAX_VIEWING_CONTEXT_ITEMS: usize = 100;

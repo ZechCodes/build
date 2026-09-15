@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::thread::MessageDeliveryStatus;
 
 #[test]
 fn thread_post_receipt_and_message_commit_together_and_retry_is_idempotent() {
@@ -121,6 +122,213 @@ fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
     assert!(
         after_ack.issue.agents[0].thread.last_sequence() > acknowledged_sequence,
         "the store-side acknowledgement sequence cannot be reused"
+    );
+}
+
+#[test]
+fn delivery_status_persists_below_the_tail_without_touching_another_operation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut record = plan_record("issue-1");
+    let thread = &mut record.agents[0].thread;
+    thread.post_user("managed one", None, NOW);
+    thread.bind_operation_messages("op-one", 0, 1);
+    thread.post_user("managed two", None, NOW);
+    thread.bind_operation_messages("op-two", 1, 2);
+    store.save_issue_plan(&record).unwrap();
+
+    let bumped = store
+        .set_operation_delivery_status(
+            &record.agents[0].id,
+            "op-one",
+            1,
+            1,
+            MessageDeliveryStatus::Sent,
+        )
+        .unwrap();
+    let items = store.thread_items(&record.agents[0].id).unwrap();
+    let statuses: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            ThreadItem::Message(message) => Some(message.delivery_status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            Some(MessageDeliveryStatus::Sent),
+            Some(MessageDeliveryStatus::Queued)
+        ]
+    );
+    assert!(items[0].latest_sequence() == bumped);
+
+    drop(store);
+    let reopened = Store::new(dir.path()).unwrap();
+    let loaded = reopened.load_all_issues().unwrap().remove(0);
+    let ThreadItem::Message(message) = &loaded.issue.agents[0].thread.items[0] else {
+        panic!()
+    };
+    assert_eq!(message.delivery_status, Some(MessageDeliveryStatus::Sent));
+}
+
+#[test]
+fn recovery_marks_only_submitted_legacy_messages_uncertain() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut record = plan_record("issue-1");
+    let thread = &mut record.agents[0].thread;
+    thread.post_user("submitted", None, NOW);
+    thread.post_user("sent", None, NOW);
+    thread.post_user("seen", None, NOW);
+    store.save_issue_plan(&record).unwrap();
+    store
+        .set_legacy_delivery_status(&record.agents[0].id, 1, 1, MessageDeliveryStatus::Submitted)
+        .unwrap();
+    store
+        .set_legacy_delivery_status(&record.agents[0].id, 2, 2, MessageDeliveryStatus::Sent)
+        .unwrap();
+    store
+        .set_legacy_delivery_status(&record.agents[0].id, 3, 3, MessageDeliveryStatus::Seen)
+        .unwrap();
+
+    store.recover_operations().unwrap();
+    let statuses: Vec<_> = store
+        .thread_items(&record.agents[0].id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|item| match item {
+            ThreadItem::Message(message) => Some(message.delivery_status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            Some(MessageDeliveryStatus::Uncertain),
+            Some(MessageDeliveryStatus::Sent),
+            Some(MessageDeliveryStatus::Seen),
+        ]
+    );
+}
+
+#[test]
+fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut record = plan_record("issue-1");
+
+    record.agents[0].thread.post_user("repair me", None, NOW);
+    let repair_messages = record.agents[0]
+        .thread
+        .bind_operation_messages("repair-op", 0, 1);
+    let mut repair = queued_operation("repair-op", 1);
+    repair.delivery.as_mut().unwrap().payload = Some(OperationPayload {
+        start_sequence: 1,
+        end_sequence: 1,
+        messages: repair_messages,
+        prior_context: String::new(),
+    });
+    store
+        .accept_thread_post("issue-1", &record.agents, &repair)
+        .unwrap();
+    assert!(store
+        .transition_operation(
+            "repair-op",
+            OperationStatus::Queued,
+            OperationStatus::Uncertain,
+            Some("crashed before message projection"),
+        )
+        .unwrap());
+
+    record.agents[0].thread.post_user("failed", None, NOW);
+    let failed_messages = record.agents[0]
+        .thread
+        .bind_operation_messages("failed-op", 1, 2);
+    let mut failed = queued_operation("failed-op", 2);
+    failed.delivery.as_mut().unwrap().payload = Some(OperationPayload {
+        start_sequence: 2,
+        end_sequence: 2,
+        messages: failed_messages,
+        prior_context: String::new(),
+    });
+    store
+        .accept_thread_post("issue-1", &record.agents, &failed)
+        .unwrap();
+    store
+        .set_operation_delivery_status(
+            &record.agents[0].id,
+            "failed-op",
+            2,
+            2,
+            MessageDeliveryStatus::Failed,
+        )
+        .unwrap();
+    assert!(store
+        .transition_operation(
+            "failed-op",
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            Some("provider declined delivery"),
+        )
+        .unwrap());
+
+    store.recover_operations().unwrap();
+    let statuses: Vec<_> = store
+        .thread_items(&record.agents[0].id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|item| match item {
+            ThreadItem::Message(message) => Some(message.delivery_status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            Some(MessageDeliveryStatus::Uncertain),
+            Some(MessageDeliveryStatus::Failed),
+        ]
+    );
+}
+
+#[test]
+fn recovery_ignores_an_orphaned_receipt_without_deleting_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut record = plan_record("issue-1");
+    record.agents[0].thread.post_user("managed", None, NOW);
+    let messages = record.agents[0]
+        .thread
+        .bind_operation_messages("orphan-op", 0, 1);
+    let mut receipt = queued_operation("orphan-op", 1);
+    receipt.delivery.as_mut().unwrap().payload = Some(OperationPayload {
+        start_sequence: 1,
+        end_sequence: 1,
+        messages,
+        prior_context: String::new(),
+    });
+    store
+        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .unwrap();
+    assert!(store
+        .transition_operation(
+            "orphan-op",
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            None,
+        )
+        .unwrap());
+    store
+        .connection()
+        .execute("DELETE FROM agents WHERE id = ?1", [&record.agents[0].id])
+        .unwrap();
+
+    store.recover_operations().unwrap();
+    assert_eq!(
+        store.operation("orphan-op").unwrap().unwrap().status,
+        OperationStatus::Delivered,
+        "recovery leaves the historical receipt intact"
     );
 }
 

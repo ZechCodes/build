@@ -15,6 +15,7 @@ use crate::models::ModelChoice;
 use crate::thread::ThreadMessage;
 
 pub const THREAD_POST_METHOD: &str = "thread.post";
+pub const NATIVE_REVIEWER_MESSAGES_HEADING: &str = "Exact accepted messages:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -62,6 +63,26 @@ pub struct OperationPayload {
 
 impl OperationPayload {
     pub fn delivery_prompt(&self, operation_id: &str, cold: bool) -> String {
+        self.render_delivery_prompt(
+            format!(
+                "Process only reviewer operation `{operation_id}` (conversation sequences {} through {}).",
+                self.start_sequence, self.end_sequence
+            ),
+            cold,
+        )
+    }
+
+    pub fn legacy_delivery_prompt(&self, cold: bool) -> String {
+        self.render_delivery_prompt(
+            format!(
+                "Process only the newly delivered reviewer messages (conversation sequences {} through {}).",
+                self.start_sequence, self.end_sequence
+            ),
+            cold,
+        )
+    }
+
+    fn render_delivery_prompt(&self, scope: String, cold: bool) -> String {
         let messages = serde_json::to_string_pretty(&self.messages)
             .expect("operation messages always serialize");
         let context = if cold && !self.prior_context.is_empty() {
@@ -72,12 +93,12 @@ impl OperationPayload {
         } else {
             String::new()
         };
-        format!(
-            "Process only reviewer operation `{operation_id}` (conversation sequences {} through {}).\
-             {context}\nExact accepted messages:\n{messages}\n\
-             Call `read_unread_messages` with `operation_id` set to `{operation_id}` to acknowledge exactly these messages; do not consume another operation's messages.",
-            self.start_sequence, self.end_sequence
-        )
+        let prompt = format!("{scope}{context}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        if cold {
+            crate::orchestrator::conversation_prompt(&prompt)
+        } else {
+            prompt
+        }
     }
 }
 
@@ -178,6 +199,60 @@ fn normalize_json(value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn payload() -> OperationPayload {
+        OperationPayload {
+            start_sequence: 7,
+            end_sequence: 7,
+            messages: vec![serde_json::from_value(serde_json::json!({
+                "id": "message-7",
+                "sequence": 7,
+                "updated_sequence": 7,
+                "role": "user",
+                "body": "inspect the screenshot",
+                "created_at": "2026-09-15T12:00:00Z",
+                "attachments": [{
+                    "name": "failure.png",
+                    "path": ".build/attachments/failure.png",
+                    "mime": "image/png",
+                    "size": 123
+                }]
+            }))
+            .unwrap()],
+            prior_context: "The previous revision changed the parser.".into(),
+        }
+    }
+
+    #[test]
+    fn operation_delivery_is_native_and_cold_reestablishes_protocol() {
+        let payload = payload();
+        let warm = payload.delivery_prompt("post-1", false);
+        assert!(warm.contains("reviewer operation `post-1`"), "{warm}");
+        assert!(warm.contains("inspect the screenshot"), "{warm}");
+        assert!(warm.contains(".build/attachments/failure.png"), "{warm}");
+        assert!(!warm.contains("read_unread_messages"), "{warm}");
+        assert!(!warm.contains("Build conversation protocol"), "{warm}");
+
+        let cold = payload.delivery_prompt("post-1", true);
+        assert!(
+            cold.contains("Conversation context before this operation"),
+            "{cold}"
+        );
+        assert!(cold.contains("Build conversation protocol"), "{cold}");
+        assert!(!cold.contains("read_unread_messages"), "{cold}");
+    }
+
+    #[test]
+    fn legacy_delivery_has_exact_scope_without_inventing_an_operation() {
+        let warm = payload().legacy_delivery_prompt(false);
+        assert!(
+            warm.contains("conversation sequences 7 through 7"),
+            "{warm}"
+        );
+        assert!(warm.contains(NATIVE_REVIEWER_MESSAGES_HEADING), "{warm}");
+        assert!(!warm.contains("operation `"), "{warm}");
+        assert!(!warm.contains("read_unread_messages"), "{warm}");
+    }
 
     #[test]
     fn request_hash_ignores_object_order_and_operation_id() {

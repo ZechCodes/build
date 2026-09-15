@@ -42,6 +42,7 @@ pub mod surfaces;
 pub use session::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, FrozenTurnChoice, HarnessError,
     SessionOutput, SessionStatusSnapshot, TerminalView, ToolOutcome, Turn, TurnChoiceSupport,
+    TurnReceiptSnapshot, TurnReceiptSupport,
 };
 
 /// How long a real harness TUI must stop painting before its input is live.

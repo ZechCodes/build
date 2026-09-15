@@ -157,6 +157,73 @@ fn wire_value_after_reships_a_message_marked_seen_after_the_cursor() {
 }
 
 #[test]
+fn managed_message_delivery_status_is_scoped_and_seen_is_terminal() {
+    let mut thread = Thread::new("plan-1");
+    thread.post_user("first", None, "2026-07-24T12:00:00Z");
+    thread.bind_operation_messages("op-1", 0, 1);
+    thread.post_user("second", None, "2026-07-24T12:01:00Z");
+    thread.bind_operation_messages("op-2", 1, 2);
+
+    let queued = thread.wire_value();
+    assert_eq!(queued["items"][0]["data"]["delivery_status"], "queued");
+    let before = thread.last_sequence();
+    thread.set_operation_delivery_status("op-1", 1, 1, MessageDeliveryStatus::Sent);
+    let sent = thread.last_sequence();
+    assert!(sent > before);
+    thread.set_operation_delivery_status("op-1", 1, 1, MessageDeliveryStatus::Sent);
+    assert_eq!(
+        thread.last_sequence(),
+        sent,
+        "an equal status does not bump"
+    );
+    thread.read_operation_messages("op-1", 1, 1, "2026-07-24T12:02:00Z");
+    thread.set_operation_delivery_status("op-1", 1, 1, MessageDeliveryStatus::Queued);
+
+    let messages: Vec<_> = thread
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ThreadItem::Message(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        messages[0].delivery_status,
+        Some(MessageDeliveryStatus::Seen)
+    );
+    assert_eq!(
+        messages[1].delivery_status,
+        Some(MessageDeliveryStatus::Queued)
+    );
+}
+
+#[test]
+fn legacy_message_without_delivery_status_still_loads() {
+    let mut thread = Thread::new("plan-1");
+    thread.post_user("legacy", None, "2026-07-24T12:00:00Z");
+    let mut value = serde_json::to_value(&thread).unwrap();
+    value["items"][0]["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove("delivery_status");
+    let loaded: Thread = serde_json::from_value(value).unwrap();
+    let ThreadItem::Message(message) = &loaded.items[0] else {
+        panic!()
+    };
+    assert_eq!(message.delivery_status, None);
+}
+
+#[test]
+fn legacy_mailbox_read_marks_a_tracked_message_seen() {
+    let mut thread = Thread::new("plan-1");
+    thread.post_user("legacy delivery", None, "2026-07-24T12:00:00Z");
+    thread.set_legacy_delivery_status(1, 1, MessageDeliveryStatus::Sent);
+    let read = thread.read_unread("2026-07-24T12:01:00Z");
+    assert_eq!(read[0].delivery_status, Some(MessageDeliveryStatus::Seen));
+    assert_eq!(read[0].seen_at.as_deref(), Some("2026-07-24T12:01:00Z"));
+}
+
+#[test]
 fn wire_value_after_reships_a_message_resolved_by_a_later_revision() {
     let mut thread = Thread::new("plan-1");
     let anchor = MessageAnchor {

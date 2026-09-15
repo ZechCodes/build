@@ -232,25 +232,48 @@ pub(in crate::app) fn out_of_phase_log(
     )
 }
 
-/// The conversation a RUN's report is written on: the owning Issue's when the
-/// run is a planned one — that is the conversation its surfaces render, and a
-/// report on the run's own thread would never be seen — else the run's own.
+/// The conversation the reporting run agent is canonically bound to. A planned
+/// run's primary continues its Issue lineage; additional agents own independent
+/// conversations on the run.
 ///
 /// The run's own is reached through the mint door: the report came from an
 /// agent of this run, so it must land somewhere even if the human emptied the
 /// roster mid-turn.
 pub(in crate::app) fn run_report_conversation<'a>(
     run_id: &str,
+    reporting_agent_id: Option<&str>,
     active: &'a mut ActiveRun,
     issue: Option<&'a mut ActivePlan>,
 ) -> &'a mut crate::thread::Thread {
-    match issue {
-        Some(issue) => issue.agents.sole_thread_mut(),
-        None => {
-            let choice = active.model_choice.clone();
-            &mut active
+    match reporting_agent_id {
+        None => match issue {
+            Some(issue) => issue.agents.sole_thread_mut(),
+            None => {
+                let choice = active.model_choice.clone();
+                &mut active
+                    .agents
+                    .ensure_primary(run_id, choice, &now_rfc3339())
+                    .thread
+            }
+        },
+        Some(reporting_agent_id) => {
+            let reporting_agent = active
                 .agents
-                .ensure_primary(run_id, choice, &now_rfc3339())
+                .by_id(reporting_agent_id)
+                .expect("authenticated reporting agent belongs to the run");
+            let conversation_id = reporting_agent.conversation_id().to_string();
+            if conversation_id == reporting_agent.id {
+                return &mut active
+                    .agents
+                    .by_id_mut(reporting_agent_id)
+                    .expect("reporting agent was just resolved")
+                    .thread;
+            }
+            let issue = issue.expect("an aliased run conversation belongs to its Issue");
+            &mut issue
+                .agents
+                .by_id_mut(&conversation_id)
+                .expect("reporting agent's canonical Issue conversation exists")
                 .thread
         }
     }
@@ -366,19 +389,24 @@ impl AppState {
     /// report advances the run on `on_run_done`, and a validation pass may then
     /// auto-advance the next approved stage when run-all is armed.
     #[allow(clippy::cognitive_complexity)] // ratchet: on_run_agent_done is at 20, threshold 15 — bring it under, then remove
-    pub(in crate::app) fn on_run_agent_done(&mut self, run_id: &str, report: DoneReport) {
+    pub(in crate::app) fn on_run_agent_done(
+        &mut self,
+        run_id: &str,
+        reporting_agent_id: Option<&str>,
+        report: DoneReport,
+    ) {
         let Some(mut active) = self.runs.remove(run_id) else {
             return;
         };
         if report.phase == DonePhase::Recover {
-            self.consume_recovery_report(run_id, active, report);
+            self.consume_recovery_report(run_id, reporting_agent_id, active, report);
             return;
         }
         let is_stage_revision = active.revising_stage_id.is_some()
             && report.phase == DonePhase::Revise
             && report.status == DoneStatus::Completed;
         if is_stage_revision {
-            self.consume_run_stage_revision(run_id, active, report);
+            self.consume_run_stage_revision(run_id, reporting_agent_id, active, report);
             return;
         }
         let plan_docs = self.owning_plan_stage_docs(&active);
@@ -481,7 +509,8 @@ impl AppState {
         let mut issue = issue_id
             .as_ref()
             .and_then(|issue_id| self.plans.remove(issue_id));
-        let conversation = run_report_conversation(run_id, &mut active, issue.as_mut());
+        let conversation =
+            run_report_conversation(run_id, reporting_agent_id, &mut active, issue.as_mut());
         record_report_in_thread(
             conversation,
             &report_for_thread,
@@ -604,6 +633,7 @@ impl AppState {
     pub(in crate::app) fn consume_run_stage_revision(
         &mut self,
         run_id: &str,
+        reporting_agent_id: Option<&str>,
         mut active: ActiveRun,
         report: DoneReport,
     ) {
@@ -624,7 +654,7 @@ impl AppState {
             eprintln!("on_agent_done {run_id}: {e}");
         }
         record_report_in_thread(
-            run_report_conversation(run_id, &mut active, plan.as_mut()),
+            run_report_conversation(run_id, reporting_agent_id, &mut active, plan.as_mut()),
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );

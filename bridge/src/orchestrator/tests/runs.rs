@@ -11,8 +11,8 @@ use crate::harness::HarnessError;
 use crate::mcp::{DonePhase, DoneStatus};
 use crate::models::ModelChoice;
 use crate::orchestrator::{
-    conversation_prompt, mcp_config_path, operation_conversation_prompt, triage_is_due, ActivePlan,
-    ActiveRun, Agent, AgentTurn, ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
+    conversation_prompt, mcp_config_path, triage_is_due, ActivePlan, ActiveRun, Agent, AgentTurn,
+    ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
 };
 use crate::plan::{StageDocState, StageManifestEntry};
 use crate::pty::HarnessSpec;
@@ -353,11 +353,13 @@ async fn dispatch_multi_stage_run_starts_the_first_stage() {
         .expect("second stage in catalog");
     assert!(first < second, "catalog preserves manifest order: {prompt}");
     assert!(
-        turn.cold
-            .contains("Before acting, call `read_unread_messages`"),
-        "cold Issue agents always pull the authoritative mailbox: {}",
+        turn.cold.contains(
+            "Act on the current instruction and exact accepted messages in the native payload"
+        ),
+        "cold Issue agents learn how native reviewer messages are delivered: {}",
         turn.cold
     );
+    assert!(!turn.cold.contains("read_unread_messages"), "{}", turn.cold);
 }
 #[tokio::test]
 async fn validation_rejects_a_dirty_or_moved_candidate_boundary() {
@@ -678,23 +680,6 @@ fn conversation_prompt_tells_the_agent_to_set_the_topic_first() {
     );
 }
 
-#[test]
-fn operation_cold_prompt_starts_the_conversation_without_an_unbounded_read() {
-    let prompt = operation_conversation_prompt("exact operation packet", "operation-7");
-    assert!(prompt.contains("`set_topic`"), "{prompt}");
-    assert!(
-        prompt.contains("`operation_id` set to `operation-7`"),
-        "{prompt}"
-    );
-    assert!(
-        !prompt.contains("process every unread Issue message"),
-        "an operation-fenced turn must not consume another operation: {prompt}"
-    );
-    assert!(
-        !prompt.contains("When Build says new reviewer messages are available"),
-        "the generic mailbox nudge would weaken the operation fence: {prompt}"
-    );
-}
 #[test]
 fn conversation_prompt_instructs_clarifying_reply_for_ambiguous_comments() {
     let prompt = conversation_prompt("do the work");

@@ -960,10 +960,10 @@ async fn send_plan_stage_notes_revises_a_stage_and_round_trips_through_done() {
     assert_eq!(plan.plan.state, PlanState::Drafting);
     assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
     let prompt = posted_turn_halves(&turn, "revise", NEW_THREAD_MESSAGES_PROMPT);
-    assert!(prompt.contains("read_unread_messages"), "{prompt}");
+    assert!(!prompt.contains("read_unread_messages"), "{prompt}");
     assert_eq!(
         turn.warm, NEW_THREAD_MESSAGES_PROMPT,
-        "the comments travel through MCP; the instruction only points at them"
+        "delivery expands the notification with the pending native messages"
     );
     assert!(
         !prompt.contains("Comment:"),

@@ -782,10 +782,32 @@ function outcomeMarkerHtml(outcome, agentLabel) {
 const messageContextHtml = (message) => message.viewing_context?.items?.length
   ? `<div class="message-viewing-context">${viewingContextChipsHtml(message.viewing_context)}</div>` : "";
 
+const DELIVERY_STATUS_META = {
+  queued: { label: "Queued", description: "Queued for the agent" },
+  submitted: { label: "Queued", description: "Queued for the agent" },
+  sent: { label: "Sent", description: "Sent to the agent" },
+  seen: { label: "Seen", description: "Seen by the agent" },
+  uncertain: { label: "Delivery uncertain", description: "Message delivery is uncertain" },
+  failed: { label: "Failed", description: "Message delivery failed" },
+};
+
+function deliveryStatusHtml(message) {
+  const token = message.delivery_status;
+  const meta = DELIVERY_STATUS_META[token];
+  if (meta) {
+    return `<span class="thread-status delivery-status ${esc(token)}" data-delivery-status="${esc(token)}" role="status" aria-label="${esc(meta.description)}">${esc(meta.label)}</span>`;
+  }
+  // Threads written before native delivery receipts retain their historical
+  // read marker. New bridges provide delivery_status, including `sent` when
+  // the provider cannot report that an agent has seen a message.
+  return `<span class="thread-status" role="img" aria-label="${message.seen_at ? "Read" : "Sent"}">${ICON_CHECK}${message.seen_at ? ICON_CHECK : ""}</span>`;
+}
+
+
 function messageFooterHtml(message) {
   const user = message.role === "user";
   const status = user
-    ? `<span class="thread-status" role="img" aria-label="${message.seen_at ? "Read" : "Sent"}">${ICON_CHECK}${message.seen_at ? ICON_CHECK : ""}</span>`
+    ? deliveryStatusHtml(message)
     : "";
   const time = timeHtml(message.created_at);
   return status || time ? `<div class="thread-message-footer">${status}${time}</div>` : "";

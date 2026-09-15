@@ -51,9 +51,10 @@ impl DeliveryQueue {
         &mut self,
         mut hold: impl FnMut(&PendingAgentTurn) -> bool,
     ) -> Vec<PendingAgentTurn> {
+        let agents_in_flight = &self.agents_in_flight;
         let (held, ready) = std::mem::take(&mut self.queued)
             .into_iter()
-            .partition(|turn| hold(turn));
+            .partition(|turn| hold(turn) || agents_in_flight.contains_key(&turn.tab_key()));
         self.queued = held;
         ready
     }
@@ -146,11 +147,9 @@ impl DeliveryQueue {
         if let Some(say) = turn.say.as_mut() {
             // The queued lifecycle turn's warm half is its protocol-free work
             // instruction. Rebuild the cold half from that source so this
-            // operation gets exactly one protocol block, with its mailbox read
-            // fenced to the receipt being attached.
-            let cold = format!("{}\n\n{exact_cold}", say.warm);
-            say.cold =
-                crate::orchestrator::operation_conversation_prompt(&cold, &receipt.operation_id);
+            // operation gets exactly one protocol block. The payload itself is
+            // already fenced to the receipt being attached.
+            say.cold = format!("{}\n\n{exact_cold}", say.warm);
             say.warm = exact_warm;
         }
         turn.wants_catch_up = false;

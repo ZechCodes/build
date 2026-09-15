@@ -45,6 +45,7 @@ pub(in crate::app::tests) struct DictatedSession {
     surfaces: Option<AgentSurfaces>,
     watched_surface_revision: Option<tokio::sync::watch::Receiver<u64>>,
     watched_status: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
+    watched_receipts: Option<tokio::sync::watch::Receiver<crate::harness::TurnReceiptSnapshot>>,
     active_model: Option<String>,
     native_choices: Vec<ModelChoice>,
     interruptible: bool,
@@ -60,6 +61,7 @@ impl DictatedSession {
             surfaces: None,
             watched_surface_revision: None,
             watched_status: None,
+            watched_receipts: None,
             active_model: None,
             native_choices: Vec::new(),
             interruptible: false,
@@ -94,6 +96,14 @@ impl DictatedSession {
         watched: tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>,
     ) -> Self {
         self.watched_status = Some(watched);
+        self
+    }
+
+    pub(in crate::app::tests) fn watching_receipts(
+        mut self,
+        watched: tokio::sync::watch::Receiver<crate::harness::TurnReceiptSnapshot>,
+    ) -> Self {
+        self.watched_receipts = Some(watched);
         self
     }
 
@@ -169,6 +179,11 @@ impl AgentSession for DictatedSession {
         &self,
     ) -> Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>> {
         self.watched_status.clone()
+    }
+    fn turn_receipts(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<crate::harness::TurnReceiptSnapshot>> {
+        self.watched_receipts.clone()
     }
     fn quiet_for(&self) -> Duration {
         self.quiet

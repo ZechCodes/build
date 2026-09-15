@@ -248,15 +248,30 @@ impl AppState {
     /// carries an Issue's scheduler on to its next stage hands that git back
     /// HERE, to the socket that can release the guard before running it. The
     /// `done` twin of [`AppState::dispatch_deferring`].
+    #[cfg(test)]
     pub(in crate::app) fn done_deferring(
         &mut self,
         entity_id: &str,
         report: DoneReport,
     ) -> Option<DeferredJob> {
+        let agent_id = self
+            .entity_agents(entity_id)
+            .ok()
+            .and_then(|agents| agents.primary())
+            .map(|agent| agent.id.clone());
+        self.done_deferring_for_resolved_agent(entity_id, agent_id.as_deref(), report)
+    }
+
+    fn done_deferring_for_resolved_agent(
+        &mut self,
+        entity_id: &str,
+        agent_id: Option<&str>,
+        report: DoneReport,
+    ) -> Option<DeferredJob> {
         if self.plans.contains_key(entity_id) {
-            self.on_plan_agent_done(entity_id, report);
+            self.on_plan_agent_done(entity_id, agent_id, report);
         } else if self.runs.contains_key(entity_id) {
-            self.on_run_agent_done(entity_id, report);
+            self.on_run_agent_done(entity_id, agent_id, report);
         } else {
             eprintln!("on_agent_done: unknown entity {entity_id}");
         }
@@ -272,7 +287,7 @@ impl AppState {
         report: DoneReport,
     ) -> Option<DeferredJob> {
         self.record_agent_working_since(entity_id, agent_id, None);
-        self.done_deferring(entity_id, report)
+        self.done_deferring_for_resolved_agent(entity_id, Some(agent_id), report)
     }
 
     /// Execute an MCP thread request against the conversation owner resolved

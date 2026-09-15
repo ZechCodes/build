@@ -1,9 +1,9 @@
 use super::{
     completion_text, doc_comment_of, snapshot_contents, AgentIdentity, ArtifactKind, DocAnchor,
     DocComment, DocCommentState, EventClass, ItemMetadata, MessageAnchor, MessageAttachment,
-    MessageOption, MessageOutcome, MessageRole, MessageSource, OptionChoice, ThreadEvent,
-    ThreadEventDraft, ThreadEventKind, ThreadItem, ThreadLink, ThreadMessage, ToolCallOutcome,
-    UnreadSummary, WorktreeScope,
+    MessageDeliveryStatus, MessageOption, MessageOutcome, MessageRole, MessageSource, OptionChoice,
+    ThreadEvent, ThreadEventDraft, ThreadEventKind, ThreadItem, ThreadLink, ThreadMessage,
+    ToolCallOutcome, UnreadSummary, WorktreeScope,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -616,6 +616,7 @@ impl Thread {
             completion_report: None,
             source: MessageSource::Chat,
             operation_id: None,
+            delivery_status: None,
             viewing_context: None,
             body,
             created_at: now,
@@ -668,6 +669,9 @@ impl Thread {
                 && message.seen_at.is_none()
             {
                 message.seen_at = Some(now.to_string());
+                if message.delivery_status.is_some() {
+                    message.delivery_status = Some(MessageDeliveryStatus::Seen);
+                }
                 // An in-place mutation of an already-sequenced item: bump its
                 // updated_sequence (inlined `next()` — the loop holds a borrow
                 // of `self.items`) so cursored polls re-ship the seen state.
@@ -698,6 +702,7 @@ impl Thread {
                         && message.sequence <= through_sequence =>
                 {
                     message.operation_id = Some(operation_id.to_string());
+                    message.delivery_status = Some(MessageDeliveryStatus::Queued);
                     Some(message.clone())
                 }
                 _ => None,
@@ -714,6 +719,77 @@ impl Thread {
         through_sequence: u64,
         now: &str,
     ) -> Vec<ThreadMessage> {
+        self.read_operation_messages_with_working(
+            operation_id,
+            from_sequence,
+            through_sequence,
+            now,
+            true,
+        )
+    }
+    /// Native delivery acknowledgement stamps the same message metadata but
+    /// must not reopen work after an agent reply already closed the turn.
+    pub fn read_native_operation_messages(
+        &mut self,
+        operation_id: &str,
+        from_sequence: u64,
+        through_sequence: u64,
+        now: &str,
+    ) -> Vec<ThreadMessage> {
+        self.read_operation_messages_with_working(
+            operation_id,
+            from_sequence,
+            through_sequence,
+            now,
+            false,
+        )
+    }
+    /// Receipt for a native turn sent through the legacy, operationless path.
+    /// It updates only reviewer messages in the exact range and leaves the
+    /// conversation's working summary untouched.
+    pub fn read_native_legacy_messages(
+        &mut self,
+        from_sequence: u64,
+        through_sequence: u64,
+        now: &str,
+    ) -> Vec<ThreadMessage> {
+        let mut messages = Vec::new();
+        for item in &mut self.items {
+            let ThreadItem::Message(message) = item else {
+                continue;
+            };
+            if message.role != MessageRole::User
+                || message.operation_id.is_some()
+                || message.sequence < from_sequence
+                || message.sequence > through_sequence
+            {
+                continue;
+            }
+            let mut changed = false;
+            if message.delivery_status != Some(MessageDeliveryStatus::Seen) {
+                message.delivery_status = Some(MessageDeliveryStatus::Seen);
+                changed = true;
+            }
+            if message.seen_at.is_none() {
+                message.seen_at = Some(now.to_string());
+                changed = true;
+            }
+            if changed {
+                self.next_sequence += 1;
+                message.updated_sequence = self.next_sequence;
+            }
+            messages.push(message.clone());
+        }
+        messages
+    }
+    fn read_operation_messages_with_working(
+        &mut self,
+        operation_id: &str,
+        from_sequence: u64,
+        through_sequence: u64,
+        now: &str,
+        mark_working: bool,
+    ) -> Vec<ThreadMessage> {
         let mut messages = Vec::new();
         for item in &mut self.items {
             let ThreadItem::Message(message) = item else {
@@ -725,17 +801,87 @@ impl Thread {
             {
                 continue;
             }
+            let mut changed = false;
+            if message.delivery_status != Some(MessageDeliveryStatus::Seen) {
+                message.delivery_status = Some(MessageDeliveryStatus::Seen);
+                changed = true;
+            }
             if message.seen_at.is_none() {
                 message.seen_at = Some(now.to_string());
+                changed = true;
+            }
+            if changed {
                 self.next_sequence += 1;
                 message.updated_sequence = self.next_sequence;
             }
             messages.push(message.clone());
         }
-        if !messages.is_empty() {
+        if mark_working && !messages.is_empty() {
             self.conversation_working = true;
         }
         messages
+    }
+    /// Update only the messages owned by an exact operation and sequence
+    /// range. Seen is terminal: delayed handoff callbacks cannot move it back.
+    pub fn set_operation_delivery_status(
+        &mut self,
+        operation_id: &str,
+        from_sequence: u64,
+        through_sequence: u64,
+        status: MessageDeliveryStatus,
+    ) {
+        for item in &mut self.items {
+            let ThreadItem::Message(message) = item else {
+                continue;
+            };
+            if message.operation_id.as_deref() != Some(operation_id)
+                || message.sequence < from_sequence
+                || message.sequence > through_sequence
+                || message.delivery_status == Some(status)
+                || message.delivery_status == Some(MessageDeliveryStatus::Seen)
+                || (status == MessageDeliveryStatus::Uncertain
+                    && matches!(
+                        message.delivery_status,
+                        Some(MessageDeliveryStatus::Sent | MessageDeliveryStatus::Failed)
+                    ))
+            {
+                continue;
+            }
+            message.delivery_status = Some(status);
+            self.next_sequence += 1;
+            message.updated_sequence = self.next_sequence;
+        }
+    }
+    /// Update an exact range of legacy reviewer messages. Operation-managed
+    /// messages are excluded so the two delivery paths cannot cross streams.
+    pub fn set_legacy_delivery_status(
+        &mut self,
+        from_sequence: u64,
+        through_sequence: u64,
+        status: MessageDeliveryStatus,
+    ) {
+        for item in &mut self.items {
+            let ThreadItem::Message(message) = item else {
+                continue;
+            };
+            if message.role != MessageRole::User
+                || message.operation_id.is_some()
+                || message.sequence < from_sequence
+                || message.sequence > through_sequence
+                || message.delivery_status == Some(status)
+                || message.delivery_status == Some(MessageDeliveryStatus::Seen)
+                || (status == MessageDeliveryStatus::Uncertain
+                    && matches!(
+                        message.delivery_status,
+                        Some(MessageDeliveryStatus::Sent | MessageDeliveryStatus::Failed)
+                    ))
+            {
+                continue;
+            }
+            message.delivery_status = Some(status);
+            self.next_sequence += 1;
+            message.updated_sequence = self.next_sequence;
+        }
     }
     /// Record the working-state half of an authorized operation read when its
     /// exact messages live below this process's bounded resident tail.

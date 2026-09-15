@@ -57,6 +57,9 @@ pub struct Turn {
     /// `None` is the compatibility shape for callers that have no addressed
     /// choice; new addressed delivery freezes both the value and its revision.
     pub choice: Option<FrozenTurnChoice>,
+    /// The delivery operation this turn belongs to, when its caller needs a
+    /// protocol-native consumption receipt.
+    pub operation_id: Option<String>,
 }
 
 /// An immutable agent-choice snapshot carried with exactly one turn.
@@ -79,6 +82,7 @@ impl Turn {
         Turn {
             text: text.into(),
             choice: None,
+            operation_id: None,
         }
     }
 
@@ -90,8 +94,33 @@ impl Turn {
                 model_choice,
                 revision,
             }),
+            operation_id: None,
         }
     }
+
+    pub fn with_operation_id(mut self, operation_id: impl Into<String>) -> Turn {
+        self.operation_id = Some(operation_id.into());
+        self
+    }
+}
+
+/// The strongest delivery receipt a session can produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnReceiptSupport {
+    /// The carrier can only confirm that it accepted the turn for sending.
+    Sent,
+    /// The carrier observes protocol evidence that the model consumed the turn.
+    Seen,
+}
+
+/// Cumulative consumed-turn receipts. The cumulative shape makes a watch
+/// channel safe even when several receipts arrive before a subscriber polls.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnReceiptSnapshot {
+    pub seen_operation_ids: Vec<String>,
+    /// Turns accepted by the session whose consumption could not be observed
+    /// before the session ended.
+    pub uncertain_operation_ids: Vec<String>,
 }
 
 /// What an agent is doing right now.
@@ -201,6 +230,14 @@ pub trait AgentSession: Send + Sync {
 
     /// Exact turn-boundary updates for protocols that expose them.
     fn status_changed(&self) -> Option<watch::Receiver<SessionStatusSnapshot>> {
+        None
+    }
+
+    fn turn_receipt_support(&self) -> TurnReceiptSupport {
+        TurnReceiptSupport::Sent
+    }
+
+    fn turn_receipts(&self) -> Option<watch::Receiver<TurnReceiptSnapshot>> {
         None
     }
 

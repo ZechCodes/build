@@ -28,8 +28,7 @@ fn first_operation_for_a_user_added_agent_carries_the_cold_start_protocol() {
     let said = queued.said();
     assert!(said.cold.contains("`set_topic`"), "{}", said.cold);
     assert!(
-        said.cold
-            .contains("`operation_id` set to `operation-first`"),
+        said.cold.contains("reviewer operation `operation-first`"),
         "{}",
         said.cold
     );
@@ -300,7 +299,7 @@ async fn thread_post_reaches_the_live_agent_at_a_review_gate() {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut echoed = String::new();
-    while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
+    while std::time::Instant::now() < deadline && !echoed.contains("why did you drop the index?") {
         match output.try_recv() {
             Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
@@ -310,7 +309,7 @@ async fn thread_post_reaches_the_live_agent_at_a_review_gate() {
         }
     }
     assert!(
-        echoed.contains("read_unread_messages"),
+        echoed.contains("why did you drop the index?") && !echoed.contains("read_unread_messages"),
         "the agent at the gate must hear the message: {echoed:?}"
     );
 }
@@ -402,7 +401,9 @@ async fn thread_post_addressed_to_run_nudges_its_live_agent() {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut echoed = String::new();
-    while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
+    while std::time::Instant::now() < deadline
+        && !echoed.contains("read this in the implementation")
+    {
         match output.try_recv() {
             Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
@@ -412,7 +413,8 @@ async fn thread_post_addressed_to_run_nudges_its_live_agent() {
         }
     }
     assert!(
-        echoed.contains("read_unread_messages"),
+        echoed.contains("read this in the implementation")
+            && !echoed.contains("read_unread_messages"),
         "the active implementation agent must be nudged: {echoed:?}"
     );
     let unread = state
@@ -984,7 +986,7 @@ fn thread_post_in_building_nudges_the_live_session_without_ending_it() {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut echoed = String::new();
-    while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
+    while std::time::Instant::now() < deadline && !echoed.contains("while you build") {
         match output.try_recv() {
             Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
@@ -994,7 +996,7 @@ fn thread_post_in_building_nudges_the_live_session_without_ending_it() {
         }
     }
     assert!(
-        echoed.contains("read_unread_messages"),
+        echoed.contains("while you build") && !echoed.contains("read_unread_messages"),
         "the live PTY must hear the nudge: {echoed:?}"
     );
 }
@@ -1222,7 +1224,7 @@ fn thread_post_at_a_review_gate_reaches_the_agent_without_moving_the_run() {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut echoed = String::new();
-    while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
+    while std::time::Instant::now() < deadline && !echoed.contains("a note for later") {
         match output.try_recv() {
             Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
@@ -1232,7 +1234,7 @@ fn thread_post_at_a_review_gate_reaches_the_agent_without_moving_the_run() {
         }
     }
     assert!(
-        echoed.contains("read_unread_messages"),
+        echoed.contains("a note for later") && !echoed.contains("read_unread_messages"),
         "the agent the human is looking at must hear them: {echoed:?}"
     );
     assert_eq!(

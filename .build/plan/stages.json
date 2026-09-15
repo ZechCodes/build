@@ -1,32 +1,44 @@
 [
   {
-    "id": "isolation-seam",
-    "title": "The isolation seam: one trait, one façade, the worktree backend moved behind it",
-    "path": ".build/plan/01-isolation-seam.md",
-    "summary": "Add bridge/src/isolation with the Isolation enum (worktree | cow, read from disk by Isolation::of), IsolationAvailability and the seven-primitive IsolationBackend trait; move today's git-linked-worktree code into WorktreeBackend; turn WorktreeManager into the façade that cuts branches, picks the directory and routes to backends, absorbing Orchestrator::merge_into_base and gaining publish/sync_base/discover/prune and the project-repo ref operations; split describe_checkout out of the porcelain parser and put isolation on ExternalWorktree. Creation calls take an Isolation argument; the app passes Worktree. No behavior change; existing tests prove it."
+    "id": "api-presence",
+    "title": "Presence via a signed bridge heartbeat to the api",
+    "path": ".build/plan/01-api-presence.md",
+    "summary": "POST /api/devices/heartbeat (device-signed, replay-guarded, copying the transport-report pattern) and a status derived from last_seen_at at read time; bridge presence.rs posts every 30 s. Relay's status POST still runs this stage so nothing user-visible changes."
   },
   {
-    "id": "route-app-through-facade",
-    "title": "Route every checkout operation in the app through the façade",
-    "path": ".build/plan/02-route-app-through-facade.md",
-    "summary": "Delete app.rs's own git for finishing a worktree (remove_registered_worktree, merge_external_branch, local_branch_exists, delete_local_branch_for_finish, restore_finish_branch_after_removal_failure), the scan wrappers and the best-effort worktree prune, and call the WorktreeManager façade instead; classify_stage_publication publishes the checkout's branch first. Behavior unchanged; after this stage a second backend needs no app changes."
+    "id": "relay-shrink",
+    "title": "Shrink the relay to rendezvous",
+    "path": ".build/plan/02-relay-shrink.md",
+    "summary": "Delete device_key/device_online/device_offline fan-out, transport_key, and the status POST from the relay and the bridge relay client; frame cap 64 KiB, queue 1 MiB; serve_device/serve_client under the clippy threshold with both ratchets retired; relay tests, dev_relay example and k8s yaml updated."
   },
   {
-    "id": "cow-backend",
-    "title": "The copy-on-write backend and the availability probe",
-    "path": ".build/plan/03-cow-backend.md",
-    "summary": "Implement CowBackend (clonefile on macOS, per-file FICLONE reflink on Linux; strip inherited .git/worktrees, write the .git/build-isolation marker, check out the branch, clean untracked, keep ignored caches) with publish/sync_base as local fetches by path, discovery by marker under the worktrees root, and cow_availability (same .git directory, same volume, a real clone probe) with user-facing reasons. Wired into the façade but not yet selectable. Tests run the real clone on APFS and skip with a printed reason on ext4."
+    "id": "bridge-strict",
+    "title": "The bridge refuses to be relayed, and signaling is carrier-neutral",
+    "path": ".build/plan/03-bridge-strict.md",
+    "summary": "session_accept returns over the carrier the session_init arrived on (the seam a direct-network listener reuses); non-rtc.* frames on a Relay carrier are refused with relay_is_not_a_data_plane; FellBack becomes ChannelsLost and the admin bucket relay_only becomes never_connected."
   },
   {
-    "id": "isolation-settings",
-    "title": "The isolation setting: account default, per-project override, locked when unavailable",
-    "path": ".build/plan/04-isolation-settings.md",
-    "summary": "Persist an account-level isolation setting and a per-project override in the bridge config; one resolver (override, else account, downgraded to worktree with the probe's reason when cow is unavailable) feeds every creation site, and a downgrade is recorded on the thread. settings.get/set gain isolation and isolation_available; project.list rows gain isolation, isolation_effective, isolation_available; new project.set_isolation. cow is refused wherever the probe fails."
+    "id": "bridge-prefer-direct",
+    "title": "Prefer direct: mDNS, interface policy, relay acceptance delay",
+    "path": ".build/plan/04-bridge-prefer-direct.md",
+    "summary": "A SettingEngine on the bridge peer: mDNS QueryOnly so browser host candidates resolve on a LAN, UDP4/UDP6 non-loopback gathering, a relay-pair acceptance delay, BRIDGE_ICE_POLICY=direct-only that strips TURN, and BRIDGE_ICE_INTERFACES; parsed fail-fast with tests."
   },
   {
-    "id": "spa-isolation-controls",
-    "title": "The isolation controls: account settings panel and project settings select",
-    "path": ".build/plan/05-spa-isolation-controls.md",
-    "summary": "A pure core/isolation.js mirroring core/defaultHarness.js, a Work isolation panel under Default agent on the Settings page, a Work isolation select in the project settings sheet with an Account default option, the copy-on-write option disabled with the bridge's reason when locked, and the effective isolation shown on each project row. Vitest first, then a browser pass."
+    "id": "spa-rendezvous",
+    "title": "SPA core: the rendezvous seam, one socket for two sessions, no terminal socket",
+    "path": ".build/plan/05-spa-rendezvous.md",
+    "summary": "core/rendezvous.js replaces relayLink.js (both ratchets retired): one socket mints the app and terminal sessions with no device_key wait; sessionSwitch makes the peer the only active carrier and queues calls until it arrives; peerLink gains onConnected/onFailed; TerminalSocket is built from a minted session and rides only the term channel."
+  },
+  {
+    "id": "spa-strict-policy",
+    "title": "SPA policy: live only over channels, fail closed, presence from the api",
+    "path": ".build/plan/06-spa-strict-policy.md",
+    "summary": "connection.js opens rendezvous → mints both sessions → negotiates → closes the socket → live; any failure enters an explicit blocked state with a Retry banner and no relay RPC; presence polls GET /api/devices; device settings sessions ride a channel too; browser pass with Build/spa:verify."
+  },
+  {
+    "id": "qa-deploy-docs",
+    "title": "QA over the peer path, deploy, docs",
+    "path": ".build/plan/07-qa-deploy-docs.md",
+    "summary": "A Rust qa_peer example replaces the Node relay-path QA in compose and CI (negotiates through the relay, closes the socket, asserts over the channels, and checks the relay refusal); README, HANDOFF, deploy docs and the older WebRTC spec updated."
   }
 ]

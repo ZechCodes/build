@@ -6,7 +6,8 @@ Three audiences, three guard styles:
 - **authenticated** (browser session/desktop OAuth): ``/api/devices/...`` and
   ``/api/gateway-token`` — guarded by ``build_auth_guard``.
 - **internal** (relay-facing): ``/internal/...`` — the relay reads device keys/approval
-  and validates gateway tokens. Guarded by ``internal_auth_guard`` (``X-Internal-Secret``
+  and validates gateway tokens. Reads only: presence is this api's own, derived from
+  the heartbeat each bridge posts. Guarded by ``internal_auth_guard`` (``X-Internal-Secret``
   shared secret; dev config may allow localhost callers instead).
 """
 
@@ -194,9 +195,6 @@ class DevicesController(Controller):
         ):
             raise NotAuthorizedException("heartbeat replayed")
         device.last_seen_at = now
-        # The column is kept coherent while the relay still writes it; nothing
-        # reads it for liveness any more.
-        device.status = presence.ONLINE
         await db_session.commit()
         return Response({"ok": True})
 
@@ -344,22 +342,6 @@ class DevicesController(Controller):
         if user_id is None:
             raise NotFoundException()
         return Response({"user_id": str(user_id)})
-
-    @post("/internal/devices/{device_id:uuid}/status", guards=[internal_auth_guard])
-    async def internal_set_status(
-        self, device_id: UUID, request: Request, db_session: AsyncSession
-    ) -> Response:
-        """The relay reports a device online/offline so the SPA can show a status dot."""
-        body = await read_json_object(request)
-        online = bool(body.get("online", False))
-        device = await db_session.get(Device, device_id)
-        if device is None:
-            raise NotFoundException()
-        device.status = "online" if online else "offline"
-        if online:
-            device.last_seen_at = utc_now()
-        await db_session.commit()
-        return Response({"ok": True})
 
     # ----- helpers -----------------------------------------------------------
 

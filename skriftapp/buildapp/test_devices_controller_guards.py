@@ -31,7 +31,7 @@ def test_internal_routes_use_internal_auth_guard():
     internal_handlers = [
         h for h in _route_handlers() if any(p.startswith("/internal/") for p in _paths(h))
     ]
-    assert len(internal_handlers) == 3  # device, gateway-token, status
+    assert len(internal_handlers) == 2  # device, gateway-token
     for handler in internal_handlers:
         assert internal_auth_guard in (handler.guards or []), _paths(handler)
 
@@ -47,6 +47,18 @@ def test_browser_routes_use_shared_browser_and_desktop_auth_guard():
     for handler in _route_handlers():
         if browser_paths & set(_paths(handler)):
             assert build_auth_guard in (handler.guards or []), _paths(handler)
+
+
+def test_the_relay_has_no_internal_writer_left():
+    """Rule 6 of the strict P2P transport spec: presence is the api's, derived
+    from the heartbeat each bridge posts. The relay reports no status, so the
+    route it used to POST to is gone — and every internal route that remains is a
+    read."""
+    assert not hasattr(DevicesController, "internal_set_status")
+    for handler in _route_handlers():
+        for path in _paths(handler):
+            if path.startswith("/internal/"):
+                assert handler.http_methods == {"GET"}, path
 
 
 def test_no_localhost_only_inline_check_remains():

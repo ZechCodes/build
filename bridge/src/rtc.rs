@@ -34,6 +34,8 @@ use webrtc::peer_connection::{
     StatsSelector,
 };
 
+use rtc::ice::mdns::MulticastDnsMode;
+
 use crate::carrier::{self, CarrierHandle, FrameIntake, OutboundEnvelope, SessionSender};
 use crate::transport_ledger::{TransportEvent, TransportLedger, TransportPath};
 
@@ -404,19 +406,23 @@ impl WebrtcPeer {
     /// that won.
     async fn connect(&self, configuration: RTCConfiguration) -> Result<Negotiation, RtcError> {
         let (connected, first_connect) = mpsc::unbounded_channel();
+        let events: Arc<dyn PeerConnectionEventHandler> = Arc::new(PeerEvents {
+            session_id: self.session_id.clone(),
+            signaling: self.signaling.clone(),
+            connected,
+        });
+        let udp_addrs = self.policy.gather_from()?;
         let connection: Arc<dyn PeerConnection> = Arc::new(
-            PeerConnectionBuilder::new()
-                .with_configuration(configuration)
-                .with_setting_engine(self.policy.setting_engine())
-                .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
-                .with_handler(Arc::new(PeerEvents {
-                    session_id: self.session_id.clone(),
-                    signaling: self.signaling.clone(),
-                    connected,
-                }))
-                .with_udp_addrs(self.policy.gather_from()?)
-                .build()
-                .await?,
+            built_or_without_mdns(&self.session_id, |multicast_dns| {
+                let attempt = PeerConnectionBuilder::new()
+                    .with_configuration(configuration.clone())
+                    .with_setting_engine(self.policy.setting_engine(multicast_dns))
+                    .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
+                    .with_handler(events.clone())
+                    .with_udp_addrs(udp_addrs.clone());
+                async move { attempt.build().await }
+            })
+            .await?,
         );
         let path_report = tokio::spawn(report_negotiated_path(
             self.session_id.clone(),
@@ -436,6 +442,43 @@ impl WebrtcPeer {
             carriers,
             path_report,
         })
+    }
+}
+
+/// Build one peer connection under rule 8's ICE agent, and — if that fails —
+/// once more without mDNS.
+///
+/// mDNS is not a knob the crate applies lazily: `MulticastDnsMode::QueryOnly`
+/// makes it bind 224.0.0.251:5353 and join the group on every interface inside
+/// `bind_transports`, and that error is returned from `build()`. On a host or
+/// container where the join is refused — no multicast route, a locked-down
+/// network namespace — every `rtc.offer` would be refused and every device
+/// would go blocked (rule 3), where the same bridge connected over STUN/TURN
+/// before rule 8 landed. Resolving a browser's `<uuid>.local` host candidates
+/// is worth a great deal on a LAN and nothing at all on a host that cannot ask,
+/// so this trades it away rather than the connection. Said once per run: on
+/// such a host every session would say the same thing.
+async fn built_or_without_mdns<T, E, Attempt>(
+    session_id: &str,
+    mut build: impl FnMut(MulticastDnsMode) -> Attempt,
+) -> Result<T, E>
+where
+    E: std::fmt::Display,
+    Attempt: std::future::Future<Output = Result<T, E>>,
+{
+    match build(MulticastDnsMode::QueryOnly).await {
+        Ok(built) => Ok(built),
+        Err(refused) => {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                eprintln!(
+                    "rtc: session {session_id} could not build a peer connection with mDNS \
+                     ({refused}); building without it, so a browser that offers only \
+                     `<uuid>.local` candidates cannot be reached on a LAN"
+                );
+            });
+            build(MulticastDnsMode::Disabled).await
+        }
     }
 }
 
@@ -1061,6 +1104,64 @@ mod channel_writer_tests {
             wire["envelope"],
             serde_json::to_value(envelope("s-1")).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod peer_build_tests {
+    use super::*;
+
+    /// mDNS is rule 8's, and the crate makes it a hard dependency of the whole
+    /// connection: the multicast join happens inside `bind_transports` and its
+    /// error comes back out of `build()`. On a host that cannot join the group
+    /// — no multicast route, a locked-down namespace — every offer would be
+    /// refused and every device blocked, where the same bridge used to connect
+    /// over STUN/TURN. Resolving a browser's `<uuid>.local` candidates is worth
+    /// a great deal on a LAN and nothing at all on a host that cannot ask, so
+    /// the build is tried once more without it.
+    #[tokio::test]
+    async fn a_peer_that_cannot_join_the_multicast_group_is_built_without_mdns() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let attempts = asked.clone();
+
+        let built = built_or_without_mdns("s-mdns", |mode| {
+            attempts.lock().unwrap().push(mode);
+            async move {
+                match mode {
+                    MulticastDnsMode::QueryOnly => Err("the multicast join was refused"),
+                    _ => Ok("a peer connection"),
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(built, Ok("a peer connection"));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec![MulticastDnsMode::QueryOnly, MulticastDnsMode::Disabled],
+            "rule 8's agent first, and only then the one without it"
+        );
+    }
+
+    /// The fallback is a fallback: a host that can join the group never gives
+    /// up mDNS, and a build that fails for some other reason still fails.
+    #[tokio::test]
+    async fn an_ordinary_host_keeps_mdns_and_a_peer_that_cannot_build_still_refuses() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let attempts = asked.clone();
+        let built = built_or_without_mdns("s-ok", |mode| {
+            attempts.lock().unwrap().push(mode);
+            async move { Ok::<&str, &str>("a peer connection") }
+        })
+        .await;
+        assert_eq!(built, Ok("a peer connection"));
+        assert_eq!(*asked.lock().unwrap(), vec![MulticastDnsMode::QueryOnly]);
+
+        let refused = built_or_without_mdns("s-no", |_| async {
+            Err::<&str, &str>("no udp_sockets or tcp_listeners available")
+        })
+        .await;
+        assert_eq!(refused, Err("no udp_sockets or tcp_listeners available"));
     }
 }
 

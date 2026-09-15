@@ -27,9 +27,14 @@
 # a rendezvous here too, and the harness closes its socket once the channels are
 # open. Nothing sets CF_TURN_KEY_ID / CF_TURN_KEY_API_TOKEN, so the api answers
 # a STUN-only list — which is all this stack needs, because every container sits
-# on one compose network and the two peers pair host to host without consulting
-# a STUN server at all. A stack whose peers could reach each other by neither
-# route would have no path to the bridge: there is no relay underneath.
+# on one compose network and the pair that wins is host to host. The bridge does
+# still QUERY that STUN server (stun:stun.cloudflare.com:3478 — unauthenticated,
+# no Cloudflare account) and trickles the server-reflexive candidate it learns
+# from it, carrying this machine's public address; nothing here ever nominates
+# that candidate, and a stack with no outbound path to the STUN server pairs
+# host to host just the same, one candidate poorer. A stack whose peers could
+# reach each other by neither route would have no path to the bridge: there is
+# no relay underneath.
 #
 # Ports: app :8090 (api + SPA), relay :18090 (matches the SPA bundle's
 # VITE_RELAY_URL and app.dev.yaml's connect-src — a relay on another port needs

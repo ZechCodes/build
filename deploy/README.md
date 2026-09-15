@@ -97,11 +97,15 @@ Both are optional (`optional: true` in [`k8s/app.yaml`](k8s/app.yaml);
 they are exported and reports their absence instead of failing). With
 neither set — which is how `compose.real.yml` runs — the route answers a
 STUN-only list, and that is all the local stack needs: every container is on one
-compose network, so the browser or the qa harness and the bridge pair **host to
-host** with no STUN server involved at all. That STUN-only list is
+compose network, so the pair the browser or the qa harness nominates with the
+bridge is **host to host**. That STUN-only list is
 `stun:stun.cloudflare.com:3478` — unauthenticated, no account, and
 unreachable-tolerant: with it down or the machine offline, host candidates still
-carry localhost sessions.
+carry localhost sessions. Unreachable-tolerant is not unused, though: the bridge
+does send a binding request to it and trickles the server-reflexive candidate it
+gets back (the public address of the machine the stack runs on). Nothing
+nominates that candidate here — plan for the outbound UDP, not against the
+pairing, if the deployment is air-gapped or egress-filtered.
 
 A deployment without the key is **not** a deployment that degrades gracefully:
 there is no relay underneath the peer connection any more. A browser and a

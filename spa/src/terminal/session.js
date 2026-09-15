@@ -13,8 +13,9 @@
 //
 // It owns no socket and opens nothing. The terminal session is minted through
 // the followed device's rendezvous and handed over with
-// `adoptTerminalSession(session)`; the wire is that device's `term` DataChannel,
-// handed over with `peer(carrier)` (spec rule 5: no terminal socket). The
+// `adoptTerminalSession(session, carrier)` together with that device's `term`
+// DataChannel, which `peer(carrier)` hands over again whenever the device's
+// peer link takes another one (spec rule 5: no terminal socket). The
 // browser is live only over the channel (rule 2), so a terminal is connected
 // exactly while one is carrying and lost the moment none is.
 //
@@ -128,25 +129,33 @@ export class TerminalSocket {
   }
 
   /**
-   * Type at this machine from now on.
+   * Type at this machine from now on, over this machine's wire.
    *
    * `session` is `{ sessionId, sessionKeyB64, deviceId }`, minted through that
-   * device's rendezvous by whoever moved the shells. Whatever was riding the
-   * session before is not riding this one — a wire belongs to the session it
-   * was negotiated for — so a channel already handed over is re-taken under the
-   * new session's key, which is what re-attaches every open terminal on it.
+   * device's rendezvous by whoever moved the shells, and `carrier` is that same
+   * device's `term` channel — `null` while its peer link has none yet.
+   *
+   * The wire comes WITH the session because a session belongs to one machine
+   * and so does every channel: a socket that re-took whatever it was already
+   * riding would re-attach the new session's terminals over the machine they
+   * just left, whose bridge has never heard of that session — and, with nothing
+   * registered to fail, would report itself connected on it. A channel already
+   * handed over is passed in again, and re-taken under the new session's key,
+   * which is what re-attaches every open terminal on it.
    */
-  adoptTerminalSession(session) {
+  adoptTerminalSession(session, carrier = null) {
     this._closed = false;
-    const carrier = this._carrier;
     // A session being replaced is not one being lost: the old session's calls
     // end with it, and nobody is told the shells are gone when they are moving.
     this._replacing = true;
     this._switch.peer(null);
     this._openSession(session);
     this._replacing = false;
+    this._carrier = carrier || null;
+    // Not `_reportLost` when there is no wire: a machine whose channel has yet
+    // to open is one the panes are waiting on, which is connecting.
     this._report("connecting");
-    return carrier ? this._switch.peer(carrier) : undefined;
+    return this._carrier ? this._switch.peer(this._carrier) : undefined;
   }
 
   /**

@@ -90,13 +90,20 @@ export function terminalManager() {
  * stream learns that its half is open — and, when the peer path goes, that
  * there is nothing left to type down (rule 2: no relay fallback).
  *
+ * `session` is that same device's freshly minted terminal session when the wire
+ * comes with one, which is what a move to another machine is. The two go over
+ * together on purpose: a socket given the session and left to pick its own wire
+ * picks the one it is already riding, which is the machine the shells just
+ * left.
+ *
  * Nothing is watched here. "The two channels are one connection and go
  * together" is written in `connection.js`, which hears each channel's close and
  * hands both streams back at once; a second listener on the same carrier would
  * run that fallback twice, through two owners of one fact.
  */
-function terminalsRideOn(carrier) {
+function terminalsRideOn(carrier, session = null) {
   peerCarrier = carrier || null;
+  if (session) return socket?.adoptTerminalSession(session, peerCarrier);
   socket?.peer(peerCarrier);
 }
 
@@ -122,13 +129,16 @@ function moveTerminalsTo(deviceId) {
 const termChannelOf = (deviceId) => contextFor(deviceId)?.peerLink?.term || null;
 
 /**
- * Mint a terminal session on one machine, give it to the socket, and only then
- * give the socket that machine's channel.
+ * Mint a terminal session on one machine and give the socket that session and
+ * that machine's channel, together.
  *
- * That order is the whole of it: a socket handed the new machine's wire while
- * it still holds the old machine's session re-attaches THAT session's terminals
- * over a bridge which has never heard of it, and reports itself connected on a
- * wire carrying nothing.
+ * Together is the whole of it. A socket handed the new machine's wire while it
+ * still holds the old machine's session re-attaches THAT session's terminals
+ * over a bridge which has never heard of it; a socket handed the new machine's
+ * session and left to re-take the wire it is on attaches the new session over
+ * the old machine's channel. Either way one of the two belongs to the machine
+ * the shells have left, and a socket with nothing registered reports itself
+ * connected on it.
  *
  * Not awaited: `followTerminalDevice` answers a route change, which cannot wait
  * on a relay round trip. A mint that fails leaves the shells on the session and
@@ -142,8 +152,7 @@ function adoptSessionOn(deviceId) {
     .then(() => mintTerminalSession(deviceId))
     .then((session) => {
       if (!session || !socket || terminalDeviceId() !== deviceId) return;
-      socket.adoptTerminalSession(session);
-      terminalsRideOn(termChannelOf(deviceId));
+      terminalsRideOn(termChannelOf(deviceId), session);
     })
     .catch(() => {
       /* that machine cannot mint one; the shells stay where they are */
@@ -163,8 +172,8 @@ function adoptSessionOn(deviceId) {
  */
 export function followTerminalDevice() {
   const deviceId = terminalDeviceId();
-  // Another machine: the session goes first and takes the wire with it when it
-  // lands. The shells keep the channel they are riding until then.
+  // Another machine: the session and that machine's wire go over together when
+  // the mint lands. The shells keep the channel they are riding until then.
   if (socket && socket.deviceId !== deviceId) return moveTerminalsTo(deviceId);
   terminalsRideOn(termChannelOf(deviceId));
   return true;

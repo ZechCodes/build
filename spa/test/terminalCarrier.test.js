@@ -172,14 +172,15 @@ describe("a terminal socket on the wire it was handed", () => {
 
   // The shells move machine by being given that machine's session and that
   // machine's channel. The session is what the frames are sealed under, so a
-  // channel adopted before the session it belongs to must be re-taken under it.
+  // channel handed back with a new session — the same physical wire, because
+  // the device's peer link is the one that moved — is re-taken under it.
   it("takes the same wire under a newly adopted session, and re-attaches there", async () => {
     const { socket } = standing(terminalSession("sess-1", "dev-a"));
     const carrier = fakeCarrier();
     await socket.peer(carrier);
     await withTerminal(socket, carrier);
 
-    await socket.adoptTerminalSession(terminalSession("sess-2", "dev-b"));
+    await socket.adoptTerminalSession(terminalSession("sess-2", "dev-b"), carrier);
 
     expect(socket.deviceId).toBe("dev-b");
     expect(carrier.calls("term.attach")).toHaveLength(2);
@@ -187,6 +188,46 @@ describe("a terminal socket on the wire it was handed", () => {
     // …and the screen still reads, because it reads under the key it now holds.
     const typing = socket.input("term-1", "x");
     await expect(typing).resolves.toBeUndefined();
+    socket.close();
+  });
+
+  // Moving the shells to another machine is that machine's session AND that
+  // machine's wire, handed over together. A socket that re-takes whatever it
+  // happened to be riding re-attaches the NEW session's terminals over the
+  // PREVIOUS machine's channel — a bridge that has never heard of that session
+  // — and with nothing registered reports itself connected on it.
+  it("attaches an adopted session on the wire it was given, never the one it was riding", async () => {
+    const { socket } = standing(terminalSession("sess-1", "dev-a"));
+    const was = fakeCarrier();
+    await socket.peer(was);
+    await withTerminal(socket, was);
+
+    const now = fakeCarrier();
+    await socket.adoptTerminalSession(terminalSession("sess-2", "dev-b"), now);
+
+    // dev-a's bridge hears nothing about dev-b's session, under its key or any.
+    expect(was.calls("term.attach")).toHaveLength(1);
+    expect(was.sent.every((envelope) => envelope.key === "key-sess-1")).toBe(true);
+    expect(now.calls("term.attach").map((p) => p.params.term_id)).toEqual(["term-1"]);
+    expect(now.sent.at(-1).key).toBe("key-sess-2");
+    socket.close();
+  });
+
+  // …and a machine whose channel is not open yet takes the shells off the one
+  // they were riding rather than leaving them typing at the machine they left:
+  // with nothing registered there is no attach to fail, so the old wire would
+  // simply be reported connected under a session its bridge cannot read.
+  it("says it is connecting, not connected, when the machine it moved to has no wire yet", async () => {
+    const { socket, statuses } = standing(terminalSession("sess-1", "dev-a"));
+    const was = fakeCarrier();
+    await socket.peer(was);
+    await socket.peer(was); // nothing registered: a bare wire, and it is connected
+
+    await socket.adoptTerminalSession(terminalSession("sess-2", "dev-b"), null);
+
+    expect(statuses).toEqual(["connecting", "connected", "connecting"]);
+    expect(was.sent.every((envelope) => envelope.key === "key-sess-1")).toBe(true);
+    await expect(socket.input("term-1", "x")).rejects.toMatchObject({ name: "TerminalSocketLost" });
     socket.close();
   });
 
@@ -204,7 +245,7 @@ describe("a terminal socket on the wire it was handed", () => {
     const waiting = socket.whenConnected();
     expect(statuses).toEqual([]);
 
-    await socket.adoptTerminalSession(terminalSession("sess-1"));
+    await socket.adoptTerminalSession(terminalSession("sess-1"), carrier);
 
     await expect(waiting).resolves.toBeUndefined();
     expect(statuses).toEqual(["connecting", "connected"]);

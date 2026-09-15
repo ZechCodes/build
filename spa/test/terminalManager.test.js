@@ -31,12 +31,17 @@ vi.mock("../src/terminal/session.js", () => ({
       this.options = options;
       this.deviceId = null;
       this.adopted = [];
+      // What each adopted session was handed to ride, and every wire this
+      // socket was given by either route, in order.
+      this.adoptedWith = [];
       this.carriers = [];
       sockets.push(this);
     }
     onStatus() {}
-    adoptTerminalSession(session) {
+    adoptTerminalSession(session, carrier = null) {
       this.adopted.push(session);
+      this.adoptedWith.push(carrier);
+      this.carriers.push(carrier);
       this.deviceId = session.deviceId;
     }
     peer(carrier) {
@@ -68,6 +73,7 @@ function socketOn(deviceId) {
   const socket = terminalManager();
   socket.deviceId = deviceId;
   socket.adopted.length = 0;
+  socket.adoptedWith.length = 0;
   socket.carriers.length = 0;
   mints.asked.length = 0;
   return socket;
@@ -232,6 +238,24 @@ describe("the device the terminals follow", () => {
 
     expect(socket.adopted).toEqual([{ sessionId: "sess-dev-b", sessionKeyB64: "key-dev-b", deviceId: "dev-b" }]);
     expect(socket.carriers).toEqual([term]);
+  });
+
+  // The session and the wire are one machine's, and they arrive together. A
+  // socket given a session and left to re-take whatever it was riding takes the
+  // PREVIOUS machine's channel — dev-a's bridge, asked to attach under dev-b's
+  // session key — for as long as it takes the next statement to run.
+  it("hands the new machine's session its own channel, and never the old machine's", async () => {
+    const term = { id: "term-b" };
+    live("dev-a", { peerLink: { term: { id: "term-a" } } });
+    live("dev-b", { peerLink: { term } });
+    const socket = socketOn("dev-a");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    followTerminalDevice();
+    await settle();
+
+    expect(socket.adoptedWith).toEqual([term]);
+    expect(socket.carriers).toEqual([term]); // dev-a's channel is never handed over
   });
 
   // And a machine that could not mint one takes neither: the shells stay on the

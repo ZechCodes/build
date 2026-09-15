@@ -164,5 +164,9 @@ class TransportSession(Base):
     current_path: Mapped[str] = mapped_column(String(16), default="relay", nullable=False)
     carrying_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     turn_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # How often the session lost its last DataChannel while still alive — the
+    # bridge's ``channels_lost``. The column keeps its original name (it was
+    # ``fell_back`` while the relay was still a data plane) so no migration is
+    # needed; both words count here.
     fell_back_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTimeUTC(timezone=True), nullable=True)

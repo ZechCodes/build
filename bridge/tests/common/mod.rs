@@ -66,8 +66,8 @@ pub async fn bind_relay() -> (TcpListener, String) {
     (listener, url)
 }
 
-/// Take the device's connection and greet it as the relay does, so it uploads
-/// its transport key and starts heartbeating at `heartbeat_interval_s`.
+/// Take the device's connection and greet it as the relay does, so it starts
+/// heartbeating at `heartbeat_interval_s`.
 pub async fn greet_device(
     listener: TcpListener,
     heartbeat_interval_s: u64,
@@ -95,7 +95,6 @@ async fn mock_relay(
     listener: TcpListener,
     mut browser_to_device: mpsc::Receiver<Value>,
     device_to_browser: mpsc::Sender<Value>,
-    transport_key: mpsc::Sender<String>,
 ) {
     let (mut sink, mut source) = greet_device(listener, HEARTBEAT_INTERVAL_S).await.split();
 
@@ -106,10 +105,6 @@ async fn mock_relay(
                 Some(Ok(Message::Text(text))) => {
                     let v: Value = serde_json::from_str(&text).unwrap();
                     match v.get("type").and_then(Value::as_str) {
-                        Some("transport_key") => {
-                            let key = v["transport_public_key"].as_str().unwrap().to_string();
-                            let _ = transport_key.send(key).await;
-                        }
                         Some("heartbeat") => {}
                         Some("session_accept") | Some("e2ee_envelope") => {
                             let _ = device_to_browser.send(v).await;
@@ -137,14 +132,14 @@ pub fn device_identity() -> DeviceIdentity {
 }
 
 /// An intake holding a fresh device transport keypair — the key browsers wrap
-/// their session keys to, and the one the relay socket uploads.
+/// their session keys to, pinned at the api by pairing.
 pub fn test_intake(handler: FrameHandler) -> Arc<FrameIntake> {
     FrameIntake::new(handler, transport::generate_transport_keypair())
 }
 
 /// A bridge stood up against one mock relay socket, as the test's browser sees
-/// it: the two halves of the relay wire, the transport public key the device
-/// uploaded, and the two tasks behind them.
+/// it: the two halves of the relay wire, the transport public key a browser
+/// wraps its session key to, and the two tasks behind them.
 pub struct ConnectedDevice {
     pub to_device: mpsc::Sender<Value>,
     pub from_device: mpsc::Receiver<Value>,
@@ -153,9 +148,10 @@ pub struct ConnectedDevice {
     pub relay_socket: JoinHandle<()>,
 }
 
-/// Bind a mock relay, run the real bridge relay-client against it with
-/// `intake`, and wait until the device has authenticated and uploaded its
-/// transport key.
+/// Bind a mock relay and run the real bridge relay-client against it with
+/// `intake`. The device's transport public key is read off the intake, not off
+/// the wire: the browser learns it from the api, where pairing pinned it, and
+/// this socket never carries it.
 pub async fn connected_device(
     intake: Arc<FrameIntake>,
     identity: &DeviceIdentity,
@@ -163,13 +159,12 @@ pub async fn connected_device(
     let (listener, url) = bind_relay().await;
     let (to_device, to_device_rx) = mpsc::channel::<Value>(64);
     let (from_device_tx, from_device) = mpsc::channel::<Value>(64);
-    let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
-    let relay_socket = tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
+    let transport_public_key = intake.transport_public_key().to_string();
+    let relay_socket = tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx));
     let bridge = {
         let identity = identity.clone();
         tokio::spawn(async move { relay::run(&url, &identity, intake).await })
     };
-    let transport_public_key = testing::within_patience(tkey_rx.recv()).await;
     ConnectedDevice {
         to_device,
         from_device,

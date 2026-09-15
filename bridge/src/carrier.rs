@@ -493,8 +493,9 @@ impl FrameIntake {
         self.registry.ledger.clone()
     }
 
-    /// The public half of the device's transport keypair: what a carrier
-    /// publishes so a client can wrap a session key the intake can open.
+    /// The public half of the device's transport keypair: the key a client wraps
+    /// a session key to, which this intake can open. No carrier publishes it —
+    /// pairing pinned it at the api, and that is where a browser reads it.
     pub fn transport_public_key(&self) -> &str {
         &self.transport.public_key_b64
     }

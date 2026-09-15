@@ -22,13 +22,12 @@ use tokio_tungstenite::tungstenite::Message;
 
 type Outbound = mpsc::UnboundedSender<Message>;
 
-/// Shared relay routing state: the two peers' write channels and the device's
-/// transport key (served to clients so they can wrap a session key to it).
+/// Shared relay routing state: the two peers' write channels. Nothing else — the
+/// device's transport key is the api's to serve, and its presence too.
 #[derive(Default)]
 struct RelayState {
     device_out: Option<Outbound>,
     client_out: Option<Outbound>,
-    device_transport_key: Option<String>,
 }
 
 type Shared = Arc<Mutex<RelayState>>;
@@ -109,18 +108,12 @@ async fn serve(tcp: TcpStream, state: Shared) -> Result<(), Box<dyn std::error::
         let mut s = state.lock().await;
         if is_device {
             s.device_out = Some(out_tx.clone());
-            // Greet the device so it uploads its transport key and heartbeats.
+            // Greet the device so it starts heartbeating.
             let _ = out_tx.send(Message::Text(
                 json!({"type":"authenticated","device_id":"dev-relay-device","heartbeat_interval_s":30}).to_string(),
             ));
         } else {
             s.client_out = Some(out_tx.clone());
-            // Tell the client which device key to wrap to (once known).
-            if let Some(key) = &s.device_transport_key {
-                let _ = out_tx.send(Message::Text(
-                    json!({"type":"device_key","transport_public_key":key}).to_string(),
-                ));
-            }
         }
     }
 
@@ -135,21 +128,6 @@ async fn serve(tcp: TcpStream, state: Shared) -> Result<(), Box<dyn std::error::
 
         if is_device {
             match msg_type {
-                "transport_key" => {
-                    let key = msg
-                        .get("transport_public_key")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let mut s = state.lock().await;
-                    s.device_transport_key = Some(key.clone());
-                    // If a client is already waiting, hand it the key now.
-                    if let Some(client) = &s.client_out {
-                        let _ = client.send(Message::Text(
-                            json!({"type":"device_key","transport_public_key":key}).to_string(),
-                        ));
-                    }
-                }
                 "heartbeat" => {}
                 "session_accept" | "e2ee_envelope" => {
                     forward(&state, /* to_device */ false, text).await;

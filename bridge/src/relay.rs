@@ -1,14 +1,18 @@
-//! The relay client — the bridge's link to the world.
+//! The relay client — the bridge's rendezvous with a browser.
 //!
 //! The device connects to the relay over a WebSocket, authenticates with an
-//! Ed25519-signed challenge, uploads its X25519 transport public key, and then
-//! relays end-to-end encrypted sessions with browser clients. The relay only ever
-//! sees the opaque outer envelope (`{version, session_id, route_to, nonce,
-//! ciphertext}`) — it routes by `session_id` and forwards JSON it cannot read.
+//! Ed25519-signed challenge, and then carries the negotiation of end-to-end
+//! encrypted sessions with browser clients. The relay only ever sees the opaque
+//! outer envelope (`{version, session_id, route_to, nonce, ciphertext}`) — it
+//! routes by `session_id` and forwards JSON it cannot read.
+//!
+//! It is a rendezvous, not a connection: the device's transport public key is
+//! pinned at the api by pairing and read from there, never uploaded here, and
+//! the device's liveness is a heartbeat posted to the api (`presence.rs`), not
+//! anything this socket reports.
 //!
 //! Frame flow, per the relay's `/ws/device` protocol:
 //! - relay → `{"type":"authenticated","heartbeat_interval_s":N}`
-//! - device → `{"type":"transport_key","transport_public_key":"<b64>"}`
 //! - device → `{"type":"heartbeat"}` every N seconds
 //! - relay → `{"type":"session_init","session_id":S,"session_init":{...}}`
 //! - device → `{"type":"session_accept","session_id":S,"envelope":{...}}`
@@ -263,20 +267,14 @@ impl<'a> RelayConnection<'a> {
         }
     }
 
-    /// The relay took the signed challenge: upload the transport public key
-    /// clients wrap session keys to, and start heartbeating at its interval.
+    /// The relay took the signed challenge: start heartbeating at its interval.
+    /// Nothing else is said — this socket keeps the device findable and carries
+    /// the sessions a browser mints on it, and that is all.
     fn authenticated(&mut self, msg: &Value) {
         let interval = msg
             .get("heartbeat_interval_s")
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_S);
-        send(
-            &self.control_tx,
-            json!({
-                "type": "transport_key",
-                "transport_public_key": self.intake.transport_public_key(),
-            }),
-        );
         self.heartbeat = Some(spawn_heartbeat(self.control_tx.clone(), interval));
         self.deadline = silence_deadline(interval);
     }

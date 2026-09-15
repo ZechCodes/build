@@ -45,13 +45,14 @@ fn install_crypto_provider() {
 }
 
 /// A TLS WebSocket server that accepts one connection with a fresh self-signed
-/// cert, greets the device as the relay would, waits for its `transport_key`,
-/// then closes. Returns the port, the cert (DER) to trust, and a receiver that
-/// yields `(device_id_header, signature_header_present, transport_key)`.
+/// cert, greets the device as the relay would, waits for the first frame the
+/// device sends back — its heartbeat — then closes. Returns the port, the cert
+/// (DER) to trust, and a receiver that yields `(device_id_header,
+/// signature_header_present)`.
 async fn spawn_tls_ws_server() -> (
     u16,
     tokio_rustls::rustls::pki_types::CertificateDer<'static>,
-    mpsc::Receiver<(String, bool, String)>,
+    mpsc::Receiver<(String, bool)>,
 ) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = cert.cert.der().clone();
@@ -98,13 +99,14 @@ async fn spawn_tls_ws_server() -> (
         .await
         .unwrap();
 
-        // The device answers with its transport key; then we hang up.
+        // The device starts heartbeating at the advertised interval, the first beat
+        // at once — that frame coming back over TLS is the round trip this test is
+        // about. Then we hang up.
         while let Some(Ok(msg)) = source.next().await {
             if let Message::Text(text) = msg {
                 let v: Value = serde_json::from_str(&text).unwrap();
-                if v["type"] == "transport_key" {
-                    let key = v["transport_public_key"].as_str().unwrap().to_string();
-                    let _ = seen_tx.send((device_id.clone(), signed, key)).await;
+                if v["type"] == "heartbeat" {
+                    let _ = seen_tx.send((device_id.clone(), signed)).await;
                     break;
                 }
             }
@@ -135,19 +137,17 @@ async fn wss_connects_to_tls_server_with_injected_root() {
         |_sender, frame, _timer| json!({"echo": frame.payload}),
     );
 
-    let intake = test_intake(handler);
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run_with_connector(&url, &identity, intake.clone(), Some(connector)),
+        relay::run_with_connector(&url, &identity, test_intake(handler), Some(connector)),
     )
     .await
     .expect("no timeout");
     outcome.expect("wss session runs to a clean close");
 
-    let (device_id, signed, transport_key) = seen_rx.recv().await.expect("server saw the device");
+    let (device_id, signed) = seen_rx.recv().await.expect("server saw the device");
     assert_eq!(device_id, identity.device_id);
     assert!(signed, "auth headers rode the TLS upgrade");
-    assert_eq!(transport_key, intake.transport_public_key());
 }
 
 #[tokio::test]

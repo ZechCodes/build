@@ -8,7 +8,7 @@
 // images render via `<img src="data:...">` — never inlined into the DOM. The
 // server fences the scope root and every path; this view never sends host paths.
 
-import { esc } from "../core/text.js";
+import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId } from "../core/directoryScope.js";
 import { readCached, writeCached } from "../core/localCache.js";
 import { renderMarkdown } from "../core/markdown.js";
@@ -161,19 +161,15 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   const treeEl = body.querySelector("#ftree");
   const treeListEl = body.querySelector(".ftree-list");
   const previewEl = body.querySelector("#fpreview");
-  // On a narrow viewport the tree is a drawer over the preview. Only a file
-  // closes it: a directory row is still part of choosing one, and closing the
-  // drawer under a tap that changed nothing but the tree would put the choosing
-  // away mid-choice.
-  const drawer = initPaneDrawer(body.querySelector(".files"), { list: treeEl, closeOnSelect: ".ffile" });
   // The placeholder states render container-less (no panel box), centered in
   // the preview area; only a loaded file gets the bordered panel back.
   const showPlaceholder = (kind, message, hint) => {
     previewEl.classList.add("idle");
     previewEl.innerHTML = previewPlaceholderHtml(kind, message, hint);
   };
-  // Below the stacking width the tree is behind the drawer handle rather than
-  // beside the preview, so the empty state names it instead of pointing at it.
+  // Below the stacking width the tree is behind the drawer's trigger row rather
+  // than beside the preview, so the empty state names it instead of pointing at
+  // it.
   showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
 
   let dir = openAt ? parentPath(openAt.path) : ""; // current directory, relative to the scope root
@@ -184,6 +180,17 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   let selectedPath = null;
   let savingState = null;
   let fileRequest = 0;
+
+  // On a narrow viewport the tree is a drawer over the preview. Only a file
+  // closes it: a directory row is still part of choosing one, and closing the
+  // drawer under a tap that changed nothing but the tree would put the choosing
+  // away mid-choice. Shut, the trigger over it names the file being read —
+  // which the preview's own header says, and the preview is behind the drawer.
+  const drawer = initPaneDrawer(body.querySelector(".files"), {
+    list: treeEl,
+    closeOnSelect: ".ffile",
+    summary: () => selectedPath || pickAFileText,
+  });
 
   const onBeforeUnload = (event) => {
     if (!viewerState?.snapshot().dirty) return;
@@ -337,6 +344,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     editor = null;
     viewerState = null;
     selectedPath = path;
+    drawer.refresh();
     viewingContext?.clearSelection?.();
     publishFileContext();
     showPlaceholder("loading");

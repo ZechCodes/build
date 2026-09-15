@@ -105,6 +105,12 @@ export const pinText = (pinned, subject) => `${pinned ? "Unpin" : "Pin"} the ${s
 export const changesTabLabel = "Changes";
 export const filesTabLabel = "Files";
 
+/** What a two-column pane's drawer trigger offers while nothing is open — the
+ *  gesture, not the state, because on a phone the list it names is behind the
+ *  trigger itself. */
+export const pickAChangesetText = "Pick a commit";
+export const pickAFileText = "Choose a file";
+
 /** Human-scale age: <60s "just now", <1h "Nm ago", <1d "Nh ago", else "Nd ago". */
 export function humanAge(seconds) {
   const s = Math.max(0, Math.floor(seconds || 0));

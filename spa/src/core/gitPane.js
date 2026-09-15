@@ -21,6 +21,7 @@ import {
   changesetPlaceholderHtml,
 } from "./changesRender.js";
 import {
+  changesSelectionSummary,
   defaultChangesSelection,
   selectionAfterPoll,
   commitBoxVisible,
@@ -491,7 +492,9 @@ export function mountGitPane(
   let wholePatchValue = null;
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
-  let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
+  let drawer = null; // the rail's narrow-viewport drop-down, re-wired per skeleton
+  // What the rail was last drawn from — the same parts its trigger names.
+  let railParts = { status: null, log: null, selected: null, review: null };
   let paintChangesetInto = null;
   let contextFrame = 0;
   let contextCommit = null;
@@ -613,12 +616,18 @@ export function mountGitPane(
     // The rail is the drawer on a narrow viewport. Both kinds of row it holds —
     // a set of changes, a commit — put something in the detail column behind
     // it, so both close it; the "show more" row, which only lengthens the rail,
-    // does not.
+    // does not. The trigger over it reads from the same parts the rail is drawn
+    // from, so the line above a shut drawer and the selected row inside it can
+    // never say different things.
     paintChangesetInto = createChangesetPaint(container.querySelector(".cdetail-host"));
     const split = container.querySelector(".changes2");
     split.insertAdjacentHTML("beforeend", paneDrawerHtml("commits"));
     if (drawer) drawer.dispose();
-    drawer = initPaneDrawer(split, { list: split.querySelector(".crail-host"), closeOnSelect: ".rrow, .crow" });
+    drawer = initPaneDrawer(split, {
+      list: split.querySelector(".crail-host"),
+      closeOnSelect: ".rrow, .crow",
+      summary: () => changesSelectionSummary(railParts),
+    });
     container.onclick = handleClick;
     container.onkeydown = (event) => {
       if ((event.key === "Enter" || event.key === " ") && event.target.closest(".gitmore")) {
@@ -993,9 +1002,14 @@ export function mountGitPane(
   /// they were. Nothing in the rail is wired to a row: the surface's one click
   /// handler reads which row was pressed off the DOM.
   const paintRail = (parts) => {
+    railParts = parts;
     const host = container.querySelector(".crail-host");
     const rail = host.querySelector(".crail") || host.appendChild(el('<div class="crail"></div>'));
     patchList(rail, changesRailEntries(parts), { keyOf: (entry) => entry.key, render: (entry) => entry.html });
+    // The drawer's trigger is the rail's selected row, said as a line: below the
+    // stacking width that row is behind the trigger, and the trigger is the only
+    // thing left saying where the reader is standing.
+    drawer.refresh();
   };
 
   /** Mount the Pull/Push/Stash split buttons into their toolbar hosts. Each host

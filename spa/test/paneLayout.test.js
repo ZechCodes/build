@@ -212,9 +212,18 @@ describe("tab layout primitives", () => {
     }
   });
 
-  it("defines each primitive once and never hard-codes its width", () => {
+  it("defines each primitive's box once and never hard-codes its width", () => {
     expect(rulesFor(".pane-col")).toHaveLength(0); // the shared rule is the whole single-column layout
-    expect(rulesFor(".pane-split")).toHaveLength(1);
+    // The split's BOX is stated once, at every width. The one other rule that
+    // names it turns the same box on its side below the stacking width and
+    // says nothing else — a second box would be a second layout.
+    expect(rulesFor(".pane-split").filter((rule) => enclosingAtRule(rule.at) === null)).toHaveLength(1);
+    for (const rule of rulesFor(".pane-split").filter((rule) => enclosingAtRule(rule.at) !== null)) {
+      expect(Object.keys(rule.body.split(";").reduce((all, piece) => {
+        const colon = piece.indexOf(":");
+        return colon < 0 ? all : { ...all, [piece.slice(0, colon).trim()]: true };
+      }, {}))).toEqual(["flex-direction"]);
+    }
     for (const rule of cssRules().filter((rule) => targetsPrimitive(rule.selector))) {
       expect(rule.body).not.toMatch(/max-width:\s*\d/);
     }
@@ -494,10 +503,17 @@ describe("tab layout primitives", () => {
   });
 
   // ---- the two-column layout below the stacking width ----
-  // Neither pane stacks any more. A phone given two stacked scrollers spends
-  // half a small screen on the list it is not reading, so the list floats over
-  // the detail instead and a handle pulls it out.
-  it("turns the list column into a drawer instead of stacking the pane", () => {
+  // Neither pane spends a phone on two scrollers. The list column drops in from
+  // the TOP of the pane over the detail, and a trigger row across the head of
+  // the pane drops it — a drawer belongs to the control that pulls it, and a
+  // panel that opens under its own button is the gesture a phone already knows.
+  it("drops the list column in from the top instead of stacking the pane", () => {
+    // The pane's own two columns become one stack — the trigger row over the
+    // detail — while the list column leaves the flow entirely.
+    const split = cssRules().find(
+      (rule) => rule.selector === ".pane-split" && enclosingAtRule(rule.at) === STACK_QUERY,
+    );
+    expect(declaration(split.body, "flex-direction")).toBe("column");
     const stacked = cssRules().filter(
       (rule) => declaration(rule.body, "flex-direction") === "column" && TWO_COLUMN_PANES.includes(rule.selector),
     );
@@ -510,11 +526,37 @@ describe("tab layout primitives", () => {
     );
     expect(drawer).toBeTruthy();
     expect(declaration(drawer.body, "position")).toBe("absolute");
-    expect(declaration(drawer.body, "transform")).toBe("translateX(-100%)");
-    expect(declaration(drawer.body, "width")).toBe("var(--pane-drawer)");
+    // Up, not left: it hangs from the trigger row and is clipped by the frame.
+    expect(declaration(drawer.body, "transform")).toBe("translateY(-100%)");
+    expect(declaration(drawer.body, "top")).toBe("var(--surface-head)");
+    expect(declaration(drawer.body, "left")).toBe("0");
+    expect(declaration(drawer.body, "right")).toBe("0");
     // The split is what the drawer measures and floats against, so it is the
     // containing block — stated once, at every width, where the primitive is.
     expect(declaration(rulesFor(".pane-split")[0].body, "position")).toBe("relative");
+  });
+
+  it("stands the trigger row on the surface's head line, above the detail", () => {
+    const trigger = cssRules().find(
+      (rule) => rule.selector === ".pane-handle" && enclosingAtRule(rule.at) === STACK_QUERY,
+    );
+    expect(trigger).toBeTruthy();
+    expect(declaration(trigger.body, "display")).toBe("flex");
+    // The trigger is written after the pane's own columns (it is the
+    // primitive's) and read before them.
+    expect(declaration(trigger.body, "order")).toBe("-1");
+    // The same line the git bar and the conversation panel's head stop on, and
+    // the height the drawer hangs from — one number, so they cannot drift.
+    expect(declaration(trigger.body, "height")).toBe("var(--surface-head)");
+    // One line that ellipsizes: a trigger that wrapped would move the drawer's
+    // hinge off the number above.
+    const words = cssRules().find(
+      (rule) => rule.selector === ".pane-handle-what" && enclosingAtRule(rule.at) === STACK_QUERY,
+    );
+    expect(declaration(words.body, "white-space")).toBe("nowrap");
+    expect(declaration(words.body, "text-overflow")).toBe("ellipsis");
+    // A caret says it is a dropdown, and turns over with it.
+    expect(cssRules().find((rule) => rule.selector === ".pane-split.drawer-open .pane-handle-caret")).toBeTruthy();
   });
 
   it("drawers both panes from one rule, so neither can drift", () => {
@@ -526,15 +568,26 @@ describe("tab layout primitives", () => {
     }
   });
 
-  it("rides the handle out with the drawer it opened", () => {
+  it("leaves the trigger row standing while the drawer hangs from it", () => {
     const open = cssRules().find((rule) => rule.selector === ".pane-split.drawer-open .pane-list");
     expect(open).toBeTruthy();
     expect(declaration(open.body, "transform")).toBe("none");
-    const handle = cssRules().find((rule) => rule.selector === ".pane-split.drawer-open .pane-handle");
-    expect(declaration(handle.body, "left")).toBe("var(--pane-drawer)");
-    // One width for the panel and for how far the handle travels — a handle
-    // that stops anywhere but the panel's edge reads as a second control.
-    expect(stylesSource.match(/--pane-drawer:/g) || []).toHaveLength(1);
+    // The trigger does not travel: it is the hinge, and pressing it again is
+    // the way back. Nothing about it moves with the panel, so the width the
+    // old edge tab slid by is gone from the sheet entirely.
+    expect(stylesSource).not.toMatch(/--pane-drawer/);
+    const trigger = cssRules().find(
+      (rule) => rule.selector === ".pane-split.drawer-open .pane-handle" && declaration(rule.body, "left"),
+    );
+    expect(trigger).toBeUndefined();
+  });
+
+  it("keeps the trigger row reachable over the scrim it raised", () => {
+    // Tapping the trigger again is one of the three ways out (the scrim and
+    // Escape are the others), so the scrim may never cover it.
+    const layer = (selector) =>
+      Number(declaration(cssRules().find((rule) => rule.selector.includes(selector) && declaration(rule.body, "z-index")).body, "z-index"));
+    expect(layer(".pane-handle")).toBeGreaterThan(layer(".pane-scrim"));
   });
 
   it("keeps the drawer's chrome out of the wide layout entirely", () => {

@@ -91,7 +91,6 @@
      One number so Changes and Files are structurally the same view: the rail is
      the same width in both, and switching tabs moves the divider nowhere. */
   --pane-rail:300px;
-  --pane-drawer:min(86vw, var(--pane-rail));
   --tbsel-inset:6px;  /* the toolbar's menu button, inside its own bar */
   --tab-inset:13px; /* a tab pill, inside the tab bar */
   --toolbar-gutter:calc(var(--pane-gutter) - var(--tbsel-inset));
@@ -315,44 +314,65 @@ main#root.surface { max-width:none;
 /* ---- the two-column layout on a narrow viewport ----
    Below the stacking width the pane keeps both columns, but only one of them
    at a time: the list column (the commit rail, the file tree) leaves the flow
-   and becomes a drawer floating over the left of the pane, and the detail
-   column — the thing being read — gets the whole frame behind it. Stacking
-   spent half a phone on the list nobody was reading, and gave the pane two
-   short scrollers where there was room for one.
+   and drops in from the TOP of the pane over the detail, and the detail column
+   — the thing being read — gets the whole frame behind it. Stacking spent half
+   a phone on the list nobody was reading, and gave the pane two short
+   scrollers where there was room for one.
+   It drops from the top rather than sliding in from the left because the
+   control that opens it is at the top: a drawer belongs to the control that
+   pulls it, and a panel that opens under its own button is the gesture a phone
+   already knows. That control is a ROW, not a tab on the pane's edge, because
+   it has something to say — with the list column behind it, the line that told
+   you where you were standing is behind it too, so the trigger carries it.
    The drawer belongs to the primitive: one rule moves both panes' list
-   columns, and both hand it the same .pane-list. Its chrome (the handle that
-   pulls it out, the scrim it sits on) is in the markup at every width and
+   columns, and both hand it the same .pane-list. Its chrome (the trigger row
+   that drops it, the scrim it sits on) is in the markup at every width and
    paints at none of them but this. */
 .pane-scrim, .pane-handle { display:none; }
 @media (max-width: 900px) {
-  /* An overlay is placed against the split's border box, so the drawer already
-     starts at the frame — it gives the bleed back rather than sliding a whole
-     gutter past the edge. */
-  .pane-split .pane-list { position:absolute; top:0; bottom:0; left:0; z-index:12;
-    margin-left:0; width:var(--pane-drawer); flex:none; background:var(--panel);
-    transform:translateX(-100%); transition:transform .18s ease; }
-  /* The shadow is the open drawer's, not the closed one's: a panel parked off
-     the left edge still spills its shadow back over the pane, which reads as a
-     dark gutter down a column that is supposed to have the frame to itself. */
-  .pane-split.drawer-open .pane-list { transform:none; box-shadow:8px 0 24px var(--shadow-soft); }
+  /* One stack: the trigger row, then the detail. The list column is out of the
+     flow entirely — it hangs off the trigger. */
+  .pane-split { flex-direction:column; }
+  /* The trigger is the primitive's, so it is written after the pane's own
+     columns and read before them. It meets the frame the way the list column
+     does above this width, and pays the surface's text column as its own inset
+     — the line the toolbar's project name and the rail's rows stand on.
+     --surface-head is the row every head on this surface stops on: the git
+     bar, the ref picker, the conversation panel's head. */
+  .pane-handle { order:-1; display:flex; align-items:center; gap:8px; z-index:13;
+    flex:none; width:auto; height:var(--surface-head);
+    margin-left:calc(var(--pane-gutter) * -1); padding:0 var(--pane-gutter);
+    font:inherit; font-size:13px; line-height:1; color:var(--ink); text-align:left;
+    background:var(--panel); border:0; border-bottom:1px solid var(--line);
+    cursor:pointer; -webkit-tap-highlight-color:transparent; }
+  /* One line, whatever it is handed: a commit subject is as long as its author
+     made it, and a trigger that wrapped would move the hinge the drawer hangs
+     from off the number above. */
+  .pane-handle-what { flex:1 1 auto; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pane-handle-caret { flex:none; font-size:9px; color:var(--dim);
+    transition:transform .18s ease; }
+  .pane-handle-caret::after { content:"▾"; }
+  .pane-split.drawer-open .pane-handle-caret { transform:rotate(180deg); }
+  /* The panel hangs from the trigger's bottom edge and is parked above it,
+     where the surface's own clip (#tabbody.flush) hides it. It never grows
+     past what is left of the pane, and it scrolls inside itself. */
+  .pane-split .pane-list { position:absolute; top:var(--surface-head); bottom:auto;
+    left:0; right:0; z-index:12;
+    margin-left:0; width:auto; flex:none;
+    max-height:min(62vh, calc(100% - var(--surface-head)));
+    background:var(--panel); border-right:0; border-bottom:1px solid var(--line);
+    transform:translateY(-100%); transition:transform .18s ease; }
+  /* The shadow is the open drawer's, not the parked one's: a panel parked above
+     the head still spills its shadow back over the trigger row. */
+  .pane-split.drawer-open .pane-list { transform:none; box-shadow:0 12px 26px var(--shadow-soft); }
+  /* From under the trigger row down: the trigger stays reachable over it,
+     because pressing it again is one of the three ways out. */
   .pane-split.drawer-open .pane-scrim { display:block; position:absolute; inset:0; z-index:11;
     background:var(--scrim); }
-  /* A tab on the pane's edge, vertically centred: an edge tab is where a
-     pull-out is grabbed anyway. It travels with the panel it opened, so the
-     way out is where the way in was. */
-  .pane-handle { display:flex; align-items:center; justify-content:center;
-    position:absolute; left:0; top:50%; transform:translateY(-50%); z-index:13;
-    width:23px; height:64px; padding:0; cursor:pointer;
-    font:inherit; font-size:14px; line-height:1; color:var(--ink2);
-    background:var(--panel); border:1px solid var(--line); border-left:none;
-    border-radius:0 9px 9px 0; box-shadow:2px 0 10px var(--shadow-soft);
-    transition:left .18s ease; -webkit-tap-highlight-color:transparent; }
-  .pane-handle::after { content:"›"; }
-  .pane-split.drawer-open .pane-handle { left:var(--pane-drawer); }
-  .pane-split.drawer-open .pane-handle::after { content:"‹"; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pane-split .pane-list, .pane-handle { transition:none; }
+  .pane-split .pane-list, .pane-handle-caret { transition:none; }
 }
 /* task view */
 .back { color:var(--ink2); font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; margin-bottom:12px; }

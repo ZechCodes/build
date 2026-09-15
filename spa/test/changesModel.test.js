@@ -11,6 +11,7 @@ import {
   commitAllPaths,
   commentsSupported,
   commentLayerBusy,
+  changesSelectionSummary,
 } from "../src/core/changesModel.js";
 
 const status = (overrides = {}) => ({
@@ -112,6 +113,35 @@ describe("defaultChangesSelection", () => {
 
   it("opens a clean branch at the commit list — nothing selected, no commit box", () => {
     expect(defaultChangesSelection({ status: status({ files: [] }), log: log() })).toBeNull();
+  });
+});
+
+// On a phone the rail is a drawer, so the one line above it has to say what the
+// reader is standing in — the rail row is behind the drawer they would have to
+// open to read it.
+describe("changesSelectionSummary", () => {
+  const summary = (selected, extra = {}) =>
+    changesSelectionSummary({ status: status(), log: log(), selected, ...extra });
+
+  it("names the aggregate and what it is measured against", () => {
+    expect(summary("review", { review: { base: "main" } })).toBe("All changes · vs main");
+    expect(summary("review", { review: { subtitle: "vs the plan" } })).toBe("All changes · vs the plan");
+    expect(summary("review", { review: {} })).toBe("All changes · vs main");
+  });
+
+  it("says whether the tree is clean, and by how much it is not", () => {
+    expect(summary("uncommitted")).toBe("Uncommitted · +4 −2");
+    expect(changesSelectionSummary({ status: status({ files: [] }), log: log(), selected: "uncommitted" }))
+      .toBe("Uncommitted · clean");
+  });
+
+  it("names a commit by its subject and its sha", () => {
+    expect(summary("a".repeat(40))).toBe("s · aaaaaaa");
+  });
+
+  it("offers the rail when nothing is open, and when the commit has gone", () => {
+    expect(summary(null)).toBe("Pick a commit");
+    expect(summary("b".repeat(40))).toBe("Pick a commit");
   });
 });
 

@@ -8,9 +8,11 @@ spec:
   replicas: 1
   # The relay is a single in-memory broker: device + browser WS connections are
   # per-pod state. A RollingUpdate would briefly run two brokers behind one
-  # Service — browsers landing on the new pod can't reach devices still attached
-  # to the old one, and presence fanout splits. Recreate preserves the locked
-  # "single broker" topology (a short blip; clients auto-reconnect).
+  # Service — a browser landing on the new pod cannot reach a device still
+  # attached to the old one, so its rendezvous fails and its peer connection is
+  # never negotiated. Recreate preserves the locked "single broker" topology; it
+  # costs the in-flight negotiations, not held connections, since an established
+  # peer connection does not pass through here at all.
   strategy:
     type: Recreate
   selector:
@@ -41,7 +43,9 @@ spec:
             - name: ws
               containerPort: 8799
           env:
-            # Internal api base for device/token lookups and status reports.
+            # Internal api base for device + gateway-token lookups. Read-only:
+            # the relay writes nothing to the api (presence is the api's own,
+            # posted by each bridge).
             - name: API_INTERNAL_URL
               value: http://build-app:8080
             # Compatibility alias: the current relay binary reads RELAY_API_URL.
@@ -66,13 +70,15 @@ spec:
               port: ws
             initialDelaySeconds: 10
             periodSeconds: 20
+          # A rendezvous holds sockets and negotiation frames, not a data plane:
+          # 64 KiB per frame and 1 MiB queued per peer (relay_server.rs).
           resources:
             requests:
               cpu: 50m
               memory: 64Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 128Mi
 ---
 apiVersion: v1
 kind: Service

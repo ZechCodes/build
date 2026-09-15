@@ -449,7 +449,11 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    a full-height surface is a flex column and #tabbody takes the rest. */
 .device-strip { flex:none; background:var(--amber-bg); color:var(--amber);
   border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent);
-  padding:6px var(--pane-gutter); font-size:12.5px; }
+  padding:6px var(--pane-gutter); font-size:12.5px;
+  display:flex; align-items:center; gap:8px; }
+/* A machine nothing could reach carries the one thing a reader can do about it
+   (Strict P2P Transport Spec, rule 3); one that is merely away carries none. */
+.device-strip .device-retry { flex:none; margin-left:auto; }
 
 /* ---- the view area's toolbar ----
    Where you are standing, said as one sentence: project / branch-or-issue, each

@@ -4,7 +4,25 @@
 // surface that names a missing machine — a branch, an issue, a sheet the
 // toolbar refuses to open — says it in these words.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The one thing a reader can do about a machine nothing could reach is ask
+// again, and running the sequence is the connection layer's (rule 3).
+const connection = vi.hoisted(() => ({ connectDevice: vi.fn(async () => null) }));
+vi.mock("../src/connection.js", () => ({
+  connectDevice: (...args) => connection.connectDevice(...args),
+  chooseCreationDevice: () => {},
+  deviceWentAway: () => {},
+  goOffline: () => {},
+  openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
+  openDeviceSettingsSession: async () => ({}),
+  retireDevice: () => {},
+  securityStopText: () => "",
+  syncHome: () => {},
+  forgetHomeFollow: () => {},
+  forgetRendezvousSockets: () => {},
+  forgetSecurityStops: () => {},
+}));
 
 import { App } from "../src/app.js";
 import { blockedMark, blockedText, deviceAwayMark, deviceAwayWord } from "../src/core/deviceAway.js";
@@ -213,5 +231,73 @@ describe("a machine whose direct connection could not be made", () => {
 
     expect(context.blocked).toBe(null);
     expect(deviceAwayWord(context)).toBe(deviceOfflineWord);
+  });
+});
+
+// Rule 3 is a dead end with one way out: the reader asks again. Only a blocked
+// machine offers it — an outage resolves itself the moment its bridge is back,
+// and there is nothing to press for that.
+describe("asking a blocked machine again", () => {
+  let host;
+
+  beforeEach(() => {
+    connection.connectDevice.mockClear();
+    document.body.innerHTML = '<main id="host"><div class="tab">the diff, as it was read</div></main>';
+    host = document.querySelector("#host");
+  });
+
+  const stripOn = () => host.querySelector(":scope > .device-strip");
+
+  it("says why over the surface, and offers the retry", () => {
+    const context = adoptDeviceSession(fakeSession("dev-1"));
+    mountDeviceStrip(host, context);
+
+    setContextOffline("dev-1", blockedMark("ice-servers"));
+
+    expect(stripOn().textContent).toContain(blockedText("ice-servers", "workshop"));
+    const retry = stripOn().querySelector("[data-retry-device]");
+    expect(retry.dataset.retryDevice).toBe("dev-1");
+
+    retry.click();
+
+    expect(connection.connectDevice).toHaveBeenCalledWith("dev-1");
+  });
+
+  // The frozen sentence is about a machine that is away; a blocked one has a
+  // reason, and the reason is what the reader needs to see.
+  it("says the reason even over a surface with something on it", () => {
+    const context = adoptDeviceSession(fakeSession("dev-1"));
+    mountDeviceStrip(host, context, { hasContent: () => true });
+
+    setContextOffline("dev-1", blockedMark("timeout"));
+
+    expect(stripOn().textContent).toContain(blockedText("timeout", "workshop"));
+    expect(stripOn().textContent).not.toContain(deviceFrozenText("workshop"));
+  });
+
+  it("offers nothing to press for a machine that is simply away", () => {
+    const context = adoptDeviceSession(fakeSession("dev-1"));
+    mountDeviceStrip(host, context);
+
+    setContextOffline("dev-1");
+
+    expect(stripOn().textContent).toBe(deviceFrozenText("workshop"));
+    expect(stripOn().querySelector("[data-retry-device]")).toBe(null);
+  });
+
+  it("offers it in place of a surface a link named, too", () => {
+    adoptDeviceSession(fakeSession("dev-1"));
+    setContextOffline("dev-1", blockedMark("failed"));
+    document.body.innerHTML = '<main id="root"></main>';
+    const root = document.querySelector("#root");
+
+    mountDeviceNotice(root, "dev-1");
+
+    expect(root.textContent).toContain(blockedText("failed", "workshop"));
+    root.querySelector("[data-retry-device]").click();
+
+    expect(connection.connectDevice).toHaveBeenCalledWith("dev-1");
+    App.viewDispose?.();
+    App.viewDispose = null;
   });
 });

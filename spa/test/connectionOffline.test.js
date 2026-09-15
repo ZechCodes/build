@@ -69,7 +69,7 @@ const {
 } = await import("../src/connection.js");
 const { initDevicePicker, paintDevicePicker, stopWatchingPresence } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
-const { allDevicesOfflineText, deviceUnreachableText } = await import("../src/core/text.js");
+const { allDevicesOfflineText, deviceUnreachableText, devicesBlockedText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
 const { holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js");
@@ -415,12 +415,61 @@ describe("per-device connections", () => {
 
   it("says every device is offline once the last one goes", async () => {
     await connectEveryDevice();
+    // The bridges went, so the account stopped calling them online — which is
+    // what "offline" on this screen means.
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
 
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
 
     expect(held()).toBe(true);
     expect(waitingNote()).toContain(allDevicesOfflineText());
+  });
+
+  // The other way the account can run out: every machine is up and answering
+  // the relay, and none of their connections could be made. Nothing is offline,
+  // so nothing is said to be — and each row carries the one thing a reader can
+  // do about it (rule 3).
+  it("says the machines are online but unreachable, and offers each of them a retry", async () => {
+    unlinkable.add("dev-a");
+    unlinkable.add("dev-b");
+
+    await connectEveryDevice();
+
+    expect(held()).toBe(true);
+    expect(waitingNote()).toBe(devicesBlockedText());
+    expect(document.querySelector("#waitlist").textContent).toContain("blocked");
+    expect([...document.querySelectorAll("[data-retry-device]")].map((button) => button.dataset.retryDevice)).toEqual([
+      "dev-a",
+      "dev-b",
+    ]);
+
+    unlinkable.delete("dev-a");
+    document.querySelector('[data-retry-device="dev-a"]').click();
+    await flush();
+
+    expect(held()).toBe(false);
+    expect(liveIds()).toEqual(["dev-a"]);
+  });
+
+  // A retry that fails again leaves the reader on the same screen, with the
+  // machine wearing whatever reason it was this time.
+  it("repaints the waiting screen when a retry could not reach the machine either", async () => {
+    devices = [online("dev-a", "Laptop")];
+    App.devices = devices;
+    unlinkable.add("dev-a");
+    await connectEveryDevice();
+    expect(held()).toBe(true);
+
+    unlinkable.delete("dev-a");
+    unreachable.add("dev-a");
+    document.querySelector('[data-retry-device="dev-a"]').click();
+    await flush();
+
+    expect(held()).toBe(true);
+    expect(contextFor("dev-a").blocked).toBe("unreached");
+    expect(document.querySelector("[data-retry-device]")).toBeTruthy();
   });
 
   // Which sentence this is, is the account's question rather than this client's.
@@ -431,6 +480,8 @@ describe("per-device connections", () => {
     devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     await connectEveryDevice();
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
 
     await loseTheLink("dev-a");
 
@@ -442,6 +493,8 @@ describe("per-device connections", () => {
     devices = [online("dev-a", "Laptop")];
     App.devices = devices;
     await connectEveryDevice();
+    devices = [away("dev-a", "Laptop")];
+    App.devices = devices;
 
     await loseTheLink("dev-a");
 

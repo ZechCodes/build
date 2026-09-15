@@ -9,6 +9,7 @@ import { deviceFrozenText, esc } from "./text.js";
 import { deviceAwayText } from "./deviceAway.js";
 import { deviceNameOf } from "./devicePolicy.js";
 import { canAnswer, contextFor, onDeviceStateChanged, routeContext } from "./deviceContexts.js";
+import { connectDevice } from "../connection.js";
 
 /** What this client says about a machine it cannot reach, in the account's name
  *  for it — the one sentence, whether a surface prints it or a refused opener
@@ -39,6 +40,8 @@ const deviceOfflineHtml = (deviceId) => `<div class="empty">${esc(deviceOfflineN
  */
 export function mountDeviceNotice(root, deviceId) {
   root.innerHTML = deviceOfflineHtml(deviceId);
+  const askAgain = retryControl(deviceId);
+  if (askAgain) root.querySelector(".empty").append(" ", askAgain);
   App.viewDispose = onDeviceStateChanged(() => {
     if (canAnswer(routeContext(App.route))) render();
   });
@@ -50,7 +53,7 @@ export function mountDeviceNotice(root, deviceId) {
  *  machine went before its first read landed has nothing but "loading…" over a
  *  frame that never filled, and says the plain thing instead. */
 const awayWords = (deviceId, hasContent) =>
-  hasContent() ? deviceFrozenNotice(deviceId) : deviceOfflineNotice(deviceId);
+  hasContent() && !contextFor(deviceId)?.blocked ? deviceFrozenNotice(deviceId) : deviceOfflineNotice(deviceId);
 
 /**
  * Name the machine over a surface that is open when it goes, and stop naming it
@@ -68,7 +71,8 @@ const awayWords = (deviceId, hasContent) =>
  * itself.
  */
 export function mountDeviceStrip(host, context, { hasContent = () => true } = {}) {
-  const paint = () => nameTheMachine(host, canAnswer(context) ? null : awayWords(context.deviceId, hasContent));
+  const paint = () =>
+    nameTheMachine(host, canAnswer(context) ? null : awayWords(context.deviceId, hasContent), context.deviceId);
   paint();
   const stopListening = onDeviceStateChanged(paint);
   return () => {
@@ -79,7 +83,7 @@ export function mountDeviceStrip(host, context, { hasContent = () => true } = {}
 
 /** One strip or none: the host carries at most one, whatever the account says
  *  and however often it says it. */
-function nameTheMachine(host, words) {
+function nameTheMachine(host, words, deviceId) {
   host.classList.toggle("device-away", Boolean(words));
   const shown = host.querySelector(":scope > .device-strip");
   if (!words) {
@@ -88,5 +92,33 @@ function nameTheMachine(host, words) {
   }
   const strip = shown || host.insertAdjacentElement("afterbegin", document.createElement("div"));
   strip.className = "device-strip";
-  strip.textContent = words;
+  strip.replaceChildren(words);
+  const askAgain = retryControl(deviceId);
+  if (askAgain) strip.append(" ", askAgain);
+}
+
+/**
+ * The one thing a reader can do about a machine nothing could reach: ask again.
+ *
+ * Only a blocked machine has one (spec rule 3). A machine that is merely away
+ * comes back when its bridge does — the presence poll opens it then — and a
+ * button that only waited would be a promise this client cannot keep.
+ */
+function retryControl(deviceId) {
+  if (!contextFor(deviceId)?.blocked) return null;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn mini device-retry";
+  button.dataset.retryDevice = deviceId;
+  button.textContent = "Retry";
+  button.onclick = () => {
+    button.disabled = true;
+    // However it settles, the registry says what became of that machine: a
+    // machine that answered takes its own strip down, and one that could not be
+    // reached again repaints this one with the new reason.
+    connectDevice(deviceId).catch(() => {}).finally(() => {
+      button.disabled = false;
+    });
+  };
+  return button;
 }

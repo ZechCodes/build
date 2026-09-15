@@ -16,6 +16,7 @@ vi.mock("../src/connection.js", () => ({
   syncHome: vi.fn(),
   goOffline: vi.fn(),
   deviceWentAway: vi.fn(),
+  connectDevice: vi.fn(async () => null),
   forgetHomeFollow: vi.fn(),
   forgetSecurityStops: vi.fn(),
   forgetRendezvousSockets: vi.fn(),

@@ -11,12 +11,14 @@ import { $ } from "../dom.js";
 import {
   allDevicesOfflineText,
   deviceUnreachableText,
+  devicesBlockedText,
   devicesNotReachedYetText,
   esc,
   waitingForDeviceText,
 } from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
-import { openDeviceSessions, securityStopText } from "../connection.js";
+import { connectDevice, openDeviceSessions, securityStopText } from "../connection.js";
+import { deviceAwayWord } from "../core/deviceAway.js";
 import { contextFor, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
 import { refreshDevices, paintDevicePicker, stopWatchingPresence, watchPresence } from "../devices.js";
@@ -122,13 +124,24 @@ export function holdAppWhileNoDeviceAnswers() {
  *  every one of them is already being asked for on its own backoff, and the
  *  first to land hands the app straight back. */
 function holdForDevices() {
-  if (holding) return;
+  if (holding && holdIsOnScreen()) {
+    // The screen is up and what the machines say has changed under it: one of
+    // them is blocked now, with a reason on its row and a retry to press (rule
+    // 3). A version gate has no list to repaint and paints nothing.
+    paintWaiting(App.devices);
+    return;
+  }
   holding = true;
   unmountView();
   const behind = gatedContext();
   if (behind) showVersionGate(behind);
   else renderWaiting(App.devices);
 }
+
+/** Whether the screen this hold stands on is still on the page. A hold is only
+ *  as good as what it put there: one whose screen has been taken down leaves a
+ *  page with nothing on it, so it is stood up again rather than trusted. */
+const holdIsOnScreen = () => Boolean($("#waitlist") || gatedDeviceId);
 
 /** A machine answered: the reader gets the route they were standing on back,
  *  with the feed reading that machine again. The hold stopped the feed, so this
@@ -278,17 +291,32 @@ function paintWaiting(devices) {
   if (!list) return;
   const intro = $("#waitintro");
   if (intro) intro.textContent = waitingText(devices);
-  const html = devices
-    .map(
-      (d) => `
-    <div class="projrow"><span class="pname">${esc(d.name)}</span>
-      <span class="ppath mono" style="font-size:11px">${esc(d.fingerprint.slice(0, 16))}…</span>
-      <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${d.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(d.status)}</span></div>`,
-    )
-    .join("");
+  const html = devices.map(waitingRowHtml).join("");
   // This runs every three seconds while the page waits for a device. Until one
   // of them says something new, the list is left exactly as it is.
   if (list.innerHTML !== html) list.innerHTML = html;
+}
+
+/** One machine under the waiting screen's heading: what the account calls it,
+ *  and — for one nothing could reach directly — the reason in a word and the
+ *  one thing a reader can do about it (spec rule 3). A machine that is simply
+ *  offline has nothing to press: it comes back when its bridge does. */
+function waitingRowHtml(device) {
+  const context = contextFor(device.id);
+  const blocked = Boolean(context?.blocked);
+  const word = blocked ? deviceAwayWord(context) : device.status;
+  return `
+    <div class="projrow"><span class="pname">${esc(device.name)}</span>
+      <span class="ppath mono" style="font-size:11px">${esc(device.fingerprint.slice(0, 16))}…</span>
+      <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${device.status === "online" && !blocked ? "var(--green)" : "var(--dim)"}"></span> ${esc(word)}</span>
+      ${blocked ? `<button class="btn mini" type="button" data-retry-device="${esc(device.id)}">Retry</button>` : ""}</div>`;
+}
+
+/** A reader asking one machine again from the screen that is waiting on it. The
+ *  hold hands the app back by itself the moment that machine answers; one that
+ *  could not be reached again wears its new reason here. */
+function retryOneDevice(deviceId) {
+  connectDevice(deviceId).catch(() => paintWaiting(App.devices));
 }
 
 /** Why the page is waiting, one sentence per situation. A machine the account
@@ -303,12 +331,17 @@ function paintWaiting(devices) {
  *  an account of two machines as an account of one — and named whichever of
  *  them this client had reached. */
 const WAITING_TEXT = {
+  blocked: devicesBlockedText,
   unreached: devicesNotReachedYetText,
   lone: (devices) => deviceUnreachableText(devices[0].name, contextFor(devices[0].id)?.offlineSince || Date.now()),
   all: allDevicesOfflineText,
 };
 
 const waitingSituation = (devices) => {
+  // A machine the account still calls online that nothing here could reach
+  // directly is the one situation on this screen with something to press: it is
+  // not offline, and waiting will not fix it (rule 3).
+  if (devices.some((device) => device.status === "online" && contextFor(device.id)?.blocked)) return "blocked";
   const unreached = devices.some((device) => device.status === "online" && !contextFor(device.id));
   if (unreached) return "unreached";
   return devices.length === 1 ? "lone" : "all";
@@ -329,6 +362,10 @@ function renderWaiting(devices) {
       <div class="adderr" id="oerr"></div>
     </div>`;
   paintWaiting(devices);
+  $("#waitlist").onclick = (event) => {
+    const asked = event.target.closest("[data-retry-device]");
+    if (asked) retryOneDevice(asked.dataset.retryDevice);
+  };
   // A machine this client has stopped dialling — its key was not the key this
   // account pinned — is the one thing on this screen that waiting will not fix,
   // so it is said where the screen says what went wrong.

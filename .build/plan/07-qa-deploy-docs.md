@@ -4,57 +4,66 @@ Binding contract: spec "QA and deploy after this plan" and "What stays the same"
 
 ## Context a cold agent needs
 
-- `deploy/compose.real.yml` — services `app`, `relay`, `bridge`, one-shot `qa` (profile
-  `qa`) which runs `web/qa.mjs` / `web/e2e.mjs` / `web/pair.mjs`. `web/client.mjs`
-  :30-40 `awaitDeviceKey` no longer works (stage 02). `web/pair.mjs` is pure HTTP and
-  still works. `web/README.md:17-20, 38-40` describe the relay round trip; `:28-40` tell
-  you to run `bridge/examples/dev_relay.rs`. `deploy/README.md:42, :62` say "peers that
-  cannot hole-punch simply keep working over the relay". `README.md` architecture block
-  and the "second infrastructure party" paragraph; `HANDOFF.md` "Topology (final)" :10-44,
-  "browser↔relay contract" :45-57 (steps 2, 5 change), "Known gaps" :117-128 item 3.
-- `bridge/src/rtc/testing.rs` — the in-process browser-side peer harness
-  (`browser_peer_with` :75). `bridge/tests/rtc_peer.rs` shows how a full negotiation is
-  driven from Rust. `bridge/src/transport.rs` has the client-side session functions
-  (`create_session_init`, `open_session_accept`, `encrypt_frame`, `decrypt_envelope`)
-  used by `interop_python.rs`.
-- `bridge/examples/dev_relay.rs` (184) — the self-contained dev relay + echo device.
-- `.github/workflows/ci.yml` and `.github/changed-tiers.sh` decide which suites run per
-  changed tier; the compose QA is invoked somewhere in there — find it.
+- QA today is `deploy/compose.real.yml:115` → `node pair.mjs && node e2e.mjs && node qa.mjs`,
+  run by CI at `.github/workflows/ci.yml:167-172` when `.github/changed-tiers.sh` says so
+  (`E2E_HARNESS_PATHS` line 28, `RELAY_PATHS` line 27). `web/wire-check.mjs` (9 checks a–i,
+  by hand from the host, header :14-16) and `web/pair-another.mjs` are not in CI.
+  `deploy/compose.two-bridges.yml` + `deploy/README.md` "Two bridges on one account".
+- **Every Node check rides the relay.** `web/client.mjs` waits for `device_key` (:33-37) and
+  runs `session_init`/`session_accept` over the socket (:59-64, :113-118, :204-210); `qa.mjs`
+  (574 lines, ~40 checks) opens `ws://…/ws/client` :39, authenticates :61-80 and runs
+  workspace/fs/git/terminal checks over the relay (`:224` "workspace terminal echoes over the
+  relay"); `e2e.mjs` the same; `wire-check.mjs` uses `openPushSession` from `client.mjs`.
+  After stages 02/03 all of them fail: no `device_key`, and the bridge refuses app RPC over
+  the relay.
+- Node has no built-in WebRTC. Options, in order of preference: `werift` (pure TypeScript
+  WebRTC; supports `createDataChannel(label, {negotiated: true, id})` — verify in its README
+  /types before committing to it), `node-datachannel` (native, prebuilt binaries; also
+  supports negotiated ids). `web/` is dev-only (`web/package.json`), so a dependency is
+  acceptable; it must also install inside the `qa` image (`web/Containerfile` or wherever
+  the compose `qa` service builds from — check `deploy/compose.real.yml` `qa.build`).
+- The SPA's chunker mirror is `spa/src/core/chunk.js` (16 KiB parts, `{"part":{id,index,
+  count},"data"}`); the DataChannel carrier is `spa/src/core/carrier.js:105-171`; the
+  negotiated channels are `app` id 0 and `term` id 1, ordered. Port these into
+  `web/peer.mjs` (small; do not import from `spa/`).
+- Docs to change: `README.md` architecture block + Cloudflare paragraph; `HANDOFF.md`
+  "Topology (final)" :10-44, "browser↔relay contract" :45-57 (rules 5, 6), "Known gaps" :146-
+  (item 3 list), the multi-device section's line about `device_offline` push (:≈427) and
+  follow-on 3 (:430 per-device terminal sockets — still true, reword to "terminal session");
+  `deploy/README.md` :42 and :62 ("keep working over the relay") and the two-bridges
+  section; `planning/v2/WebRTC Transport Spec.md` status line; `planning/v2/roadmap.md` §0
+  broker bullet. `deploy/k8s/relay.yaml` was done in stage 02 — verify.
 
 ## What to build
 
-1. **`bridge/examples/qa_peer.rs`** — a Rust "browser": `POST /api/gateway-token` with a
-   dummy-auth session cookie (see how `web/qa.mjs` :30-80 logs in), `ws /ws/client`,
-   `authenticate`, `GET /api/devices` for the pinned key, `session_init` for an app and a
-   terminal session, `rtc.offer` through the app session with the api's ICE servers (or
-   STUN-only in compose), trickle both ways, open the two negotiated channels, **close
-   the relay socket**, `session.hello` over `app`, `term.create`/`term.attach`/input echo
-   over `term`, and the e2e assertions `web/e2e.mjs` and `web/qa.mjs` make (list them in
-   the file header, port each; drop any that only make sense over the relay). Exit
-   non-zero on the first failure with a one-line reason. Reuse `rtc/testing.rs` where it
-   can be exposed via a `pub` test-support module; do not duplicate the chunker.
-2. **Negative check** in the same binary (`--expect-refusal`): send `session.hello` over
-   the relay carrier and assert the `relay_is_not_a_data_plane` error (stage 03).
-3. **Compose**: the `qa` one-shot builds/runs `qa_peer` (add a `qa` target to
-   `bridge/Containerfile` or run it from the bridge image) after `pair.mjs`; keep
-   `pair.mjs`. Retire `web/qa.mjs`, `web/e2e.mjs`, `web/client.mjs`, `web/terminal.mjs`,
-   `web/feature-check.mjs` from the profile and list them as stale in `web/README.md`
-   beside the three already listed; delete `bridge/examples/dev_relay.rs`'s presence code
-   if stage 02 left any.
-4. **CI**: the tier script runs `qa_peer` where it ran the Node QA; nothing else.
-5. **Docs**: README architecture block (relay = "auth + rendezvous, closes after
-   negotiation"), the Cloudflare paragraph (unchanged facts, plus "TURN is the only path
-   that relays bytes, and it is opt-in by cost"), HANDOFF topology + contract (steps: token
-   → devices → `/ws/client` → mint → `rtc.offer` → channels → socket closed), `deploy/README.md`
-   (both sentences, plus the LAN/Tailscale paragraph from stage 04 if missing),
-   `planning/v2/WebRTC Transport Spec.md` status line → "superseded in part by Strict P2P
-   Transport Spec.md", `planning/v2/roadmap.md` §0 broker bullet gains one sentence.
-6. Run the full compose QA locally (`podman compose -f deploy/compose.real.yml --profile
-   qa run --rm qa`; docker is reachable via `newgrp docker` on this machine if podman is
-   not) and paste the tail of its output into the commit message.
+1. **`web/peer.mjs`**: given an authenticated relay socket and a minted session (from
+   `client.mjs`), negotiate a peer connection as the browser does: fetch ICE servers via
+   `POST /api/rtc/ice-servers` (dummy-auth cookie as `qa.mjs` already does), `rtc.offer
+   {sdp, ice_servers}` → answer, trickle `rtc.ice` both ways, two negotiated channels, chunked
+   envelope carrier with the 8 MiB reassembly cap, `close()`. Export `openPeerSession()` that
+   returns the same `{call, onPush, close}` shape `client.mjs`'s session has, so checks are
+   carrier-agnostic.
+2. **`client.mjs`**: delete the `device_key` wait — take the pinned transport key from
+   `GET /api/devices` — and make `openSession` = mint over the relay → `openPeerSession` →
+   **close the relay socket** → return the peer-backed session. Keep the old relay-backed
+   session under `openRelaySignalingSession` for the negative check only.
+3. **`qa.mjs` / `e2e.mjs` / `wire-check.mjs`**: run every existing check unchanged over the
+   peer session; rename the `:224` check "… echoes over the DataChannel"; add one check in
+   `qa.mjs`: `session.hello` over the relay signaling session is refused with
+   `details.reason === "relay_is_not_a_data_plane"`; add one: the relay socket is closed
+   (`readyState === 3`) while the checks run. `wire-check.mjs` stays by-hand but must pass.
+4. **Compose / CI**: the `qa` image installs the WebRTC dependency; nothing else changes in
+   `ci.yml`. Add the compose STUN-only note: with no `CF_TURN_KEY_*` the api returns STUN
+   only and containers on one compose network connect host/host.
+5. **Docs** as listed, plus `web/README.md` (how the harness connects now).
+6. Run `podman compose -f deploy/compose.real.yml up -d --build` and `--profile qa run --rm qa`
+   locally (docker via `newgrp docker` if podman is absent) and, separately, the two-bridge
+   stack with `pair-another.mjs` then `wire-check.mjs`; paste the tails into the commit
+   message.
 
 ## Done when
 
-Compose QA green over the peer path with the relay socket closed; CI tier script updated;
-every doc sentence that said the relay carries app traffic is gone (`grep -rn "keep working
-over the relay\|stays on the relay" README.md HANDOFF.md deploy planning/v2/Strict*`); commits landed.
+Compose QA green over the peer path with the relay socket closed; `wire-check.mjs` green by
+hand; `grep -rn "keep working over the relay\|stays on the relay\|device_key" README.md
+HANDOFF.md deploy web/*.mjs` returns only historical lines in HANDOFF's dated sections;
+commits landed.

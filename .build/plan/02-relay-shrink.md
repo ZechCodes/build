@@ -44,16 +44,17 @@ and make it obvious in the code that it is a signaling broker. No new message ty
   `device_that_stops_reading...` :548 assert severance by the device socket closing, not
   by a push; `bridge/tests/relay_wss.rs` :105/:150 waits for `transport_key` — remove.
   `bridge/examples/dev_relay.rs` :31, :119-121, :138-149 stores and re-pushes `device_key`
-  — remove. `web/client.mjs` `awaitDeviceKey` breaks; stage 07 retires it, leave it.
+  — remove. `web/client.mjs` (`device_key` wait :33-37) and everything on it (`qa.mjs`,
+  `e2e.mjs`, `wire-check.mjs`) break; stage 07 rewrites them, leave them.
 - Other readers of `MAX_WS_MESSAGE_BYTES`: doc comments at
   `bridge/src/app/conversations/attachments.rs:26` and `bridge/src/gitgui/patches.rs:12`
   — reword ("the DataChannel reassembly cap, `MAX_REASSEMBLED_BYTES`"), and make
   `bridge/src/rtc/chunk.rs`'s `MAX_REASSEMBLED_BYTES` its own `8 * 1024 * 1024` literal if
   it currently aliases the relay constant.
-- Ratchet: `bridge/tests/complexity_ratchet.rs:18` `RATCHETED_FUNCTIONS = 28` and the
-  prose :12-17 ("2 each in the relay binary"). With the fan-out gone, bring `serve_device`
+- Ratchet: `bridge/tests/complexity_ratchet.rs:19` `RATCHETED_FUNCTIONS = 23` and the
+  prose :12-18 ("2 each in the relay binary"). With the fan-out gone, bring `serve_device`
   and `serve_client` under 15 (extract `authenticate_device`, `device_frame`,
-  `client_frame` helpers), delete both annotations, set the constant to 26.
+  `client_frame` helpers), delete both annotations, set the constant to 21.
 - `deploy/k8s/relay.yaml:44` env comment mentions "status reports" — fix; memory limit
   :69-75 → `128Mi`; the `Recreate` comment :9-13 → "in-flight negotiations". Compose
   header comments :5 fine as is.
@@ -68,6 +69,6 @@ Do not touch the SPA or `web/`.
 
 ## Done when
 
-`cargo test` (all relay tests), clippy, fmt green; `RATCHETED_FUNCTIONS == 26` and the
+`cargo test` (all relay tests), clippy, fmt green; `RATCHETED_FUNCTIONS == 21` and the
 ratchet test passes; `grep -rn "device_key\|device_online\|device_offline\|transport_key"
 bridge/src bridge/tests bridge/examples` returns nothing.

@@ -1,87 +1,99 @@
-# Stage 05 — SPA core: the rendezvous seam, one socket for two sessions, no terminal socket
+# Stage 05 — SPA core: the rendezvous seam per device, no terminal socket
 
 Binding contract: spec rules 1, 2, 4, 5, 7 and "SPA after this plan" (`core/rendezvous.js`,
-`core/sessionSwitch.js`, `core/peerLink.js`, `terminal/session.js`). This stage is the
-core modules and their Vitest suites only; `connection.js`, the blocked UI and presence
-polling are stage 06. Keep `connection.js` compiling against the new modules with the
-smallest possible adapter and leave the policy change to stage 06.
+`core/sessionSwitch.js`, `core/peerLink.js`, `terminal/session.js`). This stage is the core
+modules and their Vitest suites; `connection.js`, presence polling and the blocked
+vocabulary are stage 06. Keep `connection.js` compiling against the new modules with the
+smallest adapter and leave the policy change to stage 06.
 
 ## Context a cold agent needs
 
-- `spa/src/core/relayLink.js` (250 lines): `createRelayLink` :48-65 options, state :74-82
-  (`session` outlives sockets), `lost` :94-106 backoff, `connect` :109-215 (token :120,
-  socket :121, `relayInbox` observer :125-128 handles `device_key`/`device_offline`, waits
-  for `device_key` :144-150 — **gone after stage 02, the relay no longer sends it**; pinned
-  key check :154-160; re-attach :162-163; `session_init` :164-177; `session_accept` :181-188;
-  carrier hand-over :194-197; tail `device_offline` :200-202), API :217-249. Two eslint
-  complexity ratchets at :47 and :108. `relayInbox.js` :15-63 is reusable as-is.
-- `spa/src/core/session.js` :239-264 wires `createRelayLink` into `createSessionSwitch`
-  (`carrying`, `onSession` → fresh `createSessionRpc`, `onRelay`); facade :273-304 (`call`
-  consults `wireFor` :286, signaling bypasses the offline pause :284).
-- `spa/src/core/sessionSwitch.js`: `carrying = peer ?? relay` :10, `isSignaling` :15,
-  `wireFor` :72-76 (signaling waits for the relay), `close` :78-84.
-- `spa/src/core/carrier.js`: `relayCarrier` :59-74 reads `e2ee_envelope` off a socket for
-  one `sessionId`; `channelCarrier` :76-142.
-- `spa/src/core/peerLink.js`: `openPeerLink` :37-94, `offer` :97-102, `bothOpen` :108-136,
-  `watchForFailure` :139-147, `restart` :151-154.
-- `spa/src/terminal/session.js` (628): constructor :85-132 builds its **own**
-  `createSessionSwitch` :106-113 and `createRelayLink` :117-131; `peer` :141-143; `start`
-  :147-150; `_openSession` :415-427; `_relayChanged` :441-456; `_reattachAll` :464-489;
-  `_watchLiveness` :591-610; `_reportLost` :622-627. `spa/src/terminal/manager.js` :34-57
-  constructs it with `RELAY_URL` etc.
-- Tests that encode the old contract (rewrite, don't delete coverage):
-  `spa/test/relayLink.test.js` (presence at :224; device_key wait throughout),
-  `sessionSwitch.test.js` (:108 signaling→relay, :117 waits for relay),
-  `session.test.js` `:382-` "rides two carriers" (:409, :429, :518, :557),
-  `terminalCarrier.test.js` (whole file assumes the terminal's own socket),
-  `terminal.test.js` handshake suites :134-948, `terminalManager.test.js`,
-  `peerLink.test.js`, `carrier.test.js`. `spa/test/complexityRatchet.test.js:24`
-  `RATCHETED_FUNCTIONS = 70`.
-- Rules: eslint complexity 10, no new ratchet; Vitest first; `npm run lint && npm test
-  && npm run build`; semgrep + gitleaks before commit; commit per module.
+The SPA is multi-device: one context per paired device (`core/deviceContexts.js`, shape
+:58-91 — `deviceId, session, call, rpc, cacheScope, chatRepository, adapter, apiVersion,
+offline, offlineSince, peerLink, reconnect`), one `openRelaySession` — hence one relay
+socket — per online device (`connection.js:43-77` `relayDial`/`openDeviceSession`), plus one
+terminal socket for the tab (`terminal/manager.js:16,61-83`) and a transient one for the
+device settings page (`connection.js:82-89`). Read `HANDOFF.md` "2026-09-14 — Multi-device"
+(:287-438) first.
+
+- `spa/src/core/relayLink.js` (257): `createRelayLink` :48; `connect` :110-221 (token, socket,
+  `relayInbox` observer forwarding `device_key`/`device_offline` :126-129, **wait for
+  `device_key`** :145-151 — the relay no longer sends it after stage 02, pinned key :155-165,
+  re-attach rule :167-174, `session_init` :169-183, accept-or-`device_offline` :187-193,
+  carrier :194-199); `lost` backoff :93-107; API :223-255. Ratchets :48 and :109.
+  `relayInbox.js` is reusable.
+- `spa/src/core/session.js` (188): `openRelaySession` :56-187 composes switch :87-94,
+  relayLink :96-121 (`onSession` mints `createSessionRpc` :109-119), `rawCall` :138-147
+  (pause check skips signaling; `wireFor`), interface :149-186 (`deviceId, call,
+  installAdapter, adapter, onPush, peer, onCarrier, close`).
+- `spa/src/core/sessionSwitch.js` (87): `carrying = peer ?? relay` :10, `isSignaling` :15,
+  `relay()` :44-54, `peer()` :55-59, `wireFor` :72-76 (signaling waits for the relay),
+  `close` :78-84.
+- `spa/src/core/carrier.js` (172): `openCarrier` :27-29, `relayCarrier` :88-103,
+  `channelCarrier` :105-171. `spa/src/core/peerLink.js` (155): `openPeerLink` :37-94,
+  `offer` :97-102, `bothOpen` :108-136, `watchForFailure` :139-147, `restart` :151-154.
+- `spa/src/terminal/session.js` (641): own switch :112-119 and own relayLink :123-138;
+  `peer` :148-150; `simulateDrop` :413-414; `_relayChanged` :453-468; `_reattachAll`
+  :476-501; `_watchLiveness` :603-622. `terminal/manager.js` (136): `terminalDeviceId`
+  :49-52, `terminalManager` :61-83, `terminalsRideOn` :96-99, `retargetTerminals` :112-117,
+  `followTerminalDevice` :130-135 (hands over `contextFor(id)?.peerLink?.term`).
+- Tests encoding the old contract (rewrite, keep coverage): `relayLink.test.js` (:156 re-attach,
+  :227 presence of every device, :244), `session.test.js` (:254 waits for device_key, :297,
+  :388, :492-700 two-carrier block: :519, :539, :628, :667), `sessionSwitch.test.js` (:108, :117),
+  `terminalCarrier.test.js` (whole file: relay + channel), `terminal.test.js` handshake
+  suites, `terminalManager.test.js` (:105 drop socket once, :172/:184 hand-over),
+  `peerLink.test.js`, `carrier.test.js`. Shared fake: `test/deviceSessionFixture.js`
+  (`fakeSession` = `{deviceId, call, close, peer, onCarrier, onPush}` — keep that shape).
+  `spa/test/complexityRatchet.test.js:46` `RATCHETED_FUNCTIONS = 61`.
+  `spa/test/noCurrentDevice.test.js` bans the retired singletons — do not reintroduce any.
+- Rules: eslint complexity 10, no new ratchet; Vitest first; `npm run lint && npm test &&
+  npm run build`; semgrep + gitleaks before commit; commit per module.
 
 ## What to build
 
-1. **`core/rendezvous.js`** — `createRelayRendezvous({relayUrl, transport, WebSocketImpl,
-   fetchToken, getPinnedDeviceKey, openTimeoutMs, acceptTimeoutMs})` returning the
-   `Rendezvous` interface: `open()` (token → socket → `authenticate`; idempotent while
-   open), `mint({deviceId, sessionId?, sessionKeyB64?})` → `{sessionId, sessionKeyB64,
-   deviceId, carrier}` (pinned key from the api via `getPinnedDeviceKey`, **no wait for
-   `device_key`**; `session_init` with `route_to`; `session_accept` or timeout
-   "device did not answer"; a re-attach passes the existing id+key), `signalCarrier(sessionId)`
-   → the relay `Carrier` for that session (from `carrier.js` `relayCarrier`, one per
-   session on the shared socket), `close()` (closes the socket; every carrier ends),
-   `isOpen()`. No automatic reconnect loop: a socket that drops mid-negotiation rejects
-   the in-flight `mint`/signal and the caller decides. Both relayLink ratchets retire with
-   `relayLink.js` deleted; `RATCHETED_FUNCTIONS` 70 → 68 in the same commit.
-2. **`core/sessionSwitch.js`** — the peer slot is the only active carrier
-   (`carrying = peer`); `relay(carrier)` becomes `signaling(carrier)`; `wireFor(method)`:
-   `rtc.*` → the signaling carrier, else the peer carrier, else a **pending promise**
-   queued until `peer(carrier)` (resolve) or `fail(error)` (reject all). `onIdle` fires when
-   the peer carrier leaves. Update the tests to the new rules.
-3. **`core/session.js`** — `openRelaySession` → `openSession({rendezvous, deviceId, ...})`:
-   `mint` → `createSessionRpc` → switch; expose `reattachSignaling()` which re-mints over
-   a freshly opened rendezvous with the same id+key and hands `signalCarrier` to the
-   switch; expose `fail(error)`. `call` keeps bypassing the offline pause for signaling.
-4. **`core/peerLink.js`** — `openPeerLink({signal, fetchIceServers, onPush, onConnected,
-   onFailed, ...})`: `onConnected()` after `bothOpen` and after every successful restart;
-   on `connectionState === "failed"`, `await onFailed()` (the caller reopens the
-   rendezvous) then `restart`. Unchanged otherwise.
-5. **`terminal/session.js`** — `TerminalSocket` is constructed with `{session}` (the minted
-   terminal session from `openSession`) instead of a URL; delete its `createRelayLink`,
-   `_relayChanged`, `dropSocket`/`simulateDrop`; `peer(carrier)` is the only way it gets a
-   wire; `_reattachAll` on `onActive`; `_reportLost` on `onIdle`; `whenConnected` resolves
-   on the first `onActive`. `terminal/manager.js` gets `adoptTerminalSession(session)` and
-   `terminalsRideOn(carrier)`; `retargetTerminals` becomes "adopt the new device's
-   terminal session".
-6. Tests: rewrite the suites named above to the new contract, keeping every behaviour
-   that still exists (pinned-key mismatch refused, accept timeout, re-attach reuses id+key,
-   chunked channel frames, liveness ping closes the channel, `_reattachAll` forgets reaped
-   terminals, …) and adding: a mint of two sessions on one socket, `close()` ends both
-   carriers, `wireFor` queues before the peer arrives and rejects on `fail`.
+1. **`core/rendezvous.js`** — `createRelayRendezvous({deviceId, relayUrl, transport,
+   WebSocketImpl, fetchToken, getPinnedDeviceKey, openTimeoutMs, acceptTimeoutMs})` →
+   `{ open(), mint({sessionId?, sessionKeyB64?}), signalCarrier(sessionId), close(),
+   isOpen(), onClosed(fn) }`. `open()` = token → socket → `authenticate` (idempotent while
+   open; a `mint`/`signalCarrier` on a closed rendezvous calls it). `mint` seals to the
+   api-pinned key (**no `device_key` wait**), sends `session_init` with `route_to`, resolves
+   on `session_accept` or rejects on timeout ("device did not answer") — a re-attach
+   passes the existing id+key. `signalCarrier` is a `relayCarrier` for that session on
+   the shared socket. No background reconnect: a socket that drops mid-negotiation
+   rejects what was in flight and `onClosed` fires; the caller decides. Delete
+   `relayLink.js`; retire both ratchets; `RATCHETED_FUNCTIONS` 61 → 59 in the same commit.
+2. **`core/sessionSwitch.js`** — the peer slot is the only active carrier (`carrying =
+   peer`); `relay(carrier)` becomes `signaling(carrier)`; `wireFor(method)`: `rtc.*` → the
+   signaling carrier, else the peer carrier, else a pending promise queued until
+   `peer(carrier)` (resolve) or `fail(error)` (reject all). `onIdle` fires when the peer
+   leaves. Rewrite `sessionSwitch.test.js` to the new rules.
+3. **`core/session.js`** — `openRelaySession` → `openSession({rendezvous, deviceId, isPaused,
+   onLost, onPush, ...})`: `mint` → `createSessionRpc` → switch, with the same returned
+   interface plus `reattachSignaling()` (re-mint over the rendezvous with the same id+key
+   and hand `signalCarrier` to the switch) and `fail(error)`. `call` keeps bypassing the
+   pause for signaling. `onLost` is no longer driven by the relay socket — only by
+   `onIdle` (peer gone) — because the relay is not a carrier.
+4. **`core/peerLink.js`** — `openPeerLink({..., onConnected, onFailed})`: `onConnected()` after
+   `bothOpen` and after every successful restart; on `failed`, `await onFailed()` (caller
+   reopens the rendezvous and re-attaches signaling) then `restart`. Unchanged otherwise.
+5. **`terminal/session.js`** — `TerminalSocket` no longer builds a relay link. It is given a
+   session by `adoptTerminalSession(session)` (a session minted through the followed
+   device's rendezvous by stage 06's `followTerminalDevice`) and a wire by `peer(carrier)`;
+   `_reattachAll` on `onActive`, `_reportLost` on `onIdle`, `whenConnected` resolves on the
+   first `onActive`; delete `_relayChanged`, `dropSocket`, `simulateDrop`. `manager.js`:
+   `retargetTerminals(wanted)` becomes "adopt `wanted`'s terminal session" (stage 06 supplies
+   the mint; here accept an injected `mintTerminalSession(deviceId)` and keep the current
+   follow rules :112-135 — route device if opened here, else home; never onto a device that
+   `!canAnswer`).
+6. Tests: rewrite the suites above to the new contract and add: mint of two sessions on
+   one rendezvous; `close()` ends every signaling carrier; a mint on a closed rendezvous
+   reopens it; `wireFor` queues before the peer arrives and rejects on `fail`; the terminal
+   socket re-attaches when handed a session + carrier and reports lost when the carrier
+   goes, with no relay involved.
 
 ## Done when
 
 `npm run lint && npm test && npm run build` green; `relayLink.js` gone;
 `grep -rn "device_key\|device_offline\|device_online" spa/src` empty except
-`connection.js`/`devices.js` (stage 06); commits landed.
+`connection.js`/`devices.js` (stage 06); no `RETIRED` name from `noCurrentDevice.test.js`
+reappears; commits landed.

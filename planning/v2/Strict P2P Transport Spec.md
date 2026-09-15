@@ -29,30 +29,38 @@ Stated once each. Every stage's review checks them.
    carries are the relay's own control frames, `session_init` / `session_accept`, and
    E2EE envelopes whose inner method is `rtc.*`. The bridge **enforces** this: a data
    frame arriving on a `Relay` carrier whose method is not `rtc.*` is refused with an
-   error reply (`relay_is_not_a_data_plane`) and logged; it is never dispatched. The SPA
+   error reply and logged; it is never dispatched. The reply uses the closed
+   `ApiError` set of `Bridge Wire Protocol Spec.md` (extending it is a major bump):
+   `error_code: "unavailable"`, `retryable: false`, `details: {reason:
+   "relay_is_not_a_data_plane"}`, `error: "the relay is not a data plane"`. The SPA
    never sends one. A relay frame is capped at **64 KiB**.
 2. **The browser is live only over the DataChannels.** `App.call` and every terminal
    RPC ride the `app` / `term` channels. Nothing is dispatched to the user's surfaces
    before both channels are open; `session.hello` and `_reattachAll` run over the
    channels. There is no relay-carried "live the moment `session_accept` arrives".
-3. **Fail closed.** If the peer connection cannot be established — no
-   `RTCPeerConnection`, ICE servers unavailable, the offer refused, channels not open
-   within the deadline, connection `failed` — the app enters an explicit **blocked**
-   state (`App.blocked = {reason}`): a full-width banner naming the reason, a Retry
-   action, composer and calls gated exactly as `App.offline` gates them. The relay
-   session is closed. No silent fallback, no retry loop; Retry is a user action or a
-   device switch.
+3. **Fail closed, per device.** If a device's peer connection cannot be established —
+   no `RTCPeerConnection`, ICE servers unavailable, the offer refused, channels not
+   open within the deadline, connection `failed` — that device's context goes
+   **blocked**: `setContextOffline(deviceId, blockedMark(reason))` using the existing
+   per-device away vocabulary (`core/deviceAway.js`), so its rows grey, its surfaces show
+   the device strip with the reason, and `canAnswer` refuses its calls. Its relay
+   session is closed. The account-wide waiting screen appears only when no device is
+   live, exactly as today. No silent fallback, no retry loop: a Retry action on the
+   device strip / waiting screen, or the presence poll seeing the device come back,
+   runs the connect sequence again.
 4. **The relay socket is a rendezvous, not a connection.** The browser opens it to
    mint sessions and negotiate, and **closes it once both channels are open**. It
    reopens it on demand — a fresh gateway token, `session_init` re-attach with the same
    session id and key, then `rtc.offer {iceRestart:true}` — when the connection reports
    `failed`, and closes it again once `connected`. The bridge's device socket stays
    persistent (the bridge is behind NAT; the relay is how it is found).
-5. **One relay socket, two sessions.** The app session and the terminal session are
-   both minted over the same relay socket (the relay already routes N sessions per
-   client socket). The terminal session never has its own socket; after mint it rides
-   only the `term` channel. The two sessions keep separate keys, so the bridge's
-   per-session state (terminal attachments, `term.ack` budgets) is unchanged.
+5. **One rendezvous per device, no terminal socket.** Each device context owns one
+   rendezvous (relay socket) that mints that device's app session and, when the
+   terminals follow that device, its terminal session — the relay already routes N
+   sessions per client socket. The terminal session never has its own socket; after
+   mint it rides only that device's `term` channel. A mint on a closed rendezvous
+   reopens it (fresh token, re-attach) and it closes again once nothing is negotiating.
+   Sessions keep separate keys, so the bridge's per-session state is unchanged.
 6. **Presence is the api's.** The bridge posts a device-signed heartbeat to
    `POST /api/devices/heartbeat` every 30 s; the api derives `status` at read time
    (`online` iff `last_seen_at` is within 90 s, else `offline`; `pending` before
@@ -60,7 +68,10 @@ Stated once each. Every stage's review checks them.
    `transport_key`, and no longer pushes `device_key` / `device_online` /
    `device_offline`. The SPA reads presence from `GET /api/devices` and polls it (3 s
    on the gate as today, 15 s while the app is open, immediately on `visibilitychange`).
-   The transport key the SPA seals to is the api-pinned one — it already is.
+   The poll is also how a late device joins (`openDeviceSessions()` after each refresh)
+   and how a device is marked away when its bridge is gone (`status !== "online"`); a
+   live peer connection failing is the other, faster signal. The transport key the SPA
+   seals to is the api-pinned one — it already is.
 7. **Rendezvous is a seam.** In the SPA, everything that talks to the relay sits behind
    one `Rendezvous` interface: `{ open(deviceId) → {mint(sessionInitFor), signal, onPush,
    close}, ... }`, implemented today by `relayRendezvous`. In the bridge, `session_init`
@@ -106,31 +117,36 @@ gone; their two ratchet annotations are retired (`RATCHETED_FUNCTIONS` 28 → 26
 ## SPA after this plan
 
 - `core/rendezvous.js` — the `Rendezvous` interface and `relayRendezvous(...)`: one
-  socket, `authenticate`, `mint(session_init)` → `session_accept` for any number of
-  sessions, `signal(method, params)` over a session, `close()`. Replaces
-  `relayLink.js`'s socket ownership; the backoff/re-attach logic moves here and is
-  used only while a negotiation is in flight. Both `createRelayLink` ratchets retire
-  (`RATCHETED_FUNCTIONS` 70 → 68) or the doc says why not.
+  socket per device context, `authenticate`, `mint(session_init)` → `session_accept`
+  for any number of sessions, a signaling carrier per session, `close()`, reopen on
+  the next `mint`/signal. Replaces `relayLink.js`'s socket ownership; there is no
+  background reconnect loop — the relay is only open while something is negotiating.
+  Both `createRelayLink` ratchets retire (`RATCHETED_FUNCTIONS` 61 → 59) or the doc
+  says why not.
 - `core/sessionSwitch.js` — `wireFor(method)`: `rtc.*` → rendezvous (opening it if
   closed), everything else → the peer carrier or a **pending queue** while the upgrade
   is in flight; the queue is failed with `BlockedError` when the upgrade fails.
   `carrying = peer` — the relay is never the active carrier.
 - `core/peerLink.js` — unchanged negotiation; gains `onConnected` (for closing the
   rendezvous) and `onFailed` (for reopening it); `restart` asks the rendezvous to open.
-- `connection.js` — `openAppSession` becomes: open rendezvous → mint app + terminal
-  sessions → `openPeerLink` → hello + terminal re-attach over the channels →
-  `rendezvous.close()` → live. Any throw → `enterBlocked(reason)`. `goOffline` is
-  reserved for a live peer connection that ends (channel close without a successful
-  ICE restart); it drops to blocked with reason `connection lost`, and Retry runs the
-  sequence again.
+- `connection.js` — per device, `connectDevice(deviceId)` becomes: open that device's
+  rendezvous → mint the app session → `openPeerLink` → `session.hello` over `app` →
+  `rendezvous.close()` → `landSession`. Any throw → the device is blocked (rule 3).
+  `goOffline(deviceId)` is reserved for a live peer connection that ends (channel close
+  without a successful ICE restart) and blocks the device with reason `lost`. The
+  terminals' device gets its terminal session minted through that device's rendezvous
+  when `followTerminalDevice` lands on it, re-attached over its `term` channel.
 - `terminal/manager.js` / `terminal/session.js` — `TerminalSocket` no longer creates a
-  relay link; it is constructed with the terminal session minted by `connection.js`
-  and a `peer(carrier)` setter; `_reattachAll` runs on `onActive`.
+  relay link; `followTerminalDevice()` hands it a terminal session minted through the
+  followed device's rendezvous plus that device's `term` carrier; `_reattachAll` runs
+  on `onActive`. (Per-device terminal sessions remain the follow-on HANDOFF lists.)
 - `devices.js` — presence from `GET /api/devices` only; `markDeviceOnline/Offline`
-  deleted; a `watchPresence()` poller owned by `connection.js`.
-- Blocked UI: `#blockbar` beside `#offbar`, text from `core/text.js`
-  `blockedBannerText(reason)`, reasons: `no-webrtc`, `ice-servers`, `refused`,
-  `timeout`, `failed`, `lost`.
+  deleted; `watchPresence()` polls, and each refresh calls `openDeviceSessions()` for
+  newly online devices and blocks contexts whose device is no longer online.
+- Blocked vocabulary: `core/deviceAway.js` gains `blockedMark(reason)` /
+  `blockedText(reason)` for reasons `no-webrtc`, `ice-servers`, `refused`, `timeout`,
+  `failed`, `lost`; the device strip and the waiting screen show it with a Retry
+  control. No new account-wide banner.
 
 ## Bridge after this plan
 
@@ -162,12 +178,12 @@ gone; their two ratchet annotations are retired (`RATCHETED_FUNCTIONS` 28 → 26
 
 ## QA and deploy after this plan
 
-- `deploy/compose.real.yml` QA runs a Rust peer client (`bridge/examples/qa_peer.rs`,
-  built on `rtc/testing.rs`'s browser-side harness) that authenticates to the real
-  relay with a gateway token, mints a session, negotiates DataChannels through the
-  relay, and runs the e2e assertions over the channels. `web/qa.mjs` / `web/e2e.mjs`
-  are retired from the compose profile and marked stale in `web/README.md` beside the
-  three already listed.
+- The Node harnesses (`web/client.mjs`, `web/qa.mjs`, `web/e2e.mjs`,
+  `web/wire-check.mjs`) gain a WebRTC path: `client.mjs` negotiates the two negotiated
+  DataChannels through the relay with a Node WebRTC implementation (`werift`, pure JS,
+  preferred; `node-datachannel` if `werift` cannot do negotiated channels), closes the
+  relay socket, and runs every existing check over the channels. One new check asserts
+  the relay refusal of rule 1. `web/` is dev-only, so the npm dependency is acceptable.
 - `deploy/k8s/relay.yaml`: memory limit 128Mi, the presence comment rewritten; the
   `Recreate` rationale becomes "in-flight negotiations, not held connections".
 - README / HANDOFF / `deploy/README.md`: the "peers that cannot hole-punch simply keep

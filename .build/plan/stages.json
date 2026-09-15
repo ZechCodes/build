@@ -9,7 +9,7 @@
     "id": "relay-shrink",
     "title": "Shrink the relay to rendezvous",
     "path": ".build/plan/02-relay-shrink.md",
-    "summary": "Delete device_key/device_online/device_offline fan-out, transport_key, and the status POST from the relay and the bridge relay client; frame cap 64 KiB, queue 1 MiB; serve_device/serve_client under the clippy threshold with both ratchets retired; relay tests, dev_relay example and k8s yaml updated."
+    "summary": "Delete device_key/device_online/device_offline fan-out, transport_key, and the status POST from the relay and the bridge relay client; frame cap 64 KiB, queue 1 MiB; serve_device/serve_client under the clippy threshold with both ratchets retired (23\u219221); relay tests, dev_relay example and k8s yaml updated."
   },
   {
     "id": "bridge-strict",
@@ -25,20 +25,20 @@
   },
   {
     "id": "spa-rendezvous",
-    "title": "SPA core: the rendezvous seam, one socket for two sessions, no terminal socket",
+    "title": "SPA core: the rendezvous seam per device, no terminal socket",
     "path": ".build/plan/05-spa-rendezvous.md",
-    "summary": "core/rendezvous.js replaces relayLink.js (both ratchets retired): one socket mints the app and terminal sessions with no device_key wait; sessionSwitch makes the peer the only active carrier and queues calls until it arrives; peerLink gains onConnected/onFailed; TerminalSocket is built from a minted session and rides only the term channel."
+    "summary": "core/rendezvous.js replaces relayLink.js (both ratchets retired, 61\u219259): one rendezvous per device context mints its sessions with no device_key wait and no background reconnect; sessionSwitch makes the peer the only active carrier and queues calls until it arrives; peerLink gains onConnected/onFailed; TerminalSocket is handed a minted session and a term carrier and never owns a socket."
   },
   {
     "id": "spa-strict-policy",
-    "title": "SPA policy: live only over channels, fail closed, presence from the api",
+    "title": "SPA policy: live only over channels, fail closed per device, presence from the api",
     "path": ".build/plan/06-spa-strict-policy.md",
-    "summary": "connection.js opens rendezvous → mints both sessions → negotiates → closes the socket → live; any failure enters an explicit blocked state with a Retry banner and no relay RPC; presence polls GET /api/devices; device settings sessions ride a channel too; browser pass with Build/spa:verify."
+    "summary": "Per device: rendezvous \u2192 mint \u2192 negotiate \u2192 close the socket \u2192 land; any failure blocks that device with a reason in the existing away vocabulary and a Retry control, the account-wide hold only when none is live; presence and late-device join come from a 15 s GET /api/devices poll; terminals follow a device by minting through its rendezvous; the device-settings socket is retired; browser pass on the two-bridge stack."
   },
   {
     "id": "qa-deploy-docs",
     "title": "QA over the peer path, deploy, docs",
     "path": ".build/plan/07-qa-deploy-docs.md",
-    "summary": "A Rust qa_peer example replaces the Node relay-path QA in compose and CI (negotiates through the relay, closes the socket, asserts over the channels, and checks the relay refusal); README, HANDOFF, deploy docs and the older WebRTC spec updated."
+    "summary": "The Node harnesses gain a WebRTC path (werift or node-datachannel): client.mjs mints over the relay, negotiates the two channels, closes the socket, and every existing qa/e2e/wire-check check runs over the DataChannel, plus a relay-refusal check; README, HANDOFF, deploy docs and the older WebRTC spec updated."
   }
 ]

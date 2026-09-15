@@ -19,11 +19,15 @@ client's private control channel — the shape a future direct-network listener 
   returns the accept envelope; `admit` :380-398; `SessionSender::push` :135-155.
   `OutboundEnvelope` is a newtype over one E2EE `Envelope`; the relay writer wraps it as
   `e2ee_envelope` (`relay.rs:353-362`) and a channel writes it raw (`rtc.rs:654-668`).
-- `bridge/src/carrier/dispatch.rs` — `dispatch_frame` reads `method` at `app/rpc.rs:64-76`
-  and matches `"rtc.offer" | "rtc.ice" | "rtc.close"` at :86-88 and `"session.hello"` :81.
-  Find where the carrier kind is available to the dispatcher (`admit` returns the sender
-  built from `carrier.out`; the `CarrierHandle` is in scope at every `intake.accept` call:
-  `relay.rs:311-320`, `rtc.rs:712-730`).
+- **The carrier kind never reaches the dispatcher.** `Dispatcher::dispatch(sender, frame)`
+  (`carrier/dispatch.rs:302`) gets only `(SessionSender, Frame)`; `CarrierKind` is private
+  to `carrier.rs`. The one place holding both the decrypted `Frame` and `&CarrierHandle`
+  before dispatch is `FrameIntake::accept` (`carrier.rs:527-539`: `admit` :532, the close
+  check :533, dispatch :537). Put rule 1's check there, after the close check. The verb
+  table is `app/rpc.rs:111` (`session.hello`) and :117-119 (`rtc.*`). The error reply
+  shape is `Bridge Wire Protocol Spec.md` :420-437 (`ApiError` closed enum; use
+  `unavailable` with `details.reason = "relay_is_not_a_data_plane"`, `retryable: false`) —
+  find how `rpc.rs` builds an error reply and reuse it; a reply needs the frame's `id`.
 - `bridge/src/transport_ledger.rs:33-48` `TransportEvent::FellBack` and `render` :76-;
   `note_carrier_left` in `carrier.rs:325-329` records it; `bridge/src/transport_report.rs`
   maps events to wire strings (`"fell_back"`); the api side
@@ -47,8 +51,8 @@ client's private control channel — the shape a future direct-network listener 
    an init over a `Channel` carrier yields the accept on that carrier's outbound.
 2. **Rule 1 enforcement.** In the dispatcher, before routing: if the frame arrived on
    `CarrierKind::Relay` and `method` does not start with `rtc.`, reply with the standard
-   error shape (`{"id", "error": {"code": "relay_is_not_a_data_plane", "message": ...}}` —
-   match what `unknown method` returns at `rpc.rs:464`) and `tracing::warn!` once per
+   error shape from the wire spec (`error_code: "unavailable"`, `retryable: false`,
+   `details: {reason: "relay_is_not_a_data_plane"}`, `error` string) and `tracing::warn!` once per
    session (a `HashSet<session_id>` on the intake, cleared on session end). Do not
    dispatch. Tests: a `session.hello` over the relay carrier is refused; `rtc.offer` over
    the relay is dispatched; `session.hello` over a channel is dispatched; the closing

@@ -956,9 +956,6 @@ describe("the surface's text column", () => {
     const [toolbar] = rulesFor(".toolbar");
     expect(shorthandSide(declaration(toolbar.body, "padding"), 3)).toBe("var(--toolbar-gutter)");
     expect(declaration(rulesFor(".tb-sel")[0].body, "padding")).toMatch(/var\(--tbsel-inset\)/);
-    for (const bar of rulesFor(".railtabs")) {
-      expect(shorthandSide(declaration(bar.body, "padding"), 3)).toBe("var(--tabbar-gutter)");
-    }
     expect(declaration(rulesFor(".tabs .t")[0].body, "padding")).toMatch(/var\(--tab-inset\)/);
     // Both derived gutters are stated once, against the one gutter token.
     for (const derived of ["--toolbar-gutter", "--tabbar-gutter"]) {

@@ -176,8 +176,21 @@ describe("createRelayRendezvous", () => {
     stood.rendezvous.close();
   });
 
+  // Rule 5's multiplexing: several sessions negotiate on the one socket, and
+  // the accept the relay forwards is routed by the id it routed by. What a mint
+  // returns is its own closure's, so it says nothing about which answer settled
+  // it — the envelope each session UNSEALED is what pins the routing, and a
+  // swapped one is a device's sealed reply opened under another session's key.
   it("takes each session_accept to the mint that is waiting for it", async () => {
-    const stood = stand();
+    const opened = [];
+    const stood = stand({
+      transport: {
+        ...fakeTransport,
+        openSessionAccept: async ({ sessionKeyB64, envelope }) => {
+          opened.push({ sessionKeyB64, envelope });
+        },
+      },
+    });
     const app = stood.rendezvous.mint({});
     app.catch(() => {});
     await tick();
@@ -189,12 +202,18 @@ describe("createRelayRendezvous", () => {
     await tick();
     const [first, second] = ws.all("session_init");
 
-    // Out of order, as two devices' answers may well arrive.
-    ws.serverSend({ type: "session_accept", session_id: second.session_id, envelope: {} });
-    ws.serverSend({ type: "session_accept", session_id: first.session_id, envelope: {} });
+    // Out of order, as two devices' answers may well arrive, each envelope
+    // naming the session it answers.
+    ws.serverSend({ type: "session_accept", session_id: second.session_id, envelope: { for: second.session_id } });
+    ws.serverSend({ type: "session_accept", session_id: first.session_id, envelope: { for: first.session_id } });
 
     expect((await app).sessionId).toBe(first.session_id);
     expect((await term).sessionId).toBe(second.session_id);
+
+    const openedWith = new Map(opened.map(({ sessionKeyB64, envelope }) => [sessionKeyB64, envelope.for]));
+    expect(openedWith.size).toBe(2);
+    expect(openedWith.get(`key-${first.session_id}`)).toBe(first.session_id);
+    expect(openedWith.get(`key-${second.session_id}`)).toBe(second.session_id);
     stood.rendezvous.close();
   });
 

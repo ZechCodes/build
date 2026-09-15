@@ -91,6 +91,24 @@ describe("the directory rail", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  // A press changes the route, and the surface answers by painting the rail
+  // again for the new face. That paint rewrites the cells, so the one the
+  // keyboard was standing on is gone; the keyboard has to be handed the cell
+  // that took its place, or the second arrow lands on nothing (measured in the
+  // browser: ArrowDown worked once, ArrowUp then did nothing).
+  it("keeps the keyboard on the rail when a press repaints it", () => {
+    const host = document.createElement("nav");
+    document.body.appendChild(host);
+    const onSelect = vi.fn((tab) => paintDirectoryRail(host, { active: tab, onSelect }));
+    paintDirectoryRail(host, { active: "changes", onSelect });
+    host.querySelector("[data-tab=changes]").focus();
+    press(document.activeElement, "ArrowDown");
+    expect(document.activeElement).toBe(host.querySelector("[data-tab=files]"));
+    press(document.activeElement, "ArrowUp");
+    expect(onSelect).toHaveBeenLastCalledWith("changes");
+    expect(document.activeElement).toBe(host.querySelector("[data-tab=changes]"));
+  });
+
   it("repaints in place, with only the faces the directory has", () => {
     const { host, onSelect } = mount();
     paintDirectoryRail(host, { tabs: DIRECTORY_TABS.filter((tab) => tab.id === "files"), active: "files", onSelect });

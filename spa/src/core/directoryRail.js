@@ -55,7 +55,11 @@ export function directoryRailHtml(tabs, active) {
 export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect }) {
   host.setAttribute("role", "tablist");
   host.setAttribute("aria-orientation", "vertical");
+  // A paint answering a press rewrites the cell the keyboard stands on; the
+  // keyboard is handed the active cell that replaces it, or it lands on nothing.
+  const keyboardHere = host.contains(document.activeElement);
   host.innerHTML = directoryRailHtml(tabs, active);
+  if (keyboardHere) host.querySelector("[aria-selected='true']")?.focus();
   const cells = () => [...host.querySelectorAll("[data-tab]")];
   const openAt = (cell) => {
     cell.focus();

@@ -156,9 +156,12 @@ describe("the shell's grid", () => {
     expect(rail).not.toMatch(/margin-top/);
     expect(shellCss).toMatch(/body:not\(\.inbox-collapsed\):not\(\.gated\) #inbox-open \{[^}]*display:none/);
     // Where the rail overlays the view instead of standing beside it, the
-    // toggle is still the way in and out, so it comes back.
+    // toggle is still the way in and out, so it comes back. A media query adds
+    // no specificity, so the rule that brings it back must carry the same
+    // :not(.gated) as the rule that hid it, or the hiding rule keeps winning
+    // (measured: resizing a pinned rail to 900px left the toggle at display:none).
     const narrow = shellCss.match(/@media \(max-width: 900px\) \{[\s\S]*?\n\}/)[0];
-    expect(narrow).toMatch(/body:not\(\.inbox-collapsed\) #inbox-open \{[^}]*display:grid/);
+    expect(narrow).toMatch(/body:not\(\.inbox-collapsed\):not\(\.gated\) #inbox-open \{[^}]*display:grid/);
   });
 
   it("gives the gate the whole frame", () => {

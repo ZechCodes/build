@@ -1050,7 +1050,7 @@ body.gated #inbox-rail { display:none; }
   #inbox-collapse { display:none; }
   /* Here the rail is a layer over the work rather than a column beside it, so
      the header toggle is still the way in and out of it. */
-  body:not(.inbox-collapsed) #inbox-open { display:grid; }
+  body:not(.inbox-collapsed):not(.gated) #inbox-open { display:grid; }
   body:not(.inbox-collapsed):not(.gated) #inbox-scrim {
     display:block; position:fixed; inset:0; z-index:35; background:var(--scrim); }
   body.inbox-collapsed.inbox-popover-open:not(.gated) #inbox-scrim {

@@ -14,6 +14,7 @@
 //! is this same value with [`IceMode::DirectOnly`] and a rendezvous that is
 //! not the relay; nothing else about it is new.
 
+use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -123,10 +124,46 @@ impl IcePolicy {
     /// TURN servers being stripped only stops the bridge from allocating one,
     /// and a pair on the browser's allocation is the same billed egress seen
     /// from the other end.
+    ///
+    /// **What this cannot reach**: the browser is the controlling agent and
+    /// keeps its own TURN servers (the SPA passes the minted list through
+    /// unchanged, and nothing on this end can stop a browser gathering). Its
+    /// connectivity checks arrive here from its relay allocation, and a check
+    /// from an address no candidate named is a *peer-reflexive* remote
+    /// candidate the agent creates for itself — it never passes through this
+    /// method, and nothing in it says `typ relay`. A browser behind a
+    /// symmetric NAT can therefore still nominate a pair that rides its own
+    /// TURN allocation under `direct-only`, and the ledger will read it as
+    /// `direct` (the same `prflx` under-count the transport spec's open
+    /// question 2 names). Closing it needs the browser's own view of its
+    /// nominated pair, which is that question, not this one.
     pub fn allows_remote_candidate(&self, candidate: &Value) -> bool {
         match self.mode {
             IceMode::All => true,
             IceMode::DirectOnly => !is_relay_candidate(candidate),
+        }
+    }
+
+    /// The browser's offer as a peer under this policy may take it.
+    ///
+    /// Trickling is not the only way a candidate arrives: `a=candidate` lines
+    /// carried inside the offer are extracted by `set_remote_description`
+    /// itself (`rtc`'s `extract_ice_details`) and added without anything here
+    /// being asked, so a browser that had already gathered its relay candidate
+    /// when it offered would put it on the wire past
+    /// [`allows_remote_candidate`](Self::allows_remote_candidate).
+    /// `direct-only` takes those lines out; every other line, and every line
+    /// ending, is left exactly as the browser wrote it, because what comes back
+    /// out of this is parsed as SDP.
+    pub fn allowed_offer<'sdp>(&self, offer_sdp: &'sdp str) -> Cow<'sdp, str> {
+        match self.mode {
+            IceMode::All => Cow::Borrowed(offer_sdp),
+            IceMode::DirectOnly => Cow::Owned(
+                offer_sdp
+                    .split_inclusive('\n')
+                    .filter(|line| !is_relay_candidate_line(line))
+                    .collect(),
+            ),
         }
     }
 
@@ -353,14 +390,23 @@ fn is_relay_candidate(candidate: &Value) -> bool {
     candidate
         .get("candidate")
         .and_then(Value::as_str)
-        .and_then(|attribute| {
-            attribute
-                .split_whitespace()
-                .skip_while(|word| *word != "typ")
-                .nth(1)
-                .map(|kind| kind == "relay")
-        })
-        .unwrap_or(false)
+        .is_some_and(is_relay_attribute)
+}
+
+/// The same question of one line of an SDP, which states the candidate the same
+/// way with `a=candidate:` in front of it.
+fn is_relay_candidate_line(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("a=candidate:") && is_relay_attribute(line)
+}
+
+/// `... typ relay ...` in a candidate attribute, wherever it was written.
+fn is_relay_attribute(attribute: &str) -> bool {
+    attribute
+        .split_whitespace()
+        .skip_while(|word| *word != "typ")
+        .nth(1)
+        == Some("relay")
 }
 
 #[cfg(test)]
@@ -507,6 +553,49 @@ mod tests {
         assert!(
             IcePolicy::default().allows_remote_candidate(&relayed),
             "the hosted default pairs with whatever reaches it"
+        );
+    }
+
+    /// Stripping the browser's TURN servers and refusing its trickled relay
+    /// candidates leaves one way in: a candidate carried **inside** the offer.
+    /// `set_remote_description` extracts every `a=candidate` line and adds it
+    /// (`rtc`'s `extract_ice_details`), where nothing consults
+    /// `allows_remote_candidate`, so an offer from a browser that had already
+    /// gathered its relay candidate would pair on billed TURN egress under the
+    /// one mode that exists to prevent it.
+    #[test]
+    fn direct_only_takes_the_relay_candidates_out_of_the_offer() {
+        let offer = "v=0\r\n\
+                     m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+                     a=mid:0\r\n\
+                     a=candidate:1 1 udp 2130706431 192.168.1.9 51235 typ host\r\n\
+                     a=candidate:2 1 udp 41885439 198.51.100.7 51234 typ relay raddr 0.0.0.0 rport 0\r\n\
+                     a=candidate:3 1 udp 1694498815 203.0.113.9 51236 typ srflx raddr 192.168.1.9 rport 51235\r\n\
+                     a=end-of-candidates\r\n";
+
+        let direct_only = IcePolicy {
+            mode: IceMode::DirectOnly,
+            ..IcePolicy::default()
+        };
+        let allowed = direct_only.allowed_offer(offer);
+
+        assert!(!allowed.contains("typ relay"), "{allowed}");
+        assert!(allowed.contains("typ host"), "a direct candidate stays");
+        assert!(allowed.contains("typ srflx"), "so does a free one");
+        assert_eq!(
+            allowed.lines().count(),
+            offer.lines().count() - 1,
+            "one line out, every other line and its ending untouched: {allowed}"
+        );
+        assert_eq!(
+            IcePolicy::default().allowed_offer(offer),
+            offer,
+            "the hosted default takes the offer as it was sent"
+        );
+        assert_eq!(
+            direct_only.allowed_offer("v=0\r\na=mid:0\r\n"),
+            "v=0\r\na=mid:0\r\n",
+            "an offer with no candidate in it is not rewritten"
         );
     }
 

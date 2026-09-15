@@ -361,7 +361,8 @@ impl SessionPeer for WebrtcPeer {
                 connection
             }
         };
-        let offer = RTCSessionDescription::offer(offer_sdp.to_string())?;
+        let offer =
+            RTCSessionDescription::offer(self.policy.allowed_offer(offer_sdp).into_owned())?;
         connection.set_remote_description(offer).await?;
         let answer = connection.create_answer(None).await?;
         let sdp = answer.sdp.clone();

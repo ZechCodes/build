@@ -116,11 +116,20 @@ TURN egress is billed, so it has a monthly check in [`OPS.md`](OPS.md).
 When the browser and the bridge share a network — an office LAN, a Tailnet, a
 laptop reaching its own machine — set `BRIDGE_ICE_POLICY=direct-only` on the
 bridge. It then strips every `turn:`/`turns:` url out of the list the browser
-offers and refuses the relay candidates the browser trickles, so the pair that
-carries is host to host and no TURN allocation is made at either end. STUN is
-kept: it is free, and it is how a peer learns the address it puts in a host
-candidate. Nothing changes in the browser — it fetches and forwards the same
-minted list either way — and nothing changes on the api.
+offers and refuses every relay candidate the browser sends — trickled, or
+carried inside the offer — so this bridge allocates no TURN and pairs with none
+that it can name. STUN is kept: it is free, and it is how a peer learns the
+address it puts in a host candidate. Nothing changes in the browser — it fetches
+and forwards the same minted list either way — and nothing changes on the api.
+
+One case the bridge cannot close from its end: the browser is the controlling
+agent and still has its own TURN servers, so a browser behind a symmetric NAT
+can allocate one and check from it. A check from an address no candidate named
+arrives as a *peer-reflexive* candidate the ICE agent creates for itself — the
+bridge never sees it as a relay candidate, and cannot refuse it — so that pair
+can still carry, and `/admin/transport` will read it as direct. Chrome's own
+prioritisation puts a direct pair first where one exists; where none does,
+`direct-only` prevents the bridge's half of the egress, not the browser's.
 
 Two knobs go with it. `BRIDGE_ICE_INTERFACES` (e.g. `tailscale0,eth0`) binds
 only the named interfaces, which is how a bridge is kept off a network it

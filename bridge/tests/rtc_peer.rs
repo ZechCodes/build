@@ -727,6 +727,70 @@ async fn direct_only_offers_the_peer_no_turn_server_and_still_carries() {
     );
 }
 
+/// One session's signaling with a relay candidate carried **inside** the offer,
+/// the way a browser that had already gathered one sends it.
+struct RelayInTheOffer<'a>(&'a RelaySession);
+
+/// A TURN candidate on an address that routes nowhere (TEST-NET-3), so what is
+/// under test is the bridge's filter rather than somebody's TURN server.
+const RELAY_CANDIDATE_LINE: &str =
+    "a=candidate:9 1 udp 41885439 203.0.113.7 51234 typ relay raddr 0.0.0.0 rport 0\r\n";
+
+#[async_trait::async_trait]
+impl RelaySignaling for RelayInTheOffer<'_> {
+    async fn offer(&self, sdp: String, ice_servers: &[Value]) -> String {
+        self.0
+            .offer(format!("{sdp}{RELAY_CANDIDATE_LINE}"), ice_servers)
+            .await
+    }
+
+    async fn trickle(&self, candidate: Value) {
+        self.0.trickle(candidate).await
+    }
+
+    async fn device_candidate(&self) -> Value {
+        self.0.device_candidate().await
+    }
+}
+
+/// Trickling is not the only way a relay candidate arrives: an `a=candidate`
+/// line inside the offer is extracted by `set_remote_description` itself and
+/// added without the policy being asked, so `direct-only` takes those lines out
+/// before the peer sees the offer.
+///
+/// That the line is gone is asserted on the policy, where the decision is made
+/// and where it can be read. What needs a real peer connection is the other
+/// half: an SDP this bridge rewrote is still an SDP, and the session it
+/// negotiates still carries — a filter that broke the offer would refuse every
+/// `direct-only` connection instead of every relay candidate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relay_candidate_inside_the_offer_does_not_stop_the_session() {
+    let direct_only = IcePolicy {
+        mode: IceMode::DirectOnly,
+        ..IcePolicy::default()
+    };
+    assert!(
+        !direct_only
+            .allowed_offer(&format!("v=0\r\n{RELAY_CANDIDATE_LINE}"))
+            .contains("typ relay"),
+        "the line the offer carried is not one the peer is given"
+    );
+
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, _reports, ledger) = policy_peer_bridge(state_dir.path(), direct_only);
+    let (session, _demux) = browser_session("sess-inline-relay", intake).await;
+
+    let spliced = RelayInTheOffer(&session);
+    let mut peer = browser_peer(&session.session_id, &session.session_key, &spliced).await;
+    assert_eq!(peer.app.call("session.hello", json!({})).await["ok"], true);
+
+    assert_eq!(
+        ledger.trail_of("sess-inline-relay"),
+        vec!["minted", "carrying:direct"],
+        "the rewritten offer parsed, and the pair is the direct one"
+    );
+}
+
 /// An interface allow-list is applied, and a bridge it leaves with nothing to
 /// bind fails closed: the offer is refused, naming the list, and the browser
 /// blocks that device (rule 3) instead of waiting out a deadline on a peer

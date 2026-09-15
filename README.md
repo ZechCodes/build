@@ -196,7 +196,8 @@ cd desktop && npm test && npm run pack
 
 The bridge's ICE agent is tuned by three variables (strict P2P transport spec,
 rule 8): `BRIDGE_ICE_POLICY` (`all`, the default, or `direct-only` — strip the
-browser's TURN servers and refuse relay candidates), `BRIDGE_ICE_RELAY_MIN_WAIT_MS`
+browser's TURN servers and refuse every relay candidate it sends, trickled or
+carried in the offer), `BRIDGE_ICE_RELAY_MIN_WAIT_MS`
 (how long a TURN pair waits before it may be accepted so a slower direct pair can
 win; default `1500`, `0` for no wait) and `BRIDGE_ICE_INTERFACES` (a comma list of
 interfaces to gather host candidates on, e.g. `tailscale0,eth0`; unset means every

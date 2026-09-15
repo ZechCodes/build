@@ -67,7 +67,7 @@ const {
   retireDevice,
   syncHome,
 } = await import("../src/connection.js");
-const { initDevicePicker, paintDevicePicker } = await import("../src/devices.js");
+const { initDevicePicker, paintDevicePicker, stopWatchingPresence } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, deviceUnreachableText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
@@ -229,6 +229,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete globalThis.RTCPeerConnection;
+  stopWatchingPresence();
   unsubscribe();
   stopFeed();
   resetApplication();
@@ -891,6 +892,59 @@ describe("per-device connections", () => {
 
     expect(homeContext()?.session).toBe(lastSession("dev-b"));
     expect(captures.flush).toHaveBeenCalledTimes(1);
+  });
+
+  // Presence is the api's while the app is open (rule 6), and the app being
+  // open is what the gate says: it starts the poll when it hands the page back
+  // and stops it when it takes the page again.
+  it("follows the account's presence while the app is open, and stops when the gate takes it", async () => {
+    await connectEveryDevice();
+    account.fetchDevices.mockClear();
+
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(account.fetchDevices).toHaveBeenCalledTimes(1);
+
+    await loseTheLink("dev-a");
+    await loseTheLink("dev-b");
+    expect(held()).toBe(true);
+    account.fetchDevices.mockClear();
+    // The waiting screen's own 3 s poll is the gate's, and this case is not
+    // about it: what must not happen is the app's 15 s one going on underneath.
+    document.getElementById("watchmsg"); // the waiting screen is up
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(account.fetchDevices).not.toHaveBeenCalled();
+  });
+
+  // The whole of the late join, end to end: the account says a machine that was
+  // down is up, and the poll opens it.
+  it("takes up a machine the account has started calling online again", async () => {
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    await connectEveryDevice();
+    expect(liveIds()).toEqual(["dev-a"]);
+
+    devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
+    await vi.advanceTimersByTimeAsync(15000);
+    await flush();
+
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+  });
+
+  // And the other way: the bridge stopped posting its heartbeat, the api
+  // stopped calling it online, and the machine this client holds goes away —
+  // plainly away, not blocked: nothing here failed to reach it.
+  it("marks a machine away when the account stops calling it online", async () => {
+    await connectEveryDevice();
+
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    await vi.advanceTimersByTimeAsync(15000);
+    await flush();
+
+    expect(liveIds()).toEqual(["dev-a"]);
+    expect(contextFor("dev-b").offline).toBe(true);
+    expect(contextFor("dev-b").blocked).toBe(null);
+    expect(held()).toBe(false);
   });
 
   it("pauses only the calls of the device that went offline", async () => {

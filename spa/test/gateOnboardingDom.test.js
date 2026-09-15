@@ -48,6 +48,10 @@ vi.mock("../src/api.js", () => ({
 vi.mock("../src/devices.js", () => ({
   refreshDevices: (...args) => refreshDevices(...args),
   paintDevicePicker: () => {},
+  // The account's presence cadence is its own file's subject
+  // (devicePresence.test.js); here it is the gate's to start and stop.
+  watchPresence: () => {},
+  stopWatchingPresence: () => {},
 }));
 // The gate opens every online device at once and carries on the moment the
 // first one answers. It names no home: which device that is, the account list
@@ -67,6 +71,7 @@ vi.mock("../src/connection.js", () => ({
   openDeviceSettingsSession: async () => ({}),
   syncHome: () => {},
   goOffline: () => {},
+  deviceWentAway: () => {},
   forgetHomeFollow: () => {},
   forgetSecurityStops: () => {},
   forgetRendezvousSockets: () => {},

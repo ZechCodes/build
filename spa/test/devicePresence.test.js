@@ -1,0 +1,177 @@
+// @vitest-environment jsdom
+// Presence is the api's (spec rule 6). The relay says nothing about which
+// machines are up any more: `GET /api/devices` is the only answer, and this
+// poll is what re-reads it — every 15 s while the app is open, and at once when
+// the tab comes back to the front.
+//
+// Two things follow every read: a machine that is online and has no live
+// session is opened (that is how a late device joins, and how one that came
+// back is taken up again), and a machine this client holds that the account no
+// longer lists online is marked away.
+
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+
+const connection = vi.hoisted(() => ({
+  openDeviceSessions: vi.fn(() => ({ first: Promise.resolve(null), settled: Promise.resolve([]) })),
+  deviceWentAway: vi.fn(),
+  syncHome: vi.fn(),
+}));
+const account = vi.hoisted(() => ({ fetchDevices: vi.fn() }));
+
+vi.mock("../src/api.js", () => ({ fetchDevices: (...args) => account.fetchDevices(...args) }));
+vi.mock("../src/connection.js", () => ({
+  openDeviceSessions: (...args) => connection.openDeviceSessions(...args),
+  deviceWentAway: (...args) => connection.deviceWentAway(...args),
+  syncHome: (...args) => connection.syncHome(...args),
+  chooseCreationDevice: () => {},
+  connectDevice: () => Promise.resolve(null),
+  goOffline: () => {},
+  retireDevice: () => {},
+  openDeviceSettingsSession: async () => ({}),
+  forgetHomeFollow: () => {},
+  forgetRendezvousSockets: () => {},
+  forgetSecurityStops: () => {},
+  securityStopText: () => "",
+}));
+
+const { App } = await import("../src/app.js");
+const { refreshDevices, watchPresence, stopWatchingPresence } = await import("../src/devices.js");
+const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
+const { fakeSession } = await import("./deviceSessionFixture.js");
+
+const online = (id) => ({ id, name: id, status: "online", fingerprint: `${id}-fp` });
+const away = (id) => ({ ...online(id), status: "offline" });
+
+let listed = [];
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  document.body.innerHTML = '<div id="devpick"></div>';
+  resetDeviceContexts();
+  App.devices = [];
+  App.gated = false;
+  listed = [online("dev-a"), online("dev-b")];
+  account.fetchDevices.mockReset();
+  account.fetchDevices.mockImplementation(async () => listed);
+  connection.openDeviceSessions.mockClear();
+  connection.deviceWentAway.mockClear();
+  connection.syncHome.mockClear();
+});
+
+afterEach(() => {
+  stopWatchingPresence();
+  resetDeviceContexts();
+  vi.clearAllTimers();
+  vi.useRealTimers();
+});
+
+describe("the presence poll", () => {
+  it("re-reads the account on its own cadence while the app is open", async () => {
+    watchPresence();
+
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(account.fetchDevices).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(account.fetchDevices).toHaveBeenCalledTimes(3);
+    expect(App.devices.map((device) => device.id)).toEqual(["dev-a", "dev-b"]);
+  });
+
+  it("reads it at once when the tab comes back to the front", async () => {
+    watchPresence();
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(account.fetchDevices).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads nothing once it is stopped — the gate took the app back, or the account did", async () => {
+    watchPresence();
+    stopWatchingPresence();
+
+    await vi.advanceTimersByTimeAsync(60000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(account.fetchDevices).not.toHaveBeenCalled();
+  });
+
+  it("watches once however often it is asked to", async () => {
+    watchPresence();
+    watchPresence();
+
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(account.fetchDevices).toHaveBeenCalledTimes(1);
+  });
+
+  // The late join: a machine that came online after boot, or was paired in
+  // another tab, is opened without a reload.
+  it("opens every online device with no live session after each read", async () => {
+    watchPresence();
+
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(connection.openDeviceSessions).toHaveBeenCalledTimes(1);
+    expect(connection.syncHome).toHaveBeenCalled();
+  });
+
+  // The other half of rule 6: the bridge stopped posting its heartbeat, so the
+  // api stopped calling it online, so the machine this client is holding is
+  // away. That is the slow signal — a live connection failing is the fast one.
+  it("marks a machine away when the account stops calling it online", async () => {
+    adoptDeviceSession(fakeSession("dev-a"));
+    adoptDeviceSession(fakeSession("dev-b"));
+    listed = [online("dev-a"), away("dev-b")];
+    watchPresence();
+
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(connection.deviceWentAway.mock.calls).toEqual([["dev-b"]]);
+  });
+
+  it("marks a machine away when the account stops listing it at all", async () => {
+    adoptDeviceSession(fakeSession("dev-c"));
+    listed = [online("dev-a")];
+    watchPresence();
+
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(connection.deviceWentAway.mock.calls).toEqual([["dev-c"]]);
+  });
+
+  it("says nothing about a machine the account still calls online", async () => {
+    adoptDeviceSession(fakeSession("dev-a"));
+    watchPresence();
+
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(connection.deviceWentAway).not.toHaveBeenCalled();
+  });
+
+  // The api is not always there either. A read that fails is not news about any
+  // machine — marking every device away on a flaky network would empty the app.
+  it("leaves every machine exactly as it was when the account cannot be read", async () => {
+    adoptDeviceSession(fakeSession("dev-a"));
+    account.fetchDevices.mockRejectedValue(new Error("offline"));
+    watchPresence();
+
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(connection.deviceWentAway).not.toHaveBeenCalled();
+    expect(connection.openDeviceSessions).not.toHaveBeenCalled();
+  });
+
+  // The account list is read by other things too — the gate's own 3 s poll, the
+  // settings page. Reading it is not what opens or marks anything; the poll is.
+  it("is the reader that acts on a refresh, not refreshDevices itself", async () => {
+    adoptDeviceSession(fakeSession("dev-a"));
+    listed = [away("dev-a")];
+
+    await refreshDevices();
+
+    expect(connection.deviceWentAway).not.toHaveBeenCalled();
+    expect(connection.openDeviceSessions).not.toHaveBeenCalled();
+  });
+});

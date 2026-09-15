@@ -34,6 +34,10 @@ vi.mock("../src/api.js", () => ({
 vi.mock("../src/devices.js", () => ({
   refreshDevices: async () => App.devices,
   paintDevicePicker: (...args) => paintDevicePicker(...args),
+  // The account's presence cadence is its own file's subject
+  // (devicePresence.test.js); here it is the gate's to start and stop.
+  watchPresence: () => {},
+  stopWatchingPresence: () => {},
 }));
 vi.mock("../src/connection.js", () => ({
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
@@ -41,6 +45,7 @@ vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
   retireDevice: () => {},
   goOffline: () => {},
+  deviceWentAway: () => {},
   syncHome: () => {},
   forgetHomeFollow: () => {},
   forgetSecurityStops: () => {},

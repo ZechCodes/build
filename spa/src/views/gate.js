@@ -19,7 +19,7 @@ import { App, render, unmountView } from "../app.js";
 import { openDeviceSessions, securityStopText } from "../connection.js";
 import { contextFor, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
-import { refreshDevices, paintDevicePicker } from "../devices.js";
+import { refreshDevices, paintDevicePicker, stopWatchingPresence, watchPresence } from "../devices.js";
 import { renderAppBehindBridgeGate, renderBridgeBehindAppGate } from "./versionGate.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -39,6 +39,9 @@ function setGate(on) {
   if (on) {
     $("#devpick").hidden = true;
     stopFeed(); // no session to poll — the inbox is hidden while gated
+    // The account's presence is the app's cadence (spec rule 6); a gated page
+    // has its own, quicker one below, and two of them would read twice.
+    stopWatchingPresence();
   }
 }
 
@@ -84,6 +87,10 @@ function handBackToReader() {
   setGate(false);
   paintDevicePicker();
   startFeed();
+  // Which machines the account has, and which of them are up, is read from the
+  // api from here on: a late device joins on it, and a machine whose bridge has
+  // gone is marked away on it (spec rule 6).
+  watchPresence();
 }
 
 /**

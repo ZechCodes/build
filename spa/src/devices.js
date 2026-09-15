@@ -1,9 +1,17 @@
-// The device store + the nav device picker. Statuses come from GET /api/devices
-// and are patched live by the relay's device_key / device_offline pushes.
+// The device store, the presence poll, and the nav device picker.
+//
+// Presence is the api's (spec rule 6): `GET /api/devices` is the only place a
+// machine's status comes from — the relay says nothing about which machines are
+// up — so this module re-reads it on a cadence while the app is open, and at
+// once when the tab comes back to the front. Two things follow every read: a
+// machine that is online with no live session is opened (a late device joining,
+// or one that came back), and a machine this client holds that the account no
+// longer lists online is marked away. A live connection failing is the other,
+// faster signal, and it is the connection layer's (connection.js).
 
 import { $ } from "./dom.js";
 import { esc } from "./core/text.js";
-import { canAnswer, contextFor } from "./core/deviceContexts.js";
+import { canAnswer, contextFor, knownContexts } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_SETTINGS } from "./core/icons.js";
 import { App } from "./app.js";
@@ -11,7 +19,7 @@ import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { rememberDeviceFilter } from "./core/deviceFilter.js";
-import { goOffline, openDeviceSessions, syncHome } from "./connection.js";
+import { deviceWentAway, openDeviceSessions, syncHome } from "./connection.js";
 
 export async function refreshDevices() {
   App.devices = await fetchDevices();
@@ -44,51 +52,68 @@ export async function pinnedDeviceTransportKey(deviceId) {
   return pinnedKey();
 }
 
-/** Patch one device's status and repaint the picker that reads it. Says whether
- *  this was news; a device the list has never heard of is nobody to patch. */
-function markDevice(deviceId, status) {
-  const device = deviceFor(deviceId);
-  if (!device || device.status === status) return false;
-  device.status = status;
-  paintDevicePicker();
+/** How often the account's list is re-read while the app is open. The gate has
+ *  a quicker one of its own (3 s) for the screen that is waiting on a machine;
+ *  this is the cadence for an app that is already standing on one. */
+const PRESENCE_INTERVAL_MS = 15000;
+
+let presenceTimer = null;
+let onVisibilityChange = null;
+
+/**
+ * Follow the account's presence while the app is open.
+ *
+ * Re-entrant: asking again re-arms the one poll rather than starting a second.
+ * The gate stops it whenever it takes the app back — a poll left running would
+ * open sessions behind a screen that is already asking for them.
+ */
+export function watchPresence({ intervalMs = PRESENCE_INTERVAL_MS } = {}) {
+  stopWatchingPresence();
+  presenceTimer = setInterval(() => readPresence(), intervalMs);
+  // A tab that was in the background missed every tick: what it shows is as old
+  // as the last one, so the first thing it does on the way back is read.
+  onVisibilityChange = () => {
+    if (document.visibilityState !== "hidden") readPresence();
+  };
+  document.addEventListener("visibilitychange", onVisibilityChange);
+}
+
+/** Stop following it (the gate took the app back, the account signed out). */
+export function stopWatchingPresence() {
+  clearInterval(presenceTimer);
+  presenceTimer = null;
+  if (onVisibilityChange) document.removeEventListener("visibilitychange", onVisibilityChange);
+  onVisibilityChange = null;
+}
+
+/**
+ * One read of the account's list, and everything that follows from it.
+ *
+ * A read that fails is news about nothing: the api is unreachable, which says
+ * nothing about any machine, and marking them all away over a flaky network
+ * would empty the app. The next tick reads again.
+ */
+export async function readPresence() {
+  try {
+    await refreshDevices();
+  } catch {
+    return null;
+  }
+  markWhatTheAccountNoLongerLists();
+  openDeviceSessions(); // a late device, a machine that came back, one paired elsewhere
   // Which device is home is what these statuses say: the picked device dropping
   // hands home to the first that is still online, and its coming back takes it
   // straight back.
   syncHome();
-  return true;
+  return App.devices;
 }
 
-export function markDeviceOnline(deviceId) {
-  if (!deviceFor(deviceId)) {
-    // A device we have not seen yet (approved elsewhere) — read the list, then
-    // join it like any other. Reading alone would leave it online in the picker
-    // and contributing no rows until it next reconnected.
-    refreshDevices()
-      .then(() => openDeviceSessions())
-      .catch(() => {
-        /* the account list is unreachable; the next push tries again */
-      });
-    return;
+/** Every machine this client is holding that the account no longer calls
+ *  online: its bridge stopped saying it was there. */
+function markWhatTheAccountNoLongerLists() {
+  for (const context of knownContexts()) {
+    if (deviceFor(context.deviceId)?.status !== "online") deviceWentAway(context.deviceId);
   }
-  // A device that came up after boot joins the account's inbox here, without a
-  // reload: every online device with no live session is opened.
-  if (markDevice(deviceId, "online")) openDeviceSessions();
-}
-
-/**
- * The relay says one of our bridges went.
- *
- * That push is the account's own word for that machine, and it arrives while
- * the session on it is still sitting there waiting on a call that will time
- * out. So it is what takes the machine offline: the list says so, and the
- * device this client is holding goes offline with it — its rows grey, a surface
- * open on it says whose state it is showing, and the socket that waits for that
- * bridge's key is parked at once. A machine this client holds nothing for is
- * nobody to take offline.
- */
-export function markDeviceOffline(deviceId) {
-  markDevice(deviceId, "offline");
-  goOffline(deviceId);
 }
 
 const ALL_DEVICES = "All devices";

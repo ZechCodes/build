@@ -284,9 +284,23 @@ async fn oversized_frames_close_the_connection() {
     let api = mock_api().await;
     let relay = RelayProcess::start(&api.uri());
     let mut ws = authed_client(&relay).await;
-    // Just past the relay's MAX_WS_MESSAGE_BYTES cap (8 MiB). The relay may reset
-    // the connection while we are still writing — that send error is also a pass.
-    let oversized = "x".repeat(9 * 1024 * 1024);
+
+    // A negotiation-sized frame is under the 64 KiB cap and survives: the relay
+    // has no session for it, so it is dropped, but the socket stays up.
+    let negotiation_sized = json!({
+        "type": "e2ee_envelope",
+        "session_id": "s-none",
+        "payload": "x".repeat(48 * 1024),
+    })
+    .to_string();
+    ws.send(Message::Text(negotiation_sized))
+        .await
+        .expect("a 48 KiB frame is accepted");
+    expect_silence(&mut ws).await;
+
+    // Past MAX_WS_MESSAGE_BYTES (64 KiB) the connection ends. The relay may reset
+    // it while we are still writing — that send error is also a pass.
+    let oversized = "x".repeat(96 * 1024);
     if ws.send(Message::Text(oversized)).await.is_ok() {
         expect_disconnect(&mut ws).await;
     }

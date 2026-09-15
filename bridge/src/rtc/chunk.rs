@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 /// maximum. An envelope at or under it crosses whole.
 pub const CHUNK_BYTES: usize = 16 * 1024;
 
-/// The largest envelope a reassembly may add up to — the relay's own frame cap,
-/// so neither carrier accepts what the other would refuse. Past it the parts
-/// are a peer spending the device's memory, and the channel closes.
+/// The largest envelope a reassembly may add up to. Its own number, deliberately:
+/// application traffic rides the DataChannel and nothing else, so this cap is set
+/// by what a peer may spend of the device's memory, not by any relay limit. Past
+/// it the parts are an abuse, and the channel closes.
 pub const MAX_REASSEMBLED_BYTES: usize = 8 * 1024 * 1024;
 
 /// How a receiver tells a part from a whole envelope: the wrapper names `part`

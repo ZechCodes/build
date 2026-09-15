@@ -9,8 +9,8 @@ pub const GIT_DIFF_MAX_PATHS: usize = 50;
 /// The most bytes of patch one `git.diff` answer may carry, across all its
 /// files. The per-file cap alone does not bound the answer:
 /// [`GIT_DIFF_MAX_PATHS`] files at [`GIT_SHOW_MAX_PATCH_BYTES`] each is
-/// 50 MiB, and the relay refuses a frame over `MAX_WS_MESSAGE_BYTES` (8 MiB,
-/// `relay_server.rs`) — which base64-after-encryption reaches at roughly
+/// 50 MiB, and the DataChannel refuses a reassembly over `MAX_REASSEMBLED_BYTES`
+/// (8 MiB, `rtc/chunk.rs`) — which base64-after-encryption reaches at roughly
 /// 6 MiB of plaintext. The budget is spent in request order.
 pub const GIT_DIFF_MAX_ANSWER_BYTES: usize = 4 * 1_048_576;
 

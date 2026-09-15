@@ -30,9 +30,12 @@ pub const AUTH_SKEW: Duration = Duration::from_secs(60);
 /// captured challenge becomes replayable the moment the guard forgets it.
 pub const REPLAY_TTL: Duration = Duration::from_secs(2 * AUTH_SKEW.as_secs());
 
-/// Hard cap on a single WebSocket message/frame the relay will buffer. Envelopes are
-/// base64 ciphertext of terminal chunks and diffs; anything past this is abusive.
-pub const MAX_WS_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+/// Hard cap on a single WebSocket message/frame the relay will buffer. The relay
+/// is a rendezvous, not a data plane: the only frames it carries are its own
+/// control frames, `session_init` / `session_accept`, and the `rtc.*` envelopes
+/// that negotiate a peer connection. None of those is large, so the cap is set
+/// where application traffic cannot fit through even by accident.
+pub const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
 
 /// The heartbeat cadence the relay advertises to a device in its `authenticated`
 /// greeting. The device promises a `{"type":"heartbeat"}` frame this often; the
@@ -40,11 +43,11 @@ pub const MAX_WS_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 /// the enforcement can never drift apart.
 pub const HEARTBEAT_INTERVAL_S: u64 = 30;
 
-/// Hard cap on the bytes queued to one peer's writer. A browser that stops reading
-/// (backgrounded tab, stalled TCP) while its device streams terminal output would
-/// otherwise grow an unbounded queue until the relay OOMs. Past the cap, sends to
-/// that peer fail — the snapshot+cursor resume design recovers the lost frames.
-pub const MAX_OUTBOUND_QUEUE_BYTES: usize = 32 * 1024 * 1024;
+/// Hard cap on the bytes queued to one peer's writer — the write-stall defence. A
+/// peer that stops reading (backgrounded tab, stalled TCP) would otherwise grow an
+/// unbounded queue until the relay OOMs. Past the cap, sends to that peer fail,
+/// which is what severs it. Sized for negotiation traffic, not for a stream.
+pub const MAX_OUTBOUND_QUEUE_BYTES: usize = 1024 * 1024;
 
 /// Why an [`Outbound::send`] was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -750,6 +753,15 @@ mod tests {
         );
         let past_validity = now + REPLAY_TTL + Duration::from_secs(1);
         assert!(guard.check_and_record("d1", "1000", "sigA", past_validity));
+    }
+
+    /// Strict P2P Transport Spec rule 1: the relay never carries application
+    /// traffic, so its frame cap is 64 KiB and its outbound queue is 1 MiB — the
+    /// size of negotiation, not of a terminal stream.
+    #[test]
+    fn the_limits_are_sized_for_rendezvous_not_for_a_data_plane() {
+        assert_eq!(MAX_WS_MESSAGE_BYTES, 64 * 1024);
+        assert_eq!(MAX_OUTBOUND_QUEUE_BYTES, 1024 * 1024);
     }
 
     #[test]

@@ -22,11 +22,12 @@ impl AttachmentHomes {
     }
 }
 
-/// How large one conversation attachment may be. The relay carries an upload
-/// in a single frame ([`MAX_WS_MESSAGE_BYTES`](crate::relay_server::MAX_WS_MESSAGE_BYTES),
-/// 8 MiB) and base64 costs a third on top, so the cap is set where a file plus
-/// its envelope still fits with room to spare — and refused here, with a number
-/// the composer can show, rather than by a dropped socket.
+/// How large one conversation attachment may be. An upload crosses the DataChannel,
+/// reassembled under the 8 MiB DataChannel cap (`MAX_REASSEMBLED_BYTES`,
+/// `rtc/chunk.rs`), and base64
+/// costs a third on top, so the cap is set where a file plus its envelope still fits
+/// with room to spare — and refused here, with a number the composer can show,
+/// rather than by a closed channel.
 pub const ATTACHMENT_MAX_BYTES: u64 = 5 * 1_048_576;
 
 /// The one folder a conversation attachment may live in, worktree-relative.

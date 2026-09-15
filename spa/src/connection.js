@@ -329,6 +329,12 @@ export function goOffline(deviceId) {
 export function deviceWentAway(deviceId) {
   const context = contextFor(deviceId);
   if (!context || (context.offline && !context.blocked)) return;
+  // A connect in flight owns that machine's rendezvous: standing the machine
+  // down would close the socket the handshake is being made over and re-block
+  // the machine that was about to answer — on a list that is up to a heartbeat
+  // window out of date. The dial says how it went, and the next poll writes
+  // what the account says over it.
+  if (dialling.has(deviceId)) return;
   standDown(deviceId, {});
 }
 

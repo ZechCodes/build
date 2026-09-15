@@ -1051,6 +1051,34 @@ describe("per-device connections", () => {
     expect(session.close).toHaveBeenCalled();
   });
 
+  // The api derives presence from a heartbeat, so a machine whose bridge has
+  // just come back is listed offline for up to a minute and a half — over the
+  // whole of a Retry's handshake. Standing that machine down mid-dial closes
+  // the very rendezvous the dial is negotiating over, and the machine that was
+  // about to answer is re-blocked with a reason that was never true.
+  it("leaves a machine with a connect in flight alone when the account calls it offline", async () => {
+    await connectEveryDevice();
+    await loseTheLink("dev-b");
+    expect(contextFor("dev-b").blocked).toBe("lost");
+
+    slowMs.set("dev-b", 20);
+    const retry = connectDevice("dev-b");
+    await flush();
+    rendezvousFor.get("dev-b").close.mockClear();
+
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    deviceWentAway("dev-b");
+
+    expect(rendezvousFor.get("dev-b").close).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(20);
+    await retry;
+    await flush();
+
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+  });
+
   it("marks a machine plainly away when its bridge is simply gone", async () => {
     await connectEveryDevice();
     const session = lastSession("dev-a");

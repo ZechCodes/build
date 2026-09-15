@@ -204,7 +204,9 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .assign-fields { display:flex; flex-direction:column; gap:9px; }
 .ivfield { display:flex; flex-direction:column; gap:3px; font-size:11.5px; color:var(--dim); }
 .ivfield select, .ivfield input { font:inherit; font-size:13px; color:var(--ink);
-  background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:6px 8px; }
+  background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:6px 8px;
+  transition:border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast); }
+.ivfield select:focus-visible, .ivfield input:focus-visible { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring); background:var(--panel); }
 .ivfield select:disabled, .ivfield option:disabled { color:var(--dim); }
 .ivassign-gap { font-size:11.5px; color:var(--amber); display:flex; flex-direction:column; gap:4px; }
 
@@ -239,8 +241,44 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .docmarker { float:right; margin:0 0 0 10px; font:inherit; font-size:11px; line-height:1;
   color:var(--accent); background:var(--accent-soft); border:none; border-radius:999px;
   padding:4px 9px; cursor:pointer; }
-.docmarker:hover { background:var(--accent); color:var(--accent-ink); }
+.docmarker:hover { background:var(--accent-fill); color:var(--accent-ink); }
 .docmarker.addressed { color:var(--green); background:var(--green-bg); }
 .docmarker.addressed:hover { background:var(--green); color:var(--bg); }
 /* A heading with an unsent comment on it, marked while the comment is pending. */
 .plan .dochl { background:var(--hl-bg); color:var(--hl-ink); border-radius:4px; }
+/* The rail's own head, and the left end of the surface's head row: it stops on
+   the height the git bar beside it and the conversation panel's head stop on
+   (--surface-head, styles/shell.css), so the three bottom borders are one line
+   across the frame. */
+.workspace-refbar { position:relative; flex:none; display:flex; align-items:center; min-width:0; max-width:100%;
+  min-height:var(--surface-head); padding:0 var(--pane-gutter); border-bottom:1px solid var(--line); }
+.workspace-refpicker { position:relative; flex:1 1 auto; min-width:0; max-width:100%; }
+.workspace-reftrigger { width:100%; min-width:0; display:flex; align-items:center; gap:7px; padding:7px 8px; border:1px solid var(--line); border-radius:7px; color:var(--ink); background:var(--panel); cursor:pointer; text-align:left; transition:border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast); }
+.workspace-reftrigger:hover:not(:disabled) { border-color:var(--line3); background:var(--panel2); }
+.workspace-reftrigger:focus-visible { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring); }
+.workspace-reftrigger:disabled { cursor:default; opacity:.65; }
+.workspace-reftrigger-kind { flex:none; color:var(--ink2); font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+.workspace-reftrigger-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px var(--mono); }
+.workspace-refmenu { position:absolute; z-index:12; top:calc(100% + 5px); left:0; width:min(340px, calc(100vw - 32px)); max-width:100%; padding:7px; border:1px solid var(--line); border-radius:9px; background:var(--panel); box-shadow:0 12px 30px var(--shadow); }
+.workspace-reftabs { display:grid; grid-template-columns:1fr 1fr; gap:3px; padding:2px; background:var(--panel2); border-radius:7px; }
+.workspace-reftabs button { border:0; border-radius:5px; padding:5px; color:var(--ink2); background:transparent; cursor:pointer; font:inherit; font-size:11px; }
+.workspace-reftabs button[aria-selected=true] { color:var(--ink); background:var(--panel); box-shadow:0 1px 3px var(--shadow-soft); }
+.workspace-refsearch { box-sizing:border-box; width:100%; margin:7px 0 5px; padding:7px 8px; border:1px solid var(--line); border-radius:7px; color:var(--ink); background:var(--bg); font:inherit; font-size:12px; }
+.workspace-refrows { max-height:min(310px, 48vh); overflow:auto; }
+.workspace-refrow { width:100%; min-width:0; display:flex; align-items:center; gap:6px; border:0; border-radius:6px; padding:7px 8px; color:var(--ink); background:transparent; cursor:pointer; text-align:left; }
+.workspace-refrow:hover, .workspace-refrow:focus-visible { background:var(--accent-soft); color:var(--accent); outline:none; }
+.workspace-refname { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px var(--mono); }
+.workspace-refcurrent, .workspace-refremote, .workspace-refpull, .workspace-refdiverged { flex:none; font-size:10px; color:var(--ink2); }
+.workspace-refremote { max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.workspace-refcurrent { color:var(--green); }
+.workspace-refpull { color:var(--accent); }
+.workspace-refdiverged { color:var(--amber); }
+.workspace-refempty { padding:14px 8px; color:var(--ink2); font-size:12px; text-align:center; }
+/* What went wrong with a checkout, under the trigger that started it. It is in
+   the document at every moment, empty or not: a live region announces what
+   appears INSIDE it, so one mounted only once there is something to say says
+   nothing. What it costs the bar is what goes instead — an empty status pays no
+   room, and the bar stops on the height the two bars beside it stop on. */
+.workspace-referror { display:block; padding-top:5px; overflow-wrap:anywhere; font-size:11px; }
+.workspace-referror:empty { padding:0; }
+.workspace-gitpane { min-height:0; height:100%; overflow:hidden; }

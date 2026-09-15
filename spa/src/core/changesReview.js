@@ -14,7 +14,6 @@
 // popover, and typed text, and a rebuild mid-action would wipe a busy button.
 
 import "../styles/surfaces.css";
-import { currentCacheScope } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, pathOf } from "./diff.js";
@@ -78,6 +77,9 @@ export function emptyStackText(totalFiles, changedOnly) {
 // eslint-disable-next-line complexity -- ratchet: createReviewPlug is at 16, cap 10 — reduce it, then drop this line
 export function createReviewPlug({
   fetchDiff,
+  // The cache of the machine the diff is on: the surface that made the plug
+  // hands it down, and a plug made without one caches nothing.
+  cacheScope,
   submit = null,
   submitOverride = null,
   revisionId = () => null,
@@ -90,11 +92,11 @@ export function createReviewPlug({
   // pushes can say when it moved instead of being asked every 1.6 seconds. A
   // surface that names none keeps the safety poll and nothing else.
   entity = null,
+  cacheEntity = entity,
   navigate = null,
   viewingContext = null,
 }) {
   const openFile = (navigate && navigate.openFile) || null;
-  const cacheScope = currentCacheScope();
   let host = null;
   let watcher = null;
   let editedTimeWatcher = null;
@@ -375,7 +377,7 @@ export function createReviewPlug({
   // The local cache's slot for this surface's aggregate diff, keyed by the
   // entity the diff belongs to. A surface that names none caches nothing.
   const diffAddress = () =>
-    entity ? cacheScope?.address({ entityId: entity, kind: "diff" }) || null : null;
+    cacheEntity ? cacheScope?.address({ entityId: cacheEntity, kind: "diff" }) || null : null;
   let livePainted = false; // a live payload outranks whatever the cache held
 
   /** The saved diff, painted whole — comment tray and verbs included, from the
@@ -538,6 +540,9 @@ export function createReviewPlug({
         intervalMs: pollMs,
         entity,
         pausesWhileHidden: false,
+        // Focus tier: the changeset is the working tree and its status.
+        kinds: ["git", "files"],
+        mode: "realtime",
       });
       editedTimeWatcher = watchEditedTimes(host);
     },

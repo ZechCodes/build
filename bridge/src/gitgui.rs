@@ -6,11 +6,14 @@ mod mutations;
 mod network;
 mod patches;
 mod status;
+pub(crate) use status::status_shape;
 #[cfg(test)]
 mod tests;
+mod unpushed;
 
 pub use branches::{
-    branch_delete, branch_list, branch_origin, checkout, BranchListing, BranchOrigin, BranchRow,
+    branch_delete, branch_list, branch_origin, checkout, checkout_ref, ref_list, BranchListing,
+    BranchOrigin, BranchRow, CurrentRef, RefKind, RefListing, RefRow,
 };
 pub use history::{
     log_page, show_commit, truncate_at_utf8_boundary, GIT_BODY_MAX_BYTES, GIT_SHOW_MAX_PATCH_BYTES,
@@ -22,3 +25,4 @@ pub use mutations::{
 pub use network::{fetch, pull, push, GIT_NETWORK_TIMEOUT_SECS};
 pub use patches::{file_patches, GIT_DIFF_MAX_ANSWER_BYTES, GIT_DIFF_MAX_PATHS};
 pub use status::{status_payload, status_payload_unless};
+pub use unpushed::{aggregate_work_summary, unpushed_payload, work_summary, WorkSummary};

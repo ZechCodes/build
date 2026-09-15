@@ -10,6 +10,7 @@
 // buttons. No DOM, no app imports — views/archive.js wires these.
 
 import { esc } from "./text.js";
+import { clashingNames, dimDeviceHtml } from "./inbox.js";
 
 /** How the work ended, in words. The token is a run state, an issue state, or
  *  the bare `archived` a finished checkout leaves behind. A token this client
@@ -17,6 +18,7 @@ import { esc } from "./text.js";
  *  never as nothing. */
 const STATE_LABEL = {
   archived: "Archived",
+  finished: "Finished",
   merged: "Merged",
   abandoned: "Abandoned",
   failed: "Failed",
@@ -61,22 +63,23 @@ export function archiveDateLabel(iso) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(at));
 }
 
-const KIND_LABEL = { issue: "Issue", branch: "Branch" };
+const KIND_LABEL = { issue: "Issue", branch: "Branch", workspace: "Workspace" };
 
 // eslint-disable-next-line complexity -- ratchet: toRow is at 12, cap 10 — reduce it, then drop this line
 function toRow(item, index) {
-  const kind = item.kind === "issue" ? "issue" : "branch";
+  const kind = item.kind === "issue" || item.kind === "workspace" ? item.kind : "branch";
   const branch = text(item.branch);
   const state = text(item.state);
   const action = text(item.action);
   const finishedAt = text(item.finished_at);
   return {
-    key: text(item.run_id) || text(item.issue_id) || text(item.worktree_id) || `row-${index}`,
+    key: text(item.workspace_id) || text(item.run_id) || text(item.issue_id) || text(item.worktree_id) || `row-${index}`,
     kind,
     kindLabel: KIND_LABEL[kind],
     title: text(item.title) || branch || "(untitled)",
     project: text(item.project) || "",
     projectId: text(item.project_id),
+    workspaceId: text(item.workspace_id),
     branch,
     state,
     stateLabel: state === null ? "Ended" : STATE_LABEL[state] || state,
@@ -97,15 +100,20 @@ function toRow(item, index) {
   };
 }
 
-/** Everything the bridge filed away, newest first. Rows that are not objects
- *  are dropped; rows missing a stamp keep their place at the end, because a
- *  record with no date is still a record. */
+/** The order the archive reads in: newest first, and a record missing its stamp
+ *  keeps its place at the end, because a record with no date is still a record.
+ *  Stated once, because the merge across devices orders the same way. */
+export const newestFirst = (first, second) =>
+  (second.finishedMs ?? Number.NEGATIVE_INFINITY) - (first.finishedMs ?? Number.NEGATIVE_INFINITY);
+
+/** Everything one bridge filed away, newest first. Rows that are not objects
+ *  are dropped. */
 export function archiveRows(payload) {
   const items = Array.isArray(payload?.items) ? payload.items : [];
   return items
     .filter((item) => item && typeof item === "object")
     .map(toRow)
-    .sort((a, b) => (b.finishedMs ?? Number.NEGATIVE_INFINITY) - (a.finishedMs ?? Number.NEGATIVE_INFINITY));
+    .sort(newestFirst);
 }
 
 const factRow = (label, value) =>
@@ -136,10 +144,27 @@ export function archiveRecordHtml(row) {
 }
 
 /** One archived row, and its record when it is the open one. */
+/**
+ * Which machine each row is to say it is on, by row key — null where the title
+ * says which work it is on its own.
+ *
+ * The archive is the account's, so two machines' `repo` are two different
+ * checkouts filed under one word and nothing else on the row tells them apart.
+ * The rule is the rail's (core/inbox.js), so the two pages never disagree about
+ * when a name needs its machine said.
+ */
+export function archiveDeviceNames(rows, devices = []) {
+  const clashes = clashingNames(rows, (row) => row.title);
+  const names = new Map(devices.map((device) => [device.id, device.name]));
+  return new Map(rows.map((row) => [row.key, clashes.has(row.title) ? names.get(row.deviceId) || null : null]));
+}
+
 export function archiveRowHtml(row, ui = {}) {
   const open = ui.openKey === row.key;
   return `<div class="card quiet archive-row" data-key="${esc(row.key)}" role="button" tabindex="0" aria-expanded="${open}">
-    <div class="top"><span class="title">${esc(row.title)}</span><span class="chip work">${esc(row.kindLabel)}</span></div>
+    <div class="top"><span class="title">${esc(row.title)}</span>${dimDeviceHtml(
+      ui.deviceNames?.get(row.key),
+    )}<span class="chip work">${esc(row.kindLabel)}</span></div>
     <div class="meta"><span>${esc(row.project)}</span><span>·</span><span>${esc(row.stateLabel)}</span><span>·</span><span>${esc(
       row.finishedLabel,
     )}</span>${row.branch ? `<span>·</span><span>${esc(row.branch)}</span>` : ""}</div>

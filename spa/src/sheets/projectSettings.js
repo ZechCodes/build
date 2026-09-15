@@ -8,13 +8,19 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../core/isolation.js";
-import { App } from "../app.js";
 
 const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
     <input id="${id}" style="width:100%" value="${esc(value || "")}" readonly /></div>`;
 
-export function openProjectSettings(projectId, { callRpc = (method, params) => App.call(method, params) } = {}) {
+const sourcesHtml = (project) => !project.sources?.length ? "" : `<fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders</legend>
+  ${project.sources.map((source, index) => `<div class="field"><label for="pssource-${index}">${esc(source.mount || source.name || `Folder ${index + 1}`)}</label>
+    <input id="pssource-${index}" style="width:100%" value="${esc(source.path || source.remote || "")}" readonly>
+    <div class="dim">${source.is_git === false ? "Folder" : `Git repository${source.base_branch ? ` · ${esc(source.base_branch)}` : ""}`}</div></div>`).join("")}</fieldset>`;
+
+/** Opened with the caller of the machine this project is on: whoever opens the
+ *  sheet has already resolved that, so nothing here asks which device it is. */
+export function openProjectSettings(projectId, { callRpc }) {
   const sheet = $("#sheet");
   sheet.innerHTML = `<h3>Project settings</h3><div class="sub">Loading…</div>`;
   $("#scrim").classList.add("show");
@@ -35,6 +41,7 @@ export function openProjectSettings(projectId, { callRpc = (method, params) => A
       ${field("Name", "psname", project.name)}
       ${field("Repository path", "pspath", project.path)}
       ${field("Base branch", "psbranch", project.base_branch)}
+      ${sourcesHtml(project)}
       ${isolationFieldHtml()}
       <div class="field"><label>Origin remote</label>
         <input id="psremote" placeholder="git@github.com:org/repo.git" style="width:100%" value="${esc(project.remote || "")}" /></div>

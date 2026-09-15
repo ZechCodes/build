@@ -548,13 +548,17 @@ pub(in crate::app) fn publish_agent_tab(
             s.record_agent_resume_id(&owner, &agent_id, None);
         }
         inherited = inherit_waiting_clients(&mut s, key, &tab);
-        let running = tab
-            .session
-            .active_model()
-            .or_else(|| model_choice.model.clone());
+        let (reported_model, reported_effort) = tab.session.active_choice();
+        let has_reported_model = reported_model.is_some();
+        let running = reported_model.or_else(|| model_choice.model.clone());
+        let running_effort = if has_reported_model {
+            reported_effort
+        } else {
+            reported_effort.or_else(|| model_choice.effort.clone())
+        };
         s.session_registry.insert_opened(key.clone(), tab);
         claim.settle(&mut s);
-        s.record_agent_active_model(&owner, &agent_id, running);
+        s.record_agent_runtime_choice(&owner, &agent_id, running, running_effort);
         stranded = !s.agent_target_exists(&owner, &agent_id, conversation_id, &key.root);
         if stranded {
             s.retire_tab(key, "closed");

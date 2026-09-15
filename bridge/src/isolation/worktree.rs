@@ -212,6 +212,53 @@ mod tests {
         );
     }
 
+    /// A checkout sitting directly under a worktrees root — the only shape
+    /// there was before workspaces, and the shape every registry already on a
+    /// user's machine was written with — is still registered, verified,
+    /// discovered and torn down under its plain directory name. No migration:
+    /// the workspace rule reaches only a mount whose parent holds the manifest.
+    #[test]
+    fn a_legacy_checkout_under_a_worktrees_root_keeps_its_directory_name() {
+        let (dir, project) = init_repo();
+        git_in(&project, &["branch", "csv-export"]);
+        let root = dir.path().join("worktrees");
+        std::fs::create_dir_all(&root).unwrap();
+        let checkout = root.join("csv-export");
+
+        WorktreeBackend
+            .materialize(&project, "csv-export", &checkout)
+            .unwrap();
+
+        assert!(
+            project.join(".git/worktrees/csv-export").is_dir(),
+            "git registered the checkout under its own directory name"
+        );
+        WorktreeBackend
+            .verify(&project, &checkout, "csv-export")
+            .unwrap();
+        assert!(WorktreeBackend
+            .holds_record(&project, "csv-export")
+            .unwrap());
+        record_branch_teardown(&checkout, BranchTeardown::KeepsBranch).unwrap();
+        assert_eq!(
+            WorktreeBackend
+                .teardown_record(&project, "csv-export")
+                .unwrap(),
+            Some(BranchTeardown::KeepsBranch),
+        );
+        assert_eq!(
+            WorktreeBackend.discover(&project, &root).unwrap(),
+            vec![std::fs::canonicalize(&checkout).unwrap()],
+        );
+
+        WorktreeBackend.remove(&project, &checkout).unwrap();
+
+        assert!(!checkout.exists());
+        assert!(!WorktreeBackend
+            .holds_record(&project, "csv-export")
+            .unwrap());
+    }
+
     /// No registration is no record: git holds nothing to read, so the branch
     /// is nobody's to vouch for.
     #[test]

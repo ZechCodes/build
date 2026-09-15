@@ -18,7 +18,6 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
-import { currentCacheScope } from "../core/cacheScope.js";
 import { coordinatedRead, rpcReadKey } from "../core/readRequests.js";
 
 export const WORKTREE_REVIEW_POLL_MS = REVIEW_POLL_MS;
@@ -47,7 +46,8 @@ export function unadoptableHint(meta) {
 }
 
 /**
- * createWorktreeReview({ projectId, worktreeId, callRpc, adopting, ... }) →
+ * createWorktreeReview({ projectId, worktreeId, callRpc, cacheScope, adopting,
+ *   ... }) →
  *   { mount(host), unmount(), getBase() } — the gitPane review plug.
  *
  * `adopting` is the view's shared createAdoptingCall: the first mutating action
@@ -60,6 +60,9 @@ export function createWorktreeReview({
   projectId,
   worktreeId,
   callRpc,
+  // The cache and the read-coordination identity of the machine the worktree
+  // is on.
+  cacheScope = null,
   adopting,
   initialProvider = "",
   isOffline = () => false,
@@ -74,7 +77,7 @@ export function createWorktreeReview({
   // "the worktree vanished" verdict.
   let acting = false;
   let meta = null; // the last worktree.diff payload's branch/base/adoptable/path
-  const requestScope = currentCacheScope() || callRpc;
+  const requestScope = cacheScope || callRpc;
 
   const branchLabel = () => (meta && meta.branch) || "the branch";
   const baseLabel = () => (meta && meta.base_branch) || "main";
@@ -109,7 +112,7 @@ export function createWorktreeReview({
     };
     return coordinatedRead({
       key: rpcReadKey({
-        deviceId: currentCacheScope()?.deviceId,
+        deviceId: cacheScope?.deviceId,
         requestScope,
         repository: `worktree:${projectId}:${worktreeId}`,
         call: callRpc,
@@ -141,6 +144,7 @@ export function createWorktreeReview({
   };
 
   const plug = createReviewPlug({
+    cacheScope,
     isOffline,
     viewingContext,
     navigate,

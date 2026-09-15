@@ -115,7 +115,7 @@ impl ActivePlan {
 use super::reporting::merge_stage_docs;
 use super::workspace::{
     append_stage_catalog, dir_holds_a_file, gate_plan_message, gate_plan_stage_notes,
-    plan_docs_dir_display, THREAD_NOTIFICATION,
+    plan_docs_dir_display, NEW_THREAD_MESSAGES_PROMPT,
 };
 use super::{ActiveRun, AgentTurn, Orchestrator, OrchestratorError};
 
@@ -464,9 +464,13 @@ impl Orchestrator {
             &self.templates.revise_stage,
             active,
             index,
-            THREAD_NOTIFICATION,
+            NEW_THREAD_MESSAGES_PROMPT,
         );
-        Ok(AgentTurn::posted(prompt, THREAD_NOTIFICATION, "revise"))
+        Ok(AgentTurn::posted(
+            prompt,
+            NEW_THREAD_MESSAGES_PROMPT,
+            "revise",
+        ))
     }
     /// A freeform human message to the plan's agent (the plan-side `message`).
     /// A live `Drafting` session is redirected; parked states (blocked / failed
@@ -515,7 +519,7 @@ impl Orchestrator {
                     &self.templates.revise_stage,
                     active,
                     index,
-                    THREAD_NOTIFICATION,
+                    NEW_THREAD_MESSAGES_PROMPT,
                 )
             }
             None => self.render_plan(&self.templates.plan, active, ""),
@@ -631,9 +635,13 @@ impl Orchestrator {
             active,
             &plan.stages,
             doc_index,
-            THREAD_NOTIFICATION,
+            NEW_THREAD_MESSAGES_PROMPT,
         );
-        Ok(AgentTurn::posted(prompt, THREAD_NOTIFICATION, "revise"))
+        Ok(AgentTurn::posted(
+            prompt,
+            NEW_THREAD_MESSAGES_PROMPT,
+            "revise",
+        ))
     }
     pub(super) fn render_plan(
         &self,

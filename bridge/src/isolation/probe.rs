@@ -1,180 +1,312 @@
-//! Can a copy-on-write clone be made for a project on this volume? Four checks
-//! in order, first failure wins, each carrying the exact sentence a control
-//! shows the user (spec §4.3). The reason is user copy, not a log line: this is
-//! the one place a volume's answer is worded, and nothing here is cached — the
-//! probe is three `stat`s and one tiny clone, cheap enough to ask on every use.
+//! Side-effect-free Rift capability detection, plus an opt-in real-backend
+//! test helper. Availability only inspects paths and asks the executable for
+//! help; it never initializes a workspace or probes reflinks itself.
 
-use std::os::unix::fs::MetadataExt;
-use std::path::Path;
-use std::sync::atomic::AtomicU64;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use super::cow::clone_tree;
+use crate::git_process::run_command_with_deadline;
 
-const NOT_OWN_GIT_DIRECTORY: &str = "the project checkout is itself a linked worktree; clones need the repository's own .git directory";
-const CROSS_VOLUME: &str =
-    "the project and the worktrees folder are on different volumes; clones cannot cross volumes";
-const WORKTREES_ROOT_UNREADABLE: &str = "the worktrees folder cannot be created or read";
-const PROJECT_UNREADABLE: &str = "the project folder cannot be read";
+const PROBE_DEADLINE: Duration = Duration::from_secs(2);
 
-/// A sentence this module owns with the operating system's words in
-/// parentheses, so nothing the probe answers is raw io text: every `Err` here
-/// is the copy a control shows.
-fn because(sentence: &str, error: std::io::Error) -> String {
-    format!("{sentence} ({error})")
+pub fn rift_availability(project: &Path, worktrees_root: &Path) -> Result<(), String> {
+    rift_availability_with(OsStr::new("rift"), project, worktrees_root)
 }
 
-/// `Ok(())` when a clone can be made for `project` whose checkouts live under
-/// `worktrees_root`, else the sentence explaining why not.
-pub fn cow_availability(project: &Path, worktrees_root: &Path) -> Result<(), String> {
-    if !project.join(".git").is_dir() {
-        return Err(NOT_OWN_GIT_DIRECTORY.to_string());
-    }
-    std::fs::create_dir_all(worktrees_root)
-        .map_err(|error| because(WORKTREES_ROOT_UNREADABLE, error))?;
-    let project_volume = std::fs::metadata(project)
-        .map_err(|error| because(PROJECT_UNREADABLE, error))?
-        .dev();
-    let root_volume = std::fs::metadata(worktrees_root)
-        .map_err(|error| because(WORKTREES_ROOT_UNREADABLE, error))?
-        .dev();
-    if project_volume != root_volume {
-        return Err(CROSS_VOLUME.to_string());
-    }
-    clone_probe(worktrees_root)
+pub(crate) fn rift_availability_with(
+    executable: &OsStr,
+    project: &Path,
+    worktrees_root: &Path,
+) -> Result<(), String> {
+    validate_paths(project, worktrees_root)?;
+    require_help(
+        executable,
+        project,
+        &["--help"],
+        &["init", "create", "remove", "list", "gc"],
+    )?;
+    require_help(executable, project, &["init", "--help"], &["--here"])?;
+    require_help(
+        executable,
+        project,
+        &["create", "--help"],
+        &["--name", "--into", "--copy-all", "--no-hooks"],
+    )?;
+    require_help(executable, project, &["remove", "--help"], &["--no-hooks"])
 }
 
-/// How many probes this process has run, so two running at once cannot name
-/// the same scratch file and delete each other's source mid-clone.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-static PROBES_RUN: AtomicU64 = AtomicU64::new(0);
+/// Whether Rift can copy an ordinary directory into `workspaces_root`.
+/// This uses the same CLI capability checks as Git checkout isolation, without
+/// requiring the source to contain an independent Git directory.
+pub(crate) fn rift_directory_availability_with(
+    executable: &OsStr,
+    source: &Path,
+    workspaces_root: &Path,
+) -> Result<(), String> {
+    validate_storage_paths(source, workspaces_root)?;
+    require_help(
+        executable,
+        source,
+        &["--help"],
+        &["init", "create", "remove", "list", "gc"],
+    )?;
+    require_help(executable, source, &["init", "--help"], &["--here"])?;
+    require_help(
+        executable,
+        source,
+        &["create", "--help"],
+        &["--name", "--into", "--copy-all", "--no-hooks"],
+    )?;
+    require_help(executable, source, &["remove", "--help"], &["--no-hooks"])
+}
 
-/// Prove the volume clones by cloning a few bytes and removing both files. The
-/// clone call is the same one `materialize` uses, so the probe cannot pass a
-/// volume a real clone would fail on.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn clone_probe(worktrees_root: &Path) -> Result<(), String> {
-    let scratch = format!(
-        ".cow-probe-{}-{}",
-        std::process::id(),
-        PROBES_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+pub(crate) fn validate_paths(project: &Path, worktrees_root: &Path) -> Result<(), String> {
+    let project = std::fs::canonicalize(project)
+        .map_err(|error| format!("the project cannot be opened for Rift ({error})"))?;
+    if !has_independent_git_dir(&project) {
+        return Err(
+            "Rift requires the project to be a standalone Git repository, not a linked worktree"
+                .to_string(),
+        );
+    }
+    validate_storage_paths(&project, worktrees_root).map_err(|reason| {
+        reason.replace(
+            "outside the directory being copied",
+            "outside the project being copied",
+        )
+    })
+}
+
+pub(crate) fn validate_storage_paths(source: &Path, workspaces_root: &Path) -> Result<(), String> {
+    let source = std::fs::canonicalize(source)
+        .map_err(|error| format!("the source cannot be opened for Rift ({error})"))?;
+    let worktrees_root = resolved_path(workspaces_root)?;
+    if worktrees_root.starts_with(&source) {
+        return Err("Rift checkout storage must be outside the directory being copied".to_string());
+    }
+    let ancestor = worktrees_root
+        .ancestors()
+        .find(|ancestor| ancestor.exists())
+        .ok_or_else(|| "Rift checkout storage has no existing parent directory".to_string())?;
+    if !ancestor.is_dir() {
+        return Err(format!(
+            "Rift checkout storage cannot be created under {}",
+            ancestor.display()
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn has_independent_git_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path.join(".git")).is_ok_and(|metadata| metadata.file_type().is_dir())
+}
+
+pub(crate) fn validate_database_path(project: &Path, database: &Path) -> Result<(), String> {
+    let project = std::fs::canonicalize(project)
+        .map_err(|error| format!("the project cannot be opened for Rift ({error})"))?;
+    let parent = database
+        .parent()
+        .ok_or_else(|| "Rift registry path has no parent directory".to_string())?;
+    if resolved_path(parent)?.starts_with(project) {
+        return Err("Rift registry must be outside the project being copied".to_string());
+    }
+    Ok(())
+}
+
+fn resolved_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|current| current.join(path))
+            .map_err(|error| format!("Rift checkout storage cannot be resolved ({error})"))?
+    };
+    if absolute
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err("Rift paths cannot contain parent-directory components".to_string());
+    }
+    let normalized = normalize(&absolute);
+    let existing = normalized
+        .ancestors()
+        .find(|ancestor| ancestor.exists())
+        .ok_or_else(|| "Rift checkout storage has no existing parent directory".to_string())?;
+    let canonical = std::fs::canonicalize(existing)
+        .map_err(|error| format!("Rift checkout storage cannot be resolved ({error})"))?;
+    let suffix = normalized
+        .strip_prefix(existing)
+        .expect("an ancestor is always a path prefix");
+    Ok(canonical.join(suffix))
+}
+
+fn normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+fn require_help(
+    executable: &OsStr,
+    dir: &Path,
+    string_args: &[&str],
+    capabilities: &[&str],
+) -> Result<(), String> {
+    let owned: Vec<OsString> = string_args.iter().map(OsString::from).collect();
+    let args: Vec<&OsStr> = owned.iter().map(OsString::as_os_str).collect();
+    let output = run_command_with_deadline(executable, dir, &args, PROBE_DEADLINE)
+        .map_err(|error| format!("the Rift CLI is unavailable ({error})"))?;
+    if !output.status.success() {
+        return Err(format!("the Rift CLI cannot run {}", string_args.join(" ")));
+    }
+    let help = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    let source = worktrees_root.join(&scratch);
-    let clone = worktrees_root.join(format!("{scratch}.clone"));
-    let result = write_then_clone(&source, &clone);
-    let _ = std::fs::remove_file(&source);
-    let _ = std::fs::remove_file(&clone);
-    result
+    let missing: Vec<&&str> = capabilities
+        .iter()
+        .filter(|capability| !help.contains(**capability))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the installed Rift CLI lacks required capabilities: {}",
+            missing.into_iter().copied().collect::<Vec<_>>().join(", ")
+        ))
+    }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn write_then_clone(source: &Path, clone: &Path) -> Result<(), String> {
-    std::fs::write(source, b"cow-probe").map_err(|error| error.to_string())?;
-    clone_tree(source, clone)
-        .map_err(|error| format!("this volume does not support copy-on-write cloning ({error})"))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn clone_probe(_worktrees_root: &Path) -> Result<(), String> {
-    Err("copy-on-write isolation is only available on macOS and Linux".to_string())
-}
-
-/// Whether a clone can be made under `dir` on this machine. On failure it
-/// prints the reason and answers false, so a clone test says aloud why it did
-/// nothing rather than passing without exercising anything. Every clone test —
-/// the backend's and the façade's — opens with it, so the skip rule and the
-/// project it probes with are one fact.
+/// Exercise the installed Rift executable against a disposable repository.
+/// Real-backend tests use this instead of making platform-specific reflink
+/// assumptions. A failure prints why the test is skipped.
 #[cfg(test)]
-pub(crate) fn cow_or_skip(dir: &Path) -> bool {
-    let project = dir.join("cow-probe-project");
-    std::fs::create_dir_all(project.join(".git")).unwrap();
-    match cow_availability(&project, &dir.join("cow-probe-worktrees")) {
+pub(crate) fn rift_or_skip(dir: &Path) -> bool {
+    use crate::git_fixture::init_repo_named;
+    use crate::isolation::{IsolationBackend, RiftBackend};
+
+    let fixture = tempfile::tempdir_in(dir).unwrap();
+    let project = init_repo_named(fixture.path(), "rift-probe-project");
+    let worktrees_root = fixture.path().join("worktrees");
+    if let Err(reason) = rift_availability(&project, &worktrees_root) {
+        eprintln!("skipping Rift test: {reason}");
+        return false;
+    }
+    let backend = RiftBackend::new(&worktrees_root);
+    let checkout = worktrees_root.join("probe");
+    let result = backend
+        .materialize(&project, "main", &checkout)
+        .and_then(|()| backend.remove(&project, &checkout));
+    match result {
         Ok(()) => true,
-        Err(reason) => {
-            eprintln!("skipping: {reason}");
+        Err(error) => {
+            eprintln!("skipping Rift test: {error}");
             false
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::git_fixture::init_repo;
+    use std::os::unix::fs::PermissionsExt;
 
-    /// No platform assumption: the probe and a real single-file clone on this
-    /// machine's temp volume must reach the same verdict, so the probe never
-    /// promises a clone the filesystem would refuse and never refuses one it
-    /// would allow.
-    #[test]
-    fn the_probe_agrees_with_a_real_file_clone() {
-        let (dir, project) = init_repo();
-        let worktrees_root = dir.path().join("worktrees");
-
-        let probe = cow_availability(&project, &worktrees_root);
-
-        let source = worktrees_root.join("agreement-probe");
-        std::fs::write(&source, b"agreement").unwrap();
-        let clone = worktrees_root.join("agreement-probe.clone");
-        let real_clone = clone_tree(&source, &clone);
-
-        assert_eq!(
-            probe.is_ok(),
-            real_clone.is_ok(),
-            "probe said {probe:?} but a real file clone said {real_clone:?}"
-        );
+    fn fake_rift(dir: &Path, body: &str) -> PathBuf {
+        let executable = dir.join("rift");
+        std::fs::write(&executable, body).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        executable
     }
 
-    /// Every sentence the probe returns is one it wrote. A worktrees folder
-    /// that cannot be made is a volume answer like any other, so it reads as
-    /// copy the controls can show, with the operating system's words in
-    /// parentheses rather than standing alone.
     #[test]
-    fn an_unmakeable_worktrees_folder_answers_in_the_probes_own_words() {
+    fn availability_validates_help_without_creating_storage_or_a_database() {
         let (dir, project) = init_repo();
-        let blocking_file = dir.path().join("not-a-folder");
-        std::fs::write(&blocking_file, b"in the way").unwrap();
-
-        let reason = cow_availability(&project, &blocking_file.join("worktrees")).unwrap_err();
-
-        assert!(reason.starts_with(WORKTREES_ROOT_UNREADABLE), "{reason}");
-        assert!(
-            reason.ends_with(')'),
-            "the os error is not parenthetical: {reason}"
+        let root = dir.path().join("outside").join("worktrees");
+        let executable = fake_rift(
+            dir.path(),
+            "#!/bin/sh\nprintf '%s\\n' 'init create remove list gc --here --name --into --copy-all --no-hooks'\n",
         );
+
+        rift_availability_with(executable.as_os_str(), &project, &root).unwrap();
+
+        assert!(!root.exists());
+        assert!(!project.join(".rift").exists());
     }
 
-    /// Probes running at the same time in one process must not see each
-    /// other's scratch files: a shared name lets one probe delete another's
-    /// source mid-clone and report a volume that clones fine as one that
-    /// cannot. The bridge probes on every create and on every settings read,
-    /// all of which it serves concurrently.
     #[test]
-    fn concurrent_probes_do_not_disturb_each_other() {
+    fn availability_rejects_an_incomplete_cli() {
         let (dir, project) = init_repo();
-        if !cow_or_skip(dir.path()) {
-            return;
-        }
-        let worktrees_root = dir.path().join("worktrees");
-
-        let failures: Vec<String> = std::thread::scope(|scope| {
-            let probes: Vec<_> = (0..8)
-                .map(|_| {
-                    scope.spawn(|| {
-                        (0..25)
-                            .filter_map(|_| cow_availability(&project, &worktrees_root).err())
-                            .collect::<Vec<String>>()
-                    })
-                })
-                .collect();
-            probes
-                .into_iter()
-                .flat_map(|probe| probe.join().unwrap())
-                .collect()
-        });
-
-        assert!(
-            failures.is_empty(),
-            "concurrent probes refused a volume that clones: {failures:?}"
+        let executable = fake_rift(
+            dir.path(),
+            "#!/bin/sh\nprintf 'init create remove list gc\\n'\n",
         );
+
+        let reason = rift_availability_with(
+            executable.as_os_str(),
+            &project,
+            &dir.path().join("worktrees"),
+        )
+        .unwrap_err();
+
+        assert!(reason.contains("lacks required capabilities"), "{reason}");
+    }
+
+    #[test]
+    fn availability_rejects_storage_inside_the_project() {
+        let (dir, project) = init_repo();
+        let executable = fake_rift(dir.path(), "#!/bin/sh\nexit 0\n");
+
+        let reason =
+            rift_availability_with(executable.as_os_str(), &project, &project.join("worktrees"))
+                .unwrap_err();
+
+        assert!(reason.contains("outside the project"), "{reason}");
+    }
+
+    #[test]
+    fn availability_resolves_a_symlink_before_checking_storage_ownership() {
+        let (dir, project) = init_repo();
+        let link = dir.path().join("project-link");
+        std::os::unix::fs::symlink(&project, &link).unwrap();
+        let executable = fake_rift(dir.path(), "#!/bin/sh\nexit 0\n");
+
+        let reason =
+            rift_availability_with(executable.as_os_str(), &project, &link.join("worktrees"))
+                .unwrap_err();
+
+        assert!(reason.contains("outside the project"), "{reason}");
+    }
+
+    #[test]
+    fn availability_rejects_a_symlinked_git_directory() {
+        let (dir, project) = init_repo();
+        let linked = dir.path().join("linked-git");
+        std::fs::create_dir(&linked).unwrap();
+        std::os::unix::fs::symlink(project.join(".git"), linked.join(".git")).unwrap();
+        let executable = fake_rift(dir.path(), "#!/bin/sh\nexit 0\n");
+
+        let reason = rift_availability_with(
+            executable.as_os_str(),
+            &linked,
+            &dir.path().join("worktrees"),
+        )
+        .unwrap_err();
+
+        assert!(reason.contains("standalone Git repository"), "{reason}");
     }
 }

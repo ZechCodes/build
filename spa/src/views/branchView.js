@@ -5,8 +5,8 @@
 // are both the toolbar's now (core/toolbar.js) — the branch name because the
 // nav bar already says it, Done (the same `branch.finish` the inbox row's
 // Done sends) through the toolbar's verb slot (`setToolbarVerb`), so a reader
-// standing IN the branch finds it beside the name it ends. Changes/Files
-// themselves pin to the bottom of whichever rail is open (`paintTabs`) —
+// standing IN the branch finds it beside the name it ends. Files/Changes have
+// a narrow view rail between the inbox and the pane's own list (`paintTabs`) —
 // #tabbody is flush against the toolbar, nothing above it spends the height.
 // core/branchFinish.js decides when Done is offered and what it promises.
 //
@@ -24,7 +24,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go, markRoute } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
-import { tabShellHtml } from "../core/tabshell.js";
+import { paintDirectoryRail } from "../core/directoryRail.js";
 import { mountConsole } from "../core/console.js";
 import { setToolbarVerb, clearToolbarVerb } from "../core/toolbar.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -33,12 +33,16 @@ import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { renderFilesTab } from "./files.js";
 import { createTaskReview } from "./taskReview.js";
 import { createWorktreeReview } from "./worktreeReview.js";
+import { initialBranchState, projectGitState } from "./branchSeed.js";
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
+import { canAnswer, routeContext } from "../core/deviceContexts.js";
+import { routeProjectKey } from "../core/deviceKey.js";
+import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
-import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
+import { refreshFeed } from "../core/taskFeed.js";
 import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
 import {
   branchCloseout,
@@ -50,11 +54,6 @@ import {
 import { isPending, removeRecord, runOptimistic } from "../core/optimistic.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
-
-const BRANCH_TABS = [
-  { id: "changes", label: "Changes" },
-  { id: "files", label: "Files" },
-];
 
 // The cadence every work surface has always read its entity at: fast enough
 // that a state flip (building → review) moves the actionbar while you watch.
@@ -90,113 +89,57 @@ export function shouldRetainDirtyFilesPane(tab, pane) {
 
 const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primary" : "none")}`;
 
-function seedBranchState(projectId, branch) {
-  let snapshot = null;
-  const unsubscribe = subscribeFeed((feed) => {
-    snapshot = feed;
-  });
-  unsubscribe();
-  if (!snapshot) return { row: null, defaultTab: "changes" };
-  const seeded = (snapshot.items || []).find(
-    (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
-  );
-  if (seeded) return { row: seeded, defaultTab: "changes" };
-  const project = (snapshot.projects || []).find((candidate) => candidate.id === projectId);
-  if (!project || project.is_git !== false) return { row: null, defaultTab: "changes" };
-  return {
-    row: { kind: "branch", project_id: projectId, project: project.name, branch, primary: true, is_git: false },
-    defaultTab: "files",
-  };
-}
-
-async function loadPlainBranch(callRpc, projectId, branch) {
-  try {
-    const listed = await callRpc("project.list");
-    const project = (listed.projects || []).find((candidate) => (candidate.project_id || candidate.id) === projectId);
-    if (!project || project.is_git !== false) return null;
-    return { kind: "branch", project_id: projectId, project: project.name, branch, primary: true, is_git: false };
-  } catch {
-    return null;
-  }
-}
-
-async function projectGitState(callRpc, projectId) {
-  try {
-    const listed = await callRpc("project.list");
-    const project = (listed.projects || []).find((candidate) => (candidate.project_id || candidate.id) === projectId);
-    return project ? project.is_git !== false : null;
-  } catch {
-    return null;
-  }
-}
-
-async function initialBranchState(callRpc, projectId, branch, requestedTab) {
-  const seeded = seedBranchState(projectId, branch);
-  const row = seeded.row || (await loadPlainBranch(callRpc, projectId, branch));
-  const defaultTab = row?.is_git === false ? "files" : seeded.defaultTab;
-  return { row, tab: requestedTab || defaultTab };
-}
+/** Where the Files tab is standing: the URL says, so a sent link opens the same
+ *  file and a reload keeps the reader's place. Pure. */
+const openPlaceOf = (route) => (route.file ? { path: route.file, line: route.line || null } : null);
 
 function mountPlainChanges(host, onInitialize) {
   App.routeLeaveGuard = null;
-  host.innerHTML = `<div class="pane-split changes2"><aside class="crail crail-host"><div class="railtabs"></div></aside><main class="empty folder-git-empty"><h2>Initialize Git</h2><p>Track changes and create branches in this folder.</p><button class="btn primary" id="init-git" type="button">Initialize Git</button><p class="error" id="init-git-status" role="status"></p></main></div>`;
+  host.innerHTML = `<div class="pane-split changes2"><aside class="crail crail-host"></aside><main class="empty folder-git-empty"><h2>Initialize Git</h2><p>Track changes and create branches in this folder.</p><button class="btn primary" id="init-git" type="button">Initialize Git</button><p class="error" id="init-git-status" role="status"></p></main></div>`;
   host.querySelector("#init-git").onclick = onInitialize;
 }
 
 export async function renderBranch() {
   const root = $("#root");
-  const { projectId, branch } = App.route;
+  const { deviceId, projectId, branch } = App.route;
+  // The machine this link is about, read once: everything mounted below is
+  // handed its caller, its cache scope, its conversations and its offline mark
+  // from here, so no pane has to ask which device it is on.
+  const context = routeContext(App.route);
+  // The account's name for this project — the pair (device, project), since
+  // every machine mints a `p1`.
+  const projectKey = routeProjectKey(App.route);
   let tab = App.route.tab || "changes";
   // Consumed once: only the navigation the toolbar's create form just fired
   // means it, and a later revisit to this same branch must not keep stealing
   // focus back to the composer.
   const autofocusComposer = App.focusComposerOnMount;
   App.focusComposerOnMount = false;
-  // Where the Files tab is standing: the URL says, so a sent link opens the
-  // same file and a reload keeps the reader's place.
-  const openAt = App.route.file ? { path: App.route.file, line: App.route.line || null } : null;
+  const openAt = openPlaceOf(App.route);
   root.className = "surface";
+  // A machine that cannot answer — never opened here, or gone since — has
+  // nothing under this link to read or write, so the surface names it rather
+  // than standing a frame up over calls that can only be refused. The notice
+  // waits for that machine and hands the link back when it lands.
+  if (!canAnswer(context)) {
+    mountDeviceNotice(root, deviceId);
+    return;
+  }
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
-  /** Changes/Files, painted into whichever rail the mounted pane just built
-   *  (.crail-host or .ftree — both flex columns ending in a slot for exactly
-   *  this) and pinned there by CSS (.railtabs). Returns whether a rail was
-   *  there to paint into. */
+  /** Changes/Files live in the shell's own icon rail between the inbox and the
+   *  work (core/directoryRail.js) — the same rail a workspace directory uses,
+   *  because they are the same two faces of one checkout. It is part of the
+   *  shell, so it remains available while the pane is loading or has no
+   *  checkout. */
   const paintTabs = () => {
-    const railHost = $("#tabbody .crail-host, #tabbody .ftree");
-    if (!railHost) return false;
-    let bar = railHost.querySelector(".railtabs");
-    if (!bar) {
-      bar = document.createElement("div");
-      bar.className = "railtabs";
-      railHost.appendChild(bar);
-    }
-    bar.innerHTML = tabShellHtml({ tabs: BRANCH_TABS, active: tab });
-    bar.querySelectorAll("[data-tab]").forEach((cell) => {
-      cell.onclick = () => go({ name: "branch", projectId, branch, tab: cell.dataset.tab });
+    const bar = $("#dir-rail");
+    if (!bar) return;
+    paintDirectoryRail(bar, {
+      active: tab,
+      onSelect: (next) => go({ name: "branch", deviceId, projectId, branch, tab: next }),
     });
-    return true;
   };
-  // The pane just mounted builds its own rail asynchronously (gitPane's
-  // skeleton waits on its first git.status/git.log; the files tree is
-  // synchronous but this stays uniform either way) — there is nothing to
-  // paint tabs into yet at the moment mountBody() calls this. Watch #tabbody
-  // until the rail actually lands, then paint once and stop watching.
-  let tabsWatcher = null;
-  const ensureTabsPainted = () => {
-    if (tabsWatcher) {
-      tabsWatcher.disconnect();
-      tabsWatcher = null;
-    }
-    if (paintTabs()) return;
-    const host = $("#tabbody");
-    if (!host) return;
-    tabsWatcher = new MutationObserver(() => {
-      if (!paintTabs()) return;
-      tabsWatcher.disconnect();
-      tabsWatcher = null;
-    });
-    tabsWatcher.observe(host, { childList: true, subtree: true });
-  };
+  paintTabs();
   // The basement, at the bottom of the view column: this branch's checkout, as
   // terminals. Shut unless the last visit left it open.
   let consolePanel = null;
@@ -209,15 +152,25 @@ export async function renderBranch() {
 
   let disposed = false;
   let row = null; // the branch.get payload: the feed row plus `run`
+  // This machine answers now. If it goes while the surface is open, what was
+  // read stays on screen and the strip says whose state that is — but only once
+  // there is something to be whose: until the row lands this frame says
+  // "loading…", and nothing on it came from that machine at all.
+  const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => Boolean(row) });
   let pane = null; // the mounted tab body ({ dispose })
   let mountedKey = null; // what the body was mounted over: tab + review key
   let reviewPlug = null; // ONE instance per backing, so pending comments survive
   let reviewKey = null;
 
-  // This mounted route belongs to the session that created it. A device switch
-  // disposes the view, but any operation already awaiting a reply must finish
-  // on that original session instead of recovering the newly-current App.call.
-  const callRpc = App.call;
+  // How everything below asks this machine. It is the device's caller, not the
+  // session's: the machine can drop and resume under a mounted surface, and the
+  // surface goes on asking the machine rather than the socket it was built
+  // over. An operation already awaiting a reply still finishes on the session
+  // that accepted it.
+  const callRpc = context.rpc;
+  // The frozen treatment every pane shows while its machine is unreachable: one
+  // device going offline says nothing about the others.
+  const isOffline = () => context.offline;
   // Two surfaces here can mutate an unclaimed checkout first — the rail's first
   // message and the review's first comment or action — and near-simultaneous
   // adoptions would ask for two owners of one checkout. Both take their adopter
@@ -226,16 +179,25 @@ export async function renderBranch() {
   const adoptingHere = () => adopterFor(branchScope(row, projectId));
 
   let rail = null;
+  // The work item and the machine it is on — the address the console and the
+  // rail are both mounted at, minted once so the two cannot drift apart.
+  const workAddress = {
+    kind: "branch",
+    deviceId,
+    projectId,
+    branch,
+    call: callRpc,
+    cacheScope: context.cacheScope,
+  };
   const ensureBranchChrome = () => {
-    if (!consolePanel) consolePanel = mountConsole($("#console-region"), { kind: "branch", projectId, branch });
+    if (!consolePanel) consolePanel = mountConsole($("#console-region"), { ...workAddress });
     if (!rail)
       rail = mountAgentRail($("#agent-rail"), {
-        kind: "branch",
-        projectId,
-        branch,
+        ...workAddress,
         selection: agentSelection,
         adopting: adoptingHere,
         autofocusComposer,
+        chatRepository: context.chatRepository,
       });
   };
   const home = () => go({ name: "inbox" });
@@ -263,7 +225,7 @@ export async function renderBranch() {
     const name = facts.branch;
     // A cancel throws BEFORE any RPC: the button restores and no notice appears.
     if (!(await confirmAction(branchFinishConfirm(facts)))) throw new Error("cancelled");
-    const inboxKey = branchInboxKey(row, { projectId, branch: name });
+    const inboxKey = branchInboxKey(row, { projectId, branch: name, projectKey });
     if (isPending(INBOX_SCOPE, inboxKey)) return;
     const finishing = runOptimistic({
       scope: INBOX_SCOPE,
@@ -274,6 +236,9 @@ export async function renderBranch() {
             kind: "branch",
             entityId: entityIdOf(row),
             issueId: row && row.issue_id,
+            // Which machine the branch is on: the link said, and the verb goes
+            // to that device.
+            deviceId,
             projectId,
             branch: name,
             // The issue ends with the branch only when the work landed;
@@ -322,7 +287,7 @@ export async function renderBranch() {
   setToolbarVerb(paintFinish);
 
   const navigate = {
-    openFile: ({ path, line }) => go({ name: "branch", projectId, branch, tab: "files", file: path, line }),
+    openFile: ({ path, line }) => go({ name: "branch", deviceId, projectId, branch, tab: "files", file: path, line }),
   };
 
   /** The plug for the Changes rail's aggregate entry, made once per backing.
@@ -339,7 +304,8 @@ export async function renderBranch() {
           callRpc,
           navigate,
           getTask: () => (row ? row.run : null),
-          isOffline: () => App.offline,
+          isOffline,
+          cacheScope: context.cacheScope,
           agentSelection,
           viewingContext: App.viewingContext,
           // A merge is the work landing: the issue it implements ends with it.
@@ -352,7 +318,8 @@ export async function renderBranch() {
           callRpc,
           navigate,
           adopting: adopterFor(scope),
-          isOffline: () => App.offline,
+          isOffline,
+          cacheScope: context.cacheScope,
           viewingContext: App.viewingContext,
           // Adoption keeps the URL — the same branch now stands on a run, so
           // the surface re-resolves and the Changes rail re-mounts run-backed.
@@ -384,14 +351,14 @@ export async function renderBranch() {
       pane = renderFilesTab(host, {
         scope,
         callRpc,
+        cacheScope: context.cacheScope,
         openAt,
         viewingContext: App.viewingContext,
         // Moving within the tab: the URL keeps up without the surface being
         // rebuilt around the file it is already showing.
-        onFileOpen: (path) => markRoute({ name: "branch", projectId, branch, tab: "files", file: path }),
+        onFileOpen: (path) => markRoute({ name: "branch", deviceId, projectId, branch, tab: "files", file: path }),
       });
       App.routeLeaveGuard = pane.canLeave;
-      ensureTabsPainted();
       return;
     }
     if (row && row.is_git === false) {
@@ -414,13 +381,13 @@ export async function renderBranch() {
           host.querySelector("#init-git-status").textContent = error.message || String(error);
         }
       });
-      ensureTabsPainted();
       return;
     }
     App.routeLeaveGuard = null;
     pane = mountGitPane(host, {
       scope,
       callRpc,
+      cacheScope: context.cacheScope,
       agentCommitOptions: row && row.run ? taskAgentCommitOptions(row.run.state, row.run.goal) : [],
       review: reviewFor(scope),
       agentSelection,
@@ -433,7 +400,6 @@ export async function renderBranch() {
       triageEnabled: () => Boolean(row && row.run && row.run.triage_enabled === true),
       triage: () => (row && row.run && row.run.triage) || null,
     });
-    ensureTabsPainted();
   };
 
   /** Mount the open tab's body over the resolved row. Idempotent per
@@ -515,18 +481,18 @@ export async function renderBranch() {
   let watcher = null;
   App.viewDispose = () => {
     disposed = true;
-    App.routeLeaveGuard = null;
     // The view ends its own read rather than trusting the shell to clear the
     // slot it put it in.
     if (watcher) watcher.dispose();
     watcher = null;
-    if (tabsWatcher) tabsWatcher.disconnect();
-    tabsWatcher = null;
+    const dirRail = $("#dir-rail");
+    if (dirRail) dirRail.innerHTML = "";
     clearToolbarVerb(paintFinish);
     if (pane) pane.dispose();
     pane = null;
     rail?.dispose();
     consolePanel?.dispose();
+    deviceStrip();
   };
   // The feed already carries this branch's row — ids, scope, agents — and the
   // cached snapshot replays synchronously at subscribe. Standing the tabs and
@@ -534,10 +500,11 @@ export async function renderBranch() {
   // then fills from its own caches) instead of a bare loading frame for the
   // length of a round trip; the first live read reconciles.
   if (!row) {
-    const initial = await initialBranchState(callRpc, projectId, branch, App.route.tab);
+    const initial = await initialBranchState(callRpc, { deviceId, projectId, branch, requestedTab: App.route.tab });
     if (disposed) return;
     row = initial.row;
     tab = initial.tab;
+    paintTabs();
     if (row) {
       mountBody();
       paintFinish();
@@ -559,6 +526,10 @@ export async function renderBranch() {
     refresh,
     intervalMs: ROW_POLL_MS,
     entity: () => [row && row.run_id, row && row.worktree_id],
+    // Focus tier: the mounted work surface reads all four kinds of this
+    // checkout, and wants them as they happen.
+    kinds: ["state", "thread", "git", "files"],
+    mode: "realtime",
   });
   App.poll = watcher;
 }

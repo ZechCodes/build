@@ -1,0 +1,18 @@
+{
+  "method": "run.delete",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7"
+  },
+  "result": {
+    "ok": true,
+    "retained_as_issue_lineage": true
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "busy",
+    "internal"
+  ]
+}

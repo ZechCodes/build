@@ -10,13 +10,106 @@ export const esc = (value) =>
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** The offline banner sentence: honest about WHEN the device went unreachable
- *  (a moving "reconnecting…" claim reads as a lie while nothing is happening)
- *  and calm about what resumes automatically. */
-export function offlineBannerText(name, sinceMs) {
+/** What a refusal says on the surface that asked. A thrown Error carries the
+ *  words; anything else a call rejected with is shown as it reads. */
+export const messageOf = (error) => (error instanceof Error ? error.message : String(error));
+
+/** What the account says about the one machine it had and lost: honest about
+ *  WHEN it went unreachable (a moving "reconnecting…" claim reads as a lie while
+ *  nothing is happening) and calm about what resumes automatically. */
+export function deviceUnreachableText(name, sinceMs) {
   const time = new Date(sinceMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `${name} unreachable since ${time} — tasks will resume when it reconnects.`;
+  return `${name || "Your device"} unreachable since ${time} — tasks will resume when it reconnects.`;
 }
+
+/** What a work surface says when the machine its link names cannot answer —
+ *  gone offline, or never opened on this client: there is nothing to read and
+ *  nothing to write until that machine is back. */
+export const deviceOfflineText = (name) =>
+  `${name || "That device"} isn't connected, so this can't be opened right now.`;
+
+/** What a work surface says when the machine it is about goes while it is open:
+ *  it keeps what it read, so the only thing missing is whose state that is. */
+export const deviceFrozenText = (name) =>
+  `${name || "That device"} isn't connected — this is what it last said.`;
+
+/** What a work surface says when the machine its link names speaks a newer
+ *  Build API than this tab: the machine is answering, but nothing here knows
+ *  the shape of its answers, so a reload is the whole of the fix. */
+export const deviceAppBehindText = (name, version) =>
+  `${name || "That device"} speaks Build API ${version || "unknown"}, which is newer than this app — reload to open it.`;
+
+/** And the other way round: the machine's bridge is older than every API this
+ *  app speaks, so the update is on that machine. */
+export const deviceBridgeBehindText = (name, version) =>
+  `${name || "That device"} speaks Build API ${version || "unknown"}, which is older than this app — update its bridge to open it.`;
+
+/** What a workspace whose checkout the bridge could not build says, wherever it
+ *  is listed — the rail row and the toolbar's switcher both. The reason's first
+ *  line only: a list row is one line, and the whole of a git error belongs on
+ *  the surface that offers the retry. */
+export const workspaceFailedText = (reason) => {
+  const first = String(reason || "").split("\n").map((line) => line.trim()).find(Boolean);
+  return first ? `Failed: ${first}` : "Failed";
+};
+
+/** The short mark a control whose machine cannot answer wears: the title on a
+ *  greyed row, the reason a shut menu item gives, and the words a call to that
+ *  machine is refused with. A label, not a sentence — the sentences above are
+ *  for surfaces with room for one. */
+export const deviceOfflineMark = "Device offline";
+
+/** And the marks for the two version gaps: the machine is answering, so saying
+ *  it is offline would be a lie. Which side is out of date is the whole of what
+ *  a control has room to say; the sentences above say what to do about it. */
+export const appBehindMark = "App is out of date";
+export const bridgeBehindMark = "Bridge is out of date";
+
+/** The one word a greyed row and the device picker both wear to say a machine
+ *  is not here. Lower case: it is a mark on something else, never a sentence of
+ *  its own. */
+export const deviceOfflineWord = "offline";
+
+/** And the words for the two version gaps, in what a row has room for: the one
+ *  thing that would make that machine readable again. */
+export const appBehindWord = "reload";
+export const bridgeBehindWord = "update";
+
+/** What the waiting screen is waiting for. An account with several machines
+ *  lists them all under this heading, and any one of them hands the app back —
+ *  so naming "your device" over that list promises one of them in particular. */
+export const waitingForDeviceText = (deviceCount) =>
+  deviceCount > 1 ? "Waiting for a device" : "Waiting for your device";
+
+/** What it says where nothing is reachable: no device to name, and no time that
+ *  would mean anything, so it says what is true and what happens. */
+export const allDevicesOfflineText = () =>
+  "All devices are offline — tasks will resume when one reconnects.";
+
+/** What it says while the account calls a machine online and this client has
+ *  not got through to it yet — a boot still in the handshake, or one that
+ *  failed. Nothing has gone offline, so nothing is named as having gone. */
+export const devicesNotReachedYetText = () =>
+  "Your devices report online, but Build could not reach one yet. It will keep trying automatically — no need to refresh.";
+
+/** What a pin control says about the thing it docks. The words are the gesture,
+ *  never the state — "Unpin the inbox" is what pressing it does, not where the
+ *  inbox is — and the subject is the thing being pinned, in the reader's words:
+ *  the inbox, the conversation. */
+export const pinText = (pinned, subject) => `${pinned ? "Unpin" : "Pin"} the ${subject}`;
+
+/** What a checkout's two faces are called on the rail that switches between
+ *  them. The rail draws an icon and nothing else, so these words ARE the
+ *  control's name: they are its tooltip and what a screen reader reads out.
+ *  One says what moved, the other says what is there. */
+export const changesTabLabel = "Changes";
+export const filesTabLabel = "Files";
+
+/** What a two-column pane's drawer trigger offers while nothing is open — the
+ *  gesture, not the state, because on a phone the list it names is behind the
+ *  trigger itself. */
+export const pickAChangesetText = "Pick a commit";
+export const pickAFileText = "Choose a file";
 
 /** Human-scale age: <60s "just now", <1h "Nm ago", <1d "Nh ago", else "Nd ago". */
 export function humanAge(seconds) {

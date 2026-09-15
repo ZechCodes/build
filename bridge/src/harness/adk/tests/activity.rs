@@ -283,8 +283,8 @@ fn real_adk_session_reports_a_background_task_and_stays_working() {
         .arg("--model")
         .arg("haiku");
 
-    let (session, mut activity) =
-        AdkSession::spawn(&spec, Some(workspace.clone())).expect("claude should spawn");
+    let (session, mut activity) = AdkSession::spawn(&spec, Some(workspace.clone()), &adk_choice())
+        .expect("claude should spawn");
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     {
         let seen = std::sync::Arc::clone(&seen);

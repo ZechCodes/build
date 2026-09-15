@@ -1,133 +1,160 @@
-// The rail's projects face, as a pure model: the inbox, grouped by project.
-// The rows are the inbox's rows in the inbox's order; each is filed under the
-// project it belongs to, so a block's rows read top to bottom exactly as they
-// do on the inbox, and the blocks stand in the order their first live row
-// holds there — the inbox's top row is the top row of the top block. A project
-// whose rows have all gone quiet stands after every project with live work,
-// and a project with no rows at all after those, in the device's own order.
-// Each block partitions its quiet rows into a Recent of its own, by the
-// inbox's rule.
+// The rail's projects face, as a pure model: the account's workspaces, grouped
+// by the project they are in. A project belongs to one machine, so a block is
+// keyed by the account-wide project key and says the machine after its name
+// where two machines use that name.
 //
-// A capture nothing has routed yet belongs to no project, so it belongs to no
-// block. It stands above them all on its own, an inbox row like any other.
-//
-// The block's head opens the project's primary checkout — the `main` row is the
-// nearest thing a project has to a page — and offers the one create surface
-// behind a +. A block folds shut by its chevron and stays that way until it is
-// opened again.
-//
-// A block with nothing live in it is flat: no box, just its head. If it has
-// quiet rows they stand straight under the head, folded shut to begin with —
-// quiet rows always start hidden — with the chevron unfolding them and no
-// Recent disclosure of their own; if it has nothing at all, the chevron has
-// nothing to fold and is disabled.
+// The block's head opens the workspace the route is standing in — failing that
+// the first one the project holds — and offers the one create surface behind a
+// +. A block folds shut by its chevron and stays that way until it is opened
+// again; one with no workspace in it is flat, and its chevron has nothing to
+// fold.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
-import { entryRoute, inboxEntries } from "./inbox.js";
-import { projectRoute } from "./projectModel.js";
+import { clashingNames, dimDeviceHtml } from "./inbox.js";
 
-/** The blocks' identity and names: the device's projects in its order, plus
- *  one for any project a row names that the device has not listed — the row
- *  is still work, and it is still somewhere. */
-function projectsNamed(projects, items) {
-  const named = new Map(projects.map((project) => [project.id, project]));
-  for (const item of items) {
-    if (!item.project_id || named.has(item.project_id)) continue;
-    named.set(item.project_id, { id: item.project_id, name: item.project || item.project_id });
+/** What a project is called: its name, or the bare id when the device has
+ *  given it none. Minted here and read everywhere — the clash set, the block
+ *  and the toolbar's menu row all have to agree on the same string. */
+export const projectNameOf = (project) => project.name || project.id;
+
+/** The bare project id a row names, whichever half of the app it came from: a
+ *  feed row carries the wire's `project_id`, a rail entry the `projectId` the
+ *  inbox normalized it to. Read here so the rest of this module never asks. */
+const bareProjectIdOf = (row) => row.project_id || row.projectId || "";
+
+/** The blocks' identity and names: every device's projects in the order they
+ *  arrived, plus one for any project a row names that its device has not
+ *  listed — the row is still work, and it is still somewhere. Work rows and
+ *  workspace rows are named the same way, because they name the same projects.
+ *
+ *  Keyed by the account-wide project key, never the bare id: both machines call
+ *  their first project `proj-1`, and those are two projects. */
+function projectsNamed(projects, rows) {
+  const named = new Map(projects.map((project) => [project.projectKey, project]));
+  for (const row of rows) {
+    if (!row.projectKey || named.has(row.projectKey)) continue;
+    const id = bareProjectIdOf(row);
+    named.set(row.projectKey, { id, projectKey: row.projectKey, deviceId: row.deviceId, name: row.project || id });
   }
   return named;
 }
 
-/** Where a block stands: by its first live row's place on the inbox; failing
- *  that by its first quiet row's, after every block with live work; failing
- *  that last of all. */
-function rankOf(block, liveRank, quietRank) {
-  if (liveRank.has(block.id)) return [0, liveRank.get(block.id)];
-  if (quietRank.has(block.id)) return [1, quietRank.get(block.id)];
-  return [2, 0];
-}
-
-const byRank = (left, right) => left.rank[0] - right.rank[0] || left.rank[1] - right.rank[1];
-
-/** The place each project's first row holds in `entries`. */
-function firstRank(entries) {
-  const rank = new Map();
-  entries.forEach((entry, index) => {
-    if (entry.projectId && !rank.has(entry.projectId)) rank.set(entry.projectId, index);
-  });
-  return rank;
-}
-
-/**
- * The projects face: `{ unsorted, blocks }`.
- *
- * `unsorted` is the rows that belong to no project yet, in inbox order. Each
- * block is `{ key, id, name, entries, recent, flat, route, unreadCount }` —
- * its rows partitioned into the list proper and Recent exactly as the inbox
- * partitions them, `flat` when nothing in it is live,
- * `route` where its head opens (the primary checkout, or nowhere), and the
- * blocks in the inbox's order.
- */
-export function projectBlocks({ items = [], projects = [], nowMs = Date.now() } = {}) {
-  const inbox = inboxEntries({ items, nowMs });
-  const liveRank = firstRank(inbox.entries);
-  const quietRank = firstRank(inbox.recent);
-  const under = (entries, id) => entries.filter((entry) => entry.projectId === id);
-  const blocks = [...projectsNamed(projects, items)].map(([id, project]) => {
-    const entries = under(inbox.entries, id);
-    const recent = under(inbox.recent, id);
-    const primary = items.find((row) => row.kind === "branch" && row.primary && row.project_id === id);
-    const block = {
-      key: `project:${id}`,
-      id,
-      name: project.name || id,
-      isGit: project.is_git !== false,
-      entries,
-      recent,
-      flat: entries.length === 0,
-      route: primary
-        ? entryRoute(primary)
-        : project.is_git === false
-          ? projectRoute(project)
-          : null,
-      unreadCount: [...entries, ...recent].reduce((total, entry) => total + entry.unreadCount, 0),
-    };
-    return { ...block, rank: rankOf(block, liveRank, quietRank) };
-  });
+/** One project's block on the landing rail's workspace face: its workspaces,
+ *  and the one the route is standing in as the block's own destination. */
+function workspaceBlockFor(project, grouped, tag, activeWorkspaceKey) {
+  const standing = grouped.find((entry) => entry.workspaceKey === activeWorkspaceKey && entry.route);
   return {
-    unsorted: [...under(inbox.entries, ""), ...under(inbox.recent, "")],
-    blocks: blocks.sort(byRank).map(({ rank, ...block }) => block),
+    key: `project:${project.projectKey}`,
+    id: project.id,
+    projectKey: project.projectKey,
+    deviceId: project.deviceId,
+    ...tag,
+    name: projectNameOf(project),
+    isGit: project.is_git !== false,
+    entries: grouped,
+    recent: [],
+    flat: grouped.length === 0,
+    route: (standing || grouped.find((entry) => entry.route))?.route || null,
+    unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, 0),
   };
 }
 
+/** Group the landing rail's workspace rows by the project they are in. A
+ *  project belongs to one machine, so the grouping is by the account-wide
+ *  project key and never by a name or a bare id: two machines each mint a
+ *  `proj-1`, and two projects may share a name — which is what the device tag
+ *  on the head is for. */
+export function workspaceProjectBlocks(entries = [], projects = [], activeWorkspaceKey = null, devices = []) {
+  const named = projectsNamed(projects, entries);
+  const tags = deviceTags([...named.values()], devices);
+  const blocks = [...named.values()].map((project) =>
+    workspaceBlockFor(
+      project,
+      entries.filter((entry) => entry.projectKey === project.projectKey),
+      tags.get(project.projectKey),
+      activeWorkspaceKey,
+    ),
+  );
+  return { unsorted: entries.filter((entry) => !entry.projectKey), blocks };
+}
+
+
+/** The project names more than one device uses. A name that is the account's
+ *  own says which project it is; one two machines both use does not, and its
+ *  blocks say the device after it. */
+const clashingProjectNames = (projects) => clashingNames(projects, projectNameOf);
+
+/** What each project in a set wears to say which device it is on, by project
+ *  key: the `{ clash, deviceName }` deviceTagHtml reads. Whether a name needs
+ *  its device said is a fact about the whole set, so the set is asked once and
+ *  every project reads itself out of that one answer. The rail's blocks and the
+ *  toolbar's menu rows are both minted here, so they wear the same tag. */
+export function deviceTags(projects, devices = []) {
+  const clashes = clashingProjectNames(projects);
+  const deviceNames = new Map(devices.map((device) => [device.id, device.name]));
+  return new Map(
+    projects.map((project) => [
+      project.projectKey,
+      { clash: clashes.has(projectNameOf(project)), deviceName: deviceNames.get(project.deviceId) || null },
+    ]),
+  );
+}
+
+/** The device a project is on, said after its name — only on a name two
+ *  devices share, so an account with one device reads exactly as it always has.
+ *  Takes anything carrying `{ clash, deviceName }`: the rail's blocks and the
+ *  toolbar's menu rows both wear it, and they wear the same tag. */
+export function deviceTagHtml(project) {
+  if (!project || !project.clash) return "";
+  return dimDeviceHtml(project.deviceName);
+}
+
+/**
+ * Which machine each project's rows are to say they are on, by project key —
+ * null where the name says which project it is on its own.
+ *
+ * Built from the same set of projects the blocks are, and by the same rule, so
+ * a row and the block it sits in never disagree about whether a name needs its
+ * machine said. Asked once for a whole list, so the row painters are handed the
+ * answer rather than deciding it a row at a time.
+ */
+export function rowDeviceNames({ items = [], projects = [], devices = [] } = {}) {
+  const tags = deviceTags([...projectsNamed(projects, items).values()], devices);
+  return new Map([...tags].map(([key, tag]) => [key, tag.clash ? tag.deviceName : null]));
+}
+
 /** Whether a block stands folded: what the user said of it if they have said
- *  anything (`folds`: project id → folded), else shut when all it holds is
+ *  anything (`folds`: project key → folded), else shut when all it holds is
  *  quiet rows — those always start hidden — and open otherwise. */
 export function blockIsFolded(block, folds) {
-  if (folds && folds.has(block.id)) return !!folds.get(block.id);
+  if (folds && folds.has(block.projectKey)) return !!folds.get(block.projectKey);
   return block.flat && block.recent.length > 0;
 }
 
-/** The block's head: the fold, the name that opens the project's checkout,
- *  how much inside is waiting, and the + that opens the create surface. The
- *  fold is disabled on a block with nothing to fold. `ui`: { folded } — the
- *  set of folded project ids, as blockIsFolded decides. */
-// eslint-disable-next-line complexity -- ratchet: projectHeadHtml is at 11, cap 10 — reduce it, then drop this line
-export function projectHeadHtml(block, ui = {}) {
-  const folded = !!(ui.folded && ui.folded.has(block.id));
+/** The chevron that folds a block shut and unfolds it again, saying which of
+ *  those a press would do. A block with nothing inside it has nothing to fold,
+ *  so its chevron is disabled rather than absent: the heads stay in line. */
+function foldButtonHtml(block, folded) {
   const foldable = block.entries.length > 0 || block.recent.length > 0;
+  return `<button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.projectKey)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>`;
+}
+
+/** The block's head: the fold, the name that opens the project's workspace,
+ *  how much inside is waiting, and the + that starts another one. The fold is
+ *  disabled on a block with nothing to fold. `ui`: { folded } — the set of
+ *  folded project keys, as blockIsFolded decides. */
+export function projectHeadHtml(block, ui = {}) {
+  const folded = !!(ui.folded && ui.folded.has(block.projectKey));
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
-  const title = block.route ? `Open ${block.name}'s checkout` : `${block.name} has no checkout to open`;
-  const create = block.isGit
-    ? `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.id)}" title="New branch or issue in ${esc(block.name)}" aria-label="New branch or issue in ${esc(block.name)}">${ICON_PLUS}</button>`
-    : "";
+  const title = block.route ? `Open ${block.name}'s workspace` : `${block.name} has no workspace to open`;
+  const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
   return `<div class="inbox-project-head">
-    <button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.id)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>
-    <button class="${nameClasses}" type="button" data-project-open="${esc(block.id)}" title="${esc(title)}">${esc(block.name)}</button>
+    ${foldButtonHtml(block, folded)}
+    <button class="${nameClasses}" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}${deviceTagHtml(block)}</button>
     ${unread}
     ${create}
   </div>`;
@@ -142,18 +169,15 @@ export function projectBlockHtml(block, ui = {}) {
   const classes = [
     "inbox-project",
     block.flat ? "inbox-flat" : "",
-    ui.folded && ui.folded.has(block.id) ? "inbox-folded" : "",
-    ui.activeProjectId === block.id ? "active" : "",
+    ui.folded && ui.folded.has(block.projectKey) ? "inbox-folded" : "",
+    ui.activeProjectId === block.projectKey ? "active" : "",
   ]
     .filter(Boolean)
     .join(" ");
-  return `<div class="${classes}" data-key="${esc(block.key)}" data-project="${esc(block.id)}">${projectHeadHtml(
+  return `<div class="${classes}" data-key="${esc(block.key)}" data-project="${esc(block.projectKey)}">${projectHeadHtml(
     block,
     ui,
   )}<div class="inbox-project-rows"></div></div>`;
 }
 
 /** The one control at the head of the projects face. */
-export function newProjectButtonHtml() {
-  return `<button class="inbox-new-project" type="button" data-new-project>${ICON_PLUS}<span>New project</span></button>`;
-}

@@ -1,0 +1,15 @@
+{
+  "method": "plan.comment_delete",
+  "since": "1.0.0",
+  "params": {
+    "plan_id": "plan-7",
+    "comment_id": "msg-31"
+  },
+  "result": {
+    "ok": true
+  },
+  "errors": [
+    "not_found",
+    "conflict"
+  ]
+}

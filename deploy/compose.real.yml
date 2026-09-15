@@ -4,7 +4,7 @@
 #     ⇅ /internal/* (X-Internal-Secret)
 #   Rust relay (single broker: /ws/device + /ws/client, ciphertext only)
 #     ⇅ E2EE envelopes
-#   bridge (device daemon, deterministic QA agent)
+#   bridge (device daemon with a sample repository)
 #
 # No gateway, no Redis, no v1 relay. The app runs SKRIFT_ENV=dev (dummy auth,
 # sqlite inside the container, first-run setup seeded by the mounted
@@ -17,10 +17,11 @@
 #   open http://localhost:8090/app/     # dummy login (any email), the SPA
 #
 # The qa one-shot approves the bridge (real register→lookup→approve pairing via
-# BRIDGE_PAIRING_CODE), then runs the E2EE round-trip + the 16-check lifecycle
-# suite. To drive the board yourself first run qa (it pairs the device for
+# BRIDGE_PAIRING_CODE), then runs the E2EE round-trip + workspace lifecycle
+# suite. To use the workspace UI yourself first run qa (it pairs the device for
 # qa@localhost) or approve the pending device in Settings → Devices with the
-# pairing code below.
+# pairing code below. The QA suite creates temporary Git and folder sources
+# through the bridge and exercises the workspace lifecycle against them.
 #
 # Ports: app :8090 (api + SPA), relay :18090 (matches the SPA bundle's
 # VITE_RELAY_URL and app.dev.yaml's connect-src).
@@ -94,8 +95,8 @@ services:
       - relay
     restart: unless-stopped
 
-  # One-shot: pair the bridge to qa@localhost, then run the full E2EE + task
-  # lifecycle verification inside the compose network.
+  # One-shot: pair the bridge to qa@localhost, then run the full E2EE +
+  # workspace lifecycle verification inside the compose network.
   qa:
     build:
       context: ../web

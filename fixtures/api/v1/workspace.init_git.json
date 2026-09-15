@@ -1,0 +1,55 @@
+{
+  "method": "workspace.init_git",
+  "since": "1.1.0",
+  "params": {
+    "workspace_id": "ws-3f2a91c4",
+    "source_id": "source-2",
+    "target": "both"
+  },
+  "result": {
+    "results": [
+      {
+        "target": "workspace",
+        "status": "initialized",
+        "is_git": true
+      },
+      {
+        "target": "source",
+        "status": "failed",
+        "is_git": false,
+        "error": "refusing to replace an existing invalid .git marker"
+      }
+    ],
+    "workspace": {
+      "id": "ws-3f2a91c4",
+      "workspace_id": "ws-3f2a91c4",
+      "project_id": "proj-1",
+      "name": "wire-facade",
+      "root": "/home/ada/.build/workspaces/proj-1/wire-facade",
+      "status": "ready",
+      "directories": [
+        {
+          "id": "ws-3f2a91c4:source-2",
+          "source_id": "source-2",
+          "name": "assets",
+          "path": "/home/ada/.build/workspaces/proj-1/wire-facade/assets",
+          "is_git": true,
+          "branch": "main",
+          "isolation": "rift",
+          "status": "ready",
+          "error": null
+        }
+      ]
+    },
+    "source": {
+      "id": "source-2",
+      "is_git": false,
+      "base_branch": "main"
+    }
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

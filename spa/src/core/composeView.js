@@ -11,8 +11,12 @@
 // session sends it. The text is never the thing that is lost.
 
 import { $ } from "../dom.js";
-import { App, go, loadModelCatalog } from "../app.js";
+import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { canAnswer, deviceFeedView, homeContext } from "./deviceContexts.js";
+import { deviceCall, deviceCatalog } from "./inboxDevices.js";
+import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
+import { UNASKED_CATALOG } from "./modelCatalog.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { isConfirmOpen } from "./confirm.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
@@ -20,7 +24,9 @@ import {
   branchOptions,
   captureRow,
   composeBoxHtml,
+  composeManualAwayNote,
   composeOfflineNote,
+  composePlaceholder,
   composePromptHtml,
   composeShortcutFires,
   flushCaptureQueue,
@@ -34,7 +40,7 @@ import {
   withoutQueued,
 } from "./compose.js";
 import { replyOrNothing } from "./session.js";
-import { esc } from "./text.js";
+import { esc, messageOf } from "./text.js";
 import "../styles/shell.css";
 
 const CHOICE_PREFIX = "compose-choice";
@@ -42,14 +48,38 @@ const CHOICE_PREFIX = "compose-choice";
 let queue = []; // captures this client is holding for an absent device
 const tracked = new Map(); // capture id → { row, settledAt, settling }
 const listeners = new Set(); // who repaints when the held captures change
+// The home device's slice of the feed, never the merge: a capture goes to the
+// device creation goes to, so the destinations this box offers and the project
+// names it prints are that device's. Every device mints a `proj-1`.
 let feed = { items: [], projects: [] };
 let box = null; // the open box's state, or null while it is shut
 let mounted = false;
-
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
-const canSend = () => !!App.call && !App.offline;
+// Every call this box makes is the creation device's, asked for the way every
+// other surface asks: by the device it is about, with naming none meaning home.
+// A machine that cannot answer hands back a caller that refuses, so nothing
+// here asks whether a device is there — only canSend, which is the same
+// question the note and the queue are the answer to.
+const homeCall = (method, params) => deviceCall(null)(method, params);
+const canSend = () => canAnswer(homeContext());
+/** What the account calls the machine this box sends to, while it can name it:
+ *  the creation device, online or away. */
+const creationDeviceName = () => deviceNameOf(App.devices, captureDeviceId());
 const projectNameOf = (projectId) =>
   (feed.projects.find((project) => project.id === projectId) || {}).name || projectId || "";
+/** The machine a capture this client holds is on: the one creation goes to,
+ *  which is the one it was sent to or is waiting for. The rail is one list
+ *  across every machine, so a row the feed does not carry yet still has to say
+ *  whose it is. */
+const captureDeviceId = () => creationDeviceId(App.devices, App.selectedDeviceId);
+
+/** One capture this client is holding, as a row: the daemon's record, the
+ *  project name off the creation device's slice of the feed, and the machine
+ *  the row is on — which is the one it went to, not whichever is home by the
+ *  time some later answer corrects it. */
+function heldCaptureRow(capture, deviceId = captureDeviceId()) {
+  const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
+  return captureRow(capture, { projectName, deviceId });
+}
 
 // ---- what the client is holding ----------------------------------------------
 
@@ -80,9 +110,8 @@ function announce() {
 export function adoptCaptureRecord(capture) {
   const held = capture && capture.id ? tracked.get(capture.id) : null;
   if (!held) return;
-  const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
   tracked.set(capture.id, {
-    row: captureRow(capture, { projectName }),
+    row: heldCaptureRow(capture, held.row.deviceId),
     settledAt: held.settledAt ? Date.now() : null,
     settling: false,
   });
@@ -101,25 +130,31 @@ export function subscribePendingCaptures(listener) {
 }
 
 function hold(text) {
-  queue = saveCaptureQueue(
-    [...queue, queuedCapture(text, { id: `local-${Date.now()}-${queue.length}`, createdAt: new Date().toISOString() })],
-  );
+  queue = saveCaptureQueue([
+    ...queue,
+    queuedCapture(text, {
+      id: `local-${Date.now()}-${queue.length}`,
+      createdAt: new Date().toISOString(),
+      deviceId: captureDeviceId(),
+    }),
+  ]);
   announce();
 }
 
 function track(capture) {
-  const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
-  tracked.set(capture.id, { row: captureRow(capture, { projectName }), settledAt: null, settling: false });
+  tracked.set(capture.id, { row: heldCaptureRow(capture), settledAt: null, settling: false });
   announce();
 }
 
 /**
- * Send what the client is holding, oldest first. Called on every fresh session
- * (connection.js adopts one) — the gate, a reconnect, a device switch.
+ * Send what the client is holding, oldest first. Captures go to the machine
+ * creation goes to, so this is called whenever that machine has a live session
+ * to take them: its first one, a reconnect, or home moving to a machine that is
+ * already live (connection.js followHomeContext).
  */
 export async function flushCaptures() {
   if (!queue.length || !canSend()) return;
-  const { sent, remaining } = await flushCaptureQueue(queue, (text) => App.call("capture.create", { text }));
+  const { sent, remaining } = await flushCaptureQueue(queue, (text) => homeCall("capture.create", { text }));
   queue = saveCaptureQueue(remaining);
   sent.forEach(({ capture }) => track(capture));
   announce();
@@ -154,10 +189,9 @@ function syncTracked() {
     if (entry.settledAt || entry.settling || !canSend()) continue;
     entry.settling = true;
     changed = true;
-    App.call("capture.get", { capture_id: id })
+    homeCall("capture.get", { capture_id: id })
       .then((capture) => {
-        const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
-        tracked.set(id, { row: captureRow(capture, { projectName }), settledAt: Date.now(), settling: false });
+        tracked.set(id, { row: heldCaptureRow(capture, entry.row.deviceId), settledAt: Date.now(), settling: false });
       })
       .catch(() => tracked.delete(id))
       .then(announce);
@@ -174,10 +208,6 @@ function paintPrompt() {
   host.querySelector("#compose-open").onclick = () => openCompose();
 }
 
-function catalog() {
-  return App.modelCatalog || { default_provider: "", providers: [] };
-}
-
 /** The manual panel: where the work goes, what it becomes there, and which
  *  harness picks it up. Rendered only while its disclosure is open. */
 function advancedHtml() {
@@ -188,25 +218,19 @@ function advancedHtml() {
         `<option value="${esc(project.id)}"${project.id === box.projectId ? " selected" : ""}>${esc(project.name || project.id)}</option>`,
     )
     .join("");
-  const kindButton = (kind, label) =>
-    `<button class="btn mini${box.kind === kind ? " primary" : ""}" type="button" data-compose-kind="${kind}">${label}</button>`;
   return `<div class="compose-advanced">
     <label for="compose-project">Project</label>
     <select id="compose-project">${projectOptions || '<option value="">No projects on this device</option>'}</select>
-    <div class="compose-kinds">${kindButton("issue", "Issue")}${kindButton("branch", "Branch")}</div>
-    ${
-      box.kind === "branch"
-        ? `<label for="compose-branch">Branch</label>
+    <div class="compose-kinds"><button class="btn mini primary" type="button" data-compose-kind="branch">Branch</button></div>
+    <label for="compose-branch">Branch</label>
            <input id="compose-branch" type="text" class="path" list="compose-branches" autocomplete="off"
              placeholder="a new branch, named after what you said" value="${esc(box.branch)}" />
            <datalist id="compose-branches">${branches
              .map((branch) => `<option value="${esc(branch)}"></option>`)
-             .join("")}</datalist>`
-        : `<div class="compose-note dim">Nothing runs until you open it and send the first message.</div>`
-    }
-    ${agentChoicePanelHtml(catalog(), box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen })}
+             .join("")}</datalist>
+    ${agentChoicePanelHtml(box.catalog, box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen })}
     <button class="btn mini primary compose-manual" id="compose-manual-go" type="button"${box.busy ? " disabled" : ""}>${
-      box.kind === "branch" ? "Dispatch to the branch" : "File the issue"
+      "Dispatch to the branch"
     }</button>
   </div>`;
 }
@@ -215,9 +239,11 @@ function paintBox({ focus = true } = {}) {
   const host = $("#compose");
   if (!host || !box) return;
   const caret = focus ? null : selectionOf(host);
+  const deviceName = creationDeviceName();
   host.innerHTML = composeBoxHtml({
     value: box.value,
-    note: canSend() ? "" : composeOfflineNote(queue.length),
+    placeholder: composePlaceholder(deviceName),
+    note: canSend() ? "" : composeOfflineNote(queue.length, deviceName),
     error: box.error,
     busy: box.busy,
     advanced: box.advancedOpen ? advancedHtml() : "",
@@ -268,13 +294,8 @@ function wireAdvanced(host) {
       paintBox({ focus: false });
     };
   }
-  host.querySelectorAll("[data-compose-kind]").forEach((control) => {
-    control.onclick = () => {
-      box.value = host.querySelector("#compose-text").value;
-      box.kind = control.dataset.composeKind;
-      paintBox({ focus: false });
-    };
-  });
+  const branchKind = host.querySelector('[data-compose-kind="branch"]');
+  if (branchKind) branchKind.onclick = () => {};
   const branch = host.querySelector("#compose-branch");
   if (branch) {
     branch.oninput = () => {
@@ -310,18 +331,22 @@ function wireChoice(host) {
 function repaintChoice(host) {
   const holder = host.querySelector(".agent-choice");
   if (!holder) return;
-  holder.outerHTML = agentChoicePanelHtml(catalog(), box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen });
+  holder.outerHTML = agentChoicePanelHtml(box.catalog, box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen });
   wireChoice(host);
 }
 
-/** The catalog is the daemon's, so the panel opens on whatever is cached and
- *  repaints once the real one lands. A repaint mid-typing is avoided by only
- *  doing it when the answer actually changed. */
+/** The catalog is the creation device's, so the panel opens on what the box
+ *  has — nothing, the first time it is opened — and repaints once that machine
+ *  answers. A repaint mid-typing is avoided by only doing it when the answer
+ *  actually changed, and a box closed before the answer lands takes its
+ *  question with it. */
 function loadCatalogForPanel() {
-  const before = App.modelCatalog;
-  loadModelCatalog()
+  const asked = box;
+  deviceCatalog(null)
     .then((loaded) => {
-      if (loaded !== before && box && box.advancedOpen) paintBox({ focus: false });
+      if (box !== asked || loaded === box.catalog) return;
+      box.catalog = loaded;
+      if (box.advancedOpen) paintBox({ focus: false });
     })
     .catch(() => {});
 }
@@ -329,6 +354,7 @@ function loadCatalogForPanel() {
 // ---- opening, closing, sending ------------------------------------------------
 
 export function openCompose() {
+  if (!$("#compose")) return;
   if (box) {
     $("#compose-text")?.focus();
     return;
@@ -337,10 +363,13 @@ export function openCompose() {
     value: "",
     error: "",
     busy: false,
+    // What the creation device offers to start work with, as far as this box
+    // knows: nothing until that machine has answered the panel's question.
+    catalog: UNASKED_CATALOG,
     advancedOpen: false,
     choiceOpen: false,
     choice: loadAgentDefaults(),
-    kind: "issue",
+    kind: "branch",
     branch: "",
     projectId: (feed.projects[0] || {}).id || "",
   };
@@ -376,7 +405,7 @@ async function submitCapture() {
   box.error = "";
   paintBox({ focus: false });
   try {
-    track(await App.call("capture.create", { text }));
+    track(await homeCall("capture.create", { text }));
     closeCompose();
     await refreshFeed();
   } catch {
@@ -392,7 +421,7 @@ async function submitManual() {
   box.value = $("#compose-text")?.value ?? box.value;
   const text = box.value.trim();
   if (!text) {
-    fail(box.kind === "branch" ? "Say what the agent should do first." : "Describe the issue first.");
+    fail("Say what the agent should do first.");
     return;
   }
   if (!box.projectId) {
@@ -400,7 +429,7 @@ async function submitManual() {
     return;
   }
   if (!canSend()) {
-    fail("Your device is away — capture it instead and it will be routed when it is back.");
+    fail(composeManualAwayNote(creationDeviceName()));
     return;
   }
   box.busy = true;
@@ -411,10 +440,10 @@ async function submitManual() {
     projectId: box.projectId,
     text,
     branch: box.branch,
-    agentParams: agentChoiceParams(catalog(), box.choice),
+    agentParams: agentChoiceParams(box.catalog, box.choice),
   });
   try {
-    const created = await replyOrNothing(App.call(method, params));
+    const created = await replyOrNothing(homeCall(method, params));
     settleManualRoute(manualRouteDestination(box.kind, created, box.projectId));
   } catch (error) {
     fail(messageOf(error));
@@ -422,11 +451,12 @@ async function submitManual() {
 }
 
 /** The box is done with: shut it, re-read the board, and open what was made
- *  wherever the reply named it. */
+ *  wherever the reply named it — on the machine it was dispatched to, since
+ *  that is the only machine the new branch is on. */
 function settleManualRoute(destination) {
   closeCompose();
   refreshFeed();
-  if (destination) go(destination);
+  if (destination) go({ ...destination, deviceId: captureDeviceId() });
 }
 
 // ---- mounting -----------------------------------------------------------------
@@ -440,11 +470,12 @@ export function initCompose() {
   }
   mounted = true;
   queue = loadCaptureQueue();
-  paintPrompt();
   subscribeFeed((next) => {
-    feed = { items: next.items || [], projects: next.projects || [] };
+    feed = deviceFeedView(next);
     syncTracked();
   });
+  if (!$("#compose")) return;
+  paintPrompt();
   document.addEventListener("keydown", (event) => {
     // A modal is a question in flight; opening a box behind it would answer
     // neither.

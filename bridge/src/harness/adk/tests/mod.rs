@@ -13,7 +13,10 @@ use crate::harness::stream_fixtures::{
 };
 use crate::harness::surfaces::AgentSurfaces;
 use crate::harness::surfaces::SurfaceWorkflow;
-use crate::harness::{ActivityReport, AgentActivity, AgentStatus, ToolOutcome, Turn};
+use crate::harness::{
+    ActivityReport, AgentActivity, AgentStatus, HarnessError, ToolOutcome, Turn, TurnChoiceSupport,
+};
+use crate::models::{AgentProvider, ModelChoice};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -252,8 +255,22 @@ fn becomes_true_within(limit: Duration, ready: impl Fn() -> bool) -> bool {
     ready()
 }
 
+/// The choice every fake is opened with unless a test says otherwise: this
+/// provider, no model named, no effort named — so the recorded `init` line
+/// is checked against nothing and every recording plays as it always did.
+fn adk_choice() -> ModelChoice {
+    ModelChoice {
+        provider: AgentProvider::ClaudeAdk,
+        ..ModelChoice::default()
+    }
+}
+
 fn open(spec: &HarnessSpec) -> AdkSession {
-    AdkSession::spawn(spec, None)
+    open_with(spec, &adk_choice())
+}
+
+fn open_with(spec: &HarnessSpec, choice: &ModelChoice) -> AdkSession {
+    AdkSession::spawn(spec, None, choice)
         .expect("the fake harness spawns")
         .0
 }

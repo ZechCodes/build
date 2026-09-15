@@ -98,7 +98,9 @@ pub(super) fn reports_already_sent(
 pub(super) fn reader_reporting_into(activity: ActivitySlot) -> ProtocolReader {
     let (status_updates, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));
     ProtocolReader::new(
-        Arc::new(Mutex::new(ProtocolState::new())),
+        Arc::new(Mutex::new(ProtocolState::new(
+            &crate::models::ModelChoice::default(),
+        ))),
         activity,
         SurfaceRevision::default(),
         status_updates,

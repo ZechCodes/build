@@ -105,6 +105,9 @@ pub struct Thread {
     pub items: Vec<ThreadItem>,
     #[serde(default)]
     pub revisions: Vec<ArtifactRevision>,
+    /// The structured report the last `done` carried, on threads written
+    /// while `done` had one. Nothing writes it any more — the summary is the
+    /// whole report — and it is kept only so those records still load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_completion: Option<CompletionReport>,
     #[serde(default)]
@@ -544,9 +547,6 @@ impl Thread {
             reply.answers_options_of = Some(choice.message_id.clone());
         }
         Ok(id)
-    }
-    pub fn remember_completion(&mut self, report: &CompletionReport) {
-        self.last_completion = Some(report.clone());
     }
     /// Record an outcome the agent reported: its summary as an ordinary agent
     /// message carrying the outcome as a status, and the structured report

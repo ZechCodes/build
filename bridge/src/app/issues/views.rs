@@ -111,7 +111,7 @@ pub(in crate::app) fn canonical_stage_execution(progress: &StageProgress) -> &'s
 }
 
 impl AppState {
-    pub(in crate::app) fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
         // See `run_get`. An issue carries exactly one agent, so naming it is a
@@ -131,7 +131,7 @@ impl AppState {
         Ok(view)
     }
 
-    pub(in crate::app) fn plan_list(&self) -> Value {
+    pub(crate) fn plan_list(&self) -> Value {
         let plans: Vec<Value> = self
             .plans
             .iter()
@@ -140,7 +140,7 @@ impl AppState {
         json!({ "plans": plans })
     }
 
-    pub(in crate::app) fn issue_list(&self) -> Value {
+    pub(crate) fn issue_list(&self) -> Value {
         let issues: Vec<Value> = self
             .plans
             .iter()
@@ -149,7 +149,7 @@ impl AppState {
         json!({ "issues": issues, "plans": issues })
     }
 
-    pub(in crate::app) fn issue_stages(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn issue_stages(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let issue = self.plans.get(&issue_id).ok_or("unknown issue_id")?;
         // An issue with no stages yet answers with the empty list that is the

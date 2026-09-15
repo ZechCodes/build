@@ -1,0 +1,48 @@
+# A second bridge on the same account — the stack the multi-device browser pass
+# needs. compose.real.yml runs one bridge, which is enough for everything that
+# is about a device but nothing that is about *which* device: the rail carrying
+# two machines' work, the device tags on clashing project names, the picker's
+# filter, one machine going while the other keeps working. This override names
+# the base bridge "Laptop" and stands a second one up as "Desktop", with its own
+# identity, its own repo and its own pairing code.
+#
+#   docker compose -f deploy/compose.real.yml -f deploy/compose.two-bridges.yml up -d --build
+#
+# Then pair both to qa@localhost. The qa one-shot pairs the first and stops
+# there (web/pair.mjs is idempotent: it exits as soon as the account owns a
+# device), so the second is approved by its own script:
+#
+#   docker compose -f deploy/compose.real.yml -f deploy/compose.two-bridges.yml \
+#     --profile qa run --rm qa node pair.mjs
+#   API_URL=http://localhost:8090 PAIRING_CODE=COMPOSE-PAIR-2 node web/pair-another.mjs
+#
+# Then open http://localhost:8090/app/ and log in as qa@localhost. Both machines
+# are container-lifetime like everything else here: `down` resets the world,
+# including both pairings.
+services:
+  bridge:
+    environment:
+      BRIDGE_DEVICE_NAME: Laptop
+
+  bridge2:
+    build:
+      context: ../bridge
+      dockerfile: Containerfile
+      target: bridge
+    environment:
+      BRIDGE_API_URL: http://app:8080
+      BRIDGE_WEB_URL: http://localhost:8090
+      # In-network dev transport; production bridges use wss://relay.getbuild.ing.
+      BRIDGE_RELAY_URL: ws://relay:8799 # nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+      # Its own deterministic code, so pair-another.mjs can approve this one
+      # without reading its logs. Dev-stack convenience only.
+      BRIDGE_PAIRING_CODE: ${BUILD_PAIRING_CODE_2:-COMPOSE-PAIR-2}
+      BRIDGE_DEVICE_NAME: Desktop
+      BRIDGE_REPO: /repo
+      BRIDGE_WORKTREES: /worktrees
+      BRIDGE_BASE_BRANCH: main
+      BRIDGE_QA_AGENT: "1"
+    depends_on:
+      - app
+      - relay
+    restart: unless-stopped

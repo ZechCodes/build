@@ -8,6 +8,10 @@ import {
   ROUTED_LINGER_MS,
   branchOptions,
   captureRow,
+  composeManualAwayNote,
+  composeOfflineNote,
+  composePlaceholder,
+  composePromptHtml,
   composeShortcutFires,
   flushCaptureQueue,
   loadCaptureQueue,
@@ -35,10 +39,14 @@ const capture = (over = {}) => ({
 describe("the capture queue", () => {
   it("keeps what was said when there is nothing to send it to", () => {
     const storage = memoryStorage();
-    const queue = [queuedCapture("ship the thing", { id: "local-1", createdAt: "2026-08-14T10:00:00Z" })];
+    const queue = [
+      queuedCapture("ship the thing", { id: "local-1", createdAt: "2026-08-14T10:00:00Z", deviceId: "dev-1" }),
+    ];
     saveCaptureQueue(queue, storage);
+    // The machine it is waiting for is kept with it: the rail lists every
+    // machine's work, and this row is on one of them.
     expect(JSON.parse(storage.entries.get(CAPTURE_QUEUE_KEY))).toEqual([
-      { id: "local-1", text: "ship the thing", createdAt: "2026-08-14T10:00:00Z" },
+      { id: "local-1", text: "ship the thing", createdAt: "2026-08-14T10:00:00Z", deviceId: "dev-1" },
     ]);
     expect(loadCaptureQueue(storage)).toEqual(queue);
   });
@@ -215,12 +223,12 @@ describe("how long a routed capture stays visible", () => {
 // router entirely and speaks the same two verbs the router's own tools do.
 
 describe("the manual route", () => {
-  it("files an inert issue: the record exists, and nothing runs until the first message", () => {
+  it("turns a retired issue choice into a branch dispatch", () => {
     expect(
       manualRoute({ kind: "issue", projectId: "p1", text: "add a /health endpoint", agentParams: { provider: "codex" } }),
     ).toEqual({
-      method: "issue.create",
-      params: { goal: "add a /health endpoint", project_id: "p1", dispatch: false, provider: "codex" },
+      method: "branch.dispatch",
+      params: { instruction: "add a /health endpoint", project_id: "p1", provider: "codex" },
     });
   });
 
@@ -236,11 +244,7 @@ describe("the manual route", () => {
   });
 
   it("opens what it made", () => {
-    expect(manualRouteDestination("issue", { project_id: "p1", issue_id: "iss-3" }, "p1")).toEqual({
-      name: "issue",
-      projectId: "p1",
-      id: "iss-3",
-    });
+    expect(manualRouteDestination("issue", { project_id: "p1", issue_id: "iss-3" }, "p1")).toBeNull();
     expect(manualRouteDestination("branch", { project_id: "p1", branch: "build/login" }, "p1")).toEqual({
       name: "branch",
       projectId: "p1",
@@ -270,5 +274,43 @@ describe("the branches a project already has", () => {
     ];
     expect(branchOptions(items, "p1")).toEqual(["build/login", "main"]);
     expect(branchOptions(items, "p3")).toEqual([]);
+  });
+});
+
+// The box is about one machine — the one creation goes to — so it says which,
+// both in the line it asks with and in what it promises about a capture it
+// cannot send yet. An account whose device this client cannot name yet keeps
+// the plain words.
+describe("what the box says about the machine it sends to", () => {
+  it("asks on the named device, and asks plainly when there is no name", () => {
+    expect(composePlaceholder("Laptop")).toBe("Capture on Laptop");
+    expect(composePlaceholder(null)).toBe("What do you want to get done?");
+    expect(composePlaceholder("")).toBe("What do you want to get done?");
+  });
+
+  // Shut and open, it is the same question: the shut box asks it on the rail and
+  // the open box asks it again in the field. One sentence, said once.
+  it("asks the shut box's question when it cannot name a device", () => {
+    expect(composePromptHtml()).toContain(composePlaceholder(null));
+  });
+
+  it("names the device it is holding a capture for", () => {
+    expect(composeOfflineNote(0, "Laptop")).toBe("Laptop is away — this is kept here and sent when it is back.");
+    expect(composeOfflineNote(1, "Laptop")).toBe("1 capture is waiting for Laptop.");
+    expect(composeOfflineNote(3, "Laptop")).toBe("3 captures are waiting for Laptop.");
+  });
+
+  it("names the same device when the manual panel will not create on it", () => {
+    expect(composeManualAwayNote("Laptop")).toBe(
+      "Laptop is away — capture it instead and it will be routed when it is back.",
+    );
+    expect(composeManualAwayNote(null)).toBe(
+      "Your device is away — capture it instead and it will be routed when it is back.",
+    );
+  });
+
+  it("says your device when this client cannot name one", () => {
+    expect(composeOfflineNote(0, null)).toBe("Your device is away — this is kept here and sent when it is back.");
+    expect(composeOfflineNote(2, null)).toBe("2 captures are waiting for your device.");
   });
 });

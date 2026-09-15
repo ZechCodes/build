@@ -1,0 +1,17 @@
+{
+  "method": "entity.seen",
+  "since": "1.0.0",
+  "params": {
+    "entity_id": "run-7",
+    "agent_id": "agent-1",
+    "read_from_sequence": 380,
+    "read_through_sequence": 412
+  },
+  "result": {
+    "ok": true
+  },
+  "errors": [
+    "not_found",
+    "invalid_params"
+  ]
+}

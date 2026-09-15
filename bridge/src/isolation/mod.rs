@@ -1,22 +1,25 @@
 //! How a checkout is isolated from the project it came from.
 //!
 //! Build gives every task its own checkout. There are two ways to make one — a
-//! git linked worktree of the project repository, and a copy-on-write clone of
-//! the whole project directory — and this module is where that variation
+//! git linked worktree of the project repository, and a Rift snapshot of the
+//! whole project directory — and this module is where that variation
 //! lives. [`Isolation`] is the choice as a value, [`Isolation::of`] reads the
 //! choice back off a checkout on disk (the environment is the source of truth;
 //! nothing about isolation is persisted), [`IsolationAvailability`] answers
-//! whether a volume can make one, and [`IsolationBackend`] is the whole of what
+//! whether its prerequisites are available, and [`IsolationBackend`] is what
 //! a backend does. `WorktreeManager` is the only caller.
 
-pub mod cow;
+mod directory;
 pub mod probe;
+pub mod rift;
 pub mod worktree;
 
 use std::path::{Path, PathBuf};
 
 use crate::git_process::GitError;
 
+pub use directory::{copy_directory, copy_directory_with_rift_root};
+pub use rift::RiftBackend;
 pub use worktree::WorktreeBackend;
 
 /// Things that can go wrong managing a checkout.
@@ -57,19 +60,20 @@ pub enum Isolation {
     /// A git linked worktree of the project repository (`git worktree add`).
     #[default]
     Worktree,
-    /// A copy-on-write clone of the whole project directory, `.git` included.
-    Cow,
+    /// A copy-on-write workspace made and registered by the Rift CLI.
+    #[serde(alias = "cow")]
+    Rift,
 }
 
 impl Isolation {
     /// Every isolation there is.
-    pub const ALL: [Isolation; 2] = [Isolation::Worktree, Isolation::Cow];
+    pub const ALL: [Isolation; 2] = [Isolation::Worktree, Isolation::Rift];
 
     /// The word the wire, the settings file and the controls all use.
     pub fn wire(self) -> &'static str {
         match self {
             Isolation::Worktree => "worktree",
-            Isolation::Cow => "cow",
+            Isolation::Rift => "rift",
         }
     }
 
@@ -82,7 +86,7 @@ impl Isolation {
 
     /// How the checkout at `path` is isolated, read from the checkout itself.
     /// `None` when it is not a checkout Build could have made: no `.git`, or a
-    /// standalone repository without the clone marker. Two `stat`s — this runs
+    /// standalone repository without Build's Rift marker. Two `stat`s — this runs
     /// on every poll-path use of a checkout, so it never opens git.
     pub fn of(path: &Path) -> Option<Isolation> {
         let git_dir = path.join(".git");
@@ -90,8 +94,8 @@ impl Isolation {
         if metadata.is_file() {
             return Some(Isolation::Worktree);
         }
-        if metadata.is_dir() && git_dir.join(COW_MARKER).exists() {
-            return Some(Isolation::Cow);
+        if metadata.is_dir() && marker_is_rift(&git_dir.join(BUILD_ISOLATION_MARKER)) {
+            return Some(Isolation::Rift);
         }
         None
     }
@@ -132,14 +136,59 @@ impl ResolvedIsolation {
     }
 }
 
-/// What the checkout at `path` is called: its directory's name, whatever made
-/// it. Git names a linked worktree after its directory and a clone has no
-/// other name, so this is the one name every backend calls a checkout by. A
-/// path with no directory to be called by is no checkout, as a path with no
-/// `.git` is none for [`Isolation::of`].
+/// What separates the workspace from the mount in the name a workspace mount
+/// is registered under. Two hyphens, because one is ordinary inside either
+/// half and the pair is what tells the halves apart at a glance.
+pub const WORKSPACE_MOUNT_SEPARATOR: &str = "--";
+
+/// What the checkout at `path` is called — the one name every backend keys its
+/// record of it by, and the one name any caller may ask a backend about.
+///
+/// A checkout that is one mount of a multi-directory workspace is called
+/// `<workspace directory>--<mount>`. Every workspace of a project mounts the
+/// same source under the same mount name (`repo`), and a source repository
+/// keeps one registry for every checkout cut from it, so the bare mount would
+/// have a project's second workspace asking for the record its first already
+/// holds. Workspace directory names are unique within a project and mount names
+/// are unique within a workspace, so the pair is unique.
+///
+/// Every other checkout — one sitting directly under a worktrees root, which is
+/// the shape every registry already on a user's machine was written with —
+/// keeps its directory's name, so nothing registered before this rule has to be
+/// migrated to go on verifying.
+///
+/// The two are told apart by the path alone, so every caller reaches the same
+/// answer without being told which kind it holds: the parent of a workspace
+/// mount is a workspace root, and a workspace root is the directory holding the
+/// manifest. A path with no directory to be called by is no checkout, as a path
+/// with no `.git` is none for [`Isolation::of`].
 pub fn checkout_name(path: &Path) -> Option<String> {
+    let directory = directory_name(path)?;
+    match workspace_of(path) {
+        Some(workspace) => Some(format!("{workspace}{WORKSPACE_MOUNT_SEPARATOR}{directory}")),
+        None => Some(directory),
+    }
+}
+
+/// The name of the checkout's own directory: the last segment of its path,
+/// whatever it is registered under. This is what a provider is told to create
+/// — `rift create --name` makes `<parent>/<name>` — so it must stay the name
+/// the path spells even where the record is keyed by something longer.
+pub fn directory_name(path: &Path) -> Option<String> {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// The workspace directory `path` is a mount of, or `None` when it is not a
+/// mount at all. Read from the path itself: the parent is a workspace root
+/// exactly when it holds the manifest a workspace persists before anything is
+/// provisioned beneath it.
+fn workspace_of(path: &Path) -> Option<String> {
+    let parent = path.parent()?;
+    if !parent.join(crate::workspace::MANIFEST_FILE).is_file() {
+        return None;
+    }
+    directory_name(parent)
 }
 
 /// The ref a repository keeps a local branch under: `refs/heads/<branch>`.
@@ -151,12 +200,12 @@ pub fn local_branch_ref(branch: &str) -> String {
 
 /// Git's directory for the checkout at `checkout`: the one `<checkout>/.git`
 /// points at for a linked worktree, and `<checkout>/.git` itself for a
-/// repository of its own — a clone, or a project's main checkout. A relative
+/// repository of its own — a Rift checkout, or a project's main checkout. A relative
 /// `gitdir:` pointer (git 2.48+ with `worktree.useRelativePaths`) is resolved
 /// against the directory holding the pointer, which is what git does with it.
 ///
 /// The one owner of where a checkout keeps its git directory, so every marker
-/// beside a checkout — the clone's and the teardown's alike — is found the same
+/// beside a checkout — Rift's and the teardown's alike — is found the same
 /// way and no backend spells a marker path.
 pub fn checkout_git_dir(checkout: &Path) -> Result<PathBuf, WorktreeError> {
     let pointer = checkout.join(".git");
@@ -180,41 +229,46 @@ pub fn checkout_git_dir(checkout: &Path) -> Result<PathBuf, WorktreeError> {
     })
 }
 
-/// The file inside a clone's `.git` that says the clone is Build's and which
-/// project it was cloned from. A clone is a repository like any other, so this
+/// The file inside a Rift checkout's `.git` that says the checkout is Build's
+/// and which project it came from. A Rift checkout is a repository like any other, so this
 /// is the only thing that tells it apart; its contents are compared, never used
 /// to build a path to act on.
-pub const COW_MARKER: &str = "build-isolation";
+pub const BUILD_ISOLATION_MARKER: &str = "build-isolation";
 
-/// The marker a clone of `project` carries: its isolation and the project's
+/// The marker a Rift checkout of `project` carries: its isolation and the project's
 /// canonical path, one per line.
-fn cow_marker_body(project: &Path) -> std::io::Result<String> {
+fn rift_marker_body(project: &Path) -> std::io::Result<String> {
     let canonical = std::fs::canonicalize(project)?;
     Ok(format!(
         "{}\n{}\n",
-        Isolation::Cow.wire(),
+        Isolation::Rift.wire(),
         canonical.display()
     ))
 }
 
-/// Write the marker into `checkout`, naming `project` as where it was cloned from.
-pub fn write_cow_marker(checkout: &Path, project: &Path) -> Result<(), WorktreeError> {
+/// Write the marker into `checkout`, naming `project` as its source.
+pub fn write_rift_marker(checkout: &Path, project: &Path) -> Result<(), WorktreeError> {
     std::fs::write(
-        checkout_git_dir(checkout)?.join(COW_MARKER),
-        cow_marker_body(project)?,
+        checkout_git_dir(checkout)?.join(BUILD_ISOLATION_MARKER),
+        rift_marker_body(project)?,
     )?;
     Ok(())
 }
 
-/// Whether the checkout at `checkout` carries a clone marker naming `project`.
-pub fn cow_marker_names(checkout: &Path, project: &Path) -> bool {
+/// Whether the checkout at `checkout` carries Build's Rift marker naming `project`.
+pub fn rift_marker_names(checkout: &Path, project: &Path) -> bool {
     let Ok(git_dir) = checkout_git_dir(checkout) else {
         return false;
     };
-    let Ok(found) = std::fs::read_to_string(git_dir.join(COW_MARKER)) else {
+    let Ok(found) = std::fs::read_to_string(git_dir.join(BUILD_ISOLATION_MARKER)) else {
         return false;
     };
-    cow_marker_body(project).is_ok_and(|expected| found == expected)
+    rift_marker_body(project).is_ok_and(|expected| found == expected)
+}
+
+fn marker_is_rift(marker: &Path) -> bool {
+    std::fs::read_to_string(marker)
+        .is_ok_and(|body| body.lines().next() == Some(Isolation::Rift.wire()))
 }
 
 /// What removing a checkout does to the branch it is on.
@@ -230,7 +284,7 @@ pub enum BranchTeardown {
 
 /// The file, in the checkout's own git directory, that records its
 /// [`BranchTeardown`]. That directory goes when the checkout does — git prunes
-/// a linked worktree's entry with it, and a clone's `.git` is inside it — so
+/// a linked worktree's entry with it, and a Rift checkout's `.git` is inside it — so
 /// the fact cannot outlive what it describes.
 pub(crate) const BRANCH_TEARDOWN_MARKER: &str = "build-branch-teardown";
 
@@ -259,7 +313,7 @@ impl BranchTeardown {
 
 /// Record what teardown of the checkout at `checkout` owns. Isolation-blind:
 /// the marker lands in whatever git directory the checkout has, which for a
-/// clone is its own `.git` beside [`COW_MARKER`] and for a linked worktree is
+/// Rift workspace is its own `.git` beside [`BUILD_ISOLATION_MARKER`] and for a linked worktree is
 /// the entry git keeps for it in the project.
 pub fn record_branch_teardown(
     checkout: &Path,
@@ -307,41 +361,42 @@ pub fn teardown_in_git_dir(git_dir: &Path) -> Result<BranchTeardown, WorktreeErr
     }
 }
 
-/// Which isolations can be used for a project on this volume.
+/// Which isolations have their prerequisites available on this device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsolationAvailability {
-    /// `Ok(())` when a clone can be made for this project on this volume;
+    /// `Ok(())` when the CLI and project layout support attempting Rift creation;
+    /// Rift checks filesystem support during initialization and creation.
     /// `Err(reason)` is the sentence the settings controls show.
-    pub cow: Result<(), String>,
+    pub rift: Result<(), String>,
 }
 
 impl IsolationAvailability {
-    /// What this volume can do for `project`, whose checkouts live under
+    /// Which prerequisites are available for `project`, whose checkouts live under
     /// `worktrees_root`.
     pub fn of(project: &Path, worktrees_root: &Path) -> Self {
         IsolationAvailability {
-            cow: probe::cow_availability(project, worktrees_root),
+            rift: probe::rift_availability(project, worktrees_root),
         }
     }
 
-    /// Nothing can be cloned, for a reason no volume answered — the caller's
+    /// Rift is unavailable for a reason no probe answered — the caller's
     /// own sentence, carried in the shape every control already reads, so the
     /// representation stays here rather than being rebuilt by whoever has a
     /// sentence of their own.
     pub fn unavailable(reason: impl Into<String>) -> Self {
         IsolationAvailability {
-            cow: Err(reason.into()),
+            rift: Err(reason.into()),
         }
     }
 
     /// Why `isolation` cannot be used here, or `None` when it can. A linked
-    /// worktree is never locked; a clone is locked by the probe's reason. The
+    /// worktree is never locked; Rift is locked by the probe's reason. The
     /// one owner of which isolation a volume can lock, so nothing outside this
     /// module has to name a variant to ask.
     pub fn lock_reason(&self, isolation: Isolation) -> Option<&str> {
         match isolation {
             Isolation::Worktree => None,
-            Isolation::Cow => self.cow.as_ref().err().map(String::as_str),
+            Isolation::Rift => self.rift.as_ref().err().map(String::as_str),
         }
     }
 }
@@ -350,8 +405,8 @@ impl serde::Serialize for IsolationAvailability {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let mut shape = serializer.serialize_struct("IsolationAvailability", 2)?;
-        shape.serialize_field("cow", &self.cow.is_ok())?;
-        shape.serialize_field("reason", &self.cow.as_ref().err())?;
+        shape.serialize_field("rift", &self.rift.is_ok())?;
+        shape.serialize_field("reason", &self.rift.as_ref().err())?;
         shape.end()
     }
 }
@@ -365,7 +420,8 @@ pub trait IsolationBackend: Send + Sync {
     fn kind(&self) -> Isolation;
 
     /// Put a checkout of `branch` (which already exists in `project`) at `path`.
-    /// On any failure nothing is left at `path`.
+    /// Undo a failed checkout when ownership is established. Provider or
+    /// cleanup failures are reported without deleting an unowned destination.
     fn materialize(&self, project: &Path, branch: &str, path: &Path) -> Result<(), WorktreeError>;
 
     /// Everything only this backend can check about the checkout at `path`:
@@ -389,8 +445,9 @@ pub trait IsolationBackend: Send + Sync {
     ) -> Result<(), WorktreeError>;
 
     /// Delete the checkout at `path` and this backend's own record of it. A
-    /// checkout is named by its directory, so the name is the path's own and no
-    /// caller can pass one that disagrees with it. Absence is success.
+    /// checkout is named by [`checkout_name`] of its path, so the name is the
+    /// path's own and no caller can pass one that disagrees with it. Absence is
+    /// success.
     fn remove(&self, project: &Path, path: &Path) -> Result<(), WorktreeError>;
 
     /// Canonical paths of every checkout of `project` this backend can find
@@ -405,7 +462,9 @@ pub trait IsolationBackend: Send + Sync {
     /// Clear this backend's stale records of checkouts that no longer exist.
     fn prune(&self, project: &Path) -> Result<(), WorktreeError>;
 
-    /// Whether this backend holds a record of a checkout called `name`.
+    /// Whether this backend holds a record of a checkout called `name` — the
+    /// name [`checkout_name`] gives its path, which is the only name a record
+    /// is ever keyed by.
     fn holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError>;
 
     /// What teardown of the checkout called `name` owns, read from this
@@ -446,10 +505,10 @@ mod tests {
         let clone = dir.path().join("clone");
         std::fs::create_dir_all(clone.join(".git")).unwrap();
         assert_eq!(Isolation::of(&clone), None);
-        write_cow_marker(&clone, &repo).unwrap();
-        assert_eq!(Isolation::of(&clone), Some(Isolation::Cow));
-        assert!(cow_marker_names(&clone, &repo));
-        assert!(!cow_marker_names(&clone, dir.path()));
+        write_rift_marker(&clone, &repo).unwrap();
+        assert_eq!(Isolation::of(&clone), Some(Isolation::Rift));
+        assert!(rift_marker_names(&clone, &repo));
+        assert!(!rift_marker_names(&clone, dir.path()));
 
         assert_eq!(
             Isolation::of(&repo),
@@ -459,8 +518,10 @@ mod tests {
         assert_eq!(Isolation::of(&dir.path().join("nothing-here")), None);
     }
 
-    /// A checkout is called by its directory, whatever made it — and a path
-    /// with no directory to be called by is no checkout at all.
+    /// A checkout directly under a worktrees root is called by its directory,
+    /// whatever made it — and a path with no directory to be called by is no
+    /// checkout at all. This is the shape every registry already on disk was
+    /// written with, so it must keep answering to the same name.
     #[test]
     fn a_checkout_is_named_by_its_directory() {
         assert_eq!(
@@ -473,6 +534,41 @@ mod tests {
         );
         assert_eq!(checkout_name(Path::new("/")), None);
         assert_eq!(checkout_name(Path::new("")), None);
+    }
+
+    /// One mount of a workspace carries the workspace's directory in its name.
+    /// The mount alone is `repo` in every workspace of a project and the source
+    /// repository keeps one registry for all of them, so the bare mount would
+    /// have the second workspace asking for the record the first holds. The
+    /// manifest beside the mount is what says the parent is a workspace root —
+    /// the same path without it is an ordinary checkout, named by its
+    /// directory, so nothing already registered has to be migrated.
+    #[test]
+    fn a_workspace_mount_is_named_by_its_workspace_and_its_mount() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("csv-export");
+        let mount = workspace.join("repo");
+        std::fs::create_dir_all(&mount).unwrap();
+
+        assert_eq!(
+            checkout_name(&mount),
+            Some("repo".to_string()),
+            "without the manifest the parent is no workspace root"
+        );
+
+        std::fs::write(workspace.join(crate::workspace::MANIFEST_FILE), "{}").unwrap();
+
+        assert_eq!(
+            checkout_name(&mount),
+            Some("csv-export--repo".to_string()),
+            "the manifest beside it makes the parent a workspace root"
+        );
+        assert_eq!(
+            checkout_name(&workspace),
+            Some("csv-export".to_string()),
+            "the workspace root itself is not one of its own mounts"
+        );
+        assert_eq!(checkout_name(Path::new("/")), None);
     }
 
     #[test]
@@ -492,17 +588,17 @@ mod tests {
         let availability = IsolationAvailability::of(&repo, &dir.path().join("worktrees"));
 
         assert_eq!(availability.lock_reason(Isolation::Worktree), None);
-        // A clone is locked exactly when the probe could not make one, in the
+        // Rift is locked exactly when the probe cannot use the installed CLI, in the
         // probe's own words — no platform assumption either way.
         assert_eq!(
-            availability.lock_reason(Isolation::Cow),
-            availability.cow.as_ref().err().map(String::as_str),
+            availability.lock_reason(Isolation::Rift),
+            availability.rift.as_ref().err().map(String::as_str),
         );
         assert_eq!(
             serde_json::to_value(&availability).unwrap(),
             serde_json::json!({
-                "cow": availability.cow.is_ok(),
-                "reason": availability.cow.as_ref().err(),
+                "rift": availability.rift.is_ok(),
+                "reason": availability.rift.as_ref().err(),
             }),
         );
     }

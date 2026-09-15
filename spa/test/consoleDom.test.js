@@ -6,6 +6,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const manager = {
@@ -20,6 +24,10 @@ const manager = {
 vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => manager,
   subscribeTerminalStatus: () => () => {},
+  // Which machine the shells type at, and the moves between machines, are the
+  // app spine's business and not this suite's: they answer, and nothing moves.
+  terminalDeviceId: () => null,
+  followTerminalDevice: () => {},
 }));
 
 // No ghostty/wasm under node: the pane is a leaf that reports what it was asked
@@ -55,7 +63,16 @@ let calls = [];
 let branchRow = null;
 let panel = null;
 
-const mount = async (context = { kind: "branch", projectId: "p1", branch: "build/login" }) => {
+const branchAddress = (over = {}) => ({
+  kind: "branch",
+  deviceId: "dev-1",
+  projectId: "p1",
+  branch: "build/login",
+  call: (...args) => bridge.call(...args),
+  ...over,
+});
+
+const mount = async (context = branchAddress()) => {
   panel = mountConsole(region(), context);
   await flush();
   return panel;
@@ -80,7 +97,7 @@ beforeEach(() => {
   manager.attachTerminal.mockReset().mockResolvedValue({ snapshot: "", cursor: 0 });
   manager.detach.mockReset();
   notifyError.mockClear();
-  App.call = vi.fn(async (method, params) => {
+  bridge.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
     if (method === "branch.get") return branchRow;
     return {};
@@ -90,6 +107,22 @@ beforeEach(() => {
 afterEach(() => {
   if (panel) panel.dispose();
   panel = null;
+});
+
+// The console stands in one checkout on one machine, and the link that opened
+// the surface said which. It asks that machine what is under the branch — not
+// whichever machine creation happens to go to.
+describe("the machine it was mounted for", () => {
+  it("branch.get goes to the device the console was mounted for", async () => {
+    const theirCall = vi.fn(async () => ({ project_id: "p1", branch: "build/login", run_id: "run-9" }));
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
+    await mount(branchAddress({ deviceId: "dev-2", call: theirCall }));
+    await open();
+
+    expect(theirCall.mock.calls.map(([method]) => method)).toContain("branch.get");
+    expect(callsTo("branch.get")).toHaveLength(0);
+    expect(manager.listTerminals).toHaveBeenCalledWith({ run_id: "run-9" });
+  });
 });
 
 describe("the shut console", () => {
@@ -130,13 +163,13 @@ describe("opening it", () => {
 
   it("opens a checkout Build never cut by the worktree itself", async () => {
     branchRow = { project_id: "p1", branch: "loose", run_id: null, worktree_id: "wt-9", primary: false };
-    await mount({ kind: "branch", projectId: "p1", branch: "loose" });
+    await mount(branchAddress({ branch: "loose" }));
     await open();
     expect(manager.listTerminals).toHaveBeenCalledWith({ project_id: "p1", worktree_id: "wt-9" });
   });
 
   it("opens an issue's console on the primary checkout, without asking about a branch", async () => {
-    await mount({ kind: "issue", projectId: "p1", issueId: "i-1" });
+    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args) });
     await open();
     expect(manager.listTerminals).toHaveBeenCalledWith({ project_id: "p1" });
     expect(callsTo("branch.get")).toEqual([]);
@@ -150,7 +183,7 @@ describe("opening it", () => {
   });
 
   it("says so when the branch names no directory to stand in", async () => {
-    App.call = vi.fn(async () => {
+    bridge.call = vi.fn(async () => {
       throw new Error("branch.get: no branch is checked out in this project");
     });
     await mount();
@@ -196,7 +229,7 @@ describe("the sizes", () => {
     expect(size()).toBe("half");
     // Another work item's console is its own, and starts shut.
     panel.dispose();
-    await mount({ kind: "issue", projectId: "p1", issueId: "i-1" });
+    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args) });
     expect(size()).toBe("collapsed");
   });
 });
@@ -322,7 +355,7 @@ describe("a console with no terminals", () => {
     manager.listTerminals.mockReturnValue(new Promise((resolve) => {
       listed = () => resolve([{ term_id: "term-1" }]);
     }));
-    panel = mountConsole(region(), { kind: "branch", projectId: "p1", branch: "build/login" });
+    panel = mountConsole(region(), branchAddress());
     await flush();
 
     expect(size()).toBe("collapsed");
@@ -414,7 +447,7 @@ describe("a pre-redesign term-<n> URL", () => {
     markConsoleTerminal("term-2");
     await mount();
     panel.dispose();
-    await mount({ kind: "branch", projectId: "p1", branch: "other" });
+    await mount(branchAddress({ branch: "other" }));
     expect(size()).toBe("collapsed");
   });
 });

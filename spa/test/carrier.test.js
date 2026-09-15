@@ -19,17 +19,26 @@ class FakeEventTarget {
   }
 }
 
+// A socket with a lifecycle, because the bug this fake used to hide is a write
+// to one that has ended: a browser throws "WebSocket is already in CLOSING or
+// CLOSED state" there, and a fake that took the write happily could not say so.
+const SOCKET_OPEN = 1;
+const SOCKET_CLOSED = 3;
+
 class FakeSocket extends FakeEventTarget {
   constructor() {
     super();
     this.sent = [];
     this.closed = false;
+    this.readyState = SOCKET_OPEN;
   }
   send(text) {
+    if (this.readyState !== SOCKET_OPEN) throw new Error("WebSocket is already in CLOSING or CLOSED state.");
     this.sent.push(JSON.parse(text));
   }
   close() {
     this.closed = true;
+    this.readyState = SOCKET_CLOSED;
     this.emit("close");
   }
 }
@@ -211,5 +220,36 @@ describe("a carrier's listeners", () => {
       throw new RangeError("a listener that is broken");
     });
     expect(() => channel.deliver(JSON.stringify(envelope))).toThrow(RangeError);
+  });
+});
+
+// A bridge reconnect drops the relay socket under whatever was in flight: the
+// frame whose encryption was pending, the ping the liveness watcher had already
+// issued. Each of those resumes and writes, and the browser logs the write on a
+// dead wire. The refusal is the carrier's, in the words the channel carrier
+// refuses in, so the call it belonged to fails at once rather than waiting out
+// a reply nobody will send.
+describe("a relay carrier whose socket has gone", () => {
+  it("refuses the envelope rather than writing to a dead wire", () => {
+    const socket = new FakeSocket();
+    const carrier = openCarrier({ socket, sessionId: "sess-1" });
+
+    socket.close();
+
+    expect(() => carrier.send({ id: 1 })).toThrow("the relay socket closed");
+    expect(socket.sent).toEqual([]);
+  });
+
+  // The close event is not the first moment a socket stops taking writes: a
+  // socket someone has called close() on is CLOSING straight away and reports
+  // its close a turn later.
+  it("refuses while the socket is still closing, before its close has landed", () => {
+    const socket = new FakeSocket();
+    const carrier = openCarrier({ socket, sessionId: "sess-1" });
+
+    socket.readyState = 2; // CLOSING: no close event yet
+
+    expect(() => carrier.send({ id: 1 })).toThrow("the relay socket closed");
+    expect(socket.sent).toEqual([]);
   });
 });

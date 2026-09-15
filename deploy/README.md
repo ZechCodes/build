@@ -37,6 +37,26 @@ No secrets to provision: dev defaults are baked into the compose file and can
 be overridden with `BUILD_SECRET_KEY`, `BUILD_INTERNAL_API_SECRET`,
 `BUILD_PAIRING_CODE`.
 
+### Two bridges on one account
+
+Anything about *which* device — two machines' work in one rail, the device tag
+on a project name two machines share, the picker's filter, one bridge going
+while the other keeps working — needs a second bridge, which
+[`compose.two-bridges.yml`](compose.two-bridges.yml) adds: it names the base
+bridge **Laptop** and stands up a **Desktop** with its own identity, repo and
+pairing code (`COMPOSE-PAIR-2`).
+
+```bash
+docker compose -f deploy/compose.real.yml -f deploy/compose.two-bridges.yml up -d --build
+docker compose -f deploy/compose.real.yml -f deploy/compose.two-bridges.yml \
+  --profile qa run --rm qa node pair.mjs
+API_URL=http://localhost:8090 PAIRING_CODE=COMPOSE-PAIR-2 node web/pair-another.mjs
+```
+
+`pair.mjs` stops as soon as the account owns a device, so the second one is
+approved by [`../web/pair-another.mjs`](../web/pair-another.mjs) — the same
+lookup→approve flow without that guard.
+
 ## ICE servers (the WebRTC upgrade)
 
 Once a browser session is live over the relay it upgrades to a direct WebRTC

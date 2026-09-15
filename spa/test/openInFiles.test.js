@@ -12,6 +12,10 @@ import { createReviewPlug } from "../src/core/changesReview.js";
 import { renderFilesTab } from "../src/views/files.js";
 import { worktreeOf } from "./gitWireFixture.js";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -12,2 +12,2 @@\n-old\n+${line}\n`;
 
@@ -251,13 +255,26 @@ describe("the file the route names", () => {
 
   let App;
   let renderBranch;
+  let resetDeviceContexts;
 
   beforeEach(async () => {
     vi.resetModules();
     document.body.innerHTML = bodyHtml;
-    location.hash = "#/p/p1/branch/build%2Flogin/files";
+    location.hash = "#/device/dev-1/project/p1/branch/build%2Flogin/files";
     ({ App } = await import("../src/app.js"));
     ({ renderBranch } = await import("../src/views/branchView.js"));
+    // The surface takes its caller from the machine its link names.
+    let adoptDeviceSession;
+    ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+    App.devices = [{ id: "dev-1", name: "This device", status: "online" }];
+    App.selectedDeviceId = "dev-1";
+    adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => bridge.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
     document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
   });
 
@@ -266,6 +283,7 @@ describe("the file the route names", () => {
     App.poll = null;
     if (App.viewDispose) App.viewDispose();
     App.viewDispose = null;
+    resetDeviceContexts();
   });
 
   const answering = (asked) =>
@@ -281,8 +299,8 @@ describe("the file the route names", () => {
 
   it("opens the Files tab on the file the URL names", async () => {
     const asked = [];
-    App.call = answering(asked);
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files", file: "src/a.js", line: 2 };
+    bridge.call = answering(asked);
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files", file: "src/a.js", line: 2 };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".fppath")?.textContent).toBe("src/a.js"));
@@ -296,7 +314,7 @@ describe("the file the route names", () => {
   // the diff. The wrapper spreads the plug now, and this is what says so.
   it("renders the whole Changes surface, toolbar verbs and box included", async () => {
     const asked = [];
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "branch.get")
         return { ...row, run_id: "run-1", run: { run_id: "run-1", state: "review", base_branch: "main", thread: { items: [], sessions: [] } } };
       asked.push({ method, params });
@@ -309,7 +327,7 @@ describe("the file the route names", () => {
       if (method === "run.diff") return { patch: "" };
       return {};
     });
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".gittoolbar")).toBeTruthy());
@@ -322,8 +340,8 @@ describe("the file the route names", () => {
 
   it("leaves an ordinary visit to the Files tab at the root", async () => {
     const asked = [];
-    App.call = answering(asked);
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files" };
+    bridge.call = answering(asked);
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files" };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".ffile")).toBeTruthy());
@@ -336,8 +354,10 @@ describe("the file the route names", () => {
   // is already showing.
   it("writes the file the reader picks into the URL, without a re-render", async () => {
     const asked = [];
-    App.call = answering(asked);
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files" };
+    bridge.call = answering(asked);
+    // A branch surface always names the machine the checkout is on; moving
+    // within the tab keeps naming it, or the link stops addressing anything.
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files" };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".ffile")).toBeTruthy());
@@ -345,6 +365,7 @@ describe("the file the route names", () => {
 
     document.querySelector(".ffile").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await vi.waitFor(() => expect(App.route.file).toBe("README.md"));
+    expect(App.route.deviceId).toBe("dev-1");
     expect(location.hash).toContain("path=README.md");
     expect(document.querySelector(".files")).toBe(built); // the same surface, still standing
   });

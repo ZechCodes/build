@@ -1,11 +1,9 @@
 use crate::app::WorktreeLifecycleJob;
 use crate::app::{
     abandoned_branch_summary, close_abandoned_run_conversations, err, has_agent_choice,
-    model_choice_from, parse_viewing_context, parse_worktree_finish_action,
-    reconcile_missing_run_worktree, record_current_stage_started, require_str, run_state_str,
-    thread_detail, AppState, DigestScope, FinishKind, FinishRequirement, ImplementationCaller,
-    PendingAgentTurn, PlannedFinish, RunFinishEpilogue, WorktreeFinishJob,
-    NEW_THREAD_MESSAGES_PROMPT,
+    model_choice_from, parse_viewing_context, reconcile_missing_run_worktree,
+    record_current_stage_started, require_str, run_state_str, thread_detail, AppState, DigestScope,
+    ImplementationCaller, PendingAgentTurn, NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::lifecycle::{
     AdoptCheckout, AdoptImplementation, AdoptionTarget, DiscardCheckout, DiscardedCheckout,
@@ -47,23 +45,6 @@ impl ImplementationCaller for RunOpenedView {
     fn refused(self: Box<Self>, _state: &mut AppState, error: String) -> String {
         error
     }
-}
-
-/// What the lock-held half of a run's Done decided. The run is already off the
-/// board in every variant but a refusal.
-pub(in crate::app) enum PlannedRunFinish {
-    /// The checkout was already gone, so the run was retired from memory alone.
-    Settled(Value),
-    /// The checkout's finish already completed (an idempotent replay): only the
-    /// run's own retirement is left.
-    Replay {
-        archived: Value,
-        run: RunFinishEpilogue,
-    },
-    Deferred {
-        job: Box<WorktreeFinishJob>,
-        run: RunFinishEpilogue,
-    },
 }
 
 impl AppState {
@@ -109,7 +90,7 @@ impl AppState {
     /// A run always has a plan behind it: the goal-only dispatch is gone, and an
     /// unplanned coding session is now an agent tab (`term.create` with `kind`),
     /// driven by the human who opened it.
-    pub(in crate::app) fn run_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_create(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let job = self.open_implementation(
             &plan_id,
@@ -492,7 +473,7 @@ impl AppState {
 
     /// A freeform message to the run's agent — redirects a live session or
     /// resumes a parked one.
-    pub(in crate::app) fn run_message(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_message(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let message = require_str(params, "message")?;
         let viewing_context = parse_viewing_context(params.get("viewing_context"))?;
@@ -535,7 +516,7 @@ impl AppState {
     /// drain runs is git that cannot fail the verb: the stage publications the
     /// removal is about to make unreadable, the wait for the agents to die, and
     /// the removal itself.
-    pub(in crate::app) fn run_abandon(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_abandon(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let project_id = self.project_of(&run_id)?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
@@ -726,7 +707,7 @@ impl AppState {
     /// Delete a terminal run from the board: prune any leftover worktree,
     /// remove the durable record, drop the bookkeeping. Terminal runs only
     /// (merged/abandoned/archived/failed) — a live run must be abandoned first.
-    pub(in crate::app) fn run_delete(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_delete(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         let state = active.run.state;
@@ -804,7 +785,7 @@ impl AppState {
     /// card is adopted from one place; the repo root is reachable from every
     /// reload and every second browser, and they must all converge on the run
     /// that already owns it.
-    pub(in crate::app) fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let model_choice = model_choice_from(params, self.default_harness)?;
         let base = self.base_for(&project_id)?;
@@ -888,168 +869,9 @@ impl AppState {
             .unwrap_or_else(|| self.project_name_by_id(project_id))
     }
 
-    /// Finish a completed run through the same durable worktree archive path as
-    /// a bare worktree's Done control. The run is removed from the active map
-    /// only while the server resolves and executes the id-only finish request;
-    /// a pre-mutation failure restores it for retry.
-    pub(in crate::app) fn run_finish(&mut self, params: &Value) -> Result<Value, String> {
-        let run_id = require_str(params, "run_id")?;
-        let action_name = require_str(params, "action")?;
-        match self.plan_finish_run(&run_id, &action_name, FinishRequirement::CompletedWork)? {
-            PlannedRunFinish::Settled(value) => Ok(value),
-            PlannedRunFinish::Replay { archived, run } => self.apply_run_finish(run, Ok(archived)),
-            PlannedRunFinish::Deferred { job, run } => {
-                let epilogue = job.epilogue(FinishKind::Run(run));
-                Ok(self.defer_finish(job, epilogue))
-            }
-        }
-    }
-
-    /// The shared Done path: check what this caller requires of the run, take
-    /// it off the board, and hand its checkout to the finish drain. The run is
-    /// held out of the active map only while the finish runs; a failure that
-    /// left the checkout standing puts it back for retry.
-    pub(in crate::app) fn plan_finish_run(
-        &mut self,
-        run_id: &str,
-        action_name: &str,
-        requirement: FinishRequirement,
-    ) -> Result<PlannedRunFinish, String> {
-        let run_id = run_id.to_string();
-        parse_worktree_finish_action(action_name)?;
-        let project_id = self.project_of(&run_id)?;
-        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        // Finishing archives a worktree and then removes it. The primary
-        // checkout is the repository itself: there is nothing to file away,
-        // and everything to lose.
-        if self.owns_primary_checkout(&run_id, active) {
-            return Err(
-                "run.finish: the primary checkout cannot be finished or archived — it is the \
-                 repository, not a worktree to clean up"
-                    .to_string(),
-            );
-        }
-        match requirement {
-            FinishRequirement::CompletedWork => {
-                if !matches!(active.run.state, RunState::Review | RunState::Merged) {
-                    return Err(format!(
-                        "run.finish: run is {} — Done requires completed work",
-                        run_state_str(&active.run.state)
-                    ));
-                }
-            }
-            FinishRequirement::Unconditional => {}
-        }
-        if !active.worktree.path.exists() {
-            if active.run.state != RunState::Merged {
-                return Err("run.finish: worktree no longer exists".to_string());
-            }
-            let mut active = self.runs.remove(&run_id).expect("checked above");
-            active
-                .run
-                .apply(RunEvent::Archive)
-                .map_err(|error| error.to_string())?;
-            let persisted = self.finish_run_mutation(run_id, active);
-            persisted?;
-            return Ok(PlannedRunFinish::Settled(json!({ "archived": true })));
-        }
-
-        let root = Self::canonical_root(&active.worktree.path);
-        let worktree_id = crate::worktree::external_worktree_id(&root);
-        let active = self.runs.remove(&run_id).expect("checked above");
-        self.invalidate_run_stat(&run_id);
-        self.retire_agent_tabs(&root);
-        self.rescan_external_worktrees(&project_id);
-        let epilogue = RunFinishEpilogue {
-            run_id,
-            project_id: project_id.clone(),
-            active: Box::new(active),
-            root,
-        };
-        // The run comes off the board FIRST: a checkout a run still owns is
-        // excluded from the scan that has to find it, and a run whose checkout
-        // is being deleted must answer no verbs meanwhile. A refused plan puts
-        // it straight back.
-        let planned = match self.plan_worktree_finish(&json!({
-            "project_id": project_id,
-            "worktree_id": worktree_id,
-            "action": action_name,
-        })) {
-            Ok(planned) => planned,
-            Err(error) => {
-                let restored = self.apply_run_finish(epilogue, Err(error));
-                return Err(restored.expect_err("a refused finish answers with its refusal"));
-            }
-        };
-        Ok(match planned {
-            PlannedFinish::Settled(archived) => PlannedRunFinish::Replay {
-                archived,
-                run: epilogue,
-            },
-            PlannedFinish::Deferred(job) => PlannedRunFinish::Deferred { job, run: epilogue },
-        })
-    }
-
-    /// Retire the run whose checkout has just been finished — or put it back
-    /// when the finish failed with the checkout still standing.
-    pub(in crate::app) fn apply_run_finish(
-        &mut self,
-        run: RunFinishEpilogue,
-        archived: Result<Value, String>,
-    ) -> Result<Value, String> {
-        let RunFinishEpilogue {
-            run_id,
-            project_id,
-            active,
-            root,
-        } = run;
-        let mut active = *active;
-        let archived_worktree = match archived {
-            Ok(archived) => archived,
-            Err(error) => {
-                if root.exists() {
-                    self.runs.insert(run_id.clone(), active);
-                    self.note_worktree_gone(&project_id, &root);
-                } else {
-                    eprintln!("run.finish {run_id}: worktree vanished after failure: {error}");
-                }
-                return Err(error);
-            }
-        };
-
-        if active.run.plan_id.is_some() {
-            // Plans determine their own Done eligibility from retained run
-            // lineage. Keep this run internally as Archived while board.list
-            // filters it out; deleting it would make a completed plan look
-            // incomplete again.
-            active
-                .run
-                .apply(RunEvent::Archive)
-                .map_err(|error| error.to_string())?;
-            let persisted = self.finish_run_mutation(run_id, active);
-            persisted?;
-            self.reap_orphaned_terminals();
-            return Ok(archived_worktree);
-        }
-
-        if let Some(store) = &self.store {
-            if let Err(error) = store.delete_run(&run_id) {
-                // The durable worktree archive is already complete. A stale run
-                // record self-heals to Archived on restart because its checkout
-                // is gone; do not resurrect it in the live rail now.
-                eprintln!("run.finish {run_id}: stale run record: {error}");
-            }
-        }
-        self.projects.unbind_entity(&run_id);
-        self.board.attention_mut().remove_entity_clocks(&run_id);
-        self.board.diff_mut().remove_run_files_changed_at(&run_id);
-        self.reap_orphaned_terminals();
-        Ok(archived_worktree)
-    }
-
     /// Un-adopt: drop the run record and its binding, leaving every file
     /// untouched. Legal on adopted runs in any non-terminal state.
-    pub(in crate::app) fn run_release(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_release(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         if !active.adopted {

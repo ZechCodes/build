@@ -1,13 +1,13 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
+import { hashFromRoute } from "./router.js";
 import { RENDERED_FOLD_ATTRIBUTE, patchElement, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { followConversation, paintKeepingPlace } from "./paintKeepingPlace.js";
 import { paintRunsShowingLatest } from "./activityRunScroll.js";
-import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
+import { EVENT_META, eventLabel, isStartupEvent } from "./threadEvents.js";
 import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "./activityDigest.js";
 import {
-  INTERRUPT_SEND_OPTION,
   autoGrow,
   composerHtml,
   composerPartIds,
@@ -20,6 +20,8 @@ import { mountSplitMenu } from "./splitButton.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import { providerLabel } from "./modelPicker.js";
 import { viewingContextChipsHtml } from "./viewingContext.js";
+import { ICON_CHECK } from "./icons.js";
+import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -501,39 +503,83 @@ function harnessLabel(thread, override) {
   return providerLabel(LEGACY_PROVIDER_IDS[raw] || raw);
 }
 
-// eslint-disable-next-line complexity -- ratchet: linkLocation is at 12, cap 10 — reduce it, then drop this line
+/// Everything a reference carries besides its kind, and the dataset key each
+/// rides on. One table, read forwards by the render and backwards by the
+/// wiring, so a field written onto a chip cannot be forgotten on the way back
+/// off it — which is how a reference lost the line it pointed at.
+const LINK_FIELDS = Object.freeze([
+  { field: "path", data: "path" },
+  { field: "issue_id", data: "issueId" },
+  { field: "plan_id", data: "planId" },
+  { field: "stage_id", data: "stageId" },
+  { field: "implementation_id", data: "implementationId" },
+  { field: "run_id", data: "runId" },
+  { field: "worktree_id", data: "worktreeId" },
+  { field: "sha", data: "sha" },
+  { field: "recovery_id", data: "recoveryId" },
+  { field: "line_start", data: "lineStart", number: true },
+  { field: "line_end", data: "lineEnd", number: true },
+]);
+
+/// The attribute a dataset key is written as: `lineStart` rides on
+/// `data-line-start`, which is the one rule the DOM already has for the pair.
+const datasetAttribute = (data) => `data-${data.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+
+/// What a reference is worth writing onto its chip. An empty string and a
+/// missing field say the same nothing; a zero does not, and is kept.
+const linkFieldWritten = (value) => value != null && value !== "";
+
+function linkAttributes(link) {
+  return [
+    `data-kind="${esc(link.kind || "")}"`,
+    ...LINK_FIELDS.filter(({ field }) => linkFieldWritten(link[field])).map(
+      ({ field, data, number }) => `${datasetAttribute(data)}="${number ? Number(link[field]) : esc(link[field])}"`,
+    ),
+  ].join(" ");
+}
+
+/// What a chip reads back off itself when it is pressed — the reference the
+/// render was given, as far as the table carries it.
+const linkFromDataset = (dataset) => LINK_FIELDS.reduce(
+  (link, { field, data, number }) =>
+    dataset[data] ? { ...link, [field]: number ? Number(dataset[data]) : dataset[data] } : link,
+  { kind: dataset.kind },
+);
+
+/// The fields a reference is named by when it is not a file, best first.
+const LABEL_FIELDS = ["path", "implementation_id", "run_id", "worktree_id", "sha", "recovery_id"];
+
+/// Which lines of a file a reference stands on: one line, a span, or none.
+function linkLines(link) {
+  const { line_start: start, line_end: end } = link;
+  if (start == null) return "";
+  return start === end || end == null ? `:${start}` : `:${start}-${end}`;
+}
+
 function linkLocation(link) {
-  if (link.kind !== "file") {
-    return link.path || link.implementation_id || link.run_id || link.worktree_id || link.sha || link.recovery_id || "Open";
-  }
-  const start = link.line_start;
-  const end = link.line_end;
-  const lines = start == null ? "" : start === end || end == null ? `:${start}` : `:${start}-${end}`;
-  return `${link.path || "file"}${lines}`;
+  if (link.kind !== "file") return LABEL_FIELDS.map((field) => link[field]).find(Boolean) || "Open";
+  return `${link.path || "file"}${linkLines(link)}`;
+}
+
+/// One reference, as the chip under a message.
+///
+/// A file is an anchor, because it names a place in this app that has a URL of
+/// its own: the href is written by whoever wires the chip, which is the surface
+/// that knows which checkout the conversation is about (`wireThreadLinks`). The
+/// browser's own gestures then work on it — middle-click, Cmd-click, "open in
+/// new tab" — which a button can never offer. Every other kind opens a work
+/// item the render cannot name a URL for, so it stays a button.
+function linkChipHtml(link) {
+  const attributes = `class="thread-reference" ${linkAttributes(link)}`;
+  const label = esc(linkLocation(link));
+  return link.kind === "file"
+    ? `<a ${attributes}>${label}</a>`
+    : `<button type="button" ${attributes}>${label}</button>`;
 }
 
 function linksHtml(links) {
   if (!links || !links.length) return "";
-  return `<div class="thread-references">${links
-    // eslint-disable-next-line complexity -- ratchet: this callback is at 13, cap 10 — reduce it, then drop this line
-    .map((link) => {
-      const attributes = [
-        `data-kind="${esc(link.kind || "")}"`,
-        link.path ? `data-path="${esc(link.path)}"` : "",
-        link.issue_id ? `data-issue-id="${esc(link.issue_id)}"` : "",
-        link.plan_id ? `data-plan-id="${esc(link.plan_id)}"` : "",
-        link.stage_id ? `data-stage-id="${esc(link.stage_id)}"` : "",
-        link.implementation_id ? `data-implementation-id="${esc(link.implementation_id)}"` : "",
-        link.run_id ? `data-run-id="${esc(link.run_id)}"` : "",
-        link.worktree_id ? `data-worktree-id="${esc(link.worktree_id)}"` : "",
-        link.sha ? `data-sha="${esc(link.sha)}"` : "",
-        link.recovery_id ? `data-recovery-id="${esc(link.recovery_id)}"` : "",
-        link.line_start != null ? `data-line-start="${Number(link.line_start)}"` : "",
-        link.line_end != null ? `data-line-end="${Number(link.line_end)}"` : "",
-      ].filter(Boolean).join(" ");
-      return `<button type="button" class="thread-reference" ${attributes}>${esc(linkLocation(link))}</button>`;
-    })
-    .join("")}</div>`;
+  return `<div class="thread-references">${links.map(linkChipHtml).join("")}</div>`;
 }
 
 /// Attachment bytes already fetched, keyed by path — and `null` for a path the
@@ -638,7 +684,9 @@ function attachmentsHtml(attachments, threadState) {
       if (isImageAttachment(attachment.mime)) {
         const refused = threadState.attachment(attachment.path) === null ? " unavailable" : "";
         return `<figure class="thread-attachment-figure${refused}">
-          <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
+          <button type="button" class="thread-attachment-preview" aria-label="Open ${name}">
+            <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
+          </button>
           <figcaption>${name}</figcaption>
         </figure>`;
       }
@@ -734,16 +782,27 @@ function outcomeMarkerHtml(outcome, agentLabel) {
 const messageContextHtml = (message) => message.viewing_context?.items?.length
   ? `<div class="message-viewing-context">${viewingContextChipsHtml(message.viewing_context)}</div>` : "";
 
-function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
+function messageFooterHtml(message) {
   const user = message.role === "user";
   const status = user
-    ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
+    ? `<span class="thread-status" role="img" aria-label="${message.seen_at ? "Read" : "Sent"}">${ICON_CHECK}${message.seen_at ? ICON_CHECK : ""}</span>`
     : "";
+  const time = timeHtml(message.created_at);
+  return status || time ? `<div class="thread-message-footer">${status}${time}</div>` : "";
+}
+
+const resolvedRevisionHtml = (message) => message.resolved_by_revision
+  ? `<div class="thread-message-resolution"><button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button></div>`
+  : "";
+
+function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
+  const user = message.role === "user";
   // `done` is message metadata, not a presentation type: on a thread written
   // before outcomes were message statuses it flags the send that followed the
   // timeline's done event, and such a message renders like every other one.
-  // What marks a message is `outcome` — the whole record of a reported outcome,
-  // carrying the structured handoff the done event used to.
+  // What marks a message is `outcome` — the whole record of a reported outcome.
+  // The body IS the report: the agent's `done` summary, in markdown, which is
+  // why no card of lists sits under it any more.
   // renderMarkdown escapes all input before adding its fixed safe tag set.
   // The sequence rides the row: it is how the timeline says which message a
   // row stands for, and how the panel reports what the reader's viewport has
@@ -751,38 +810,19 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
-      <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
       ${outcomeMarkerHtml(message.outcome, agentLabel)}
+      ${resolvedRevisionHtml(message)}
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
-      ${completionReportHtml(message.completion_report)}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, liveOptions, offer, threadState)}
+      ${messageFooterHtml(message)}
     </div>
   </article>`;
 }
 
-/// The agent's handoff, as a card.
-///
-/// `done` is asked for a completion report, and the report renders wherever the
-/// record of that completion is: on the outcome message that reports it, and on
-/// the `Done` event of a thread written before outcomes were message statuses.
-/// Either way it is the same card — the critical files, the decisions a
-/// reviewer would otherwise reverse-engineer, the risks, and what was
-/// deliberately left alone. Every line is the agent's words — escaped.
-function completionReportHtml(report) {
-  const sections = completionReportSections(report);
-  if (!sections.length) return "";
-  return `<div class="completion-report">${sections
-    .map(
-      (section) =>
-        `<div class="completion-section"><div class="completion-title">${esc(section.title)}</div>
-        <ul>${section.items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div>`,
-    )
-    .join("")}</div>`;
-}
 
 /// What a tool call's answer reported, as a mark on the call's own row.
 ///
@@ -998,6 +1038,7 @@ function activityRunHtml(span, summary, children) {
   return `<details class="thread-activity-group" ${RENDERED_FOLD_ATTRIBUTE} ${ACTIVITY_RUN_ATTRIBUTE}="${esc(String(span.key))}" ${ACTIVITY_RUN_FROM_ATTRIBUTE}="${esc(String(span.from))}" ${ACTIVITY_RUN_THROUGH_ATTRIBUTE}="${esc(String(span.through))}"${children === null ? "" : " open"}>
     <summary class="thread-activity-head thread-activity-group-head">
       <span class="thread-event-icon" aria-hidden="true">${esc(summary.icon)}</span>
+      <span class="thread-activity-label">Actions</span>
       <span class="thread-activity-count">${summary.count}</span>
       <span class="thread-activity-preview">${esc(summary.meat)}</span>
       ${toolOutcomeHtml(summary.outcome)}
@@ -1083,7 +1124,7 @@ function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
     : event.event !== "done" && event.summary ? renderMarkdown(event.summary) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
-    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${completionReportHtml(event.completion_report)}${linksHtml(event.links)}</div>
+    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${linksHtml(event.links)}</div>
   </div>`;
 }
 
@@ -1679,6 +1720,21 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     );
   });
 
+  root.querySelectorAll("button.thread-attachment-preview").forEach((preview) => {
+    preview.onclick = async () => {
+      const image = preview.querySelector("img.thread-attachment-image");
+      const path = image?.dataset.attachmentPath;
+      if (!path) return;
+      try {
+        const dataUrl = image.getAttribute("src") || await dataUrlFor(path);
+        if (dataUrl) openThreadAttachmentLightbox(preview, { src: dataUrl, alt: image.alt });
+      } catch {
+        threadState.rememberAttachment(path, null);
+        image.closest(".thread-attachment-figure")?.classList.add("unavailable");
+      }
+    };
+  });
+
   root.querySelectorAll("button.thread-attachment").forEach((chip) => {
     chip.onclick = async () => {
       const path = chip.dataset.attachmentPath;
@@ -1692,23 +1748,31 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
   });
 }
 
-export function wireThreadLinks(root, openLink) {
+/// Whether a press is the browser's rather than the app's. A middle click, or
+/// a click held with a modifier, means "open this somewhere else" — another
+/// tab, another window — and a chip that is a real link already knows how.
+const pressIsTheBrowsers = (event) =>
+  event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+
+/**
+ * Wire the reference chips under the messages of a conversation.
+ *
+ * `openLink(link)` navigates the app. `routeFor(link)` says where a file
+ * reference goes — the caller's, because only the surface holding the
+ * conversation knows which checkout its paths are written against
+ * (core/threadLinks.js) — and its answer becomes the anchor's href, so the
+ * browser can open the file in a tab of its own. A caller that names no route
+ * leaves the chips hrefless and keeps the in-app press.
+ */
+export function wireThreadLinks(root, openLink, routeFor = () => null) {
   if (!root) return;
-  root.querySelectorAll(".thread-reference").forEach((button) => {
-    // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
-    button.onclick = () => {
-      const link = { kind: button.dataset.kind };
-      if (button.dataset.path) link.path = button.dataset.path;
-      if (button.dataset.issueId) link.issue_id = button.dataset.issueId;
-      if (button.dataset.planId) link.plan_id = button.dataset.planId;
-      if (button.dataset.stageId) link.stage_id = button.dataset.stageId;
-      if (button.dataset.implementationId) link.implementation_id = button.dataset.implementationId;
-      if (button.dataset.runId) link.run_id = button.dataset.runId;
-      if (button.dataset.worktreeId) link.worktree_id = button.dataset.worktreeId;
-      if (button.dataset.sha) link.sha = button.dataset.sha;
-      if (button.dataset.recoveryId) link.recovery_id = button.dataset.recoveryId;
-      if (button.dataset.lineStart) link.line_start = Number(button.dataset.lineStart);
-      if (button.dataset.lineEnd) link.line_end = Number(button.dataset.lineEnd);
+  root.querySelectorAll(".thread-reference").forEach((chip) => {
+    const link = linkFromDataset(chip.dataset);
+    const route = chip.tagName === "A" ? routeFor(link) : null;
+    if (route) chip.href = hashFromRoute(route);
+    chip.onclick = (event) => {
+      if (chip.href && pressIsTheBrowsers(event)) return;
+      event.preventDefault();
       openLink(link);
     };
   });
@@ -1723,20 +1787,14 @@ export function wireThreadLinks(root, openLink) {
 /// a wedged-looking box invites. Restoring the button here — before any
 /// repaint — keeps that true even when the caller's rebuild is frozen.
 ///
-/// `onSubmit(body, attachments, { interrupt })` does the transport —
-/// `interrupt` is true only where the send control offered the alternative and
-/// the writer chose it. `upload` (with the
+/// `onSubmit(body, attachments)` does the transport. `onInterrupt` stops the
+/// active turn when the empty composer is showing its stop control. `upload` (with the
 /// `readAttachments`/`writeAttachments` draft pair) turns the box into one that
 /// takes files; without it the composer is the plain text box it always was.
 ///
 /// Returns a controller: `setCanInterrupt(flag)` moves the send between its two
 /// shapes in place, for a surface whose poll can change the answer under a box
 /// somebody is typing in.
-/// The send button's word. It wraps its label so a busy state can rewrite the
-/// word without wiping the icon beside it; the split shape, which has no icon
-/// to protect, is driven directly.
-const sendLabel = (button) => button.querySelector(".composer-send-label") || button;
-
 function mountViewingContext(root, inputId, viewingContext) {
   const tray = root.querySelector(`#${composerPartIds(inputId).context}`);
   const paint = (context = viewingContext?.snapshot?.()) => {
@@ -1755,6 +1813,7 @@ function mountViewingContext(root, inputId, viewingContext) {
 export function wireThreadComposer(root, {
   ids,
   onSubmit,
+  onInterrupt,
   readDraft,
   writeDraft,
   onError,
@@ -1776,36 +1835,43 @@ export function wireThreadComposer(root, {
   const say = (message) => {
     if (hint) hint.textContent = message;
   };
-  const tray = upload
+  let canInterrupt = !!send?.classList.contains("is-stop");
+  let submitting = false;
+  let blocked = false;
+  let tray = null;
+  const hasDraft = () => input.value.trim() !== "" || !!(tray && !tray.isEmpty());
+  const paintAction = () => {
+    if (!control || submitting) return;
+    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt, hasDraft: hasDraft() });
+    wireSendControl();
+    setPressable(true);
+  };
+  tray = upload
     ? mountComposerAttachments(root, {
         ids,
         upload,
         readAttachments,
         writeAttachments,
         onError: say,
+        onChange: () => queueMicrotask(paintAction),
       })
     : null;
 
   input.value = readDraft();
   input.oninput = () => {
     writeDraft(input.value);
-    say("");
+    if (!blocked) say("");
+    paintAction();
   };
   const fitToText = autoGrow(input);
 
-  /// The caret half of a split send, when the control is wearing that shape.
-  const caretOf = () => control && control.querySelector(".caret");
-  let blocked = false;
-  let submitting = false;
   const setPressable = (pressable) => {
     const disabled = !pressable || blocked;
     send.disabled = disabled;
-    const caret = caretOf();
-    if (caret) caret.disabled = disabled;
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line
-  const submit = async ({ interrupt = false } = {}) => {
+  const submit = async () => {
     // A send is already in flight: the keyboard path has no disabled gate.
     if (send.disabled) return;
     if (tray && tray.busy()) {
@@ -1824,23 +1890,22 @@ export function wireThreadComposer(root, {
     }
     setPressable(false);
     submitting = true;
-    sendLabel(send).textContent = "sending…";
     try {
-      const result = await onSubmit(body, tray ? tray.attachments() : [], { interrupt });
+      const result = await onSubmit(body, tray ? tray.attachments() : []);
       if (!submissionOwnsDraft) writeDraft("");
       input.value = "";
       fitToText();
       if (tray) tray.clear();
       submitting = false;
       setPressable(true);
-      sendLabel(send).textContent = "Send";
+      paintAction();
       if (afterSubmit) afterSubmit(result);
     } catch (error) {
       // The text and the files stay put: a failed send must never cost the user
       // their words, and re-picking the files would be worse.
       submitting = false;
       setPressable(true);
-      sendLabel(send).textContent = "Send";
+      paintAction();
       if (onError) onError(error);
     }
   };
@@ -1850,26 +1915,34 @@ export function wireThreadComposer(root, {
   const wireSendControl = () => {
     send = root.querySelector(`#${ids.send}`);
     if (!send) return;
-    send.onclick = () => submit();
-    if (control) {
-      mountSplitMenu(control, { onChoose: (action) => submit({ interrupt: action === INTERRUPT_SEND_OPTION.id }) });
-    }
+    send.onclick = async () => {
+      if (send.dataset.action !== "stop") return submit();
+      if (send.disabled || !onInterrupt) return;
+      setPressable(false);
+      submitting = true;
+      try {
+        await onInterrupt();
+      } catch (error) {
+        if (onError) onError(error);
+      } finally {
+        submitting = false;
+        paintAction();
+      }
+    };
   };
 
-  /// Move the send between its two shapes. Never mid-press: a send in flight
-  /// owns the button's word, and an open menu is a choice being made — the
-  /// poll comes round again a second later, and by then the press has landed.
-  let splitShown = !!(control && control.querySelector(".splitmenu"));
+  /// Record whether the active turn can be stopped. A request already in
+  /// flight keeps its disabled control until it settles, then paints the latest
+  /// turn and draft state.
   const setCanInterrupt = (wanted) => {
-    const split = !!wanted;
-    if (!control || split === splitShown) return;
-    if (send.disabled || control.querySelector(".splitmenu:not([hidden])")) return;
-    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt: split });
-    splitShown = split;
-    wireSendControl();
+    const next = !!wanted;
+    if (!control || next === canInterrupt) return;
+    canInterrupt = next;
+    paintAction();
   };
 
   wireSendControl();
+  paintAction();
   input.onkeydown = (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -1882,7 +1955,6 @@ export function wireThreadComposer(root, {
     setPressable(!submitting);
     if (!submitting) {
       say(blocked ? message : "");
-      sendLabel(send).textContent = blocked ? message : "Send";
     }
   };
 

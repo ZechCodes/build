@@ -69,13 +69,17 @@ fn each_named_tool_mints_the_argument_a_developer_would_read() {
         assert_eq!(tool_call_summary(tool, &input), want, "{tool}");
     }
 }
-/// The meat is clipped the way every summary is: one line, and the limit
-/// with an ellipsis behind it.
+/// Expandable tool text keeps its original shape through the activity limit,
+/// then clips on a character boundary with an ellipsis.
 #[test]
-fn a_long_command_clips_at_the_summary_limit() {
-    let command = "x".repeat(500);
+fn a_long_command_clips_at_the_activity_limit() {
+    let command = format!("first\n{}", "λ".repeat(ACTIVITY_TEXT_LIMIT));
+    let summary = tool_call_summary("Bash", &json!({ "command": command }));
+    assert!(summary.contains('\n'));
     assert_eq!(
-        tool_call_summary("Bash", &json!({ "command": command })),
-        format!("Bash {}…", "x".repeat(TOOL_SUMMARY_LIMIT)),
+        summary.chars().count(),
+        ACTIVITY_TEXT_LIMIT + 1,
+        "the ellipsis sits beyond the activity text bound"
     );
+    assert!(summary.ends_with('…'));
 }

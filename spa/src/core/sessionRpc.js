@@ -19,6 +19,18 @@ function timedOutError(method, uncertain = false) {
   return error;
 }
 
+/** The bridge said no. From API 1.1 the refusal carries `error_code`,
+ *  `retryable` and `details` beside the string (wire spec step 2.4); they ride
+ *  the Error under their wire names so the adapter can read them off it. A 1.0
+ *  bridge sends the string alone, and the Error carries nothing more. */
+function refusalError(payload) {
+  const error = new Error(payload.error);
+  for (const field of ["error_code", "retryable", "details"]) {
+    if (payload[field] !== undefined) error[field] = payload[field];
+  }
+  return error;
+}
+
 /** A carrier disappearing after send was invoked cannot tell us whether the
  * device accepted the request. Give each affected call its own error: calls
  * that were still waiting for a carrier can fail definitely beside them. */
@@ -125,8 +137,19 @@ export function createSessionRpc({
      * wire that is on its way back, and then the wait is inside this call's
      * own deadline: nothing waits on a carrier longer than it would have
      * waited for an answer over one.
+     *
+     * `priority: "background"` rides the request envelope beside `id` and
+     * `method` (wire spec step 1.4), so the bridge's dispatcher keeps a cache
+     * warm-up out of the focused surface's way. Anything else is foreground
+     * and stamps nothing: absence is the default on both ends.
+     * A `null` or zero `timeoutMs` leaves the call pending until an answer or
+     * session failure; it does not create a browser timer.
      */
-    async call(method, params = {}, { timeoutMs = defaultTimeoutMs, carrier: wire = carrier } = {}) {
+    async call(
+      method,
+      params = {},
+      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground" } = {},
+    ) {
       if (closed) throw noCarrier();
       const id = "r" + ++requestId;
       let waiting;
@@ -134,7 +157,7 @@ export function createSessionRpc({
         waiting = {
           handoffAttempted: false,
           reject,
-          ok: (payload) => (payload.ok ? resolve(payload.result) : reject(new Error(payload.error))),
+          ok: (payload) => (payload.ok ? resolve(payload.result) : reject(refusalError(payload))),
         };
         pending.set(id, waiting);
       });
@@ -148,7 +171,11 @@ export function createSessionRpc({
         const envelope = await transport.encryptFrame({
           sessionKeyB64,
           outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
-          frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
+          frameFields: {
+            frame_type: "data",
+            sender: "client",
+            payload: { method, id, params, ...(priority === "background" ? { priority } : {}) },
+          },
         });
         // The session may have been failed, closed, or timed out while its
         // carrier/encryption was pending. Once the outward call has settled,
@@ -164,12 +191,15 @@ export function createSessionRpc({
       });
       // However this settles, nothing is waiting for it any more: a call that
       // timed out must not leave an entry for a later loss to reject at nobody.
-      return Promise.race([
-        answer,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(timedOutError(method, waiting.handoffAttempted)), timeoutMs),
-        ),
-      ]).finally(() => pending.delete(id));
+      const settled = timeoutMs == null || timeoutMs === 0
+        ? answer
+        : Promise.race([
+            answer,
+            new Promise((_, reject) =>
+              setTimeout(() => reject(timedOutError(method, waiting.handoffAttempted)), timeoutMs),
+            ),
+          ]);
+      return settled.finally(() => pending.delete(id));
     },
 
     fail,

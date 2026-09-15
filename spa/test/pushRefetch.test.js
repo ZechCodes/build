@@ -72,44 +72,44 @@ async function mountPane(scope = { run_id: "run-7" }) {
 
 describe("a surface against a bridge that pushes", () => {
   it("reads again when the entity it is showing changes", async () => {
-    armChangeEvents({ push_events: true });
+    armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" });
+    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
     await settle();
     expect(reads()).toBe(before + 1);
     pane.dispose();
   });
 
   it("ignores an entity it is not showing", async () => {
-    armChangeEvents({ push_events: true });
+    armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    dispatchChangeEvent({ type: "entity.changed", id: "run-99" });
+    dispatchChangeEvent({ type: "entity.changed", id: "run-99" }, "dev-a");
     await settle();
     expect(reads()).toBe(before);
     pane.dispose();
   });
 
   it("ignores board.changed — the feed moved, not this entity's detail", async () => {
-    armChangeEvents({ push_events: true });
+    armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    dispatchChangeEvent({ type: "board.changed" });
+    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
     await settle();
     expect(reads()).toBe(before);
     pane.dispose();
   });
 
   it("watches the board when its scope is a project checkout, which names no entity", async () => {
-    armChangeEvents({ push_events: true });
+    armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane({ project_id: "p1" });
     const before = reads();
 
-    dispatchChangeEvent({ type: "board.changed" });
+    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
     await settle();
     expect(reads()).toBe(before + 1);
     pane.dispose();
@@ -118,7 +118,7 @@ describe("a surface against a bridge that pushes", () => {
   it("stands its 1.6s poll down to the safety poll", async () => {
     // Before the mount: the interval has to be the fake one from the start.
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    armChangeEvents({ push_events: true });
+    armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane();
     const before = reads();
 
@@ -130,7 +130,7 @@ describe("a surface against a bridge that pushes", () => {
   });
 
   it("reads once for a reconnect, whatever it is showing", async () => {
-    armChangeEvents({ push_events: true });
+    armChangeEvents({ push_events: true }, "dev-a");
     const entity = await mountPane();
     const board = await mountPane({ project_id: "p1" });
     const before = [entity.reads(), board.reads()];
@@ -143,12 +143,12 @@ describe("a surface against a bridge that pushes", () => {
   });
 
   it("stops hearing events once the surface is disposed", async () => {
-    armChangeEvents({ push_events: true });
+    armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane();
     pane.dispose();
     const before = reads();
 
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" });
+    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
     await settle();
     expect(reads()).toBe(before);
   });
@@ -171,8 +171,8 @@ describe("a surface against a bridge that does not", () => {
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" });
-    dispatchChangeEvent({ type: "board.changed" });
+    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
+    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
     await settle();
     expect(reads()).toBe(before);
     pane.dispose();

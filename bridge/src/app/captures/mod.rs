@@ -5,8 +5,6 @@ use serde_json::{json, Value};
 mod routing;
 
 pub use routing::RoutedCapture;
-#[cfg(test)]
-pub(in crate::app) use routing::RoutedIssueDrafting;
 pub(in crate::app) use routing::{capture_after_routing, RouteRecorded};
 
 /// A capture as it ships: the stored record itself, so the wire and the store
@@ -61,7 +59,7 @@ impl AppState {
     /// never starts, never answers, or dies mid-decision costs a routing
     /// decision and never the text: the only part of a capture the user cannot
     /// produce again.
-    pub(in crate::app) fn capture_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_create(&mut self, params: &Value) -> Result<Value, String> {
         let said = require_str(params, "text")?;
         let text = said.trim();
         if text.is_empty() {
@@ -92,7 +90,7 @@ impl AppState {
     /// router offered (`option_id`, or `option_index` counting from the first
     /// one offered). A tapped option reaches the router as words too: the label
     /// the user saw and the destination it stood for.
-    pub(in crate::app) fn capture_answer(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_answer(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         let capture = self
             .captures
@@ -127,7 +125,7 @@ impl AppState {
     /// Only while the capture is still its own presence. Once it became an
     /// issue or a branch, that work is what there is to cancel, and it is
     /// cancelled where it lives.
-    pub(in crate::app) fn capture_cancel(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_cancel(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         let capture = self
             .captures
@@ -157,7 +155,7 @@ impl AppState {
     /// router's own tools use: one path to a destination, so a manual route and
     /// a routed one are the same kind of thing afterwards. With none it re-fires
     /// the router, which is what the one-tap retry on a failed route is.
-    pub(in crate::app) fn capture_reroute(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_reroute(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         if !self.captures.contains_key(&capture_id) {
             return Err(format!("unknown capture_id: {capture_id}"));
@@ -176,6 +174,9 @@ impl AppState {
             .and_then(Value::as_str)
             .unwrap_or(crate::capture::CaptureTarget::Issue.as_str())
             .to_string();
+        if kind == crate::capture::CaptureTarget::Issue.as_str() {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
         // A router still deciding this capture would route it a second time on
         // top of the user's own choice.
         self.abandon_router_session(&capture_id);
@@ -189,16 +190,6 @@ impl AppState {
         let text = self.captures[&capture_id].text.clone();
         let rationale = Some("rerouted by the user".to_string());
         match kind.as_str() {
-            // The planning session's disk runs through the drain, so the
-            // capture this answers with is read once the session is real — in
-            // the apply phase, which is where the route is written down.
-            "issue" => self.route_to_issue(
-                &capture_id,
-                &project_id,
-                &text,
-                rationale,
-                capture_after_routing,
-            ),
             // The dispatch's git runs through the drain, so the row this answers
             // with is read once the branch is real — in the apply phase, which
             // is where the route is written down.
@@ -211,12 +202,12 @@ impl AppState {
                 capture_after_routing,
             ),
             other => Err(format!(
-                "capture.reroute: {other:?} is not a destination — branch and issue are the work"
+                "capture.reroute: {other:?} is not a destination — branch is the supported work"
             )),
         }
     }
 
-    pub(in crate::app) fn capture_list(&self) -> Value {
+    pub(crate) fn capture_list(&self) -> Value {
         let captures: Vec<Value> = self
             .captures_oldest_first()
             .into_iter()
@@ -225,7 +216,7 @@ impl AppState {
         json!({ "captures": captures })
     }
 
-    pub(in crate::app) fn capture_get(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_get(&self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         let capture = self
             .captures

@@ -1,9 +1,11 @@
+use crate::api::clients::DeclaredClient;
+use crate::api::API_VERSION;
 use crate::app::{
     capture_conversation_names, err, record_idle_in_thread, require_str, spawn_tab_pumps, AppState,
     HarnessExit, IdleObservation, LifecycleDiagnostic, Tab, TabKey,
 };
 use crate::carrier::SessionSender;
-use crate::changes::ANNOUNCED_EVENTS;
+use crate::changes::{Kind, ANNOUNCED_EVENTS, MAX_BATCH_MS, MIN_BATCH_MS};
 use crate::encoding::b64decode;
 use crate::models::AgentProvider;
 use crate::pty::HarnessSpec;
@@ -33,8 +35,7 @@ pub(in crate::app) enum TermScope {
 }
 
 impl TermScope {
-    /// Parse the inline scope params: `run_id` wins (a run is worktree-scoped),
-    /// then `project_id`+`worktree_id`, then `project_id` alone.
+    /// Parse the legacy inline work-item scope params.
     pub(in crate::app) fn parse(params: &Value) -> Result<TermScope, String> {
         let field = |key: &str| {
             params
@@ -98,6 +99,19 @@ impl TermScope {
         };
         Ok(AppState::canonical_root(&root))
     }
+}
+
+/// Resolve the terminal's owning workspace. Workspace-aware clients use the
+/// container root; old work-item clients retain their checkout-root behavior.
+fn terminal_scope_root(state: &mut AppState, params: &Value) -> Result<std::path::PathBuf, String> {
+    if let Some(workspace_id) = params
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        return state.workspace_root(workspace_id);
+    }
+    TermScope::parse(params)?.resolve_root(state)
 }
 
 /// What a client is told about the tab it just attached to.
@@ -192,6 +206,14 @@ pub(in crate::app) fn terminal_size(cols: u16, rows: u16) -> PtySize {
 /// Greet a browser session: announce what this bridge pushes, and subscribe the
 /// session to it.
 ///
+/// `"changes"` picks which push contract the session speaks (wire spec, step
+/// 1.5). `"legacy"` — the default, and what every client that predates
+/// subscriptions sends — is today's behaviour: the session hears
+/// `board.changed` / `entity.changed` for every entity on the device.
+/// `"subscriptions"` means it hears nothing until it calls
+/// `changes.subscribe`, and drops any legacy subscription it already had, so
+/// a reconnecting client that switches contracts is not served both.
+///
 /// `push_events: true` is the feature detection. A bridge that predates push
 /// invalidation answers `unknown method: session.hello`, and a client that
 /// predates it never asks — so a new SPA against an old bridge, and an old SPA
@@ -202,17 +224,37 @@ pub(in crate::app) fn terminal_size(cols: u16, rows: u16) -> PtySize {
 pub(in crate::app) fn session_hello(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
+    params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    // The subscribe happens with the app mutex released — it takes the bus's
-    // own leaf lock, and nothing in this daemon may nest one lock inside
-    // another it did not have to.
+    // The subscribe and the client record both happen with the app mutex
+    // released — each takes its own leaf lock, and nothing in this daemon may
+    // nest one lock inside another it did not have to.
     let changes = timer.lock(state).changes();
-    changes.subscribe(sender);
+    let subscriptions = params.get("changes").and_then(Value::as_str) == Some("subscriptions");
+    if subscriptions {
+        changes.unsubscribe_legacy(sender.session_id());
+    } else {
+        changes.subscribe_legacy(sender);
+    }
+    timer.clock().clients().record(
+        sender.session_id(),
+        DeclaredClient::from_hello_params(params),
+    );
     Ok(json!({
+        "api_version": API_VERSION,
         "push_events": true,
         "events": ANNOUNCED_EVENTS,
         "coalesce_window_ms": changes.window().as_millis() as u64,
+        // What a Part 1 adapter reads instead of probing for
+        // `changes.subscribe`: whether this bridge serves subscriptions, the
+        // kinds it filters on, and the clamp on a batch interval.
+        "changes": {
+            "subscriptions": true,
+            "mode": if subscriptions { "subscriptions" } else { "legacy" },
+            "kinds": Kind::ALL.map(Kind::as_str),
+            "batch_ms": { "min": MIN_BATCH_MS, "max": MAX_BATCH_MS },
+        },
         "thread_post_operations": {
             "version": 1,
             "status_method": "thread.operation",
@@ -244,12 +286,11 @@ pub(in crate::app) fn term_create(
 ) -> Result<Value, String> {
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-    let scope = TermScope::parse(params)?;
     require_shell_kind(params)?;
 
     let (key, pumps) = {
         let mut s = timer.lock(state);
-        let root = scope.resolve_root(&mut s)?;
+        let root = terminal_scope_root(&mut s, params)?;
         // The cap counts the human's shells and never an agent: sixteen open
         // terminals must not be able to crowd a worktree's agent out of a
         // registry they now share.
@@ -300,8 +341,17 @@ pub(in crate::app) fn term_attach(
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
 
     let attachment = {
-        let s = timer.lock(state);
+        let mut s = timer.lock(state);
         let key = s.tab_key_of_wire_id(&term_id)?;
+        // Workspace-aware clients prove that the id belongs to the workspace
+        // currently mounted. This also keeps a stale cached id from attaching
+        // to an unrelated workspace after a directory/ref selection change.
+        if params.get("workspace_id").is_some() {
+            let requested_root = terminal_scope_root(&mut s, params)?;
+            if key.root != requested_root {
+                return Err("terminal does not belong to workspace".to_string());
+            }
+        }
         s.attachment(&key)?
     };
     Ok(attach_to_tab(attachment, sender, cols, rows))
@@ -470,7 +520,7 @@ impl AppState {
     /// run adopts it; filtering by scope made every open shell vanish from the
     /// tab row at adoption while its process kept running.
     pub(in crate::app) fn term_list(&mut self, params: &Value) -> Result<Value, String> {
-        let root = TermScope::parse(params)?.resolve_root(self)?;
+        let root = terminal_scope_root(self, params)?;
         let mut terminals: Vec<(u64, Value)> = self
             .session_registry
             .shell_tabs_at(&root)

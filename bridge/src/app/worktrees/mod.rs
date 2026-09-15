@@ -1,16 +1,11 @@
 use crate::app::{
-    archived_worktree_json, named_agent_id, parse_worktree_finish_action, require_str,
-    scan_may_yet_show_it, view_thread_detail, AppState, BranchFinishEpilogue, DigestScope,
-    FinishKind, FinishRequirement, PlannedFinish, PlannedRunFinish, WorktreeFinishJob,
+    named_agent_id, require_str, scan_may_yet_show_it, view_thread_detail, AppState, DigestScope,
 };
 use crate::lifecycle::holders::ProjectCheckouts;
 use crate::lifecycle::{CreateWorktree, PendingRow};
-use crate::run::RunState;
-use crate::store::{WorktreeFinishAction, WorktreeFinishStatus};
 use serde_json::{json, Value};
 
 pub(in crate::app) mod dispatch;
-pub(in crate::app) mod finish;
 
 impl AppState {
     /// Mint a bare worktree — no run, no agent, no session. It is the
@@ -22,7 +17,7 @@ impl AppState {
     /// names a branch that already exists — here or on a remote — and Build
     /// borrows it a directory, cutting nothing. `name` is words to cut a new
     /// branch after, and no branch of that spelling is consulted.
-    pub(in crate::app) fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let (title, existing_branch, branch) = match (
             params.get("branch").and_then(Value::as_str),
@@ -71,88 +66,10 @@ impl AppState {
         )
     }
 
-    /// Finish an external worktree selected only by server-resolved ids.
-    ///
-    /// Two halves. HERE, under the app mutex: resolve the project, settle the
-    /// idempotent replays out of memory, and claim the checkout. Then
-    /// [`WorktreeFinishJob::run`] with the mutex released: the forced rescan
-    /// (which is both stale-id protection and the execution-time status
-    /// recheck), the checkpoint, and the destructive git. Client paths are
-    /// ignored and never become an authority in either half.
-    pub(in crate::app) fn worktree_finish(&mut self, params: &Value) -> Result<Value, String> {
-        match self.plan_worktree_finish(params)? {
-            PlannedFinish::Settled(value) => Ok(value),
-            PlannedFinish::Deferred(job) => {
-                let epilogue = job.epilogue(FinishKind::Worktree);
-                Ok(self.defer_finish(job, epilogue))
-            }
-        }
-    }
-
-    /// The lock-held half of every finish verb: what the app mutex decides
-    /// before any disk is touched.
-    pub(in crate::app) fn plan_worktree_finish(
-        &mut self,
-        params: &Value,
-    ) -> Result<PlannedFinish, String> {
-        let project_id = require_str(params, "project_id")?;
-        let worktree_id = require_str(params, "worktree_id")?;
-        let action = parse_worktree_finish_action(&require_str(params, "action")?)?;
-        let (project_path, base_branch) = self
-            .projects
-            .iter()
-            .find(|project| project.id == project_id)
-            .map(|project| (project.repo_path.clone(), project.base_branch.clone()))
-            .ok_or("unknown project_id")?;
-        let canonical_project_path = project_path.display().to_string();
-
-        self.require_store()?;
-        // A completed record makes the mutation idempotent. A pending record is
-        // the crash/failure-safe resume point and uses only the same server ids.
-        let mut resume = None;
-        if let Some(record) = self.board.archived(&worktree_id).cloned() {
-            if record.project_path == canonical_project_path {
-                if record.action != action {
-                    return Err(format!(
-                        "worktree.finish already started with action {:?}",
-                        record.action
-                    ));
-                }
-                if record.status == WorktreeFinishStatus::Archived {
-                    return Ok(PlannedFinish::Settled(archived_worktree_json(&record)));
-                }
-                resume = Some(record);
-            }
-        }
-
-        // The claim is the last thing taken and the first thing the epilogue
-        // gives back: past this point the checkout belongs to this finish until
-        // its git work returns.
-        let store = self.require_store()?.clone();
-        let excluded = self.bound_worktree_paths();
-        if !self.finishing_worktrees.insert(worktree_id.clone()) {
-            return Err(format!(
-                "worktree {worktree_id} is already finishing — wait for that to complete"
-            ));
-        }
-        Ok(PlannedFinish::Deferred(Box::new(WorktreeFinishJob {
-            worktrees: self.orch_for(&project_id)?.worktrees().clone(),
-            project_id,
-            base_branch,
-            worktree_id,
-            action,
-            excluded,
-            resume,
-            store,
-            #[cfg(test)]
-            gate: self.off_lock_gate.clone(),
-        })))
-    }
-
     /// `branch.get` — resolve `(project_id, branch)` to the work item behind
     /// it, with the full underlying run view (`run_view`) when a run owns the
     /// branch and `run: null` when the checkout is bare.
-    pub(in crate::app) fn branch_get(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn branch_get(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let branch = require_str(params, "branch")?;
         if !self.projects.iter().any(|p| p.id == project_id) {
@@ -208,158 +125,6 @@ impl AppState {
         }
         row["run"] = run;
         Ok(row)
-    }
-
-    /// `branch.finish` — the inbox entry's Done, for a branch.
-    ///
-    /// Done on a branch DELETES it: the checkout goes through the same durable
-    /// path as `worktree.finish`, the branch goes with it, and the run's
-    /// records and conversation leave the inbox. It is never refused for the
-    /// state of the work — an unpushed commit, an unmerged branch and an
-    /// uncommitted edit are warnings the row carries (`finish.warnings`) and
-    /// the user confirms through. `action` chooses how the checkout is retired
-    /// and defaults to `delete`, which is what Done means.
-    ///
-    /// An issue the branch implements only ends with it when the work landed:
-    /// a merge finishes the issue too, and any other ending hands the issue
-    /// back to the inbox with an event naming the branch it lost.
-    /// `unlink: true` leaves the issue alone either way.
-    pub(in crate::app) fn branch_finish(&mut self, params: &Value) -> Result<Value, String> {
-        let project_id = require_str(params, "project_id")?;
-        let branch = require_str(params, "branch")?;
-        let action_name = params
-            .get("action")
-            .and_then(Value::as_str)
-            .filter(|action| !action.is_empty())
-            .unwrap_or("delete")
-            .to_string();
-        parse_worktree_finish_action(&action_name)?;
-        let unlink = params
-            .get("unlink")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let Some(run_id) = self.run_on_branch(&project_id, &branch) else {
-            // No run behind the branch: it is a bare checkout, and the durable
-            // archive path is the same one `run.finish` delegates to.
-            //
-            // The last scan is what maps the branch to a checkout id. Resolving
-            // it is not the authority for what gets deleted — the job rescans
-            // and re-resolves the id itself — so a stale hit fails closed there
-            // rather than costing every other frame a scan under this lock.
-            let worktree = self.find_checkout(
-                &project_id,
-                &format!("branch.finish: no checkout of this project is on branch {branch}"),
-                |checkout| checkout.branch.as_deref() == Some(branch.as_str()),
-            )?;
-            let planned = self.plan_worktree_finish(&json!({
-                "project_id": project_id,
-                "worktree_id": worktree.id,
-                "action": action_name,
-            }))?;
-            let epilogue = BranchFinishEpilogue {
-                branch,
-                run: None,
-                issue_id: None,
-                orphaned_issue_id: None,
-            };
-            return Ok(match planned {
-                PlannedFinish::Settled(archived) => {
-                    self.apply_branch_finish(epilogue, Ok(archived))?
-                }
-                PlannedFinish::Deferred(job) => {
-                    let epilogue = job.epilogue(FinishKind::Branch(epilogue));
-                    self.defer_finish(job, epilogue)
-                }
-            });
-        };
-        let implemented_issue_id = self.runs[&run_id]
-            .run
-            .plan_id
-            .as_ref()
-            .map(|id| id.0.clone())
-            // An issue already filed away has nothing left to hear about this.
-            .filter(|issue_id| {
-                self.plans
-                    .get(issue_id)
-                    .is_some_and(|issue| issue.plan.archived_at.is_none())
-            });
-        // Whether the work landed. That is the whole question an issue's fate
-        // turns on: a merge publishes it into the base branch and the issue is
-        // done with the branch; anything else deletes work the issue was
-        // waiting for, so the issue comes back to the inbox and has to be told
-        // what happened to the branch that was speaking for it.
-        let merged = matches!(
-            parse_worktree_finish_action(&action_name),
-            Ok(WorktreeFinishAction::Merge)
-        ) || self.runs[&run_id].run.state == RunState::Merged;
-        let issue_id = implemented_issue_id.clone().filter(|_| !unlink && merged);
-        let orphaned_issue_id = implemented_issue_id.filter(|_| !merged);
-        let planned =
-            self.plan_finish_run(&run_id, &action_name, FinishRequirement::Unconditional)?;
-        let epilogue = |run| BranchFinishEpilogue {
-            branch,
-            run,
-            issue_id,
-            orphaned_issue_id,
-        };
-        match planned {
-            // The checkout was already gone: there is no branch left to finish
-            // and no issue news to file, only the run's own retirement.
-            PlannedRunFinish::Settled(archived) => {
-                self.apply_branch_finish(epilogue(None), Ok(archived))
-            }
-            PlannedRunFinish::Replay { archived, run } => {
-                self.apply_branch_finish(epilogue(Some(run)), Ok(archived))
-            }
-            PlannedRunFinish::Deferred { job, run } => {
-                let epilogue = job.epilogue(FinishKind::Branch(epilogue(Some(run))));
-                Ok(self.defer_finish(job, epilogue))
-            }
-        }
-    }
-
-    /// Settle the issue behind a finished branch, once the branch is actually
-    /// gone: a merge files the issue away with it, anything else hands the
-    /// issue back to the inbox with an event naming the branch it lost.
-    pub(in crate::app) fn apply_branch_finish(
-        &mut self,
-        epilogue: BranchFinishEpilogue,
-        archived: Result<Value, String>,
-    ) -> Result<Value, String> {
-        let BranchFinishEpilogue {
-            branch,
-            run,
-            issue_id,
-            orphaned_issue_id,
-        } = epilogue;
-        let run_id = run.as_ref().map(|run| run.run_id.clone());
-        let finished = match run {
-            Some(run) => self.apply_run_finish(run, archived)?,
-            None => archived?,
-        };
-        if let (Some(orphaned_issue_id), Some(run_id)) = (&orphaned_issue_id, &run_id) {
-            self.note_implementation_abandoned(
-                orphaned_issue_id,
-                run_id,
-                &branch,
-                "finished off the board",
-            );
-        }
-        let issue_archived = match &issue_id {
-            Some(issue_id) => {
-                self.plan_archive(&json!({ "plan_id": issue_id }))?;
-                true
-            }
-            None => false,
-        };
-        Ok(json!({
-            "branch": branch,
-            "run_id": run_id,
-            "issue_id": issue_id,
-            "issue_archived": issue_archived,
-            "issue_abandoned": orphaned_issue_id.is_some(),
-            "worktree": finished,
-        }))
     }
 
     /// The checkouts of a project the mutex can name without touching the

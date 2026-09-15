@@ -31,9 +31,10 @@ const call = vi.fn(async (method) => {
   return {};
 });
 
+// No device context is registered here, so the creation device's catalog is the
+// empty one — which is all this page's downloads block cares about.
 vi.mock("../src/app.js", () => ({
-  App: { call: (...args) => call(...args) },
-  loadModelCatalog: async () => CATALOG,
+  App: { call: (...args) => call(...args), devices: [], selectedDeviceId: null },
   go: vi.fn(),
 }));
 vi.mock("../src/api.js", () => ({
@@ -48,10 +49,6 @@ vi.mock("../src/push.js", () => ({
   disablePush: async () => {},
 }));
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "linux-x86_64" }));
-vi.mock("../src/sheets/browser.js", () => ({ openBrowser: () => {} }));
-vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: () => {} }));
-vi.mock("../src/sheets/setRemote.js", () => ({ openSetRemote: () => {} }));
-vi.mock("../src/sheets/clone.js", () => ({ openClone: () => {} }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
@@ -92,7 +89,7 @@ describe("Settings → Downloads", () => {
       Promise.race([renderSettings().then(() => "settled"), flush().then(() => "stalled")]),
     ).resolves.toBe("settled");
     expect(typeof document.getElementById("adddev").onclick).toBe("function");
-    expect(typeof document.getElementById("newrepo").onclick).toBe("function");
+    expect(typeof document.getElementById("creationdev").onchange).toBe("function");
     expect(document.getElementById("downloads").textContent).toContain("loading…");
   });
 

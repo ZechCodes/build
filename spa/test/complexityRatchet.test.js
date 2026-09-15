@@ -5,10 +5,9 @@
 // way once the comment is written, so the count is asserted here: adding one
 // fails this test, and retiring one is a deliberate edit of the number below.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
+
+import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 
 // Measured when the gate landed: 78 functions across 39 files under src/.
 // 77 since diffFileHtml became a header, a body and a frame.
@@ -21,37 +20,46 @@ import { describe, it, expect } from "vitest";
 // Main's toolbar/composer extraction and chat state ownership together retire
 // four counted functions, with no new exemption added.
 // The editable file viewer splits file-selection setup from its async read.
-const RATCHETED_FUNCTIONS = 70;
+// 69 since cacheSync's snapshot handler became four named steps: the active
+// rows, the eviction, the watcher set, and the entities entering it — and
+// syncDeviceSnapshot follows one device at a time, so onSnapshot only walks the
+// merged snapshot's devices.
+// 68 since capture routing is branch-only, so its manual form no longer
+// exceeds the cap.
+// 67 since each route kind writes its own hash: hashFromRoute looks the writer
+// up instead of walking every kind in one chain.
+// 66 since a row's project tag is one function both row painters call, rather
+// than the same conditional written out in each of them.
+// 65 since the rail's projects face lists only workspaces: a project block's
+// head has one kind of surface to open and one create button, and its chevron
+// is its own helper.
+// 62 since a conversation's reference chips are written from one table of the
+// fields a reference carries: the render reads it forwards, the wiring reads it
+// backwards, and neither walks the fields one `if` at a time. The label a chip
+// wears is a list of the fields it can be named by, and the lines it points at
+// are their own helper.
+// 61 since the pane drawer stopped guarding against chrome it writes itself:
+// paneDrawerHtml always emits the scrim and the handle, and both panes always
+// hand initPaneDrawer a list column, so the wiring reads straight down instead
+// of asking whether each of its own parts is there.
+const RATCHETED_FUNCTIONS = 61;
 
-const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything
 // below it without touching the count above: none may exist.
 const BLANKET = /eslint-disable(?!-next-line)[^\n]*complexity/;
 
-function jsFiles(dir) {
-  return readdirSync(dir, { withFileTypes: true })
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .flatMap((entry) => {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) return jsFiles(path);
-      return entry.name.endsWith(".js") ? [path] : [];
-    });
-}
-
 describe("the complexity ratchet", () => {
   it("is never switched off for a whole block or file", () => {
-    const blanket = jsFiles(SRC).filter((path) => BLANKET.test(readFileSync(path, "utf8")));
+    const blanket = srcJsFiles().filter((file) => BLANKET.test(srcSourceOf(file)));
     expect(blanket, "a blanket eslint-disable for complexity defeats the ratchet").toEqual([]);
   });
 
   it("holds at the count measured when the gate landed", () => {
-    const found = jsFiles(SRC).flatMap((path) =>
-      readFileSync(path, "utf8")
+    const found = srcJsFiles().flatMap((file) =>
+      srcSourceOf(file)
         .split("\n")
-        .flatMap((line, index) =>
-          line.includes(DISABLE) ? [`${path.slice(SRC.length + 1)}:${index + 1}`] : [],
-        ),
+        .flatMap((line, index) => (line.includes(DISABLE) ? [`${file}:${index + 1}`] : [])),
     );
     expect(
       found.length,

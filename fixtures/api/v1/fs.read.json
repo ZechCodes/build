@@ -1,0 +1,23 @@
+{
+  "method": "fs.read",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7",
+    "path": "src/main.rs"
+  },
+  "result": {
+    "path": "src/main.rs",
+    "size": 1024,
+    "truncated": false,
+    "mime": "text/x-rust",
+    "content_b64": "dXNlIHN0ZDo6aW87Cg==",
+    "editable": true,
+    "encoding": "utf-8",
+    "revision": "3d2a1f0b9c8e7d6a"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

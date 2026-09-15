@@ -8,6 +8,7 @@ import {
   branchDoneConfirm,
   dismissParamsOf,
   entryFactsText,
+  entryKeyOf,
   entryRoute,
   entryState,
   inboxEmptyHtml,
@@ -26,7 +27,9 @@ const ago = (hours) => new Date(NOW - hours * 3600 * 1000).toISOString();
 
 const branch = (over = {}) => ({
   kind: "branch",
+  deviceId: "dev-1",
   project_id: "p1",
+  projectKey: "dev-1/p1",
   project: "relaydb",
   branch: "build/login",
   title: "Fix the login flow",
@@ -63,7 +66,9 @@ const branch = (over = {}) => ({
 
 const issue = (over = {}) => ({
   kind: "issue",
+  deviceId: "dev-1",
   project_id: "p2",
+  projectKey: "dev-1/p2",
   project: "dotfiles",
   branch: null,
   title: "Rework the prompt cache",
@@ -173,7 +178,7 @@ describe("the order the list reads in", () => {
       branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, anchor: null }),
       issue({ anchor: ago(1) }),
     ]);
-    expect(entries.map((entry) => entry.key)).toEqual(["iss-1", "branch:p1:main"]);
+    expect(entries.map((entry) => entry.key)).toEqual(["iss-1", "branch:dev-1/p1:main"]);
   });
 });
 
@@ -216,16 +221,44 @@ describe("what the inbox lists", () => {
     // The repository takes no attention, so the row names no entity — and it
     // still has a key to be opened by, and its own menu to be cleared from.
     expect(entries[0].entityId).toBeNull();
-    expect(entries[0].key).toBe("branch:p1:main");
-    expect(entries[0].route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "changes" });
+    expect(entries[0].key).toBe("branch:dev-1/p1:main");
+    expect(entries[0].route).toEqual({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
     const html = inboxRowHtml(entries[0], {});
-    expect(html).toContain('data-key="branch:p1:main"');
+    expect(html).toContain('data-key="branch:dev-1/p1:main"');
     expect(html).not.toContain("data-entity");
     expect(html).toContain("data-menu");
   });
 
   it("routes an issue to its own surface", () => {
-    expect(entryRoute(issue())).toEqual({ name: "issue", projectId: "p2", id: "iss-1" });
+    expect(entryRoute(issue())).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
+  });
+
+  // Every machine mints a `proj-1`, so a route that names a project without
+  // naming the machine names two projects. The row knows which machine
+  // answered for it, and hands that to the route it opens.
+  it("entryRoute carries deviceId on branch and issue routes", () => {
+    expect(entryRoute({ kind: "branch", deviceId: "d", project_id: "p", branch: "b" })).toEqual({
+      name: "branch",
+      deviceId: "d",
+      projectId: "p",
+      branch: "b",
+      tab: "changes",
+    });
+    expect(entryRoute({ kind: "issue", deviceId: "d", project_id: "p", issue_id: "iss-2" })).toEqual({
+      name: "issue",
+      deviceId: "d",
+      projectId: "p",
+      id: "iss-2",
+    });
+  });
+
+  // A capture is not per-device business: its decision page is named by the
+  // capture and nothing else.
+  it("a capture's own decision route carries no device", () => {
+    expect(entryRoute({ kind: "capture", deviceId: "d", capture_id: "cap-1", state: "unrouted" })).toEqual({
+      name: "capture",
+      id: "cap-1",
+    });
   });
 
   it("has nowhere to send a detached checkout — it has no branch to name", () => {
@@ -242,7 +275,10 @@ describe("what the inbox lists", () => {
 describe("the rows a lifecycle verb in flight leaves", () => {
   const creating = (over = {}) => ({
     entity_id: "wt-new",
+    // Stamped on every row by the feed (core/feedMerge.js), pending ones too.
+    deviceId: "dev-1",
     project_id: "p1",
+    projectKey: "dev-1/p1",
     project: "relaydb",
     title: "mascot spike",
     branch: "build/mascot-spike",
@@ -325,15 +361,15 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     );
     expect(entry.facts).toBe("Creating…");
     expect(entry.placeholder).toBe(false);
-    expect(entry.route).toEqual({ name: "issue", projectId: "p2", id: "iss-1" });
+    expect(entry.route).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
   });
 
   // The bridge says how the checkout a verb is cutting is isolated from the
   // moment it is asked for, so the row stands for the card in that too: a
   // reader of a row's isolation gets the same answer before and after the git.
   it("carries the isolation the checkout is being made as", () => {
-    const [entry] = mergePendingRows([], [creating({ isolation: "cow" })]);
-    expect(entry.isolation).toBe("cow");
+    const [entry] = mergePendingRows([], [creating({ isolation: "rift" })]);
+    expect(entry.isolation).toBe("rift");
   });
 
   // A verb that cuts nothing — a discard, an adoption of a checkout already on
@@ -369,9 +405,40 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(items).toHaveLength(1);
     const entries = listed(items);
     expect(entries).toHaveLength(1);
-    expect(entries[0].key).toBe("branch:p1:main");
+    expect(entries[0].key).toBe("branch:dev-1/p1:main");
     expect(entries[0].facts).toBe("Creating…");
     expect(entries[0].placeholder).toBe(false);
+  });
+
+  // Two machines both mint a `p1`, so what names the project on a pending row
+  // is the account-wide name. Matching on the bare id would say the laptop's
+  // adopt on the desktop's primary card — whichever of them the merge listed
+  // first.
+  it("says it on the primary card of the device the verb is running on", () => {
+    const primaryOn = (deviceId) =>
+      branch({
+        deviceId,
+        projectKey: `${deviceId}/p1`,
+        branch: "main",
+        run_id: null,
+        worktree_id: null,
+        primary: true,
+        can_finish: false,
+        anchor: ago(1),
+      });
+    const items = mergePendingRows(
+      [primaryOn("dev-2"), primaryOn("dev-1")],
+      [
+        creating({
+          entity_id: "run-new",
+          checkout_id: "wt-repo-root",
+          primary: true,
+          title: "relaydb",
+        }),
+      ],
+    );
+    expect(items).toHaveLength(2);
+    expect(items.filter((item) => item.pending).map((item) => item.projectKey)).toEqual(["dev-1/p1"]);
   });
 
   it("reads a state it has never heard of as work in flight, not as nothing", () => {
@@ -546,8 +613,8 @@ describe("a row the user cleared", () => {
     const [entry] = listed([
       branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false }),
     ]);
-    const html = inboxRowHtml(entry, { openMenuKey: "branch:p1:main" });
-    expect(html).toContain('data-dismiss="branch:p1:main"');
+    const html = inboxRowHtml(entry, { openMenuKey: "branch:dev-1/p1:main" });
+    expect(html).toContain('data-dismiss="branch:dev-1/p1:main"');
     expect(html).toContain("Clear from inbox");
     expect(html).not.toContain('data-mute="');
     expect(html).not.toContain('data-done="');
@@ -561,7 +628,7 @@ describe("a row the user cleared", () => {
       branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: true }),
     ]);
     expect(entry.canFinish).toBe(false);
-    const html = inboxRowHtml(entry, { openMenuKey: "branch:p1:main" });
+    const html = inboxRowHtml(entry, { openMenuKey: "branch:dev-1/p1:main" });
     expect(html).not.toContain("data-done=");
   });
 
@@ -595,8 +662,21 @@ describe("the active entry", () => {
   const all = [...entries, ...recent];
 
   it("is the one the route is standing on", () => {
-    expect(activeEntryKey({ name: "branch", projectId: "p1", branch: "build/login" }, all)).toBe("run-1");
-    expect(activeEntryKey({ name: "issue", projectId: "p2", id: "iss-1" }, all)).toBe("iss-1");
+    expect(activeEntryKey({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" }, all)).toBe("run-1");
+    expect(activeEntryKey({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" }, all)).toBe("iss-1");
+  });
+
+  // Two machines both hold a `proj-1` with a `build/login` in it, and those are
+  // two rows. The route says which machine it is standing on, so the mark goes
+  // on that machine's row and on no other.
+  it("activeEntryKey marks the row on the route's device, not another device's copy of the same branch", () => {
+    const twice = inboxEntries({
+      items: [branch(), branch({ deviceId: "dev-2", projectKey: "dev-2/p1", run_id: "run-2", worktree_id: "wt-2" })],
+      nowMs: NOW,
+    });
+    const both = [...twice.entries, ...twice.recent];
+    expect(activeEntryKey({ name: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/login" }, both)).toBe("run-2");
+    expect(activeEntryKey({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" }, both)).toBe("run-1");
   });
 
   it("is nothing on a route that names no work item", () => {
@@ -826,6 +906,7 @@ describe("the Done confirmations", () => {
 
 const captureItem = (over = {}) => ({
   kind: "capture",
+  deviceId: "dev-1",
   capture_id: "capture-1",
   project_id: "",
   project: "",
@@ -954,7 +1035,7 @@ describe("capture rows", () => {
           routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
         }),
       ).route,
-    ).toEqual({ name: "issue", projectId: "p1", id: "iss-9" });
+    ).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p1", id: "iss-9" });
   });
 
   it("mark the row the decision page is standing on", () => {
@@ -972,8 +1053,7 @@ describe("capture rows", () => {
       { id: "p2", name: "dotfiles" },
     ];
     const html = inboxRowHtml(entry, { rerouteKey: entry.key, projects });
-    expect(html).toContain('data-reroute-project="p2"');
-    expect(html).toContain('data-reroute-kind="issue"');
+    expect(html).not.toContain('data-reroute-kind="issue"');
     expect(html).toContain('data-reroute-branch-open="p2"');
     expect(inboxRowHtml(entry, { projects })).not.toContain("data-reroute-project");
   });
@@ -1015,7 +1095,7 @@ describe("capture rows", () => {
       }),
       branch(),
     ]);
-    expect(activeEntryKey({ name: "branch", projectId: "p1", branch: "build/login" }, entries)).toBe("run-1");
+    expect(activeEntryKey({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" }, entries)).toBe("run-1");
   });
 
   it("escape what the user said and what the router asked", () => {
@@ -1031,6 +1111,43 @@ describe("capture rows", () => {
     const html = inboxRowHtml(entry, {});
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<script>");
+  });
+});
+
+// ---- what names a row across the account ---------------------------------------
+// Two devices both call their first project `proj-1`, so a row that has no
+// entity of its own — a project's primary checkout, a branch with no checkout —
+// is named by the project key, never the bare project id.
+describe("what names a row", () => {
+  it("keys a no-entity row by its projectKey, in the same shape as before", () => {
+    const primary = branch({ run_id: null, worktree_id: null, branch: "main", primary: true });
+    expect(entryKeyOf(primary)).toBe("branch:dev-1/p1:main");
+    expect(entryKeyOf({ ...primary, deviceId: "dev-2", projectKey: "dev-2/p1" })).toBe("branch:dev-2/p1:main");
+    const plan = issue({ issue_id: null, run_id: null, worktree_id: null });
+    expect(entryKeyOf(plan)).toBe("issue:dev-1/p2");
+  });
+
+  it("keys a row that has an entity by that entity, whichever device it is on", () => {
+    expect(entryKeyOf(branch())).toBe("run-1");
+    expect(entryKeyOf({ ...branch(), deviceId: "dev-2", projectKey: "dev-2/p1" })).toBe("run-1");
+  });
+
+  it("keys a capture by the capture, as it always has", () => {
+    expect(entryKeyOf(captureItem())).toBe("capture:capture-1");
+    expect(entryKeyOf(captureItem({ deviceId: "dev-2" }))).toBe("capture:capture-1");
+  });
+
+  it("carries deviceId and projectKey onto every entry", () => {
+    const entries = listed([branch(), issue(), captureItem()]);
+    expect(entries.map((entry) => entry.deviceId)).toEqual(["dev-1", "dev-1", "dev-1"]);
+    expect(entries.map((entry) => entry.projectKey)).toEqual(["dev-1/p1", "dev-1/p2", undefined]);
+    // The wire's own field is untouched: the bridge still wants the bare id.
+    expect(entries[0].projectId).toBe("p1");
+  });
+
+  it("still names a cleared row on the wire by its bare project id", () => {
+    const [entry] = listed([branch({ run_id: null, worktree_id: null, branch: "main", primary: true })]);
+    expect(dismissParamsOf(entry)).toEqual({ project_id: "p1", primary: true });
   });
 });
 

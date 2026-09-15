@@ -403,7 +403,7 @@ async fn task_rows_lead_with_the_work_and_end_with_what_happened() {
         format!("{TASK_DESCRIPTION} — started"),
         format!("{TASK_DESCRIPTION} — finished"),
         format!("{TASK_DESCRIPTION} — started"),
-        format!("{TASK_DESCRIPTION}: Background command completed woke"),
+        format!("{TASK_DESCRIPTION}: Background command completed\n\n  woke"),
         format!("{TASK_DESCRIPTION} — finished"),
     ] {
         assert_eq!(
@@ -455,8 +455,7 @@ async fn a_terminal_task_update_fails_the_task_once() {
     session.end();
 }
 /// A notification is the task saying something worth reading, so its text is
-/// minted under the task's own name — collapsed onto one line, because this
-/// is operational text rather than the agent speaking — and, when the status
+/// minted under the task's own name with the provider's whitespace, and when the status
 /// it carries is terminal, it closes the task as well: the text first, then
 /// the ending it announces.
 ///
@@ -504,7 +503,7 @@ async fn a_task_notification_is_minted_and_a_progress_patch_is_not() {
     assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: "Background command completed woke".to_string(),
+                summary: "Background command completed\n\n  woke".to_string(),
             },
             "several lines of output are one row, the way a tool answer is — and the set no longer holds a name to speak it under"
         );

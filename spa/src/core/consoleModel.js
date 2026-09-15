@@ -8,6 +8,8 @@
 // how big it should be next, which directory its terminals live in, whether a
 // keystroke belongs to it, and which terminal a pre-redesign URL asked for.
 
+import { workspaceKey } from "./deviceKey.js";
+
 /** Shut, half the view, or over all of it. The order is the order of growth. */
 export const CONSOLE_SIZES = ["collapsed", "half", "full"];
 
@@ -22,10 +24,13 @@ export function consoleSize(value) {
   return CONSOLE_SIZES.includes(value) ? value : "collapsed";
 }
 
-/** The work item whose console this is. Each branch and each issue keeps its
- *  own — the terminals are the checkout's, so the size belongs to it too. */
+/** The work item whose console this is. Each workspace, branch and issue keeps
+ *  its own — the terminals are the checkout's, so the size belongs to it too.
+ *  A workspace is one machine's, and a workspace id is one bridge's, so its key
+ *  carries the machine (core/deviceKey.js). */
 export function consoleKey(context) {
   if (!context) return "none";
+  if (context.kind === "workspace") return `workspace:${workspaceKey(context.deviceId, context.workspaceId)}`;
   return context.kind === "issue" ? `issue:${context.issueId}` : `branch:${context.projectId}:${context.branch}`;
 }
 
@@ -82,9 +87,15 @@ export function grownConsoleSize(size) {
  * `row` is the branch's `branch.get` payload; an issue needs none — its agent
  * runs on the primary checkout, which the project alone names.
  */
-export function consoleScope(context, row) {
-  if (!context) return null;
-  if (context.kind === "issue") return context.projectId ? { project_id: context.projectId } : null;
+const scopeResolvers = {
+  // A workspace owns its terminals as a whole. Its selected source directory
+  // deliberately does not participate in terminal identity.
+  workspace: (context) => context.workspaceId ? { workspace_id: context.workspaceId } : null,
+  issue: (context) => context.projectId ? { project_id: context.projectId } : null,
+  branch: (context, row) => branchConsoleScope(context, row),
+};
+
+function branchConsoleScope(context, row) {
   if (!row) return null;
   if (row.run_id) return { run_id: row.run_id };
   const projectId = row.project_id || context.projectId;
@@ -93,6 +104,10 @@ export function consoleScope(context, row) {
   // A branch row with neither is the repository itself: main, in the checkout
   // every project is cloned into.
   return row.primary ? { project_id: projectId } : null;
+}
+
+export function consoleScope(context, row) {
+  return scopeResolvers[context?.kind]?.(context, row) || null;
 }
 
 /** Whether the backtick is the console's to take, given what has focus.

@@ -9,6 +9,29 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defaultHarnessOf, defaultHarnessPanelHtml, mountDefaultHarness } from "../src/core/defaultHarness.js";
+import { sessionAnswering } from "./deviceSessionFixture.js";
+import { renderDeviceSettingsPage } from "./deviceSettingsFixture.js";
+
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
+// The device page opens its own connection to the machine it is about; here
+// that connection answers with whatever the bridge is standing at the time, so a
+// test writes one bridge and both the page and the registry read it.
+const { openSession } = vi.hoisted(() => ({ openSession: vi.fn() }));
+vi.mock("../src/connection.js", () => ({
+  openDeviceSettingsSession: openSession,
+  chooseCreationDevice: () => {},
+  retireDevice: () => {},
+  openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
+  syncHome: () => {},
+  goOffline: () => {},
+  forgetHomeFollow: () => {},
+  forgetSecurityStops: () => {},
+  forgetUnconnectedDevices: () => {},
+  securityStopText: () => "",
+}));
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -79,7 +102,7 @@ describe("the fallback-agent panel", () => {
     await flush();
 
     expect(host.textContent).toContain(
-      "This account fallback is used only when a coding-agent creation request does not name a provider.",
+      "This device fallback is used only when a coding-agent creation request does not name a provider.",
     );
     expect(host.textContent).toContain(
       "Creation pickers send the displayed Claude Code or Codex provider and override this fallback.",
@@ -226,28 +249,16 @@ describe("the fallback-agent panel", () => {
 });
 
 // The account fallback lives in Settings beside the other agent preferences.
-describe("the Settings page", () => {
-  const renderWith = async (call) => {
-    vi.resetModules();
-    document.body.innerHTML = bodyHtml;
-    // The devices panel talks HTTP, not the bridge. Nothing here is about it,
-    // and a real request from jsdom hangs until the test's own deadline.
-    globalThis.fetch = vi.fn(async () => {
-      throw new Error("no network in tests");
-    });
-    const { App } = await import("../src/app.js");
-    const { renderSettings } = await import("../src/views/settings.js");
-    App.call = vi.fn(call);
-    await renderSettings();
-    await flush();
-    return App;
-  };
+// Every panel the bridge owns lives on the page of the machine that bridge
+// runs on, read and written over that page's own connection.
+describe("the device's settings page", () => {
+  const renderWith = (call) => renderDeviceSettingsPage(call, openSession);
 
   // Each of these re-imports the whole app shell (vi.resetModules), and that
   // transform alone can outrun the default deadline on a loaded machine.
   const SLOW_IMPORT_MS = 30000;
 
-  it("carries the default-agent panel and asks the bridge what the account holds", async () => {
+  it("carries the agent panels and asks that machine's bridge what it holds", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return {
@@ -264,9 +275,7 @@ describe("the Settings page", () => {
     expect(document.getElementById("agentmode-codex").value).toBe("headless");
   }, SLOW_IMPORT_MS);
 
-  // Visible creation pickers send Claude Code or Codex and therefore override
-  // the separate fallback selector.
-  it("offers the agent defaults two agents, not every default harness", async () => {
+  it("exposes every provider the machine offers as its fallback", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude_adk" };
@@ -274,10 +283,6 @@ describe("the Settings page", () => {
       return {};
     });
 
-    const defaults = document.getElementById("defprovider");
-    expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
-    expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
-    // The account fallback still exposes every provider from the catalog.
     expect([...document.getElementById("defaultharness").options].map((option) => option.textContent)).toEqual([
       "Claude Code",
       "Claude Code TUI",
@@ -287,7 +292,7 @@ describe("the Settings page", () => {
     ]);
   }, SLOW_IMPORT_MS);
 
-  it("puts the fallback agent beside the other agent preferences", async () => {
+  it("puts the fallback agent beside the machine's other agent preferences", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude_adk" };
@@ -297,42 +302,44 @@ describe("the Settings page", () => {
 
     const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
-    expect(at("Agent defaults")).toBeGreaterThan(-1);
-    expect(at("Agent modes")).toBe(at("Agent defaults") + 1);
+    expect(at("Projects")).toBe(0);
+    expect(at("Agent modes")).toBe(at("Projects folder") + 1);
     expect(at("Fallback agent")).toBe(at("Agent modes") + 1);
     expect(at("Work isolation")).toBe(at("Fallback agent") + 1);
     expect(at("Diff triage")).toBe(at("Work isolation") + 1);
-    expect(at("Appearance")).toBe(at("Diff triage") + 1);
   }, SLOW_IMPORT_MS);
+});
 
-  it("updates same-page creation defaults after a mode save even when catalog refresh fails", async () => {
-    let current = {
-      projects_dir: "/p",
-      default_harness: "claude_adk",
-      agent_modes: { claude: "headless", codex: "tui" },
-    };
-    let catalogReads = 0;
-    const App = await renderWith(async (method, params) => {
-      if (method === "project.list") return { projects: [] };
-      if (method === "settings.get") return current;
-      if (method === "settings.set") {
-        current = { ...current, agent_modes: { ...current.agent_modes, ...params.agent_modes } };
-        return current;
-      }
-      if (method === "models.list" && catalogReads++ < 2) return CATALOG;
-      if (method === "models.list") throw new Error("catalog refresh failed");
-      return {};
+// The account page keeps what is spent creating work rather than what a bridge
+// holds: the defaults a new issue starts with, read from the creation device's
+// own catalog.
+describe("the account page's creation defaults", () => {
+  it("offers the agent defaults two agents, not every default harness", async () => {
+    vi.resetModules();
+    document.body.innerHTML = bodyHtml;
+    // The devices panel talks HTTP, not the bridge. Nothing here is about it,
+    // and a real request from jsdom hangs until the test's own deadline.
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("no network in tests");
     });
+    const { App } = await import("../src/app.js");
+    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+    const { renderSettings } = await import("../src/views/settings.js");
+    bridge.call = vi.fn(async (method) => (method === "models.list" ? CATALOG : {}));
+    App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
+    App.selectedDeviceId = "dev-1";
+    adoptDeviceSession(sessionAnswering(bridge));
 
-    const claudeMode = document.getElementById("agentmode-claude");
-    claudeMode.value = "tui";
-    claudeMode.dispatchEvent(new Event("change"));
-    await flush();
+    await renderSettings();
     await flush();
 
-    expect(App.modelCatalog.agent_modes).toEqual({ claude: "tui", codex: "tui" });
-    expect([...document.getElementById("defprovider").options].map(({ value }) => value)).toEqual(["claude", "codex"]);
-    expect(claudeMode.disabled).toBe(false);
-    expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved.");
-  }, SLOW_IMPORT_MS);
+    const defaults = document.getElementById("defprovider");
+    expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
+    expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
+    // Nothing a bridge owns is on this page any more, and what is left says
+    // whose defaults they are.
+    expect(document.getElementById("defaultharness")).toBeNull();
+    expect(document.getElementById("agentmode-claude")).toBeNull();
+    expect(document.querySelector("#root").textContent).toContain("Browser agent defaults");
+  }, 30000);
 });

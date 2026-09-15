@@ -849,6 +849,14 @@ impl AgentSession for CodexAppServerSession {
         self.core.state.lock().unwrap().active_model()
     }
 
+    fn active_effort(&self) -> Option<String> {
+        self.core.state.lock().unwrap().active_effort()
+    }
+
+    fn active_choice(&self) -> (Option<String>, Option<String>) {
+        self.core.state.lock().unwrap().active_choice()
+    }
+
     fn surfaces(&self) -> Option<AgentSurfaces> {
         self.core.subagents.lock().unwrap().snapshot()
     }

@@ -8,7 +8,10 @@
 //! restart. Where the events go is a sink behind [`TransportLedger`]: stderr
 //! on every bridge, and whatever else is installed beside it.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+// `Mutex` is the recording sink's alone, and that sink is test-only.
+#[cfg(any(test, feature = "testing"))]
+use std::sync::Mutex;
 
 /// Which kind of path a peer connection carries on. `Turn` when either end of
 /// the nominated pair is a relay candidate — the egress somebody pays for —

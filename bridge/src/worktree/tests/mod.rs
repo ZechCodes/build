@@ -4,3 +4,4 @@ mod discovery;
 mod identity;
 mod manager;
 mod mutation;
+mod workspaces;

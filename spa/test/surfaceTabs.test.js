@@ -19,6 +19,10 @@ const paneSpy = vi.hoisted(() => ({ lastOpts: null }));
 vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => fakeManager,
   subscribeTerminalStatus: () => () => {}, // returns an unsubscribe
+  // Which machine the shells type at, and the moves between machines, are the
+  // app spine's business and not this suite's: they answer, and nothing moves.
+  terminalDeviceId: () => null,
+  followTerminalDevice: () => {},
 }));
 vi.mock("../src/terminal/pane.js", () => ({
   mountTerminalPane: async (host, opts) => {

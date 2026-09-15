@@ -10,8 +10,8 @@
   "display": "standalone",
   "display_override": ["standalone"],
   "orientation": "any",
-  "background_color": "#fafafa",
-  "theme_color": "#fafafa",
+  "background_color": "#f3f7f8",
+  "theme_color": "#f3f7f8",
   "icons": [
     {
       "src": "/app/static/icon-192.png",

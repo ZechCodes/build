@@ -50,6 +50,20 @@ const termOf = (segment) => (isTermTab(segment) ? { term: segment } : null);
 
 const inbox = () => ({ name: "inbox" });
 
+/** `<workspaceId>[/directory/<sourceId>][/<tab>]`. The directory is optional,
+ *  so the tab is whichever segment follows whatever came before it. */
+function workspaceRoute(projectId, parts) {
+  if (!parts[0]) return inbox();
+  const [sourceId, tabSegment] = parts[1] === "directory" ? [parts[2], parts[3]] : [undefined, parts[1]];
+  return {
+    name: "workspace",
+    projectId,
+    workspaceId: parts[0],
+    ...(sourceId ? { sourceId } : null),
+    tab: branchTab(tabSegment),
+  };
+}
+
 /** A legacy stage deep-link: `<tab>/<stageId>` where the tab is one of the
  *  retired plan tabs (stages, review, conversation…). Returns the stage id, or
  *  undefined when the segments name no stage. */
@@ -127,6 +141,10 @@ function tabPlace(query) {
   return { file: path, ...(Number.isFinite(line) && line > 0 ? { line } : null) };
 }
 
+// The surfaces whose Files tab stands in a file: both are a checkout with a
+// tree, and both carry the file as a query rather than a path segment.
+const FILE_TAB_SURFACES = new Set(["branch", "workspace"]);
+
 /// The route a hash names, and where in it the reader is standing.
 ///
 /// Split before parse: everything up to the `?` is the surface, everything
@@ -134,17 +152,39 @@ function tabPlace(query) {
 export function routeFromHash(hash) {
   const [path, query] = String(hash || "").split("?");
   const route = surfaceFromHashPath(path);
-  const place = route.name === "branch" && route.tab === "files" ? tabPlace(query) : null;
-  return place ? { ...route, ...place } : route;
+  const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
+  // The place is merged BEFORE the device question is asked: a device-less
+  // Files link parks on a resolve route that still knows which file it meant.
+  return withDeviceOrResolve(place ? { ...route, ...place } : route);
 }
 
-// eslint-disable-next-line complexity -- ratchet: surfaceFromHashPath is at 28, cap 10 — reduce it, then drop this line
-function surfaceFromHashPath(hash) {
-  const parts = (hash || "")
+/// The segments of a hash path, decoded, with the empties dropped.
+const segmentsOf = (hash) =>
+  (hash || "")
     .replace(/^#\/?/, "")
     .split("/")
     .filter(Boolean)
     .map(decodeURIComponent);
+
+/// The device a URL names, taken off the front so the parser below reads the
+/// same segments it always has. Only a `project` URL can carry one —
+/// `#/device/<d>` and `#/device/<d>/settings` are the device's own page.
+const peelDevice = (parts) =>
+  parts[0] === "device" && parts[2] === "project"
+    ? { deviceId: parts[1], rest: parts.slice(2) }
+    : { deviceId: null, rest: parts };
+
+/// Which machine the route is about. A route that names no project names no
+/// machine either — the inbox and the account pages are the whole account's.
+const stampDevice = (route, deviceId) => (deviceId && route.projectId ? { ...route, deviceId } : route);
+
+function surfaceFromHashPath(hash) {
+  const { deviceId, rest } = peelDevice(segmentsOf(hash));
+  return stampDevice(surfaceFromSegments(rest), deviceId);
+}
+
+// eslint-disable-next-line complexity -- ratchet: surfaceFromSegments is at 28, cap 10 — reduce it, then drop this line
+function surfaceFromSegments(parts) {
   switch (parts[0]) {
     case "device":
       return parts[1] ? { name: "device", id: parts[1] } : inbox();
@@ -174,6 +214,7 @@ function surfaceFromHashPath(hash) {
     case "project": {
       if (!parts[1]) return inbox();
       const projectId = parts[1];
+      if (parts[2] === "workspace") return workspaceRoute(projectId, parts.slice(3));
       if (parts[2] === "branch") return branchRoute(projectId, parts.slice(3));
       if (parts[2] === "issue" || parts[2] === "plan") {
         if (!parts[3]) return inbox();
@@ -197,6 +238,8 @@ function surfaceFromHashPath(hash) {
   }
 }
 
+const encode = encodeURIComponent;
+
 /// The `?path=…&line=…` a Files route ends with, and nothing at all for every
 /// other tab: only Files stands in a file.
 function tabPlaceSuffix(route, tab) {
@@ -206,19 +249,54 @@ function tabPlaceSuffix(route, tab) {
   return `?${query}`;
 }
 
-// eslint-disable-next-line complexity -- ratchet: hashFromRoute is at 12, cap 10 — reduce it, then drop this line
-export function hashFromRoute(route) {
-  const encode = encodeURIComponent;
-  if (route.name === "branch" && route.projectId && route.branch) {
+/// Everything a work URL says before the branch or the issue: the machine the
+/// project is on, when the route names one, and the project itself. A route
+/// that names no device is written without one — a device is never invented.
+function projectPrefix(route) {
+  const project = `project/${encode(route.projectId)}`;
+  return route.deviceId ? `#/device/${encode(route.deviceId)}/${project}` : `#/${project}`;
+}
+
+// The surfaces that are about one machine's checkout, and so cannot be opened
+// until the route says which machine: every device mints a `proj-1`.
+const WORK_SURFACES = new Set(["branch", "issue", "workspace"]);
+
+/// A work route that names no machine is a question, not a destination: park it
+/// on the resolve route that asks the feed which device holds that project, and
+/// keep the route it meant (and the terminal it named) for the answer.
+export function withDeviceOrResolve(route) {
+  if (!route || route.deviceId || !route.projectId || !WORK_SURFACES.has(route.name)) return route;
+  return { name: "resolve", kind: "project", projectId: route.projectId, route, ...termOf(route.term) };
+}
+
+/// How each kind of route is written, one writer per kind. A writer answers
+/// null when the route is missing what its URL is made of — an unwritable route
+/// has no link of its own, and the inbox is where the app lands without one.
+/// The `resolve` routes are the same: a question has no URL, only the URL that
+/// asked it (see withDeviceOrResolve).
+const HASH_WRITERS = Object.freeze({
+  workspace: (route) => {
+    if (!route.projectId || !route.workspaceId) return null;
     const tab = branchTab(route.tab);
-    return `#/project/${encode(route.projectId)}/branch/${encode(route.branch)}/${tab}${tabPlaceSuffix(route, tab)}`;
-  }
-  if (route.name === "issue" && route.projectId && route.id) {
-    const base = `#/project/${encode(route.projectId)}/issue/${encode(route.id)}`;
+    const source = route.sourceId ? `/directory/${encode(route.sourceId)}` : "";
+    return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${tabPlaceSuffix(route, tab)}`;
+  },
+  branch: (route) => {
+    if (!route.projectId || !route.branch) return null;
+    const tab = branchTab(route.tab);
+    return `${projectPrefix(route)}/branch/${encode(route.branch)}/${tab}${tabPlaceSuffix(route, tab)}`;
+  },
+  issue: (route) => {
+    if (!route.projectId || !route.id) return null;
+    const base = `${projectPrefix(route)}/issue/${encode(route.id)}`;
     return route.stage ? `${base}/stage/${encode(route.stage)}` : base;
-  }
-  if (route.name === "device" && route.id) return `#/device/${encode(route.id)}/settings`;
-  if (route.name === "capture" && route.id) return `#/capture/${encode(route.id)}`;
-  if (route.name === "account") return `#/account/${ACCOUNT_PAGES.has(route.page) ? route.page : "settings"}`;
-  return "#/inbox";
+  },
+  device: (route) => (route.id ? `#/device/${encode(route.id)}/settings` : null),
+  capture: (route) => (route.id ? `#/capture/${encode(route.id)}` : null),
+  account: (route) => `#/account/${ACCOUNT_PAGES.has(route.page) ? route.page : "settings"}`,
+});
+
+export function hashFromRoute(route) {
+  const write = HASH_WRITERS[route.name];
+  return (write && write(route)) || "#/inbox";
 }

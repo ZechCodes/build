@@ -1,0 +1,27 @@
+{
+  "method": "project.list",
+  "since": "1.0.0",
+  "params": {},
+  "result": {
+    "projects": [
+      {
+        "project_id": "proj-1",
+        "name": "build",
+        "path": "/home/ada/code/build",
+        "base_branch": "main",
+        "is_git": true,
+        "remote": "git@github.com:ada/build.git",
+        "isolation": null,
+        "isolation_default": "worktree",
+        "isolation_effective": "worktree",
+        "isolation_available": {
+          "rift": false,
+          "reason": "rift is not installed on this device"
+        }
+      }
+    ]
+  },
+  "errors": [
+    "internal"
+  ]
+}

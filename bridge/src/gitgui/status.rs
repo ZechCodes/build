@@ -288,7 +288,7 @@ fn status_key(shape: &Value) -> String {
 /// The status walk alone — the repository's state, its changed paths, and each
 /// path's content key — with the key that names all of it. No line is counted
 /// and no patch is rendered here.
-fn status_shape(repo_path: &Path, max_files: usize) -> Result<(Value, String), String> {
+pub(crate) fn status_shape(repo_path: &Path, max_files: usize) -> Result<(Value, String), String> {
     let mut repo = open_repo(repo_path)?;
     let branch = current_branch(&repo)?;
     let head = head_commit_id(&repo)?.map(|oid| oid.to_string());

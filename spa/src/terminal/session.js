@@ -81,6 +81,12 @@ export class TerminalSocketLost extends Error {
 /** Whether a rejection is "the socket was not there". */
 export const isTerminalSocketLost = (error) => error instanceof TerminalSocketLost;
 
+/** Terminal identity stops at the workspace. A selected directory is editor
+ *  state and must never move or split the workspace's running PTYs. */
+export function terminalScope(scope = {}) {
+  return scope.workspace_id ? { workspace_id: scope.workspace_id } : { ...scope };
+}
+
 export class TerminalSocket {
   constructor({ url, transport, WebSocketImpl, getToken, getPinnedDeviceKey, preferDeviceId = () => null }) {
     this.transport = transport;
@@ -120,8 +126,9 @@ export class TerminalSocket {
       WebSocketImpl,
       fetchToken: getToken,
       getPinnedDeviceKey,
-      // The terminals follow the app session's device, re-read on every
-      // connect; a device switch is answered by the next socket.
+      // The terminals are on one machine at a time — the route's device, else
+      // home — re-read on every connect; the shells moving machine is answered
+      // by the next socket.
       preferDeviceId,
       acceptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
       carrying: () => this._switch.active(),
@@ -176,13 +183,13 @@ export class TerminalSocket {
    *  started by a delivery rather than by opening a terminal. */
   async createTerminal(scope, cols, rows) {
     await this.whenConnected();
-    return this._call("term.create", { ...scope, cols, rows });
+    return this._call("term.create", { ...terminalScope(scope), cols, rows });
   }
 
   /** term.list — the user's open shells for a scope (never the agent). */
   async listTerminals(scope) {
     await this.whenConnected();
-    const r = await this._call("term.list", { ...scope });
+    const r = await this._call("term.list", terminalScope(scope));
     return r.terminals || [];
   }
 
@@ -196,13 +203,18 @@ export class TerminalSocket {
     }
   }
 
-  /** Register a user terminal and attach — the snapshot flows through opts.onSnapshot. */
-  async attachTerminal(termId, opts = {}) {
+  /** Register a workspace's user terminal and attach. `scope` is retained on
+   *  the registration so reconnects cannot accidentally reattach the id from
+   *  another workspace. Legacy callers may omit it while old surfaces migrate. */
+  async attachTerminal(termId, scope = {}, opts = undefined) {
+    // Backward compatibility for the former (termId, opts) signature.
+    if (opts === undefined) { opts = scope; scope = {}; }
     await this.whenConnected();
-    const entry = this._register(termId, "user", null, opts);
+    const attachParams = terminalScope(scope);
+    const entry = this._register(termId, "user", attachParams, opts || {});
     let r;
     try {
-      r = await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
+      r = await this._call("term.attach", { ...attachParams, term_id: termId, cols: entry.cols, rows: entry.rows });
     } catch (e) {
       this._deregisterFailedAttach(termId, entry);
       throw e;
@@ -472,7 +484,7 @@ export class TerminalSocket {
       try {
         const r = entry.kind === "agent"
           ? await this._call("agent.attach", { ...entry.attachParams, cols: entry.cols, rows: entry.rows })
-          : await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
+          : await this._call("term.attach", { ...entry.attachParams, term_id: termId, cols: entry.cols, rows: entry.rows });
         // A worktree that moved (or an agent that opened while we were away)
         // answers with a different wire id: follow it rather than stream into
         // an id nothing pushes to.

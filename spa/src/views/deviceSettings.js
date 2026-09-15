@@ -1,10 +1,18 @@
-// Device settings keep their own transport so browsing another machine cannot
-// redirect workspace requests, or a late folder selection, to a different host.
+// One machine's settings: everything the bridge on it owns — its projects,
+// where they are kept, and how agents run there.
+//
+// The page keeps its own transport so browsing another machine cannot redirect
+// workspace requests, or a late folder selection, to a different host. That is
+// also why every panel here is handed this page's caller: the account page holds
+// what is the account's, and every answer on this one belongs to this machine.
 import { $ } from "../dom.js";
-import { esc } from "../core/text.js";
+import { deviceOfflineText, esc } from "../core/text.js";
+import { deviceOfflineNotice } from "../core/deviceNotice.js";
+import { contextFor } from "../core/deviceContexts.js";
 import { App } from "../app.js";
 import { openDeviceSettingsSession } from "../connection.js";
 import { openBrowser } from "../sheets/browser.js";
+import { standUpDevicePanels } from "./devicePanels.js";
 
 export async function renderDeviceSettings() {
   const device = App.devices.find((item) => item.id === App.route.id);
@@ -16,7 +24,8 @@ export async function renderDeviceSettings() {
   }
   root.innerHTML = `
     <a class="btn mini" href="#/account/settings">Account settings</a>
-    <div class="board-head"><div><h1>${esc(device.name)} settings</h1><p>Settings for this device.</p></div></div>
+    <div class="board-head"><div><h1>${esc(device.name)} settings</h1><p>The projects this machine holds, and how agents run on it.</p></div></div>
+    <div id="device-projects-panel"></div>
     <div class="panel">
       <h3>Projects folder</h3>
       <p class="dim">New projects and cloned repositories will be kept in this folder on ${esc(device.name)}. Existing projects stay where they are.</p>
@@ -24,7 +33,8 @@ export async function renderDeviceSettings() {
         <button class="btn" id="device-projects-change" disabled>Choose folder…</button></div>
       <p id="device-settings-status" role="status" aria-live="polite"></p>
       <button class="btn mini" id="device-settings-retry" hidden>Retry</button>
-    </div>`;
+    </div>
+    <div id="device-bridge-panels"></div>`;
   const pathLabel = root.querySelector("#device-projects-path");
   const change = root.querySelector("#device-projects-change");
   const status = root.querySelector("#device-settings-status");
@@ -43,10 +53,23 @@ export async function renderDeviceSettings() {
     closeBrowser();
     session?.close();
   };
-  const callRpc = (method, params) => {
-    if (!active || !session) return Promise.reject(new Error("Device settings are no longer open."));
-    return session.call(method, params);
+  // Nothing here can be read or written without the connection, so a panel that
+  // asks after it has gone is refused in the account's own words for a machine
+  // that is not there.
+  const callRpc = (...asked) => {
+    if (!active || !session) return Promise.reject(new Error(deviceOfflineText(device.name)));
+    return session.call(...asked);
   };
+  // Every panel here is this machine's answer, so none of them exists until the
+  // machine is answering: a page that cannot connect says that once, in its
+  // status line, rather than standing up six panels that all say it again.
+  const standUpPanels = () =>
+    standUpDevicePanels({
+      projectsHost: root.querySelector("#device-projects-panel"),
+      bridgeHost: root.querySelector("#device-bridge-panels"),
+      callRpc,
+      device,
+    });
   const save = async (path) => {
     const attempt = connectionAttempt;
     const owner = session;
@@ -105,6 +128,7 @@ export async function renderDeviceSettings() {
       pathLabel.textContent = settings.projects_dir;
       status.textContent = "";
       change.disabled = false;
+      await standUpPanels();
     } catch (error) {
       if (!current()) return;
       session?.close();
@@ -116,11 +140,32 @@ export async function renderDeviceSettings() {
     }
   };
   retry.onclick = connect;
-  if (device.status !== "online") {
-    pathLabel.textContent = "Unavailable while offline";
-    status.textContent = "Bring this device online, then retry to choose its projects folder.";
-    retry.hidden = false;
+  const refusal = whyNothingCanBeAsked(device);
+  if (refusal) {
+    pathLabel.textContent = refusal.path;
+    status.textContent = refusal.words;
+    retry.hidden = !refusal.retry;
     return;
   }
   await connect();
+}
+
+/**
+ * Why this machine can be asked nothing at all, before a socket is opened for
+ * it — or null, which is the page standing itself up.
+ *
+ * Two ways a page about a machine has nothing to stand on, and each says one
+ * sentence in the status line rather than six panels that all fail. A machine
+ * the account calls offline is a wait, so it keeps the way back on. A bridge
+ * speaking an API major no adapter here claims is answering, in a shape this
+ * tab cannot read: retrying reads the same shape again, so there is no Retry
+ * and no folder to choose — the fix is on one side or the other, which is what
+ * the notice says.
+ */
+function whyNothingCanBeAsked(device) {
+  if (device.status !== "online")
+    return { path: "Unavailable while offline", words: "Bring this device online, then retry to configure it.", retry: true };
+  if (contextFor(device.id)?.unsupported)
+    return { path: "Unavailable", words: deviceOfflineNotice(device.id), retry: false };
+  return null;
 }

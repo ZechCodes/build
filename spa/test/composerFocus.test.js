@@ -12,6 +12,10 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const refreshFeed = vi.fn(async () => {});
@@ -176,11 +180,13 @@ describe("the rail's poll", () => {
     resetAgentRailMemory();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     payload = branchRow([]);
-    App.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
+    bridge.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
+      deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
+      call: (method, params) => bridge.call(method, params),
     });
     await flush();
   });
@@ -222,7 +228,7 @@ describe("the rail's poll", () => {
     document.getElementById("railsend").click();
     await flush();
 
-    const post = App.call.mock.calls.find(([method]) => method === "thread.post");
+    const post = bridge.call.mock.calls.find(([method]) => method === "thread.post");
     expect(post[1]).toMatchObject({ entity_id: "run-3", agent_id: "ag-1", body: "ship it" });
   });
 });
@@ -267,14 +273,21 @@ describe("a work item that keeps losing its agent", () => {
 
   const mount = async () => {
     payload = withAgent();
-    App.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
+    bridge.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
+      deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
+      call: (method, params) => bridge.call(method, params),
     });
     await flush();
   };
+
+  /** Whose conversation the head says is open. The head wears the topic the
+   *  agent named its work with (`set_topic`) and shimmers "Starting" until
+   *  there is one, so the harness name rides as the title. */
+  const headWho = () => document.querySelector(".rail-who").title;
 
   const typeInto = () => {
     const input = document.getElementById("railinput");
@@ -292,6 +305,13 @@ describe("a work item that keeps losing its agent", () => {
     }
   };
 
+  /** The frame these cases run at. The phone case below moves it, and the panel
+   *  starts shut below 761px, so it is put back for whoever runs next. */
+  const atWidth = (width, height) => {
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: height, configurable: true });
+  };
+
   beforeEach(() => {
     document.body.innerHTML = bodyHtml;
     localStorage.clear();
@@ -302,6 +322,7 @@ describe("a work item that keeps losing its agent", () => {
   afterEach(() => {
     if (rail) rail.dispose();
     rail = null;
+    atWidth(1024, 768);
     vi.useRealTimers();
   });
 
@@ -331,9 +352,13 @@ describe("a work item that keeps losing its agent", () => {
   // work in CSS and changes nothing about what paints — so the guard has to
   // hold at a phone's width for the same reason it holds at a desk's.
   it("keeps it at a phone's width, where losing it costs the keyboard", async () => {
-    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
-    Object.defineProperty(window, "innerHeight", { value: 844, configurable: true });
+    atWidth(390, 844);
+    // The panel is shut by default at this width, so the case opens it the way
+    // a phone reader does — the strip's bubble — before there is a box to type
+    // into at all.
     await mount();
+    document.querySelector(".rail-bubble").click();
+    await flush();
     const input = typeInto();
 
     await flap((tick) => (tick % 2 ? bareCheckout() : withAgent()), 12);
@@ -349,7 +374,7 @@ describe("a work item that keeps losing its agent", () => {
   // unscoped ask that follows. Both are the same non-answer.
   it("keeps the box when the daemon refuses the agent it asked about", async () => {
     let tick = 0;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "branch.get") return {};
       // Two ticks off the bare checkout for every one that resolves the run.
       const bare = tick++ % 3 !== 2;
@@ -359,8 +384,10 @@ describe("a work item that keeps losing its agent", () => {
     });
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
+      deviceId: "dev-1",
       projectId: "p1",
       branch: "build/login",
+      call: (method, params) => bridge.call(method, params),
     });
     await flush();
     // The first read lands on a bare tick; the run resolves on the third.
@@ -372,11 +399,11 @@ describe("a work item that keeps losing its agent", () => {
     expect(document.getElementById("railinput")).toBe(input);
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe("half a thought");
-    expect(document.querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho()).toBe("Claude Code 1");
   });
 
   // The same tick that rebuilt the panel also rewrote the strip and the head:
-  // the agent's bubble became a ghost and the name above the conversation
+  // the agent's bubble became a ghost and the head over the conversation
   // became "New agent", a second and a half at a time.
   it("keeps saying whose conversation is open", async () => {
     await mount();
@@ -386,7 +413,7 @@ describe("a work item that keeps losing its agent", () => {
     const strip = document.querySelector(".rail-strip");
     expect([...strip.querySelectorAll(".rail-bubble")].map((bubble) => bubble.dataset.bubble))
       .toEqual(["agent", "add"]);
-    expect(document.querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho()).toBe("Claude Code 1");
   });
 
   // The guard is a hiccup filter, not a freeze: a branch whose run really has

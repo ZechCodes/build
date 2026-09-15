@@ -13,7 +13,7 @@
 // strand every frame already in flight on it. A device that will not take the
 // session back leaves it behind rather than presenting it forever.
 
-import { openCarrier } from "./carrier.js";
+import { openCarrier, sendOverSocket } from "./carrier.js";
 import { relayInbox } from "./relayInbox.js";
 
 const DEFAULT_OPEN_TIMEOUT_MS = 8000;
@@ -29,8 +29,9 @@ const noop = () => {};
 const expiry = (ms, message) => new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms));
 
 /**
- * @param preferDeviceId `() => device id or null`, re-read on every connect: a
- *   device switch is answered by the next socket, not by this one.
+ * @param preferDeviceId `() => device id or null`, re-read on every connect:
+ *   this link is pinned to one machine, and a caller moving to another one is
+ *   answered by the next socket, not by this one.
  * @param waitForDevice wait as long as it takes for a device to come online.
  *   This socket IS the "tell me when a device is back" channel, so a resume
  *   waits; a boot gives up after `deviceWaitMs` and shows the waiting screen.
@@ -139,7 +140,7 @@ export function createRelayLink({
         }),
         expiry(openTimeoutMs, "open timeout"),
       ]);
-      ws.send(JSON.stringify({ type: "authenticate", token }));
+      sendOverSocket(ws, JSON.stringify({ type: "authenticate", token }));
 
       const wanted = preferDeviceId();
       const hello = await waitFor(
@@ -153,10 +154,14 @@ export function createRelayLink({
       // the broker (or someone on the socket) is substituting keys — abort loudly.
       const pinnedKeyB64 = await getPinnedDeviceKey(deviceId);
       if (!pinnedKeyB64) {
-        throw new Error(`no pinned transport key for device ${deviceId} — refusing to open a session`);
+        throw Object.assign(new Error(`no pinned transport key for device ${deviceId} — refusing to open a session`), {
+          securityCritical: true,
+        });
       }
       if (hello.transport_public_key !== pinnedKeyB64) {
-        throw new Error("relay-supplied device key does not match the api-pinned key — possible tampering");
+        throw Object.assign(new Error("relay-supplied device key does not match the api-pinned key — possible tampering"), {
+          securityCritical: true,
+        });
       }
 
       reattaching = Boolean(carrying() && session && session.deviceId === deviceId);
@@ -167,7 +172,8 @@ export function createRelayLink({
         deviceTransportPublicKeyB64: pinnedKeyB64,
         sessionKeyB64: reattaching ? session.sessionKeyB64 : undefined,
       });
-      ws.send(
+      sendOverSocket(
+        ws,
         JSON.stringify({
           type: "session_init",
           session_id: sessionId,
@@ -225,8 +231,8 @@ export function createRelayLink({
     /** The device this link's session is with. */
     deviceId: () => session?.deviceId ?? null,
 
-    /** Drop the socket and let the reconnect bring it back — how a caller
-     *  re-reads `preferDeviceId` after a device switch. */
+    /** Drop the socket and let the reconnect bring it back — how a caller that
+     *  has moved to another machine gets `preferDeviceId` re-read. */
     dropSocket() {
       try {
         socket?.close();

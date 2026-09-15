@@ -15,6 +15,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
+
 /** Every `vi.mock` / `vi.doMock` on a local module whose factory is an object
  *  literal, as `{ file, module, names }`. A factory that returns anything else
  *  (a class, a spread of the real module) names nothing to check. */
@@ -72,6 +74,28 @@ const MOCKS = readdirSync(resolve("test"))
   .flatMap(mockedModulesIn)
   .filter((mock) => mock.names.length);
 
+/** Every name `src/` imports from the module at `path`, across the whole tree. */
+function namesImportedFromSrc(path) {
+  const names = new Set();
+  for (const file of srcJsFiles()) {
+    const source = srcSourceOf(file);
+    const imports = new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*["'][^"']*${path}["']`, "g");
+    for (let match = imports.exec(source); match; match = imports.exec(source))
+      for (const name of match[1].split(",")) names.add(name.trim().split(/\s+/).pop());
+  }
+  return [...names].filter(Boolean);
+}
+
+// The modules the app's spine asks things of from far outside the suite that
+// mounts them: render() asks the terminal manager which machine the shells type
+// at, the connection takes them to the device home moved to, and the device
+// list asks the connection to catch home up whenever a status changes. A
+// stand-in that answers only the half its own suite exercises throws "not a
+// function" out of the first render of a route that names a device, which is a
+// matter of which cases the suite happens to have. So a stand-in for one of
+// these answers everything the app asks it.
+const SPINE = ["terminal/manager.js", "connection.js"];
+
 describe("every mocked export exists on the module it replaces", () => {
   it("finds the mocks to check at all", () => {
     // A guard on the guard: a regex that stops matching would otherwise pass by
@@ -83,5 +107,20 @@ describe("every mocked export exists on the module it replaces", () => {
     const real = await import(/* @vite-ignore */ resolve("test", mock.module));
     const invented = mock.names.filter((name) => !(name in real));
     expect(invented, `${mock.file} mocks ${mock.module} with exports it does not have`).toEqual([]);
+  });
+});
+
+describe.each(SPINE)("a stand-in for %s answers everything the app asks it", (module) => {
+  const asked = namesImportedFromSrc(module);
+  const standIns = MOCKS.filter((mock) => mock.module.endsWith(module));
+
+  it("finds what the app asks it, and who stands in for it", () => {
+    expect(asked.length).toBeGreaterThan(3);
+    expect(standIns.length).toBeGreaterThan(2);
+  });
+
+  it.each(standIns.map((mock) => [mock.file, mock]))("%s", (_name, mock) => {
+    const unanswered = asked.filter((name) => !mock.names.includes(name));
+    expect(unanswered, `${mock.file} stands in for ${module} without it`).toEqual([]);
   });
 });

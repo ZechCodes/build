@@ -49,11 +49,34 @@ import {
 } from "./agentSurfacesRender.js";
 
 const ROW_CLOCK_TICK_MS = 1000;
+const SURFACE_CLEARANCE_PROPERTY = "--surface-popover-clearance";
 
 const PILL_MOTION = motionHooks({ axis: "width" });
 const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
 
 const nothingToRender = () => "";
+
+export function mountSurfaceClearance(viewerHost) {
+  const scroller = viewerHost.closest(".rail-panel")?.querySelector("#rail-body");
+  if (!scroller || typeof ResizeObserver === "undefined") return () => {};
+
+  const sync = () => {
+    const distanceFromBottom = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+    const wasAtBottom = distanceFromBottom <= 2;
+    const margin = Number.parseFloat(getComputedStyle(viewerHost).marginBottom) || 0;
+    const height = viewerHost.hidden ? 0 : viewerHost.getBoundingClientRect().height + margin;
+    scroller.style.setProperty(SURFACE_CLEARANCE_PROPERTY, `${height}px`);
+    if (wasAtBottom) scroller.scrollTop = scroller.scrollHeight;
+  };
+
+  const observer = new ResizeObserver(sync);
+  observer.observe(viewerHost);
+  sync();
+  return () => {
+    observer.disconnect();
+    scroller.style.removeProperty(SURFACE_CLEARANCE_PROPERTY);
+  };
+}
 
 const oneListOfKind = (kind, renderRow) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], nothingToRender),
@@ -292,8 +315,31 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
   let closingFrame = null;
   let visibility = emptySurfaceVisibility();
   let hidingTimer = null;
+  const disposeClearance = mountSurfaceClearance(viewerHost);
 
   const openKind = () => visibility.openKind;
+
+  const closeOpenSurface = ({ restoreFocus = false } = {}) => {
+    const openButton = pillHost.querySelector('[aria-pressed="true"]');
+    chosenKind = null;
+    writeOpenSurface(key, null);
+    paint();
+    if (restoreFocus) openButton?.focus();
+  };
+
+  const viewerCanvas = (kind) => {
+    let canvas = viewerHost.querySelector(".surface-popover-body");
+    if (!canvas) {
+      viewerHost.innerHTML = `<div class="surface-popover-head">
+        <strong>Activity</strong><span class="surface-popover-kind"></span>
+        <button type="button" class="surface-popover-close" aria-label="Close activity">×</button>
+      </div><div class="surface-popover-body"></div>`;
+      viewerHost.querySelector(".surface-popover-close").onclick = () => closeOpenSurface({ restoreFocus: true });
+      canvas = viewerHost.querySelector(".surface-popover-body");
+    }
+    viewerHost.querySelector(".surface-popover-kind").textContent = surfaceKindLabel(kind);
+    return canvas;
+  };
 
   const closeViewerFrame = () => {
     if (!viewer) return;
@@ -304,6 +350,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
       closingFrame = null;
       viewer = null;
       frame.viewer.dispose();
+      viewerHost.innerHTML = "";
     });
   };
 
@@ -326,7 +373,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     }
     closingFrame = null;
     if (viewer) viewer.dispose();
-    viewer = mountSurfaceViewer(viewerHost, kind, { onOpenThreadItem, modelLabel, compact: true });
+    viewer = mountSurfaceViewer(viewerCanvas(kind), kind, { onOpenThreadItem, modelLabel, compact: true });
     reveal(viewerHost, { axis: "height" });
     viewer.set(surfaces);
   };
@@ -376,12 +423,22 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     const button = event.target.closest("[data-surface-kind]");
     if (!button) return;
     const kind = button.dataset.surfaceKind;
-    chosenKind = kind === openKind() ? null : kind;
+    if (kind === openKind()) return closeOpenSurface();
+    chosenKind = kind;
     writeOpenSurface(key, chosenKind);
     paint();
   };
 
+  const onEscape = (event) => {
+    const nestedPopoverIsOpen = [...viewerHost.closest(".rail-panel")?.querySelectorAll(".splitmenu") || []]
+      .some((menu) => !menu.hidden);
+    if (event.defaultPrevented || event.key !== "Escape" || nestedPopoverIsOpen || !openKind()) return;
+    event.preventDefault();
+    closeOpenSurface({ restoreFocus: true });
+  };
+
   pillHost.addEventListener("click", onPillPress);
+  document.addEventListener("keydown", onEscape);
 
   return {
     set(nextSurfaces, seenAtMs = Date.now()) {
@@ -400,8 +457,11 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
       if (viewer) viewer.dispose();
       viewer = null;
       settleHidden(viewerHost);
+      viewerHost.innerHTML = "";
       pillHost.removeEventListener("click", onPillPress);
+      document.removeEventListener("keydown", onEscape);
       paintedSurfaces = null;
+      disposeClearance();
       pillHost.innerHTML = "";
       notifyPillsChanged();
     },

@@ -6,6 +6,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 // jsdom gives import.meta.url an http origin, so the sources are read from the
 // package root (vitest's cwd), as the other jsdom suites do.
 const indexSource = readFileSync(resolve("index.html"), "utf8");
@@ -25,9 +29,11 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: () => {},
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 
 const { App, render } = await import("../src/app.js");
+const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { railStartsCollapsed } = await import("../src/core/inboxShell.js");
 const { consoleHeadHtml } = await import("../src/core/console.js");
 
@@ -58,24 +64,39 @@ beforeEach(() => {
   document.body.className = "";
   location.hash = "";
   App.gated = false;
-  App.call = vi.fn(async (method, params) => rpc(method, params));
+  bridge.call = vi.fn(async (method, params) => rpc(method, params));
   App.poll = null;
   App.viewDispose = null;
+  App.devices = [{ id: "dev-1", name: "This device", status: "online" }];
+  App.selectedDeviceId = "dev-1";
 });
 
+/** A work route is about one machine: the view reads its caller off that
+ *  device's context, so a surface case opens the device its route names. */
+const openDevice = () =>
+  adoptDeviceSession({
+    deviceId: "dev-1",
+    call: (...args) => bridge.call(...args),
+    close: () => {},
+    peer: () => {},
+    onCarrier: () => {},
+  });
+
 afterEach(() => {
+  App.viewDispose?.();
   if (App.poll) clearInterval(App.poll);
   App.poll = null;
   App.viewDispose = null;
+  resetDeviceContexts();
 });
 
 describe("the shell's markup", () => {
   it("carries the three panels, the console slot and the chrome that outlives views", () => {
-    for (const id of ["shell", "inbox-rail", "inbox-list", "view", "toolbar", "view-body", "root", "agent-rail", "console-region"]) {
+    for (const id of ["shell", "inbox-rail", "inbox-list", "view", "toolbar", "view-body", "dir-rail", "root", "agent-rail", "console-region"]) {
       expect([id, !!document.getElementById(id)]).toEqual([id, true]);
     }
     // The banners, the sheet scrim and the device picker survive the rebuild.
-    for (const id of ["offbar", "verbar", "scrim", "sheet", "devpick"]) {
+    for (const id of ["verbar", "scrim", "sheet", "devpick"]) {
       expect([id, !!document.getElementById(id)]).toEqual([id, true]);
     }
     // Account lives at the foot of the inbox rail.
@@ -100,9 +121,9 @@ describe("the shell's markup", () => {
 describe("the shell's grid", () => {
   it("lays the rail beside the view column, and the view column in three rows", () => {
     expect(shellCss).toMatch(/#shell \{[^}]*display:grid/);
-    expect(shellCss).toMatch(/#shell \{[^}]*grid-template-columns:auto minmax\(0, 1fr\)/);
+    expect(shellCss).toMatch(/#shell \{[^}]*grid-template-columns:var\(--inbox-space\) minmax\(0, 1fr\)/);
     expect(shellCss).toMatch(/#view \{[^}]*grid-template-rows:auto minmax\(0, 1fr\) auto/);
-    expect(shellCss).toMatch(/#view-body \{[^}]*grid-template-columns:minmax\(0, 1fr\) auto/);
+    expect(shellCss).toMatch(/#view-body \{[^}]*grid-template-columns:auto minmax\(0, 1fr\) auto/);
   });
 
   it("pins each panel to its own track, so the view column never lands in the rail's", () => {
@@ -125,20 +146,37 @@ describe("the shell's grid", () => {
     expect(shellCss).toMatch(/#view \{[^}]*grid-template-columns:minmax\(0, 1fr\)/);
   });
 
-  it("gives the gate the whole frame, keeping only the compose box", () => {
+  it("gives the pinned rail the whole column, and drops the toggle that stands on it", () => {
+    // The reviewer's screenshot: a dead band above the docked rail with the
+    // inbox toggle floating in it. The band was the rail's own margin, and the
+    // toggle it made room for does nothing while the rail is already there —
+    // the pin in the rail's head is the control at that width.
+    const rail = shellCss.match(/\n#inbox-rail \{[^}]*\}/)[0];
+    expect(rail).toMatch(/height:100%/);
+    expect(rail).not.toMatch(/margin-top/);
+    expect(shellCss).toMatch(/body:not\(\.inbox-collapsed\):not\(\.gated\) #inbox-open \{[^}]*display:none/);
+    // Where the rail overlays the view instead of standing beside it, the
+    // toggle is still the way in and out, so it comes back. A media query adds
+    // no specificity, so the rule that brings it back must carry the same
+    // :not(.gated) as the rule that hid it, or the hiding rule keeps winning
+    // (measured: resizing a pinned rail to 900px left the toggle at display:none).
+    const narrow = shellCss.match(/@media \(max-width: 900px\) \{[\s\S]*?\n\}/)[0];
+    expect(narrow).toMatch(/body:not\(\.inbox-collapsed\):not\(\.gated\) #inbox-open \{[^}]*display:grid/);
+  });
+
+  it("gives the gate the whole frame", () => {
     const hidden = shellCss.match(/body\.gated[^{]*\{[^}]*display:none[^}]*\}/g).join("\n");
-    for (const region of ["#inbox-open", "#toolbar", "#agent-rail", "#console-region", "#inbox-list", ".inbox-foot"]) {
+    for (const region of ["#inbox-open", "#toolbar", "#agent-rail", "#console-region"]) {
       expect([region, hidden.includes(region)]).toEqual([region, true]);
     }
-    // Capture works before a device does, so the rail survives the gate as the
-    // carrier for that one control — and takes up no room doing it.
-    expect(shellCss).toMatch(/body\.gated #inbox-rail \{[^}]*width:0/);
-    expect(shellCss).toMatch(/body\.gated #compose \{[^}]*position:fixed/);
+    expect(shellCss).toMatch(/body\.gated \{[^}]*--inbox-space:0px/);
+    expect(shellCss).toMatch(/body\.gated #inbox-rail \{[^}]*display:none/);
   });
 
   it("overlays the inbox on a narrow viewport, the way the rail it replaces did", () => {
     const narrow = shellCss.match(/@media \(max-width: 900px\) \{[\s\S]*?\n\}/)[0];
-    expect(narrow).toMatch(/#inbox-rail \{[^}]*position:fixed/);
+    expect(narrow).toMatch(/#inbox-rail \{[^}]*position:absolute/);
+    expect(narrow).toMatch(/body \{[^}]*--inbox-space:0px/);
     expect(narrow).toMatch(/#inbox-scrim/);
   });
 
@@ -150,8 +188,11 @@ describe("the shell's grid", () => {
     // phone cannot afford to lose.
     expect(panel).toMatch(/position:absolute/);
     expect(panel).toMatch(/top:calc\(var\(--toolbar-h\) \+ 1px\)/);
-    expect(panel).toMatch(/right:var\(--agent-strip\)/);
     expect(panel).not.toMatch(/top:0/);
+    // The strip has left the right edge for the column's foot, so the panel
+    // takes the whole width and stops on the strip along its bottom instead.
+    expect(panel).toMatch(/right:0/);
+    expect(panel).toMatch(/bottom:calc\(var\(--console-space\) \+ var\(--agent-strip\)\)/);
   });
 });
 
@@ -160,7 +201,8 @@ describe("the inbox rail's docked state", () => {
     expect(railStartsCollapsed(null, 1400)).toBe(false);
     expect(railStartsCollapsed(null, 700)).toBe(true);
     expect(railStartsCollapsed("1", 1400)).toBe(true);
-    expect(railStartsCollapsed("", 700)).toBe(false);
+    expect(railStartsCollapsed("", 700)).toBe(true);
+    expect(railStartsCollapsed("", 900)).toBe(true);
   });
 });
 
@@ -172,12 +214,18 @@ describe("render dispatch", () => {
     expect(root().querySelector(".shell-stub")).toBeTruthy();
   });
 
-  it("mounts the branch surface with its two tabs and the console slot", async () => {
-    App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
+  it("keeps a legacy branch conversation reachable, with its two tabs and the console slot", async () => {
+    openDevice();
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    const tabs = [...root().querySelectorAll(".railtabs [data-tab]")].map((cell) => cell.dataset.tab);
+    const tabs = [...document.querySelectorAll("#dir-rail [data-tab]")].map((cell) => cell.dataset.tab);
     expect(tabs).toEqual(["changes", "files"]);
+    // Icon-only at every width: the words are the tooltip and the accessible
+    // name, and the rail is a tablist rather than a row of links.
+    expect(document.querySelector("#dir-rail").getAttribute("role")).toBe("tablist");
+    expect(document.querySelector('#dir-rail [data-tab="files"]').textContent.trim()).toBe("");
+    expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().classList.contains("surface")).toBe(true);
     // The console is reserved and shut.
     const bar = document.querySelector("#console-region .console-bar");
@@ -191,19 +239,23 @@ describe("render dispatch", () => {
   });
 
   it("navigates between the branch tabs by URL", async () => {
-    App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
+    openDevice();
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    root().querySelector('.railtabs [data-tab="files"]').click();
-    expect(location.hash).toBe("#/project/p-1/branch/build%2Flogin/files");
+    document.querySelector('#dir-rail [data-tab="files"]').click();
+    // The link the tab writes keeps the machine the surface is standing on.
+    expect(location.hash).toBe("#/device/dev-1/project/p-1/branch/build%2Flogin/files");
   });
 
-  it("mounts the issue surface as two columns, no tabs", async () => {
-    App.route = { name: "issue", projectId: "p-1", id: "i-1" };
+  it("keeps a legacy issue transcript reachable, as two columns with no tabs", async () => {
+    openDevice();
+    App.route = { name: "issue", deviceId: "dev-1", projectId: "p-1", id: "i-1" };
     render();
     await flush();
+    expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().querySelector(".ivsplit")).toBeTruthy();
-    expect(root().querySelector(".railtabs")).toBeNull();
+    expect(document.querySelector("#dir-rail").children).toHaveLength(0);
     expect(root().querySelector('[data-stage="s1"]').textContent).toContain("First half");
   });
 
@@ -230,13 +282,13 @@ describe("render dispatch", () => {
   });
 
   it("hands each view a clean #root and runs the outgoing view's teardown", async () => {
-    App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
+    openDevice();
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    expect(document.querySelector("#console-region .console-bar")).toBeTruthy();
+    expect(document.querySelector("#dir-rail").children.length).toBeGreaterThan(0);
     App.route = { name: "account", page: "settings" };
     render();
-    // The branch view's teardown clears the console region it mounted.
     expect(document.getElementById("console-region").innerHTML).toBe("");
     expect(App.poll).toBeNull();
   });
@@ -253,7 +305,11 @@ describe("the console", () => {
   it("takes the bottom row of the view column, and overlays it at full size", () => {
     expect(shellCss).toMatch(/#console-region \{[^}]*height:var\(--console-bar\)/);
     expect(shellCss).toMatch(/#console-region\[data-size="half"\] \{[^}]*height:var\(--console-half\)/);
-    const full = shellCss.match(/#console-region\[data-size="full"\] \{[^}]*\}/)[0];
+    // The base rule, not the phone's narrowing of it: at that width the strip
+    // is a row at the column's foot and the overlay stops on it from below.
+    const full = shellCss
+      .match(/#console-region\[data-size="full"\] \{[^}]*\}/g)
+      .find((rule) => rule.includes("position:absolute"));
     expect(full).toMatch(/position:absolute/);
     // …and never over the toolbar or the bubble strip: where you are standing
     // and what every agent is doing stay legible under an open console.

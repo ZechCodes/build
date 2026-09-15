@@ -1,8 +1,8 @@
+use crate::api::ApiError;
 use crate::app::runtime::lifecycle::{LifecycleOutcome, WorktreeLifecycleJob};
 use crate::app::{
     diff_file_edited_at, diff_file_rows, diff_json, entity_ids_of, sha256_hex, worktree_diff_json,
-    AppState, DeferredGit, DiffCacheEntry, FinishEpilogue, FinishKind, WorktreeFinishJob,
-    WorktreeFinishOutcome,
+    AppState, DeferredGit,
 };
 use crate::isolation::{Isolation, IsolationAvailability};
 use crate::lifecycle::{PendingRow, WorktreeChange};
@@ -33,15 +33,63 @@ pub(in crate::app) enum DeferredWork {
     /// One lifecycle verb's git — `git worktree add`, a checkpoint, a scan —
     /// and the row reserved on the board until it returns.
     Lifecycle(Box<WorktreeLifecycleJob>),
-    /// A claimed finish and the bookkeeping still owed once its git returns.
-    Finish {
-        job: Box<WorktreeFinishJob>,
-        epilogue: FinishEpilogue,
-    },
     /// One `git.*` verb against one resolved checkout.
     Git(Box<DeferredGit>),
     /// One diff to render for a review surface.
     Read(Box<DeferredRead>),
+    /// A subscribe or unsubscribe: reconcile the worktree watchers against
+    /// the new coverage, then answer with the watch state that produced.
+    Watch(Box<DeferredWatch>),
+}
+
+/// How the drain holds a deferred reply to the result type `api/v1` declares
+/// for the verb that deferred it. Built from `serde_json::from_value::<R>` at
+/// dispatch time, when `R` is still known.
+pub(crate) type DeferredResultCheck = fn(&Value) -> Result<(), String>;
+
+/// One verb's deferred work, with the type check its answer owes.
+///
+/// The check rides ALONG with the work rather than being looked up when the
+/// reply lands: the app mutex is released while the work runs, and by then
+/// the state carries whatever the next frame put on it.
+pub(in crate::app) struct DeferredJob {
+    work: DeferredWork,
+    check: Option<DeferredResultCheck>,
+}
+
+impl DeferredJob {
+    /// The lock-free phase, keeping the check for the write-back.
+    pub(in crate::app) fn run(self) -> DeferredDone {
+        DeferredDone {
+            outcome: self.work.run(),
+            check: self.check,
+        }
+    }
+}
+
+/// What [`DeferredJob::run`] brought back: the outcome to write down, and the
+/// check the published value must pass.
+pub(in crate::app) struct DeferredDone {
+    outcome: DeferredOutcome,
+    check: Option<DeferredResultCheck>,
+}
+
+#[cfg(test)]
+impl DeferredDone {
+    /// Answer something else than the implementation did — how a test stands
+    /// in for an implementation whose shape has drifted from the type
+    /// `api/v1` declares for it.
+    pub(in crate::app) fn answer_instead(&mut self, value: Value) {
+        match &mut self.outcome {
+            DeferredOutcome::Git { result, .. } | DeferredOutcome::Read(result) => {
+                *result = Ok(value);
+            }
+            DeferredOutcome::Watch(reply) => *reply = value,
+            DeferredOutcome::Lifecycle(_) => {
+                panic!("only a git verb, a read or a watch answers a value of its own")
+            }
+        }
+    }
 }
 
 impl DeferredWork {
@@ -49,10 +97,6 @@ impl DeferredWork {
     pub(in crate::app) fn run(self) -> DeferredOutcome {
         match self {
             Self::Lifecycle(job) => DeferredOutcome::Lifecycle(Box::new(job.run())),
-            Self::Finish { job, epilogue } => DeferredOutcome::Finish {
-                epilogue: Box::new(epilogue),
-                finished: Box::new(job.run()),
-            },
             Self::Git(git) => {
                 #[cfg(test)]
                 if let Some(gate) = &git.gate {
@@ -68,6 +112,39 @@ impl DeferredWork {
                 }
                 DeferredOutcome::Read(read.run())
             }
+            Self::Watch(watch) => DeferredOutcome::Watch(watch.run()),
+        }
+    }
+}
+
+/// The lock-free half of `changes.subscribe` / `changes.unsubscribe`: the bus
+/// already holds the new subscription set; what is left is starting or
+/// dropping watchers, which walks trees and so runs here, and the reply,
+/// which can only say `live` or `polled` once that has happened.
+pub(in crate::app) struct DeferredWatch {
+    pub(in crate::app) watchers: Arc<crate::app::watchers::WorktreeWatchers>,
+    pub(in crate::app) bus: Arc<crate::changes::ChangeBus>,
+    pub(in crate::app) answer: WatchAnswer,
+}
+
+/// What the verb answers once the watchers are reconciled.
+pub(crate) enum WatchAnswer {
+    /// `changes.subscribe`: the subscription as stored, whose `watch` is read
+    /// off the bus after the reconcile.
+    Subscribed(crate::changes::SubscriptionSpec),
+    /// `changes.unsubscribe`: `{"ok": true}`.
+    Unsubscribed,
+}
+
+impl DeferredWatch {
+    pub(in crate::app) fn run(&self) -> Value {
+        self.watchers.reconcile(&self.bus);
+        match &self.answer {
+            WatchAnswer::Subscribed(spec) => json!({
+                "subscription_id": spec.id,
+                "watch": self.bus.watch_state(spec),
+            }),
+            WatchAnswer::Unsubscribed => json!({ "ok": true }),
         }
     }
 }
@@ -75,15 +152,13 @@ impl DeferredWork {
 /// What the lock-free phase brought back, for the app mutex to write down.
 pub(in crate::app) enum DeferredOutcome {
     Lifecycle(Box<LifecycleOutcome>),
-    Finish {
-        epilogue: Box<FinishEpilogue>,
-        finished: Box<WorktreeFinishOutcome>,
-    },
     Git {
         git: Box<DeferredGit>,
         result: Result<Value, String>,
     },
     Read(Result<Value, String>),
+    /// The subscribe/unsubscribe reply, watchers reconciled.
+    Watch(Value),
 }
 
 /// A read whose git work needs nothing the app mutex holds: the lock resolves
@@ -301,6 +376,7 @@ pub(in crate::app) struct ProjectListRow {
     pub(in crate::app) worktrees_root: std::path::PathBuf,
     pub(in crate::app) base_branch: String,
     pub(in crate::app) is_git: bool,
+    pub(in crate::app) sources: Vec<crate::app::projects::ProjectSource>,
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) isolation_default: Isolation,
 }
@@ -321,6 +397,15 @@ impl ProjectListRow {
             "base_branch": self.base_branch,
             "is_git": self.is_git,
             "remote": self.is_git.then(|| git_remote_origin(&self.repo_path)).flatten(),
+            "sources": self.sources.iter().enumerate().map(|(index, source)| json!({
+                "id": source.id,
+                "name": source.name,
+                "mount": source.mount,
+                "path": source.path.display().to_string(),
+                "is_git": source.is_git,
+                "base_branch": source.base_branch,
+                "remote": source.remote.clone().or_else(|| (index == 0 && source.is_git).then(|| git_remote_origin(&source.path)).flatten()),
+            })).collect::<Vec<_>>(),
             "isolation": self.isolation,
             "isolation_default": self.isolation_default,
             "isolation_effective": effective,
@@ -397,13 +482,13 @@ impl AppState {
         &mut self,
         method: &str,
         params: &Value,
-    ) -> (Result<Value, String>, Option<DeferredWork>) {
+    ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
         let outcome = self.route(method, params);
         if outcome.is_err() {
             self.drop_turns_queued_since(queued_before);
         }
-        match self.deferred_work.take() {
+        match self.take_deferred() {
             // Nothing is settled until the git work returns, so the stamp waits
             // for `apply_deferred` too.
             Some(deferred) => (outcome, Some(deferred)),
@@ -423,27 +508,29 @@ impl AppState {
         &mut self,
         method: &str,
         params: &Value,
-        done: DeferredOutcome,
+        done: DeferredDone,
     ) -> Result<Value, String> {
+        let DeferredDone {
+            outcome: done,
+            check,
+        } = done;
         // Whether the git that just ran off-lock CHANGED anything. A read
         // deferred its work to keep the mutex free and writes nothing back, so
         // nothing about it is worth telling a browser; a mutating git verb
         // moved the tree every diff surface is showing.
         let mutating = match &done {
             DeferredOutcome::Lifecycle(_) => true,
-            DeferredOutcome::Finish { .. } => true,
             DeferredOutcome::Git { git, .. } => git.invalidates,
             DeferredOutcome::Read(_) => false,
+            DeferredOutcome::Watch(_) => false,
         };
         let queued_before = self.delivery_queue.checkpoint();
         let applied = match done {
             DeferredOutcome::Lifecycle(outcome) => self.apply_lifecycle(*outcome),
-            DeferredOutcome::Finish { epilogue, finished } => {
-                self.apply_finish(*epilogue, *finished)
-            }
             DeferredOutcome::Git { git, result } => self.apply_git(&git, result),
             // A read writes nothing back: its answer is the whole result.
             DeferredOutcome::Read(result) => result,
+            DeferredOutcome::Watch(reply) => Ok(reply),
         };
         match &applied {
             Ok(result) => {
@@ -460,7 +547,51 @@ impl AppState {
             }
             Err(_) => self.drop_turns_queued_since(queued_before),
         }
-        applied
+        // LAST, and deliberately after the write-back: the git ran and the
+        // state it moved is written down whatever shape the value took, so
+        // only the reply is refused. A mismatch is this bridge's own bug —
+        // an implementation that drifted from the type `api/v1` declares for
+        // its verb — and reads as `internal` to the client.
+        Self::checked_reply(method, check, applied)
+    }
+
+    /// Hold a deferred reply to the result type its verb declares. Runs in
+    /// release builds too: it is one deserialise per deferred reply, and the
+    /// verbs that answer this way — every `git.*` and every diff read — are
+    /// exactly the ones the facade's own check never sees.
+    fn checked_reply(
+        method: &str,
+        check: Option<DeferredResultCheck>,
+        applied: Result<Value, String>,
+    ) -> Result<Value, String> {
+        let (Some(check), Ok(result)) = (check, &applied) else {
+            return applied;
+        };
+        match check(result) {
+            Ok(()) => applied,
+            Err(error) => Err(format!(
+                "{method}: the deferred reply does not match the type api/v1 declares for it: {error}"
+            )),
+        }
+    }
+
+    /// Take the work a verb deferred, with the type check `api/v1` attached
+    /// to it. Any check left behind by a verb that did NOT defer goes with
+    /// it, so nothing can be checked against the wrong verb's type.
+    pub(in crate::app) fn take_deferred(&mut self) -> Option<DeferredJob> {
+        let check = self.deferred_result_check.take();
+        let work = self.deferred_work.take()?;
+        Some(DeferredJob { work, check })
+    }
+
+    /// Name the result type the verb just dispatched declares, for the work
+    /// it deferred. Called by [`crate::api::v1::dispatch`] the moment the
+    /// handler returns, while `R` is still known; a verb that deferred
+    /// nothing has nothing to check.
+    pub(crate) fn expect_deferred_result(&mut self, check: DeferredResultCheck) {
+        if self.deferred_work.is_some() {
+            self.deferred_result_check = Some(check);
+        }
     }
 
     /// Forget what a failed request queued for an agent. A turn is not
@@ -499,6 +630,21 @@ impl AppState {
         self.defer_conditional_read(subject, issue_id, None)
     }
 
+    /// Hand a changed subscription set to the drain, which reconciles the
+    /// worktree watchers with the mutex released and answers from the result.
+    /// The roots snapshot is refreshed here so the reconcile sees the board
+    /// as this verb saw it. The `Value` returned is the placeholder
+    /// [`AppState::deferred_work`] documents.
+    pub(crate) fn defer_watch(&mut self, answer: WatchAnswer) -> Value {
+        self.watchers.set_roots(self.worktree_roots());
+        self.deferred_work = Some(DeferredWork::Watch(Box::new(DeferredWatch {
+            watchers: Arc::clone(&self.watchers),
+            bus: Arc::clone(&self.changes),
+            answer,
+        })));
+        Value::Null
+    }
+
     pub(in crate::app) fn defer_conditional_read(
         &mut self,
         subject: ReadSubject,
@@ -512,18 +658,6 @@ impl AppState {
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));
-        Value::Null
-    }
-
-    /// Hand a claimed finish to the drain. The `Ok` returned here is the
-    /// placeholder [`AppState::deferred_work`] documents: whichever drain runs
-    /// the job replaces it with what [`AppState::apply_finish`] answers.
-    pub(in crate::app) fn defer_finish(
-        &mut self,
-        job: Box<WorktreeFinishJob>,
-        epilogue: FinishEpilogue,
-    ) -> Value {
-        self.deferred_work = Some(DeferredWork::Finish { job, epilogue });
         Value::Null
     }
 
@@ -641,52 +775,13 @@ impl AppState {
         }
     }
 
-    /// Write back what the lock-free git work found: release the claim, take
-    /// the scan it paid for and the record it left, and then run whatever
-    /// bookkeeping the verb that deferred it still owes.
-    pub(in crate::app) fn apply_finish(
-        &mut self,
-        epilogue: FinishEpilogue,
-        outcome: WorktreeFinishOutcome,
-    ) -> Result<Value, String> {
-        self.finishing_worktrees.remove(&epilogue.worktree_id);
-        // The scan the preflight paid for, whichever way the preflight went.
-        // `store_diff_entry` drops it if the project has since gone.
-        if let Some(worktrees) = outcome.scan {
-            self.store_diff_entry(DiffCacheEntry::ExternalScan {
-                project_id: epilogue.project_id.clone(),
-                worktrees,
-            });
-        }
-        // Memory mirrors the store: Archived after a completed finish, Pending
-        // after a failed destructive step (which is the resume point).
-        let finished_path = outcome
-            .record
-            .as_ref()
-            .map(|record| std::path::PathBuf::from(&record.worktree_path));
-        if let Some(record) = outcome.record {
-            self.board.insert_archived(record);
-        }
-        let archived = outcome.result.inspect(|_| {
-            self.reap_orphaned_terminals();
-            // The checkout is archived, so it leaves the scan the preflight
-            // above just stored — which was taken while it still stood.
-            if let Some(path) = &finished_path {
-                self.note_worktree_gone(&epilogue.project_id, path);
-            }
-            self.persist_attention();
-        });
-        match epilogue.kind {
-            FinishKind::Worktree => archived,
-            FinishKind::Run(run) => self.apply_run_finish(run, archived),
-            FinishKind::Branch(branch) => self.apply_branch_finish(branch, archived),
-        }
-    }
-
     /// The feed moved: task lifecycle, inbox/attention, capture, agent
     /// liveness. Queues only — the send happens with this mutex released.
     pub(in crate::app) fn note_board_changed(&self) {
         self.changes.note_board();
+        // An entity may have arrived with a checkout or left with one: the
+        // watchers follow the board, off this mutex.
+        self.watchers.board_moved(self.worktree_roots());
     }
 
     /// One entity's detail moved: its thread, stages, git state or diff. The

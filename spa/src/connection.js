@@ -1,79 +1,86 @@
-// Session lifecycle: open, adopt, degrade offline, resume, switch devices.
+// Session lifecycle: one session per online device — open, adopt, degrade
+// offline, resume — and which of them the app calls home.
 //
-// The relay pushes device_offline the instant our bridge drops; the socket's
-// own close event covers relay/network loss. Degrade quietly: banner + amber
-// dot, freeze the current view (the polls fail fast and skip re-rendering, so
-// in-progress typing/reading is untouched), pause bridge-backed actions — then
-// resume silently the moment the device is back.
+// Every device answers for itself. The relay pushes device_offline the instant
+// one of our bridges drops; that session's own close event covers relay/network
+// loss. Degrade that device quietly: its rows stay in the rail (greyed), its
+// calls pause, its scope and drafts survive, and it resumes silently the moment
+// it is back. The account-wide banner is for the state where nothing at all is
+// reachable, which is the only one the user can do anything about.
 
 import * as transport from "@build/secure-transport";
-import { $ } from "./dom.js";
 import { RELAY_URL } from "./config.js";
 import { openRelaySession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
-import { onlineStickyDeviceId } from "./core/devicePolicy.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
-import { App, adoptApplicationScope, render, rememberSelectedDevice } from "./app.js";
+import { App, rememberSelectedDevice } from "./app.js";
 import {
-  deviceName,
+  adoptBridgeSelection,
+  adoptDeviceSession,
+  canAnswer,
+  closeQuietly,
+  contextFor,
+  homeContext,
+  liveContexts,
+  releaseGreeting,
+  retireDeviceContext,
+  setContextOffline,
+} from "./core/deviceContexts.js";
+import {
   markDeviceOnline,
   markDeviceOffline,
-  paintDevicePicker,
   pinnedDeviceTransportKey,
-  refreshDevices,
 } from "./devices.js";
-import { retargetTerminals, terminalsRideOn } from "./terminal/manager.js";
+import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
-import { resetFeedScope } from "./core/taskFeed.js";
-import { offlineBannerText } from "./core/text.js";
+import { deliverFeed, joinFeed } from "./core/taskFeed.js";
 
-/// Connection status has no chip of its own any more — the status line under the
-/// rail is the device picker and nothing else. Offline still speaks up loudly
-/// through the banner (#offbar), which is the state that actually needs saying.
-/// Kept as a no-op-when-absent writer so every caller stays unchanged.
-export function setConn(html) {
-  const el = $("#conn");
-  if (el) el.innerHTML = html;
-}
+/** What every socket to this account's relay needs, whoever is opening it and
+ *  whatever they mean to do with it: the endpoint, the crypto, and the device
+ *  the relay is to land the session on. */
+const relayDial = (deviceId) => ({
+  relayUrl: RELAY_URL,
+  transport,
+  WebSocketImpl: WebSocket,
+  fetchToken: fetchGatewayToken,
+  getPinnedDeviceKey: pinnedDeviceTransportKey,
+  preferDeviceId: deviceId,
+});
 
-export function openAppSession({ preferDeviceId = null, waitForDevice = false } = {}) {
+/**
+ * A session for one device, with everything that varies by device closed over
+ * that device: what pausing means, what being lost means, and whose surfaces a
+ * push wakes.
+ *
+ * The relay only ever lands a session on `preferDeviceId`, so the device is
+ * known before the socket is and nothing here has to ask who answered.
+ */
+function openDeviceSession(deviceId, { waitForDevice = false } = {}) {
   return openRelaySession({
-    relayUrl: RELAY_URL,
-    transport,
-    WebSocketImpl: WebSocket,
-    fetchToken: fetchGatewayToken,
-    getPinnedDeviceKey: pinnedDeviceTransportKey,
-    preferDeviceId,
+    ...relayDial(deviceId),
     waitForDevice,
-    isPaused: () => App.offline,
+    // One device's offline state pauses one device's calls.
+    isPaused: () => contextFor(deviceId)?.offline === true,
     onDeviceKey: markDeviceOnline,
     onDeviceOffline: markDeviceOffline,
-    onLost: goOffline,
+    onLost: () => goOffline(deviceId),
     // The bridge saying something moved. A frame nobody asked for reaches the
-    // surface showing that state, which is what lets the polls stand down —
-    // except the signaling pushes, which belong to the upgrade negotiating
-    // them and describe nothing the surfaces show.
+    // surfaces showing that device's state, which is what lets its polls stand
+    // down — except the signaling pushes, which belong to the upgrade
+    // negotiating them and describe nothing the surfaces show.
     onPush: (payload) => {
-      if (!isSignaling(payload.type)) dispatchChangeEvent(payload);
+      if (!isSignaling(payload.type)) dispatchChangeEvent(payload, deviceId);
     },
   });
 }
 
-/** A settings page owns its connection: it never changes the active workspace,
- * and the active device's offline state must not pause another device's RPCs. */
+/** A settings page owns its connection: nothing about it reaches the registry,
+ * so no device the app is already holding is disturbed, and no other device
+ * being offline pauses its RPCs. */
 export async function openDeviceSettingsSession(deviceId, { onLost } = {}) {
-  const session = await openRelaySession({
-    relayUrl: RELAY_URL,
-    transport,
-    WebSocketImpl: WebSocket,
-    fetchToken: fetchGatewayToken,
-    getPinnedDeviceKey: pinnedDeviceTransportKey,
-    preferDeviceId: deviceId,
-    waitForDevice: false,
-    onLost,
-  });
+  const session = await openRelaySession({ ...relayDial(deviceId), waitForDevice: false, onLost });
   if (session.deviceId !== deviceId) {
     session.close();
     throw new Error("Could not connect to the requested device.");
@@ -83,8 +90,6 @@ export async function openDeviceSettingsSession(deviceId, { onLost } = {}) {
 
 // ---- the peer path (spec §SPA carrier and migration policy) ------------------
 
-let peerLink = null;
-
 /**
  * Upgrade a live session onto a direct peer path, in the background.
  *
@@ -92,10 +97,11 @@ let peerLink = null;
  * over the relay carrier, and migrates both streams once the two channels are
  * open. A failure anywhere logs and leaves the session exactly where it is —
  * the relay is the fallback, not a retry target, so the next attempt is the
- * next relay session and nothing sooner.
+ * next relay session for that device and nothing sooner.
  */
-async function upgradeToPeer(session) {
+async function upgradeToPeer(context) {
   if (!globalThis.RTCPeerConnection) return;
+  const session = context.session;
   let link;
   try {
     link = await openPeerLink({
@@ -109,177 +115,435 @@ async function upgradeToPeer(session) {
     console.warn("staying on the relay:", error.message);
     return;
   }
-  adoptPeerLink(session, link);
+  adoptPeerLink(context, session, link);
 }
 
-/** Put both streams on the connection that just opened — unless the session it
- *  was opened for is not the one the app is on any more. */
-function adoptPeerLink(session, link) {
-  if (App.session !== session) {
-    link.close(); // a device switch overtook the upgrade
+/** Put this device's streams on the connection that just opened — unless the
+ *  session it was opened for is not the one that device is on any more. */
+function adoptPeerLink(context, session, link) {
+  if (contextFor(session.deviceId)?.session !== session) {
+    link.close(); // a newer session for this device overtook the upgrade
     return;
   }
-  peerLink = link;
+  context.peerLink = link;
   // The two channels are one connection: whichever goes first takes the other,
   // and both streams migrate back to the relay together.
   for (const carrier of [link.app, link.term]) {
     carrier.onClose(() => {
-      if (peerLink === link) dropPeerLink();
+      if (context.peerLink === link) dropPeerLink(context);
     });
   }
   session.peer(link.app);
-  terminalsRideOn(link.term);
+  followTerminalsIfTheirs(context);
 }
 
 /** Idempotent, and the single point where both streams are handed back at once:
  *  nothing may end up on the relay while the other half still rides a peer
  *  connection that is going away. */
-function dropPeerLink() {
-  const link = peerLink;
+function dropPeerLink(context) {
+  const link = context?.peerLink;
   if (!link) return;
-  peerLink = null;
-  App.session?.peer(null);
-  terminalsRideOn(null);
+  context.peerLink = null;
+  context.session?.peer(null);
+  followTerminalsIfTheirs(context);
   link.close();
 }
 
-/** Greet a session that is live and unpaused: feature-detect push invalidation,
- *  subscribe this session to it, and read everything once. Not awaited by its
- *  callers — a slow greeting must not hold up the app, and a surface mounted
- *  before it lands is re-timed the moment it does. */
-export function greetLiveBridge() {
-  const session = App.session;
-  const repository = App.chatRepository;
-  if (!session) return Promise.resolve(false);
-  return greetBridge(session.call, {
-    isCurrent: () => App.session === session && App.chatRepository === repository,
-    onGreeting: (greeting) => repository?.configureCapabilities(greeting),
-  }).catch(() => {
-    /* the session died mid-greeting; the next one greets again */
-  });
+/** One device's peer link opened or closed. The terminals move only when they
+ *  are on that device — another device's channel carries the stream to the
+ *  wrong machine, and nothing about the wire theirs rides has changed. */
+function followTerminalsIfTheirs(context) {
+  if (context.deviceId === terminalDeviceId()) followTerminalDevice();
 }
 
-export function adoptSession(session) {
-  const deviceChanged = Boolean(App.cacheScope && App.cacheScope.deviceId !== session.deviceId);
-  dropPeerLink(); // whatever was carrying was carrying the session we just left
-  App.session = session;
-  App.call = session.call;
+/**
+ * Let a device go for good: the account no longer has it.
+ *
+ * The registry forgets the machine and tells every surface standing over it,
+ * but two things it is holding are this layer's. The direct connection it may
+ * be riding: retiring through the registry alone would leave an
+ * RTCPeerConnection open for the life of the tab, with both streams still
+ * pointed down it. And the backoff of a device that never connected at all,
+ * which is kept off to the side and would go on asking the relay for a machine
+ * the account no longer has.
+ *
+ * A resume already parked on the relay's `device_key` for this device is not
+ * reached: openRelaySession has no abort, so that socket is held until the
+ * bridge answers it, and `stillWaiting` closes the session it lands.
+ */
+export function retireDevice(deviceId) {
+  dropPeerLink(contextFor(deviceId));
+  forgetUnconnected(deviceId);
+  securityStops.delete(deviceId); // a machine the account no longer has is not barred, it is gone
+  return retireDeviceContext(deviceId);
+}
+
+/** Greet a device that is live and unpaused: feature-detect push invalidation,
+ *  subscribe that session to it, and read everything it has once. Not awaited by
+ *  its callers — a slow greeting must not hold up the app, and a surface mounted
+ *  before it lands is re-timed the moment it does.
+ *
+ *  Adopting the session armed this device's greeting (core/deviceContexts.js),
+ *  and the selection this one settles is what releases it. A greeting that
+ *  settles nothing — the session died before it said anything — is released
+ *  here instead: the feed waits on that promise, and a machine whose greeting
+ *  went missing must not be left unread for ever. */
+export function greetLiveBridge(context) {
+  const session = context?.session;
+  if (!session) return Promise.resolve(false);
+  const repository = context.chatRepository;
+  return greetBridge(session.call, {
+    deviceId: session.deviceId,
+    // The device's context may have been retargeted onto a newer session while
+    // this greeting was in flight; that greeting belongs to the session that
+    // asked for it, not to the one the device is on now.
+    isCurrent: () => contextFor(session.deviceId)?.session === session,
+    onGreeting: (greeting) => repository?.configureCapabilities(greeting),
+    // The session first, so a gate that lets the app back in finds it there;
+    // then the device's context, which is where every surface reads what this
+    // machine's bridge speaks (core/deviceContexts.js).
+    install: (selection) => {
+      const adapter = session.installAdapter(selection);
+      adoptBridgeSelection(context, selection, adapter);
+      return adapter;
+    },
+  })
+    .catch(() => {
+      /* the session died mid-greeting; the next one greets again */
+    })
+    .finally(() => {
+      // Only this session's own: a newer one has armed a greeting of its own,
+      // and what this one failed to say is no answer about that bridge.
+      if (context.session === session) releaseGreeting(context);
+    });
+}
+
+// ---- landing a session, and which device is home -----------------------------
+
+/** Everything a device gets the moment it has a live session: the registry
+ *  adopts it (a reconnect keeps that device's scope, drafts and controllers and
+ *  only replaces its transport), the feed starts reading it, the bridge is
+ *  greeted, and the peer upgrade runs in the background. */
+function landSession(session) {
+  const previous = contextFor(session.deviceId);
+  dropPeerLink(previous); // it was carrying the session this one replaces
+  // A device holds one session: a resume and a device that came back online can
+  // both land one, and the socket that lost the race is nobody's.
+  if (previous?.session !== session) closeQuietly(previous?.session);
+  cancelScheduledResume(session.deviceId);
+  const context = adoptDeviceSession(session);
+  forgetUnconnected(session.deviceId); // it has a context to keep its backoff on now
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
-  session.onCarrier(greetLiveBridge);
-  // Reconnects keep this device's controllers/drafts and only replace their
-  // transport. A device switch retires the old scope before any new view can
-  // capture it.
-  adoptApplicationScope({ deviceId: session.deviceId, call: session.call });
-  if (deviceChanged) resetFeedScope();
-  paintDevicePicker();
-  // Every live session starts here — the gate's first one, a reconnect, a
-  // device switch — so this is where captures taken with no device to send them
-  // to are handed over.
+  session.onCarrier(() => greetLiveBridge(context));
+  // What this bridge speaks is asked for before anything else is asked of it,
+  // and nothing waits on the answer but this device's own first read.
+  greetLiveBridge(context);
+  // A device the feed is not polling yet — the account's first session, one a
+  // late device just opened — gets its own board watcher and reads it as soon
+  // as its greeting is in.
+  joinFeed(context);
+  syncHome(context);
+  upgradeToPeer(context); // in the background: the user is live already
+  return context;
+}
+
+// The device followHomeContext was last run for. Home itself is derived — the
+// account list and the pick say who it is — so this is not another answer to
+// that question, only the record of which one the side effects below were last
+// carried out for. Signing out forgets it, so the first device of the next
+// account is taken in hand however familiar its name.
+let followedHomeId = null;
+
+/** Forget which device home was last followed for (sign-out, teardown). */
+export function forgetHomeFollow() {
+  followedHomeId = null;
+}
+
+/** Take the home device in hand: whose link the terminals ride, whose slice the
+ *  surfaces about "here" read, and who is offered the captures nobody could
+ *  send. The device picker is not among them — it is a filter over the account
+ *  list and says nothing about where creation goes. Home is read off the
+ *  account list and the pick, so nothing here writes who it is; everything a
+ *  home move touches happens here, once. */
+function followHomeContext(context) {
+  followedHomeId = context.deviceId;
+  // The terminal socket reads the device it wants only as it connects, and a
+  // healthy one never reconnects on its own: home moving is one of the two
+  // things that makes it drop and re-point (a route change is the other).
+  followTerminalDevice();
+  // Every surface about "here" — the composer's destinations, the toolbar, the
+  // capture decision page, the agent rail — keeps the home device's slice of
+  // the snapshot it was last handed. Home moving is news about all of them and
+  // about no bridge, so it is told from what the devices have already said.
+  deliverFeed();
+  if (!context.session || context.offline) return;
+  // The gate's first session, a reconnect, a new home device: this is where
+  // captures taken with no device to send them to are handed over.
   flushCaptures().catch(() => {
     /* still unreachable: the queue keeps them for the next session */
   });
-  upgradeToPeer(session); // in the background: the user is live already
 }
 
-function restoreOnline() {
-  App.offline = false;
-  App.offlineSince = null;
-  document.body.classList.remove("offline");
-  $("#offbar").hidden = true;
-  setConn('<span class="dot"></span>connected');
+/**
+ * Send new projects and captures to this machine from now on.
+ *
+ * The account's one control for home (Settings → Creation device), and its only
+ * writer: the pick is remembered, and whoever home is now is taken in hand.
+ * Nothing is opened and nothing is closed — every paired device that can answer
+ * is already live, and this says only where creation goes.
+ */
+export function chooseCreationDevice(deviceId) {
+  rememberSelectedDevice(deviceId);
+  syncHome();
 }
 
-let reconnectTimer = null;
-let reconnectDelay = 0;
+/**
+ * Catch the side effects up with whoever home is now.
+ *
+ * Nobody holds home: the account's device list and the user's pick say who it
+ * is, and this is asked whenever one of those, or the home device itself, has
+ * changed. `landed` is the context whose own state just changed — a device that
+ * just landed or just went — and is taken in hand again even when it was
+ * already home, because what the surfaces read off it is not what it was.
+ */
+export function syncHome(landed = null) {
+  const followed = followedHomeId;
+  // Nothing at all is online, so the account names no home: the side effects
+  // stay on the device they were already following and run for it again, which
+  // is how the picker and the composer come to say it has gone offline. At boot
+  // nothing has been followed yet, which is how the device the pick names keeps
+  // home while it is still handshaking.
+  const home = homeContext() || contextFor(followed);
+  if (home && (home.deviceId !== followed || home === landed)) followHomeContext(home);
+}
 
-export function goOffline() {
-  if (App.offline) return;
-  App.offline = true;
-  App.offlineSince = Date.now();
-  dropPeerLink();
+// ---- opening every device ----------------------------------------------------
+
+/** Connect one device and land it. A device that will not answer is marked
+ *  offline — its rows stay, greyed — and kept after until it does.
+ *
+ *  A pinned-key mismatch is not an outage: the machine answering is not the one
+ *  this account pinned, and asking it again every few seconds would neither fix
+ *  that nor tell anyone about it. Those errors are rethrown untouched, so the
+ *  caller shows what they say and this layer stops. */
+async function connectDevice(deviceId) {
+  dialling.add(deviceId);
   try {
-    App.session?.close();
-  } catch {
-    /* already gone */
-  }
-  document.body.classList.add("offline");
-  const name = deviceName(App.session?.deviceId) || "Your device";
-  $("#offbar-text").textContent = offlineBannerText(name, App.offlineSince);
-  $("#offbar").hidden = false;
-  setConn('<span class="dot" style="background:var(--amber)"></span>reconnecting…');
-  resume();
-}
-
-export async function resume() {
-  if (!App.offline || App._resuming) return;
-  App._resuming = true;
-  try {
-    // Blocks until a device is online: the fresh authenticated socket receives
-    // the relay's device_key push the moment a bridge returns. The sticky
-    // choice is honored only when that device is online right now — otherwise
-    // ANY of the user's devices brings us back (waiting on an offline sticky
-    // device would discard the working device's return forever).
-    const devices = await refreshDevices();
-    const session = await openAppSession({
-      preferDeviceId: onlineStickyDeviceId(devices, App.selectedDeviceId),
-      waitForDevice: true,
-    });
-    if (!App.offline) {
-      // Someone else (a device switch) already restored us while we waited.
-      session.close();
-      return;
-    }
-    adoptSession(session);
-    restoreOnline();
-    reconnectDelay = 0;
-    // AFTER restoreOnline, which is what unpauses calls — and the greeting is a
-    // call. Whatever happened while we were away was pushed at a socket that
-    // was not there, so this reads every mounted surface once and re-arms event
-    // mode on whatever bridge we came back to.
-    greetLiveBridge();
-    // The notifications view holds no user input, so refreshing it is safe; the
-    // task view's own poll resumes and its key-diffing preserves in-progress work.
-    if (App.route.name === "notifications") render();
-  } catch {
-    // Relay unreachable — retry with backoff until it's back.
-    reconnectDelay = Math.min((reconnectDelay || 1000) * 2, 15000);
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(resume, reconnectDelay);
+    return landSession(await openDeviceSession(deviceId));
+  } catch (error) {
+    if (barredBySecurity(deviceId, error)) throw error;
+    setContextOffline(deviceId);
+    scheduleResume(deviceId);
+    throw error;
   } finally {
-    App._resuming = false;
+    dialling.delete(deviceId);
   }
 }
 
-/** Re-target the app at another device: open the new session first, then swap. */
-export async function switchDevice(deviceId) {
-  if (App.session?.deviceId === deviceId && !App.offline) {
-    rememberSelectedDevice(deviceId);
+// The machines this layer has a dial in flight at. A bridge that answers is
+// marked online by the relay's own `device_key` push while its socket is still
+// opening, and a machine newly online is one this layer opens — so without this
+// a machine dialled while the account called it offline would be dialled again,
+// at itself, mid-handshake.
+const dialling = new Set();
+
+// A machine this client will not dial again for the life of the tab: the key
+// the relay offered for it was not the key this account pinned, so whatever
+// answered is not the machine that was paired. What it said is kept for the
+// screen that has room to say it.
+const securityStops = new Map(); // deviceId → what the refusal said
+
+/** Whether this failure is a stop rather than an outage — and if it is, the
+ *  machine is barred here, once, wherever the error was caught. */
+function barredBySecurity(deviceId, error) {
+  if (!error?.securityCritical) return false;
+  securityStops.set(deviceId, error.message);
+  return true;
+}
+
+/** What to say about a machine this client has stopped dialling, or "" while
+ *  every machine is merely unreachable. A stop is the one connection failure a
+ *  reader can act on and the only one that never resolves itself, so the
+ *  screen holding the app says it out loud. */
+export const securityStopText = () => [...securityStops.values()][0] || "";
+
+/** Let go of every bar (sign-out, teardown): they are this account's, and the
+ *  next account's machines have not been refused anything. */
+export function forgetSecurityStops() {
+  securityStops.clear();
+}
+
+/**
+ * Open every online device that has no live session, all at once.
+ *
+ * `first` is for a caller that needs A device — the gate, so the app starts on
+ * whichever machine answers rather than on the slowest one; `settled` is every
+ * context that came up. Nothing waits on the slowest device.
+ */
+export function openDeviceSessions() {
+  const wanted = App.devices.filter(wantsSession).map((device) => connectDevice(device.id));
+  const attempts = wanted.length ? wanted : guessAtStaleDevices();
+  return { first: handled(firstContext(attempts)), settled: handled(everyContext(attempts)) };
+}
+
+/**
+ * With nothing else to try, dial the machines the account calls offline.
+ *
+ * The api's presence is a snapshot: a bridge that came back since it was taken
+ * is listed offline until the account catches up. While something is open the
+ * relay says so itself — it pushes that bridge's key, and the push opens it —
+ * but an account holding nothing has nobody to hear that from, and the waiting
+ * screen would re-read the same stale list every three seconds for a machine
+ * that is answering. So each such machine is asked once, without waiting on it:
+ * it either answers, or joins the backoff that keeps asking for it.
+ */
+function guessAtStaleDevices() {
+  if (liveContexts().length) return []; // a live session will hear it come back
+  return App.devices.filter(neverAsked).map((device) => connectDevice(device.id));
+}
+
+/** A machine nothing here has asked for yet: it has never answered (no
+ *  context), never refused (no backoff waiting to try it again), has no dial on
+ *  it now, and is not barred. */
+function neverAsked(device) {
+  if (securityStops.has(device.id) || contextFor(device.id)) return false;
+  return !dialling.has(device.id) && !unconnected.get(device.id)?.timer;
+}
+
+/** A device for this call to open: online by the account list, with nothing
+ *  already working on it. Already answering is the registry's own question
+ *  (canAnswer), asked here the way every surface asks it. A resume is working
+ *  on it too — it is parked on the relay's `device_key` for exactly that bridge
+ *  and lands the moment it is back, so the push that says so must not start a
+ *  second handshake; and neither must a dial of this layer's own. */
+function wantsSession(device) {
+  const context = contextFor(device.id);
+  if (securityStops.has(device.id)) return false; // barred: retrying offers the same key to the same impostor
+  if (dialling.has(device.id)) return false;
+  return device.status === "online" && !canAnswer(context) && !context?.reconnect.resuming;
+}
+
+/** A caller usually wants one of the two promises. Handling the other here
+ *  keeps a refused device from reading as an unhandled rejection, and leaves
+ *  what the caller awaits exactly as it was. */
+function handled(promise) {
+  promise.catch(() => {});
+  return promise;
+}
+
+function firstContext(attempts) {
+  if (attempts.length) return Promise.any(attempts);
+  // Nothing to open: either every online device is already live — and whoever
+  // asked can use one of those — or there is no device to answer at all.
+  const [live] = liveContexts();
+  return live ? Promise.resolve(live) : Promise.reject(new Error("No device answered."));
+}
+
+async function everyContext(attempts) {
+  const results = await Promise.allSettled(attempts);
+  return results.filter((result) => result.status === "fulfilled").map((result) => result.value);
+}
+
+// ---- offline and resume, per device ------------------------------------------
+
+/** One device stopped answering. Its context stays registered: its rows stay in
+ *  the rail, its scope and drafts survive, and only its own calls pause. */
+export function goOffline(deviceId) {
+  const context = contextFor(deviceId);
+  if (!context || context.offline) return;
+  setContextOffline(deviceId);
+  dropPeerLink(context);
+  closeQuietly(context.session);
+  // Home may have moved off it — and if it has not, the surfaces that follow
+  // home still have to say the device they are about is offline.
+  syncHome(context);
+  resume(deviceId);
+}
+
+/** Keep asking for one device until it answers. `waitForDevice` blocks on the
+ *  relay's `device_key` for exactly this device: the fresh authenticated socket
+ *  hears it the moment that bridge is back. */
+export async function resume(deviceId) {
+  const reconnect = reconnectFor(deviceId);
+  if (reconnect.resuming) return;
+  reconnect.resuming = true;
+  clearTimeout(reconnect.timer);
+  try {
+    await claimResumedSession(deviceId, reconnect);
+  } catch (error) {
+    // A machine whose key does not match what this account pinned is a stop,
+    // never a reconnect loop: retrying would keep offering the same pinned key
+    // to the same impostor.
+    if (!error?.securityCritical) scheduleResume(deviceId, reconnect);
+  } finally {
+    reconnect.resuming = false;
+  }
+}
+
+async function claimResumedSession(deviceId, reconnect) {
+  const waiting = contextFor(deviceId);
+  const session = await openDeviceSession(deviceId, { waitForDevice: true });
+  if (!stillWaiting(deviceId, waiting)) {
+    closeQuietly(session);
     return;
   }
-  const previous = App.session;
-  const wasOffline = App.offline;
-  App.offline = false; // let the fresh session's calls through
-  let session;
-  try {
-    session = await openAppSession({ preferDeviceId: deviceId, waitForDevice: false });
-  } catch (error) {
-    App.offline = wasOffline;
-    throw error;
+  reconnect.delay = 0;
+  landSession(session);
+}
+
+/** Whether the session that just landed is still wanted: a new home device or
+ *  another resume can restore a device while this one waits, and a device that
+ *  was retired is not coming back at all. */
+function stillWaiting(deviceId, waiting) {
+  const context = contextFor(deviceId);
+  if (waiting) return context === waiting && context.offline;
+  return !context; // a device that had never connected still has not
+}
+
+/** A resume still counting down for this device is waiting for exactly what
+ *  just landed. Left armed it fires at a device that is live again: another
+ *  handshake, another greeting, and a session for the bin. */
+function cancelScheduledResume(deviceId) {
+  const reconnect = contextFor(deviceId)?.reconnect || unconnected.get(deviceId);
+  if (reconnect) clearTimeout(reconnect.timer);
+}
+
+function scheduleResume(deviceId, reconnect = reconnectFor(deviceId)) {
+  reconnect.delay = Math.min((reconnect.delay || 1000) * 2, 15000);
+  clearTimeout(reconnect.timer);
+  reconnect.timer = setTimeout(() => resume(deviceId), reconnect.delay);
+}
+
+// A device whose very first connect failed has no context to keep its backoff
+// on; it waits here until it has one. Every other device's is on its context,
+// so retiring a device retires its reconnect with it.
+const unconnected = new Map();
+
+function reconnectFor(deviceId) {
+  const context = contextFor(deviceId);
+  if (context) {
+    forgetUnconnected(deviceId);
+    return context.reconnect;
   }
-  try {
-    previous?.close();
-  } catch {
-    /* already gone */
-  }
-  // Persist the sticky choice only once the switch actually succeeded — an
-  // unreachable pick must not poison future boots/resumes.
-  rememberSelectedDevice(deviceId);
-  adoptSession(session);
-  restoreOnline();
-  // A different device is a different bridge: it may push where the last one
-  // polled, or the other way round.
-  greetLiveBridge();
-  retargetTerminals(); // the terminal socket follows the app session's device
-  render();
+  if (!unconnected.has(deviceId)) unconnected.set(deviceId, { timer: null, delay: 0, resuming: false });
+  return unconnected.get(deviceId);
+}
+
+/** Let go of every backoff kept here (sign-out, teardown): they are this
+ *  account's, and a timer left armed dials the relay for an account that has
+ *  gone. Every other machine's backoff is on its context and is retired with
+ *  it. */
+export function forgetUnconnectedDevices() {
+  for (const deviceId of [...unconnected.keys()]) forgetUnconnected(deviceId);
+}
+
+/** Let go of a backoff kept here: the device has a context to keep its own on
+ *  now, or it is gone. The timer goes with it — left armed it asks for a
+ *  machine nobody is waiting for. */
+function forgetUnconnected(deviceId) {
+  const reconnect = unconnected.get(deviceId);
+  if (!reconnect) return;
+  clearTimeout(reconnect.timer);
+  unconnected.delete(deviceId);
 }

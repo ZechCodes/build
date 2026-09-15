@@ -96,6 +96,11 @@ struct WorkingTurn {
     steer: Option<PendingSteer>,
     interrupt: Option<PendingInterrupt>,
     completion: Option<TurnCompletion>,
+    /// The choice this turn was started with. A message frozen to the same
+    /// choice can be steered into it — the way a claude child absorbs a
+    /// message into its running turn — and only a message that chooses
+    /// differently has to wait for a `turn/start` of its own.
+    choice: ModelChoice,
 }
 
 #[derive(Debug, Clone)]
@@ -288,13 +293,14 @@ impl CodexSessionState {
         turn: Turn,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        let chosen = turn.choice.is_some();
         let turn = self.accept_turn(turn)?;
         let thread_id = self.thread_id.clone();
         match &mut self.phase {
             Phase::Waiting => Ok(vec![self.begin_start_turn(turn)]),
             Phase::Working(working)
-                if !chosen && working.interrupt.is_none() && working.steer.is_none() =>
+                if working.interrupt.is_none()
+                    && working.steer.is_none()
+                    && steers_into(&turn, working) =>
             {
                 let input = turn.turn.text.clone();
                 working.steer = Some(PendingSteer::Response { turn });
@@ -620,6 +626,7 @@ impl CodexSessionState {
             ));
         }
         let accepted_choice = turn.applied_choice.clone();
+        let running_choice = accepted_choice.clone();
         let observed = observed_id.clone();
         let completed = completion.clone();
         let interrupt_after_start = *interrupt_after_start;
@@ -651,6 +658,7 @@ impl CodexSessionState {
                 steer: None,
                 interrupt: interrupt_after_start.then_some(PendingInterrupt::Response),
                 completion: None,
+                choice: running_choice,
             });
             Ok(interrupt_after_start
                 .then(|| {
@@ -897,11 +905,6 @@ impl CodexSessionState {
         let Some(turn) = self.pop_queue() else {
             return Ok(Vec::new());
         };
-        if turn.turn.choice.is_some() {
-            self.queued_bytes += turn.turn.text.len();
-            self.queued_turns.push_front(turn);
-            return Ok(Vec::new());
-        }
         let input = turn.turn.text.clone();
         let thread_id = self.thread_id.clone().expect("an active turn has a thread");
         let Phase::Working(working) = &mut self.phase else {
@@ -909,7 +912,7 @@ impl CodexSessionState {
                 "cannot release steer without active turn".to_string(),
             ));
         };
-        if working.interrupt.is_some() {
+        if working.interrupt.is_some() || !steers_into(&turn, working) {
             self.queued_bytes += input.len();
             self.queued_turns.push_front(turn);
             return Ok(Vec::new());
@@ -1172,9 +1175,12 @@ impl CodexSessionState {
         self.active_model.clone()
     }
 
-    #[cfg(test)]
     pub fn active_effort(&self) -> Option<String> {
         self.active_effort.clone()
+    }
+
+    pub fn active_choice(&self) -> (Option<String>, Option<String>) {
+        (self.active_model.clone(), self.active_effort.clone())
     }
 
     pub fn epitaph(&self) -> Option<String> {
@@ -1295,6 +1301,17 @@ fn expect_interrupted(
         )),
         Err(error) => Ok(Err(error)),
     }
+}
+
+/// Whether `turn` can be handed to the running turn as steer input rather than
+/// waiting for a `turn/start` of its own: an unchosen turn always can, and a
+/// chosen one can when it chooses what the running turn already runs. Every
+/// production turn is chosen — delivery freezes the agent's settings onto each
+/// one — so without the second half no message ever reached a working Codex
+/// agent mid-turn, while the same message reaches a working claude agent at
+/// its next step boundary.
+fn steers_into(turn: &AcceptedTurn, working: &WorkingTurn) -> bool {
+    turn.turn.choice.is_none() || turn.applied_choice == working.choice
 }
 
 fn retained_steer_turn(steer: PendingSteer) -> AcceptedTurn {

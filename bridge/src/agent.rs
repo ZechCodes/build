@@ -112,6 +112,9 @@ pub struct Agent {
     pub resume_session_id: Option<String>,
     #[serde(default)]
     pub active_model: Option<String>,
+    /// The reasoning effort last reported by the running session.
+    #[serde(default)]
+    pub active_effort: Option<String>,
     /// When the agent's current working interval began, if it is working now.
     #[serde(default)]
     pub working_since: Option<String>,
@@ -125,6 +128,12 @@ pub struct Agent {
     /// never been asked to run.
     #[serde(default)]
     pub start_error: Option<String>,
+    /// The agent's own word for what this conversation is about — a 2-4 word
+    /// objective it sets over MCP (`set_topic`), which the conversation header
+    /// wears in place of the harness name. `None` until it has: the header
+    /// says "Starting" until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
 }
 
 impl Agent {
@@ -152,8 +161,10 @@ impl Agent {
             state: AgentLifecycle::Idle,
             resume_session_id: None,
             active_model: None,
+            active_effort: None,
             working_since: None,
             start_error: None,
+            topic: None,
         }
     }
 

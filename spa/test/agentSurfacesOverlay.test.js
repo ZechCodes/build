@@ -3,8 +3,13 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { surfacesSnapshot } from "./surfacesFixture.js";
 import { motionBeat } from "./motionRecorder.js";
+import { sessionAnswering } from "./deviceSessionFixture.js";
 import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { resolve } from "node:path";
+
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
@@ -16,6 +21,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: async () => {},
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 vi.mock("../src/core/inboxView.js", () => ({
   markSeen: async () => {},
@@ -28,6 +34,7 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: () => {} }) }));
 
 const { App } = await import("../src/app.js");
+const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, panelHeadHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
 const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
@@ -58,6 +65,8 @@ const branchRow = (agentOver = {}) => ({
 let payload = branchRow();
 let calls = [];
 let rail = null;
+/** What the machine this rail is mounted on offers to start work with. */
+let catalog = { default_provider: "claude", providers: [] };
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
@@ -126,8 +135,12 @@ const finishedShells = () => {
 const mount = async () => {
   rail = mountAgentRail(document.getElementById("agent-rail"), {
     kind: "branch",
+    deviceId: "dev-1",
     projectId: "p1",
     branch: "build/login",
+    // A standalone mount brings its own caller: the rail makes its repository
+    // over the machine it was handed, not over an ambient one.
+    call: (method, params) => bridge.call(method, params),
   });
   await flush();
 };
@@ -146,30 +159,43 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
   payload = branchRow();
-  App.call = vi.fn(async (method, params) => {
+  catalog = { default_provider: "claude", providers: [] };
+  bridge.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
+    if (method === "models.list") return catalog;
     if (method === "branch.get") return payload;
     if (method === "thread.post") return { posted_sequence: 7 };
     return {};
   });
+  // The machine the rail is mounted on, which is the one its harness catalog
+  // comes from.
+  adoptDeviceSession(sessionAnswering(bridge));
 });
 
 afterEach(() => {
   if (rail) rail.dispose();
   rail = null;
-  App.modelCatalog = null;
+  resetDeviceContexts();
   document.body.innerHTML = "";
   vi.useRealTimers();
 });
 
 describe("panelHeadHtml's surface menu", () => {
+  it("keeps the title as text beside the selected harness icon", () => {
+    const html = panelHeadHtml("My agent", "chat", { provider: "codex_app_server" });
+    document.body.innerHTML = html;
+
+    expect(document.querySelector(".rail-who").textContent).toBe("My agent");
+    expect(document.querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
+  });
+
   it("writes no menu at all when the agent has nothing to show", () => {
     const html = panelHeadHtml("Claude Code", "chat", { surfaceOptions: [] });
     expect(html).toContain("rail-surface-menu");
     expect(html).not.toContain("splitbtn");
   });
 
-  it("writes one item per kind, beside the remove and collapse buttons", () => {
+  it("places the vertical menu after Done without a collapse control", () => {
     const html = panelHeadHtml("Claude Code", "chat", {
       removable: true,
       surfaceOptions: [{ id: SHELL_ENTRY_KIND, label: "Shells", description: "1 running" }],
@@ -177,8 +203,10 @@ describe("panelHeadHtml's surface menu", () => {
     expect(html).toContain(`data-action="${SHELL_ENTRY_KIND}"`);
     expect(html).toContain("Shells");
     expect(html).toContain("1 running");
-    expect(html.indexOf("rail-surface-menu")).toBeLessThan(html.indexOf("rail-remove"));
-    expect(html.indexOf("rail-remove")).toBeLessThan(html.indexOf("rail-collapse"));
+    expect(html.indexOf("rail-remove")).toBeLessThan(html.indexOf("rail-surface-menu"));
+    expect(html).toContain(">Done</button>");
+    expect(html).toContain("⋮");
+    expect(html).not.toContain("rail-collapse");
   });
 });
 
@@ -253,7 +281,7 @@ describe("the conversation header's menu", () => {
   it("is one plain icon button carrying the three dots alone", async () => {
     await mount();
     expect(menuCaret().classList.contains("iconbtn")).toBe(true);
-    expect(menuCaret().textContent.trim()).toBe("⋯");
+    expect(menuCaret().textContent.trim()).toBe("⋮");
     expect(menuCaret().closest(".splitbtn").classList.contains("splitbtn-icon")).toBe(true);
   });
 
@@ -303,7 +331,7 @@ describe("the conversation header's menu", () => {
 
 describe("the model a surface row names", () => {
   it("says what the account's catalog calls it, and the raw id when it knows none", async () => {
-    App.modelCatalog = {
+    catalog = {
       default_provider: "claude",
       providers: [
         { id: "claude", label: "Claude Code", models: [{ id: "claude-opus-5[1m]", label: "Opus 5 · 1m" }], efforts: [] },
@@ -445,7 +473,7 @@ describe("collapsing the panel a surface stands over", () => {
     await poll(finishedShells());
     expect(timers.count()).toBe(1);
 
-    panel().querySelector(".rail-collapse").click();
+    document.querySelector(".rail-bubble").click();
     await flush();
 
     expect(document.getElementById("rail-panel")).toBe(null);
@@ -463,7 +491,8 @@ describe("the overlay's own height", () => {
     menuItem(SHELL_ENTRY_KIND).click();
 
     expect(overlay().closest(".rail-surfaces-viewer")).toBe(null);
-    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:34vh/);
+    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:min\(46vh, 420px\)/);
+    expect(shellCss).toMatch(/\.surface-popover-body\s*\{[^}]*overflow-y:auto/);
     expect(shellCss).not.toContain(".modal-surface");
     expect(appCss).toMatch(/\.modal\.modal-surface\s*\{[^}]*max-height/);
     expect(appCss).toMatch(/\.modal-surface\s+\.surface-overlay-body\s*\{[^}]*overflow-y:auto/);

@@ -6,22 +6,33 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 const feedProjects = [
   { id: "p1", name: "relaydb" },
   { id: "p2", name: "dotfiles" },
 ];
 const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login" }];
+/** The merge as the feed last delivered it — one device's worth by default, the
+ *  way a single-device fixture reads. */
+let feedSnapshot = { items: feedItems, projects: feedProjects };
 const refreshFeed = vi.fn(async () => {});
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    fn({ items: feedItems, projects: feedProjects });
+    fn(feedSnapshot);
     return () => {};
   },
   refreshFeed: (...args) => refreshFeed(...args),
   startFeed: () => {},
   stopFeed: () => {},
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
+
+/** Another device that is connected too: nothing this page does may reach it. */
+const awayCall = vi.fn(async () => ({}));
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({
@@ -31,6 +42,10 @@ vi.mock("../src/core/notify.js", () => ({
 
 let App;
 let mountCaptureDecision;
+let resetDeviceContexts;
+/** What the home device answers. A capture is that device's (design §8), so
+ *  every call this page makes has to land here and nowhere else. */
+let homeCall;
 let pendingIn;
 let entryKeyOf;
 let host;
@@ -38,12 +53,16 @@ let surface;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
+// Every destination the router can offer is a branch: filing an issue is
+// retired (core/captureDecision.js drops an issue option that names no branch),
+// so a fixture offering one would be asserting about a choice the page never
+// paints.
 const option = (over = {}) => ({
   id: "option-1",
-  label: "File as an issue on relaydb",
+  label: "Continue the login work",
   project_id: "p1",
-  kind: "issue",
-  branch: null,
+  kind: "branch",
+  branch: "build/login",
   ...over,
 });
 
@@ -64,7 +83,7 @@ const asking = ({ question: asked, ...over } = {}) =>
       text: "Which project is the login redirect in?",
       asked_at: "2026-08-15T10:00:01Z",
       answer: null,
-      options: [option(), option({ id: "option-2", label: "Continue the login work", kind: "branch", branch: "build/login" })],
+      options: [option(), option({ id: "option-2", label: "Start the CSV export", branch: "build/csv-export" })],
       chosen_option_id: null,
       ...(asked || {}),
     },
@@ -93,12 +112,40 @@ beforeEach(async () => {
   App.route = { name: "capture", id: "capture-1" };
   App.gated = false;
   record = asking();
+  feedSnapshot = { items: feedItems, projects: feedProjects };
   refreshFeed.mockClear();
   notifyError.mockClear();
-  App.call = vi.fn(async (method) => {
+  awayCall.mockClear();
+  homeCall = vi.fn(async (method) => {
     if (method === "capture.get") return record;
     return record;
   });
+  // Home the way the running app names it: the account lists the device online
+  // and the user's pick names it. The context's caller is read fresh on every
+  // call, so a case can rescript `homeCall` after the page is mounted.
+  const contexts = await import("../src/core/deviceContexts.js");
+  resetDeviceContexts = contexts.resetDeviceContexts;
+  App.devices = [
+    { id: "dev-1", name: "workshop", status: "online" },
+    { id: "dev-2", name: "laptop", status: "online" },
+  ];
+  App.selectedDeviceId = "dev-1";
+  contexts.adoptDeviceSession({
+    deviceId: "dev-1",
+    call: (...args) => homeCall(...args),
+    close: () => {},
+    peer: () => {},
+    onCarrier: () => {},
+  });
+  contexts.adoptDeviceSession({
+    deviceId: "dev-2",
+    call: awayCall,
+    close: () => {},
+    peer: () => {},
+    onCarrier: () => {},
+  });
+  // The alias no surface on this page may read any more.
+  bridge.call = vi.fn(async () => record);
   host = document.getElementById("capture-page");
   surface = mountCaptureDecision(host, "capture-1");
   await surface.load();
@@ -107,25 +154,26 @@ beforeEach(async () => {
 afterEach(() => {
   surface?.dispose();
   document.getElementById("confirm-scrim")?.remove();
+  resetDeviceContexts();
 });
 
 const choices = () => [...host.querySelectorAll("[data-capture-option]")];
 
 describe("the capture decision page", () => {
   it("states what was said, what the router asked, and the choices it offered", () => {
-    expect(App.call).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
+    expect(homeCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
     expect(host.textContent).toContain("fix the login redirect");
     expect(host.textContent).toContain("Which project is the login redirect in?");
     expect(choices().map((choice) => choice.dataset.captureOption)).toEqual(["option-1", "option-2"]);
-    expect(choices()[1].textContent).toContain("relaydb · branch build/login");
+    expect(choices()[0].textContent).toContain("relaydb · branch build/login");
     expect(host.textContent).toContain("Waiting for your answer");
   });
 
   it("answers with the choice that was tapped, and shows the router deciding again", async () => {
-    record = capture({ state: "routing", question: { ...asking().question, answer: "…", chosen_option_id: "option-2" } });
-    choices()[1].click();
+    record = capture({ state: "routing", question: { ...asking().question, answer: "…", chosen_option_id: "option-1" } });
+    choices()[0].click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-2" });
+    expect(homeCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-1" });
     expect(refreshFeed).toHaveBeenCalled();
     expect(host.textContent).toContain("Deciding where this goes");
   });
@@ -144,7 +192,7 @@ describe("the capture decision page", () => {
     host.querySelector("#capture-branch").value = "build/csv-export";
     host.querySelector("#capture-route").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.answer", {
+    expect(homeCall).toHaveBeenCalledWith("capture.answer", {
       capture_id: "capture-1",
       text: "Route this to project p2 as a branch, on the branch build/csv-export",
     });
@@ -161,10 +209,10 @@ describe("the capture decision page", () => {
     expect(host.querySelector("#capture-answer-send").disabled).toBe(true);
     host.querySelector("#capture-route").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.reroute", {
+    expect(homeCall).toHaveBeenCalledWith("capture.reroute", {
       capture_id: "capture-1",
       project_id: "p1",
-      kind: "issue",
+      kind: "branch",
     });
   });
 
@@ -174,7 +222,7 @@ describe("the capture decision page", () => {
     box.dispatchEvent(new Event("input"));
     host.querySelector("#capture-answer-send").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.answer", {
+    expect(homeCall).toHaveBeenCalledWith("capture.answer", {
       capture_id: "capture-1",
       text: "neither, it is the relay",
     });
@@ -183,13 +231,13 @@ describe("the capture decision page", () => {
   it("says nothing to the daemon when the answer box is empty", async () => {
     host.querySelector("#capture-answer-send").click();
     await flush();
-    expect(App.call).not.toHaveBeenCalledWith("capture.answer", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("capture.answer", expect.anything());
   });
 
   it("cancels the capture behind a confirmation, and leaves for the inbox", async () => {
     host.querySelector("#capture-cancel").click();
     await answerConfirm(true);
-    expect(App.call).toHaveBeenCalledWith("capture.cancel", { capture_id: "capture-1" });
+    expect(homeCall).toHaveBeenCalledWith("capture.cancel", { capture_id: "capture-1" });
     expect(refreshFeed).toHaveBeenCalled();
     expect(location.hash).toBe("#/inbox");
   });
@@ -197,13 +245,13 @@ describe("the capture decision page", () => {
   it("keeps the capture when the confirmation is declined", async () => {
     host.querySelector("#capture-cancel").click();
     await answerConfirm(false);
-    expect(App.call).not.toHaveBeenCalledWith("capture.cancel", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("capture.cancel", expect.anything());
     expect(location.hash).toBe("#/capture/capture-1");
     expect(pendingIn("inbox")).toEqual([]);
   });
 
   it("leaves for the inbox the instant the cancel is confirmed, before capture.cancel answers", async () => {
-    App.call = vi.fn(async (method) => {
+    homeCall = vi.fn(async (method) => {
       if (method === "capture.cancel") return new Promise(() => {});
       return record;
     });
@@ -211,11 +259,11 @@ describe("the capture decision page", () => {
     await answerConfirm(true);
 
     expect(location.hash).toBe("#/inbox");
-    expect(App.call).toHaveBeenCalledWith("capture.cancel", { capture_id: "capture-1" });
+    expect(homeCall).toHaveBeenCalledWith("capture.cancel", { capture_id: "capture-1" });
   });
 
   it("takes the capture's inbox row off under the key the inbox itself speaks", async () => {
-    App.call = vi.fn(async (method) => {
+    homeCall = vi.fn(async (method) => {
       if (method === "capture.cancel") return new Promise(() => {});
       return record;
     });
@@ -229,7 +277,7 @@ describe("the capture decision page", () => {
   });
 
   it("puts the row back and says why when the cancel is refused", async () => {
-    App.call = vi.fn(async (method) => {
+    homeCall = vi.fn(async (method) => {
       if (method === "capture.cancel") throw new Error("that capture is already routed");
       return record;
     });
@@ -243,8 +291,30 @@ describe("the capture decision page", () => {
     expect(location.hash).toBe("#/inbox");
   });
 
+  it("answers, reroutes, cancels and reads the capture on the home device's call", async () => {
+    // A capture was taken on the home device and is routed into that device's
+    // projects, so all four of this page's calls go there — never through the
+    // App alias, and never to the other device that happens to be connected.
+    choices()[1].click();
+    await flush();
+    record = capture({ state: "failed" });
+    await surface.load();
+    host.querySelector("#capture-route").click();
+    await flush();
+    host.querySelector("#capture-cancel").click();
+    await answerConfirm(true);
+
+    const asked = homeCall.mock.calls.map(([method]) => method);
+    expect(asked).toContain("capture.get");
+    expect(asked).toContain("capture.answer");
+    expect(asked).toContain("capture.reroute");
+    expect(asked).toContain("capture.cancel");
+    expect(bridge.call).not.toHaveBeenCalled();
+    expect(awayCall).not.toHaveBeenCalled();
+  });
+
   it("says on the page, and out loud, when the daemon refuses an answer", async () => {
-    App.call = vi.fn(async (method) => {
+    homeCall = vi.fn(async (method) => {
       if (method === "capture.answer") throw new Error("that question has already been answered");
       return record;
     });
@@ -254,6 +324,45 @@ describe("the capture decision page", () => {
     expect(error.hidden).toBe(false);
     expect(error.textContent).toContain("already been answered");
     expect(notifyError).toHaveBeenCalled();
+  });
+});
+
+// A capture belongs to the machine it was taken on, and home moves. The merged
+// inbox carries every device's captures and names the device each row came from,
+// so the page reads, answers and offers destinations there — not on whichever
+// machine creation goes to now.
+describe("a capture taken on a device that is not home", () => {
+  beforeEach(async () => {
+    surface.dispose();
+    feedSnapshot = {
+      items: [{ kind: "capture", capture_id: "capture-1", deviceId: "dev-2" }],
+      projects: [],
+      devices: {
+        "dev-1": { items: feedItems, projects: feedProjects },
+        "dev-2": { items: [], projects: [{ id: "p9", name: "away notes" }] },
+      },
+    };
+    awayCall.mockImplementation(async () => record);
+    homeCall.mockClear();
+    host.innerHTML = "";
+    surface = mountCaptureDecision(host, "capture-1");
+    await surface.load();
+  });
+
+  it("reads and answers the capture on the machine it is on", async () => {
+    expect(awayCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
+
+    choices()[1].click();
+    await flush();
+
+    expect(awayCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-2" });
+    expect(homeCall).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
+
+  it("offers that machine's projects as the destinations", () => {
+    const options = [...host.querySelectorAll("#capture-project option")].map((option) => option.textContent);
+    expect(options).toEqual(["away notes"]);
   });
 });
 

@@ -92,8 +92,8 @@ function createScopedAdoptingCall(call, adoptScope) {
   };
 }
 
-/** A run-RPC caller for one external worktree. `call` is App.call-shaped
- *  (injected for tests). */
+/** A run-RPC caller for one external worktree. `call` is a device context's
+ *  call (injected for tests). */
 export function createAdoptingCall(call, projectId, worktreeId) {
   return createScopedAdoptingCall(call, worktreeAdoptScope(projectId, worktreeId));
 }
@@ -120,10 +120,10 @@ function checkoutKey(scope) {
  * race to mint two owners of the same checkout. `createAdopters` hands them
  * all the same one.
  *
- * `call` is App.call-shaped (injected for tests). The returned lookup takes a
- * git scope (views/branchView.js `branchScope`) and answers the adopter for it,
- * or null where nothing is to be adopted: a run already owns that checkout, or
- * the row names none.
+ * `call` is a device context's call (injected for tests). The returned lookup
+ * takes a git scope (views/branchView.js `branchScope`) and answers the adopter
+ * for it, or null where nothing is to be adopted: a run already owns that
+ * checkout, or the row names none.
  */
 export function createAdopters(call) {
   const byCheckout = new Map();

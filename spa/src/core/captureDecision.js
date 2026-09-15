@@ -59,7 +59,7 @@ export function captureDecisionModel(capture, { projects = [] } = {}) {
     answer: question && question.answer ? String(question.answer) : "",
     awaitingAnswer,
     chosenOptionId: (question && question.chosen_option_id) || null,
-    options: (question?.options || []).map((option) => ({
+    options: (question?.options || []).filter((option) => option.kind !== "issue" || trimmed(option.branch)).map((option) => ({
       id: option.id,
       label: String(option.label ?? ""),
       destination: optionDestinationText(option, projects),
@@ -70,20 +70,19 @@ export function captureDecisionModel(capture, { projects = [] } = {}) {
 /** The answer a destination the user named reads as: the same sentence the
  *  bridge writes when a router's own option is tapped, so the router hears a
  *  hand-picked destination in exactly the terms it routes in. */
-export function manualRouteAnswer({ projectId, kind = "issue", branch = "" } = {}) {
+export function manualRouteAnswer({ projectId, branch = "" } = {}) {
   const project = trimmed(projectId);
   if (!project) return "";
   const named = trimmed(branch);
-  const becomes = kind === "branch" || named ? "a branch" : "an issue";
-  return `Route this to project ${project} as ${becomes}${named ? `, on the branch ${named}` : ""}`;
+  return `Route this to project ${project} as a branch${named ? `, on the branch ${named}` : ""}`;
 }
 
 /** What a reroute asks for — the destination stated to the daemon rather than
  *  to the router. This is the way out when there is no question to answer: an
  *  unnamed branch is the daemon naming it after what was said. */
-export function manualRouteParams(captureId, { projectId, kind = "issue", branch = "" } = {}) {
-  const params = { capture_id: captureId, project_id: trimmed(projectId), kind: kind === "branch" ? "branch" : "issue" };
-  const named = kind === "branch" ? trimmed(branch) : "";
+export function manualRouteParams(captureId, { projectId, branch = "" } = {}) {
+  const params = { capture_id: captureId, project_id: trimmed(projectId), kind: "branch" };
+  const named = trimmed(branch);
   return named ? { ...params, branch: named } : params;
 }
 
@@ -149,7 +148,6 @@ function askHtml(model, ui) {
  *  for a branch, the one destination with something left to say — which branch.
  *  The same three fields the compose box's manual panel offers, because it is
  *  the same decision. */
-// eslint-disable-next-line complexity -- ratchet: manualHtml is at 11, cap 10 — reduce it, then drop this line
 function manualHtml(model, ui) {
   const busy = ui.busy ? " disabled" : "";
   const projectOptions = (ui.projects || [])
@@ -160,8 +158,6 @@ function manualHtml(model, ui) {
         )}</option>`,
     )
     .join("");
-  const kindButton = (kind, label) =>
-    `<button class="btn mini${ui.kind === kind ? " primary" : ""}" type="button" data-capture-kind="${kind}"${busy}>${label}</button>`;
   const branches = (ui.branches || []).map((branch) => `<option value="${esc(branch)}"></option>`).join("");
   return `<div class="panel capture-manual">
     <h3>${model.question ? "Or send it somewhere yourself" : "Send it somewhere yourself"}</h3>
@@ -169,18 +165,14 @@ function manualHtml(model, ui) {
     <select id="capture-project"${busy}>${
       projectOptions || '<option value="">No projects on this device</option>'
     }</select>
-    <div class="compose-kinds">${kindButton("issue", "Issue")}${kindButton("branch", "Branch")}</div>
-    ${
-      ui.kind === "branch"
-        ? `<label for="capture-branch">Branch</label>
+    <div class="compose-kinds"><button class="btn mini primary" type="button" data-capture-kind="branch"${busy}>Branch</button></div>
+    <label for="capture-branch">Branch</label>
            <input id="capture-branch" type="text" class="path" list="capture-branches" autocomplete="off"
              placeholder="a new branch, named after what you said" value="${esc(ui.branch || "")}"${busy} />
-           <datalist id="capture-branches">${branches}</datalist>`
-        : '<div class="compose-note dim">Nothing runs until you open the issue and send the first message.</div>'
-    }
+           <datalist id="capture-branches">${branches}</datalist>
     <button class="btn mini primary compose-manual" id="capture-route" type="button"${
       ui.busy || !ui.projectId ? " disabled" : ""
-    }>${ui.kind === "branch" ? "Send it to the branch" : "File it as an issue"}</button>
+    }>Send it to the branch</button>
   </div>`;
 }
 

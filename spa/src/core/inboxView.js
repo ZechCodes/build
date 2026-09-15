@@ -20,15 +20,17 @@ import { confirmAction } from "./confirm.js";
 import {
   activeEntryKey,
   branchDoneConfirm,
+  captureEntries,
   dismissParamsOf,
   entryKeyOf,
   inboxEmptyHtml,
-  inboxEntries,
   inboxRowHtml,
   issueDoneConfirm,
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
+  workspaceEntries,
+  workspaceEntryKey,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
@@ -43,79 +45,56 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
+import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
+import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
+import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
+import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
+import { creationTarget, paintDeviceState, verbCall } from "./inboxDevices.js";
+import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
-import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
+import {
+  blockIsFolded,
+  projectBlockHtml,
+  projectHeadHtml,
+  rowDeviceNames,
+  workspaceProjectBlocks,
+} from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
-import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
+import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 import { publishInboxAttentionCount } from "./inboxAttention.js";
+import { messageOf } from "./text.js";
 
 let items = [];
 // The board's rows for lifecycle verbs in flight (board.list's `pending`): a
 // checkout being cut is on the list while its git runs.
 let pendingLifecycle = [];
 let projects = [];
+// The snapshot those arrays were taken from, kept whole for the one thing that
+// is about a single machine: where a capture can be rerouted to.
+let snapshot = null;
+let workspaces = [];
 let entries = [];
 let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
 let openMenuKey = null;
-let rerouteKey = null; // the capture row whose destination picker is open
-let rerouteBranchProject = null; // the project in that picker whose branch field is open
 // Whether each Recent is open, once the user has said — keyed by whose Recent
 // it is: the inbox's, or one project block's. A scope nobody has spoken for
 // lets its partition decide (it opens when the list above it is thin).
 const recentOpen = new Map();
-// What the user has said of each block's fold (project id → folded). A block
+// What the user has said of each block's fold (project key → folded). A block
 // they have said nothing about folds as the face decides. Remembered on this
 // device.
 let folds = new Map();
-// Each block as last painted, by project id: where its head opens, and what
-// it is called — which is what the create it offers is titled with.
+// Each block as last painted, by project key: where its head opens, what it is
+// called — which is what the create it offers is titled with — and the bare
+// project id every RPC still wants.
 let blocksPainted = new Map();
-const capturesBeingRerouted = new Set();
 const errors = new Map(); // row key → the message its row is showing
-const captureErrors = new Map(); // capture id → the message its row is showing
+const workspacesBeingFinished = new Set();
 
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
-
-/**
- * Tell the bridge this entry has been read. No agent id means the whole entry —
- * which is what opening it means; a bubble passes its own agent.
- *
- * A reader who holds a WINDOW on a long conversation rather than the whole of
- * it passes the sequence that window starts at, so the daemon moves the read
- * cursor only as far as the reader was actually sent. No floor says what it
- * always said: the conversation arrived whole.
- *
- * `readThroughSequence` is the newest message the reader's viewport actually
- * reached. Reading is per message — a panel showing half of what arrived clears
- * half of it — and no sequence says the reader read to the end of what they
- * hold, which is what opening a whole entry means.
- *
- * This is also the hook for a self-initiated ending: merge and abandon are
- * attention-class events, so a merge the user triggered from this client would
- * otherwise badge its own entry. Whoever runs that verb calls this after it.
- */
-export async function markSeen(entityId, agentId, readFromSequence = null, readThroughSequence = null) {
-  if (!entityId || !App.call) return;
-  try {
-    await App.call("entity.seen", {
-      entity_id: entityId,
-      ...(agentId ? { agent_id: agentId } : {}),
-      ...(typeof readFromSequence === "number" ? { read_from_sequence: readFromSequence } : {}),
-      ...(typeof readThroughSequence === "number" ? { read_through_sequence: readThroughSequence } : {}),
-    });
-  } catch {
-    /* the cursor is the daemon's; a failed clear is re-tried by the next open */
-  }
-}
-
-/** The entries a mutation from this client just ended, cleared in one call. */
-export function noteSelfAction(...entityIds) {
-  return Promise.all([...new Set(entityIds.filter(Boolean))].map((id) => markSeen(id)));
-}
 
 /** A box in the list has the caret. The reconciler keeps a row that is still
  *  there, and the box in it with the words and the caret — so a repaint no
@@ -137,13 +116,8 @@ function drawFromFeed() {
 }
 
 function publishAttentionCount() {
-  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const partition = inboxEntries({ items: shown, nowMs: Date.now() });
-  publishInboxAttentionCount(
-    [...partition.entries, ...partition.recent]
-      .filter((entry) => !entry.muted && !entry.dismissed)
-      .reduce((total, entry) => total + entry.unreadCount, 0),
-  );
+  const unread = workspaceEntries(workspaces, projects, items).filter((entry) => entry.state === "unread");
+  publishInboxAttentionCount(new Set(unread.map((entry) => entry.entityId || entry.key)).size);
 }
 
 /** The one name a row has, which is what the reconciler matches rows by. */
@@ -151,9 +125,16 @@ const keyOf = (entry) => entry.key;
 
 export const INBOX_SCOPE = "inbox";
 
+// The read cursor has its own module (core/inboxSeen.js); its callers still
+// find it here.
+export { markSeen, noteSelfAction };
+
 // The captures this client is holding or watching stand beside the daemon's
-// own rows; the daemon's copy wins wherever both name the same capture.
-const mergedItems = () => mergeCaptureRows(mergePendingRows(items, pendingLifecycle), pendingCaptureRows());
+// own rows; the daemon's copy wins wherever both name the same capture. They
+// are narrowed by the picker on the way in — the snapshot's own rows were
+// narrowed as it arrived, and a row is a row whoever is holding it.
+const mergedItems = () =>
+  mergeCaptureRows(mergePendingRows(items, pendingLifecycle), onlyDeviceRows(pendingCaptureRows(), App.deviceFilter));
 
 /** Show one of the rail's two faces. The shell calls this with what the user
  *  chose (and remembered); the list repaints as that face. */
@@ -168,10 +149,13 @@ function draw() {
   publishAttentionCount();
   const list = $("#inbox-list");
   if (!list) return;
-  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const nowMs = Date.now();
+  // The captures first: they are the account's unfinished business and belong
+  // to no project, so they stand above the workspace rows on the flat face and
+  // above the blocks on the other.
+  const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
+  const shown = withDeviceNames([...captureEntries(rows), ...workspaceEntries(workspaces, projects, rows)]);
   list.onclick = onListClick;
-  list.onkeydown = onListKeydown;
+  list.onkeydown = onCaptureKeydown;
   // A different face is a different list: the one is emptied for the other,
   // and every paint after that reconciles in place.
   if (list.dataset.view !== view) {
@@ -179,54 +163,79 @@ function draw() {
     list.replaceChildren();
   }
   const scroll = list.scrollTop;
-  if (view === "projects") drawProjects(list, shown, nowMs);
-  else drawInbox(list, shown, nowMs);
+  if (view === "projects") drawProjects(list, shown);
+  else drawWorkspaceList(list, shown);
   list.scrollTop = scroll;
   paintErrors(list);
+  paintDeviceState(list, { entryFor: entryOf, blockFor: blockOf });
+}
+
+/** Which machine each row is to say it is on: only where two machines use the
+ *  same project name, decided once for the whole list so the row painters print
+ *  what they are given. A rail showing one machine's work names no machine at
+ *  all, which is every account with one device and every filtered rail. */
+function withDeviceNames(rows) {
+  const names = rowDeviceNames({ items: rows, projects, devices: App.devices });
+  return rows.map((row) => ({ ...row, deviceName: names.get(row.projectKey) || null }));
+}
+
+/** The inbox face's flat durable workspace list. */
+function drawWorkspaceList(list, shown) {
+  entries = shown;
+  const ui = rowUi(true);
+  paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
+  list.querySelector(":scope > .inbox-recent")?.remove();
+  list.querySelector(":scope > .inbox-unsorted")?.remove();
+  list.querySelector(":scope > .inbox-projects")?.remove();
+  patchList(list, entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
 }
 
 /** What every row is painted with. `showProject` is whether a row names its
  *  own project — under a project block it has already been told. */
 function rowUi(showProject) {
+  const picker = reroutePicker();
+  // A reroute goes to the machine holding the capture, so the destinations it
+  // offers are that machine's — its projects, and the branches they have.
+  const destinations = deviceFeedView(snapshot, entryOf(picker.rerouteKey)?.deviceId);
+  const activeKey = activeEntryKey(App.route, entries);
   return {
-    activeKey: activeEntryKey(App.route, entries),
+    activeKey,
     openMenuKey,
-    rerouteKey,
-    projects,
-    rerouteBranchProject,
+    projects: destinations.projects,
+    ...picker,
     // The branches that project already has, off the same feed rows the
     // compose panel offers: one source for "which branches are there".
-    rerouteBranches: branchOptions(items, rerouteBranchProject),
+    rerouteBranches: branchOptions(destinations.items, picker.rerouteBranchProject),
     showProject,
     folded: new Set(),
     // The block holding the branch or issue the route stands on. A capture's
     // route names no project; the row it stands on does.
-    activeProjectId: App.route.projectId || (entries.find((entry) => entry.key === activeEntryKey(App.route, entries)) || {}).projectId || null,
+    activeProjectId: activeProjectKey(activeKey),
+    finishingWorkspaces: workspacesBeingFinished,
   };
 }
 
-/** The inbox face: one list, Recent at its end. */
-function drawInbox(list, shown, nowMs) {
-  const partition = inboxEntries({ items: shown, nowMs });
-  // Every row on screen, Recent included: what the route stands on and what a
-  // click resolves to do not care which section a row sits in.
-  entries = [...partition.entries, ...partition.recent];
-  const ui = rowUi(true);
-  paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
-  patchList(list, partition.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-  paintRecent(list, partition, ui, "inbox");
+/** The block the route stands in, named the way every block is named: the row
+ *  the route opens says so, and a route that matches no row still names its own
+ *  machine and project (core/deviceKey.js). */
+function activeProjectKey(activeKey) {
+  const standing = entries.find((entry) => entry.key === activeKey);
+  if (standing) return standing.projectKey || null;
+  return routeProjectKey(App.route);
 }
 
-/** The projects face: the new-project control, the unrouted captures on their
- *  own, then a block per project with its rows and its own Recent. */
-function drawProjects(list, shown, nowMs) {
-  const face = projectBlocks({ items: shown, projects, nowMs });
-  entries = [...face.unsorted, ...face.blocks.flatMap((block) => [...block.entries, ...block.recent])];
-  blocksPainted = new Map(face.blocks.map((block) => [block.id, block]));
-  const ui = { ...rowUi(false), folded: new Set(face.blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.id)) };
+/** The projects face: any workspaces whose project nothing lists, then one
+ *  block per project — every machine's, each head naming its machine where two
+ *  machines use that project name. */
+function drawProjects(list, shown) {
+  const { unsorted, blocks } = workspaceProjectBlocks(shown, projects, routeWorkspaceKey(App.route), App.devices);
+  entries = [...unsorted, ...blocks.flatMap((block) => [...block.entries, ...block.recent])];
+  blocksPainted = new Map(blocks.map((block) => [block.projectKey, block]));
+  const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
+  const ui = { ...rowUi(false), folded };
   const frame = projectsFrame(list);
-  patchList(frame.unsorted, face.unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-  paintBlocks(frame.blocks, face.blocks, ui);
+  patchList(frame.unsorted, unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  paintBlocks(frame.blocks, blocks, ui);
 }
 
 /** The projects face's frame, built once: the new-project control, the loose
@@ -235,7 +244,7 @@ function projectsFrame(list) {
   let unsorted = list.querySelector(":scope > .inbox-unsorted");
   if (!unsorted) {
     unsorted = el('<div class="inbox-unsorted"></div>');
-    list.append(el(newProjectButtonHtml()), unsorted, el('<div class="inbox-projects"></div>'));
+    list.append(unsorted, el('<div class="inbox-projects"></div>'));
   }
   return { unsorted, blocks: list.querySelector(":scope > .inbox-projects") };
 }
@@ -261,8 +270,8 @@ function paintBlocks(host, blocks, ui) {
       host.insertBefore(element, anchor);
     } else {
       element.classList.toggle("inbox-flat", block.flat);
-      element.classList.toggle("inbox-folded", ui.folded.has(block.id));
-      element.classList.toggle("active", ui.activeProjectId === block.id);
+      element.classList.toggle("inbox-folded", ui.folded.has(block.projectKey));
+      element.classList.toggle("active", ui.activeProjectId === block.projectKey);
       patchElement(element.querySelector(":scope > .inbox-project-head"), el(projectHeadHtml(block, ui)));
       if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
     }
@@ -274,7 +283,7 @@ function paintBlocks(host, blocks, ui) {
       patchList(rows, block.recent, { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
     } else {
       patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-      paintRecent(element, block, ui, block.id);
+      paintRecent(element, block.recent, ui, block.projectKey);
     }
     anchor = element;
   }
@@ -294,8 +303,8 @@ function paintEmpty(container, empty, html, selector) {
  *  have gone quiet. It is its own container, so the quiet rows are its keyed
  *  children and each list reconciles only its own. `scope` names whose Recent
  *  it is, which is what the user's open-or-shut is remembered under. */
-function paintRecent(host, partition, ui, scope) {
-  if (!partition.recent.length) {
+function paintRecent(host, recent, ui, scope) {
+  if (!recent.length) {
     host.querySelector(":scope > .inbox-recent")?.remove();
     return;
   }
@@ -303,16 +312,16 @@ function paintRecent(host, partition, ui, scope) {
   if (!section) {
     section = document.createElement("div");
     section.className = "inbox-recent";
-    section.append(el(recentToggleHtml(partition.recent, false, scope)));
+    section.append(el(recentToggleHtml(recent, false, scope)));
   }
   // Recent follows the list proper. A row that arrives while nothing was keyed
   // above it lands after the section, so the section is put back at the end
   // whenever a paint has left something below it.
   if (host.lastElementChild !== section) host.appendChild(section);
   const open = recentIsOpen(recentOpen.get(scope));
-  patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(partition.recent, open, scope)));
+  patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(recent, open, scope)));
   // Recent's rows are quiet rows: one line each, no state dot.
-  patchList(section, open ? partition.recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
+  patchList(section, open ? recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
 }
 
 /** A row key is whatever the daemon minted (a worktree's is derived from a
@@ -320,7 +329,7 @@ function paintRecent(host, partition, ui, scope) {
  *  selector out of it. */
 function paintErrors(list) {
   list.querySelectorAll(".inbox-entry").forEach((row) => {
-    const message = errors.get(row.dataset.key) || captureErrors.get(row.dataset.capture);
+    const message = errors.get(row.dataset.key) || captureError(row.dataset.capture);
     const slot = message && row.querySelector("[data-done-error], [data-capture-error]");
     if (!slot) return;
     slot.textContent = message;
@@ -328,13 +337,67 @@ function paintErrors(list) {
   });
 }
 
+/** The two things the wiring keeps of what it last painted, looked up the same
+ *  way: a row by its key, and a block by its project key. Nothing is ever found
+ *  by a selector built out of an id the daemon minted. */
 const entryOf = (key) => entries.find((entry) => entry.key === key) || null;
+const blockOf = (projectKey) => blocksPainted.get(projectKey) || null;
 
 function closeMenu() {
   if (openMenuKey === null) return;
   openMenuKey = null;
   draw();
 }
+
+/** One control per attribute a row paints, in the order a press is read in:
+ *  the innermost control wins. Each is handed the element that was pressed. */
+const ROW_CONTROLS = [
+  ["data-workspace-done", (control) => finishWorkspace(entryOf(control.dataset.workspaceDone))],
+  ["data-done", (control) => finishRow(control.dataset.done)],
+  ["data-mute", (control) => toggleMute(entryOf(control.dataset.mute))],
+  ["data-dismiss", (control) => dismissEntry(entryOf(control.dataset.dismiss))],
+  ["data-menu", (control) => openMenu(control.dataset.menu)],
+  // Recent is one disclosure, and pressing it is the user saying so — from then
+  // on the section stays as they left it, whatever the list above it does.
+  ["data-recent-toggle", (control) => toggleRecent(control)],
+];
+
+/** Done is the one row verb that comes off the menu, so the menu shuts with it. */
+function finishRow(key) {
+  closeMenu();
+  finishEntry(entryOf(key));
+}
+
+function toggleRecent(control) {
+  recentOpen.set(control.dataset.recentToggle, control.getAttribute("aria-expanded") !== "true");
+  draw();
+}
+
+/** The press answered off a table of controls: true when it was one of them. */
+function pressed(controls, target) {
+  for (const [attribute, act] of controls) {
+    const control = target.closest(`[${attribute}]`);
+    if (control) {
+      act(control);
+      return true;
+    }
+  }
+  return false;
+}
+
+/** One control per attribute the head paints, in the order a press is read in:
+ *  the innermost control wins, so the fold and the + are asked for before the
+ *  name they sit beside. Each is handed the element that was pressed. */
+const BLOCK_CONTROLS = [
+  ["data-project-fold", (control) => toggleFold(control.dataset.projectFold)],
+  ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
+  ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
+  ["data-new-project", () => openNewProject()],
+];
+
+/** Every control the list holds, innermost first: a row's own verbs, then what
+ *  a capture row can do to its route, then a block's head. */
+const LIST_CONTROLS = [...ROW_CONTROLS, ...CAPTURE_CONTROLS, ...BLOCK_CONTROLS];
 
 /// Every control in the list, answered in one place.
 ///
@@ -344,37 +407,10 @@ function closeMenu() {
 /// row was spoken for.
 function onListClick(event) {
   const { target } = event;
-  const done = target.closest("[data-done]");
-  if (done) {
-    closeMenu();
-    finishEntry(entryOf(done.dataset.done));
-    return;
-  }
-  const mute = target.closest("[data-mute]");
-  if (mute) {
-    toggleMute(entryOf(mute.dataset.mute));
-    return;
-  }
-  const dismiss = target.closest("[data-dismiss]");
-  if (dismiss) {
-    dismissEntry(entryOf(dismiss.dataset.dismiss));
-    return;
-  }
-  const menu = target.closest("[data-menu]");
-  if (menu) {
-    openMenu(menu.dataset.menu);
-    return;
-  }
-  // Recent is one disclosure, and pressing it is the user saying so — from then
-  // on the section stays as they left it, whatever the list above it does.
-  const recentToggle = target.closest("[data-recent-toggle]");
-  if (recentToggle) {
-    recentOpen.set(recentToggle.dataset.recentToggle, recentToggle.getAttribute("aria-expanded") !== "true");
-    draw();
-    return;
-  }
-  if (captureClicked(target)) return;
-  if (projectClicked(target)) return;
+  // A control the row's device cannot answer for is shut, not hidden: the
+  // reader can see the verb and reads why it is unavailable on it.
+  if (target.closest('[aria-disabled="true"]')) return;
+  if (pressed(LIST_CONTROLS, target)) return;
   // The row's own controls answer for themselves; everything else on it opens.
   const row = target.closest(".inbox-entry");
   if (row && !target.closest(".inbox-actions")) openEntry(entryOf(row.dataset.key));
@@ -398,166 +434,66 @@ function openMenu(key) {
 //
 // What a block's head can do: fold, open the project's checkout, and create —
 // a branch or an issue, on the one create surface, scoped to the block's
-// project. And the one control above every block: a new project.
+// project. And the one control above every block: a new project. Which press
+// is which is the table BLOCK_CONTROLS, up with the other control tables.
 
-/** The block controls, answered off the same one listener. True when the press
- *  was one of them. */
-function projectClicked(target) {
-  const fold = target.closest("[data-project-fold]");
-  if (fold) {
-    toggleFold(fold.dataset.projectFold);
-    return true;
-  }
-  const head = target.closest("[data-project-open]");
-  if (head) {
-    const block = blocksPainted.get(head.dataset.projectOpen);
-    if (block && block.route) goFromInbox(block.route);
-    return true;
-  }
-  const create = target.closest("[data-project-create]");
-  if (create) {
-    const block = blocksPainted.get(create.dataset.projectCreate);
-    expandFold(create.dataset.projectCreate);
-    closeMenu();
-    openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", kind: "branch", navigate: goFromInbox });
-    return true;
-  }
-  if (target.closest("[data-new-project]")) {
-    openNewRepo((project) => {
-      const route = projectRoute(project);
-      if (route) goFromInbox(route);
-      refreshFeed();
-    });
-    return true;
-  }
-  return false;
+/** The block's name opens the project's workspace, when it has one. */
+function openBlockHead(projectKey) {
+  const block = blockOf(projectKey);
+  if (block && block.route) goFromInbox(block.route);
+}
+
+/** The + opens the create surface on this block's project, with the block
+ *  unfolded so the new row has somewhere visible to land. The create surface
+ *  talks to one bridge — the machine this block is on — which knows its
+ *  projects by the bare id it minted. */
+function createInBlock(projectKey) {
+  const block = blockOf(projectKey);
+  expandFold(projectKey);
+  closeMenu();
+  if (!block) return;
+  openCreateWork({
+    projectId: block.id,
+    deviceId: block.deviceId,
+    projectName: block.name,
+    navigate: goFromInbox,
+  });
+}
+
+/** The one control above every block, and the rail head's own: a project the
+ *  account does not have yet. It is made where creation goes, over that
+ *  machine's own connection; while no machine can answer there is nowhere to
+ *  make it, and the rail says so. */
+export function openNewProject() {
+  const target = creationTarget("No device can take a new project");
+  if (!target) return;
+  openNewRepo((project) => {
+    // The machine that made it is the machine it is on: the answer to a fresh
+    // project.create is not a feed row and carries no device of its own, and a
+    // device-less route is resolved by asking every machine — which would hand
+    // the reader another machine's project of the same number.
+    const route = projectRoute({ ...project, deviceId: target.deviceId });
+    if (route) goFromInbox(route);
+    refreshFeed();
+  }, target);
 }
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */
-function toggleFold(projectId) {
-  const block = blocksPainted.get(projectId);
+function toggleFold(projectKey) {
+  const block = blockOf(projectKey);
   if (!block) return;
-  folds.set(projectId, !blockIsFolded(block, folds));
+  folds.set(projectKey, !blockIsFolded(block, folds));
   persistProjectFolds(folds, localStorage);
   draw();
 }
 
 /** Creating a branch gives the new row somewhere visible to land. */
-function expandFold(projectId) {
-  const block = blocksPainted.get(projectId);
+function expandFold(projectKey) {
+  const block = blockOf(projectKey);
   if (!block || !blockIsFolded(block, folds)) return;
-  folds.set(projectId, false);
+  folds.set(projectKey, false);
   persistProjectFolds(folds, localStorage);
   draw();
-}
-
-// ---- capture rows -------------------------------------------------------------
-//
-// The two things a row can do to a route: retry one that gave up, and send the
-// capture somewhere else. Both go through the daemon's own capture verbs — a
-// reroute by hand and a route by the router are the same kind of thing
-// afterwards.
-//
-// Answering the router is not one of them. What to do with a capture is a
-// decision with several shapes — the router's own choices, a destination named
-// by hand, words, or abandoning it — and the row opens the page that holds all
-// of them (views/captureDecision.js) rather than hosting the thinnest one.
-
-/** The capture controls, answered off the same one listener. True when the press
- *  was one of them. */
-function captureClicked(target) {
-  const retry = target.closest("[data-capture-retry]");
-  if (retry) {
-    rerouteCapture(retry.dataset.captureRetry, null);
-    return true;
-  }
-  const reroute = target.closest("[data-capture-reroute]");
-  if (reroute) {
-    const key = `capture:${reroute.dataset.captureReroute}`;
-    rerouteKey = rerouteKey === key ? null : key;
-    rerouteBranchProject = null;
-    draw();
-    return true;
-  }
-  // Branch is the one destination with something left to say, so it discloses
-  // the field that says it instead of dispatching on the spot.
-  const branchOpen = target.closest("[data-reroute-branch-open]");
-  if (branchOpen) {
-    openRerouteBranch(branchOpen.dataset.rerouteBranchOpen);
-    return true;
-  }
-  const destination = target.closest("[data-reroute-project]");
-  if (destination) {
-    dispatchReroute(destination);
-    return true;
-  }
-  return false;
-}
-
-function openRerouteBranch(projectId) {
-  rerouteBranchProject = rerouteBranchProject === projectId ? null : projectId;
-  draw();
-  // The field is found through the list that was just painted, never through a
-  // selector built out of an id the daemon minted.
-  if (rerouteBranchProject) $("#inbox-list")?.querySelector("[data-reroute-branch]")?.focus();
-}
-
-function dispatchReroute(control) {
-  const row = control.closest(".capture-entry");
-  const named = control.dataset.rerouteKind === "branch" ? branchFieldValue(control) : "";
-  rerouteKey = null;
-  rerouteBranchProject = null;
-  rerouteCapture(row.dataset.capture, {
-    projectId: control.dataset.rerouteProject,
-    kind: control.dataset.rerouteKind,
-    branch: named,
-  });
-}
-
-/** Enter in the branch field is the Dispatch beside it. */
-function onListKeydown(event) {
-  if (event.key !== "Enter") return;
-  const field = event.target.closest("[data-reroute-branch]");
-  if (!field) return;
-  event.preventDefault();
-  field.closest(".reroute-branch").querySelector("[data-reroute-kind='branch']").click();
-}
-
-/** The branch named beside a Dispatch button, "" when the field is empty or
- *  the destination was chosen without one. */
-function branchFieldValue(control) {
-  const field = control.closest(".reroute-branch")?.querySelector("[data-reroute-branch]");
-  return field ? field.value.trim() : "";
-}
-
-/** With a destination this routes by hand; with none it re-fires the router,
- *  which is what the retry on a failed route is. */
-async function rerouteCapture(captureId, destination) {
-  if (capturesBeingRerouted.has(captureId)) return;
-  capturesBeingRerouted.add(captureId);
-  captureErrors.delete(captureId);
-  try {
-    const rerouted = await App.call("capture.reroute", rerouteParams(captureId, destination));
-    // The answer carries the new routing, and for a capture that has already
-    // settled it is the only thing that will: the feed stopped carrying it, so
-    // nothing else would ever correct the row's "→ project as issue".
-    adoptCaptureRecord(rerouted);
-    await refreshFeed();
-  } catch (error) {
-    captureErrors.set(captureId, messageOf(error));
-  } finally {
-    capturesBeingRerouted.delete(captureId);
-    draw();
-  }
-}
-
-/** What a reroute asks for: a destination, or nothing at all — which is the
- *  retry, and means "decide again". A branch carries the name when one was
- *  given; with none the daemon names it after what was said. */
-function rerouteParams(captureId, destination) {
-  if (!destination) return { capture_id: captureId };
-  const params = { capture_id: captureId, project_id: destination.projectId, kind: destination.kind };
-  return destination.branch ? { ...params, branch: destination.branch } : params;
 }
 
 /** Opening an entry reads it — every agent on it — and goes where it lives. */
@@ -575,7 +511,7 @@ async function toggleMute(entry) {
   await runOptimistic({
     scope: INBOX_SCOPE,
     records: [patchRecord(entry.key, { muted })],
-    call: () => App.call("entity.mute", { entity_id: entry.entityId, muted }),
+    call: () => verbCall(entry)("entity.mute", { entity_id: entry.entityId, muted }),
     failureSummary: `Couldn't ${muted ? "mute" : "unmute"} ${entry.branch || "this item"}`,
     onRevert: (error) => showRowError(entry.key, error),
   });
@@ -604,9 +540,9 @@ async function dismissEntry(entry) {
       // dismissal controls placement, but preserving read state avoids an
       // obsolete badge if the entry later returns.
       if (entry.state === "unread" && entry.entityId) {
-        await App.call("entity.seen", { entity_id: entry.entityId });
+        await verbCall(entry)("entity.seen", { entity_id: entry.entityId });
       }
-      await App.call("entity.dismiss", params);
+      await verbCall(entry)("entity.dismiss", params);
     },
     failureSummary: `Couldn't clear ${entry.branch || "this item"}`,
     onRevert: (error) => showRowError(entry.key, error),
@@ -619,8 +555,9 @@ async function dismissEntry(entry) {
  *  archives. Neither is refused for the state of the work — what the
  *  destruction costs came down with the row and was confirmed through. */
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
-  if (target.kind === "issue") await App.call("plan.archive", { plan_id: target.issueId });
-  else await App.call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch }));
+  const call = verbCall(target);
+  if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
+  else await call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch }));
   // Done ends the work, and an ending is an attention event. The user did this
   // here, so this entry is already read. The issue an unmerged branch leaves
   // behind is NOT: it comes back to the inbox asking for somebody, and the
@@ -645,6 +582,25 @@ async function finishEntry(entry) {
   await refreshFeed();
 }
 
+/** Archive a clean workspace in one tap. The bridge rechecks cleanliness at
+ * execution time, stops every agent it owns, and preserves the checkout. */
+async function finishWorkspace(entry) {
+  if (!entry || entry.kind !== "workspace" || !entry.clean || workspacesBeingFinished.has(entry.key)) return;
+  workspacesBeingFinished.add(entry.key);
+  errors.delete(entry.key);
+  draw();
+  try {
+    await verbCall(entry)("workspace.finish", { workspace_id: entry.workspaceId, require_clean: true });
+    workspaces = workspaces.filter((workspace) => workspace.workspaceKey !== entry.workspaceKey);
+  } catch (error) {
+    errors.set(entry.key, messageOf(error));
+  } finally {
+    workspacesBeingFinished.delete(entry.key);
+    draw();
+  }
+  await refreshFeed();
+}
+
 function showRowError(key, error) {
   errors.set(key, messageOf(error));
   draw();
@@ -660,15 +616,31 @@ export function mountInboxList() {
   }
   mounted = true;
   folds = loadProjectFolds(localStorage);
+  initCaptureRows({ onChange: draw, entryOf });
+  // A machine going or coming back changes no row, so the feed never says it:
+  // the rail hears it from the registry and repaints, greying what the lost
+  // device holds and shutting the verbs that would have asked it.
+  onDeviceStateChanged(draw);
   subscribePendingCaptures(drawFromFeed);
   subscribeOptimistic(INBOX_SCOPE, draw);
-  subscribeFeed((feed) => {
-    items = feed.items || [];
-    pendingLifecycle = feed.pending || [];
-    projects = feed.projects || [];
-    const live = new Set(items.map(entryKeyOf));
+  subscribeFeed((next) => {
+    // Which machines the rail lists is the picker's, and it is answered once,
+    // here: everything below paints whatever this snapshot holds.
+    snapshot = filterByDevice(next, App.deviceFilter);
+    items = snapshot.items || [];
+    pendingLifecycle = snapshot.pending || [];
+    projects = snapshot.projects || [];
+    workspaces = snapshot.workspaces || [];
+    const live = new Set([
+      ...items.map(entryKeyOf),
+      ...workspaces.map(workspaceEntryKey),
+    ]);
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
-    reconcileOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
+    const merged = mergedItems();
+    // Every verb that names only an entity — a read report, a self-action —
+    // finds its row, and so its device, through this.
+    indexRowsByEntity(merged);
+    reconcileOptimistic(INBOX_SCOPE, merged, { keyOf: entryKeyOf });
     drawFromFeed();
   });
 }

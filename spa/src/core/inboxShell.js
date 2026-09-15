@@ -5,27 +5,156 @@
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
-import { inboxListRouteChanged, mountInboxList, setInboxView } from "./inboxView.js";
+import { inboxListRouteChanged, mountInboxList, openNewProject, setInboxView } from "./inboxView.js";
 import { loadRailView, persistRailView, railViewSwitchHtml } from "./railMode.js";
 import { subscribeInboxAttentionCount } from "./inboxAttention.js";
+import { ICON_PIN, ICON_PLUS } from "./icons.js";
+import { syncPinButton } from "./pinControl.js";
 import "../styles/shell.css";
 
 const COLLAPSED_KEY = "build.inbox.collapsed";
+
+/** The width the rail stops being a column and is laid over the view instead
+ *  (styles/shell.css, `@media (max-width: 900px)`). One number, because every
+ *  answer that depends on it — whether the pin does anything, whether
+ *  navigating puts the rail away, whether the header toggle is still the way
+ *  out — has to give the same answer at the same width. */
+const RAIL_OVERLAYS_AT = 900;
+const railOverlays = () => window.innerWidth <= RAIL_OVERLAYS_AT;
 
 /** Docked or away on this device, given what the user last chose and how much
  *  room there is. A viewport narrow enough to overlay the rail starts with it
  *  away; a choice, once made, is what counts. */
 export function railStartsCollapsed(stored, viewportWidth) {
+  if (viewportWidth <= RAIL_OVERLAYS_AT) return true;
   if (stored === "1") return true;
   if (stored === "") return false;
-  return viewportWidth < 900;
+  return false;
 }
 
-export function setInboxCollapsed(on) {
+export function setInboxCollapsed(on, { animate = true, persist = true, reveal = on } = {}) {
+  const wasCollapsed = document.body.classList.contains("inbox-collapsed");
   setInboxPeek(false);
   if (on) collapsedAt = Date.now();
+  const rail = $("#inbox-rail");
+  const before = rail?.getBoundingClientRect();
   document.body.classList.toggle("inbox-collapsed", on);
-  localStorage.setItem(COLLAPSED_KEY, on ? "1" : "");
+  document.body.classList.toggle("inbox-popover-open", on && reveal);
+  persistCollapsedChoice(on, persist);
+  syncInboxControls(on);
+  animateCollapsedChange(animate && wasCollapsed !== on, rail, before);
+}
+
+function persistCollapsedChoice(on, persist) {
+  if (persist) localStorage.setItem(COLLAPSED_KEY, on ? "1" : "");
+}
+
+function animateCollapsedChange(changed, rail, before) {
+  if (changed) animateInboxTransition(rail, before);
+}
+
+let transitionRun = 0;
+let transitionCleanup = null;
+const LAYOUT_TRANSITION_MS = 240;
+const PANEL_TRANSITION_MS = 160;
+
+function pinRailRect(rail, rect) {
+  Object.assign(rail.style, {
+    position: "fixed",
+    left: `${rect.left}px`,
+    top: `${rect.top}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+    maxHeight: "none",
+    margin: "0",
+    zIndex: "46",
+  });
+}
+
+function releaseRailRect(rail) {
+  for (const property of ["position", "left", "top", "width", "height", "max-height", "margin", "z-index"]) {
+    rail.style.removeProperty(property);
+  }
+}
+
+function animateInboxTransition(rail, before) {
+  const run = ++transitionRun;
+  transitionCleanup?.();
+  transitionCleanup = null;
+  if (!rail || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  const after = rail.getBoundingClientRect();
+  if (!before?.width || !after.width) return;
+  document.body.classList.add("inbox-transitioning");
+  pinRailRect(rail, before);
+  let animation = null;
+  let settleTimer = null;
+  const finish = () => {
+    if (run !== transitionRun) return;
+    clearTimeout(settleTimer);
+    releaseRailRect(rail);
+    document.body.classList.remove("inbox-transitioning");
+    transitionCleanup = null;
+  };
+  settleTimer = setTimeout(() => {
+    if (run !== transitionRun) return;
+    animation = rail.animate?.(
+      [
+        { left: `${before.left}px`, top: `${before.top}px`, width: `${before.width}px`, height: `${before.height}px` },
+        { left: `${after.left}px`, top: `${after.top}px`, width: `${after.width}px`, height: `${after.height}px` },
+      ],
+      { duration: PANEL_TRANSITION_MS, easing: "cubic-bezier(.2,.8,.2,1)" },
+    );
+    if (!animation) return finish();
+    pinRailRect(rail, after);
+    animation.onfinish = finish;
+    animation.oncancel = finish;
+  }, LAYOUT_TRANSITION_MS);
+  transitionCleanup = () => {
+    clearTimeout(settleTimer);
+    animation?.cancel();
+    releaseRailRect(rail);
+    document.body.classList.remove("inbox-transitioning");
+  };
+}
+
+function syncInboxControls(collapsed = document.body.classList.contains("inbox-collapsed")) {
+  const open = $("#inbox-open");
+  const pin = $("#inbox-collapse");
+  const visible = !collapsed || document.body.classList.contains("inbox-popover-open") || document.body.classList.contains("inbox-peek");
+  if (open) syncOpenControl(open, visible, collapsed);
+  if (pin) syncPinControl(pin, collapsed);
+}
+
+function syncOpenControl(open, visible, collapsed) {
+  // Pinned beside the view the rail is already the inbox, and this toggle only
+  // stands on top of it (styles/shell.css hides it there too, so the layout
+  // never reserves its room). Pinned OVER the view it is still the way out.
+  open.hidden = !collapsed && !railOverlays();
+  const count = open.dataset.attentionCount;
+  const attention = count ? `, ${count} unread notification${count === "1" ? "" : "s"}` : "";
+  const label = `${collapsed ? (visible ? "Close" : "Open") + " the inbox" : "Go to inbox"}${attention}`;
+  open.setAttribute("aria-expanded", String(visible));
+  open.setAttribute("aria-label", label);
+  open.title = label;
+}
+
+/** Which of its two shapes the rail is in is a question about the width, and
+ *  the width changes with no state of ours changing: a window dragged narrow
+ *  leaves the rail pinned and lying OVER the view, where the header toggle is
+ *  the way out of it again. So the sync every state change runs is run once
+ *  more whenever the width crosses the one number that decides the answer. */
+function watchRailShape() {
+  const overlaying = window.matchMedia?.(`(max-width: ${RAIL_OVERLAYS_AT}px)`);
+  overlaying?.addEventListener?.("change", () => syncInboxControls());
+}
+
+/** The thing this pin docks, as the reader would name it. The conversation
+ *  panel's pin names its own (core/agentRail.js); the words around both are
+ *  core/pinControl.js's. */
+const INBOX_SUBJECT = "inbox";
+
+function syncPinControl(pin, collapsed) {
+  syncPinButton(pin, { subject: INBOX_SUBJECT, pinned: !collapsed });
 }
 
 /* The hover peek: the pointer resting on the reopen toggle lays the collapsed
@@ -51,6 +180,22 @@ function setInboxPeek(on) {
   clearTimeout(peekCloseTimer);
   peekCloseTimer = null;
   document.body.classList.toggle("inbox-peek", on);
+  syncInboxControls();
+}
+
+function setInboxPopover(on, { restoreFocus = false } = {}) {
+  if (!document.body.classList.contains("inbox-collapsed")) return;
+  setInboxPeek(false);
+  document.body.classList.toggle("inbox-popover-open", on);
+  syncInboxControls();
+  if (restoreFocus) $("#inbox-open")?.focus();
+}
+
+function dismissInbox({ restoreFocus = false } = {}) {
+  const pinnedMobile = railOverlays() && !document.body.classList.contains("inbox-collapsed");
+  if (pinnedMobile) setInboxCollapsed(true, { persist: false, reveal: false });
+  else setInboxPopover(false, { restoreFocus });
+  if (restoreFocus) $("#inbox-open")?.focus();
 }
 
 function schedulePeekClose() {
@@ -89,7 +234,9 @@ function wireHoverPeek(open, rail) {
 export function goFromInbox(route) {
   const navigation = go(route);
   const closeAfterNavigation = (accepted) => {
-    if (accepted && window.innerWidth < 900) setInboxCollapsed(true);
+    if (accepted && railOverlays()) {
+      setInboxCollapsed(true, { persist: false, reveal: false });
+    }
     return accepted;
   };
   return navigation instanceof Promise ? navigation.then(closeAfterNavigation) : closeAfterNavigation(navigation);
@@ -114,11 +261,10 @@ function paintAttentionCount(count) {
   const open = $("#inbox-open");
   if (!open) return;
   const hasAttention = count > 0;
+  open.dataset.attentionCount = hasAttention ? String(count) : "";
   open.classList.toggle("has-attention", hasAttention);
   open.querySelector(".inbox-open-count").textContent = count > 99 ? "99+" : String(count || "");
-  const label = hasAttention ? `Open the inbox, ${count} unread notification${count === 1 ? "" : "s"}` : "Open the inbox";
-  open.setAttribute("aria-label", label);
-  open.title = label;
+  syncInboxControls();
 }
 
 /** Mount once. Re-entrant: a reconnect calls this again and it just repaints. */
@@ -128,17 +274,46 @@ export function initInboxRail() {
     return;
   }
   mounted = true;
-  setInboxCollapsed(railStartsCollapsed(localStorage.getItem(COLLAPSED_KEY), window.innerWidth));
+  const startsCollapsed = railStartsCollapsed(localStorage.getItem(COLLAPSED_KEY), window.innerWidth);
+  setInboxCollapsed(startsCollapsed, { animate: false, persist: false, reveal: false });
   // One toggle in two places: the head button docks or puts the rail away, and
   // the floating one — at the same spot, while the rail is away — docks it.
-  $("#inbox-collapse").onclick = () =>
+  const pin = $("#inbox-collapse");
+  pin.innerHTML = ICON_PIN;
+  pin.onclick = () => {
+    if (railOverlays()) return;
     setInboxCollapsed(!document.body.classList.contains("inbox-collapsed"));
+  };
+  const newProject = $("#inbox-new-project");
+  newProject.innerHTML = `${ICON_PLUS}<span>New project</span>`;
+  newProject.onclick = () => {
+    setInboxPeek(false);
+    dismissInbox();
+    openNewProject();
+  };
   const open = $("#inbox-open");
   subscribeInboxAttentionCount(paintAttentionCount);
-  open.onclick = () => setInboxCollapsed(false);
+  open.onclick = () => {
+    if (!document.body.classList.contains("inbox-collapsed")) return goFromInbox({ name: "inbox" });
+    setInboxPopover(!document.body.classList.contains("inbox-popover-open"));
+  };
   const rail = $("#inbox-rail");
   wireHoverPeek(open, rail);
-  $("#inbox-scrim").onclick = () => setInboxCollapsed(true);
+  $("#inbox-scrim").onclick = () => dismissInbox();
+  document.addEventListener("pointerdown", (event) => {
+    if (!document.body.classList.contains("inbox-popover-open")) return;
+    if (rail.contains(event.target) || open.contains(event.target)) return;
+    setInboxPopover(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    const inboxVisible = document.body.classList.contains("inbox-popover-open") ||
+      (railOverlays() && !document.body.classList.contains("inbox-collapsed"));
+    if (event.key === "Escape" && !event.defaultPrevented && inboxVisible) {
+      dismissInbox({ restoreFocus: true });
+    }
+  });
+  window.addEventListener("resize", () => transitionCleanup?.());
+  watchRailShape();
   const views = $("#inbox-views");
   views.onclick = (event) => {
     const button = event.target.closest("[data-inbox-view]");

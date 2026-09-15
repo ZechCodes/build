@@ -2,9 +2,10 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App } from "../app.js";
 
-export function openSetRemote(project, onDone) {
+/** Opened with the caller of the machine this project is on: the page that
+ *  lists the project has already resolved that. */
+export function openSetRemote(project, onDone, { callRpc }) {
   $("#sheet").innerHTML = `
     <h3>Set remote</h3>
     <div class="sub">Origin remote for <strong>${esc(project.name)}</strong>. Leave empty to clear.</div>
@@ -20,7 +21,7 @@ export function openSetRemote(project, onDone) {
     $("#srdo").textContent = "saving…";
     $("#srerr").textContent = "";
     try {
-      await App.call("project.set_remote", { project_id: project.project_id, url });
+      await callRpc("project.set_remote", { project_id: project.project_id, url });
       $("#scrim").classList.remove("show");
       onDone && onDone();
     } catch (e) {

@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
-// The collapsed inbox rail's hover peek: hovering the reopen toggle lays the
-// rail over the view, leaving the pointer puts it away, and a click is what
-// docks it again. The head puts the toggle before the app name.
+// The inbox has a stable global trigger, a transient floating card and a
+// separate persisted pin choice.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -18,6 +17,7 @@ vi.mock("../src/app.js", () => ({
 vi.mock("../src/core/inboxView.js", () => ({
   mountInboxList: vi.fn(),
   inboxListRouteChanged: vi.fn(),
+  openNewProject: vi.fn(),
   setInboxView: vi.fn(),
 }));
 
@@ -27,6 +27,7 @@ const hover = (element, type) =>
 let setInboxCollapsed, initInboxRail;
 let publishInboxAttentionCount;
 let hoverCapability;
+let overlayCapability;
 
 function mediaCapability(matches) {
   const listeners = new Set();
@@ -49,7 +50,14 @@ beforeEach(async () => {
   document.body.className = "";
   localStorage.clear();
   hoverCapability = mediaCapability(true);
-  vi.stubGlobal("matchMedia", vi.fn(() => hoverCapability));
+  // A width query is the other thing the rail asks the media about, and it has
+  // to be able to answer differently: this suite starts wide, where the rail is
+  // a column beside the view rather than a layer over it.
+  overlayCapability = mediaCapability(false);
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query) => (query.includes("max-width") ? overlayCapability : hoverCapability)),
+  );
   ({ setInboxCollapsed, initInboxRail } = await import("../src/core/inboxShell.js"));
   ({ publishInboxAttentionCount } = await import("../src/core/inboxAttention.js"));
   initInboxRail();
@@ -61,14 +69,18 @@ afterEach(() => {
 });
 
 describe("the inbox head", () => {
-  it("puts the toggle to the left of the app name, and the face switch at the right edge", () => {
+  it("keeps the global inbox control outside the persistent rail content", () => {
     const head = document.querySelector(".inbox-head");
     const order = [...head.children].map((child) => child.id || child.className);
-    expect(order).toEqual(["inbox-collapse", "logo", "inbox-views"]);
+    expect(order).toEqual(["inbox-views", "inbox-new-project", "inbox-collapse"]);
+    expect(document.querySelector("#global-controls #inbox-open")).toBeTruthy();
+    expect(document.getElementById("inbox-new-project").textContent).toContain("New project");
+    expect(document.getElementById("inbox-collapse").querySelector("svg")).toBeTruthy();
   });
 
-  it("names the app with an uppercase B", () => {
-    expect(document.querySelector(".inbox-head .logo").textContent).toBe("Build");
+  it("does not render global branding", () => {
+    expect(document.querySelector("#global-controls .logo")).toBeNull();
+    expect(document.querySelector("#global-controls .brand-mark")).toBeNull();
   });
 });
 
@@ -118,9 +130,8 @@ describe("the collapsed rail's hover peek", () => {
     expect(matchMedia).toHaveBeenCalledWith("(hover: hover) and (pointer: fine)");
 
     toggle.click();
-    vi.runAllTimers();
-    expect(document.body.classList.contains("inbox-collapsed")).toBe(false);
-    expect(document.body.classList.contains("inbox-peek")).toBe(false);
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
+    expect(document.body.classList.contains("inbox-popover-open")).toBe(false);
   });
 
   it("ends a live peek and cancels its close timer when hover capability is lost", () => {
@@ -162,13 +173,14 @@ describe("the collapsed rail's hover peek", () => {
     expect(document.body.classList.contains("inbox-peek")).toBe(false);
   });
 
-  it("docks the rail on a click of the reopen toggle, ending the peek", () => {
+  it("opens the floating rail on trigger click without changing its pin choice", () => {
     const toggle = document.getElementById("inbox-open");
     hover(toggle, "mouseenter");
     toggle.click();
-    expect(document.body.classList.contains("inbox-collapsed")).toBe(false);
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
     expect(document.body.classList.contains("inbox-peek")).toBe(false);
-    expect(localStorage.getItem("build.inbox.collapsed")).toBe("");
+    expect(document.body.classList.contains("inbox-popover-open")).toBe(false);
+    expect(localStorage.getItem("build.inbox.collapsed")).toBe("1");
   });
 
   it("replaces the reopen icon with the aggregate count and resets at zero", () => {
@@ -176,12 +188,12 @@ describe("the collapsed rail's hover peek", () => {
     publishInboxAttentionCount(3);
     expect(toggle.classList.contains("has-attention")).toBe(true);
     expect(toggle.querySelector(".inbox-open-count").textContent).toBe("3");
-    expect(toggle.getAttribute("aria-label")).toBe("Open the inbox, 3 unread notifications");
+    expect(toggle.getAttribute("aria-label")).toContain("3 unread notifications");
 
     publishInboxAttentionCount(0);
     expect(toggle.classList.contains("has-attention")).toBe(false);
     expect(toggle.querySelector(".inbox-open-count").textContent).toBe("");
-    expect(toggle.getAttribute("aria-label")).toBe("Open the inbox");
+    expect(toggle.getAttribute("aria-label")).toContain("the inbox");
   });
 
   it("keeps large counts inside the fixed-width toggle and still reopens", () => {
@@ -190,7 +202,7 @@ describe("the collapsed rail's hover peek", () => {
     expect(toggle.querySelector(".inbox-open-count").textContent).toBe("99+");
     expect(toggle.getAttribute("aria-label")).toContain("137 unread notifications");
     toggle.click();
-    expect(document.body.classList.contains("inbox-collapsed")).toBe(false);
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
   });
 
   it("docks the rail on a click of the head toggle inside a peek", () => {
@@ -202,26 +214,157 @@ describe("the collapsed rail's hover peek", () => {
 });
 
 describe("the docked rail's head toggle", () => {
+  it("gives the persistent trigger a truthful navigation label while pinned", () => {
+    setInboxCollapsed(false);
+    expect(document.getElementById("inbox-open").getAttribute("aria-label")).toBe("Go to inbox");
+    expect(document.getElementById("inbox-open").getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("collapses the rail", () => {
     setInboxCollapsed(false);
     document.getElementById("inbox-collapse").click();
     expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
   });
+
+  it("does not let the hidden pin change state on a narrow viewport", () => {
+    vi.stubGlobal("innerWidth", 900);
+    setInboxCollapsed(true, { persist: false, reveal: false });
+    document.getElementById("inbox-collapse").click();
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
+  });
+});
+
+describe("the header toggle beside a pinned rail", () => {
+  it("is gone while the rail is pinned, and back once it is away", () => {
+    setInboxCollapsed(false);
+    expect(document.getElementById("inbox-open").hidden).toBe(true);
+    setInboxCollapsed(true);
+    expect(document.getElementById("inbox-open").hidden).toBe(false);
+  });
+
+  it("stays the way back where the rail overlays the view instead", () => {
+    vi.stubGlobal("innerWidth", 900);
+    setInboxCollapsed(false);
+    expect(document.getElementById("inbox-open").hidden).toBe(false);
+  });
+
+  it("comes back the moment a resize starts the rail overlaying, with nothing else changed", () => {
+    // Which of its two shapes the rail is in is a question about the width, and
+    // the width changes without any state of ours changing. Dragging 1440 down
+    // to 900 left the rail pinned and lying OVER the view with this toggle —
+    // the only way out of it there, and the only way back to the work — still
+    // hidden, because the sync ran on state changes alone.
+    setInboxCollapsed(false);
+    expect(document.getElementById("inbox-open").hidden).toBe(true);
+
+    vi.stubGlobal("innerWidth", 900);
+    overlayCapability.change(true);
+    expect(document.getElementById("inbox-open").hidden).toBe(false);
+
+    // …and it goes again when the window is dragged back out, where the rail is
+    // a column beside the view and this toggle only stands on top of it.
+    vi.stubGlobal("innerWidth", 1440);
+    overlayCapability.change(false);
+    expect(document.getElementById("inbox-open").hidden).toBe(true);
+  });
+
+  it("watches the one width both the sheet and the rail turn on", () => {
+    expect(matchMedia).toHaveBeenCalledWith("(max-width: 900px)");
+    expect(shellCss).toMatch(/@media \(max-width: 900px\) \{/);
+  });
+});
+
+describe("the floating card", () => {
+  it("does not persist or animate the responsive startup state", () => {
+    expect(localStorage.getItem("build.inbox.collapsed")).toBeNull();
+    expect(document.body.classList.contains("inbox-transitioning")).toBe(false);
+  });
+
+  it("dismisses on Escape, restores trigger focus, and preserves the pin choice", () => {
+    setInboxCollapsed(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(document.body.classList.contains("inbox-popover-open")).toBe(false);
+    expect(document.activeElement).toBe(document.getElementById("inbox-open"));
+    expect(localStorage.getItem("build.inbox.collapsed")).toBe("1");
+  });
+
+  it("dismisses the transient rail before opening the new-project sheet", () => {
+    setInboxCollapsed(true);
+    const saved = localStorage.getItem("build.inbox.collapsed");
+    document.getElementById("inbox-new-project").click();
+    expect(document.body.classList.contains("inbox-popover-open")).toBe(false);
+    expect(document.body.classList.contains("inbox-peek")).toBe(false);
+    expect(localStorage.getItem("build.inbox.collapsed")).toBe(saved);
+  });
+
+  it("dismisses a docked rail after a resize to the mobile breakpoint", () => {
+    vi.stubGlobal("innerWidth", 900);
+    setInboxCollapsed(false);
+    const saved = localStorage.getItem("build.inbox.collapsed");
+    document.getElementById("inbox-new-project").click();
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
+    expect(localStorage.getItem("build.inbox.collapsed")).toBe(saved);
+  });
+
+  it("lets the mobile scrim dismiss a pinned overlay without changing its saved choice", () => {
+    vi.stubGlobal("innerWidth", 760);
+    setInboxCollapsed(false);
+    document.getElementById("inbox-scrim").click();
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
+    expect(localStorage.getItem("build.inbox.collapsed")).toBe("");
+  });
+
+  it("leaves Escape to a higher-priority surface when it was prevented", () => {
+    setInboxCollapsed(true);
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    event.preventDefault();
+    document.dispatchEvent(event);
+    expect(document.body.classList.contains("inbox-popover-open")).toBe(true);
+  });
+
+  it("keeps the rail node and scroll position across pin changes", () => {
+    const rail = document.getElementById("inbox-rail");
+    const list = document.getElementById("inbox-list");
+    list.scrollTop = 37;
+    setInboxCollapsed(true);
+    document.getElementById("inbox-collapse").click();
+    expect(document.getElementById("inbox-rail")).toBe(rail);
+    expect(list.scrollTop).toBe(37);
+  });
+
+  it("cancels an in-flight geometry animation when pinning is reversed", () => {
+    hoverCapability.matches = false;
+    const rail = document.getElementById("inbox-rail");
+    rail.getBoundingClientRect = vi.fn(() => ({ left: 0, top: 0, width: 288, height: 700 }));
+    const animations = [];
+    rail.animate = vi.fn(() => {
+      const animation = { cancel: vi.fn(() => animation.oncancel?.()), oncancel: null, onfinish: null };
+      animations.push(animation);
+      return animation;
+    });
+    setInboxCollapsed(true);
+    setInboxCollapsed(false);
+    vi.advanceTimersByTime(240);
+    expect(animations).toHaveLength(1);
+    animations[0].onfinish();
+    expect(document.body.classList.contains("inbox-transitioning")).toBe(false);
+  });
 });
 
 describe("the peek's geometry", () => {
-  it("shows the collapsed rail as a fixed overlay above the reopen toggle", () => {
-    const peek = shellCss.match(/body\.inbox-collapsed\.inbox-peek #inbox-rail \{[^}]*\}/)[0];
-    expect(peek).toMatch(/display:flex/);
-    expect(peek).toMatch(/position:fixed/);
-    // Above the floating toggle (z-index 45), so the head toggle takes the click.
-    expect(peek).toMatch(/z-index:46/);
+  it("anchors the collapsed rail to the shell above the view", () => {
+    const floating = shellCss.match(/body\.inbox-collapsed #inbox-rail \{[^}]*\}/)[0];
+    expect(floating).toMatch(/position:absolute/);
+    expect(floating).toMatch(/z-index:46/);
   });
 
-  it("animates the icon into the count unless reduced motion is requested", () => {
+  it("keeps the icon centered and exposes attention as a separate badge", () => {
+    expect(shellCss).toMatch(/#inbox-open \{[^}]*place-items:center/);
+    expect(shellCss).toMatch(/#inbox-open \{[^}]*background:none; border:0/);
+    expect(shellCss).toMatch(/\.inbox-open-icon \{[^}]*place-items:center/);
     expect(shellCss).toMatch(/\.inbox-open-icon, \.inbox-open-count \{[^}]*transition:/);
-    expect(shellCss).toMatch(/#inbox-open\.has-attention \{[^}]*animation:inbox-toggle-bubble/);
-    expect(shellCss).toMatch(/body\.inbox-collapsed #inbox-open\.has-attention \.inbox-open-count \{[^}]*animation:inbox-count-in/);
     expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+    expect(shellCss).toMatch(/#inbox-open\.has-attention \.inbox-open-count \{[^}]*position:absolute/);
+    expect(shellCss).not.toMatch(/inbox-toggle-bubble|inbox-icon-away/);
   });
 });

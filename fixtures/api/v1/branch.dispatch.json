@@ -1,0 +1,22 @@
+{
+  "method": "branch.dispatch",
+  "since": "1.0.0",
+  "params": {
+    "project_id": "proj-1",
+    "instruction": "Add the api/v1 facade",
+    "branch": "build/wire"
+  },
+  "result": {
+    "project_id": "proj-1",
+    "branch": "build/wire",
+    "run_id": "run-7",
+    "agent_id": "agent-1"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "busy",
+    "internal"
+  ]
+}

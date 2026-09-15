@@ -166,6 +166,7 @@ pub struct SurfaceLedger {
     checklist: Vec<SurfaceChecklistItem>,
     shell_outputs: HashMap<String, PathBuf>,
     pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
+    pending_subagent_choices: HashMap<String, SubagentChoice>,
 }
 
 const RUNNING: &str = "running";
@@ -197,6 +198,12 @@ enum ShellReport {
 struct PendingChecklistCreate {
     subject: String,
     description: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SubagentChoice {
+    model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 impl SurfaceLedger {
@@ -235,7 +242,43 @@ impl SurfaceLedger {
     }
 
     pub fn read_tool_call(&mut self, name: &str, tool_use_block: &Value) -> bool {
-        self.apply_checklist_call(name, tool_use_block)
+        match name {
+            "Agent" | "Task" => {
+                let Some(call_id) = tool_use_block["id"].as_str() else {
+                    return false;
+                };
+                let input = &tool_use_block["input"];
+                self.pending_subagent_choices.insert(
+                    call_id.to_string(),
+                    SubagentChoice {
+                        model: bounded_text(input, "model"),
+                        reasoning_effort: bounded_text(input, "reasoning_effort")
+                            .or_else(|| bounded_text(input, "effort")),
+                    },
+                );
+                false
+            }
+            _ => self.apply_checklist_call(name, tool_use_block),
+        }
+    }
+
+    pub fn read_subagent_message(&mut self, call_id: &str, message: &Value) -> bool {
+        let Some(held) = self
+            .subagents
+            .iter_mut()
+            .find(|agent| agent.spawning_call_id.as_deref() == Some(call_id))
+        else {
+            return false;
+        };
+        let reported = SurfaceAgent {
+            model: bounded_text(message, "model").or_else(|| held.model.clone()),
+            reasoning_effort: bounded_text(message, "reasoningEffort")
+                .or_else(|| bounded_text(message, "reasoning_effort"))
+                .or_else(|| bounded_text(message, "effort"))
+                .or_else(|| held.reasoning_effort.clone()),
+            ..held.clone()
+        };
+        replace_when_changed(held, reported)
     }
 
     pub fn read_tool_answer(
@@ -248,6 +291,7 @@ impl SurfaceLedger {
     ) -> bool {
         match tool {
             "Bash" => self.apply_shell_launch(whole_event, answered_text, now_ms),
+            "Agent" | "Task" => self.apply_subagent_launch_answer(call_id, whole_event),
             _ => self.apply_checklist_answer(tool, call_id, whole_event),
         }
     }
@@ -270,6 +314,7 @@ impl SurfaceLedger {
 
     pub fn close_pending_creates(&mut self) {
         self.pending_checklist_creates.clear();
+        self.pending_subagent_choices.clear();
     }
 
     #[cfg(test)]
@@ -336,7 +381,10 @@ impl SurfaceLedger {
                 let accumulated = held_named(&mut self.subagents, task_id)
                     .map(|held| held.clone())
                     .unwrap_or_default();
-                let started = started_subagent(&accumulated, task_id, event);
+                let spawn_choice = event["tool_use_id"]
+                    .as_str()
+                    .and_then(|call_id| self.pending_subagent_choices.get(call_id));
+                let started = started_subagent(&accumulated, task_id, event, spawn_choice);
                 upsert_by_id(&mut self.subagents, started)
             }
             "task_progress" => match held_named(&mut self.subagents, task_id) {
@@ -356,6 +404,42 @@ impl SurfaceLedger {
             ),
             _ => false,
         }
+    }
+
+    fn apply_subagent_launch_answer(&mut self, call_id: &str, event: &Value) -> bool {
+        let choice = self
+            .pending_subagent_choices
+            .remove(call_id)
+            .unwrap_or_default();
+        let result = &event["tool_use_result"];
+        let resolved_model = bounded_text(result, "resolvedModel");
+        let resolved_effort = bounded_text(result, "reasoningEffort")
+            .or_else(|| bounded_text(result, "reasoning_effort"))
+            .or_else(|| bounded_text(result, "effort"));
+        let Some(held) = self
+            .subagents
+            .iter_mut()
+            .find(|agent| agent.spawning_call_id.as_deref() == Some(call_id))
+        else {
+            self.pending_subagent_choices.insert(
+                call_id.to_string(),
+                SubagentChoice {
+                    model: resolved_model.or(choice.model),
+                    reasoning_effort: resolved_effort.or(choice.reasoning_effort),
+                },
+            );
+            return false;
+        };
+        let reported = SurfaceAgent {
+            model: resolved_model
+                .or_else(|| held.model.clone())
+                .or(choice.model),
+            reasoning_effort: resolved_effort
+                .or_else(|| held.reasoning_effort.clone())
+                .or(choice.reasoning_effort),
+            ..held.clone()
+        };
+        replace_when_changed(held, reported)
     }
 
     fn close_subagent(
@@ -608,10 +692,23 @@ fn read_todo_list(todos: &[Value]) -> Vec<SurfaceChecklistItem> {
         .collect()
 }
 
-fn started_subagent(held: &SurfaceAgent, task_id: &str, event: &Value) -> SurfaceAgent {
+fn started_subagent(
+    held: &SurfaceAgent,
+    task_id: &str,
+    event: &Value,
+    spawn_choice: Option<&SubagentChoice>,
+) -> SurfaceAgent {
     SurfaceAgent {
         id: task_id.to_string(),
         label: bounded_text(event, "description").unwrap_or_default(),
+        model: bounded_text(event, "model")
+            .or_else(|| held.model.clone())
+            .or_else(|| spawn_choice.and_then(|choice| choice.model.clone())),
+        reasoning_effort: bounded_text(event, "reasoningEffort")
+            .or_else(|| bounded_text(event, "reasoning_effort"))
+            .or_else(|| bounded_text(event, "effort"))
+            .or_else(|| held.reasoning_effort.clone())
+            .or_else(|| spawn_choice.and_then(|choice| choice.reasoning_effort.clone())),
         state: Some(RUNNING.to_string()),
         spawning_call_id: read_text(event, "tool_use_id"),
         ..held.clone()
@@ -758,7 +855,9 @@ fn read_workflow_agent(task_id: &str, position: u64, entry: &Value) -> SurfaceAg
         label: bounded_text(entry, "label").unwrap_or_default(),
         description: None,
         model: bounded_text(entry, "model"),
-        reasoning_effort: None,
+        reasoning_effort: bounded_text(entry, "reasoningEffort")
+            .or_else(|| bounded_text(entry, "reasoning_effort"))
+            .or_else(|| bounded_text(entry, "effort")),
         state: entry["state"]
             .as_str()
             .and_then(|token| wire_agent_state(token, started_at.is_some()))
@@ -1448,6 +1547,96 @@ mod tests {
             Some(SUBAGENT_SPAWNING_CALL_ID)
         );
         assert_eq!(subagent.started_at, None);
+    }
+
+    #[test]
+    fn an_agent_launch_answer_reports_the_childs_resolved_model() {
+        let mut ledger = SurfaceLedger::default();
+        let call = fixture_line(SUBAGENT_FIXTURE, 9)["message"]["content"][0].clone();
+        let answer = fixture_line(SUBAGENT_FIXTURE, 12);
+
+        assert!(!ledger.read_tool_call("Agent", &call));
+        assert!(feed_line(&mut ledger, SUBAGENT_FIXTURE, 11));
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).subagents).model.as_deref(),
+            Some("haiku")
+        );
+        assert!(ledger.read_tool_answer(
+            "Agent",
+            SUBAGENT_SPAWNING_CALL_ID,
+            &answer,
+            "",
+            A_READERS_CLOCK,
+        ));
+
+        let subagent = the_only(&snapshot_of(&ledger).subagents);
+        assert_eq!(subagent.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(subagent.reasoning_effort, None);
+    }
+
+    #[test]
+    fn child_event_metadata_reports_reasoning_effort_without_parent_inference() {
+        let mut ledger = SurfaceLedger::default();
+        let mut started = fixture_line(SUBAGENT_FIXTURE, 11);
+        started["model"] = json!("claude-sonnet-4-5-20250929");
+        started["reasoningEffort"] = json!("high");
+
+        assert!(feed(&mut ledger, &started));
+
+        let subagent = the_only(&snapshot_of(&ledger).subagents);
+        assert_eq!(
+            subagent.model.as_deref(),
+            Some("claude-sonnet-4-5-20250929")
+        );
+        assert_eq!(subagent.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn a_child_message_upgrades_spawn_metadata_and_a_repeat_start_preserves_it() {
+        let mut ledger = SurfaceLedger::default();
+        let mut call = fixture_line(SUBAGENT_FIXTURE, 9)["message"]["content"][0].clone();
+        call["input"]["effort"] = json!("medium");
+        ledger.read_tool_call("Agent", &call);
+        feed_line(&mut ledger, SUBAGENT_FIXTURE, 11);
+
+        assert!(ledger.read_subagent_message(
+            SUBAGENT_SPAWNING_CALL_ID,
+            &json!({"model":"claude-haiku-4-5-20251001", "reasoningEffort":"high"}),
+        ));
+        assert!(!feed_line(&mut ledger, SUBAGENT_FIXTURE, 11));
+        assert!(!ledger.read_tool_answer(
+            "Agent",
+            SUBAGENT_SPAWNING_CALL_ID,
+            &json!({"tool_use_result":{"status":"completed"}}),
+            "",
+            A_READERS_CLOCK,
+        ));
+
+        let subagent = the_only(&snapshot_of(&ledger).subagents);
+        assert_eq!(subagent.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(subagent.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn a_launch_answer_arriving_before_task_started_is_retained() {
+        let mut ledger = SurfaceLedger::default();
+        let call = fixture_line(SUBAGENT_FIXTURE, 9)["message"]["content"][0].clone();
+        let answer = fixture_line(SUBAGENT_FIXTURE, 12);
+        ledger.read_tool_call("Agent", &call);
+
+        assert!(!ledger.read_tool_answer(
+            "Agent",
+            SUBAGENT_SPAWNING_CALL_ID,
+            &answer,
+            "",
+            A_READERS_CLOCK,
+        ));
+        assert!(feed_line(&mut ledger, SUBAGENT_FIXTURE, 11));
+
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).subagents).model.as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
     }
 
     #[test]

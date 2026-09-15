@@ -232,6 +232,6 @@ const selectionChip = (item, index, removable) => `<details class="viewing-conte
 
 export function viewingContextChipsHtml(context, { removable = false } = {}) {
   return (context?.items || []).map((item, index) => item.kind === "selection" ? selectionChip(item, index, removable) :
-    `<span class="viewing-context-chip ${esc(item.kind)}" data-context-index="${index}" title="${esc(chipLabel(item))}">${esc(chipLabel(item))}${removable ? `<button type="button" aria-label="Remove context">×</button>` : ""}</span>`,
+    `<span class="viewing-context-chip" data-context-kind="${esc(item.kind)}" data-context-index="${index}" title="${esc(chipLabel(item))}"><span class="viewing-context-label">${esc(chipLabel(item))}</span>${removable ? `<button type="button" aria-label="Remove context">×</button>` : ""}</span>`,
   ).join("");
 }

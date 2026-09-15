@@ -8,6 +8,15 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
+import { sessionAnswering } from "./deviceSessionFixture.js";
+
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
+// The device's conversations, as the registry holds them for this one machine:
+// the rail is handed one and writes every draft and message through it.
+let chatRepository = null;
 
 // The conversation cache writes through IndexedDB; give the module a fake one
 // before anything imports it.
@@ -33,6 +42,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 const markSeen = vi.fn(async () => {});
 vi.mock("../src/core/inboxView.js", () => ({
@@ -79,7 +89,8 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { currentCacheScope, setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor } = await import("../src/core/cacheScope.js");
+const { adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
@@ -109,6 +120,8 @@ const branchRow = (over = {}) => ({
 });
 
 let payload = branchRow();
+/** What the machine the rail is mounted on offers to start work with. */
+let catalog = null;
 let calls = [];
 let rail = null;
 
@@ -137,10 +150,16 @@ const CATALOG = {
 const railHost = () => document.getElementById("agent-rail");
 const modelMenuButton = () => railHost().querySelector(".composer-model .caret");
 const menuItem = (action) => railHost().querySelector(`.composer-model .mi[data-action="${action}"]`);
+const reasoningMenuButton = () => railHost().querySelector(".composer-reasoning .caret");
+const reasoningMenuItem = (action) => railHost().querySelector(`.composer-reasoning .mi[data-action="${action}"]`);
 const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
 const panel = () => railHost().querySelector(".rail-panel");
+/** Whose conversation the head says is open. The head wears the topic the agent
+ *  named its work with (`set_topic`) and shimmers "Starting" until there is
+ *  one, so the harness name and ordinal these cases pin rides as the title. */
+const headWho = (root = railHost()) => root.querySelector(".rail-who").title;
 const tuiToggle = () => panel().querySelector(".rail-tui");
 const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
@@ -155,8 +174,21 @@ const pushFeed = async (snapshot) => {
   await flush();
 };
 
-const mount = async (context = { kind: "branch", projectId: "p1", branch: "build/login" }) => {
-  rail = mountAgentRail(railHost(), context);
+/** The rail as a surface mounts it: the work item, plus the machine's cache,
+ *  conversations and caller, which the view beside it hands down. */
+const railAddress = (over = {}) => ({
+  kind: "branch",
+  deviceId: "dev-1",
+  projectId: "p1",
+  branch: "build/login",
+  cacheScope: scopeFor("dev-1"),
+  chatRepository,
+  call: (method, params) => bridge.call(method, params),
+  ...over,
+});
+
+const mount = async (context = {}) => {
+  rail = mountAgentRail(railHost(), railAddress(context));
   await flush();
 };
 
@@ -165,7 +197,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetAgentRailMemory();
   resetOptimistic();
-  setCacheDevice("dev-1");
+  resetDeviceContexts(); // and with them the last test's harness catalog
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
@@ -176,10 +208,10 @@ beforeEach(async () => {
   markSeen.mockClear();
   mountAgentTab.mockClear();
   notifyError.mockClear();
-  App.modelCatalog = null; // fetched once per session; each test gets its own
-  App.call = vi.fn(async (method, params) => {
+  catalog = CATALOG; // asked for once per device; each test gets its own
+  bridge.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
-    if (method === "models.list") return CATALOG;
+    if (method === "models.list") return catalog;
     if (method === "branch.get") return payload;
     if (method === "issue.get") return payload;
     if (method === "run.adopt") return { run_id: "run-9" };
@@ -188,15 +220,222 @@ beforeEach(async () => {
     if (method === "thread.post") return { posted_sequence: 7 };
     return {};
   });
-  App.chatRepository = createChatRepository({ scope: currentCacheScope(), call: (method, params) => App.call(method, params) });
+  chatRepository = createChatRepository({ scope: scopeFor("dev-1"), call: (method, params) => bridge.call(method, params) });
+  // The machine the rail is mounted on: its bridge is what the harness catalog
+  // comes from.
+  adoptDeviceSession(sessionAnswering(bridge));
 });
 
 afterEach(() => {
   if (rail) rail.dispose();
   rail = null;
-  App.chatRepository?.dispose();
-  App.chatRepository = null;
+  chatRepository?.dispose();
+  chatRepository = null;
   vi.useRealTimers();
+});
+
+// On a phone the panel is not a column beside the work, it is laid over it
+// (styles/shell.css, `@media (max-width: 760px)`). A workspace opened at
+// 390x844 therefore showed the conversation and nothing else — no Files, no
+// Changes, and nothing on screen saying the strip was the way back to them.
+// The panel is out by default only where both fit; the reader's own choice,
+// once made, holds at either width.
+describe("where the conversation panel starts", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+
+  afterEach(() => atWidth(1024));
+
+  it("is out beside the work on a desktop and shut over it on a phone", async () => {
+    atWidth(1024);
+    await mount();
+    expect(panel()).toBeTruthy();
+    rail.dispose();
+
+    atWidth(390);
+    await mount();
+    expect(panel()).toBeNull();
+  });
+
+  it("opens on the strip's bubble on a phone, and shuts on a second press", async () => {
+    atWidth(390);
+    await mount();
+
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBeTruthy();
+
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBeNull();
+  });
+
+  it("holds a phone reader's own choice across mounts", async () => {
+    atWidth(390);
+    await mount();
+    bubbles()[0].click();
+    await flush();
+    // A press on a bubble is a look at one conversation, not a change of mind
+    // about the layout: it opens the popover and leaves the choice alone. The
+    // pin in the panel's head is what the reader chooses with.
+    panel().querySelector(".pinbtn").click();
+    await flush();
+    rail.dispose();
+
+    await mount();
+    expect(panel()).toBeTruthy();
+  });
+});
+
+// ---- the conversation panel's pin -------------------------------------------
+// The panel had one state with no name: a column beside the work, or nothing at
+// all, and which of the two you got depended on what was pressed last. It wears
+// the inbox's pin now — docked beside the work, or a card on the bubble strip
+// pointing at the conversation it belongs to.
+describe("the conversation panel's pin", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  const pin = () => panel().querySelector(".pinbtn");
+  const scrim = () => railHost().querySelector("#rail-scrim");
+
+  afterEach(() => atWidth(1024));
+
+  it("says what pressing it does, in the inbox's words", async () => {
+    atWidth(1024);
+    await mount();
+    expect(pin().getAttribute("aria-pressed")).toBe("true");
+    expect(pin().title).toBe("Unpin the conversation");
+    expect(pin().getAttribute("aria-label")).toBe("Unpin the conversation");
+    expect(pin().querySelector("svg")).toBeTruthy();
+  });
+
+  it("renders no scrim while the panel is pinned", async () => {
+    atWidth(1024);
+    await mount();
+    expect(panel()).toBeTruthy();
+    expect(scrim()).toBeNull();
+    expect(railHost().classList.contains("rail-popover")).toBe(false);
+    expect(panel().dataset.anchor).toBe("");
+  });
+
+  it("unpins to a popover on the strip, and remembers the choice", async () => {
+    atWidth(1024);
+    await mount();
+    pin().click();
+    await flush();
+    // The conversation stays on screen, as a card over the work rather than a
+    // column beside it — the same move the inbox's pin makes.
+    expect(railHost().classList.contains("rail-popover")).toBe(true);
+    expect(scrim()).toBeTruthy();
+    expect(pin().getAttribute("aria-pressed")).toBe("false");
+    expect(pin().title).toBe("Pin the conversation");
+    expect(localStorage.getItem("build.rail.expanded")).toBe("0");
+
+    rail.dispose();
+    await mount();
+    // Unpinned, a fresh mount is the strip alone until a bubble is pressed.
+    expect(panel()).toBeNull();
+    expect(scrim()).toBeNull();
+  });
+
+  it("pins a popover back into the column", async () => {
+    atWidth(390);
+    await mount();
+    bubbles()[0].click();
+    await flush();
+    pin().click();
+    await flush();
+    expect(railHost().classList.contains("rail-popover")).toBe(false);
+    expect(scrim()).toBeNull();
+    expect(localStorage.getItem("build.rail.expanded")).toBe("1");
+
+    rail.dispose();
+    await mount();
+    expect(panel()).toBeTruthy();
+  });
+});
+
+describe("the unpinned panel's popover", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  const scrim = () => railHost().querySelector("#rail-scrim");
+
+  beforeEach(() => {
+    atWidth(390);
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+  });
+  afterEach(() => atWidth(1024));
+
+  it("opens on the bubble it was pressed on, and says which one", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    expect(panel().dataset.anchor).toBe("ag-2");
+    // Where the notch sits along the panel's edge. jsdom lays nothing out, so
+    // every box it measures is at the origin; the browser check is the
+    // orchestrator's.
+    expect(panel().style.getPropertyValue("--rail-anchor")).toBe("0px");
+    expect(scrim()).toBeTruthy();
+  });
+
+  it("re-anchors on the next bubble rather than closing", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBeTruthy();
+    expect(panel().dataset.anchor).toBe("ag-1");
+  });
+
+  it("is dismissed by the scrim", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    scrim().click();
+    await flush();
+    expect(panel()).toBeNull();
+    expect(scrim()).toBeNull();
+    // Dismissing a popover is not unpinning anything: the choice stands.
+    expect(localStorage.getItem("build.rail.expanded")).toBeNull();
+  });
+
+  it("is dismissed by Escape", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flush();
+    expect(panel()).toBeNull();
+  });
+
+  it("leaves Escape to a surface that already answered it", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    event.preventDefault();
+    document.dispatchEvent(event);
+    await flush();
+    expect(panel()).toBeTruthy();
+  });
+
+  it("is dismissed by navigating", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+    await flush();
+    expect(panel()).toBeNull();
+  });
+
+  it("takes its listeners with it when the rail goes", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    rail.dispose();
+    rail = null;
+    expect(() =>
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+    ).not.toThrow();
+  });
 });
 
 describe("the bubble strip", () => {
@@ -213,13 +452,25 @@ describe("the bubble strip", () => {
     await mount();
     bubbles()[1].click();
     await flush();
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
     expect(bubbles()[1].classList.contains("active")).toBe(true);
     bubbles()[1].click();
     await flush();
     expect(panel()).toBe(null);
     // …and the strip is still there with the panel shut.
     expect(bubbles().length).toBe(3);
+  });
+
+  it("repaints the header icon when a provider update arrives", async () => {
+    await mount();
+    expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("claude_adk");
+
+    payload = branchRow({ agents: [agent({ provider: "codex_app_server" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
+    expect(headWho(panel())).toBe("Codex 1");
   });
 
   // The rail reads the row every 1.6s and nearly every read says the same
@@ -328,8 +579,8 @@ describe("the bubble strip", () => {
     expect(callsTo("agent.add")).toEqual([]);
     const chooser = railHost().querySelector(".rail-newagent");
     expect(chooser).toBeTruthy();
-    expect(chooser.querySelector(".chooser-card.chosen").dataset.provider).toBe("codex");
-    expect(railHost().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(chooser.querySelector(".rail-harness-choice.chosen").dataset.provider).toBe("codex");
+    expect(headWho()).toBe("New agent");
     expect(railHost().querySelector("#railinput").placeholder).toContain("start an agent");
   });
 
@@ -354,7 +605,7 @@ describe("the bubble strip", () => {
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
-    expect(railHost().querySelector(".rail-newagent .chooser-card.chosen").dataset.provider).toBe("claude_adk");
+    expect(railHost().querySelector(".rail-newagent .rail-harness-choice.chosen").dataset.provider).toBe("claude_adk");
   });
 
   it("backs out of the chooser onto whichever bubble is pressed", async () => {
@@ -393,8 +644,8 @@ describe("the bubble strip", () => {
 
     // The run behind the branch was replaced: the daemon refuses the id rather
     // than answering with somebody else's conversation.
-    const refusing = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const refusing = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "branch.get" && params.agent_id) throw new Error("unknown agent_id: ag-1");
       return refusing(method, params);
@@ -527,9 +778,9 @@ describe("taking an agent back off the branch", () => {
   };
 
   const holdRemove = () => {
-    const answering = App.call;
+    const answering = bridge.call;
     let refuse = null;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "agent.remove") return new Promise((_, reject) => { refuse = reject; });
       return answering(method, params);
@@ -571,7 +822,7 @@ describe("taking an agent back off the branch", () => {
     // A working branch, not a broken one: the strip drops to its ghost and the
     // panel head offers to start a new agent.
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
-    expect(panel().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(headWho(panel())).toBe("New agent");
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -602,7 +853,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code 1");
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -627,8 +878,8 @@ describe("taking an agent back off the branch", () => {
   // standard way and stay exactly as it was, not break under the refusal.
   it("raises the standard error notice when the daemon does not know the method", async () => {
     await openSecondAgent();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "agent.remove") throw new Error("unknown method: agent.remove");
       return answering(method, params);
@@ -641,7 +892,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "unknown method: agent.remove");
     // Still open on the agent it failed to remove, still offering to try again.
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
     expect(removeButton()).toBeTruthy();
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
   });
@@ -667,7 +918,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(payload.agents.map((each) => each.id)).toEqual(["ag-1", "ag-2"]);
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code 1");
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(0);
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
     expect(notifyError).not.toHaveBeenCalled();
@@ -684,7 +935,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(payload.agents.map((each) => each.id)).toEqual(["ag-1"]);
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
-    expect(panel().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(headWho(panel())).toBe("New agent");
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -728,7 +979,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
     expect(removeButton()).toBeTruthy();
     expect(notifyError).toHaveBeenCalledTimes(1);
@@ -742,8 +993,8 @@ describe("taking an agent back off the branch", () => {
     await flush();
     confirmModal().querySelector("[data-confirm-ok]").click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "branch.get") throw new Error("the bridge is not answering");
       return answering(method, params);
@@ -754,7 +1005,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
     expect(bubbles()[1].classList.contains("active")).toBe(true);
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
   });
 
   it("removes an agent the create record still names", async () => {
@@ -789,9 +1040,25 @@ describe("taking an agent back off the branch", () => {
 });
 
 describe("the conversation panel", () => {
+  it("wears the topic the agent named its work with, and shimmers until it has", async () => {
+    await mount();
+    // Nothing named yet: the head says so, in the shimmering word.
+    expect(panel().querySelector(".rail-who").textContent).toBe("Starting");
+    expect(panel().querySelector(".rail-who").classList.contains("rail-who-starting")).toBe(true);
+    expect(headWho(panel())).toBe("Claude Code 1");
+
+    payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(panel().querySelector(".rail-who").textContent).toBe("Unify prompt delivery");
+    expect(panel().querySelector(".rail-who").classList.contains("rail-who-starting")).toBe(false);
+    expect(headWho(panel())).toBe("Claude Code 1");
+  });
+
   it("carries the agent, the one way down to its screen, and a box to write in", async () => {
     await mount();
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code 1");
     const modes = [...panel().querySelectorAll(".rail-mode")];
     expect(modes).toHaveLength(1);
     expect(modes[0].textContent).toBe("TUI");
@@ -910,8 +1177,8 @@ describe("the conversation panel", () => {
     await mount();
     tuiToggle().click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         return {};
@@ -931,8 +1198,8 @@ describe("the conversation panel", () => {
     await mount();
     tuiToggle().click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         return new Promise(() => {});
@@ -959,8 +1226,8 @@ describe("the conversation panel", () => {
   it("marks the agent starting from a message that wakes it, so a second message starts nothing twice", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         return new Promise(() => {});
@@ -1017,8 +1284,8 @@ describe("the conversation panel", () => {
     await mount();
     tuiToggle().click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         const timedOut = new Error("agent.start timed out");
@@ -1040,8 +1307,8 @@ describe("the conversation panel", () => {
     await mount();
     tuiToggle().click();
     await flush();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
         calls.push({ method, params });
         throw new Error("no session could be spawned");
@@ -1093,7 +1360,7 @@ describe("the conversation panel", () => {
     bubbles()[1].click();
     await flush();
 
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
     expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
@@ -1207,7 +1474,7 @@ describe("the conversation panel", () => {
         items: [{ type: "message", data: { role: "agent", body: `words from ${who}`, seen_at: null } }],
         sessions: [],
       });
-      App.call = vi.fn(async (method, params) => {
+      bridge.call = vi.fn(async (method, params) => {
         calls.push({ method, params });
         if (method === "branch.get") {
           return branchRow({
@@ -1240,7 +1507,7 @@ describe("the conversation panel", () => {
       bubbles()[1].click();
       await flush();
 
-      expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+      expect(headWho(panel())).toBe("Claude Code 2");
       expect(panel().textContent).toContain("words from ag-2");
       expect(panel().textContent).not.toContain("words from ag-1");
     });
@@ -1284,7 +1551,7 @@ describe("reading back past the top of a paged conversation", () => {
   const railBody = () => railHost().querySelector("#rail-body");
 
   const pagedConversation = (hasMore, moreAboveThatPage = true, agents = [agent()]) => {
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "branch.get") {
         // A cursored poll is a forward delta and says nothing about the far
@@ -1427,7 +1694,7 @@ describe("the count on a folded run of activity", () => {
   });
 
   const conversationOf = (thread) => {
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") {
@@ -1524,6 +1791,34 @@ describe("focusing the composer on a freshly created branch", () => {
 });
 
 describe("the pinned status line above the composer", () => {
+  // Every machine mints a `p1` with a `build/login` in it, and the feed holds
+  // all of them at once. The rail is about one work item on one machine, so the
+  // row it reports on comes out of that machine's slice.
+  it("the rail reads the work item's row from its own device's slice of the feed", async () => {
+    const theirs = {
+      kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-2",
+      working: false, working_time: null, stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
+    };
+    const mine = {
+      kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
+      working: false, working_time: null, stat: { insertions: 99, deletions: 99, ahead: 0, behind: 0 },
+    };
+    await pushFeed({
+      items: [mine, theirs],
+      projects: [],
+      devices: {
+        "dev-1": { items: [mine], projects: [] },
+        "dev-2": { items: [theirs], projects: [] },
+      },
+    });
+
+    await mount({ deviceId: "dev-2" });
+
+    expect(railStatus().textContent).toContain("+4");
+    expect(railStatus().textContent).toContain("−1");
+    expect(railStatus().textContent).not.toContain("99");
+  });
+
   it("pins nothing when the feed row has nothing to report", async () => {
     await mount();
     expect(railStatus().hidden).toBe(true);
@@ -1534,7 +1829,7 @@ describe("the pinned status line above the composer", () => {
     payload = branchRow({ agents: [agent({ working_time: { since: new Date(Date.now() - 750000).toISOString(), seconds: 750 } })] });
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 750000).toISOString(), seconds: 750 }, stat: null,
       }],
       projects: [],
@@ -1548,7 +1843,7 @@ describe("the pinned status line above the composer", () => {
   it("shows the diffstat and ahead/behind alongside, only when nonzero", async () => {
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: false, working_time: null, stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
       }],
       projects: [],
@@ -1567,7 +1862,7 @@ describe("the pinned status line above the composer", () => {
     // around. One group carries both, and the sheet anchors it to the row's end.
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 },
         stat: { insertions: 104, deletions: 38, ahead: 0, behind: 1 },
       }],
@@ -1603,7 +1898,7 @@ describe("the pinned status line above the composer", () => {
 
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 }, stat: null,
       }],
       projects: [],
@@ -1642,7 +1937,7 @@ describe("the pinned status line above the composer", () => {
     payload = branchRow({ agents: [agent({ working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 } })] });
     await pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 }, stat: null,
       }],
       projects: [],
@@ -1694,7 +1989,7 @@ describe("the first message", () => {
   // would mint a second owner of the checkout the Changes review just claimed.
   it("adopts through the adopter the view hands it", async () => {
     payload = branchRow({ run_id: null, run: null, agents: [] });
-    const shared = createAdoptingCall((method, params) => App.call(method, params), "p1", "wt-3");
+    const shared = createAdoptingCall((method, params) => bridge.call(method, params), "p1", "wt-3");
     await shared.adopt();
     await mount({ kind: "branch", projectId: "p1", branch: "build/login", adopting: () => shared });
 
@@ -1723,7 +2018,7 @@ describe("the first message", () => {
 // conversation has. Sending is the one act that creates one and speaks to it.
 describe("the chat tab of a branch with no agent", () => {
   const agentless = () => branchRow({ agents: [] });
-  const cards = () => [...railHost().querySelectorAll(".rail-newagent .chooser-card")];
+  const cards = () => [...railHost().querySelectorAll(".rail-newagent .rail-harness-choice")];
   const card = (provider) => cards().find((entry) => entry.dataset.provider === provider);
   const chosenCard = () => cards().find((entry) => entry.classList.contains("chosen"));
   const send = async (body) => {
@@ -1762,7 +2057,7 @@ describe("the chat tab of a branch with no agent", () => {
     payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2 })] });
     vi.advanceTimersByTime(1600);
     await flush();
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Claude Code 2");
   });
 
   it("moves the highlight to the card that is pressed, and creates that one", async () => {
@@ -1775,6 +2070,36 @@ describe("the chat tab of a branch with no agent", () => {
 
     await send("start here");
     expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
+  });
+
+  it("keeps model and effort when the selected harness is pressed again", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    }));
+    payload = agentless();
+    await mount();
+
+    chosenCard().click();
+    await flush();
+    expect(document.activeElement).toBe(chosenCard());
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+  });
+
+  it("passes a custom saved model through for a compatible harness", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "company-custom-model", effort: "custom",
+    }));
+    payload = agentless();
+    await mount();
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "company-custom-model", effort: "custom",
+    });
   });
 
   it("adopts a checkout Build owns nothing in before it creates the agent", async () => {
@@ -1810,7 +2135,7 @@ describe("the chat tab of a branch with no agent", () => {
   // The account decides which carrier "Claude Code" means, and the card is
   // where that answer lands: one name, whichever carrier is behind it.
   it("gives the Claude Code card the carrier the account chose", async () => {
-    App.modelCatalog = { ...CATALOG, default_provider: "claude" };
+    catalog = { ...CATALOG, default_provider: "claude" };
     payload = agentless();
     await mount();
 
@@ -1826,14 +2151,15 @@ describe("the chat tab of a branch with no agent", () => {
   // a stale token clamps, so the view highlights the card it is showing —
   // never nothing at all.
   it("clamps a choice made under the other claude carrier onto the card on offer", async () => {
-    App.modelCatalog = { ...CATALOG, default_provider: "claude" };
+    catalog = { ...CATALOG, default_provider: "claude" };
     payload = agentless();
     await mount();
     card("claude").click();
     await flush();
 
     rail.dispose();
-    App.modelCatalog = CATALOG;
+    catalog = CATALOG;
+    await contextFor("dev-1").refreshModelCatalog();
     await mount();
 
     expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "codex"]);
@@ -1865,10 +2191,15 @@ describe("the composer's model menu", () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "low" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · low");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("low");
     modelMenuButton().click();
     expect([...railHost().querySelectorAll(".composer-model .mi")].map((mi) => mi.dataset.action)).toEqual([
-      "model:", "model:claude-opus-5", "model:claude-haiku-4-5", "effort:", "effort:low", "effort:high",
+      "model:claude-opus-5", "model:claude-haiku-4-5",
+    ]);
+    reasoningMenuButton().click();
+    expect([...railHost().querySelectorAll(".composer-reasoning .mi")].map((mi) => mi.dataset.action)).toEqual([
+      "effort:low", "effort:high",
     ]);
   });
 
@@ -1892,30 +2223,32 @@ describe("the composer's model menu", () => {
     modelMenuButton().click();
     menuItem("model:claude-opus-5").click();
     await flush();
-    modelMenuButton().click();
-    menuItem("effort:high").click();
+    reasoningMenuButton().click();
+    reasoningMenuItem("effort:high").click();
     await flush();
 
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "high" })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · high");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("high");
   });
 
   it("says the model the open agent is actually running on, with no second round trip", async () => {
-    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5", active_effort: "high" })] });
     await mount();
 
     expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("high");
     expect(callsTo("agent.choose")).toEqual([]);
   });
 
   it("names the pending model beside it once the menu has chosen another", async () => {
     payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.choose") {
         calls.push({ method, params });
         payload = branchRow({
@@ -1937,18 +2270,18 @@ describe("the composer's model menu", () => {
     expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
   });
 
-  it("says Default model for an agent that has never run and chose nothing", async () => {
+  it("asks for a model when an agent has never run and chose nothing", async () => {
     payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Default model");
+    expect(modelMenuButton().textContent).toContain("Select model");
   });
 
   it("moves the label the instant a model is picked, before agent.choose answers", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.choose") {
         calls.push({ method, params });
         return new Promise(() => {});
@@ -1968,9 +2301,9 @@ describe("the composer's model menu", () => {
   it("does not send with the old model while a newly picked model is still applying", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
+    const answering = bridge.call;
     let acknowledgeChoice;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.choose") {
         calls.push({ method, params });
         return new Promise((resolve) => { acknowledgeChoice = resolve; });
@@ -1987,7 +2320,7 @@ describe("the composer's model menu", () => {
 
     expect(callsTo("thread.post")).toEqual([]);
     expect(panel().querySelector("#railsend").disabled).toBe(true);
-    expect(panel().querySelector("#railsend").textContent).toContain("Applying model…");
+    expect(panel().querySelector("#railhint").textContent).toContain("Applying model…");
 
     acknowledgeChoice({
       entity_id: "run-3",
@@ -2009,11 +2342,45 @@ describe("the composer's model menu", () => {
     });
   });
 
+  it("uses model and reasoning changes made in an existing conversation on the next send", async () => {
+    payload = branchRow({
+      agents: [agent({ model: "claude-opus-5", effort: "low", active_model: "claude-opus-5" })],
+    });
+    await mount();
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    await flush();
+    modelMenuButton().click();
+    menuItem("model:claude-opus-5").click();
+    await flush();
+    reasoningMenuButton().click();
+    reasoningMenuItem("effort:high").click();
+    await flush();
+
+    const composer = panel().querySelector("#railinput");
+    composer.value = "continue with these settings";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("agent.choose").at(-1).params).toMatchObject({
+      agent_id: "ag-1",
+      model: "claude-opus-5",
+      effort: "high",
+    });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      agent_id: "ag-1",
+      choice_revision: 3,
+      body: "continue with these settings",
+    });
+  });
+
   it("keeps the pick through a branch.get that still names the old model", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.choose") {
         calls.push({ method, params });
         return new Promise(() => {});
@@ -2036,8 +2403,8 @@ describe("the composer's model menu", () => {
   it("says a refusal the standard way and puts the menu back on what the bridge holds", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
-    const answering = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "agent.choose") throw new Error("agent.choose: the agent is locked to Claude Code");
       return answering(method, params);
@@ -2055,57 +2422,51 @@ describe("the composer's model menu", () => {
   });
 });
 
-// A message to an agent mid-turn can be handed over two ways: queued for its
-// next step — which for a carrier that can be steered usually decides the same
-// turn — or after stopping the turn outright. Two behaviours behind one verb,
-// so the send is a split button, and the stop is never the default press.
+// An empty composer stops an interruptible active turn. As soon as there is a
+// draft, the same stable control sends it instead.
 describe("interrupting the turn", () => {
-  const splitSend = () => panel().querySelector(".composer-send-control .splitbtn");
-  const menuItem = (action) =>
-    [...panel().querySelectorAll(".composer-send-control .splitmenu .mi")].find((mi) => mi.dataset.action === action);
+  const send = () => panel().querySelector("#railsend");
 
   it("offers the plain send to an agent whose turn cannot be stopped", async () => {
     payload = branchRow({ agents: [agent({ working: true })] });
     await mount();
-    expect(splitSend()).toBe(null);
-    expect(panel().querySelector("#railsend")).toBeTruthy();
+    expect(send().dataset.action).toBe("send");
   });
 
   it("offers the plain send to an agent that is not working, whatever it can do", async () => {
     payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
     await mount();
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
   });
 
-  it("splits the send for a working agent that announced the interrupt", async () => {
+  it("shows stop for a working agent that announced the interrupt", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    expect(splitSend()).toBeTruthy();
-    // The default press is the send it always was, still the button by that id.
-    expect(splitSend().querySelector("#railsend").dataset.action).toBe("send");
-    expect(menuItem("interrupt_send").textContent).toContain("Interrupt & send");
+    expect(send().dataset.action).toBe("stop");
+    expect(send().getAttribute("aria-label")).toBe("Stop agent");
   });
 
-  it("posts the message with the interrupt flag when that is the option chosen", async () => {
+  it("invokes the standalone interrupt when stop is pressed", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    panel().querySelector("#railinput").value = "stop, do this instead";
-    splitSend().querySelector(".caret").click();
-    menuItem("interrupt_send").click();
+    send().click();
     await flush();
-    expect(callsTo("thread.post")[0].params).toMatchObject({
-      entity_id: "run-3", agent_id: "ag-1", body: "stop, do this instead", interrupt: true,
+    expect(callsTo("agent.interrupt")[0].params).toMatchObject({
+      entity_id: "run-3", agent_id: "ag-1", conversation_id: "ag-1",
     });
   });
 
-  it("leaves the flag off the default press", async () => {
+  it("changes stop back to send as soon as the user types", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    panel().querySelector("#railinput").value = "when you get a moment";
-    panel().querySelector("#railsend").click();
+    const input = panel().querySelector("#railinput");
+    input.value = "when you get a moment";
+    input.dispatchEvent(new Event("input"));
+    expect(send().dataset.action).toBe("send");
+    send().click();
     await flush();
     expect(callsTo("thread.post")[0].params.body).toBe("when you get a moment");
-    expect(callsTo("thread.post")[0].params.interrupt).toBeUndefined();
+    expect(callsTo("agent.interrupt")).toHaveLength(0);
   });
 
   // The condition changes every time an agent starts or finishes a turn, which
@@ -2116,13 +2477,13 @@ describe("interrupting the turn", () => {
     await mount();
     const input = panel().querySelector("#railinput");
     input.value = "half a sent";
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
 
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(splitSend()).toBeTruthy();
+    expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
 
@@ -2130,14 +2491,14 @@ describe("interrupting the turn", () => {
     payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
     vi.advanceTimersByTime(1600);
     await flush();
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
   });
 });
 
 describe("the conversation's local cache", () => {
-  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" }];
+  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1" }];
   const threadItem = (sequence, body) => ({
     id: `m-${sequence}`,
     type: "message",
@@ -2203,7 +2564,7 @@ describe("the conversation's local cache", () => {
 });
 
 describe("revisiting a conversation", () => {
-  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" }];
+  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1" }];
   const historyThread = () => ({
     items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "the history", created_at: "2026-08-30T12:00:00Z" } }],
     has_more: false,
@@ -2218,7 +2579,7 @@ describe("revisiting a conversation", () => {
       { items: historyThread().items, olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: [{ ...feedItems[0], agents: [agent()] }], projects: [] };
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return new Promise(() => {});
@@ -2243,7 +2604,7 @@ describe("revisiting a conversation", () => {
     rail.dispose();
     rail = null;
 
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") {
@@ -2278,7 +2639,12 @@ describe("the agent's surfaces, carried by the status row", () => {
     await openPanelWithSurfaces();
 
     const block = railHost().querySelector(".rail-composer");
-    expect([...block.children].map((child) => child.id)).toEqual(["rail-status", "rail-chat-recovery", ""]);
+    expect([...block.children].map((child) => child.id)).toEqual([
+      "rail-surfaces-viewer",
+      "rail-status",
+      "rail-chat-recovery",
+      "",
+    ]);
     expect(block.querySelector('#rail-status-pills [data-surface-kind="shells"]')).not.toBe(null);
     expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
   });
@@ -2322,10 +2688,10 @@ describe("the agent's surfaces, carried by the status row", () => {
 
 describe("the agent's surfaces, seeded from the local cache", () => {
   const feedItems = [{
-    kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3",
+    kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1",
     agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
   }];
-  const railContext = { kind: "branch", projectId: "p1", branch: "build/login" };
+  const railContext = () => railAddress();
   const shellsRunning = (...descriptions) => ({
     shells: descriptions.map((description, index) => ({ id: `sh-${index}`, description, state: "running", tail: [] })),
   });
@@ -2346,7 +2712,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   const pillCount = (kind) =>
     railStatusPills().querySelector(`[data-surface-kind="${kind}"] .surface-pill-count`).textContent.trim();
   const answerNothing = () => {
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return new Promise(() => {});
@@ -2439,7 +2805,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   it("drops a seed whose agent was left while the read was in flight", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
-    rail = mountAgentRail(railHost(), railContext);
+    rail = mountAgentRail(railHost(), railContext());
     bubbles()[1].click(); // ag-1's seed is still in flight
     await flush();
     expect(pillKinds()).toEqual([]);
@@ -2448,7 +2814,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   it("replaces the seeded pills with the first live payload", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test", "cargo clippy"));
     let answer = null;
-    App.call = vi.fn(async (method, params) => {
+    bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return new Promise((resolve) => { answer = resolve; });
@@ -2504,12 +2870,136 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   it("leaves no seed landing after the rail is gone", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
-    rail = mountAgentRail(railHost(), railContext);
+    rail = mountAgentRail(railHost(), railContext());
     rail.dispose();
     rail = null;
     await flush();
     expect(railHost().querySelector(".surface-pill")).toBe(null);
     expect(notifyError).not.toHaveBeenCalled();
+  });
+});
+
+// The bridge behind these is the machine's own, handed over mid-test: a
+// workspace whose checkout this bridge holds no run for answers differently,
+// it is not another machine.
+describe("a workspace conversation on a metadata-only bridge", () => {
+  it("recovers the exact adopted run and posts through its agent conversation", async () => {
+    const run = {
+      run_id: "run-3",
+      project_id: "p1",
+      branch: "build/login",
+      agents: [agent({ id: "ag-workspace", conversation_id: "conversation-workspace", state: "live" })],
+      thread: { items: [], sessions: [] },
+    };
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { id: "run-3", project_id: "p1", directories: [{ branch: "build/login" }] };
+      if (method === "run.get") return run;
+      if (method === "thread.post") return {
+        entity_id: "run-3", agent_id: "ag-workspace", conversation_id: "conversation-workspace", posted_sequence: 7,
+      };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "run-3", sourceId: "root" });
+    const input = railHost().querySelector("#railinput");
+    expect(input).not.toBeNull();
+    input.value = "fix the deployed workspace";
+    railHost().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("run.get")[0].params).toMatchObject({ run_id: "run-3" });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-3",
+      agent_id: "ag-workspace",
+      conversation_id: "conversation-workspace",
+      body: "fix the deployed workspace",
+    });
+  });
+
+  it("shows the shared new-conversation composer without creating storage on open", async () => {
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1" });
+    if (!panel()) {
+      railHost().querySelector('[data-bubble="ghost"]').click();
+      await flush();
+    }
+
+    expect(railHost().querySelector(".rail-newagent")).not.toBeNull();
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+    expect(callsTo("workspace.ensure_conversation")).toEqual([]);
+    expect(callsTo("agent.add")).toEqual([]);
+  });
+
+  it("creates the workspace conversation on first send and uses saved defaults", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    }));
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      if (method === "workspace.ensure_conversation") return { workspace_id: "workspace-1", entity_id: "run-workspace" };
+      if (method === "agent.add") return { entity_id: "run-workspace", agent: agent({ id: "ag-workspace", ordinal: 1, state: "idle" }) };
+      if (method === "thread.post") return { posted_sequence: 1 };
+      if (method === "agent.start") return { agent_id: "ag-workspace" };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true });
+    railHost().querySelector("#railinput").value = "start in this workspace";
+    railHost().querySelector("#railsend").click();
+    await flush();
+
+    expect(calls.filter((entry) => ["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"].includes(entry.method))
+      .map((entry) => entry.method)).toEqual(["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"]);
+    expect(callsTo("workspace.ensure_conversation")[0].params).toEqual({ workspace_id: "workspace-1" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      entity_id: "run-workspace", provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-workspace", agent_id: "ag-workspace", body: "start in this workspace",
+    });
+    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-workspace", agent_id: "ag-workspace" });
+  });
+
+  it("restores the draft and retries workspace creation after ensure fails", async () => {
+    let ensureAttempts = 0;
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      if (method === "workspace.ensure_conversation") {
+        ensureAttempts += 1;
+        if (ensureAttempts === 1) throw new Error("workspace unavailable");
+        return { entity_id: "run-workspace" };
+      }
+      if (method === "agent.add") return { agent: agent({ id: "ag-workspace", state: "idle" }) };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true });
+    railHost().querySelector("#railinput").value = "keep this draft";
+    railHost().querySelector("#railsend").click();
+    await flush();
+    expect(railHost().querySelector("#railinput").value).toBe("keep this draft");
+    expect(railHost().querySelector(".rail-newagent")).not.toBeNull();
+    expect(callsTo("agent.add")).toEqual([]);
+    expect(callsTo("thread.post")).toEqual([]);
+    expect(callsTo("agent.start")).toEqual([]);
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "workspace unavailable");
+
+    railHost().querySelector("#railsend").click();
+    await flush();
+    expect(callsTo("workspace.ensure_conversation")).toHaveLength(2);
+    expect(callsTo("agent.add")).toHaveLength(1);
   });
 });
 
@@ -2523,8 +3013,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
     const held = new Promise((resolve) => {
       release = resolve;
     });
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "agent.add") return answer(method, params);
       calls.push({ method, params });
       await held;
@@ -2534,8 +3024,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
   };
 
   const refuseCall = (refused, message) => {
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== refused) return answer(method, params);
       calls.push({ method, params });
       throw new Error(message);
@@ -2555,8 +3045,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
     const held = new Promise((resolve) => {
       release = resolve;
     });
-    const running = App.chatRepository.optimisticStore().runOptimistic({
-      scope: `${App.chatRepository.scopeKey}:agents:branch:p1:build/login`,
+    const running = chatRepository.optimisticStore().runOptimistic({
+      scope: `${chatRepository.scopeKey}:agents:branch:p1:build/login`,
       records: [insertRecord("ag-7", agent({ id: "ag-7", ordinal: 1 }))],
       call: () => held,
       failureSummary: "Could not start the agent",
@@ -2582,7 +3072,7 @@ describe("creating an agent, before the daemon has answered for it", () => {
 
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
     expect(bubbles()[0].classList.contains("active")).toBe(true);
-    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code 1");
     expect(timeline().textContent).toContain("start here");
     expect(composer().value).toBe("");
     expect(callsTo("agent.add")).toHaveLength(1);
@@ -2622,8 +3112,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
     payload = agentless();
     await mount();
     let releasePost = null;
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "thread.post") return answer(method, params);
       calls.push({ method, params });
       await new Promise((resolve) => {
@@ -2736,8 +3226,8 @@ describe("sending to an agent that is already there", () => {
     const held = new Promise((resolve) => {
       release = resolve;
     });
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "thread.post") return answer(method, params);
       calls.push({ method, params });
       await held;
@@ -2747,8 +3237,8 @@ describe("sending to an agent that is already there", () => {
   };
 
   const refuseThreadPost = (message) => {
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "thread.post") return answer(method, params);
       calls.push({ method, params });
       throw new Error(message);
@@ -2817,8 +3307,8 @@ describe("sending to an agent that is already there", () => {
   it("leaves a delivered message where it landed when only the wake is refused", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "agent.start") return answer(method, params);
       calls.push({ method, params });
       throw new Error("no session could be spawned");
@@ -2838,8 +3328,8 @@ describe("sending to an agent that is already there", () => {
   it("keeps a delivered message, and raises nothing, when only the wake outlives the timer", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "agent.start") return answer(method, params);
       calls.push({ method, params });
       const timedOut = new Error("agent.start timed out");
@@ -2862,8 +3352,8 @@ describe("sending to an agent that is already there", () => {
   it("keeps the message on the thread when the post itself outlives the timer", async () => {
     payload = branchRow({ agents: [agent({ state: "live" })] });
     await mount();
-    const answer = App.call;
-    App.call = vi.fn(async (method, params) => {
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
       if (method !== "thread.post") return answer(method, params);
       calls.push({ method, params });
       const timedOut = new Error("thread.post timed out");
@@ -2905,7 +3395,7 @@ describe("the one status row", () => {
       agents: [agent({ ...payload.agents?.[0], working_time: { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 } })],
     }), pushFeed({
       items: [{
-        kind: "branch", project_id: "p1", branch: "build/login",
+        kind: "branch", project_id: "p1", branch: "build/login", deviceId: "dev-1",
         working: true, working_time: { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 },
         stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
       }],
@@ -2930,7 +3420,10 @@ describe("the one status row", () => {
     const phoneRule = shellCss.match(/@media \(max-width: 760px\) \{[\s\S]*?\.rail-panel \{([^}]*)\}/);
     expect(phoneRule).not.toBe(null);
     expect(phoneRule[1]).toContain("left:0");
-    expect(phoneRule[1]).toContain("right:var(--agent-strip)");
+    // The strip runs across the column's foot at this width, not down its
+    // edge, so the panel takes the whole width and stops on it from above.
+    expect(phoneRule[1]).toContain("right:0");
+    expect(phoneRule[1]).toContain("bottom:calc(var(--console-space) + var(--agent-strip))");
     expect(phoneRule[1]).toContain("width:auto");
     expect(phoneRule[1]).not.toContain("100vw");
   });
@@ -2943,20 +3436,25 @@ describe("the one status row", () => {
     expect(clockRule[0]).toContain("display:inline-block");
   });
 
-  it("shimmers the status clock and every ticking row clock through one rule, holding still under reduced motion", () => {
+  // The head of a conversation whose agent has not named its work yet is
+  // mid-something too, so it wears the same shimmer as the clocks rather than
+  // a copy of it — one rule, one keyframe, one reduced-motion answer.
+  it("shimmers the status clock, every ticking row clock and a starting head through one rule, holding still under reduced motion", () => {
     expect(shellCss.match(/@keyframes clock-shimmer/g)).toHaveLength(1);
     expect(shellCss.match(/linear-gradient\(100deg/g)).toHaveLength(1);
-    const shimmerRule = shellCss.match(
-      /\n\.rail-status-working, \.surface-row-clock\[data-running-since\] \{ color:transparent;[^}]*\}/,
-    );
+    const shimmering = /\.rail-status-working, \.surface-row-clock\[data-running-since\], \.rail-who-starting/;
+    const shimmerRule = shellCss.match(new RegExp(`\\n${shimmering.source} \\{ color:transparent;[^}]*\\}`));
     expect(shimmerRule[0]).toContain("animation:clock-shimmer");
     expect(shimmerRule[0]).toContain("background-clip:text");
     expect(shimmerRule[0]).toContain("var(--clock-ink)");
     const stillRule = shellCss.match(
-      /@media \(prefers-reduced-motion: reduce\) \{\n?\s*\.rail-status-working, \.surface-row-clock\[data-running-since\] \{[^}]*\}/,
+      new RegExp(`@media \\(prefers-reduced-motion: reduce\\) \\{\\n?\\s*${shimmering.source} \\{[^}]*\\}`),
     );
     expect(stillRule).not.toBe(null);
     expect(stillRule[0]).toContain("animation:none");
+    // Each wearer brings its own ink: the working clock the accent, a starting
+    // head the dim.
+    expect(shellCss).toContain(".rail-who-starting { --clock-ink:var(--dim); font-weight:500; }");
   });
 
   it("wears the working colour on the status clock and grey on a row clock, holding its digits still", () => {
@@ -3038,8 +3536,8 @@ describe("the one status row", () => {
   });
 });
 
-describe("the viewer at the bottom of the conversation column", () => {
-  it("stands between the conversation and the composer, with nothing drawn between", async () => {
+describe("the viewer above the conversation footer", () => {
+  it("is anchored inside the composer block so opening it cannot reflow the transcript", async () => {
     payload = branchRow({
       agents: [agent({ surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running", tail: [] }] } })],
     });
@@ -3048,18 +3546,21 @@ describe("the viewer at the bottom of the conversation column", () => {
     expect([...panel().children].map((child) => child.className)).toEqual([
       "rail-head",
       "rail-body",
-      "rail-surfaces-viewer",
       "rail-composer",
     ]);
+    expect(panel().querySelector(".rail-composer > .rail-surfaces-viewer")).not.toBeNull();
     expect(railHost().querySelector("#rail-surfaces-viewer").hidden).toBe(true);
   });
 
-  it("is drawn with no border and no divider of its own", () => {
+  it("is an independently scrolling popover anchored above the footer", () => {
     const viewerRule = shellCss.match(/\.rail-surfaces-viewer \{[^}]*\}/)[0];
-    expect(viewerRule).toMatch(/max-height:34vh/);
-    expect(viewerRule).toMatch(/overflow-y:auto/);
-    expect(viewerRule).not.toMatch(/border:/);
-    expect(viewerRule).not.toMatch(/border-top/);
+    const composerRule = shellCss.match(/\.rail-composer \{[^}]*\}/)[0];
+    expect(composerRule).toMatch(/position:relative/);
+    expect(viewerRule).toMatch(/position:absolute/);
+    expect(viewerRule).toMatch(/bottom:100%/);
+    expect(viewerRule).toMatch(/max-height:min\(46vh, 420px\)/);
+    expect(viewerRule).toMatch(/overflow:hidden/);
+    expect(shellCss).toMatch(/\.surface-popover-body \{[^}]*overflow-y:auto/);
   });
 });
 
@@ -3093,7 +3594,7 @@ describe("a run of activity in the rail", () => {
   const runRows = () => [...railHost().querySelectorAll(".thread-activity-group-list > .thread-activity")];
 
   const answering = (activityPage) => {
-    App.call.mockImplementation(async (method, params) => {
+    bridge.call.mockImplementation(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return payload;
@@ -3251,7 +3752,7 @@ describe("a run of activity in the rail", () => {
       [said(1, "Have a look."), toolCall(50, "Read y.js"), said(52, "Done.")],
       [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, rows: 40, last_tool_call: null }],
     );
-    App.call.mockImplementation(async (method, params) => {
+    bridge.call.mockImplementation(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "branch.get") return payload;
@@ -3338,5 +3839,120 @@ describe("a chat paint with nothing to say", () => {
 
     expect(markSurvived()).toBe(false);
     expect(railHost().querySelector(".thread-items").textContent).toContain("and the next");
+  });
+});
+
+// The rail merges every device's rows, and every machine mints a `p1`. The work
+// item the rail is standing on is on one machine — the home device's, until a
+// route can name its own — so the row it seeds and reports from is that
+// device's, not whichever `p1` the merge happens to list first.
+describe("an account with more than one device", () => {
+  let resetDeviceContexts;
+
+  afterEach(() => {
+    if (resetDeviceContexts) resetDeviceContexts();
+    resetDeviceContexts = null;
+    App.devices = [];
+    App.selectedDeviceId = null;
+  });
+
+  it("seeds its strip from the home device's row", async () => {
+    const contexts = await import("../src/core/deviceContexts.js");
+    resetDeviceContexts = contexts.resetDeviceContexts;
+    App.devices = [
+      { id: "dev-2", name: "Desktop", status: "online" },
+      { id: "dev-1", name: "This device", status: "online" },
+    ];
+    App.selectedDeviceId = "dev-1"; // home is the device the pick names
+    contexts.adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => bridge.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
+    // The desktop's own build/login sorts first in the merge.
+    const theirs = { ...branchRow({ agents: [agent({ id: "ag-9", ordinal: 9 })] }), deviceId: "dev-2" };
+    const mine = { ...branchRow(), deviceId: "dev-1" };
+    feedSnapshot = {
+      items: [theirs, mine],
+      projects: [],
+      devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [mine], projects: [] } },
+    };
+    // The first read never answers, so what is painted is the seed alone.
+    bridge.call = vi.fn(async (method) => {
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise(() => {});
+      return {};
+    });
+    await mount();
+
+    const strip = bubbles().filter((bubble) => bubble.dataset.bubble === "agent");
+    expect(strip.map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);
+  });
+});
+
+// A reference an agent posts is a path in the checkout it is working in, and
+// the rail is the only thing that knows which checkout that is. So the chip
+// under the message is a real link: it carries the machine, the workspace, the
+// directory the path is mounted under, and the line it points at.
+describe("a file reference in a conversation", () => {
+  const workspaceRow = (links) => ({
+    entity_id: "run-3",
+    id: "ws-1",
+    project_id: "p1",
+    directories: [
+      { source_id: "repo", name: "Repository" },
+      { source_id: "assets", name: "Assets" },
+    ],
+    agents: [agent()],
+    thread: {
+      items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "Changed the parser.", links } }],
+      has_more: false,
+      sessions: [],
+    },
+  });
+
+  const answerWith = (row) => {
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return row;
+      if (method === "branch.get") return row;
+      return {};
+    });
+  };
+
+  const chipHref = () => railHost().querySelector("a.thread-reference")?.getAttribute("href");
+
+  it("links a path into the workspace directory it is mounted under", async () => {
+    answerWith(workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }]));
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
+    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files?path=logo.svg&line=4");
+  });
+
+  it("links a path of the open directory at the line it starts on", async () => {
+    answerWith(workspaceRow([{ kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 }]));
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
+    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/repo/files?path=src%2Fparser.js&line=8");
+  });
+
+  it("links a branch conversation's reference at the file, not at the tab", async () => {
+    payload = branchRow({
+      run: {
+        run_id: "run-3",
+        thread: {
+          items: [{
+            id: "m-1",
+            type: "message",
+            data: { sequence: 1, role: "agent", body: "Changed the parser.", links: [{ kind: "file", path: "src/parser.js", line_start: 8 }] },
+          }],
+          has_more: false,
+          sessions: [],
+        },
+      },
+    });
+    await mount();
+    expect(chipHref()).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/files?path=src%2Fparser.js&line=8");
   });
 });

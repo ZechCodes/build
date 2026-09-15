@@ -8,6 +8,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
@@ -25,6 +29,10 @@ const manager = {
 vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => manager,
   subscribeTerminalStatus: () => () => {},
+  // Which machine the shells type at, and the moves between machines, are the
+  // app spine's business and not this suite's: they answer, and nothing moves.
+  terminalDeviceId: () => null,
+  followTerminalDevice: () => {},
 }));
 vi.mock("../src/terminal/pane.js", () => ({
   mountTerminalPane: async (host, opts) => {
@@ -33,20 +41,22 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
-const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" }];
+const homeRow = { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1" };
+let feedSnapshot = { items: [homeRow], projects: [] };
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    fn({ items: feedItems, projects: [] });
+    fn(feedSnapshot);
     return () => {};
   },
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: () => {},
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 
 const { App } = await import("../src/app.js");
-const { setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 
@@ -60,8 +70,15 @@ const tabs = () => [...region().querySelectorAll(".console-tab-name")].map((cell
 
 let panel = null;
 
-const mountAndOpen = async () => {
-  panel = mountConsole(region(), { kind: "branch", projectId: "p1", branch: "build/login" });
+const mountAndOpen = async (deviceId = "dev-1") => {
+  panel = mountConsole(region(), {
+    kind: "branch",
+    deviceId,
+    projectId: "p1",
+    branch: "build/login",
+    call: (...args) => bridge.call(...args),
+    cacheScope: scopeFor(deviceId),
+  });
   await flush();
   bar().click();
   await flush();
@@ -71,13 +88,13 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetConsoleMemory();
-  setCacheDevice("dev-1");
+  feedSnapshot = { items: [homeRow], projects: [] };
   await wipeCache();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });
   manager.closeTerminal.mockReset().mockResolvedValue(undefined);
   manager.attachTerminal.mockReset().mockResolvedValue({ snapshot: "", cursor: 0 });
-  App.call = vi.fn(async (method) => {
+  bridge.call = vi.fn(async (method) => {
     if (method === "branch.get") return { project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" };
     return {};
   });
@@ -94,7 +111,7 @@ describe("the cached tab list", () => {
       { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
       { scope: { run_id: "run-3" }, termIds: ["term-1", "term-2"] },
     );
-    App.call = vi.fn(() => new Promise(() => {}));
+    bridge.call = vi.fn(() => new Promise(() => {}));
     manager.listTerminals.mockImplementation(() => new Promise(() => {}));
     await mountAndOpen();
     expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
@@ -117,5 +134,38 @@ describe("the cached tab list", () => {
     await mountAndOpen();
     const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "tabs" });
     expect(record.value).toEqual({ scope: { run_id: "run-3" }, termIds: ["term-5"] });
+  });
+});
+
+// The rail merges every device's rows, and every machine mints a `p1`. The
+// console stands in one checkout on one machine — the one the link that opened
+// the surface named — so the row it addresses the tab cache with is that
+// device's, not whichever `p1` the merge happens to list first.
+describe("an account with more than one device", () => {
+  it("addresses the tab cache with the route device's row", async () => {
+    // The desktop's own build/login sorts first in the merge, and this console
+    // is the desktop's: its run is what the saved tabs are filed under.
+    const theirs = { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-9", worktree_id: "wt-9", deviceId: "dev-2" };
+    feedSnapshot = {
+      items: [theirs, homeRow],
+      projects: [],
+      devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [homeRow], projects: [] } },
+    };
+    await writeCached(
+      { deviceId: "dev-2", entityId: "run-9", kind: "tabs" },
+      { scope: { run_id: "run-9" }, termIds: ["term-1"] },
+    );
+    // This machine's own row is cached too, under a different device and a
+    // different run: reading it here would paint two tabs instead of one.
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
+      { scope: { run_id: "run-3" }, termIds: ["term-4", "term-5"] },
+    );
+    bridge.call = vi.fn(() => new Promise(() => {}));
+    manager.listTerminals.mockImplementation(() => new Promise(() => {}));
+
+    await mountAndOpen("dev-2");
+
+    expect(tabs()).toEqual(["Terminal 1"]);
   });
 });

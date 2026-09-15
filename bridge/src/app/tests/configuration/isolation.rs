@@ -24,13 +24,13 @@ fn the_account_isolation_and_a_project_override_survive_a_reload() {
     {
         let mut state = load(&cfg);
         state.add_project(inheriting.clone(), "main".to_string());
-        state.isolation = Isolation::Cow;
+        state.isolation = Isolation::Rift;
         state.project_at_mut(0).isolation = Some(Isolation::Worktree);
         state.persist();
     }
 
     let written: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-    assert_eq!(written["isolation"], "cow", "{written:?}");
+    assert_eq!(written["isolation"], "rift", "{written:?}");
     assert_eq!(
         written["projects"][0]["isolation"], "worktree",
         "{written:?}"
@@ -41,7 +41,7 @@ fn the_account_isolation_and_a_project_override_survive_a_reload() {
     );
 
     let reloaded = load(&cfg);
-    assert_eq!(reloaded.isolation, Isolation::Cow);
+    assert_eq!(reloaded.isolation, Isolation::Rift);
     assert_eq!(reloaded.project_at(0).isolation, Some(Isolation::Worktree));
     assert_eq!(
         reloaded.project_at(1).isolation,
@@ -92,7 +92,7 @@ fn an_unknown_persisted_isolation_loads_as_the_default() {
 fn a_project_override_beats_the_account_isolation() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    state.isolation = Isolation::Cow;
+    state.isolation = Isolation::Rift;
     state.project_at_mut(0).isolation = Some(Isolation::Worktree);
 
     let project_id = state.project_at(0).id.clone();
@@ -107,15 +107,15 @@ fn a_project_override_beats_the_account_isolation() {
 #[test]
 fn a_project_asking_to_be_cloned_is_cloned_where_the_volume_can() {
     let (dir, repo) = init_repo();
-    if !crate::isolation::probe::cow_or_skip(dir.path()) {
+    if !crate::isolation::probe::rift_or_skip(dir.path()) {
         return;
     }
     let mut state = qa_state(&repo, dir.path());
-    state.project_at_mut(0).isolation = Some(Isolation::Cow);
+    state.project_at_mut(0).isolation = Some(Isolation::Rift);
 
     let project_id = state.project_at(0).id.clone();
     let resolved = state.resolved_isolation(&project_id);
-    assert_eq!(resolved.isolation, Isolation::Cow);
+    assert_eq!(resolved.isolation, Isolation::Rift);
     assert_eq!(resolved.downgrade, None);
 }
 
@@ -131,7 +131,7 @@ fn a_clone_no_volume_can_make_is_downgraded_with_its_reason() {
         &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
     );
     let mut state = qa_state(&repo, dir.path());
-    state.isolation = Isolation::Cow;
+    state.isolation = Isolation::Rift;
     let project_id = state.add_project(linked, "feature".to_string());
 
     let resolved = state.resolved_isolation(&project_id);
@@ -170,10 +170,10 @@ fn settings_get_reports_the_account_isolation_and_what_this_volume_can_make() {
     let result = &settings["result"];
     assert_eq!(result["isolation"], "worktree", "{result:?}");
     let available = &result["isolation_available"];
-    assert!(available["cow"].is_boolean(), "{result:?}");
+    assert!(available["rift"].is_boolean(), "{result:?}");
     assert_eq!(
         available["reason"].is_null(),
-        available["cow"] == true,
+        available["rift"] == true,
         "a locked clone carries its sentence and an available one carries none: {result:?}"
     );
 }
@@ -188,7 +188,7 @@ fn with_no_project_registered_the_clone_answer_names_the_missing_project() {
     let settings = state.handle(req("settings.get", json!({})));
     assert_eq!(
         settings["result"]["isolation_available"],
-        json!({ "cow": false, "reason": "no project registered yet" }),
+        json!({ "rift": false, "reason": "no project registered yet" }),
         "{settings:?}"
     );
 }
@@ -199,17 +199,17 @@ fn with_no_project_registered_the_clone_answer_names_the_missing_project() {
 #[test]
 fn the_account_can_choose_cloning_where_the_volume_clones() {
     let (dir, repo) = init_repo();
-    if !crate::isolation::probe::cow_or_skip(dir.path()) {
+    if !crate::isolation::probe::rift_or_skip(dir.path()) {
         return;
     }
     let mut state = qa_state(&repo, dir.path());
 
-    let saved = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+    let saved = state.handle(req("settings.set", json!({ "isolation": "rift" })));
     assert_eq!(saved["ok"], true, "{saved:?}");
-    assert_eq!(saved["result"]["isolation"], "cow", "{saved:?}");
+    assert_eq!(saved["result"]["isolation"], "rift", "{saved:?}");
     assert_eq!(
         state.handle(req("settings.get", json!({})))["result"]["isolation"],
-        "cow"
+        "rift"
     );
 }
 
@@ -221,11 +221,11 @@ fn a_clone_this_machine_cannot_make_is_refused_and_changes_nothing() {
     let (dir, repo) = init_repo();
     let mut state = state_on_an_unclonable_project(dir.path(), &repo);
 
-    let refused = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+    let refused = state.handle(req("settings.set", json!({ "isolation": "rift" })));
     assert_eq!(refused["ok"], false, "{refused:?}");
     let sentence = refused["error"].as_str().unwrap().to_string();
     assert!(
-        sentence.starts_with("copy-on-write isolation is unavailable: ")
+        sentence.starts_with("Rift isolation is unavailable: ")
             && sentence.contains("linked worktree")
             && sentence.ends_with("; locked to worktrees"),
         "{sentence}"
@@ -234,7 +234,7 @@ fn a_clone_this_machine_cannot_make_is_refused_and_changes_nothing() {
     let settings = state.handle(req("settings.get", json!({})));
     assert_eq!(settings["result"]["isolation"], "worktree", "{settings:?}");
     assert_eq!(
-        settings["result"]["isolation_available"]["cow"], false,
+        settings["result"]["isolation_available"]["rift"], false,
         "{settings:?}"
     );
     assert_eq!(
@@ -242,7 +242,7 @@ fn a_clone_this_machine_cannot_make_is_refused_and_changes_nothing() {
             .as_str()
             .unwrap(),
         sentence
-            .trim_start_matches("copy-on-write isolation is unavailable: ")
+            .trim_start_matches("Rift isolation is unavailable: ")
             .trim_end_matches("; locked to worktrees"),
         "the refusal quotes the reason the same read reports: {settings:?}"
     );
@@ -260,7 +260,7 @@ fn an_unknown_isolation_is_refused_and_a_known_one_is_not_an_empty_set() {
     assert_eq!(refused["ok"], false, "{refused:?}");
     assert_eq!(
         refused["error"].as_str().unwrap(),
-        "unknown isolation \"telepathy\" (expected \"worktree\" or \"cow\")"
+        "unknown isolation \"telepathy\" (expected \"worktree\" or \"rift\")"
     );
 
     let saved = state.handle(req("settings.set", json!({ "isolation": "worktree" })));
@@ -286,10 +286,10 @@ fn a_project_row_carries_its_own_isolation_the_accounts_and_the_effective_one() 
     assert_eq!(row["isolation_default"], "worktree", "{row:?}");
     assert_eq!(row["isolation_effective"], "worktree", "{row:?}");
     let available = &row["isolation_available"];
-    assert!(available["cow"].is_boolean(), "{row:?}");
+    assert!(available["rift"].is_boolean(), "{row:?}");
     assert_eq!(
         available["reason"].is_null(),
-        available["cow"] == true,
+        available["rift"] == true,
         "a locked clone carries its sentence and an available one carries none: {row:?}"
     );
 }
@@ -339,17 +339,17 @@ fn a_project_override_is_stored_and_a_null_clears_it() {
 fn a_project_cannot_choose_a_clone_its_volume_cannot_make() {
     let (dir, repo) = init_repo();
     let mut state = state_on_an_unclonable_project(dir.path(), &repo);
-    state.isolation = Isolation::Cow;
+    state.isolation = Isolation::Rift;
     let project_id = state.project_at(0).id.clone();
 
     let refused = state.handle(req(
         "project.set_isolation",
-        json!({ "project_id": project_id, "isolation": "cow" }),
+        json!({ "project_id": project_id, "isolation": "rift" }),
     ));
     assert_eq!(refused["ok"], false, "{refused:?}");
     let sentence = refused["error"].as_str().unwrap().to_string();
     assert!(
-        sentence.starts_with("copy-on-write isolation is unavailable: ")
+        sentence.starts_with("Rift isolation is unavailable: ")
             && sentence.contains("linked worktree")
             && sentence.ends_with("; locked to worktrees"),
         "{sentence}"
@@ -363,12 +363,12 @@ fn a_project_cannot_choose_a_clone_its_volume_cannot_make() {
     let listed = state.handle(req("project.list", json!({})));
     let row = &listed["result"]["projects"][0];
     assert!(row["isolation"].is_null(), "{row:?}");
-    assert_eq!(row["isolation_default"], "cow", "{row:?}");
+    assert_eq!(row["isolation_default"], "rift", "{row:?}");
     assert_eq!(
         row["isolation_effective"], "worktree",
         "a locked volume makes the checkout every volume can: {row:?}"
     );
-    assert_eq!(row["isolation_available"]["cow"], false, "{row:?}");
+    assert_eq!(row["isolation_available"]["rift"], false, "{row:?}");
     assert!(
         row["isolation_available"]["reason"]
             .as_str()
@@ -384,7 +384,7 @@ fn a_project_cannot_choose_a_clone_its_volume_cannot_make() {
 #[test]
 fn a_project_may_choose_cloning_where_its_volume_clones() {
     let (dir, repo) = init_repo();
-    if !crate::isolation::probe::cow_or_skip(dir.path()) {
+    if !crate::isolation::probe::rift_or_skip(dir.path()) {
         return;
     }
     let mut state = qa_state(&repo, dir.path());
@@ -392,14 +392,14 @@ fn a_project_may_choose_cloning_where_its_volume_clones() {
 
     let saved = state.handle(req(
         "project.set_isolation",
-        json!({ "project_id": project_id, "isolation": "cow" }),
+        json!({ "project_id": project_id, "isolation": "rift" }),
     ));
     assert_eq!(saved["ok"], true, "{saved:?}");
     let row = &saved["result"];
-    assert_eq!(row["isolation"], "cow", "{row:?}");
+    assert_eq!(row["isolation"], "rift", "{row:?}");
     assert_eq!(row["isolation_default"], "worktree", "{row:?}");
-    assert_eq!(row["isolation_effective"], "cow", "{row:?}");
-    assert_eq!(state.project_at(0).isolation, Some(Isolation::Cow));
+    assert_eq!(row["isolation_effective"], "rift", "{row:?}");
+    assert_eq!(state.project_at(0).isolation, Some(Isolation::Rift));
 }
 
 /// The setter fails fast on both ways of naming nothing: a project this
@@ -469,7 +469,7 @@ fn conversation_summaries(state: &AppState, run_id: &str) -> Vec<String> {
 fn a_create_that_cannot_clone_falls_back_and_says_so_on_the_conversation() {
     let (dir, repo) = init_repo();
     let mut state = state_on_an_unclonable_project(dir.path(), &repo);
-    state.isolation = Isolation::Cow;
+    state.isolation = Isolation::Rift;
     let project_id = state.project_at(0).id.clone();
 
     let dispatched = state.handle(req(
@@ -498,104 +498,9 @@ fn a_create_that_cannot_clone_falls_back_and_says_so_on_the_conversation() {
             )
         });
     assert!(
-        note.starts_with("Created a git worktree: copy-on-write isolation is unavailable here — ")
+        note.starts_with("Created a git worktree: Rift isolation is unavailable here — ")
             && note.contains("linked worktree"),
         "the note carries the volume's own sentence: {note}"
-    );
-}
-
-/// Putting a checkout back is a create like any other: the isolation it is
-/// remade with is what the settings resolve to now — never a memory of what
-/// the vanished one was — and a volume that cannot clone is said on the
-/// same conversation the restore is written on.
-#[test]
-fn a_restore_that_cannot_clone_puts_a_worktree_back_and_says_so_on_the_conversation() {
-    let (dir, repo) = init_repo();
-    let mut state = state_on_an_unclonable_project(dir.path(), &repo);
-    let issue_id = approved_issue(&mut state, "put the checkout back");
-    let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
-    let run_id = run_id_of(&run);
-    std::fs::remove_dir_all(&state.runs[&run_id].worktree.path).unwrap();
-    // Chosen after the run exists, so the only fallback on this
-    // conversation is the restore's own.
-    state.isolation = Isolation::Cow;
-
-    let implemented = state.handle(req(
-        "issue.implement_stage",
-        json!({ "issue_id": issue_id, "stage_id": "second-half" }),
-    ));
-
-    assert_eq!(implemented["ok"], true, "{implemented:?}");
-    let restored = state.runs[&run_id].worktree.path.clone();
-    assert_eq!(
-        Isolation::of(&restored),
-        Some(Isolation::Worktree),
-        "the checkout came back as the isolation this volume can make: {restored:?}"
-    );
-    let note = conversation_summaries(&state, &run_id)
-        .into_iter()
-        .find(|summary| summary.starts_with("Created a git worktree: "))
-        .unwrap_or_else(|| {
-            panic!(
-                "the fallback is on the conversation: {:?}",
-                conversation_summaries(&state, &run_id)
-            )
-        });
-    assert!(
-        note.contains("linked worktree"),
-        "the note carries the volume's own sentence: {note}"
-    );
-}
-
-/// A restore that finds its checkout standing makes nothing: the directory
-/// is verified and reused, whatever it is. So the row it stands behind names
-/// no isolation and the conversation hears no fallback — a run reached again
-/// and again while the account asks for cloning would otherwise be told, on
-/// every stage, that a checkout nobody made is a linked worktree.
-#[test]
-fn a_restore_that_reuses_its_checkout_names_no_isolation_and_announces_nothing() {
-    let (dir, repo) = init_repo();
-    let mut app = state_on_an_unclonable_project(dir.path(), &repo);
-    let issue_id = approved_issue(&mut app, "reuse the checkout that is still there");
-    let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
-    let run_id = run_id_of(&run);
-    // Chosen after the run exists, so the only fallback that could reach
-    // this conversation is the restore's own.
-    app.isolation = Isolation::Cow;
-    let (gate, gate_handle) = OffLockGate::new();
-    app.off_lock_gate = Some(gate);
-    let state = app.shared();
-
-    let implemented = frame_on_a_thread(
-        &state,
-        "s-implement",
-        "issue.implement_stage",
-        json!({ "issue_id": issue_id, "stage_id": "second-half" }),
-    );
-    gate_handle.wait_for_arrival();
-
-    let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the board answers while the checkout is being verified");
-    let pending = pending_on_the_board(&board);
-    assert_eq!(
-        pending[0]["isolation"],
-        Value::Null,
-        "a verb that makes no checkout names no isolation: {pending:?}"
-    );
-
-    gate_handle.release();
-    let implemented = implemented
-        .recv_timeout(Duration::from_secs(30))
-        .expect("the implementation answers once its restore is done");
-    assert_eq!(implemented["ok"], true, "{implemented:?}");
-    let state = state.lock().unwrap();
-    assert!(
-        conversation_summaries(&state, &run_id)
-            .iter()
-            .all(|summary| !summary.starts_with("Created a git worktree: ")),
-        "the checkout was reused, not created: {:?}",
-        conversation_summaries(&state, &run_id)
     );
 }
 
@@ -606,7 +511,7 @@ fn a_restore_that_reuses_its_checkout_names_no_isolation_and_announces_nothing()
 fn a_bare_worktree_that_cannot_be_cloned_says_so_in_its_answer() {
     let (dir, repo) = init_repo();
     let mut state = state_on_an_unclonable_project(dir.path(), &repo);
-    state.isolation = Isolation::Cow;
+    state.isolation = Isolation::Rift;
     let project_id = state.project_at(0).id.clone();
 
     let created = state.handle(req(
@@ -619,7 +524,7 @@ fn a_bare_worktree_that_cannot_be_cloned_says_so_in_its_answer() {
     assert_eq!(result["isolation"], "worktree", "{result:?}");
     let note = result["isolation_note"].as_str().unwrap_or_default();
     assert!(
-        note.starts_with("Created a git worktree: copy-on-write isolation is unavailable here — ")
+        note.starts_with("Created a git worktree: Rift isolation is unavailable here — ")
             && note.contains("linked worktree"),
         "the answer carries the volume's own sentence: {result:?}"
     );
@@ -639,7 +544,7 @@ fn a_bare_worktree_that_cannot_be_cloned_says_so_in_its_answer() {
 fn a_creating_row_carries_the_isolation_the_checkout_is_being_made_as() {
     let (dir, repo) = init_repo();
     let mut app = state_on_an_unclonable_project(dir.path(), &repo);
-    app.isolation = Isolation::Cow;
+    app.isolation = Isolation::Rift;
     let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
@@ -676,11 +581,11 @@ fn a_creating_row_carries_the_isolation_the_checkout_is_being_made_as() {
 #[test]
 fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
     let (dir, repo) = init_repo();
-    if !crate::isolation::probe::cow_or_skip(dir.path()) {
+    if !crate::isolation::probe::rift_or_skip(dir.path()) {
         return;
     }
     let mut app = qa_state(&repo, dir.path());
-    app.isolation = Isolation::Cow;
+    app.isolation = Isolation::Rift;
     let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
@@ -700,7 +605,7 @@ fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
     let pending = pending_on_the_board(&board);
     assert_eq!(
         pending[0]["isolation"],
-        json!("cow"),
+        json!("rift"),
         "the row says the checkout being made is a clone: {pending:?}"
     );
 
@@ -710,7 +615,7 @@ fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
         .expect("the create answers once its git is done");
     assert_eq!(created["ok"], true, "{created:?}");
     let result = &created["result"];
-    assert_eq!(result["isolation"], "cow", "{result:?}");
+    assert_eq!(result["isolation"], "rift", "{result:?}");
     assert!(
         result["isolation_note"].is_null(),
         "a clone that was made announces no fallback: {result:?}"
@@ -718,77 +623,30 @@ fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
     let path = std::path::PathBuf::from(result["path"].as_str().unwrap_or_default());
     assert_eq!(
         Isolation::of(&path),
-        Some(Isolation::Cow),
+        Some(Isolation::Rift),
         "and what stands on disk is the clone: {path:?}"
-    );
-}
-
-/// The fallback is an announcement, not a term of the create. A store that
-/// refuses the note leaves the checkout, the branch and the record exactly
-/// as they are, and the run reaches the board it would have reached — the
-/// alternative is a run alive on disk that the bridge has forgotten.
-#[test]
-fn a_fallback_that_cannot_be_recorded_still_leaves_the_run_on_the_board() {
-    let (dir, repo) = init_repo();
-    let mut state = state_on_an_unclonable_project(dir.path(), &repo);
-    state.isolation = Isolation::Cow;
-
-    let plan = state.handle(req(
-        "plan.create",
-        json!({ "goal": "add a health endpoint" }),
-    ));
-    let plan_id = plan_id_of(&plan);
-    for stage_id in ["first-half", "second-half"] {
-        let approved = state.handle(req(
-            "plan.stage_approve",
-            json!({ "plan_id": plan_id, "stage_id": stage_id }),
-        ));
-        assert_eq!(approved["ok"], true, "{approved:?}");
-    }
-    let approved = state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
-    assert_eq!(approved["ok"], true, "{approved:?}");
-
-    // The first write the dispatch makes is the note's: everything before
-    // it is git and files, so this refusal lands on the announcement alone.
-    state
-        .store
-        .as_ref()
-        .expect("the qa state has a store")
-        .fail_next_write();
-    let dispatched = state.handle(req("run.create", json!({ "plan_id": plan_id })));
-
-    assert_eq!(
-        dispatched["ok"], true,
-        "an announcement that cannot be written never fails the create: {dispatched:?}"
-    );
-    let run_id = run_id_of(&dispatched);
-    assert!(
-        state.runs.contains_key(&run_id),
-        "and the run it made is on the board: {:?}",
-        state.runs.keys().collect::<Vec<_>>()
     );
 }
 
 /// The whole feature, end to end, on a volume that clones: the account
 /// chooses cloning, the run that follows lives in a clone of the project
 /// rather than a linked worktree, every surface that reads its work still
-/// reads it, and Done lands the clone's branch on the base and takes the
-/// directory away.
+/// reads it, and Finish retains the checkout when no remote is configured.
 #[test]
-fn a_run_dispatched_under_cloning_lives_in_a_clone_and_lands_from_it() {
+fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_retains_it() {
     let (dir, repo) = init_repo();
-    if !crate::isolation::probe::cow_or_skip(dir.path()) {
+    if !crate::isolation::probe::rift_or_skip(dir.path()) {
         return;
     }
     let mut state = qa_state(&repo, dir.path());
-    let chosen = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+    let chosen = state.handle(req("settings.set", json!({ "isolation": "rift" })));
     assert_eq!(chosen["ok"], true, "{chosen:?}");
 
     let (_, run_id) = planned_run_in_review(&mut state, "clone the project to work in it");
     let checkout = state.runs[&run_id].worktree.path.clone();
     assert_eq!(
         Isolation::of(&checkout),
-        Some(Isolation::Cow),
+        Some(Isolation::Rift),
         "the chosen isolation is what the run got: {checkout:?}"
     );
     assert!(
@@ -832,9 +690,10 @@ fn a_run_dispatched_under_cloning_lives_in_a_clone_and_lands_from_it() {
         json!({ "run_id": run_id, "action": "merge" }),
     ));
     assert_eq!(finished["ok"], true, "{finished:?}");
+    assert_eq!(finished["result"]["complete"], false, "{finished:?}");
     assert!(
-        repo.join("result-first-half.txt").exists() && repo.join("result-second-half.txt").exists(),
-        "the clone's branch landed on the base"
+        checkout.join("result-first-half.txt").exists()
+            && checkout.join("result-second-half.txt").exists(),
+        "Finish retains the clone and its work when no remote is configured"
     );
-    assert!(!checkout.exists(), "Done took the clone away");
 }

@@ -8,6 +8,7 @@ import {
   agentIsUp,
   agentSessionAnswered,
   agentSessionIsLive,
+  agentHeading,
   agentPattern,
   agentTitle,
   bubbleTip,
@@ -39,6 +40,20 @@ const agent = (over = {}) => ({
   unread_reason: null,
   working: false,
   ...over,
+});
+
+describe("what the conversation is called", () => {
+  it("wears the topic the agent set, and says it is starting until then", () => {
+    expect(agentHeading(agent())).toEqual({ text: "Starting", starting: true });
+    expect(agentHeading(agent({ topic: "Unify prompt delivery" }))).toEqual({
+      text: "Unify prompt delivery",
+      starting: false,
+    });
+    // A blank topic is no topic: the bridge never sends one, but a client
+    // that trusted the field's presence would show an empty header.
+    expect(agentHeading(agent({ topic: "   " }))).toEqual({ text: "Starting", starting: true });
+    expect(agentHeading(null)).toEqual({ text: "Starting", starting: true });
+  });
 });
 
 describe("who an agent is", () => {
@@ -165,6 +180,14 @@ describe("the bubble strip", () => {
     expect(types("issue")).not.toContain("add");
   });
 
+  it("marks the add bubble as the open conversation", () => {
+    const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "workspace", addingAgent: true });
+    expect(bubbles.map((bubble) => [bubble.type, bubble.active])).toEqual([
+      ["agent", false],
+      ["add", true],
+    ]);
+  });
+
   it("shows one ghost where no agent has been born yet, and nothing to add to", () => {
     const bubbles = railBubbles({ agents: [], selectedId: null, kind: "branch" });
     expect(bubbles.map((b) => b.type)).toEqual(["ghost"]);
@@ -250,6 +273,16 @@ describe("which agent can be taken back off", () => {
     ]);
     expect(plan.confirmLabel).toBe("Remove agent");
     expect(plan.danger).toBe(true);
+  });
+
+  it("names a workspace when removing one of its agents", () => {
+    const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2, provider: "codex" }), "workspace");
+    expect(plan.title).toBe("Remove Codex TUI 2 from this workspace?");
+    expect(plan.actions).toEqual([
+      "End the agent's session, if one is running",
+      "Remove Codex TUI 2 and its conversation from the workspace",
+      "Leave the workspace and its files untouched",
+    ]);
   });
 });
 

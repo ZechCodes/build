@@ -45,6 +45,14 @@ export async function replyOrNothing(pending) {
   }
 }
 
+/** The third argument of `session.call`: the timeout alone, as every caller
+ *  has always passed it, or `{ timeoutMs, priority }` — a cache warm-up names
+ *  `priority: "background"` there (wire spec step 1.4). */
+function callOptions(options) {
+  if (typeof options === "number") return { timeoutMs: options };
+  return options && typeof options === "object" ? options : {};
+}
+
 export async function openRelaySession({
   relayUrl,
   transport,
@@ -64,6 +72,9 @@ export async function openRelaySession({
   let rpc = null;
   let severed = false;
   let onCarrierChange = () => {};
+  /** The API adapter the last greeting selected (wire spec step 2.5), or
+   *  null before one has, and for a bridge no adapter here speaks to. */
+  let adapter = null;
 
   /** Nothing is carrying this session any more. The caller hears it once. */
   const severSession = () => {
@@ -116,20 +127,44 @@ export async function openRelaySession({
     throw error;
   }
 
+  /**
+   * One RPC over whichever wire this method belongs on — the switch's rule,
+   * not this module's.
+   *
+   * Signaling runs whether or not the app is paused: the pause holds the
+   * user's actions back, and `rtc.*` is the machinery that looks for a
+   * better wire under them.
+   */
+  const rawCall = (method, params = {}, options = {}) => {
+    if (isPaused() && !isSignaling(method)) {
+      return Promise.reject(new Error("your device is offline — reconnecting…"));
+    }
+    // Workspace detail waits until the bridge answers or the session fails;
+    // every other RPC retains the ordinary browser deadline.
+    const defaultTimeoutMs = method === "workspace.get" ? null : DEFAULT_RPC_TIMEOUT_MS;
+    const { timeoutMs = defaultTimeoutMs, priority } = callOptions(options);
+    return rpc.call(method, params, { timeoutMs, priority, carrier: carrierSwitch.wireFor(method) });
+  };
+
   return {
     deviceId: link.deviceId(),
+    /** The raw rpc through the installed adapter, when there is one: every
+     *  refusal a caller sees is then an `ApiError` with a code, whichever
+     *  1.x bridge answered. Before a greeting, the raw rpc. */
+    call: (method, params = {}, options = {}) =>
+      adapter ? adapter.call(method, params, options) : rawCall(method, params, options),
     /**
-     * One RPC over whichever wire this method belongs on — the switch's rule,
-     * not this module's.
-     *
-     * Signaling runs whether or not the app is paused: the pause holds the
-     * user's actions back, and `rtc.*` is the machinery that looks for a
-     * better wire under them.
+     * Install what `selectAdapter` picked for this session's bridge. The
+     * adapter is bound to the raw rpc, never to `call`, so its normalisation
+     * wraps the wire exactly once. A selection naming a side as `unsupported`
+     * installs nothing. Returns the adapter now installed, or null.
      */
-    call: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) =>
-      isPaused() && !isSignaling(method)
-        ? Promise.reject(new Error("your device is offline — reconnecting…"))
-        : rpc.call(method, params, { timeoutMs, carrier: carrierSwitch.wireFor(method) }),
+    installAdapter: (selection) => {
+      adapter = selection && !selection.unsupported ? selection.create(rawCall) : null;
+      return adapter;
+    },
+    /** The adapter installed on this session, or null. */
+    adapter: () => adapter,
     /** Subscribe to what the bridge says without being asked — the upgrade's
      *  own trickled candidates among it. Returns the unsubscribe. */
     onPush: (fn) => rpc.onPush(fn),
@@ -140,7 +175,8 @@ export async function openRelaySession({
      *  the session is handed over, so the first relay attach is the caller's
      *  own greeting, not a second one. */
     onCarrier: (fn) => (onCarrierChange = fn),
-    /** Sever this session deliberately (e.g. switching devices) — no onLost. */
+    /** Sever this session deliberately — the device was let go of, or a newer
+     *  session for it landed and this one lost the race — with no onLost. */
     close: () => {
       carrierSwitch.close();
       severed = true;

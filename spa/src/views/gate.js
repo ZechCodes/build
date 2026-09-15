@@ -1,13 +1,26 @@
 // Connection gate. Before the app can load we need a live, owned device.
 // Three entry states: onboarding (no devices yet), waiting (devices exist but
 // none online — auto-reconnect), connected (open the E2EE session and render).
+//
+// The waiting screen is not only a boot state. Every surface in the app is
+// about a machine, so an account that has run out of machines that can answer
+// has nothing to stand on: the gate takes the app back and says which machines
+// it is waiting for, and hands it straight back when one of them lands.
 
 import { $ } from "../dom.js";
-import { esc } from "../core/text.js";
-import { onlineStickyDeviceId } from "../core/devicePolicy.js";
-import { App, render } from "../app.js";
-import { openAppSession, adoptSession, greetLiveBridge, setConn } from "../connection.js";
+import {
+  allDevicesOfflineText,
+  deviceUnreachableText,
+  devicesNotReachedYetText,
+  esc,
+  waitingForDeviceText,
+} from "../core/text.js";
+import { App, render, unmountView } from "../app.js";
+import { openDeviceSessions, securityStopText } from "../connection.js";
+import { contextFor, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
+import { deviceNameOf } from "../core/devicePolicy.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
+import { renderAppBehindBridgeGate, renderBridgeBehindAppGate } from "./versionGate.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
@@ -29,53 +42,138 @@ function setGate(on) {
   }
 }
 
-async function enterApp() {
-  if (App._connecting) return;
-  App._connecting = true;
-  try {
-    // Honor an explicit device choice when that device is online; otherwise
-    // whichever of the user's devices answers first.
-    const preferDeviceId = onlineStickyDeviceId(App.devices, App.selectedDeviceId);
-    adoptSession(await openAppSession({ preferDeviceId }));
-  } finally {
-    App._connecting = false;
-  }
-  if (App._watch) {
-    clearInterval(App._watch);
-    App._watch = null;
-  }
-  setGate(false);
-  paintDevicePicker();
-  setConn('<span class="dot"></span>connected');
-  // Before the surfaces mount, so they take the cadence this bridge earns: a
-  // bridge that pushes lets them stand down to the safety poll, and one that
-  // does not leaves every interval exactly where it has always been.
-  greetLiveBridge();
-  startFeed();
+// Whether the gate is holding the app for want of a machine that can answer,
+// and how it hears that that changed.
+let holding = false;
+let stopWatchingDevices = null;
+// One boot at a time, and a counter every screen paint checks itself against:
+// two overlapping boots must not paint over each other.
+let gateGeneration = 0;
+let connectingPromise = null;
+
+async function connectToApp() {
+  // Every online device is opened at once; the app comes up on whichever
+  // answers first rather than waiting out the slowest one. The gate names no
+  // home: which device that is, the account list and the user's pick already
+  // say, and each device takes it in hand as it lands.
+  await openDeviceSessions().first;
+  gateGeneration += 1;
+  stopWatchingForOnline();
+  handBackToReader();
   startCacheSync();
   initInboxRail();
   initToolbar();
   render(); // the hash route survives the gate, so deep links land where they point
+  // Last, because it reads the account as it starts listening: the machine that
+  // answered may have greeted a bridge no adapter here speaks to while the app
+  // was coming up, and the page it has earned is the version gate this stands.
+  holdAppWhileNoDeviceAnswers();
+}
+
+/** Give the page back to the reader: the shell is theirs again, the picker says
+ *  what the rail is showing, and the devices are read on their cadence.
+ *
+ *  The bridges are already greeted: connection.js greets every device as it
+ *  lands it, which is before the first one answers here — so the surfaces mount
+ *  on the cadence each bridge has earned. A bridge that pushes lets them stand
+ *  down to the safety poll; one that does not leaves every interval exactly
+ *  where it has always been. */
+function handBackToReader() {
+  holding = false;
+  gatedDeviceId = null;
+  setGate(false);
+  paintDevicePicker();
+  startFeed();
+}
+
+/**
+ * Hold the app whenever nothing can answer, and hand it back when something
+ * can.
+ *
+ * Reachability is not news the feed carries — a row does not change when the
+ * machine behind it goes — so it is heard from the registry. One device of
+ * several going is the rail's business: its rows grey and the account carries
+ * on. The last one going is the whole app's, because there is no longer a
+ * machine for any surface to be about.
+ *
+ * The account is read as this starts listening as well as whenever it moves: a
+ * greeting settles while the app is still coming up, and a bridge no adapter
+ * here speaks to announces that once. A gate that only listened would wait for
+ * news that had already been told.
+ */
+export function holdAppWhileNoDeviceAnswers() {
+  stopWatchingDevices?.();
+  const readAccount = () => (liveContexts().length ? leaveHold() : holdForDevices());
+  stopWatchingDevices = onDeviceStateChanged(readAccount);
+  readAccount();
+}
+
+/** Nothing can answer: the mounted view goes, and the screen says why. A
+ *  machine whose bridge speaks an API major nothing here claims is answering —
+ *  in a shape this tab cannot read — so it gets the version gate rather than
+ *  the waiting screen. Otherwise nothing is started to watch for a device:
+ *  every one of them is already being asked for on its own backoff, and the
+ *  first to land hands the app straight back. */
+function holdForDevices() {
+  if (holding) return;
+  holding = true;
+  unmountView();
+  const behind = gatedContext();
+  if (behind) showVersionGate(behind);
+  else renderWaiting(App.devices);
+}
+
+/** A machine answered: the reader gets the route they were standing on back,
+ *  with the feed reading that machine again. The hold stopped the feed, so this
+ *  starts it — the device that just landed is live by the time this runs, and
+ *  its own joinFeed finds it already polling. */
+function leaveHold() {
+  if (!holding) return;
+  stopWatchingForOnline();
+  handBackToReader();
+  render();
+}
+
+/** Stop the waiting screen's poll. Every way back into the app runs this: a
+ *  poll left armed fires at an app the reader is already standing in, enters it
+ *  again, and builds the rail, the toolbar and the route over whatever was
+ *  mounted. */
+function stopWatchingForOnline() {
+  clearInterval(App._watch);
+  App._watch = null;
+}
+
+/** One boot at a time: a second call while the first is still opening devices
+ *  waits on the same promise rather than starting a second handshake. */
+async function enterApp() {
+  if (connectingPromise) return connectingPromise;
+  App._connecting = true;
+  connectingPromise = connectToApp();
+  try {
+    return await connectingPromise;
+  } finally {
+    connectingPromise = null;
+    App._connecting = false;
+  }
 }
 
 // Poll for a device to come online, then connect automatically.
 function watchForOnline() {
-  if (App._watch) clearInterval(App._watch);
+  stopWatchingForOnline();
+  const generation = gateGeneration;
   App._watch = setInterval(async () => {
     const devices = await refreshDevices();
+    if (generation !== gateGeneration) return;
     if (!devices.length) {
-      clearInterval(App._watch);
-      App._watch = null;
+      stopWatchingForOnline();
       await renderOnboarding();
       return;
     }
     paintWaiting(devices);
-    if (devices.some((d) => d.status === "online")) {
-      try {
-        await enterApp();
-      } catch {
-        /* warming up */
-      }
+    try {
+      await enterApp();
+    } catch {
+      /* warming up */
     }
   }, 3000);
 }
@@ -158,7 +256,6 @@ function bindPairing() {
 // the same screen, above the code the bridge will print.
 async function renderOnboarding() {
   setGate(true);
-  setConn('<span class="dot" style="background:var(--dim)"></span>no devices');
   $("#root").innerHTML = onboardingStepsHtml();
   bindPairing();
   await mountDownloads($("#root"), {
@@ -172,6 +269,8 @@ async function renderOnboarding() {
 function paintWaiting(devices) {
   const list = $("#waitlist");
   if (!list) return;
+  const intro = $("#waitintro");
+  if (intro) intro.textContent = waitingText(devices);
   const html = devices
     .map(
       (d) => `
@@ -185,40 +284,131 @@ function paintWaiting(devices) {
   if (list.innerHTML !== html) list.innerHTML = html;
 }
 
+/** Why the page is waiting, one sentence per situation. A machine the account
+ *  calls online that this client has never opened is a handshake still to
+ *  happen, so nothing has gone; once every such machine has been reached and
+ *  lost, the account has run out — named when there is one machine to name,
+ *  and said of all of them when there are several.
+ *
+ *  It is the account's own list that decides which of those it is, not what
+ *  this client happens to hold. A machine that was already down when the page
+ *  loaded was never opened here and has no context, so counting contexts read
+ *  an account of two machines as an account of one — and named whichever of
+ *  them this client had reached. */
+const WAITING_TEXT = {
+  unreached: devicesNotReachedYetText,
+  lone: (devices) => deviceUnreachableText(devices[0].name, contextFor(devices[0].id)?.offlineSince || Date.now()),
+  all: allDevicesOfflineText,
+};
+
+const waitingSituation = (devices) => {
+  const unreached = devices.some((device) => device.status === "online" && !contextFor(device.id));
+  if (unreached) return "unreached";
+  return devices.length === 1 ? "lone" : "all";
+};
+
+const waitingText = (devices) => WAITING_TEXT[waitingSituation(devices)](devices);
+
 function renderWaiting(devices) {
   setGate(true);
-  setConn('<span class="dot" style="background:var(--amber)"></span>device offline');
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
-      <h1 style="margin:0 0 6px">Waiting for your device</h1>
-      <p class="settings-intro" style="margin:0 0 18px">None of your devices are online right now. Start your bridge and Build will connect automatically — no need to refresh.</p>
+      <h1 style="margin:0 0 6px">${esc(waitingForDeviceText(devices.length))}</h1>
+      <p class="settings-intro" id="waitintro" style="margin:0 0 18px">${esc(waitingText(devices))}</p>
       <div class="panel"><div id="waitlist"></div></div>
-      <div class="row" style="margin-top:14px"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>
-        <button class="btn" id="retrybtn" style="margin-left:auto">Retry now</button>
+      <div class="wait-row"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>
+        <button class="btn" id="retrybtn">Retry now</button>
         <button class="btn" id="addmore">Add another device…</button></div>
       <div class="adderr" id="oerr"></div>
     </div>`;
   paintWaiting(devices);
+  // A machine this client has stopped dialling — its key was not the key this
+  // account pinned — is the one thing on this screen that waiting will not fix,
+  // so it is said where the screen says what went wrong.
+  $("#oerr").textContent = securityStopText();
   $("#retrybtn").onclick = () => boot();
   $("#addmore").onclick = () => openAddDevice(boot);
 }
 
-export async function boot() {
+// ---- the version gates (wire spec step 2.5) ----------------------------------
+//
+// Every greeting selects an adapter for the bridge that answered it, or names
+// the side that is out of date. The two screens below own #root for as long
+// as that is the answer; the greeting of a reconnect onto a bridge an adapter
+// claims — the user updated it, or switched device — lets the app back in.
+
+/** The machine a version gate is standing over, while one is up. */
+let gatedDeviceId = null;
+
+/** Which screen a machine no adapter here speaks to gets, by the side that is
+ *  behind. A kind, so a table rather than a chain. */
+const VERSION_GATES = {
+  app: showAppBehindGate,
+  bridge: showBridgeBehindGate,
+};
+
+/** The machine the gate is about when nothing can answer and some machine is
+ *  behind: app-behind first, because a reload fixes that one at no cost. */
+function gatedContext() {
+  const behind = knownContexts().filter((context) => context.unsupported);
+  return behind.find((context) => context.unsupported === "app") || behind[0] || null;
+}
+
+function showVersionGate(context) {
+  gatedDeviceId = context.deviceId;
   setGate(true);
-  setConn('<span class="dot" style="background:var(--amber)"></span>connecting…');
+  VERSION_GATES[context.unsupported](context);
+}
+
+/** The bridge speaks a newer major than this bundle. The reload is offered
+ *  only once the served-version watcher has found something newer to land on. */
+function showAppBehindGate(context) {
+  renderAppBehindBridgeGate($("#root"), {
+    deviceName: deviceNameOf(App.devices, context.deviceId),
+    bridgeVersion: context.apiVersion,
+    onReload: App.updateAvailable ? () => location.reload() : null,
+  });
+}
+
+/** The bridge speaks an older major than any adapter here. The screen stands
+ *  before the install line is minted, and carries it once it is. */
+async function showBridgeBehindGate(context) {
+  const root = $("#root");
+  const shown = { deviceName: deviceNameOf(App.devices, context.deviceId), bridgeVersion: context.apiVersion };
+  renderBridgeBehindAppGate(root, shown);
+  let minted;
+  try {
+    minted = await mintInstallCommand();
+  } catch {
+    return; // the instruction stands without the line
+  }
+  if (gatedDeviceId === context.deviceId && root === $("#root")) {
+    renderBridgeBehindAppGate(root, { ...shown, installCommand: minted.install_command });
+  }
+}
+
+export async function boot() {
+  const generation = ++gateGeneration;
+  if (App._watch) {
+    clearInterval(App._watch);
+    App._watch = null;
+  }
+  setGate(true);
   const devices = await refreshDevices();
+  if (generation !== gateGeneration) return;
   if (!devices.length) {
     await renderOnboarding();
     return;
   }
-  if (devices.some((d) => d.status === "online")) {
-    try {
-      await enterApp();
-      return;
-    } catch {
-      /* status stale or warming up → waiting */
-    }
+  try {
+    await enterApp();
+    return;
+  } catch {
+    /* API presence is only a hint; the relay is not ready yet → waiting */
   }
-  renderWaiting(devices);
+  if (generation !== gateGeneration) return;
+  const refreshedDevices = await refreshDevices();
+  if (generation !== gateGeneration) return;
+  renderWaiting(refreshedDevices);
   watchForOnline();
 }

@@ -27,10 +27,11 @@ const TITLE_WIDTH = 80;
 
 // ---- what the client holds ---------------------------------------------------
 
-/** One capture the client is holding: the text, an id of its own making, and
- *  when it was said. The daemon mints the real id when it takes it. */
-export function queuedCapture(text, { id, createdAt }) {
-  return { id, text, createdAt };
+/** One capture the client is holding: the text, an id of its own making, when
+ *  it was said, and the machine it is going to. The daemon mints the real id
+ *  when it takes it. */
+export function queuedCapture(text, { id, createdAt, deviceId = null }) {
+  return { id, text, createdAt, deviceId };
 }
 
 const isQueued = (entry) =>
@@ -125,12 +126,16 @@ function captureUnreadReason(capture) {
  * it carries. One row vocabulary, whichever side the copy came from.
  */
 // eslint-disable-next-line complexity -- ratchet: captureRow is at 11, cap 10 — reduce it, then drop this line
-export function captureRow(capture, { projectName = "" } = {}) {
+export function captureRow(capture, { projectName = "", deviceId = null } = {}) {
   const routing = capture.routing || null;
   const reason = captureUnreadReason(capture);
   return {
     kind: "capture",
     capture_id: capture.id,
+    // Which machine this row is on, stamped the way the feed stamps its own
+    // rows: a capture the client is holding is not on any device's board yet,
+    // and the rail narrowed to one machine still has to know whose it is.
+    deviceId,
     project_id: routing ? routing.project_id : "",
     project: projectName,
     branch: routing && routing.kind === "branch" ? routing.target_id : null,
@@ -162,7 +167,10 @@ export function captureRow(capture, { projectName = "" } = {}) {
  *  the daemon, which is a kind of working. */
 export function queuedCaptureRow(queued) {
   return {
-    ...captureRow({ id: queued.id, text: queued.text, created_at: queued.createdAt, state: "queued" }),
+    ...captureRow(
+      { id: queued.id, text: queued.text, created_at: queued.createdAt, state: "queued" },
+      { deviceId: queued.deviceId || null },
+    ),
     working: true,
   };
 }
@@ -183,21 +191,28 @@ export function routedCaptureExpired(tracked, nowMs) {
 
 // ---- the box -----------------------------------------------------------------
 
+/** The question the composer asks when it is not naming a machine: on the box
+ *  at rest, and in the open box while this client cannot say where the capture
+ *  is going. One sentence, minted once. */
+const PLAIN_QUESTION = "What do you want to get done?";
+
 /** The compose affordance at rest: one line, the whole question. */
 export function composePromptHtml() {
-  return `<button class="compose-prompt" id="compose-open" type="button">What do you want to get done?</button>`;
+  return `<button class="compose-prompt" id="compose-open" type="button">${PLAIN_QUESTION}</button>`;
 }
 
 /**
- * The open box. `note` is what the client wants to say about where this is
- * going (queued while the device is away); `advanced` is the manual panel's
- * markup, rendered only while its disclosure is open.
+ * The open box. `placeholder` is the line it asks with and `note` is what the
+ * client wants to say about where this is going (queued while the device is
+ * away) — both computed by the caller, which is the one that knows which
+ * machine this capture is for; `advanced` is the manual panel's markup,
+ * rendered only while its disclosure is open.
  */
 // eslint-disable-next-line complexity -- ratchet: composeBoxHtml is at 13, cap 10 — reduce it, then drop this line
-export function composeBoxHtml({ value = "", note = "", error = "", busy = false, advanced = "" } = {}) {
+export function composeBoxHtml({ value = "", placeholder, note = "", error = "", busy = false, advanced = "" } = {}) {
   return `<div class="compose-box">
-    <textarea id="compose-text" rows="3" placeholder="What do you want to get done?"
-      aria-label="What do you want to get done?">${esc(value)}</textarea>
+    <textarea id="compose-text" rows="3" placeholder="${esc(placeholder)}"
+      aria-label="${esc(placeholder)}">${esc(value)}</textarea>
     <div class="compose-row">
       <button class="compose-disclose" id="compose-advanced" type="button" aria-expanded="${advanced ? "true" : "false"}">
         ${advanced ? "▾" : "▸"} I know where this goes</button>
@@ -228,16 +243,11 @@ export function branchOptions(items, projectId) {
  *  exists and nothing runs until the first message; a branch is dispatched in
  *  one call, which is worktree, agent and first message together. */
 export function manualRoute({ kind, projectId, text, branch = "", agentParams = {} }) {
-  if (kind === "branch") {
-    const named = String(branch || "").trim();
-    return {
-      method: "branch.dispatch",
-      params: { project_id: projectId, instruction: text, ...(named ? { branch: named } : {}), ...agentParams },
-    };
-  }
+  void kind; // retained in the input shape for queued legacy drafts
+  const named = String(branch || "").trim();
   return {
-    method: "issue.create",
-    params: { goal: text, project_id: projectId, dispatch: false, ...agentParams },
+    method: "branch.dispatch",
+    params: { project_id: projectId, instruction: text, ...(named ? { branch: named } : {}), ...agentParams },
   };
 }
 
@@ -247,21 +257,30 @@ export function manualRoute({ kind, projectId, text, branch = "", agentParams = 
  *  after this browser has stopped waiting for it; the board carries the row
  *  either way. */
 export function manualRouteDestination(kind, created, projectId) {
+  void kind;
   const made = created || {};
   const project = made.project_id || projectId;
-  if (kind === "branch") {
-    return made.branch ? { name: "branch", projectId: project, branch: made.branch, tab: "changes" } : null;
-  }
-  const issueId = made.issue_id || made.plan_id;
-  return issueId ? { name: "issue", projectId: project, id: issueId } : null;
+  return made.branch ? { name: "branch", projectId: project, branch: made.branch, tab: "changes" } : null;
 }
 
-/** What the box says about a capture it cannot send yet. The text is kept
- *  whatever happens, and saying so is the difference between a queue and a
- *  loss. */
-export function composeOfflineNote(queuedCount) {
-  if (!queuedCount) return "Your device is away — this is kept here and sent when it is back.";
-  return queuedCount === 1
-    ? "1 capture is waiting for your device."
-    : `${queuedCount} captures are waiting for your device.`;
+/** The line the open box asks with: the machine the capture is going to, when
+ *  this client can name it, and the plain question when it cannot. */
+export const composePlaceholder = (deviceName) => (deviceName ? `Capture on ${deviceName}` : PLAIN_QUESTION);
+
+/** What the box says about a capture it cannot send yet: which machine it is
+ *  waiting for, and that the text is kept meanwhile — the difference between a
+ *  queue and a loss. A client that cannot name the machine says whose it is. */
+export function composeOfflineNote(queuedCount, deviceName) {
+  if (!queuedCount) return `${awayFrom(deviceName)} — this is kept here and sent when it is back.`;
+  const waitingFor = deviceName || "your device";
+  return queuedCount === 1 ? `1 capture is waiting for ${waitingFor}.` : `${queuedCount} captures are waiting for ${waitingFor}.`;
 }
+
+/** How every line about a machine that cannot take work starts — named when
+ *  this client can name it, and whose it is when it cannot. */
+const awayFrom = (deviceName) => `${deviceName || "Your device"} is away`;
+
+/** What the manual panel says instead of creating: the box beside it takes the
+ *  text whatever happens, which is the way out this offers. */
+export const composeManualAwayNote = (deviceName) =>
+  `${awayFrom(deviceName)} — capture it instead and it will be routed when it is back.`;

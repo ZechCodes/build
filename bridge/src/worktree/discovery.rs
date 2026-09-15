@@ -8,9 +8,10 @@ pub struct ExternalWorktree {
     /// Stable id: "wt-" + the first 12 hex chars of sha256 over the canonical
     /// absolute path (UTF-8 bytes of `path.display().to_string()`).
     pub id: String,
-    /// The checkout's directory name, whatever made it — the name every
-    /// backend calls it by, so adoption can build a `Worktree` that
-    /// `WorktreeManager::remove` understands.
+    /// What the checkout is called: [`checkout_name`] of its path, whatever
+    /// made it — the name every backend keys its record by, so adoption can
+    /// build a `Worktree` that `WorktreeManager::remove` understands. A mount
+    /// of a workspace carries its workspace, everything else its directory.
     pub name: String,
     /// Canonical absolute path of the working directory.
     pub path: PathBuf,

@@ -89,7 +89,7 @@ impl AppState {
     /// `dispatch: false` files the record and starts nothing — an inert issue,
     /// which is what the router and the toolbar's New issue create. The first
     /// `thread.post` to it starts the planning session.
-    pub(in crate::app) fn plan_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn plan_create(&mut self, params: &Value) -> Result<Value, String> {
         let goal = require_str(params, "goal")?;
         let project_id = match params.get("project_id").and_then(Value::as_str) {
             Some(p) => p.to_string(),

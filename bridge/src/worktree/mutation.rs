@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 /// from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
-    /// Git's internal worktree id (also the on-disk directory name) — the slug.
+    /// What the checkout is called: the name every backend keys its record of
+    /// it by, which for a checkout under the worktrees root is its directory
+    /// and its slug both. [`crate::isolation::checkout_name`] is the one place
+    /// it is read off a path.
     pub name: String,
     /// Absolute path to the working directory.
     pub path: PathBuf,
@@ -153,6 +156,50 @@ use super::WorktreeManager;
 use crate::isolation::branch_teardown;
 
 impl WorktreeManager {
+    /// Materialize one repository at an exact path inside a multi-directory
+    /// workspace. The branch name is derived independently from the mount, so
+    /// changing a source's display path does not change its Git identity.
+    pub fn create_workspace_checkout(
+        &self,
+        workspace_slug: &str,
+        base_branch: &str,
+        destination: &Path,
+        isolation: Isolation,
+    ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
+        if destination.exists() {
+            return Err(WorktreeError::Refused(format!(
+                "{} already exists",
+                destination.display()
+            )));
+        }
+        let backend = self.backend(isolation)?;
+        let repo = git2::Repository::open(&self.repo_path)?;
+        let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
+        let name = self.unique_checkout_name(workspace_slug, |candidate| {
+            self.branch_taken(&repo, candidate)
+        })?;
+        let branch = self.branch_name(&name);
+        repo.branch(&branch, &base_commit, false)?;
+        if let Err(error) = backend.materialize(&self.repo_path, &branch, destination) {
+            if let Ok(mut created) = repo.find_branch(&branch, git2::BranchType::Local) {
+                let _ = created.delete();
+            }
+            return Err(error);
+        }
+        let teardown = BranchTeardown::DeletesBranch;
+        record_branch_teardown(destination, teardown)?;
+        Ok(NamedBranchCheckout {
+            worktree: Worktree {
+                name,
+                path: destination.to_path_buf(),
+                recorded_branch: branch,
+                base_branch: base_branch.to_string(),
+            },
+            teardown,
+        })
+    }
+
     /// Create `<prefix>/<slug>` from `base_branch` and materialize a checkout of
     /// it. The name is made unique (`<slug>`, `<slug>-2`, …) so re-dispatching
     /// the same goal — or leftover branches/checkouts from prior tasks — never
@@ -168,6 +215,7 @@ impl WorktreeManager {
         base_branch: &str,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
         let backend = self.backend(isolation)?;
         let repo = git2::Repository::open(&self.repo_path)?;
         let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
@@ -206,6 +254,7 @@ impl WorktreeManager {
         base_branch: &str,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
         let repo = git2::Repository::open(&self.repo_path)?;
         let prepared = self
             .prepare_existing_branch(&repo, branch)?
@@ -232,6 +281,7 @@ impl WorktreeManager {
         base_branch: &str,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
         let repo = git2::Repository::open(&self.repo_path)?;
         let prepared = match self.prepare_existing_branch(&repo, branch)? {
             Some(prepared) => prepared,
@@ -313,13 +363,22 @@ impl WorktreeManager {
         std::fs::create_dir_all(&self.worktrees_root)?;
         Ok(self.worktrees_root.join(name))
     }
-    /// Ask every backend to be rid of the checkout at `path`. Removal's goal is
-    /// ABSENCE, and absence is success for every backend, so a checkout that is
-    /// already gone and one that is still there take the same path — and a
-    /// record left behind by an outside cleanup is cleared either way.
+    /// Remove a live checkout through its owner before clearing stale records.
+    /// A provider may need the directory's marker to unregister it, or a
+    /// filesystem-specific operation to remove it. Other backends only see
+    /// the absent path after its owner has finished.
     pub fn remove_checkout(&self, path: &Path) -> Result<(), WorktreeError> {
+        let owner = Isolation::of(path);
+        if owner.is_none() && (path.join(".rift").exists() || path.join(".git").is_dir()) {
+            return Err(WorktreeError::NotABuildCheckout(path.to_path_buf()));
+        }
+        if let Some(isolation) = owner {
+            self.backend(isolation)?.remove(&self.repo_path, path)?;
+        }
         for backend in self.every_backend() {
-            backend.remove(&self.repo_path, path)?;
+            if Some(backend.kind()) != owner {
+                backend.remove(&self.repo_path, path)?;
+            }
         }
         Ok(())
     }
@@ -561,6 +620,7 @@ impl WorktreeManager {
         when_unregistered: UnregisteredRestore,
         isolation: Isolation,
     ) -> Result<Worktree, WorktreeError> {
+        let _creation = self.lock_creation()?;
         self.refuse_outside_root(worktree)?;
         if worktree.path.exists() {
             return self.verify_existing_checkout(worktree);

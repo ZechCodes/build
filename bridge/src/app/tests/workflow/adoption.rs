@@ -191,6 +191,7 @@ fn a_queued_turn_spends_the_agents_own_harness() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let (_issue_id, run_id) = planned_run_in_review(&mut state, "review on two harnesses");
+    let branch_choice = state.runs[&run_id].model_choice.clone();
     let planted = primary_agent_id(&state, &run_id);
     let added = state.handle(req(
         "agent.add",
@@ -219,8 +220,7 @@ fn a_queued_turn_spends_the_agents_own_harness() {
         "the branch's harness is not this agent's, and the turn is this agent's"
     );
     assert_eq!(
-        state.runs[&run_id].model_choice.provider,
-        AgentProvider::ClaudeAdk,
+        state.runs[&run_id].model_choice.provider, branch_choice.provider,
         "and nothing moved the branch's own choice"
     );
 

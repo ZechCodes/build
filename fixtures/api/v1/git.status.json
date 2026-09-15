@@ -1,0 +1,17 @@
+{
+  "method": "git.status",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7",
+    "if_status_key": "9f3c1a0b7e2d4c55"
+  },
+  "result": {
+    "unchanged": true,
+    "status_key": "9f3c1a0b7e2d4c55"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

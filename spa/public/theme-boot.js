@@ -7,8 +7,8 @@
 // key, the attribute, and the two chrome colours in step with it — theme.js
 // takes ownership of all three the moment it loads.
 (function () {
-  var LIGHT = "#fafafa";
-  var DARK = "#15171c";
+  var LIGHT = "#f3f7f8";
+  var DARK = "#07151b";
   var dark = false;
   try {
     var preference = localStorage.getItem("build.theme");
@@ -20,6 +20,7 @@
     /* private mode or no matchMedia: fall through to light, which is the default */
   }
   document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-  var meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", dark ? DARK : LIGHT);
+  document.querySelectorAll('meta[name="theme-color"]').forEach(function (meta) {
+    meta.setAttribute("content", dark ? DARK : LIGHT);
+  });
 })();

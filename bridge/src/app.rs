@@ -15,6 +15,7 @@ mod board;
 mod board_index;
 mod captures;
 mod config;
+mod facts;
 mod fs;
 mod git;
 mod issues;
@@ -26,15 +27,19 @@ mod runs;
 mod runtime;
 mod streams;
 mod transactions;
+mod watchers;
+mod workspaces;
 mod worktrees;
 
+#[cfg(test)]
+pub(in crate::app) use self::board::cache::DiffCacheEntry;
 #[cfg(test)]
 pub(in crate::app) use self::board::cache::DiffCacheKey;
 #[cfg(test)]
 pub(in crate::app) use self::board::cache::EXTERNAL_SCAN_INTERVAL;
 pub(in crate::app) use self::board::cache::{
-    scan_may_yet_show_it, DiffCacheEntry, DiffComputeObserver, ExternalWorktreeRows,
-    PRIMARY_SUMMARY_TTL,
+    scan_may_yet_show_it, DiffComputeObserver, ExternalWorktreeRows, PRIMARY_SUMMARY_TTL,
+    WORKSPACE_SUMMARY_TTL,
 };
 pub(in crate::app) use self::board::views::{working_time_json, EntitylessRow};
 pub(in crate::app) use self::board_index::{BoardIndex, CacheEffect, RefreshClaim};
@@ -62,14 +67,13 @@ pub(in crate::app) use self::rpc::{
     entity_ids_of, err, optional_nonempty_string, require_array, require_str, require_value,
 };
 pub(in crate::app) use self::rtc::{rtc_close, rtc_ice, rtc_offer};
-pub(in crate::app) use self::runs::lifecycle::PlannedRunFinish;
+#[cfg(test)]
+pub(in crate::app) use self::runs::reporting::run_outcome_mirrors_to_issue;
 pub(in crate::app) use self::runs::reporting::{
     abandoned_branch_summary, append_plan_stage_announcements, close_abandoned_run_conversations,
     open_session_id, record_current_stage_started, record_idle_in_thread, record_report_in_thread,
     recovery_agent_prompt, HarnessExit,
 };
-#[cfg(test)]
-pub(in crate::app) use self::runs::reporting::{out_of_phase_log, run_outcome_mirrors_to_issue};
 #[cfg(test)]
 pub(in crate::app) use self::runs::review::{merge_cleanup_from, MergeCleanup};
 pub(in crate::app) use self::runs::views::{
@@ -78,18 +82,23 @@ pub(in crate::app) use self::runs::views::{
 #[cfg(test)]
 pub(in crate::app) use self::runtime::agents::endpoints::agent_is_working;
 pub(in crate::app) use self::runtime::agents::endpoints::{
-    activity_event_kind, agent_attach, agent_start, has_agent_choice, model_choice_from,
-    named_agent_id, AgentSpawnRequest, DigestScope,
+    activity_event_kind, agent_attach, agent_interrupt, agent_start, has_agent_choice,
+    model_choice_from, named_agent_id, AgentSpawnRequest, DigestScope,
 };
 pub(in crate::app) use self::runtime::agents::records::{
     record_activity, PumpWake, SelfReport, NO_ANSWER_SESSION_ENDED, SESSION_DIED_SUMMARY,
 };
+/// How a deferred reply is held to its verb's declared result type; see
+/// [`runtime::deferred::DeferredResultCheck`].
+pub(crate) use self::runtime::deferred::DeferredResultCheck;
 #[cfg(test)]
 pub use self::runtime::deferred::OffLockGate;
 #[cfg(test)]
 pub(in crate::app) use self::runtime::deferred::OffLockGateHandle;
+/// The `changes.*` verbs' off-lock half; see [`runtime::deferred::WatchAnswer`].
+pub(crate) use self::runtime::deferred::WatchAnswer;
 pub(in crate::app) use self::runtime::deferred::{
-    DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
+    DeferredJob, DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
 };
 pub(in crate::app) use self::runtime::delivery::preflight::{
     chosen_option_id, deliver, NEW_THREAD_MESSAGES_PROMPT, WORKING_INDICATOR_NOTICE,
@@ -147,21 +156,11 @@ pub(in crate::app) use self::runtime::terminals::{
 pub(in crate::app) use self::streams::{sha256_hex, stream_start, StreamState};
 
 #[cfg(test)]
-pub(in crate::app) use self::worktrees::finish::run_finish_git_steps;
-pub(in crate::app) use self::worktrees::finish::{
-    finish_git_steps_are_complete, parse_worktree_finish_action, BranchFinishEpilogue,
-    FinishEpilogue, FinishKind, FinishRequirement, PlannedFinish, RunFinishEpilogue,
-    WorktreeFinishJob, WorktreeFinishOutcome,
-};
-
-#[cfg(test)]
 use crate::orchestrator::Orchestrator;
 #[cfg(test)]
 use crate::templates::Templates;
 use captures::RouteRecorded;
 pub use captures::RoutedCapture;
-#[cfg(test)]
-use captures::{capture_after_routing, RoutedIssueDrafting};
 pub use config::ConfigError;
 pub(crate) use config::{announce_isolation_downgrade, expand_tilde};
 use config::{default_state_root, DEFAULT_HARNESS};
@@ -209,16 +208,13 @@ use crate::orchestrator::{
     AgentTurn, ImplementableIssue, PreparedAgentLaunch, RunSource, SpawnOptions,
 };
 #[cfg(test)]
-use crate::plan::{ImplementationActivity, PlanId, PlanState};
+use crate::plan::{PlanId, PlanState};
 #[cfg(test)]
 use crate::pty::HarnessSpec;
 use crate::rtc::{NoPeerFactory, SessionPeers};
 #[cfg(test)]
-use crate::run::ValidationReport;
 #[cfg(test)]
-use crate::run::{
-    PublicationAttempt, RunId, RunState, StageProgress, StageProgressState, StagePublication,
-};
+use crate::run::{RunId, RunState, StageProgress, StageProgressState, StagePublication};
 #[cfg(test)]
 use crate::screen::ScreenHandle;
 #[cfg(test)]
@@ -230,7 +226,7 @@ use crate::store::{
 };
 pub use crate::terminal_environment::{capture_login_path, resolve_term_shell};
 #[cfg(test)]
-use crate::thread::{SessionInstance, ThreadDetail};
+use crate::thread::SessionInstance;
 use crate::timing::FrameClock;
 #[cfg(test)]
 use crate::timing::FrameTimer;
@@ -239,6 +235,8 @@ use crate::transport::{self, Frame};
 #[cfg(test)]
 use crate::worktree::{git_remote_origin, git_stdout, WorktreeManager};
 pub(crate) use crate::{encoding::b64encode, fs_scope::fenced_scope_path};
+use facts::FactsHandle;
+use watchers::WorktreeWatchers;
 
 mod conversations;
 mod qa;
@@ -254,6 +252,8 @@ pub struct AppState {
     /// Registered projects and the entity bindings that route work to them.
     projects: ProjectRegistry,
     worktrees_root: std::path::PathBuf,
+    /// Durable multi-source workspaces plus adopted legacy Git-root checkouts.
+    workspaces: crate::workspace::WorkspaceRegistry,
     /// Where cloned repos land and the directory browser starts; user-configurable.
     projects_dir: std::path::PathBuf,
     /// The harness a new agent is created on when nobody names one. An agent is
@@ -331,18 +331,17 @@ pub struct AppState {
     /// seconds; every other frame, every terminal pump and the relay's own
     /// read loop need this mutex while they run.
     deferred_work: Option<DeferredWork>,
+    /// The result type `api/v1` declares for the verb that filled
+    /// [`AppState::deferred_work`], as a check the published value must pass.
+    /// Set by [`AppState::expect_deferred_result`] and taken with the work it
+    /// belongs to; a verb the facade does not serve leaves it `None`.
+    deferred_result_check: Option<DeferredResultCheck>,
     /// Rows a lifecycle verb has claimed and not yet settled: the board's
     /// carrier for a checkout being cut or discarded right now, and the claim
     /// that keeps a second verb off the same name, branch or checkout while its
     /// git runs. Never persisted — everything one leaves behind on a crash is
     /// re-derived by the scan (see `Bridge Concurrency Primitives.md` §5).
     pending_rows: Vec<Arc<crate::lifecycle::PendingRow>>,
-    /// Checkouts whose finish is running right now with the mutex released.
-    /// A finish is the one verb whose git work outlives its lock hold, so the
-    /// checkout it acts on is claimed here for the duration: a second finish
-    /// of the same checkout refuses cleanly instead of racing the first one's
-    /// branch delete and worktree removal.
-    finishing_worktrees: std::collections::HashSet<String>,
     /// Tests only: read every diff cache as aged out, so a stale-poll test does
     /// not have to sleep out a ten-second TTL.
     #[cfg(test)]
@@ -413,6 +412,12 @@ pub struct AppState {
     /// changes holding this state's mutex, and the flusher SENDS them holding
     /// no lock at all. See [`crate::changes`].
     changes: Arc<ChangeBus>,
+    /// The filesystem watchers on the worktrees subscriptions cover, and the
+    /// board's worktree roots they are reconciled against. See
+    /// [`watchers::WorktreeWatchers`].
+    watchers: Arc<WorktreeWatchers>,
+    /// Where the bus's facts source finds this state once it is shared.
+    facts_handle: FactsHandle,
     /// What every frame's four durations are recorded against.
     ///
     /// It lives on the state rather than beside it because the state is what
@@ -477,9 +482,19 @@ impl AppState {
         let state_root = context.state_root.clone();
         let bridge_exe = context.bridge_exe.clone();
         let agent = build_agent(qa_agent, context);
+        let watchers = WorktreeWatchers::new();
+        let facts_handle = FactsHandle::default();
+        let changes = facts::bus_with_sources(DEFAULT_COALESCE_WINDOW, &watchers, &facts_handle);
+        let workspaces =
+            crate::workspace::WorkspaceRegistry::recover(worktrees_root.join("workspaces"))
+                .unwrap_or_else(|error| {
+                    eprintln!("load workspaces: {error}");
+                    crate::workspace::WorkspaceRegistry::empty(worktrees_root.join("workspaces"))
+                });
         let mut state = AppState {
             projects: ProjectRegistry::new(),
             worktrees_root,
+            workspaces,
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
@@ -506,8 +521,8 @@ impl AppState {
             #[cfg(test)]
             off_lock_project_list_gate: None,
             deferred_work: None,
+            deferred_result_check: None,
             pending_rows: Vec::new(),
-            finishing_worktrees: std::collections::HashSet::new(),
             #[cfg(test)]
             force_stale_diff_caches: false,
             #[cfg(test)]
@@ -525,7 +540,9 @@ impl AppState {
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
             peers: SessionPeers::with_factory(Arc::new(NoPeerFactory)),
-            changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
+            changes,
+            watchers,
+            facts_handle,
             frame_clock: FrameClock::new(),
         };
         if let Some(repo_path) = repo_path {
@@ -607,16 +624,21 @@ impl AppState {
     /// can spawn pump tasks (see the `self_handle` field).
     pub fn shared(self) -> Arc<Mutex<AppState>> {
         let state = Arc::new(Mutex::new(self));
-        let changes = {
+        let (changes, watchers) = {
             let mut app = state.lock().unwrap();
             app.self_handle = Some(Arc::downgrade(&state));
-            Arc::clone(&app.changes)
+            let _ = app.facts_handle.set(Arc::downgrade(&state));
+            app.watchers.set_roots(app.worktree_roots());
+            (Arc::clone(&app.changes), Arc::clone(&app.watchers))
         };
         // The flusher runs on a task of its own and never takes this mutex —
         // that is the whole reason the bus is not a field it would have to
         // lock. A build with no runtime under it (the synchronous unit tests)
-        // gets no flusher and simply never sends.
-        ChangeBus::spawn_flusher(changes);
+        // gets no flusher and simply never sends. The watcher reconciler is
+        // the same shape: it starts watchers, which is a tree walk, so it too
+        // runs off this mutex.
+        ChangeBus::spawn_flusher(Arc::clone(&changes));
+        WorktreeWatchers::spawn_reconciler(watchers, changes);
         state
     }
 
@@ -626,12 +648,18 @@ impl AppState {
         Arc::clone(&self.changes)
     }
 
+    /// The per-worktree watchers — how the subscribe verbs and the board
+    /// reconcile which checkouts are watched.
+    pub(in crate::app) fn watchers(&self) -> Arc<WorktreeWatchers> {
+        Arc::clone(&self.watchers)
+    }
+
     /// Tests only: coalesce over a shorter window, so a push test does not have
     /// to sleep out the production one. Must precede [`AppState::shared`] —
     /// that is where the flusher takes its handle.
     #[cfg(test)]
     fn with_change_window(mut self, window: Duration) -> Self {
-        self.changes = ChangeBus::new(window);
+        self.changes = facts::bus_with_sources(window, &self.watchers, &self.facts_handle);
         self
     }
 }

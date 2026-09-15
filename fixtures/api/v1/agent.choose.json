@@ -1,0 +1,20 @@
+{
+  "method": "agent.choose",
+  "since": "1.0.0",
+  "params": {
+    "entity_id": "run-7",
+    "agent_id": "agent-1",
+    "model": "opus",
+    "effort": "high",
+    "expected_choice_revision": 4
+  },
+  "result": {
+    "entity_id": "run-7",
+    "agent_id": "agent-1",
+    "provider": "claude",
+    "model": "opus",
+    "effort": "high",
+    "choice_revision": 5
+  },
+  "errors": ["not_found", "invalid_params", "conflict", "internal"]
+}

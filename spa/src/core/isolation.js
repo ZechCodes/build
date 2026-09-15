@@ -1,13 +1,11 @@
-// How a task's checkout is isolated from the project — the account's choice,
+// How a task's checkout is isolated from the project — the device's choice,
 // overridable per project.
 //
-// A git worktree shares the project's repository, so it costs nothing and
-// starts empty. A copy-on-write clone copies the whole project directory,
-// `.git` included, through the filesystem, so it also costs nothing and starts
-// warm — node_modules, target and every other ignored directory already there —
-// but it is a repository of its own, and only a volume that can clone can make
-// one. Which volumes those are is the bridge's fact, and so is the sentence
-// naming why this one cannot: the client renders it, never writes it.
+// A git worktree shares the project's repository and starts empty. Rift makes
+// copy-on-write checkouts that preserve build caches already in the project.
+// Rift is available when its CLI is installed on the device. Availability and
+// the sentence explaining why it is unavailable are the bridge's facts: the
+// client renders them and never tries to detect Rift itself.
 //
 // This is the client's one naming table for the two isolations. The settings
 // panel and the project sheet both read it, so neither learns a variant name, a
@@ -18,7 +16,7 @@ import { esc } from "./text.js";
 /** The two isolations, in the order every control offers them. */
 export const ISOLATIONS = [
   { id: "worktree", label: "Git worktree" },
-  { id: "cow", label: "Copy-on-write clone" },
+  { id: "rift", label: "Rift (copy-on-write)" },
 ];
 
 const isolationNamed = (name) => ISOLATIONS.find((isolation) => isolation.id === name);
@@ -39,16 +37,16 @@ export function isolationOf(settings) {
   return isolationNamedOrDefault(settings && settings.isolation).id;
 }
 
-/** Why this device cannot clone, or "" while it can. The bridge writes the
+/** Why this device cannot use Rift, or "" while it can. The bridge writes the
  *  sentence; an availability that refuses without one still says something,
  *  because a disabled control with no reason is a dead end. */
 export function isolationLockReason(available) {
-  if (!available || available.cow !== false) return "";
+  if (!available || available.rift !== false) return "";
   return available.reason || "unavailable on this device";
 }
 
-/** The isolations as `<option>`s: the chosen one marked, the clone disabled and
- *  carrying the lock reason when the volume locks it, and — where a project
+/** The isolations as `<option>`s: the chosen one marked, Rift disabled and
+ *  carrying the lock reason when it is unavailable, and — where a project
  *  inherits — the account's answer offered first as the empty value. */
 export function isolationOptionsHtml(selected, available, { inheritLabel } = {}) {
   const lockReason = isolationLockReason(available);
@@ -57,7 +55,7 @@ export function isolationOptionsHtml(selected, available, { inheritLabel } = {})
     ? `<option value=""${chosen ? "" : " selected"}>${esc(inheritLabel)}</option>`
     : "";
   const options = ISOLATIONS.map((isolation) => {
-    const locked = isolation.id === "cow" && lockReason;
+    const locked = isolation.id === "rift" && lockReason;
     return `<option value="${esc(isolation.id)}"${isolation === chosen ? " selected" : ""}${
       locked ? ` disabled title="${esc(lockReason)}"` : ""
     }>${esc(isolation.label)}</option>`;
@@ -82,22 +80,22 @@ export function isolationFieldHtml() {
 export function isolationPanelHtml() {
   return `<div class="panel">
       <h3>🗂️ Work isolation</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:10px">A copy-on-write clone starts with the project's build caches already in place and keeps its own git repository. A git worktree shares the project's repository and starts empty.</div>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">Rift uses copy-on-write checkouts that preserve the project's build caches. Install the Rift CLI on this device to use it. A git worktree shares the project's repository and starts empty.</div>
       ${isolationFieldHtml()}
     </div>`;
 }
 
-/** The account's own choice: settings.set, and nothing above it to inherit. */
-export const ACCOUNT_ISOLATION = { rpc: "settings.set", params: {}, inherits: false, inheritLabel: null };
+/** The device's own choice: settings.set, and nothing above it to inherit. */
+export const DEVICE_ISOLATION = { rpc: "settings.set", params: {}, inherits: false, inheritLabel: null };
 
-/** A project's override, keyed on its id, naming the account default it
+/** A project's override, keyed on its id, naming the device default it
  *  replaces so the inherit option reads as what choosing it does. */
 export function projectIsolationTarget(project) {
   return {
     rpc: "project.set_isolation",
     params: { project_id: project.project_id },
     inherits: true,
-    inheritLabel: `Account default (${isolationLabel(project && project.isolation_default)})`,
+    inheritLabel: `Device default (${isolationLabel(project && project.isolation_default)})`,
   };
 }
 
@@ -110,10 +108,10 @@ const chosenIsolation = (settings, target) =>
 
 const lockLine = (available) => {
   const reason = isolationLockReason(available);
-  return reason ? `Locked to git worktrees on this device: ${reason}.` : "";
+  return reason ? `Rift is unavailable on this device: ${reason}.` : "";
 };
 
-/** Wire a select to one place a chosen isolation is sent — `ACCOUNT_ISOLATION`
+/** Wire a select to one place a chosen isolation is sent — `DEVICE_ISOLATION`
  *  or `projectIsolationTarget(project)` — and to the payload that place answers
  *  with. A caller holding the payload already, as a project surface holds its
  *  row, hands it over; a caller holding none leaves it out and the control reads
@@ -158,7 +156,7 @@ export async function mountIsolation(host, { callRpc, target, settings }) {
     saved.textContent = "Saving…";
     try {
       paint(await callRpc(target.rpc, { ...target.params, isolation: chosen }));
-      saved.textContent = "Saved. New worktrees are isolated this way; the ones already here keep what they were made with.";
+      saved.textContent = "Saved. New tasks use this isolation; existing checkouts and their caches stay as they are.";
     } catch (refusal) {
       error.textContent = refusal.message;
       saved.textContent = "";

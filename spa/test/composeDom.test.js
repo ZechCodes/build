@@ -3,26 +3,33 @@
 // by `c`, capture-first on submit, queued while the device is away — and the
 // advanced panel for the times the destination is already known.
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { sessionAnswering } from "./deviceSessionFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 let feedItems = [];
 let feedProjects = [];
+// The per-device slices of the snapshot, for the cases that have more than one
+// device; null means a fixture with one device, which is what a snapshot with
+// no `devices` is.
+let feedDevices = null;
 let subscriber = null;
-const refreshFeed = vi.fn(async () => subscriber && subscriber({ items: feedItems, projects: feedProjects }));
+const feedSnapshot = () => ({ items: feedItems, projects: feedProjects, ...(feedDevices ? { devices: feedDevices } : {}) });
+const refreshFeed = vi.fn(async () => subscriber && subscriber(feedSnapshot()));
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
     subscriber = fn;
-    fn({ items: feedItems, projects: feedProjects });
+    fn(feedSnapshot());
     return () => {};
   },
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 
 let App;
@@ -33,6 +40,13 @@ let adoptCaptureRecord;
 let forgetCaptureRecord;
 let subscribePendingCaptures;
 let CAPTURE_QUEUE_KEY;
+let adoptDeviceSession;
+let resetDeviceContexts;
+let setContextOffline;
+let modelCatalog;
+// What the one device on this account answers. The context adopted below calls
+// it, so a test that hands over a new one is that bridge answering differently.
+const bridge = { call: null };
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const $ = (selector) => document.querySelector(selector);
@@ -62,6 +76,9 @@ beforeEach(async () => {
   vi.resetModules();
   localStorage.clear();
   document.body.innerHTML = bodyHtml;
+  const composeHost = document.createElement("div");
+  composeHost.id = "compose";
+  document.getElementById("inbox-rail").insertBefore(composeHost, document.getElementById("inbox-list"));
   document.body.className = "";
   location.hash = "";
   feedItems = [{ kind: "branch", project_id: "p1", project: "relaydb", branch: "build/login", run_id: "run-1" }];
@@ -69,29 +86,43 @@ beforeEach(async () => {
     { id: "p1", name: "relaydb" },
     { id: "p2", name: "dotfiles" },
   ];
+  feedDevices = null;
   refreshFeed.mockClear();
   ({ App } = await import("../src/app.js"));
   ({ initCompose, flushCaptures, pendingCaptureRows, adoptCaptureRecord, forgetCaptureRecord, subscribePendingCaptures } =
     await import("../src/core/composeView.js"));
   ({ CAPTURE_QUEUE_KEY } = await import("../src/core/compose.js"));
+  ({ adoptDeviceSession, resetDeviceContexts, setContextOffline } = await import("../src/core/deviceContexts.js"));
   App.route = { name: "inbox" };
   App.gated = false;
-  App.offline = false;
-  App.modelCatalog = {
+  // The harnesses the composer offers are the creation device's, so the one
+  // device on this account answers for them.
+  modelCatalog = {
     default_provider: "claude",
     providers: [
       { id: "claude", label: "Claude Code", models: [{ id: "opus", label: "Opus", supports_effort: true }], efforts: ["low"] },
     ],
   };
-  App.call = vi.fn(async (method) => {
+  bridge.call = vi.fn(async (method) => {
+    if (method === "models.list") return modelCatalog;
     if (method === "capture.create") return captureRecord();
     if (method === "capture.get") return captureRecord();
     if (method === "issue.create") return { project_id: "p1", issue_id: "iss-3" };
     if (method === "branch.dispatch") return { project_id: "p1", branch: "build/login", run_id: "run-1", agent_id: "agent-1" };
     return { ok: true };
   });
+  App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
+  App.selectedDeviceId = "dev-1";
+  adoptDeviceSession(sessionAnswering(bridge)); // the device creation goes to
   initCompose();
 });
+
+afterEach(() => {
+  resetDeviceContexts?.();
+  App.devices = [];
+  App.selectedDeviceId = null;
+});
+
 
 describe("where compose lives", () => {
   it("is pinned at the inbox rail's top, above the entries", () => {
@@ -105,6 +136,20 @@ describe("where compose lives", () => {
   it("survives the gate, because a capture is worth keeping before a device answers", () => {
     document.body.classList.add("gated");
     expect($("#compose-open")).toBeTruthy();
+  });
+});
+
+describe("where the capture goes", () => {
+  it("asks on the device creation goes to, by name", () => {
+    press("c");
+    expect($("#compose-text").placeholder).toBe("Capture on Laptop");
+  });
+
+  it("asks plainly while this client cannot name that device", () => {
+    App.devices = [];
+    App.selectedDeviceId = null;
+    press("c");
+    expect($("#compose-text").placeholder).toBe("What do you want to get done?");
   });
 });
 
@@ -148,7 +193,7 @@ describe("capture first", () => {
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.create", { text: "fix the login redirect" });
+    expect(bridge.call).toHaveBeenCalledWith("capture.create", { text: "fix the login redirect" });
     expect(refreshFeed).toHaveBeenCalled();
     expect($("#compose-text")).toBeNull(); // the box is done with it
   });
@@ -158,7 +203,7 @@ describe("capture first", () => {
     type("#compose-text", "   ");
     $("#compose-send").click();
     await flush();
-    expect(App.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
+    expect(bridge.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
     expect($(".compose-error").hidden).toBe(false);
   });
 
@@ -171,12 +216,24 @@ describe("capture first", () => {
     expect(rows.map((row) => [row.capture_id, row.state])).toEqual([["capture-1", "routing"]]);
   });
 
+  // The rail lists every machine's work and the picker narrows it to one, so
+  // every row on it says which machine it is on — including the ones the client
+  // is holding, which no device's feed carries yet. A capture goes to the
+  // machine creation goes to, and that is the machine its row names.
+  it("stamps the machine it went to on the row it is holding", async () => {
+    press("c");
+    type("#compose-text", "fix the login redirect");
+    $("#compose-send").click();
+    await flush();
+    expect(pendingCaptureRows().map((row) => row.deviceId)).toEqual(["dev-1"]);
+  });
+
   it("sends on ⌘/ctrl+Enter, since a capture can be more than one line", async () => {
     press("c");
     const text = type("#compose-text", "ship it");
     text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.create", { text: "ship it" });
+    expect(bridge.call).toHaveBeenCalledWith("capture.create", { text: "ship it" });
   });
 });
 
@@ -188,7 +245,7 @@ describe("a route the client is watching", () => {
   /** Send one, then let the feed drop it: the route settled, so the client asks
    *  once where it went and keeps the row on screen. */
   async function settledCapture(record) {
-    App.call = vi.fn(async (method) => {
+    bridge.call = vi.fn(async (method) => {
       if (method === "capture.create") return captureRecord();
       if (method === "capture.get") return record;
       return { ok: true };
@@ -267,7 +324,22 @@ describe("a route the client is watching", () => {
 
 describe("while the device is away", () => {
   beforeEach(() => {
-    App.offline = true;
+    setContextOffline("dev-1");
+  });
+
+  it("names the device it is holding the capture for", () => {
+    press("c");
+    expect($(".compose-note").textContent).toBe("Laptop is away — this is kept here and sent when it is back.");
+  });
+
+  it("counts what it is holding for that device, once the box is opened again", async () => {
+    press("c");
+    type("#compose-text", "remember the redirect");
+    $("#compose-send").click();
+    await flush();
+
+    press("c");
+    expect($(".compose-note").textContent).toBe("1 capture is waiting for Laptop.");
   });
 
   it("keeps what was said on the device, and says so", async () => {
@@ -275,10 +347,12 @@ describe("while the device is away", () => {
     type("#compose-text", "remember the redirect");
     $("#compose-send").click();
     await flush();
-    expect(App.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
+    expect(bridge.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
     const queued = JSON.parse(localStorage.getItem(CAPTURE_QUEUE_KEY));
     expect(queued.map((entry) => entry.text)).toEqual(["remember the redirect"]);
     expect(pendingCaptureRows().map((row) => row.state)).toEqual(["queued"]);
+    // Still that machine's row: it is where this is going the moment it answers.
+    expect(pendingCaptureRows().map((row) => row.deviceId)).toEqual(["dev-1"]);
   });
 
   it("sends what it was holding the moment the device is back", async () => {
@@ -287,9 +361,9 @@ describe("while the device is away", () => {
     $("#compose-send").click();
     await flush();
 
-    App.offline = false;
+    setContextOffline("dev-1", { offline: false });
     await flushCaptures();
-    expect(App.call).toHaveBeenCalledWith("capture.create", { text: "remember the redirect" });
+    expect(bridge.call).toHaveBeenCalledWith("capture.create", { text: "remember the redirect" });
     expect(JSON.parse(localStorage.getItem(CAPTURE_QUEUE_KEY))).toEqual([]);
   });
 
@@ -299,8 +373,8 @@ describe("while the device is away", () => {
     $("#compose-send").click();
     await flush();
 
-    App.offline = false;
-    App.call = vi.fn(async () => {
+    setContextOffline("dev-1", { offline: false });
+    bridge.call = vi.fn(async () => {
       throw new Error("device offline");
     });
     await flushCaptures();
@@ -310,22 +384,25 @@ describe("while the device is away", () => {
 });
 
 describe("the advanced panel", () => {
-  const openAdvanced = () => {
+  // The panel's harness picker is filled from the creation device's catalog, so
+  // opening it is a round trip the tests below wait out.
+  const openAdvanced = async () => {
     press("c");
     $("#compose-advanced").click();
+    await flush();
   };
 
-  it("offers the projects, the two things work can be, and the branches there are", () => {
-    openAdvanced();
+  it("offers the projects and the branches there are, with no issue destination", async () => {
+    await openAdvanced();
     expect([...document.querySelectorAll("#compose-project option")].map((option) => option.value)).toEqual(["p1", "p2"]);
-    expect($('[data-compose-kind="issue"]')).toBeTruthy();
+    expect($('[data-compose-kind="issue"]')).toBeNull();
     expect($('[data-compose-kind="branch"]')).toBeTruthy();
     $('[data-compose-kind="branch"]').click();
     expect([...document.querySelectorAll("#compose-branches option")].map((option) => option.value)).toEqual(["build/login"]);
   });
 
-  it("carries the harness picker — agent, model and effort — on the same panel", () => {
-    openAdvanced();
+  it("carries the harness picker — agent, model and effort — on the same panel", async () => {
+    await openAdvanced();
     $("[data-agent-choice-toggle]").click();
     // Both agents, whatever the bridge has listed models for: dispatching needs
     // only a harness. The Claude Code entry is the carrier this account's
@@ -337,25 +414,24 @@ describe("the advanced panel", () => {
     expect($("#compose-choice-effort")).toBeTruthy();
   });
 
-  it("files an inert issue and opens it, without troubling the router", async () => {
-    openAdvanced();
+  it("dispatches the default branch destination without troubling the router", async () => {
+    await openAdvanced();
     type("#compose-text", "add a /health endpoint");
     $("#compose-project").value = "p2";
     $("#compose-project").dispatchEvent(new Event("change", { bubbles: true }));
     $("#compose-manual-go").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("issue.create", {
-      goal: "add a /health endpoint",
+    expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", {
+      instruction: "add a /health endpoint",
       project_id: "p2",
-      dispatch: false,
       provider: "claude",
     });
-    expect(App.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
-    expect(location.hash).toBe("#/project/p1/issue/iss-3");
+    expect(bridge.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 
   it("dispatches a branch, with the harness the panel names", async () => {
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "finish the redirect");
     $('[data-compose-kind="branch"]').click();
     type("#compose-branch", "build/login");
@@ -364,27 +440,28 @@ describe("the advanced panel", () => {
     $("#compose-choice-model").dispatchEvent(new Event("change", { bubbles: true }));
     $("#compose-manual-go").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("branch.dispatch", {
+    expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", {
       project_id: "p1",
       instruction: "finish the redirect",
       branch: "build/login",
       provider: "claude",
       model: "opus",
     });
-    expect(location.hash).toBe("#/project/p1/branch/build%2Flogin/changes");
+    // The branch was made on the machine creation goes to, so the route says so.
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 
   // A dispatch the browser stopped waiting for is still running, and its row is
   // on the board. The box shuts on it rather than accusing the daemon of a
   // refusal it never made.
   it("shuts on a dispatch that outlives the browser's timer, saying nothing about it", async () => {
-    App.call = vi.fn(async () => {
+    bridge.call = vi.fn(async () => {
       const timedOut = new Error("branch.dispatch timed out");
       timedOut.timedOut = true;
       timedOut.uncertain = true;
       throw timedOut;
     });
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "finish the redirect");
     $('[data-compose-kind="branch"]').click();
     $("#compose-manual-go").click();
@@ -394,7 +471,7 @@ describe("the advanced panel", () => {
   });
 
   it("dispatches an untouched branch with the agent displayed when the account default is not offered", async () => {
-    App.modelCatalog = {
+    modelCatalog = {
       default_provider: "pi",
       providers: [
         { id: "pi", label: "Pi", models: [], efforts: [] },
@@ -402,14 +479,14 @@ describe("the advanced panel", () => {
         { id: "codex", label: "Codex", models: [], efforts: [] },
       ],
     };
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "finish the redirect");
     $('[data-compose-kind="branch"]').click();
     type("#compose-branch", "build/login");
     expect($("#compose-choice-provider").value).toBe("claude_adk");
     $("#compose-manual-go").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("branch.dispatch", {
+    expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", {
       project_id: "p1",
       instruction: "finish the redirect",
       branch: "build/login",
@@ -418,14 +495,60 @@ describe("the advanced panel", () => {
   });
 
   it("says what the daemon refused, and keeps what was typed", async () => {
-    App.call = vi.fn(async () => {
+    bridge.call = vi.fn(async () => {
       throw new Error("unknown project_id: p9");
     });
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "add a /health endpoint");
     $("#compose-manual-go").click();
     await flush();
     expect($(".compose-error").textContent).toContain("unknown project_id");
     expect($("#compose-text").value).toBe("add a /health endpoint");
+  });
+});
+
+// Compose is about one machine: a capture goes to the device creation goes to,
+// so the destinations it offers and the names it prints are that device's. The
+// rail's feed carries every device — both of them mint a `p1` — so the box
+// reads the home device's slice out of it rather than the merge.
+describe("an account with more than one device", () => {
+  const twoDevices = async () => {
+    App.devices = [
+      { id: "dev-2", name: "Desktop", status: "online" },
+      { id: "dev-1", name: "Laptop", status: "online" },
+    ];
+    App.selectedDeviceId = "dev-1"; // the laptop is the device creation goes to
+    const theirs = {
+      items: [{ kind: "branch", project_id: "p1", project: "their notes", branch: "their/branch", deviceId: "dev-2" }],
+      projects: [{ id: "p1", name: "their notes", deviceId: "dev-2", projectKey: "dev-2/p1" }],
+    };
+    const mine = {
+      items: [{ kind: "branch", project_id: "p1", project: "relaydb", branch: "build/login", deviceId: "dev-1" }],
+      projects: [{ id: "p1", name: "relaydb", deviceId: "dev-1", projectKey: "dev-1/p1" }],
+    };
+    // The desktop sorts first in the merge, so a bare-id lookup finds its rows.
+    feedItems = [...theirs.items, ...mine.items];
+    feedProjects = [...theirs.projects, ...mine.projects];
+    feedDevices = { "dev-2": theirs, "dev-1": mine };
+    await refreshFeed();
+  };
+
+  it("offers the home device's projects and branches, not every device's", async () => {
+    await twoDevices();
+    press("c");
+    $("#compose-advanced").click();
+    expect([...document.querySelectorAll("#compose-project option")].map((option) => option.textContent)).toEqual(["relaydb"]);
+    $('[data-compose-kind="branch"]').click();
+    expect([...document.querySelectorAll("#compose-branches option")].map((option) => option.value)).toEqual(["build/login"]);
+  });
+
+  it("names a routed capture after the project on the device that took it", async () => {
+    await twoDevices();
+    press("c");
+    type("#compose-text", "fix the login redirect");
+    $("#compose-send").click();
+    await flush();
+    adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "issue" } }));
+    expect(pendingCaptureRows()[0].project).toBe("relaydb");
   });
 });

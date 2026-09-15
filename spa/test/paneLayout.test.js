@@ -38,6 +38,9 @@ const cssRules = () => rulesIn(strippedSource);
 
 const rulesFor = (selector) => cssRules().filter((rule) => rule.selector === selector);
 
+/** The rule as it reads before any media query narrows it. */
+const baseRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === null);
+
 /** The value a rule body settles on for one property, or null. Names are
  *  compared whole, so `width` never reads out of `max-width`, and a repeated
  *  property keeps its last value the way the cascade does. */
@@ -82,6 +85,10 @@ const narrowQueryAt = strippedSource.indexOf(NARROW_QUERY);
  *  are the same number, which is what makes the transition read as one — the
  *  test below pins that rather than trusting the constant. */
 const STACK_QUERY = "@media (max-width: 900px)";
+
+/** The width a phone reads at: the conversation panel stops sitting beside the
+ *  work and is laid over it. */
+const PHONE_QUERY = "@media (max-width: 760px)";
 const STACK_WIDTH = 900;
 
 /** Custom properties as the cascade leaves them for a viewport: every :root
@@ -205,9 +212,18 @@ describe("tab layout primitives", () => {
     }
   });
 
-  it("defines each primitive once and never hard-codes its width", () => {
+  it("defines each primitive's box once and never hard-codes its width", () => {
     expect(rulesFor(".pane-col")).toHaveLength(0); // the shared rule is the whole single-column layout
-    expect(rulesFor(".pane-split")).toHaveLength(1);
+    // The split's BOX is stated once, at every width. The one other rule that
+    // names it turns the same box on its side below the stacking width and
+    // says nothing else — a second box would be a second layout.
+    expect(rulesFor(".pane-split").filter((rule) => enclosingAtRule(rule.at) === null)).toHaveLength(1);
+    for (const rule of rulesFor(".pane-split").filter((rule) => enclosingAtRule(rule.at) !== null)) {
+      expect(Object.keys(rule.body.split(";").reduce((all, piece) => {
+        const colon = piece.indexOf(":");
+        return colon < 0 ? all : { ...all, [piece.slice(0, colon).trim()]: true };
+      }, {}))).toEqual(["flex-direction"]);
+    }
     for (const rule of cssRules().filter((rule) => targetsPrimitive(rule.selector))) {
       expect(rule.body).not.toMatch(/max-width:\s*\d/);
     }
@@ -480,17 +496,24 @@ describe("tab layout primitives", () => {
     // The inbox rail leaves the flow under the same query the panes stack
     // under. Were they different numbers, one of the two transitions would
     // land in a frame sized for the other.
-    const overlay = rulesFor("#inbox-rail").find((rule) => declaration(rule.body, "position") === "fixed");
+    const overlay = rulesFor("#inbox-rail").find((rule) => declaration(rule.body, "position") === "absolute");
     expect(overlay).toBeTruthy();
     expect(enclosingAtRule(overlay.at)).toBe(STACK_QUERY);
     expect(shellWidth(STACK_WIDTH)).toBe(STACK_WIDTH);
   });
 
   // ---- the two-column layout below the stacking width ----
-  // Neither pane stacks any more. A phone given two stacked scrollers spends
-  // half a small screen on the list it is not reading, so the list floats over
-  // the detail instead and a handle pulls it out.
-  it("turns the list column into a drawer instead of stacking the pane", () => {
+  // Neither pane spends a phone on two scrollers. The list column drops in from
+  // the TOP of the pane over the detail, and a trigger row across the head of
+  // the pane drops it — a drawer belongs to the control that pulls it, and a
+  // panel that opens under its own button is the gesture a phone already knows.
+  it("drops the list column in from the top instead of stacking the pane", () => {
+    // The pane's own two columns become one stack — the trigger row over the
+    // detail — while the list column leaves the flow entirely.
+    const split = cssRules().find(
+      (rule) => rule.selector === ".pane-split" && enclosingAtRule(rule.at) === STACK_QUERY,
+    );
+    expect(declaration(split.body, "flex-direction")).toBe("column");
     const stacked = cssRules().filter(
       (rule) => declaration(rule.body, "flex-direction") === "column" && TWO_COLUMN_PANES.includes(rule.selector),
     );
@@ -503,24 +526,37 @@ describe("tab layout primitives", () => {
     );
     expect(drawer).toBeTruthy();
     expect(declaration(drawer.body, "position")).toBe("absolute");
-    expect(declaration(drawer.body, "transform")).toBe("translateX(-100%)");
-    expect(declaration(drawer.body, "width")).toBe("var(--pane-drawer)");
+    // Up, not left: it hangs from the trigger row and is clipped by the frame.
+    expect(declaration(drawer.body, "transform")).toBe("translateY(-100%)");
+    expect(declaration(drawer.body, "top")).toBe("var(--surface-head)");
+    expect(declaration(drawer.body, "left")).toBe("0");
+    expect(declaration(drawer.body, "right")).toBe("0");
     // The split is what the drawer measures and floats against, so it is the
     // containing block — stated once, at every width, where the primitive is.
     expect(declaration(rulesFor(".pane-split")[0].body, "position")).toBe("relative");
   });
 
-  it("splits the rail's floor evenly between Changes and Files", () => {
-    // The bar at the bottom of the rail is the rail's own two-way switch, not a
-    // row of pills at the top of a surface: each tab takes half the column and
-    // centres its label in it.
-    const [cell] = cssRules().filter((rule) => rule.selector === ".railtabs .tabs .t");
-    expect(cell).toBeTruthy();
-    expect(declaration(cell.body, "flex")).toBe("1 1 0");
-    expect(declaration(cell.body, "justify-content")).toBe("center");
-    // Half a squeezed rail is narrower than a label: the cell has to give
-    // ground rather than push the bar past the column.
-    expect(declaration(cell.body, "min-width")).toBe("0");
+  it("stands the trigger row on the surface's head line, above the detail", () => {
+    const trigger = cssRules().find(
+      (rule) => rule.selector === ".pane-handle" && enclosingAtRule(rule.at) === STACK_QUERY,
+    );
+    expect(trigger).toBeTruthy();
+    expect(declaration(trigger.body, "display")).toBe("flex");
+    // The trigger is written after the pane's own columns (it is the
+    // primitive's) and read before them.
+    expect(declaration(trigger.body, "order")).toBe("-1");
+    // The same line the git bar and the conversation panel's head stop on, and
+    // the height the drawer hangs from — one number, so they cannot drift.
+    expect(declaration(trigger.body, "height")).toBe("var(--surface-head)");
+    // One line that ellipsizes: a trigger that wrapped would move the drawer's
+    // hinge off the number above.
+    const words = cssRules().find(
+      (rule) => rule.selector === ".pane-handle-what" && enclosingAtRule(rule.at) === STACK_QUERY,
+    );
+    expect(declaration(words.body, "white-space")).toBe("nowrap");
+    expect(declaration(words.body, "text-overflow")).toBe("ellipsis");
+    // A caret says it is a dropdown, and turns over with it.
+    expect(cssRules().find((rule) => rule.selector === ".pane-split.drawer-open .pane-handle-caret")).toBeTruthy();
   });
 
   it("drawers both panes from one rule, so neither can drift", () => {
@@ -532,15 +568,26 @@ describe("tab layout primitives", () => {
     }
   });
 
-  it("rides the handle out with the drawer it opened", () => {
+  it("leaves the trigger row standing while the drawer hangs from it", () => {
     const open = cssRules().find((rule) => rule.selector === ".pane-split.drawer-open .pane-list");
     expect(open).toBeTruthy();
     expect(declaration(open.body, "transform")).toBe("none");
-    const handle = cssRules().find((rule) => rule.selector === ".pane-split.drawer-open .pane-handle");
-    expect(declaration(handle.body, "left")).toBe("var(--pane-drawer)");
-    // One width for the panel and for how far the handle travels — a handle
-    // that stops anywhere but the panel's edge reads as a second control.
-    expect(stylesSource.match(/--pane-drawer:/g) || []).toHaveLength(1);
+    // The trigger does not travel: it is the hinge, and pressing it again is
+    // the way back. Nothing about it moves with the panel, so the width the
+    // old edge tab slid by is gone from the sheet entirely.
+    expect(stylesSource).not.toMatch(/--pane-drawer/);
+    const trigger = cssRules().find(
+      (rule) => rule.selector === ".pane-split.drawer-open .pane-handle" && declaration(rule.body, "left"),
+    );
+    expect(trigger).toBeUndefined();
+  });
+
+  it("keeps the trigger row reachable over the scrim it raised", () => {
+    // Tapping the trigger again is one of the three ways out (the scrim and
+    // Escape are the others), so the scrim may never cover it.
+    const layer = (selector) =>
+      Number(declaration(cssRules().find((rule) => rule.selector.includes(selector) && declaration(rule.body, "z-index")).body, "z-index"));
+    expect(layer(".pane-handle")).toBeGreaterThan(layer(".pane-scrim"));
   });
 
   it("keeps the drawer's chrome out of the wide layout entirely", () => {
@@ -867,7 +914,6 @@ describe("the surface's text column", () => {
   const inRail = (row) => [FLUSH_BODY, ".pane-split", LIST_COLUMN, row];
   const CHAIN = {
     "the toolbar's project name": [".toolbar", ".tb-sel"],
-    "a tab label": [...inRail(".railtabs"), ".tabs .t"],
     "a one-column pane": [".surface #tabbody"],
     "a section heading in the Changes rail": inRail(".crail .rhead"),
     "a changeset in the Changes rail": inRail(".crail .rrow"),
@@ -910,9 +956,6 @@ describe("the surface's text column", () => {
     const [toolbar] = rulesFor(".toolbar");
     expect(shorthandSide(declaration(toolbar.body, "padding"), 3)).toBe("var(--toolbar-gutter)");
     expect(declaration(rulesFor(".tb-sel")[0].body, "padding")).toMatch(/var\(--tbsel-inset\)/);
-    for (const bar of rulesFor(".railtabs")) {
-      expect(shorthandSide(declaration(bar.body, "padding"), 3)).toBe("var(--tabbar-gutter)");
-    }
     expect(declaration(rulesFor(".tabs .t")[0].body, "padding")).toMatch(/var\(--tab-inset\)/);
     // Both derived gutters are stated once, against the one gutter token.
     for (const derived of ["--toolbar-gutter", "--tabbar-gutter"]) {
@@ -962,17 +1005,58 @@ describe("the surface's text column", () => {
 // The reviewer's screenshot: the work area's right edge and the conversation
 // panel were fenced apart — two hairlines with a strip of page between them.
 // They are two halves of one frame and have to touch across ONE border. The
+// ---- the directory rail ------------------------------------------------------
+// Changes and Files are a column of the shell now, not a row inside the list
+// column of the pane they switch. On the reviewer's phone that row sat at the
+// bottom of a drawer; a column of the shell is never inside what it switches,
+// and it is the same column at every width.
+describe("the directory rail", () => {
+  it("is one narrow column of the shell, stated once, at every width", () => {
+    const rail = baseRule("#dir-rail");
+    expect(rail).toBeTruthy();
+    expect(declaration(rail.body, "width")).toBe("var(--dir-rail)");
+    expect(pixels("var(--dir-rail)", tokensAt(390))).toBe(40);
+    // One number, and no media query narrows or hides the rail: the work's left
+    // edge is in the same place on a phone as on a desktop.
+    expect(stylesSource.match(/--dir-rail:/g) || []).toHaveLength(1);
+    for (const rule of rulesFor("#dir-rail")) {
+      expect(enclosingAtRule(rule.at)).toBeNull();
+    }
+    // The seam with the work is the rail's own, like every other divide in the
+    // shell.
+    expect(declaration(rail.body, "border-right")).toBe("1px solid var(--line3, var(--line))");
+  });
+
+  it("keeps its cells at the head of the column, clear of the phone's bubble strip", () => {
+    // The strip is laid over the FOOT of this same column on a phone
+    // (shell.css, .rail-strip), so nothing tappable may be parked down there.
+    const rail = baseRule("#dir-rail");
+    expect(declaration(rail.body, "flex-direction")).toBe("column");
+    expect(declaration(rail.body, "justify-content")).toBe("flex-start");
+  });
+
+  it("draws an icon and nothing else, with the open face in the accent", () => {
+    const tab = baseRule(".dirtab");
+    expect(pixels(declaration(tab.body, "width"), tokensAt(390))).toBeLessThanOrEqual(
+      pixels("var(--dir-rail)", tokensAt(390)),
+    );
+    // The pack ships a 24x24 intrinsic size; every call site states its own.
+    expect(declaration(baseRule(".dirtab svg").body, "width")).toBe("18px");
+    expect(declaration(baseRule(".dirtab.active").body, "color")).toBe("var(--accent)");
+    // Reachable by keyboard means visible when reached.
+    expect(baseRule(".dirtab:focus-visible")).toBeTruthy();
+  });
+});
+
 // wrapper (#agent-rail) drew the seam while the panel drew a second rule on its
 // other side, and where those two met — the phone's overlay, whose right edge
 // lands on the strip — the divide was painted twice on one pixel. Each divide
 // is stated once now, by the surface that begins at it.
 describe("the view column's seam with the agent rail", () => {
-  const PHONE_QUERY = "@media (max-width: 760px)";
   const SIDE_BORDERS = ["border", "border-left", "border-right"];
 
   /** The rule for a selector outside every media query — the one that holds at
    *  any width, which is where a seam has to be stated. */
-  const baseRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === null);
 
   /** Every vertical border a rule draws, as `property:value`. */
   const sideBorders = (rule) =>
@@ -980,10 +1064,10 @@ describe("the view column's seam with the agent rail", () => {
       .filter(([, value]) => value)
       .map(([property, value]) => `${property}:${value}`);
 
-  it("puts the two columns side by side with nothing between them", () => {
+  it("puts the directory rail, the view, and the agent rail side by side with nothing between them", () => {
     const body = baseRule("#view-body");
     expect(body).toBeTruthy();
-    expect(declaration(body.body, "grid-template-columns")).toBe("minmax(0, 1fr) auto");
+    expect(declaration(body.body, "grid-template-columns")).toBe("auto minmax(0, 1fr) auto");
     // A gutter between the tracks would be a strip of page the seam's border
     // could not cover — the columns meet, and the border is the whole divide.
     for (const rule of rulesFor("#view-body")) {
@@ -1034,22 +1118,25 @@ describe("the view column's seam with the agent rail", () => {
   it("holds the seam where the phone lays the panel over the view", () => {
     const overlay = rulesFor(".rail-panel").find((rule) => enclosingAtRule(rule.at) === PHONE_QUERY);
     expect(overlay).toBeTruthy();
-    // The overlay's leading edge is the same border the docked panel states, and
-    // its trailing edge stops ON the strip's — so the panel covers the work
-    // beside it without painting a second line over the strip's own.
+    // The overlay draws no side rule of its own. On a phone the strip has left
+    // the right edge for the column's foot (below), so the panel takes the
+    // whole width and meets the strip along its bottom instead.
     expect(sideBorders(overlay)).toEqual([]);
-    expect(declaration(overlay.body, "right")).toBe("var(--agent-strip)");
+    expect(declaration(overlay.body, "right")).toBe("0");
   });
 
   it("stops the full console on the same line, so the seam runs unbroken", () => {
     // The console at full is an overlay over the view column. It clears the
     // strip by the strip's own width, which is where the strip's border is —
     // one pixel further and the overlay would paint out the divide it stops at.
-    const full = cssRules().find((rule) => rule.selector === '#console-region[data-size="full"]');
+    // The base rule — where the strip is a column at the view's right edge. A
+    // phone turns the strip into a row at the foot and moves the same stop to
+    // the overlay's bottom edge (see "the bubble strip on a phone" below).
+    const full = baseRule('#console-region[data-size="full"]');
     expect(full).toBeTruthy();
     expect(declaration(full.body, "right")).toBe("var(--agent-strip)");
     for (const size of ["collapsed", "half", "full"]) {
-      const rule = cssRules().find((r) => r.selector === `#console-region[data-size="${size}"]`);
+      const rule = baseRule(`#console-region[data-size="${size}"]`);
       if (rule) expect(sideBorders(rule)).toEqual([]);
     }
   });
@@ -1064,16 +1151,74 @@ describe("the view column's seam with the agent rail", () => {
   });
 });
 
+// ---- the conversation panel's two shapes ------------------------------------
+// The pin in the panel's head says which of two things the conversation is.
+// Pinned it is the column the seam tests above measure — half the frame, beside
+// the work, costing the work its width. Unpinned it is a card ON the strip,
+// pointing with a notch at the bubble it was opened from, over a scrim that is
+// also the way out of it: the shape the away inbox wears at the other edge of
+// the frame, turned round to face the strip.
+describe("the conversation panel unpinned", () => {
+  const POPOVER = "#agent-rail.rail-popover .rail-panel";
+
+  it("floats as a card on the strip's edge, over a scrim", () => {
+    const card = baseRule(POPOVER);
+    expect(card).toBeTruthy();
+    expect(declaration(card.body, "position")).toBe("absolute");
+    // It stops on the strip's own edge, from the same token everything that
+    // stops there reads.
+    expect(declaration(card.body, "right")).toBe("var(--agent-strip)");
+    // The rail is the card's frame, so the card cannot land anywhere else.
+    const railBox = rulesFor("#agent-rail").find((rule) => declaration(rule.body, "position"));
+    expect(declaration(railBox.body, "position")).toBe("relative");
+    expect(enclosingAtRule(railBox.at)).toBeNull();
+
+    const scrim = baseRule(".rail-scrim");
+    expect(declaration(scrim.body, "position")).toBe("fixed");
+    expect(declaration(scrim.body, "inset")).toBe("0");
+    expect(declaration(scrim.body, "background")).toBe("var(--scrim)");
+    // …and it lies under the card it dismisses.
+    expect(Number(declaration(scrim.body, "z-index")))
+      .toBeLessThan(Number(declaration(card.body, "z-index")));
+  });
+
+  it("holds the strip over the scrim, so the next bubble re-anchors the card", () => {
+    // The scrim is what dismisses the card, and it lies over everything under
+    // it — including the row of bubbles the card is anchored to. Pressing
+    // another agent has to reach that agent, not the way out, so the strip
+    // rides above the scrim while the card is open.
+    const lifted = baseRule("#agent-rail.rail-popover .rail-strip");
+    expect(lifted).toBeTruthy();
+    expect(Number(declaration(lifted.body, "z-index")))
+      .toBeGreaterThan(Number(declaration(baseRule(".rail-scrim").body, "z-index")));
+    // …which it can only do from a position of its own.
+    expect(declaration(baseRule(".rail-strip").body, "position")).toBe("relative");
+  });
+
+  it("points its notch at the bubble it was opened from", () => {
+    const notch = baseRule(`${POPOVER}::before`);
+    expect(notch).toBeTruthy();
+    // core/agentRail.js measures the open bubble and writes the offset; the
+    // clamp keeps the notch on the card for a bubble at either end of a long
+    // strip.
+    expect(declaration(notch.body, "top")).toBe("clamp(14px, var(--rail-anchor, 50%), calc(100% - 14px))");
+    // The same notch the away inbox wears, so the two popovers read as one
+    // vocabulary rather than two.
+    const inbox = cssRules().find((rule) => rule.selector.includes("#inbox-rail::before"));
+    for (const property of ["transform", "width", "height", "background"]) {
+      expect([property, declaration(notch.body, property)])
+        .toEqual([property, declaration(inbox.body, property)]);
+    }
+  });
+});
+
 describe("the collapsed toolbar's clearance", () => {
-  // The reviewer's screenshots: docked, "Build" sits 8px from the toggle;
-  // collapsed, the project name sat far from the same toggle. One token for
-  // the toggle's width and a clearance derived from it keep the two gaps the
-  // same — whatever is right of the toggle always starts one head-gap away.
-  it("derives the clearance from the toggle, so both states share one gap", () => {
+  // The clearance accounts for the toggle's left offset, width, and the gap
+  // before toolbar content without reserving room for removed branding.
+  it("derives a compact clearance from the toggle", () => {
     expect(strippedSource).toMatch(/--inbox-toggle:28px/);
-    expect(strippedSource).toMatch(
-      /--inbox-open-clear:calc\(10px \+ var\(--inbox-toggle\) \+ 8px - var\(--tbsel-inset\)\)/,
-    );
+    expect(strippedSource).toMatch(/--inbox-open-clear:calc\(48px \+ env\(safe-area-inset-left, 0px\)\)/);
+    expect(strippedSource).toMatch(/\.toolbar \{[^}]*transition:padding-left 240ms cubic-bezier\(\.2,\.8,\.2,1\)/);
     // Both toggles wear the width the clearance is derived from…
     const toggles = cssRules().find((rule) => rule.selector.includes("#inbox-open") && rule.selector.includes("#inbox-collapse"));
     expect(toggles).toBeTruthy();
@@ -1088,6 +1233,174 @@ describe("the rail status line", () => {
     const git = rulesFor(".rail-status-git")[0];
     expect(git).toBeTruthy();
     expect(declaration(git.body, "margin-left")).toBe("auto");
+  });
+});
+
+describe("the rail surface menu", () => {
+  // On phones the shared split-menu rule left-aligns menus with their trigger.
+  // This trigger sits at the viewport's right edge, so its menu must grow left.
+  it("anchors its right edge to the header action", () => {
+    const rule = rulesFor(".rail-surface-menu .splitmenu")[0];
+    expect(rule).toBeTruthy();
+    expect(declaration(rule.body, "right")).toBe("0");
+    expect(declaration(rule.body, "left")).toBe("auto");
+    expect(declaration(rule.body, "max-width")).toBe("calc(100vw - 16px)");
+  });
+});
+
+// ---- the row of heads across the top of a work surface ----------------------
+// The reviewer's screenshot: at desktop width the ref picker (left of the
+// pane), the git action bar (middle) and the conversation panel's head (right)
+// sat side by side at three different heights, so their bottom borders stepped
+// down across the frame. They are one row of chrome and have to read as one
+// line — which means one number, stated once, that all three stop on.
+describe("the row of heads across a work surface", () => {
+  const SURFACE_HEADS = [".workspace-refbar", ".gp-toolbar", ".rail-head"];
+
+  /** The same question asked of any of the three sheets: the three bars live in
+   *  three files and are only actually pinned together when they are read
+   *  together. */
+  const headRule = (selector) =>
+    [...cssRules(), ...rulesIn(strippedSurfaces)].find(
+      (rule) => rule.selector === selector && enclosingAtRuleOf(rule) === null,
+    );
+
+  it("states the shared height once, beside the row above it", () => {
+    // One token across all three sheets — a second definition is a second
+    // number, and two numbers are what put the borders on different lines.
+    expect((stylesSource + strippedSurfaces).match(/--surface-head:/g) || []).toHaveLength(1);
+    expect(tokensAt(1400)["--surface-head"]).toBe("46px");
+    // It is the sibling of the view column's own top row, one row down.
+    expect(tokensAt(1400)["--toolbar-h"]).toBe("38px");
+  });
+
+  it("gives all three bars that one height and centres what they carry", () => {
+    for (const selector of SURFACE_HEADS) {
+      const rule = headRule(selector);
+      expect([selector, !!rule]).toEqual([selector, true]);
+      expect([selector, declaration(rule.body, "min-height")]).toEqual([selector, "var(--surface-head)"]);
+      // A bar taller than its contents has to say where they sit in it, or the
+      // three sets of controls line up at three different heights inside one
+      // shared box.
+      expect([selector, declaration(rule.body, "display")]).toEqual([selector, "flex"]);
+      expect([selector, declaration(rule.body, "align-items")]).toEqual([selector, "center"]);
+      // …and one border under the row, so the shared height is a shared line.
+      expect([selector, declaration(rule.body, "border-bottom")]).toEqual([selector, "1px solid var(--line)"]);
+    }
+  });
+
+  it("lets each bar's own contents take its width", () => {
+    // The bars are flex rows now; the one thing on each has to fill it rather
+    // than shrink to its text.
+    expect(declaration(headRule(".workspace-refpicker").body, "flex")).toBe("1 1 auto");
+    expect(declaration(headRule(".gittoolbar").body, "flex")).toBe("1 1 auto");
+  });
+
+  it("centres the ref bar's control in that height instead of padding it to one", () => {
+    // jsdom computes no layout, so this pins the rules the bar's height is made
+    // of rather than measuring it. The bar pays nothing above or below: its one
+    // control is centred in the height the token gives it, so the bar cannot
+    // come out taller than the two beside it whatever that control measures.
+    expect(declaration(headRule(".workspace-refbar").body, "padding")).toBe("0 var(--pane-gutter)");
+  });
+
+  it("keeps the picker's empty status line out of the bar", () => {
+    // The status line is always in the document — a live region has to be there
+    // before it has anything to say, or what it says is never announced — so it
+    // is what it COSTS that has to go while it is empty. It cost 5px of padding,
+    // and that 5px was the whole difference between this bar and the two beside
+    // it.
+    const surfaceRules = rulesIn(strippedSurfaces);
+    const status = surfaceRules.find((rule) => rule.selector === ".workspace-referror");
+    const quiet = surfaceRules.find((rule) => rule.selector === ".workspace-referror:empty");
+    expect(status).toBeTruthy();
+    expect(quiet).toBeTruthy();
+    expect(declaration(status.body, "padding-top")).toBe("5px");
+    expect(declaration(quiet.body, "padding")).toBe("0");
+    // Same specificity as the rule it silences minus the pseudo-class, so it is
+    // the later one that has to win.
+    expect(quiet.at).toBeGreaterThan(status.at);
+    // …and it is still rendered, so it is still a live region.
+    expect(declaration(quiet.body, "display")).toBeNull();
+  });
+});
+
+// ---- the git bar in a column too narrow for its words -----------------------
+// The git bar is one of the three heads across the top of a work surface, and
+// the only one whose contents can outgrow the line. Its column is not the
+// window: at 1440 with the inbox pinned and the conversation docked it is 386px
+// wide, and a bar that wrapped there stood 104px tall against the 46px the two
+// bars beside it stop on. jsdom computes no layout, so what is pinned here is
+// the rules that decide the height rather than the height: the row never wraps,
+// and a narrow column takes width off the verbs instead of folding them onto a
+// second line.
+describe("the git bar in a column too narrow for its words", () => {
+  const COMPACT = "@container (max-width: 600px)";
+  /** The compact block's rules for THIS bar — the bar itself or the half of it
+   *  the verbs stand in. The diff file header has a compact treatment at the
+   *  same query and is no business of the toolbar's. */
+  const compactRules = () =>
+    cssRules().filter(
+      (rule) => enclosingAtRule(rule.at) === COMPACT && /\.(gittoolbar|gtrest)\b/.test(rule.selector),
+    );
+
+  it("stays one row at every width", () => {
+    for (const selector of [".gittoolbar", ".gtrest"]) {
+      const rule = baseRule(selector);
+      expect([selector, declaration(rule.body, "flex-wrap")]).toEqual([selector, "nowrap"]);
+    }
+    // …and nothing in the compact block gives a part of the bar a line of its
+    // own, which is the wrap written as a width instead of a flex-wrap.
+    for (const rule of compactRules()) {
+      expect([rule.selector, declaration(rule.body, "flex-basis")]).toEqual([rule.selector, null]);
+      expect([rule.selector, declaration(rule.body, "flex-wrap")]).not.toEqual([rule.selector, "wrap"]);
+      expect([rule.selector, declaration(rule.body, "width")]).not.toEqual([rule.selector, "100%"]);
+    }
+  });
+
+  it("drops each repo verb to the icon it already carries", () => {
+    const quiet = compactRules().find((rule) => declaration(rule.body, "font-size") === "0");
+    expect(quiet).toBeTruthy();
+    for (const host of [".gtsync", ".gtstash"]) expect(quiet.selector).toContain(host);
+    // Hidden from the eye, not from the accessibility tree: display:none would
+    // take the word out of the button's name with it, and a button called "↓"
+    // is a button nobody can be told the name of.
+    expect(quiet.body).not.toMatch(/display:\s*none/);
+    // The caret keeps its ▾ — a menu with nothing saying it is one is a button
+    // that appears to do nothing — and the arrow each verb is marked with is
+    // exactly the icon the word gives way to, so it is sized on its own.
+    expect(quiet.selector).toContain(":not(.caret)");
+    const glyph = compactRules().find((rule) => rule.selector.includes("::before"));
+    expect(glyph).toBeTruthy();
+    expect(declaration(glyph.body, "font-size")).toBe("12px");
+    expect(declaration(glyph.body, "margin-right")).toBe("0");
+  });
+
+  it("gives the bar to the selection's verbs where both sets will not fit", () => {
+    // A selection raises three more controls, and no treatment of the words fits
+    // those beside the repository's verbs in 386px. So they take the bar, the
+    // way the mid-merge banner takes it: with files in hand the bar is about
+    // those files, and Clear is right there to hand it back. Nothing may scroll
+    // instead — the bar is a container query's container, which is a containing
+    // block for a fixed descendant, so the split menus lifted out of a scroller
+    // inside it would be placed against the bar rather than the window.
+    const handed = compactRules().find((rule) => declaration(rule.body, "display") === "none");
+    expect(handed).toBeTruthy();
+    expect(handed.selector).toContain(":has(.selbar)");
+    for (const verb of [".gtsync", ".gtstash", ".gtmerge", ".gtdivider"]) {
+      expect([verb, handed.selector.includes(verb)]).toEqual([verb, true]);
+    }
+    for (const rule of compactRules()) {
+      expect([rule.selector, declaration(rule.body, "overflow-x")]).toEqual([rule.selector, null]);
+    }
+
+    // …and what the selection says gives ground before its buttons do, so the
+    // last of them is never clipped at the seam.
+    const count = compactRules().find((rule) => rule.selector.includes(".selcount"));
+    expect(count).toBeTruthy();
+    expect(declaration(count.body, "min-width")).toBe("0");
+    expect(declaration(count.body, "overflow")).toBe("hidden");
+    expect(declaration(count.body, "text-overflow")).toBe("ellipsis");
   });
 });
 
@@ -1133,6 +1446,38 @@ describe("the inbox row's actions", () => {
     expect(reveal.selector).toContain(".inbox-actions:has(.inbox-menu:not([hidden]))");
   });
 
+  it("reserves the row's edge from the control the overlay actually holds", () => {
+    // A greyed row keeps the overlay's width out of its first line, so hovering
+    // never covers the one word saying why the row is grey. The reserve was the
+    // ⋯ button's, and a clean workspace's row does not carry the ⋯ — it carries
+    // Done, which is more than twice as wide, so the overlay covered the last
+    // 20px of "offline". jsdom computes no layout: what is pinned is that the
+    // reserve is built from the same numbers the overlay itself is.
+    // The row is stated twice — once as a row of the list, once as the box this
+    // overlay is positioned against. It is the second that carries the reserve.
+    const row = rulesFor(".inbox-entry").find((rule) => declaration(rule.body, "--inbox-actions-room"));
+    const withDone = cssRules().find((rule) => rule.selector === ".inbox-entry:has(.inbox-workspace-done)");
+    expect(withDone).toBeTruthy();
+    const room = (inside) =>
+      `calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(${inside}))`;
+    expect(declaration(row.body, "--inbox-actions-room")).toBe(room("--inbox-menu-width"));
+    expect(declaration(withDone.body, "--inbox-actions-room")).toBe(room("--inbox-done-width"));
+
+    // …and those numbers have one home each: where the overlay sits, the fade it
+    // stands on, and the width of the control it holds.
+    const actions = baseRule(".inbox-actions");
+    expect(declaration(actions.body, "right")).toBe("var(--inbox-actions-inset)");
+    expect(declaration(actions.body, "top")).toBe("var(--inbox-actions-inset)");
+    expect(declaration(actions.body, "padding-left")).toBe("var(--inbox-actions-fade)");
+    expect(declaration(baseRule(".inbox-workspace-done").body, "min-width")).toBe("var(--inbox-done-width)");
+
+    // The room is reserved on the line the word stands on, and nowhere else.
+    const line = cssRules().find(
+      (rule) => rule.selector === ".inbox-offline > .inbox-body > .inbox-line:first-child",
+    );
+    expect(declaration(line.body, "padding-right")).toBe("var(--inbox-actions-room)");
+  });
+
   it("stays reachable where hover does not exist", () => {
     const touch = cssRules().find(
       (rule) =>
@@ -1141,5 +1486,167 @@ describe("the inbox row's actions", () => {
         declaration(rule.body, "opacity") === "1",
     );
     expect(touch).toBeTruthy();
+    expect(touch.selector).toContain(".inbox-entry .inbox-actions:has(.inbox-workspace-done)");
+  });
+});
+
+describe("the creation sheet", () => {
+  // Add project with two sources added was taller than a 1440x950 frame, and
+  // neither the sheet nor the scrim scrolled, so Create sat below the fold with
+  // no way to reach it. The phone block had bounded the sheet all along; the
+  // bound belongs at every width. The scrim leaves the same room above and
+  // below, and the sheet takes what is left and scrolls inside it.
+  it("is bounded by the frame and scrolls inside it at every width", () => {
+    const scrim = baseRule(".scrim");
+    expect(declaration(scrim.body, "padding-top")).toBe("9vh");
+    expect(declaration(scrim.body, "padding-bottom")).toBe("9vh");
+
+    const sheet = baseRule(".sheet");
+    expect(declaration(sheet.body, "max-height")).toBe("100%");
+    expect(declaration(sheet.body, "overflow-y")).toBe("auto");
+
+    // And the phone block does not bound it a second time, to a number that
+    // would once more be taller than the room the scrim leaves.
+    for (const narrowed of rulesFor(".sheet").filter((rule) => rule.at !== sheet.at)) {
+      expect(declaration(narrowed.body, "max-height")).toBeNull();
+    }
+  });
+});
+
+// ---- the bubble strip on a phone --------------------------------------------
+// A column of bubbles down the right edge costs a phone the width the work is
+// read in, and puts the one row that says what every agent is doing where a
+// thumb cannot reach it. The strip runs across the foot of the view column
+// instead — above the console bar, which keeps the very bottom — and the
+// conversation opens above the strip rather than beside it.
+describe("the bubble strip on a phone", () => {
+  const phoneRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === PHONE_QUERY);
+
+  it("runs across the column's foot instead of down its edge", () => {
+    const strip = phoneRule(".rail-strip");
+    expect(strip).toBeTruthy();
+    expect(declaration(strip.body, "position")).toBe("absolute");
+    expect(declaration(strip.body, "flex-direction")).toBe("row");
+    expect(declaration(strip.body, "left")).toBe("0");
+    expect(declaration(strip.body, "right")).toBe("0");
+    expect(declaration(strip.body, "height")).toBe("var(--agent-strip)");
+    // More agents than fit scroll sideways rather than squeezing to nothing.
+    expect(declaration(strip.body, "overflow-x")).toBe("auto");
+    expect(declaration(baseRule(".rail-bubble").body, "flex")).toBe("none");
+    // Each divide is still stated by the surface that begins at it — and the
+    // strip's leading edge is its top now, not its left.
+    expect(declaration(strip.body, "border-left")).toBe("0");
+    expect(declaration(strip.body, "border-top")).toBe("1px solid var(--line)");
+    // The strip leaves the rail's box out of the flow, so the work keeps the
+    // whole width — and the rail's desktop column is untouched.
+    expect(declaration(phoneRule("#agent-rail").body, "position")).toBe("static");
+    expect(declaration(baseRule("#agent-rail").body, "grid-column")).toBe("3");
+  });
+
+  // At 390x844 the conversation panel was laid over the view column to the
+  // bottom of #view — and the console is a row of #view, not of the body the
+  // panel covers. The composer bar landed exactly on #console-toggle, so the
+  // console could not be opened at all. Now two things have to stand above the
+  // console, so how much of the foot it is taking is stated once and both read
+  // it: two rules working it out separately are two rules that drift.
+  it("clears the console from one statement of what the console is taking", () => {
+    const space = (selector) => declaration(phoneRule(selector).body, "--console-space");
+    expect(space("#view")).toBe("0px");
+    expect(space("#view:has(#console-region[data-size])")).toBe("var(--console-bar)");
+    expect(space('#view:has(#console-region[data-size="half"])')).toBe("var(--console-half)");
+    // At full the console leaves the grid and overlays the column, stopping on
+    // the strip — so it takes none of the column's foot, and the strip and the
+    // console toggle on it stay reachable.
+    expect(space('#view:has(#console-region[data-size="full"])')).toBe("0px");
+    const full = phoneRule('#console-region[data-size="full"]');
+    expect(declaration(full.body, "bottom")).toBe("var(--agent-strip)");
+    expect(declaration(full.body, "right")).toBe("0");
+
+    // The room reserved is the room the console takes, stated once each.
+    expect(declaration(baseRule("#console-region").body, "height")).toBe("var(--console-bar)");
+    expect(declaration(baseRule('#console-region[data-size="half"]').body, "height")).toBe("var(--console-half)");
+
+    // The strip stands on the console; the panel stands on the strip. So the
+    // composer at the panel's foot and the Done control in its head are clear
+    // of the strip, and the strip is clear of the console bar.
+    expect(declaration(phoneRule(".rail-strip").body, "bottom")).toBe("var(--console-space)");
+    expect(declaration(phoneRule(".rail-panel").body, "bottom"))
+      .toBe("calc(var(--console-space) + var(--agent-strip))");
+  });
+
+  it("stops the full console at the strip's top edge, in the later of the two rules", () => {
+    // Both rules name the same element with the same selector, and a media
+    // query adds no specificity — so the one that holds is simply the one
+    // written later in the sheet. The desktop rule was the later of the two,
+    // and the phone's full console ran past the strip to the bottom of the
+    // column: at z-index 34 over the strip's 31, elementFromPoint on a bubble
+    // answered with the terminal.
+    const base = baseRule('#console-region[data-size="full"]');
+    const phone = phoneRule('#console-region[data-size="full"]');
+    expect(phone.at).toBeGreaterThan(base.at);
+    // One stop each, on the edge the strip's leading border is on: the column's
+    // right at desktop widths, the column's foot on a phone.
+    expect([declaration(base.body, "right"), declaration(base.body, "bottom")])
+      .toEqual(["var(--agent-strip)", "0"]);
+    expect([declaration(phone.body, "right"), declaration(phone.body, "bottom")])
+      .toEqual(["0", "var(--agent-strip)"]);
+    // Which is what keeps the strip tappable — not the stacking order, where the
+    // console still stands above it, as an overlay over the work must.
+    expect(Number(declaration(base.body, "z-index"))).toBeGreaterThan(
+      Number(declaration(phoneRule(".rail-strip").body, "z-index")),
+    );
+  });
+
+  it("fits the unpinned card between the toolbar and the strip at every console size", () => {
+    // The card stands on the console and the strip, and it hangs from the
+    // toolbar: its height has to clear all three or its top leaves the column.
+    // It cleared two — the console's share was in the bottom and missing from
+    // the height — so with the console at half the card's top was 54px above
+    // the toolbar and the Done control in its head was off the screen entirely.
+    // jsdom computes no layout: what is pinned is that the height is measured
+    // from the same room the bottom is.
+    const card = phoneRule("#agent-rail.rail-popover .rail-panel");
+    const height = declaration(card.body, "height");
+    expect(height).toBe(
+      "min(62vh, calc(100% - var(--toolbar-h) - var(--agent-strip) - var(--console-space) - 26px))",
+    );
+    for (const stood of declaration(card.body, "bottom").match(/var\(--[\w-]+\)/g)) {
+      expect([stood, height.includes(stood)]).toEqual([stood, true]);
+    }
+    expect(height).toContain("var(--toolbar-h)");
+  });
+
+  it("opens the unpinned card above the strip, pointing down at its bubble", () => {
+    const card = phoneRule("#agent-rail.rail-popover .rail-panel");
+    expect(card).toBeTruthy();
+    expect(declaration(card.body, "top")).toBe("auto");
+    expect(declaration(card.body, "bottom"))
+      .toBe("calc(var(--console-space) + var(--agent-strip) + 8px)");
+    expect(declaration(card.body, "width")).toBe("auto");
+    // The notch turns with the strip: on the card's bottom edge, at the open
+    // bubble's place along it.
+    const notch = phoneRule("#agent-rail.rail-popover .rail-panel::before");
+    expect(declaration(notch.body, "top")).toBe("auto");
+    expect(declaration(notch.body, "right")).toBe("auto");
+    expect(declaration(notch.body, "bottom")).toBe("-6px");
+    expect(declaration(notch.body, "left")).toBe("clamp(14px, var(--rail-anchor, 50%), calc(100% - 14px))");
+  });
+});
+
+describe("the waiting screen's foot", () => {
+  // Nothing styles a bare `.row`, so the line that says what the app is doing
+  // sat against the frame with the ⟳ clipped at its left edge and the two
+  // buttons crowded onto the end of the sentence. It is laid out as a row: the
+  // sentence takes the free width, the buttons keep theirs, and they wrap under
+  // it rather than squeezing it where there is no room.
+  it("is a row that wraps rather than crowding its sentence", () => {
+    const row = baseRule(".wait-row");
+    expect(declaration(row.body, "display")).toBe("flex");
+    expect(declaration(row.body, "align-items")).toBe("center");
+    expect(declaration(row.body, "flex-wrap")).toBe("wrap");
+    expect(declaration(row.body, "gap")).toBe("10px 12px");
+
+    expect(declaration(baseRule(".wait-row .dim").body, "flex")).toBe("1 1 auto");
+    expect(declaration(baseRule(".wait-row .btn").body, "flex")).toBe("none");
   });
 });

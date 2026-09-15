@@ -1,0 +1,282 @@
+//! The changes family: `changes.subscribe`, `changes.unsubscribe`,
+//! `changes.list` (wire spec Part 1, step 1.1).
+//!
+//! Three verbs over [`crate::changes::ChangeBus`], and the only family whose
+//! subject is the session itself: a subscription is an address to push to, so
+//! every verb here needs the caller's own [`SessionSender`]. [`dispatch`]
+//! deliberately carries only `AppState`, so the frame handler names the
+//! caller for the duration of the call with [`with_session`] and the handlers
+//! read it back. Called with no session named — the synchronous test entry
+//! point, or an internal probe — the verbs refuse `unavailable` rather than
+//! guessing at a subscriber.
+//!
+//! [`dispatch`]: crate::api::v1::dispatch
+//!
+//! The params ARE the wire types: [`SubscriptionSpec`] is what
+//! `changes.subscribe` takes and what `changes.list` answers with, so the
+//! fixture holds one shape rather than two copies of it. Subscribe is an
+//! upsert by `subscription_id`; re-sending an id with a new mode is how a
+//! client changes cadence, and the bus keeps what that subscription already
+//! held.
+
+use super::{Handler, NoParams};
+use crate::api::ApiError;
+use crate::app::{AppState, WatchAnswer};
+use crate::carrier::SessionSender;
+use crate::changes::{Kind, Scope, SubscriptionSpec, WatchState};
+use crate::{v1_method, v1_methods};
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+
+/// The verbs this family serves.
+pub fn methods() -> &'static [(&'static str, Handler)] {
+    v1_methods![
+        v1_method!(
+            "changes.subscribe",
+            changes_subscribe,
+            SubscriptionSpec,
+            Subscribed
+        ),
+        v1_method!(
+            "changes.unsubscribe",
+            changes_unsubscribe,
+            UnsubscribeParams,
+            Unsubscribed
+        ),
+        v1_method!("changes.list", changes_list, NoParams, SubscriptionList),
+    ]
+}
+
+// ------------------------------------------------------- the caller ---
+
+thread_local! {
+    /// Who is asking, for the length of one frame. A thread-local rather than
+    /// a param because the facade's dispatch signature is one shape for every
+    /// verb, and this is the only family that needs the session.
+    static CALLER: RefCell<Option<SessionSender>> = const { RefCell::new(None) };
+}
+
+/// Name the session this frame came from while `run` executes. Nested calls
+/// restore the previous caller, and a panic inside `run` restores it too.
+pub fn with_session<T>(session: &SessionSender, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<SessionSender>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CALLER.with(|caller| *caller.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(CALLER.with(|caller| caller.borrow_mut().replace(session.clone())));
+    run()
+}
+
+fn caller() -> Result<SessionSender, ApiError> {
+    CALLER
+        .with(|caller| caller.borrow().clone())
+        .ok_or_else(|| {
+            ApiError::unavailable(
+                "changes: no session on this call — a subscription is an address to push to",
+            )
+        })
+}
+
+// ---------------------------------------------------------------- params ---
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UnsubscribeParams {
+    pub subscription_id: String,
+}
+
+// --------------------------------------------------------------- results ---
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Subscribed {
+    pub subscription_id: String,
+    /// `polled` means a worktree in scope could not get a filesystem watcher
+    /// and its `git`/`files` kinds come from the TTL refresh instead.
+    pub watch: WatchState,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Unsubscribed {
+    pub ok: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SubscriptionList {
+    pub subscriptions: Vec<SubscriptionSpec>,
+}
+
+// -------------------------------------------------------------- handlers ---
+
+/// Upsert one subscription for the calling session.
+fn changes_subscribe(app: &mut AppState, params: SubscriptionSpec) -> Result<Subscribed, ApiError> {
+    let session = caller()?;
+    check(&params)?;
+    let subscription_id = params.id.clone();
+    let outcome = app.changes().subscribe(&session, params.clone());
+    // The watchers are reconciled with the lock released, and the reply's
+    // `watch` is read after that — this typed value is the placeholder the
+    // drain replaces (see `AppState::defer_watch`).
+    app.defer_watch(WatchAnswer::Subscribed(params));
+    Ok(Subscribed {
+        subscription_id,
+        watch: outcome.watch,
+    })
+}
+
+/// Drop one of this session's subscriptions. Idempotent: unsubscribing one
+/// that is already gone is `{"ok": true}`, because the client's desired state
+/// is what it asked for either way.
+fn changes_unsubscribe(
+    app: &mut AppState,
+    params: UnsubscribeParams,
+) -> Result<Unsubscribed, ApiError> {
+    let session = caller()?;
+    app.changes()
+        .unsubscribe_one(session.session_id(), &params.subscription_id);
+    app.defer_watch(WatchAnswer::Unsubscribed);
+    Ok(Unsubscribed { ok: true })
+}
+
+/// What this session is subscribed to — the SPA's reconnect diff.
+fn changes_list(app: &mut AppState, _params: NoParams) -> Result<SubscriptionList, ApiError> {
+    let session = caller()?;
+    Ok(SubscriptionList {
+        subscriptions: app.changes().list(session.session_id()),
+    })
+}
+
+/// What the bus will not enforce for us: a subscription with no id, no kinds,
+/// or a board scope asking for more than the feed can move.
+fn check(sub: &SubscriptionSpec) -> Result<(), ApiError> {
+    if sub.id.trim().is_empty() {
+        return Err(ApiError::invalid_params(
+            "missing required param: subscription_id",
+        ));
+    }
+    if sub.kinds.is_empty() {
+        return Err(ApiError::invalid_params(
+            "changes.subscribe: name at least one kind — state, thread, git, or files",
+        ));
+    }
+    if sub.scope == Scope::Board && sub.kinds.iter().any(|kind| kind != Kind::State) {
+        return Err(ApiError::invalid_params(
+            "changes.subscribe: a board scope carries state only",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::changes::{ChangeBus, KindSet, Mode, Priority};
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn round_trips(method: &str) {
+        crate::api::v1::testing::fixture_round_trips(methods(), method);
+    }
+
+    #[test]
+    fn the_changes_subscribe_fixture_round_trips() {
+        round_trips("changes.subscribe");
+    }
+
+    #[test]
+    fn the_changes_unsubscribe_fixture_round_trips() {
+        round_trips("changes.unsubscribe");
+    }
+
+    #[test]
+    fn the_changes_list_fixture_round_trips() {
+        round_trips("changes.list");
+    }
+
+    fn focus() -> SubscriptionSpec {
+        SubscriptionSpec {
+            id: "s-focus".into(),
+            scope: Scope::Entity("run-7".into()),
+            kinds: KindSet::all(),
+            mode: Mode::Realtime,
+            priority: Priority::Foreground,
+        }
+    }
+
+    /// The verbs are about the session, so a call with no session named is a
+    /// refusal with a code and not a subscription nobody can be sent.
+    #[test]
+    fn a_call_with_no_session_is_unavailable() {
+        let refused = caller().err().expect("no session, no subscription");
+        assert_eq!(refused.code(), "unavailable");
+    }
+
+    /// Subscribe, list, unsubscribe — all against the calling session, and
+    /// the upsert keeps one subscription.
+    #[test]
+    fn the_family_serves_the_calling_sessions_subscriptions() {
+        let bus = ChangeBus::new(Duration::from_millis(250));
+        let (sender, _rx, _key) = SessionSender::observable("s-1");
+        with_session(&sender, || {
+            let session = caller().unwrap();
+            assert_eq!(session.session_id(), "s-1");
+            bus.subscribe(&session, focus());
+            bus.subscribe(
+                &session,
+                SubscriptionSpec {
+                    mode: Mode::Batch(Duration::from_secs(30)),
+                    ..focus()
+                },
+            );
+            assert_eq!(bus.list("s-1").len(), 1);
+            bus.unsubscribe_one("s-1", "s-focus");
+            assert!(bus.list("s-1").is_empty());
+        });
+        assert!(caller().is_err(), "the caller is only named for the frame");
+    }
+
+    /// A board scope carries the feed's own state and nothing else; naming a
+    /// worktree kind on it is a client bug worth a refusal.
+    #[test]
+    fn a_board_scope_may_not_ask_for_worktree_kinds() {
+        let refused = check(&SubscriptionSpec {
+            scope: Scope::Board,
+            ..focus()
+        })
+        .unwrap_err();
+        assert_eq!(refused.code(), "invalid_params");
+        assert!(refused.message().contains("state only"), "{refused:?}");
+
+        check(&SubscriptionSpec {
+            scope: Scope::Board,
+            kinds: [Kind::State].into_iter().collect(),
+            ..focus()
+        })
+        .expect("state on the board is the tier the feed subscribes with");
+    }
+
+    #[test]
+    fn a_subscription_with_no_kinds_is_refused() {
+        let refused = check(&SubscriptionSpec {
+            kinds: KindSet::default(),
+            ..focus()
+        })
+        .unwrap_err();
+        assert_eq!(refused.code(), "invalid_params");
+    }
+
+    /// An unknown field is ignored, both ends, forever: the params derive
+    /// `Deserialize` without `deny_unknown_fields`.
+    #[test]
+    fn params_from_a_newer_client_parse() {
+        let parsed: SubscriptionSpec = serde_json::from_value(json!({
+            "subscription_id": "s-focus",
+            "scope": { "kind": "entity", "id": "run-7" },
+            "kinds": ["state"],
+            "mode": "realtime",
+            "settle_ms": 40,
+        }))
+        .expect("a field this bridge predates is ignored");
+        assert_eq!(parsed.id, "s-focus");
+    }
+}

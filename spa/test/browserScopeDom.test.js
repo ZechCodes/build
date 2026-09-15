@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from "vitest";
-const { App } = vi.hoisted(() => ({ App: { call: vi.fn() } }));
-vi.mock("../src/app.js", () => ({ App }));
 import { openBrowser } from "../src/sheets/browser.js";
 const listing = (path) => ({ path, parent: "/", is_git: false, entries: [] });
 beforeEach(() => {
@@ -13,7 +11,6 @@ it("uses the supplied device connection and initial folder", async () => {
   const onChoose = vi.fn();
   await openBrowser({ title: "Projects", callRpc, startPath: "/device-projects", onChoose });
   expect(callRpc).toHaveBeenCalledWith("fs.list", { path: "/device-projects" });
-  expect(App.call).not.toHaveBeenCalled();
   document.querySelector("#choosecur").click();
   expect(onChoose).toHaveBeenCalledWith("/device-projects");
 });
@@ -26,6 +23,44 @@ it("can render inside a host without replacing its surrounding controls", async 
   expect(document.querySelector("#outside")).not.toBeNull();
   expect(host.querySelector("#choosecur")).not.toBeNull();
   expect(host.querySelector("#bcancel")).toBeNull();
+});
+it("creates a directory in the current folder and opens it", async () => {
+  const callRpc = vi.fn()
+    .mockResolvedValueOnce(listing("/projects"))
+    .mockResolvedValueOnce({ path: "/projects/new source" })
+    .mockResolvedValueOnce(listing("/projects/new source"));
+  await openBrowser({ title: "Projects", callRpc, allowCreateDirectory: true, onChoose: vi.fn() });
+  document.querySelector("#bdirname").value = " new source ";
+  document.querySelector("#bmkdir").click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(callRpc).toHaveBeenNthCalledWith(2, "fs.mkdir", { parent: "/projects", name: "new source" });
+  expect(callRpc).toHaveBeenNthCalledWith(3, "fs.list", { path: "/projects/new source" });
+  expect(document.querySelector(".browse-path").textContent).toBe("/projects/new source");
+});
+it("validates directory names before calling the device", async () => {
+  const callRpc = vi.fn().mockResolvedValue(listing("/projects"));
+  await openBrowser({ title: "Projects", callRpc, allowCreateDirectory: true, onChoose: vi.fn() });
+  document.querySelector("#bdirname").value = "../escape";
+  document.querySelector("#bmkdir").click();
+  expect(document.querySelector("#berr").textContent).toContain("single folder name");
+  expect(callRpc).toHaveBeenCalledTimes(1);
+  expect(document.activeElement).toBe(document.querySelector("#bdirname"));
+});
+it("ignores a directory created after the embedded picker is replaced", async () => {
+  document.querySelector("#sheet").innerHTML = '<div id="browser-host"></div>';
+  const host = document.querySelector("#browser-host");
+  let finishCreate;
+  const callRpc = vi.fn()
+    .mockResolvedValueOnce(listing("/projects"))
+    .mockImplementationOnce(() => new Promise((resolve) => { finishCreate = resolve; }));
+  await openBrowser({ title: "Projects", callRpc, allowCreateDirectory: true, container: host, onChoose: vi.fn() });
+  host.querySelector("#bdirname").value = "later";
+  host.querySelector("#bmkdir").click();
+  host.innerHTML = "Project form restored";
+  finishCreate({ path: "/projects/later" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(host.textContent).toBe("Project form restored");
+  expect(callRpc).toHaveBeenCalledTimes(2);
 });
 it("does not overwrite newer embedded content when a listing completes late", async () => {
   document.querySelector("#sheet").innerHTML = '<div id="browser-host"></div>';

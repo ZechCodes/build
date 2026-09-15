@@ -662,7 +662,7 @@ impl AppState {
     /// `entity.seen` — the human has looked at this run/plan/worktree as it
     /// stands. Versioned against the entity's state clock, so a later change
     /// makes it unseen again rather than staying read forever.
-    pub(in crate::app) fn entity_seen(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn entity_seen(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         // A named agent reads one bubble through; no agent reads the whole
         // entry, which is what opening the entry means.
@@ -689,7 +689,7 @@ impl AppState {
     /// A muted entry keeps its place in the inbox with live status: it pushes
     /// nothing and badges nothing, and that is all mute does. The read cursors
     /// are untouched, so unmuting shows exactly what was waiting.
-    pub(in crate::app) fn entity_mute(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn entity_mute(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let muted = params
             .get("muted")
@@ -725,7 +725,7 @@ impl AppState {
     /// an interaction: it moves no anchor and no resume point. It touches no
     /// read cursor (what was waiting is still waiting), no mute (silencing is
     /// mute's job), and no push.
-    pub(in crate::app) fn entity_dismiss(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn entity_dismiss(&mut self, params: &Value) -> Result<Value, String> {
         if params.get("entity_id").is_none() {
             let row = self.dismissable_row(params)?;
             self.clear_row(&row);

@@ -10,6 +10,8 @@
 // with no commit box, commit is commit-all (no staged set), and noise files are
 // COLLAPSED, never filtered away.
 
+import { pickAChangesetText } from "./text.js";
+
 /** Generated files a reviewer almost never reads: they still render, grouped
  *  and collapsed at the bottom of the stack. Matched on the basename so a
  *  vendored copy deep in a tree is recognised too. */
@@ -77,6 +79,29 @@ export function hasUncommittedChanges(status) {
 export function defaultChangesSelection({ status, review = null }) {
   if (review) return "review";
   return hasUncommittedChanges(status) ? "uncommitted" : null;
+}
+
+/** Plain words for the state of the working tree, as the rail's Uncommitted row
+ *  wears them: clean, or what it is carrying. */
+const uncommittedWords = (status) => {
+  if (!hasUncommittedChanges(status)) return "clean";
+  const { insertions, deletions } = uncommittedTotals(status);
+  return `+${insertions} −${deletions}`;
+};
+
+/** What the aggregate is measured against — its own subtitle, or the base. */
+const reviewWords = (review) => (review && review.subtitle) || `vs ${(review && review.base) || "main"}`;
+
+/** One line naming the changeset the detail column is showing, in the same
+ *  words its rail row wears. The pane's narrow-viewport trigger reads it: there
+ *  the rail is a drawer, so the row that says where you are standing is behind
+ *  the control you would press to leave. Plain text, never markup — a trigger is
+ *  a line of copy, not a row. */
+export function changesSelectionSummary({ status, log, selected, review = null }) {
+  if (selected === "review") return `All changes · ${reviewWords(review)}`;
+  if (selected === "uncommitted") return `Uncommitted · ${uncommittedWords(status)}`;
+  const commit = ((log && log.commits) || []).find((entry) => entry.hash === selected);
+  return commit ? `${commit.subject} · ${commit.short}` : pickAChangesetText;
 }
 
 /** The selection a fresh poll should hold: the user's, always — except that an

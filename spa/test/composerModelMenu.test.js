@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The model menu on the composer's left, opposite the send.
+// The model and reasoning menus on the composer's left, opposite the send.
 //
 // It is the split button's menu half and nothing else: one button that says
 // what the next turn will run on, and a menu of the models the agent's own
@@ -31,17 +31,22 @@ const CATALOG = {
 
 const host = () => document.querySelector("#host");
 const slot = () => host().querySelector(`#${composerPartIds(IDS.input).modelMenu}`);
+const reasoningSlot = () => host().querySelector(`#${composerPartIds(IDS.input).reasoningMenu}`);
 const button = () => slot().querySelector(".caret");
+const reasoningButton = () => reasoningSlot().querySelector(".caret");
 const menu = () => slot().querySelector(".splitmenu");
+const reasoningMenu = () => reasoningSlot().querySelector(".splitmenu");
 const items = () => [...menu().querySelectorAll(".mi")].map((item) => item.dataset.action);
+const reasoningItems = () => [...reasoningMenu().querySelectorAll(".mi")].map((item) => item.dataset.action);
 const item = (action) => menu().querySelector(`.mi[data-action="${action}"]`);
+const reasoningItem = (action) => reasoningMenu().querySelector(`.mi[data-action="${action}"]`);
 
-const mount = (choice, { provider = "claude_adk", onChoose = vi.fn(), activeModel = "" } = {}) => {
+const mount = (choice, { provider = "claude_adk", onChoose = vi.fn(), activeModel = "", activeEffort = "" } = {}) => {
   document.body.innerHTML = `<div id="host">${composerHtml({
     inputId: IDS.input, sendId: IDS.send, hintId: IDS.hint, placeholder: "…", modelMenu: true,
   })}</div>`;
   const control = mountComposerModelMenu(host(), { ids: IDS, onChoose });
-  control.set(CATALOG, provider, choice, activeModel);
+  control.set(CATALOG, provider, choice, activeModel, activeEffort);
   return { control, onChoose };
 };
 
@@ -55,6 +60,7 @@ describe("where the menu sits", () => {
     const bar = html.slice(html.indexOf('class="composer-bar"'));
     expect(bar.indexOf("composer-model")).toBeLessThan(bar.indexOf("composer-actions"));
     expect(bar).toContain('id="imodel"');
+    expect(bar).toContain('id="ireasoning"');
   });
 
   it("is absent from a composer that does not ask for it", () => {
@@ -64,28 +70,34 @@ describe("where the menu sits", () => {
 });
 
 describe("what the menu offers", () => {
-  it("says what the next turn runs on, and offers the harness's models and efforts", () => {
+  it("shows separate model and reasoning controls with their own choices", () => {
     mount({ provider: "claude_adk", model: "claude-opus-5", effort: "high" });
-    expect(button().textContent).toContain("Claude Opus 5 · high");
+    expect(button().textContent).toContain("Claude Opus 5");
+    expect(reasoningButton().textContent).toContain("high");
     button().click();
-    expect(items()).toEqual([
-      "model:", "model:claude-opus-5", "model:claude-haiku-4-5", "effort:", "effort:low", "effort:high",
-    ]);
+    expect(items()).toEqual(["model:claude-opus-5", "model:claude-haiku-4-5"]);
+    reasoningButton().click();
+    expect(reasoningItems()).toEqual(["effort:low", "effort:high"]);
+    expect(reasoningMenu().textContent).not.toContain("reasoning effort");
     expect(item("model:claude-opus-5").className).toContain("on");
+    expect(reasoningItem("effort:high").className).toContain("on");
   });
 
   it("offers the models of the harness the agent is on, and no harness of its own", () => {
     mount({ provider: "codex", model: "", effort: "" }, { provider: "codex" });
-    expect(button().textContent).toContain("Default model");
+    expect(button().textContent).toContain("Select model");
     button().click();
-    expect(items()).toEqual(["model:", "model:gpt", "effort:", "effort:medium"]);
+    expect(items()).toEqual(["model:gpt"]);
+    reasoningButton().click();
+    expect(reasoningItems()).toEqual(["effort:medium"]);
     expect(items().some((action) => action.startsWith("provider"))).toBe(false);
   });
 
   it("drops the effort question for a model that does not answer it", () => {
     mount({ provider: "claude_adk", model: "claude-haiku-4-5", effort: "" });
     button().click();
-    expect(items()).toEqual(["model:", "model:claude-opus-5", "model:claude-haiku-4-5"]);
+    expect(items()).toEqual(["model:claude-opus-5", "model:claude-haiku-4-5"]);
+    expect(reasoningSlot().hidden).toBe(true);
   });
 });
 
@@ -106,6 +118,15 @@ describe("choosing", () => {
     item("model:claude-haiku-4-5").click();
     expect(onChoose).toHaveBeenCalledWith({ provider: "claude_adk", model: "claude-haiku-4-5", effort: "" });
   });
+
+  it("changes reasoning independently of the selected model", () => {
+    const { onChoose } = mount({ provider: "claude_adk", model: "claude-opus-5", effort: "low" });
+    reasoningButton().click();
+    reasoningItem("effort:high").click();
+
+    expect(onChoose).toHaveBeenCalledWith({ provider: "claude_adk", model: "claude-opus-5", effort: "high" });
+    expect(reasoningButton().textContent).toContain("high");
+  });
 });
 
 describe("a repaint under the poll", () => {
@@ -124,11 +145,32 @@ describe("a repaint under the poll", () => {
   it("repaints when the choice moved under it — another device chose", () => {
     const { control } = mount({ provider: "claude_adk", model: "", effort: "" });
     control.set(CATALOG, "claude_adk", { provider: "claude_adk", model: "claude-opus-5", effort: "low" });
-    expect(button().textContent).toContain("Claude Opus 5 · low");
+    expect(button().textContent).toContain("Claude Opus 5");
+    expect(reasoningButton().textContent).toContain("low");
   });
 });
 
 describe("the model the agent is running on", () => {
+  it("shows the reported reasoning level when no override is selected", () => {
+    mount(
+      { provider: "claude_adk", model: "", effort: "" },
+      { activeModel: "claude-opus-5", activeEffort: "high" },
+    );
+    expect(reasoningButton().textContent).toContain("high");
+    reasoningButton().click();
+    expect(reasoningItem("effort:high").className).toContain("on");
+  });
+
+  it("does not pass off the old session's effort as the pending model's level", () => {
+    mount(
+      { provider: "claude_adk", model: "claude-opus-5", effort: "" },
+      { activeModel: "claude-haiku-4-5", activeEffort: "high" },
+    );
+    expect(reasoningButton().textContent).toContain("Select effort");
+    reasoningButton().click();
+    expect(reasoningItem("effort:high").className).not.toContain("on");
+  });
+
   it("says on its button the model the agent is running on", () => {
     mount({ provider: "claude_adk", model: "", effort: "" }, { activeModel: "claude-opus-5" });
     expect(button().textContent).toContain("Claude Opus 5");

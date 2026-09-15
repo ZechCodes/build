@@ -8,8 +8,8 @@
 // images render via `<img src="data:...">` — never inlined into the DOM. The
 // server fences the scope root and every path; this view never sends host paths.
 
-import { esc } from "../core/text.js";
-import { currentCacheScope } from "../core/cacheScope.js";
+import { esc, pickAFileText } from "../core/text.js";
+import { directoryCacheId } from "../core/directoryScope.js";
 import { readCached, writeCached } from "../core/localCache.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
@@ -141,14 +141,15 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
 }
 
 /**
- * renderFilesTab(body, { scope, callRpc }) — mount the browser into `body`.
- * `scope` is the plain server-resolved scope object ({task_id} / {project_id[,
- * worktree_id]}) spread into every fs.* call; `callRpc(method, params)` is the
- * app RPC (fs.* ride the app session, not the terminal socket). No polling —
- * fetches only on navigation/selection. Returns { dispose() }.
+ * renderFilesTab(body, { scope, callRpc, cacheScope }) — mount the browser into
+ * `body`. `scope` is the plain server-resolved scope object ({task_id} /
+ * {project_id[, worktree_id]}) spread into every fs.* call; `callRpc(method,
+ * params)` is the app RPC (fs.* ride the app session, not the terminal socket);
+ * `cacheScope` is the cache of the machine that checkout is on, handed down by
+ * the view, and a mount without one saves nothing. No polling — fetches only on
+ * navigation/selection. Returns { dispose() }.
  */
-export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen = null, viewingContext = null }) {
-  const cacheScope = currentCacheScope();
+export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt = null, onFileOpen = null, viewingContext = null }) {
   let disposed = false;
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
@@ -160,19 +161,15 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
   const treeEl = body.querySelector("#ftree");
   const treeListEl = body.querySelector(".ftree-list");
   const previewEl = body.querySelector("#fpreview");
-  // On a narrow viewport the tree is a drawer over the preview. Only a file
-  // closes it: a directory row is still part of choosing one, and closing the
-  // drawer under a tap that changed nothing but the tree would put the choosing
-  // away mid-choice.
-  const drawer = initPaneDrawer(body.querySelector(".files"), { list: treeEl, closeOnSelect: ".ffile" });
   // The placeholder states render container-less (no panel box), centered in
   // the preview area; only a loaded file gets the bordered panel back.
   const showPlaceholder = (kind, message, hint) => {
     previewEl.classList.add("idle");
     previewEl.innerHTML = previewPlaceholderHtml(kind, message, hint);
   };
-  // Below the stacking width the tree is behind the drawer handle rather than
-  // beside the preview, so the empty state names it instead of pointing at it.
+  // Below the stacking width the tree is behind the drawer's trigger row rather
+  // than beside the preview, so the empty state names it instead of pointing at
+  // it.
   showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
 
   let dir = openAt ? parentPath(openAt.path) : ""; // current directory, relative to the scope root
@@ -183,6 +180,17 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
   let selectedPath = null;
   let savingState = null;
   let fileRequest = 0;
+
+  // On a narrow viewport the tree is a drawer over the preview. Only a file
+  // closes it: a directory row is still part of choosing one, and closing the
+  // drawer under a tap that changed nothing but the tree would put the choosing
+  // away mid-choice. Shut, the trigger over it names the file being read —
+  // which the preview's own header says, and the preview is behind the drawer.
+  const drawer = initPaneDrawer(body.querySelector(".files"), {
+    list: treeEl,
+    closeOnSelect: ".ffile",
+    summary: () => selectedPath || pickAFileText,
+  });
 
   const onBeforeUnload = (event) => {
     if (!viewerState?.snapshot().dirty) return;
@@ -249,7 +257,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
 
   // The local cache's address for one directory's listing. A primary checkout
   // names no entity and takes no part.
-  const cacheEntityId = () => (scope && (scope.run_id || scope.worktree_id)) || null;
+  const cacheEntityId = () => directoryCacheId(scope);
   const treeAddress = (path) =>
     cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "tree", sub: path }) || null : null;
 
@@ -336,6 +344,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     editor = null;
     viewerState = null;
     selectedPath = path;
+    drawer.refresh();
     viewingContext?.clearSelection?.();
     publishFileContext();
     showPlaceholder("loading");

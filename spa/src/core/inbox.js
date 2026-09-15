@@ -30,8 +30,79 @@
 import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
+import { workspaceRoute } from "./projectModel.js";
+import { workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
+
+/** Work still local to every Git directory in a durable workspace. The bridge
+ * omits the summary when even one repository cannot be read, so absence must
+ * remain visibly unknown rather than looking like a clean workspace.
+ *
+ * A checkout the bridge could not build has no work to summarize at all, and
+ * calling that an unavailable summary reads as a hiccup in the reporting rather
+ * than as the thing that went wrong. It says what the toolbar's switcher says
+ * for the same workspace. */
+function workspaceFacts(workspace) {
+  if (workspace.status === "failed") return workspaceStatusText(workspace);
+  const summary = workspace.work_summary;
+  const values = summary && [summary.pushes, summary.additions, summary.deletions];
+  if (!values || values.some((value) => !Number.isSafeInteger(value) || value < 0)) return "Work summary unavailable";
+  return `${summary.pushes} ${summary.pushes === 1 ? "push" : "pushes"} · +${summary.additions} −${summary.deletions}`;
+}
+
+const firstText = (...values) => values.find(Boolean) || "";
+
+/** How a workspace row is named in the rail's DOM and in every set the wiring
+ *  keeps beside it. Minted here, beside `entryKeyOf`, so the row a paint draws
+ *  and the row an error or a live-key sweep names are the same row. */
+export const workspaceEntryKey = (workspace) => `workspace:${workspace.workspaceKey}`;
+
+function toWorkspaceEntry(workspace, projectNames, conversation) {
+  const activity = conversation || { working: workspace.status === "active" };
+  return {
+    key: workspaceEntryKey(workspace),
+    kind: "workspace",
+    workspaceId: workspace.id,
+    workspaceKey: workspace.workspaceKey,
+    deviceId: workspace.deviceId,
+    projectId: workspace.project_id,
+    projectKey: workspace.projectKey,
+    project: firstText(projectNames.get(workspace.projectKey), workspace.project, workspace.project_id),
+    name: firstText(workspace.name, workspace.root, "Workspace"),
+    title: firstText(workspace.root, workspace.name, "Workspace"),
+    entityId: entityIdOf(conversation),
+    state: entryState(activity),
+    unreadCount: activity.unread_count || 0,
+    reason: unreadReasonText(activity.unread_reason, "branch"),
+    muted: !!activity.muted,
+    dismissed: !!activity.dismissed,
+    working: !!activity.working,
+    canFinish: false,
+    // Only the bridge can establish that every Git directory is clean. A
+    // missing value is unknown and must never expose the one-tap archive.
+    clean: workspace.status === "ready" && workspace.work_summary?.clean === true,
+    facts: workspaceFacts(workspace),
+    route: workspaceRoute(workspace),
+    anchorMs: ms(firstText(workspace.created_at, workspace.updated_at)),
+    lastActivityMs: ms(workspace.updated_at),
+  };
+}
+
+/** Every device's workspaces as rows. A workspace belongs to one machine, so it
+ *  is named — and its project and its conversation are looked up — by the
+ *  account-wide names the feed stamped (core/deviceKey.js): two machines each
+ *  hold a `proj-1`, and a run id on one says nothing about the other. */
+export function workspaceEntries(workspaces = [], projects = [], items = []) {
+  const projectNames = new Map(projects.map((project) => [project.projectKey, project.name]));
+  const conversations = new Map(items.filter((item) => item.kind === "branch" && entityIdOf(item))
+    .map((item) => [JSON.stringify([item.projectKey, entityIdOf(item)]), item]));
+  return workspaces.filter((workspace) => workspace.status !== "finished").map((workspace) => {
+    const owner = workspace.entity_id || workspace.run_id || workspace.id;
+    const conversation = conversations.get(JSON.stringify([workspace.projectKey, owner])) || workspaceRun(workspace, items);
+    return toWorkspaceEntry(workspace, projectNames, conversation);
+  });
+}
 
 /** How long a row can say nothing before it belongs to Recent rather than to
  *  the list proper. */
@@ -116,7 +187,9 @@ const PENDING_LINE = {
 const pendingItem = (row) => ({
   kind: "branch",
   entity_id: row.entity_id,
+  deviceId: row.deviceId,
   project_id: row.project_id,
+  projectKey: row.projectKey,
   project: row.project,
   title: row.title,
   branch: row.branch || null,
@@ -149,7 +222,9 @@ const pendingItem = (row) => ({
 export function mergePendingRows(items = [], pending = []) {
   const rows = [...(items || [])];
   const cardOf = (row) => (item) => {
-    if (row.primary) return !!item.primary && item.project_id === row.project_id;
+    // The account-wide name of the project, not the bare id one machine minted:
+    // every machine has a `proj-1`, and the rail lists all of them.
+    if (row.primary) return !!item.primary && item.projectKey === row.projectKey;
     const id = entityIdOf(item);
     return id !== null && (id === row.entity_id || id === row.checkout_id);
   };
@@ -161,30 +236,35 @@ export function mergePendingRows(items = [], pending = []) {
   return rows;
 }
 
-/** Where an entry opens. A branch is (project, branch name); an issue is its
- *  own surface. A checkout with no branch is nameable by no URL, so it opens
+/** Where each kind of entry opens, looked up rather than walked. A branch is
+ *  (device, project, branch name); an issue is its own surface on the machine
+ *  holding it. A checkout with no branch is nameable by no URL, so it opens
  *  nowhere until it is on one.
  *
- *  A capture opens wherever it was routed. Until it is routed it opens its own
- *  decision page — what to do with it is a question, and a question deserves a
- *  surface. One this client is still holding has no record to decide about, so
- *  it opens nowhere. */
+ *  A capture opens wherever it was routed — it answers as the work item it
+ *  names. Until it is routed it opens its own decision page: what to do with it
+ *  is a question, and a question deserves a surface. One this client is still
+ *  holding has no record to decide about, so it opens nowhere. */
+const OPENS_AT = {
+  capture: (item) => {
+    if (item.routing) return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
+    return item.state === "queued" ? null : { name: "capture", id: item.capture_id };
+  },
+  issue: (item) =>
+    item.issue_id ? { name: "issue", deviceId: item.deviceId, projectId: item.project_id, id: item.issue_id } : null,
+  branch: (item) =>
+    item.branch ? { name: "branch", deviceId: item.deviceId, projectId: item.project_id, branch: item.branch, tab: "changes" } : null,
+};
+
+/** Where an entry opens, and null for a row with nowhere to go. */
 export function entryRoute(item) {
   // A row standing in for a card that does not exist yet opens nowhere: there
   // is nothing on the other side of it. It opens itself the moment its record
   // lands under the same key. A card that is already there keeps its surface
   // however busy the daemon is with it.
   if (item.placeholder) return null;
-  if (item.kind === "capture") {
-    if (item.routing) {
-      return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
-    }
-    return item.state === "queued" ? null : { name: "capture", id: item.capture_id };
-  }
-  if (item.kind === "issue") {
-    return item.issue_id ? { name: "issue", projectId: item.project_id, id: item.issue_id } : null;
-  }
-  return item.branch ? { name: "branch", projectId: item.project_id, branch: item.branch, tab: "changes" } : null;
+  // A checkout is the kind a row wears when it says nothing else.
+  return (OPENS_AT[item.kind] || OPENS_AT.branch)(item);
 }
 
 const ms = (iso) => {
@@ -195,10 +275,15 @@ const ms = (iso) => {
 /** What names a row in the DOM — the one name every row has. Usually the
  *  entity id; a project's primary checkout is the repository, which takes no
  *  attention and has no entity, and it is still a row you open and clear.
- *  Exported so the wiring can match a feed row to the keys it is holding. */
+ *
+ *  A row with no entity is named by its project, and a project is only named
+ *  once you also say which device it is on (core/deviceKey.js): two machines
+ *  both call their first project `proj-1`, and their `main` rows are two rows.
+ *  So the key carries the projectKey the feed stamped, in the shape it always
+ *  had. Exported so the wiring can match a feed row to the keys it is holding. */
 export const entryKeyOf = (item) => {
   if (item.kind === "capture") return `capture:${item.capture_id}`;
-  return entityIdOf(item) || (item.kind === "issue" ? `issue:${item.project_id}` : `branch:${item.project_id}:${item.branch}`);
+  return entityIdOf(item) || (item.kind === "issue" ? `issue:${item.projectKey}` : `branch:${item.projectKey}:${item.branch}`);
 };
 
 /**
@@ -287,6 +372,10 @@ function toCaptureEntry(item) {
     kind: "capture",
     captureId: item.capture_id,
     captureState: item.state,
+    // Which machine answered for this row, and the account-wide name of the
+    // project it is on — both stamped by the feed, both carried as they came.
+    deviceId: item.deviceId,
+    projectKey: item.projectKey,
     projectId: item.project_id || "",
     project: item.project || "",
     branch: item.branch || null,
@@ -334,8 +423,13 @@ function toEntry(item) {
     key: entryKeyOf(item),
     entityId,
     kind: item.kind,
+    deviceId: item.deviceId,
+    projectKey: item.projectKey,
     projectId: item.project_id,
     project: item.project || item.project_id || "",
+    // The machine this row is on, said after the project name — only where two
+    // machines use that name, which the list decides once (core/inboxView.js).
+    deviceName: item.deviceName || null,
     branch: item.branch || null,
     issueId: item.issue_id || null,
     name,
@@ -379,6 +473,18 @@ function toEntry(item) {
 function isListed(item) {
   if (FINISHED_STATES.has(item.state)) return false;
   return !(item.kind === "issue" && item.implementation_active);
+}
+
+/** The captures the rail lists: what this client is holding because no machine
+ *  could take it, and what the router has not placed yet. A capture belongs to
+ *  no project until it is routed — at which point it stops being a capture and
+ *  becomes the work it was routed to — so these stand above the workspaces
+ *  rather than under any project's block. */
+export function captureEntries(items = []) {
+  return items
+    .filter((item) => item.kind === "capture" && isListed(item))
+    .map(toCaptureEntry)
+    .sort(byAnchor);
 }
 
 /** Oldest anchor first. A row nobody can date sorts under the ones somebody
@@ -432,23 +538,33 @@ export function cacheableEntityIds({ items = [], nowMs = Date.now() } = {}) {
   return [...ids];
 }
 
+/** Which row each kind of route stands on, as a test one row answers. A
+ *  capture names where it was routed, but it is not that work item: a work
+ *  route stands on the branch or the issue itself, and a capture route stands
+ *  only on the capture. */
+const STANDS_ON = {
+  // A branch is named by its machine as well as its project: two devices each
+  // hold a `proj-1` with a `main` in it, and those are two rows.
+  branch: (route) => (entry) =>
+    entry.kind !== "capture" &&
+    entry.deviceId === route.deviceId &&
+    entry.projectId === route.projectId &&
+    entry.branch === route.branch,
+  // An issue id is a uuid, so it names one row wherever it is.
+  issue: (route) => (entry) => entry.kind !== "capture" && entry.issueId === route.id,
+  // A workspace is named by its machine too: a workspace id is one bridge's.
+  workspace: (route) => (entry) =>
+    entry.kind === "workspace" && entry.deviceId === route.deviceId && entry.workspaceId === route.workspaceId,
+  capture: (route) => (entry) => entry.kind === "capture" && entry.captureId === route.id,
+};
+
 /** The entry the current route is standing on, so the list can mark it. Takes
- *  every row on screen — Recent included, since an open one is on screen. */
+ *  every row on screen — Recent included, since an open one is on screen. A
+ *  route that names no work item stands on nothing. */
 export function activeEntryKey(route, entries) {
-  if (!route) return null;
-  if (route.name === "capture") {
-    const capture = entries.find((entry) => entry.kind === "capture" && entry.captureId === route.id);
-    return capture ? capture.key : null;
-  }
-  // A capture names where it was routed, but it is not that work item — the row
-  // the route stands on is the branch or the issue itself.
-  const work = entries.filter((entry) => entry.kind !== "capture");
-  const match =
-    route.name === "branch"
-      ? work.find((entry) => entry.projectId === route.projectId && entry.branch === route.branch)
-      : route.name === "issue"
-        ? work.find((entry) => entry.issueId === route.id)
-        : null;
+  const standsOn = route && STANDS_ON[route.name];
+  if (!standsOn) return null;
+  const match = entries.find(standsOn(route));
   return match ? match.key : null;
 }
 
@@ -469,6 +585,7 @@ export function activeEntryKey(route, entries) {
  *  to take. A row with neither Done nor Mute still has its menu — Clear is
  *  what it is for. */
 function menuHtml(entry, open) {
+  if (entry.kind === "workspace") return "";
   // A row the daemon is in the middle of making or removing is not the
   // reader's to act on: every verb here would race the one already running,
   // and the daemon refuses a second claim on the same thing anyway.
@@ -499,17 +616,60 @@ function menuHtml(entry, open) {
     ${menu}`;
 }
 
+/** The machine something is on, said dim after its name. Minted here because a
+ *  row wears it (projectTagHtml) and so does a project block's head
+ *  (core/inboxProjects.js deviceTagHtml): it is one mark, in one place. */
+export const dimDeviceHtml = (deviceName) => (deviceName ? ` <span class="dim">${esc(deviceName)}</span>` : "");
+
+/** The names in a list that more than one machine holds. A name the account
+ *  uses once says which thing it is; one two machines both use does not, and
+ *  whatever wears it says its machine after it. The rail's project blocks and
+ *  the archive's rows both ask here, so the two pages agree about when a name
+ *  needs its machine said. */
+export function clashingNames(rows, nameOf) {
+  const devicesByName = new Map();
+  for (const row of rows) {
+    const name = nameOf(row);
+    if (!devicesByName.has(name)) devicesByName.set(name, new Set());
+    devicesByName.get(name).add(row.deviceId);
+  }
+  return new Set([...devicesByName].filter(([, devices]) => devices.size > 1).map(([name]) => name));
+}
+
+/** What a row says it is in: its project, and — only where two machines use
+ *  that name — the machine it is on, after it. Whether the name needs its
+ *  machine said is decided once for the whole list and carried on the entry, so
+ *  this prints what it is given. A row under its project's own block has
+ *  already been told which project it is in, and says nothing. */
+function projectTagHtml(entry, ui) {
+  if (ui.showProject === false) return "";
+  return `<span class="inbox-tag">${esc(entry.project || "unknown project")}${dimDeviceHtml(entry.deviceName)}</span>`;
+}
+
+/** The project a row's title names, with the machine after it where two
+ *  machines share the name. */
+const titleProject = (entry) => (entry.deviceName ? `${entry.project} (${entry.deviceName})` : entry.project);
+
+/** A clean durable workspace can be put away directly from the row. Finishing
+ * preserves its checkout and stops its agents, so it does not use the branch
+ * deletion menu or confirmation. Asks the wiring whether this one is already
+ * being finished, so the row painter does not have to. */
+function workspaceDoneHtml(entry, ui) {
+  if (entry.kind !== "workspace" || !entry.clean) return "";
+  const pending = ui.finishingWorkspaces?.has(entry.key);
+  return `<button class="btn mini inbox-workspace-done" type="button" data-workspace-done="${esc(entry.key)}" aria-label="Archive workspace ${esc(entry.name)}"${pending ? " disabled" : ""}>${pending ? "Done…" : "Done"}</button>`;
+}
+
 /** Everything the two lines leave out, on the row itself: what the work is for,
  *  which project it lives in, and why it is asking for you. */
 function rowTooltip(entry) {
-  return [entry.title, entry.project, entry.reason].filter(Boolean).join(" — ");
+  return [entry.title, titleProject(entry), entry.reason].filter(Boolean).join(" — ");
 }
 
 /** One inbox row, in two lines: the state dot and what this is, with the unread
  *  count at the right edge; then what it weighs. `ui`: { activeKey,
  *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
  *  line instead (quietRowHtml). */
-// eslint-disable-next-line complexity -- ratchet: inboxRowHtml is at 12, cap 10 — reduce it, then drop this line
 export function inboxRowHtml(entry, ui = {}) {
   if (entry.kind === "capture") return captureRowHtml(entry, ui);
   if (ui.quiet) return quietRowHtml(entry, ui);
@@ -518,7 +678,7 @@ export function inboxRowHtml(entry, ui = {}) {
   // fact it cannot go without, so it leads line one — two rows both named
   // "main" must never read as the same thing. A row painted under its project's
   // own block (`showProject: false`) has already been told.
-  const projectTag = ui.showProject === false ? "" : `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
+  const projectTag = projectTagHtml(entry, ui);
   const classes = [
     "srow",
     "inbox-entry",
@@ -537,7 +697,7 @@ export function inboxRowHtml(entry, ui = {}) {
       <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
       <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+    <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
 }
 
@@ -549,7 +709,7 @@ export function inboxRowHtml(entry, ui = {}) {
  *  element shape, so a row going quiet keeps its element. */
 function quietRowHtml(entry, ui) {
   const unread = entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "";
-  const projectTag = ui.showProject === false ? "" : `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
+  const projectTag = projectTagHtml(entry, ui);
   const classes = [
     "srow",
     "inbox-entry",
@@ -619,17 +779,14 @@ function rerouteBranchHtml(projectId, branches) {
 }
 
 /** The destination picker behind the reroute chip: every project, and the two
- *  things a capture can become in it. An issue takes one tap — there is nothing
- *  else to say about it; a branch discloses the field that names it.
+ *  branch destination a capture can become in it.
  *
  *  `ui`: { projects, rerouteBranchProject, rerouteBranches }. */
 function rerouteMenuHtml(entry, ui = {}) {
   const rows = (ui.projects || [])
     .map(
       (project) => `<div class="reroute-project"><span class="mt">${esc(project.name || project.id)}</span>
-        <span class="reroute-kinds">
-          <button class="btn mini" type="button" data-reroute-project="${esc(project.id)}" data-reroute-kind="issue">Issue</button>
-          <button class="btn mini${project.id === ui.rerouteBranchProject ? " primary" : ""}" type="button"
+        <span class="reroute-kinds"><button class="btn mini${project.id === ui.rerouteBranchProject ? " primary" : ""}" type="button"
             data-reroute-branch-open="${esc(project.id)}">Branch</button>
         </span></div>${project.id === ui.rerouteBranchProject ? rerouteBranchHtml(project.id, ui.rerouteBranches) : ""}`,
     )

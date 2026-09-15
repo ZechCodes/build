@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Direct Connection Spec — Build v2</title>
+<style>
+  :root { --ink:#1b1b1f; --muted:#5f6368; --line:#e2e0d8; --bg:#faf9f5; --accent:#4f46e5; --code:#f2f1ec; --warn:#b45309; --ok:#15803d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif; }
+  main { max-width:920px; margin:0 auto; padding:48px 24px 96px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 8px; }
+  h2 { font-size:24px; margin:48px 0 12px; padding-top:16px; border-top:1px solid var(--line); }
+  h3 { font-size:18px; margin:28px 0 8px; }
+  p, li { max-width:72ch; }
+  .meta { color:var(--muted); font-size:14px; margin-bottom:24px; }
+  .meta b { color:var(--ink); }
+  code, pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:14px; }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; }
+  pre { background:var(--code); padding:14px 16px; border-radius:8px; overflow-x:auto; line-height:1.45; }
+  pre code { background:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 20px; font-size:15px; }
+  th, td { text-align:left; vertical-align:top; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { font-weight:600; background:#f4f3ee; }
+  .rule { border-left:4px solid var(--accent); background:#fff; padding:12px 16px; margin:14px 0; border-radius:0 8px 8px 0; }
+  .rule b:first-child { color:var(--accent); }
+  .warn { border-left-color:var(--warn); }
+  .warn b:first-child { color:var(--warn); }
+  .ok { border-left-color:var(--ok); }
+  .ok b:first-child { color:var(--ok); }
+  nav { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 20px; margin:24px 0 8px; }
+  nav ol { margin:0; padding-left:20px; columns:2; column-gap:32px; }
+  nav li { break-inside:avoid; margin:2px 0; }
+  nav a { color:var(--accent); text-decoration:none; }
+  .seq { display:grid; grid-template-columns:36px 1fr; gap:6px 12px; margin:12px 0 20px; }
+  .seq .n { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .diagram { background:#111318; color:#e6e6ea; }
+  footer { margin-top:64px; color:var(--muted); font-size:14px; border-top:1px solid var(--line); padding-top:16px; }
+  @media print { body { background:#fff; } main { padding:0; } nav ol { columns:1; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Direct Connection Spec</h1>
+<p class="meta">
+  Status: <b>draft for review</b> (2026-09-15). Companion to
+  <code>Strict P2P Transport Spec.md</code> (binding for the hosted path) and
+  <code>E2EE Platform Scope.md</code>. Scope of this revision: <b>Tailscale only</b>.
+</p>
+
+<p>
+  A <b>direct connection</b> is a browser talking to a bridge with nothing of Build's in the path:
+  no relay, no api, no Cloudflare, no login. The bridge serves the web app itself, authenticates
+  the browser itself, and is reachable because the phone or laptop is on the same tailnet as the
+  machine it runs on. It is a fully owned security guarantee: the user's tailnet is the perimeter,
+  and the bridge's own key registry is the door.
+</p>
+
+<div class="rule ok"><b>Guarantee.</b> A direct device never falls back to, consults, or is discoverable
+through Build infrastructure. If the direct path is down, the device is away. There is no other path.</div>
+
+<nav>
+<ol>
+  <li><a href="#goals">Goals and non-goals</a></li>
+  <li><a href="#topology">Topology</a></li>
+  <li><a href="#trust">Trust model</a></li>
+  <li><a href="#invite">The invite</a></li>
+  <li><a href="#pairing">Pairing handshake</a></li>
+  <li><a href="#session">Sessions after pairing</a></li>
+  <li><a href="#listener">The bridge listener and TLS</a></li>
+  <li><a href="#spa">The SPA in direct mode</a></li>
+  <li><a href="#tailnet">Tailnet integration</a></li>
+  <li><a href="#mobile">Mobile</a></li>
+  <li><a href="#threat">Threat model</a></li>
+  <li><a href="#checklist">Security checklist</a></li>
+  <li><a href="#stages">Stages</a></li>
+  <li><a href="#open">Open questions</a></li>
+</ol>
+</nav>
+
+<h2 id="goals">1. Goals and non-goals</h2>
+<h3>Goals</h3>
+<ul>
+  <li>Open the Build web app on a phone or laptop against a bridge on the same tailnet with no Build account and no Build server involved.</li>
+  <li>Keep the existing SPA and its E2EE session protocol; the browser is the client, no native app.</li>
+  <li>Authentication and key pinning are owned by the bridge: an invite pairs a browser once, and the bridge keeps a revocable list of authorized clients.</li>
+  <li>The tailnet is defence in depth, not the authentication: a stranger who reaches the port still cannot open a session.</li>
+</ul>
+<h3>Non-goals (this revision)</h3>
+<ul>
+  <li>Bare-LAN operation without Tailscale (the TLS trust bootstrap is the blocker; see §7).</li>
+  <li>NAT traversal, WebRTC, STUN or TURN on the direct path. A tailnet address is reachable, so the WebSocket <em>is</em> the direct connection.</li>
+  <li>Web push notifications for direct devices (there is nothing to push through).</li>
+  <li>Several direct bridges in one page (each bridge serves its own origin; cross-origin pairing is a follow-on, §14).</li>
+  <li>Passkeys against the bridge as a WebAuthn relying party (possible later on top of the same listener).</li>
+</ul>
+
+<h2 id="topology">2. Topology</h2>
+<pre class="diagram"><code>  phone / laptop (on the tailnet)                      user's machine (on the tailnet)
+ ┌─────────────────────────────┐   WireGuard (Tailscale)   ┌──────────────────────────────────┐
+ │ browser                      │◄═════════════════════════►│ tailscaled                        │
+ │  https://box.tail1234.ts.net │      TLS (LE cert)        │   tailscale serve https / ──┐     │
+ │   ├─ GET /            SPA    │──────────────────────────►│                             ▼     │
+ │   └─ WSS /direct/ws   E2EE   │──────────────────────────►│   build-bridge  127.0.0.1:7800    │
+ └─────────────────────────────┘                           │     ├─ embedded SPA (static)      │
+                                                           │     ├─ /direct/pair  (invite)     │
+        nothing of Build's anywhere on this path           │     ├─ /direct/ws    (sessions)   │
+                                                           │     └─ authorized_clients.json    │
+                                                           └──────────────────────────────────┘</code></pre>
+<p>
+  Compare the hosted path (<code>README.md</code> diagram): api for login and the SPA, relay for
+  rendezvous, Cloudflare TURN when peers cannot hole-punch. None of it appears here. The same bridge
+  binary can run both paths at once; a browser on the hosted path and a phone on the direct path
+  are simply two clients with two different ways of proving who they are.
+</p>
+
+<h2 id="trust">3. Trust model</h2>
+<p>
+  On the hosted path the bridge never authenticates a user. It trusts the relay to admit only the
+  device owner (same-owner scoping on <code>session_init</code>) and trusts the api to have pinned
+  its transport key for the browser. Remove Build and both guarantees vanish, so the direct path
+  rebuilds them at the bridge, mirroring what the api does today with device identity keys:
+</p>
+<table>
+  <tr><th>Question</th><th>Hosted path</th><th>Direct path</th></tr>
+  <tr><td>Is this the right bridge?</td><td>api pins <code>transport_public_key_b64</code>; browser seals to it</td><td>invite carries the bridge <b>identity fingerprint</b>; bridge proves possession with a signed challenge; browser pins it</td></tr>
+  <tr><td>Is this browser allowed?</td><td>relay checks gateway token → user → device owner</td><td>bridge checks the client's <b>identity key</b> against its <code>authorized_clients</code></td></tr>
+  <tr><td>Who registered whom?</td><td>pairing code redeemed at the api</td><td>one-time <b>invite secret</b> minted by the bridge CLI, consumed on first use</td></tr>
+  <tr><td>Wire confidentiality</td><td>E2EE envelope over relay / DTLS</td><td>E2EE envelope over WSS over WireGuard (unchanged envelope, <code>PROTOCOL_VERSION</code> 1)</td></tr>
+  <tr><td>Revocation</td><td>api revokes device</td><td>bridge revokes client (CLI + settings)</td></tr>
+</table>
+<div class="rule"><b>Rule 1.</b> The bridge is its own registry. <code>~/.build/direct/authorized_clients.json</code>
+is the only authority for who may open a direct session. No file, header, or tailnet identity replaces it.</div>
+<div class="rule"><b>Rule 2.</b> The E2EE session is unchanged. A direct session is minted with the same
+<code>session_init</code> / <code>session_accept</code>, sealed to the same transport key, carried by the
+existing socket carrier. Nothing is ever plaintext on the wire, even inside the tailnet.</div>
+
+<h2 id="invite">4. The invite</h2>
+<p>
+  <code>build-bridge direct invite [--name "Zech's phone"] [--ttl 10m]</code> prints a compact string
+  and a QR code. It is <b>not a JWT</b>: the browser has no prior trust in any key, so a signature
+  proves nothing at this point. The invite is a bootstrap credential: it tells the browser where the
+  bridge is, which key to expect, and gives it one secret to prove it was invited.
+</p>
+<pre><code>{
+  "v": 1,
+  "addr": ["https://box.tail1234.ts.net"],        // one or more origins, tried in order
+  "fp":   "sha256:9f3c…a1",                        // bridge identity public key fingerprint
+  "secret": "base64url(32 random bytes)",          // one-time, ≥ 256 bits
+  "exp":  1758000000,                              // unix seconds; default now + 10 min
+  "name": "Zech's phone"                           // label the bridge will store for this client
+}
+→ encoded as base64url(JSON), shown as text and as  build-direct://&lt;encoded&gt;
+→ the QR carries  https://box.tail1234.ts.net/#invite=&lt;encoded&gt;   (fragment, never query string)</code></pre>
+<ul>
+  <li>The secret is machine-generated and pasted or scanned, never typed, so it can be long. A long secret needs no PAKE: the paste/scan channel is assumed confidential, the same assumption an SSH key or WireGuard config makes.</li>
+  <li>Single use. The bridge stores <code>hash(secret)</code>, <code>exp</code>, <code>name</code>; a redeemed or expired invite is deleted. <code>build-bridge direct invites</code> lists pending ones; <code>direct invite --revoke &lt;id&gt;</code> cancels.</li>
+  <li>The fragment form exists so a scanned QR can open the SPA with the invite without the invite ever reaching a server log or a Referer header. The SPA reads and clears <code>location.hash</code> before doing anything else.</li>
+</ul>
+
+<h2 id="pairing">5. Pairing handshake</h2>
+<p>Over <code>WSS /direct/pair</code>, JSON frames, all bounded to 16 KiB. The browser first generates its own long-lived Ed25519 <b>client identity keypair</b> (libsodium, stored in IndexedDB).</p>
+<div class="seq">
+  <span class="n">1</span><span>client → bridge: <code>{"type":"pair_hello","client_nonce":n_c}</code></span>
+  <span class="n">2</span><span>bridge → client: <code>{"type":"pair_challenge","bridge_nonce":n_b,"identity_public_key":pk_b,"sig":Sign(sk_b, "direct-pair-v1" ‖ n_c ‖ n_b ‖ pk_b)}</code></span>
+  <span class="n">3</span><span>client verifies <code>sha256(pk_b) == fp</code> from the invite and the signature. On mismatch it stops and shows "this is not the bridge the invite came from". The bridge key is now <b>pinned</b>.</span>
+  <span class="n">4</span><span>client → bridge: <code>{"type":"pair_prove","client_public_key":pk_c,"name":name,"mac":HMAC(secret, "direct-pair-v1" ‖ n_c ‖ n_b ‖ pk_b ‖ pk_c ‖ name)}</code></span>
+  <span class="n">5</span><span>bridge looks up a pending invite whose secret verifies the MAC (constant-time), checks <code>exp</code>, then appends <code>{pk_c, name, paired_at, last_seen}</code> to <code>authorized_clients</code>, deletes the invite, and notifies the desktop ("Zech's phone paired").</span>
+  <span class="n">6</span><span>bridge → client: <code>{"type":"pair_ok","transport_public_key":tpk_b,"sig":Sign(sk_b, "direct-pair-ok-v1" ‖ n_c ‖ n_b ‖ tpk_b ‖ pk_c)}</code></span>
+  <span class="n">7</span><span>client verifies and stores <code>{origin, fp, tpk_b, own keypair, bridge name}</code> as a <b>direct device record</b>. Pairing is complete; the socket closes.</span>
+</div>
+<ul>
+  <li>The MAC binds the client key and both nonces to the invite, so a captured invite cannot be replayed to enrol a second key, and an attacker on the path cannot swap <code>pk_c</code>.</li>
+  <li>Rate limits: 5 failed <code>pair_prove</code> per source address per minute, then a 15-minute lockout; every failure is logged with the source address.</li>
+  <li>The bridge's identity key is the same one it uses with the api (<code>identity.rs</code>); the direct path does not mint a second identity. The transport keypair is likewise shared.</li>
+</ul>
+
+<h2 id="session">6. Sessions after pairing</h2>
+<p>Over <code>WSS /direct/ws</code>. The browser opens the socket and sends, for each session it wants:</p>
+<pre><code>{
+  "type": "session_init",
+  "session_id": "sess-…",
+  "session_init": &lt;the existing sealed session_init, sealed to tpk_b&gt;,
+  "client_public_key": pk_c,
+  "timestamp": 1758000123,
+  "sig": Sign(sk_c, "direct-session-v1" ‖ session_id ‖ fp ‖ timestamp ‖ sha256(session_init))
+}</code></pre>
+<ol>
+  <li>The bridge refuses unless <code>pk_c ∈ authorized_clients</code>, <code>|now − timestamp| ≤ 60 s</code>, the signature verifies, and <code>(pk_c, timestamp, sig)</code> has not been seen (replay guard, 2× the window — the same scheme as the relay's device auth and the api's notify route).</li>
+  <li>Then <code>FrameIntake::open</code> runs unchanged and <code>session_accept</code> returns over the same socket — the carrier-neutral seam the strict-P2P change built for exactly this.</li>
+  <li>The socket is a <code>CarrierKind::Direct</code>. Unlike the relay carrier it <b>carries everything</b>: there is no data-plane refusal, because the bridge authenticated this client itself.</li>
+  <li>Re-attach on a new socket repeats the same frame with the same session id and key, as on the hosted path. A session ends when its last carrier ends or its client says so (registry rule unchanged).</li>
+  <li><code>last_seen</code> on the client record is updated on every accepted <code>session_init</code>; the settings page shows it beside the Revoke button. Revoking a client ends its live sessions immediately (<code>SessionRegistry::end</code> for every session admitted under that key).</li>
+</ol>
+
+<h2 id="listener">7. The bridge listener and TLS</h2>
+<div class="rule"><b>Rule 3.</b> The direct listener is off until the first invite is minted and binds to
+<b>loopback only</b> unless a certificate pair is configured. Tailscale terminates TLS; the bridge never
+serves plain HTTP on a non-loopback address.</div>
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>BRIDGE_DIRECT_LISTEN</code></td><td><code>127.0.0.1:7800</code></td><td>Where the embedded SPA and <code>/direct/*</code> are served. A non-loopback address is refused unless the cert pair below is set.</td></tr>
+  <tr><td><code>BRIDGE_DIRECT_TLS_CERT</code> / <code>_KEY</code></td><td>unset</td><td>Escape hatch: the bridge terminates TLS itself from files (e.g. from <code>tailscale cert box.tail1234.ts.net</code>). Reloaded on SIGHUP.</td></tr>
+  <tr><td><code>BRIDGE_DIRECT_ORIGIN</code></td><td>derived from the first invite's <code>addr</code></td><td>The one <code>Origin</code>/<code>Host</code> the listener accepts (DNS-rebinding defence). Requests with any other Host are answered 421.</td></tr>
+  <tr><td><code>BRIDGE_DIRECT_TAILNET_USERS</code></td><td>unset (no check)</td><td>Optional allow-list of tailnet logins; see §9.</td></tr>
+</table>
+<p>The recommended setup is one command, which the bridge prints after <code>direct invite</code>:</p>
+<pre><code>tailscale serve --bg https / http://127.0.0.1:7800</code></pre>
+<p>
+  This gives <code>https://&lt;box&gt;.&lt;tailnet&gt;.ts.net</code> a Let's Encrypt certificate that every
+  browser trusts (requires MagicDNS and HTTPS certificates enabled on the tailnet, which Tailscale
+  prompts for). Because <code>tailscale serve</code> proxies from the tailnet to loopback, the port is
+  unreachable from any other network. The bridge detects the proxy by the loopback peer address plus
+  the <code>Tailscale-User-Login</code> header and treats that header as trustworthy <em>only</em> on
+  loopback connections.
+</p>
+<p>
+  <b>Why not bare LAN yet:</b> an <code>https://</code> page cannot open <code>ws://192.168.1.5</code> (mixed content),
+  and a self-signed <code>wss://</code> needs a trust dialog on every device, which on iOS means installing a
+  profile. Serving plain <code>http://</code> on a LAN would let anyone on that network substitute the page and
+  steal the client key. A tailnet has neither problem.
+</p>
+
+<h2 id="spa">8. The SPA in direct mode</h2>
+<p>The same build is embedded in the bridge (<code>include_dir!</code> of <code>skriftapp/buildapp/static/</code> at
+compile time, so <code>spa/</code> keeps building into one place). At boot the SPA decides which mode it is in:</p>
+<pre><code>direct mode  ⇔  document has &lt;meta name="build-mode" content="direct"&gt;   (the bridge injects it)
+             ⇔  never: fetch("/api/…"), passkeys, gateway tokens, ICE servers, push subscribe</code></pre>
+<ul>
+  <li><b>Rendezvous.</b> <code>core/rendezvous.js</code> gains <code>createDirectRendezvous({origin, record})</code>: <code>open()</code> dials <code>/direct/ws</code>, <code>mint()</code> sends the signed <code>session_init</code> of §6, and — unlike the relay rendezvous — the socket <b>is</b> the carrier, so <code>signalCarrier</code> is unused and the session switch is told <code>peer(socketCarrier)</code> directly. No peer link is ever opened.</li>
+  <li><b>Device identity.</b> A direct device's <code>deviceId</code> is <code>direct:&lt;fp&gt;</code>. Device contexts, device keys (<code>${deviceId}/${projectId}</code>), routes and caches work unchanged.</li>
+  <li><b>Presence.</b> No api poll. A direct device is online while its socket answers <code>ping</code> (the terminal socket's liveness rule, 4 s); reconnect with backoff 1 s → 15 s; away while it does not.</li>
+  <li><b>New device screen.</b> Settings → Devices → <em>Add a direct connection</em>: a paste field for the invite (or the fragment form on load). It shows the bridge's name and fingerprint before pairing, then the pairing result. Records are listed with Forget.</li>
+  <li><b>Storage.</b> Client keypair and device records in IndexedDB under the bridge's origin. The private key never leaves the page; export is not offered.</li>
+  <li><b>Gate.</b> The login/passkey gate is skipped; the waiting screen's copy names the bridge ("Waiting for <b>box</b> on your tailnet").</li>
+  <li><b>Fail closed.</b> No code path in direct mode may construct a relay URL, call <code>fetchIceServers</code>, or read <code>VITE_RELAY_URL</code>; a source-scan test pins it, like <code>noCurrentDevice.test.js</code> pins the retired singletons.</li>
+</ul>
+
+<h2 id="tailnet">9. Tailnet integration</h2>
+<ul>
+  <li><b>Detection.</b> The bridge asks <code>tailscale status --json</code> at start (if the binary exists) for its own <code>.ts.net</code> name and address, uses them in invites, and prints the <code>serve</code> command.</li>
+  <li><b>Identity allow-list (optional).</b> With <code>BRIDGE_DIRECT_TAILNET_USERS=zech@github</code> the bridge requires, on <code>/direct/pair</code> and <code>/direct/ws</code>, that <code>tailscale whois &lt;peer-ip&gt;</code> (or the <code>Tailscale-User-Login</code> header from the loopback proxy) names an allowed login. This runs <em>before</em> the client-key check and never replaces it.</li>
+  <li><b>Headscale</b> and other control planes work the same; nothing here talks to Tailscale's servers except tailscaled itself.</li>
+  <li><b>Docs.</b> <code>deploy/README.md</code> gains "Direct connections over Tailscale": install Tailscale on the machine and the phone, mint an invite, run the serve command, scan the QR.</li>
+</ul>
+
+<h2 id="mobile">10. Mobile</h2>
+<ul>
+  <li>iOS and Android run the Tailscale app from their stores; nothing of ours is installed.</li>
+  <li>Install the SPA to the home screen (PWA). Safari's storage eviction after 7 days of non-use does not apply to installed web apps, so the client key survives; if it is evicted anyway, pairing again is one scan.</li>
+  <li>The QR fragment flow means pairing from a phone is: open camera → scan → confirm the fingerprint shown → done.</li>
+  <li>No notifications in direct mode (documented on the settings page). A later revision may deliver them through the socket while the PWA is open.</li>
+</ul>
+
+<h2 id="threat">11. Threat model</h2>
+<p>Amends <code>build-secure-transport/E2E-MVP.md</code> with a new party, the local network / tailnet, and removes two (relay, Cloudflare) from the direct path.</p>
+<table>
+  <tr><th>Attacker</th><th>Can</th><th>Cannot, and why</th></tr>
+  <tr><td>Someone on the same tailnet (a shared or compromised node)</td><td>Reach the port; see TLS metadata; attempt pairing</td><td>Open a session: no authorized key. Pair: no invite secret (256-bit, single use, rate-limited). Substitute the bridge: the page is served over Tailscale's cert and the invite pins the identity fingerprint.</td></tr>
+  <tr><td>Someone who obtains an invite (shoulder-surfed QR, pasted into the wrong chat)</td><td>Pair one client within the TTL if the real user has not yet</td><td>Pair after the real user did (single use); the desktop notification and the clients list expose the extra client, which is revoked in one click. Mitigation: short TTL, the SPA shows the bridge name/fingerprint before it proves.</td></tr>
+  <tr><td>Someone who steals the phone (unlocked)</td><td>Use the paired session</td><td>Persist after revocation: the bridge ends its sessions and refuses its key. The client key is not exportable through the UI.</td></tr>
+  <tr><td>Tailscale (the control plane)</td><td>See node keys and tailnet membership; route WireGuard</td><td>Read anything: WireGuard is end-to-end between the two nodes, TLS is on top, and the E2EE envelope is on top of that. Impersonate the bridge: the pin is on the bridge's own identity key, not its tailnet address.</td></tr>
+  <tr><td>Build (us)</td><td>Nothing: not in the path</td><td>—</td></tr>
+  <tr><td>A malicious page in the same browser</td><td>Attempt DNS rebinding or cross-origin WebSocket</td><td>The listener answers only its configured Origin/Host; the key lives under the bridge's origin; no cookies are used.</td></tr>
+</table>
+<div class="rule warn"><b>Residual.</b> A compromised tailnet node that also obtains a live invite within its TTL can enrol
+itself. The controls are TTL, single use, the pairing notification, and the clients list. Accepting this is
+the same choice SSH makes with <code>authorized_keys</code>.</div>
+
+<h2 id="checklist">12. Security checklist</h2>
+<p>To be scored 100/100 before the feature ships, in the style of the existing checklists in <code>planning/v2/</code>.</p>
+<ol>
+  <li>Listener off by default; loopback-only without a cert pair; never <code>0.0.0.0</code>.</li>
+  <li>Origin and Host pinned; 421 otherwise; no cookies; no CORS headers.</li>
+  <li>Invite secret ≥ 256 bits from the OS CSPRNG; stored hashed; single use; TTL ≤ 10 min by default, max 24 h.</li>
+  <li>Pairing MAC binds both nonces, the bridge identity key, the client key and the name; verified in constant time.</li>
+  <li>Bridge proves identity-key possession before the client sends anything secret-derived.</li>
+  <li><code>session_init</code> signed by an authorized client key with a 60 s window and a replay guard.</li>
+  <li>Rate limit and lockout on pairing; every refusal logged with the source address.</li>
+  <li>Revocation ends live sessions immediately and is available from the CLI and the settings page.</li>
+  <li>The tailnet identity check, when enabled, runs before the key check and never replaces it; the header is trusted only from loopback.</li>
+  <li>Direct mode has no code path to the relay, api, ICE servers or push; a source-scan test enforces it.</li>
+  <li>All direct frames bounded (16 KiB pairing, 8 MiB session, the same reassembly cap as the channels).</li>
+  <li>Client key non-exportable through the UI; stored under the bridge origin only.</li>
+  <li>The E2EE envelope is unchanged; <code>interop_python.rs</code> keeps passing.</li>
+  <li>Threat-model amendment landed in <code>build-secure-transport/E2E-MVP.md</code> (separate repo) and referenced from README.</li>
+</ol>
+
+<h2 id="stages">13. Stages</h2>
+<table>
+  <tr><th>#</th><th>Stage</th><th>Ships</th></tr>
+  <tr><td>1</td><td>Bridge serves the embedded SPA</td><td><code>include_dir!</code> of the SPA build, loopback listener, <code>build-mode</code> meta injection, Host/Origin pinning, the printed <code>tailscale serve</code> command, cert-pair escape hatch.</td></tr>
+  <tr><td>2</td><td>Invite, pairing, authorized clients</td><td><code>direct invite/invites/clients/revoke</code> CLI, <code>authorized_clients.json</code>, the §5 handshake with rate limits, signed <code>session_init</code> admission (§6), <code>CarrierKind::Direct</code>, revocation ending sessions.</td></tr>
+  <tr><td>3</td><td>SPA direct mode</td><td><code>createDirectRendezvous</code>, direct-mode boot with no api calls, client key storage, new-device screen (paste + fragment/QR), presence by ping, the source-scan test.</td></tr>
+  <tr><td>4</td><td>Tailnet integration</td><td>Tailscale detection for invites, optional whois allow-list, settings page for direct clients, docs for iOS/Android and the serve command.</td></tr>
+  <tr><td>5</td><td>Security pass</td><td>Checklist to 100/100, threat-model amendment, a real phone pairing over a tailnet recorded in HANDOFF, semgrep/gitleaks, complexity gates.</td></tr>
+</table>
+<p>Estimated at half to two-thirds of the strict-P2P change. No WebRTC work.</p>
+
+<h2 id="open">14. Open questions</h2>
+<ol>
+  <li>Should a hosted-path browser (page from getbuild.ing) be allowed to <em>also</em> hold direct devices? It would need cross-origin WSS to the bridge, which the pairing permits, but the page itself is Build's. This spec says no; the guarantee is per page.</li>
+  <li>Several direct bridges in one page: each is its own origin today. A follow-on could let one bridge's page pair with another bridge (cross-origin WSS + the same invite), giving the multi-device board without any server.</li>
+  <li>Invite TTL default: 10 minutes, or shorter?</li>
+  <li>Should revoking the <em>last</em> client turn the listener off again?</li>
+</ol>
+
+<footer>Build v2 — Direct Connection Spec, 2026-09-15. Supersedes nothing; complements <code>Strict P2P Transport Spec.md</code>.</footer>
+</main>
+</body>
+</html>

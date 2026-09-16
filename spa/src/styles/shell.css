@@ -389,7 +389,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-project-tools { flex:none; display:grid; align-items:center; justify-items:end; margin-left:auto; }
 .inbox-project-device, .inbox-project-actions { grid-area:1 / 1; }
 .inbox-project-device { max-width:88px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  padding:0 4px; transition:opacity 120ms ease; }
+  padding:0 4px; pointer-events:none; transition:opacity 120ms ease; }
 .inbox-project-actions { display:flex; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
 .inbox-project-head:hover .inbox-project-device,
 .inbox-project-head:focus-within .inbox-project-device { opacity:0; }

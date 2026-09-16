@@ -26,12 +26,33 @@ beforeEach(() => {
 it("opens the multi-source project form without creation tabs", () => {
   openSheet();
   expect(document.querySelector('[role="tab"]')).toBeNull();
-  expect(document.querySelector("legend").textContent).toBe("Workspace folders");
+  expect(document.querySelector("legend").textContent).toBe("Workspace folders (optional)");
 });
 
 it("names the machine the folders come from", () => {
   openSheet();
-  expect(document.querySelector("#sheet .sub").textContent).toContain("from Laptop");
+  expect(document.querySelector("#sheet .sub").textContent).toContain("Laptop's configured projects folder");
+});
+
+it("creates a named empty project in the device projects folder", async () => {
+  const done = vi.fn(); openSheet(done);
+  document.querySelector("#nrname").value = " docs ";
+  document.querySelector("#nrdo").click(); await flush();
+  expect(callRpc).toHaveBeenCalledWith("project.create", { name: "docs" });
+  expect(done).toHaveBeenCalledWith({ project_id: "p1" });
+});
+
+it("creates a name-only project on the currently selected device without loading settings", async () => {
+  const done = vi.fn();
+  const calls = openSelectableSheet(done, "desk");
+  const selector = document.querySelector("#nrdevice");
+  selector.value = "lap"; selector.dispatchEvent(new Event("change"));
+  document.querySelector("#nrname").value = "docs";
+  document.querySelector("#nrdo").click(); await flush();
+  expect(calls.desk).not.toHaveBeenCalled();
+  expect(calls.lap).toHaveBeenCalledOnce();
+  expect(calls.lap).toHaveBeenCalledWith("project.create", { name: "docs" });
+  expect(done).toHaveBeenCalledWith({ project_id: "lap-project" }, devices[1]);
 });
 
 it("creates one project from mixed local and remote sources", async () => {

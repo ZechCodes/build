@@ -447,6 +447,24 @@ fn project_create_writes_its_repository_with_the_state_lock_free() {
     );
 }
 
+#[test]
+fn name_only_project_create_makes_the_missing_configured_projects_directory() {
+    let (dir, repo) = init_repo();
+    let projects_dir = dir.path().join("missing-parent").join("projects");
+    let mut state = qa_state(&repo, dir.path()).with_projects_dir_default(projects_dir.clone());
+    assert!(!projects_dir.exists());
+
+    let created = state.handle(req("project.create", json!({ "name": "fresh" })));
+
+    assert_eq!(created["ok"], true, "{created:?}");
+    let destination = projects_dir.join("fresh").canonicalize().unwrap();
+    assert_eq!(created["result"]["path"], destination.to_str().unwrap());
+    let repository = git2::Repository::open(&destination).unwrap();
+    assert_eq!(repository.head().unwrap().shorthand(), Some("main"));
+    assert!(repository.head().unwrap().peel_to_commit().is_ok());
+    assert_eq!(state.projects.len(), 2);
+}
+
 /// The row a create reserves stands for the directory the create writes:
 /// one destination, settled in the decide phase and carried into the git.
 /// A second asker for that directory is refused by the row guarding it, and

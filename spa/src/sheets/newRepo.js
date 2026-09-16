@@ -73,7 +73,6 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   const invalidSource = () => {
     if (!selectedDevice()) return ["Choose a device.", "#nrdevice"];
     if (!draft.name.trim()) return ["Enter a project name.", "#nrname"];
-    if (!draft.sources.length) return ["Add at least one workspace folder.", "#nraddfolder"];
     const names = new Set();
     for (const source of draft.sources) {
       const error = sourceError(source, names);
@@ -123,11 +122,11 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     version += 1;
     const target = selectedDevice();
     const selector = selectable ? `<div class="field"><label for="nrdevice">Device</label><select id="nrdevice"><option value="">Choose a device</option>${choices.map((device) => `<option value="${esc(device.id)}"${device.id === selectedDeviceId ? " selected" : ""}>${esc(device.name)}</option>`).join("")}</select></div>` : "";
-    const subtitle = target ? `Add Git remotes or folders from ${esc(target.name)}. Each becomes a folder in the project.` : "Choose the device where this project will be created.";
+    const subtitle = target ? `Enter a name to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.` : "Choose the device where this project will be created.";
     sheet.innerHTML = `<h3>Add project</h3><p class="sub">${subtitle}</p><form id="nrform">
       ${selector}
       <div class="field"><label for="nrname">Project name</label><input id="nrname" required value="${esc(draft.name)}"></div>
-      <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
+      <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders (optional)</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
       <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
     $("#nrcancel").onclick = close;
     if (selectable) $("#nrdevice").onchange = (event) => {
@@ -150,7 +149,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     sheet.querySelectorAll("[data-source-branch]").forEach((input) => input.oninput = () => { draft.sources.find((item) => item.id === Number(input.dataset.sourceBranch)).base_branch = input.value; });
     sheet.querySelectorAll("[data-choose-source]").forEach((button) => button.onclick = () => void browseFor(Number(button.dataset.chooseSource)));
     sheet.querySelectorAll("[data-remove-source]").forEach((button) => button.onclick = () => { remember(); draft.sources = draft.sources.filter((source) => source.id !== Number(button.dataset.removeSource)); paint(); $("#nraddfolder").focus(); });
-    $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); void submit({ name: draft.name.trim(), sources }); };
+    $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); const params = { name: draft.name.trim(), ...(sources.length ? { sources } : {}) }; void submit(params); };
     $("#nrname").focus();
   };
   function paint() { if (active) paintSources(); }

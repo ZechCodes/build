@@ -80,6 +80,62 @@ it("shows initial failures and keeps Cancel available", async () => {
   document.querySelector("#bcancel").click();
   expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
 });
+it("falls back to the device home only when the configured initial folder is missing", async () => {
+  const callRpc = vi.fn()
+    .mockRejectedValueOnce(new Error("cannot open /gone/projects: No such file or directory (os error 2)"))
+    .mockResolvedValueOnce(listing("/home/me"));
+  await openBrowser({ title: "Projects", callRpc, startPath: "/gone/projects", fallbackFromMissingStart: true, onChoose: vi.fn() });
+  expect(callRpc).toHaveBeenNthCalledWith(1, "fs.list", { path: "/gone/projects" });
+  expect(callRpc).toHaveBeenNthCalledWith(2, "fs.list", {});
+  expect(document.querySelector(".browse-path").textContent).toBe("/home/me");
+});
+it("does not fall back from an initial permission failure", async () => {
+  const callRpc = vi.fn().mockRejectedValue(new Error("cannot open /restricted: Permission denied (os error 13)"));
+  await openBrowser({ title: "Projects", callRpc, startPath: "/restricted", fallbackFromMissingStart: true });
+  expect(callRpc).toHaveBeenCalledOnce();
+  expect(document.querySelector("#berr").textContent).toContain("Permission denied");
+});
+it("does not fall back when later navigation reaches a missing folder", async () => {
+  const callRpc = vi.fn()
+    .mockResolvedValueOnce({ ...listing("/projects"), entries: [{ name: "Gone", path: "/projects/gone", is_git: false, is_hidden: false }] })
+    .mockRejectedValueOnce(new Error("cannot open /projects/gone: No such file or directory (os error 2)"));
+  await openBrowser({ title: "Projects", callRpc, startPath: "/projects", fallbackFromMissingStart: true });
+  document.querySelectorAll(".browse-nav")[1].click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(callRpc).toHaveBeenCalledTimes(2);
+  expect(document.querySelector("#berr").textContent).toContain("No such file or directory");
+});
+it("does not request home after a missing initial folder finishes behind cancellation", async () => {
+  let rejectInitial;
+  const callRpc = vi.fn(() => new Promise((resolve, reject) => { rejectInitial = reject; }));
+  const opening = openBrowser({ title: "Projects", callRpc, startPath: "/gone", fallbackFromMissingStart: true });
+  document.querySelector("#bcancel").click();
+  rejectInitial(new Error("cannot open /gone: No such file or directory (os error 2)"));
+  await opening;
+  expect(callRpc).toHaveBeenCalledOnce();
+});
+it("surfaces a failed home fallback without retrying again", async () => {
+  const callRpc = vi.fn()
+    .mockRejectedValueOnce(new Error("cannot open /gone: No such file or directory (os error 2)"))
+    .mockRejectedValueOnce(new Error("cannot open home: Permission denied (os error 13)"));
+  await openBrowser({ title: "Projects", callRpc, startPath: "/gone", fallbackFromMissingStart: true });
+  expect(callRpc).toHaveBeenCalledTimes(2);
+  expect(document.querySelector("#berr").textContent).toContain("Permission denied");
+});
+it("does not paint a home fallback that completes after its embedded host is replaced", async () => {
+  document.querySelector("#sheet").innerHTML = '<div id="browser-host"></div>';
+  const host = document.querySelector("#browser-host");
+  let resolveHome;
+  const callRpc = vi.fn()
+    .mockRejectedValueOnce(new Error("cannot open /gone: No such file or directory (os error 2)"))
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveHome = resolve; }));
+  const opening = openBrowser({ title: "Projects", callRpc, startPath: "/gone", fallbackFromMissingStart: true, container: host });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  host.innerHTML = "New content";
+  resolveHome(listing("/home/me"));
+  await opening;
+  expect(host.textContent).toBe("New content");
+});
 it("does not overwrite another sheet when a listing completes late", async () => {
   let resolve;
   const callRpc = vi.fn(() => new Promise((done) => { resolve = done; }));

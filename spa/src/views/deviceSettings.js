@@ -96,6 +96,7 @@ export async function renderDeviceSettings() {
     void openBrowser({
       title: `Choose a projects folder on ${device.name}`,
       gitOnly: false,
+      fallbackFromMissingStart: true,
       startPath: pathLabel.textContent,
       callRpc,
       onChoose: save,

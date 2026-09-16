@@ -89,6 +89,7 @@ it("rejects duplicate mount names and focuses the duplicate", () => {
 it("ignores a stale browser choice and enables directory creation in the picker", async () => {
   openSheet(); document.querySelector("#nrname").value = "docs"; document.querySelector("#nraddfolder").click(); await flush();
   expect(openBrowser.mock.calls[0][0].allowCreateDirectory).toBe(true);
+  expect(openBrowser.mock.calls[0][0].fallbackFromMissingStart).toBe(true);
   const choose = openBrowser.mock.calls[0][0].onChoose; document.querySelector("#nrback").click(); choose("/stale");
   expect(document.querySelector("#nrsources").textContent).toContain("No folder selected");
 });

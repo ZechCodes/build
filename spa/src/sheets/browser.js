@@ -7,6 +7,8 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 
+const missingDirectory = (error) => /No such file or directory \(os error 2\)$/.test(error?.message || "");
+
 function bindCancel(container, cancel) {
   const button = container.querySelector("#bcancel");
   if (button) button.onclick = cancel;
@@ -123,11 +125,17 @@ export async function openBrowser(opts) {
       if (currentButton) currentButton.disabled = false;
     }
   };
-  const nav = async (path) => {
+  const nav = async (path, fallbackFromMissingStart = false) => {
     const version = ++request;
     const loading = container.firstElementChild;
     try {
-      const next = await callRpc("fs.list", path ? { path } : {});
+      let next;
+      try {
+        next = await callRpc("fs.list", path ? { path } : {});
+      } catch (error) {
+        if (!fallbackFromMissingStart || !missingDirectory(error) || version !== request || !loading.isConnected) throw error;
+        next = await callRpc("fs.list", {});
+      }
       if (version !== request || !loading.isConnected) return;
       data = next;
     } catch (e) {
@@ -143,5 +151,5 @@ export async function openBrowser(opts) {
   container.innerHTML = `${titleHtml}<div class="dim browse-loading" style="padding:14px">loading…</div>
     ${cancelHtml}<div class="adderr" id="berr" role="status"></div>`;
   bindCancel(container, cancel);
-  await nav(opts.startPath || null);
+  await nav(opts.startPath || null, Boolean(opts.startPath && opts.fallbackFromMissingStart));
 }

@@ -332,6 +332,7 @@ describe("device settings", () => {
     document.querySelector("#device-projects-change").click();
     const options = openBrowser.mock.calls[0][0];
     expect(options.startPath).toBe("/projects");
+    expect(options.fallbackFromMissingStart).toBe(true);
     await options.callRpc("fs.list", { path: "/next" });
     expect(session.call).toHaveBeenLastCalledWith("fs.list", { path: "/next" });
     session.call.mockResolvedValueOnce({ projects_dir: "/next" });

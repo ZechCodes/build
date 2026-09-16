@@ -48,7 +48,11 @@ function workspaceFacts(workspace) {
   const summary = workspace.work_summary;
   const values = summary && [summary.pushes, summary.additions, summary.deletions];
   if (!values || values.some((value) => !Number.isSafeInteger(value) || value < 0)) return "Work summary unavailable";
-  return `${summary.pushes} ${summary.pushes === 1 ? "push" : "pushes"} · +${summary.additions} −${summary.deletions}`;
+  // Older bridges omit `behind`; its absence is unknown, not zero. Once a
+  // bridge supplies it, however, it is part of the same all-or-nothing summary.
+  const hasBehind = Object.hasOwn(summary, "behind");
+  if (hasBehind && (!Number.isSafeInteger(summary.behind) || summary.behind < 0)) return "Work summary unavailable";
+  return [`↑${summary.pushes}`, hasBehind ? `↓${summary.behind}` : "", `+${summary.additions}`, `−${summary.deletions}`].filter(Boolean).join(" ");
 }
 
 const firstText = (...values) => values.find(Boolean) || "";

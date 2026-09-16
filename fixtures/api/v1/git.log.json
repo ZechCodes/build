@@ -9,6 +9,7 @@
   "result": {
     "branch": "build/wire",
     "more": true,
+    "highlight_key": "0000000000000001",
     "commits": [
       {
         "short": "1f0c9a7",

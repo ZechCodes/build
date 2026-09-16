@@ -89,6 +89,10 @@ export function createReviewPlug({
   statusHtml = () => "",
   isOffline = () => false,
   pollMs = REVIEW_POLL_MS,
+  // A review embedded in a controller that already watches the same checkout
+  // can use that controller's refresh path. This avoids a second timer while
+  // keeping the plug's serialized, freeze-aware diff fetch intact.
+  watchDiff = true,
   // What the diff belongs to — the run or the worktree — so a bridge that
   // pushes can say when it moved instead of being asked every 1.6 seconds. A
   // surface that names none keeps the safety poll and nothing else.
@@ -385,6 +389,7 @@ export function createReviewPlug({
   const diffAddress = () =>
     cacheEntity ? cacheScope?.address({ entityId: cacheEntity, kind: "diff" }) || null : null;
   let livePainted = false; // a live payload outranks whatever the cache held
+  let refreshHeld = false; // news fetched while an interaction froze repainting
 
   /** The saved diff, painted whole — comment tray and verbs included, from the
    *  commentability the last live paint recorded. A comment is drafted locally
@@ -456,6 +461,7 @@ export function createReviewPlug({
     // flight, and skip the rebuild when nothing moved (fold state survives too).
     const busy = actionsFrozen() || Boolean(commentLayer && commentLayer.busy());
     if (host.querySelector(".diffbar") && busy) {
+      refreshHeld = true;
       paintActions();
       return;
     }
@@ -510,10 +516,40 @@ export function createReviewPlug({
     });
   };
 
+  /** A pushed invalidation can land while a comment draft or popover freezes
+   *  repainting. Keep that news pending and consume it as soon as the owning
+   *  surface says the interaction ended; the next safety tick is only backup. */
+  const resumeHeldRefresh = () => {
+    if (!refreshHeld || !host || actionsFrozen() || Boolean(commentLayer && commentLayer.busy())) return;
+    refreshHeld = false;
+    paint();
+  };
+
+  const startDiffWatcher = () => {
+    if (!watchDiff) return null;
+    return watchChanges({
+      refresh: paint,
+      intervalMs: pollMs,
+      entity,
+      pausesWhileHidden: false,
+      // Focus tier: the changeset is the working tree and its status.
+      kinds: ["git", "files"],
+      mode: "realtime",
+    });
+  };
+
   return {
     /** Redraw the actionbar — what a surface calls when its own verbs change
      *  (an action settled, a flash message expired) but the diff has not. */
     refreshActions: paintActions,
+
+    /** Re-read the diff through the same conditional-key and freeze path the
+     *  plug's watcher uses. Embedded controllers call this from their existing
+     *  checkout watcher instead of mounting a duplicate timer. */
+    refreshDiff: paint,
+
+    /** Resume an invalidation held to protect a draft/popover. */
+    resumeRefresh: resumeHeldRefresh,
 
     /** The pending comments (and typed general note) the surface holds. */
     busy: () => Boolean(commentLayer && commentLayer.busy()),
@@ -534,6 +570,7 @@ export function createReviewPlug({
       if (reviewMarks) marks = reviewMarks;
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
+      refreshHeld = false;
       livePainted = false;
       responseDiffKey = null;
       host.innerHTML = '<div class="empty">loading…</div>';
@@ -541,15 +578,7 @@ export function createReviewPlug({
       paint();
       // `pausesWhileHidden: false`: this paint has never been visibility-gated,
       // and an event must not do less than the tick it replaced.
-      watcher = watchChanges({
-        refresh: paint,
-        intervalMs: pollMs,
-        entity,
-        pausesWhileHidden: false,
-        // Focus tier: the changeset is the working tree and its status.
-        kinds: ["git", "files"],
-        mode: "realtime",
-      });
+      watcher = startDiffWatcher();
       editedTimeWatcher = watchEditedTimes(host);
     },
 
@@ -580,6 +609,7 @@ export function createReviewPlug({
         host.onchange = null;
       }
       host = null;
+      refreshHeld = false;
       viewingContext?.clear();
       trayMounted = false;
     },

@@ -34,8 +34,11 @@ const statSummary = (stat) => {
 
 /** One commit row: subject over short hash · author · relative age. */
 export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now() / 1000 } = {}) {
-  const classes = ["crow", commit.ahead_of_base ? "ahead" : "", selected ? "sel" : ""].filter(Boolean).join(" ");
-  return `<div class="${classes}" data-hash="${esc(commit.hash)}">
+  const classes = ["crow", commit.ahead_of_base ? "ahead" : "", commit.unpushed ? "unpushed" : "", selected ? "sel" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const title = commit.unpushed ? ' title="Not pushed"' : "";
+  return `<div class="${classes}" data-hash="${esc(commit.hash)}"${title}>
     <span class="csubject">${esc(commit.subject)}</span>
     <span class="cmeta"><span class="chash">${esc(commit.short)}</span> · <span class="cauthor">${esc(commit.author)}</span> · <span class="cage">${esc(humanAge(nowSeconds - (commit.time || 0)))}</span></span></div>`;
 }

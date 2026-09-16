@@ -206,6 +206,7 @@
         "workspace_id": "ws-1",
         "work_summary": {
           "pushes": 3,
+          "behind": 2,
           "additions": 214,
           "deletions": 61
         }

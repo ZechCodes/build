@@ -67,7 +67,7 @@ const workspace = (overrides = {}) => {
     root: "/work/checkout",
     status: "ready",
     deviceId: "dev-1",
-    work_summary: { pushes: 2, additions: 8, deletions: 3 },
+    work_summary: { pushes: 2, behind: 1, additions: 8, deletions: 3 },
     directories: [{ id: "api", source_id: "source-api", is_git: true }],
     ...overrides,
   };
@@ -165,7 +165,7 @@ describe("the workspace inbox", () => {
     feed([workspace(), workspace({ id: "workspace-2", project_id: "project-2", name: "Marketing", directories: [] })]);
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1", "workspace:dev-1/workspace-2"]);
     expect(rows()[0].textContent).toContain("Payments");
-    expect(rows()[0].textContent).toContain("2 pushes · +8 −3");
+    expect(rows()[0].textContent).toContain("↑2 ↓1 +8 −3");
   });
 
   // A capture is unfinished business that belongs to no project yet — the

@@ -56,6 +56,17 @@ fn git_scope_selects_one_workspace_source_and_names_its_cache() {
         first["result"]["status_key"], second["result"]["status_key"],
         "two selected directories must never share a browser cache key"
     );
+    let history = state.handle(req("git.log", first_scope.clone()));
+    assert_eq!(history["ok"], true, "{history:?}");
+    assert!(
+        history["result"]["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|commit| commit["unpushed"] == true && commit.get("ahead_of_base").is_none()),
+        "workspace history uses publication semantics: {history:?}"
+    );
+    assert!(history["result"]["highlight_key"].is_string());
     let unchanged = state.handle(req(
         "git.status",
         json!({

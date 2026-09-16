@@ -127,6 +127,13 @@ describe("commitRowHtml", () => {
     expect(commitRowHtml(commit({ ahead_of_base: true }), { nowSeconds: NOW })).toContain("ahead");
     expect(commitRowHtml(commit(), { selected: true, nowSeconds: NOW })).toContain("sel");
   });
+
+  it("marks commits included in All changes as not pushed", () => {
+    const html = commitRowHtml(commit({ unpushed: true }), { nowSeconds: NOW });
+    expect(html).toContain('class="crow unpushed"');
+    expect(html).toContain('title="Not pushed"');
+    expect(commitRowHtml(commit({ unpushed: false }), { nowSeconds: NOW })).not.toContain("Not pushed");
+  });
 });
 
 describe("uncommittedHeaderHtml", () => {

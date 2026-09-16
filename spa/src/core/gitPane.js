@@ -71,6 +71,11 @@ export function createWorkspaceReview({ scope, callRpc, navigate = null, viewing
     submit,
     entity: scope.workspace_id,
     cacheEntity: directoryCacheId(scope),
+    // The surrounding pane already owns the workspace source's push + fast
+    // fallback watcher. Durable workspace ids are not bridge worktree ids, so
+    // a private entity watcher here would stand down to the 60 s safety poll
+    // without ever receiving filesystem pushes.
+    watchDiff: false,
     fetchDiff: async (ifDiffKey) => {
       const payload = await callRpc("git.unpushed", {
         ...scope,
@@ -270,7 +275,7 @@ export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
   // A coarse minute bucket: relative commit ages re-render at most once a
   // minute even when the repo itself is untouched.
   const minuteBucket = Math.floor(nowSeconds / 60);
-  return [status.status_key, commits, Boolean(log && log.more), minuteBucket].join("\x03");
+  return [status.status_key, commits, Boolean(log && log.more), String(log?.highlight_key || ""), minuteBucket].join("\x03");
 }
 
 /** What to ask git.status with: the key the pane already holds, so a repo that
@@ -445,6 +450,7 @@ export function mountGitPane(
   let bodiesUnpainted = false; // a file body landed while a repaint was held
   let lastStatus = null;
   let lastLog = null; // the poll's first page (limit default)
+  let lastHighlightKey = null; // the remote-publication boundary used to highlight commits
   let lastHead; // undefined until the first poll lands
   let extraCommits = []; // "Show more" pages beyond the poll's first page
   let pagedMore = null; // the last fetched page's `more` (null → use lastLog.more)
@@ -916,9 +922,17 @@ export function mountGitPane(
         readDraft: () => resolveCommitDraft(null, commitDraftStash, draftKey),
         // Every keystroke lands in the stash so tab switches and view-shell
         // rebuilds (which remount the pane from scratch) restore the draft.
-        writeDraft: (value) => syncCommitDraft(commitDraftStash, draftKey, value),
+        writeDraft: (value) => {
+          syncCommitDraft(commitDraftStash, draftKey, value);
+          // `runWith` writes the stash before it clears the live textarea; wait
+          // one microtask so the plug's busy check sees the final field value.
+          queueMicrotask(() => {
+            if (!disposed && reviewMounted) review?.resumeRefresh?.();
+          });
+        },
       });
     else composer.refresh();
+    if (reviewMounted) review?.resumeRefresh?.();
     setHint(hint); // the box the refresh may have rebuilt has no hint in it yet
     // A repaint during an in-flight action must not resurrect an enabled button
     // (double-fire) — leave it disabled until the RPC settles.
@@ -1072,7 +1086,10 @@ export function mountGitPane(
 
   const paintFrom = (status, log) => {
     lastStatus = status;
-    if (log) lastLog = log;
+    if (log) {
+      lastLog = log;
+      lastHighlightKey = log.highlight_key ?? null;
+    }
     // A content refresh clears any stale armed confirm (the file/state it named
     // may be gone) — matching "any repaint resets the pending confirm".
     clearConfirm();
@@ -1551,7 +1568,13 @@ export function mountGitPane(
       extraCommits = []; // HEAD moved — the paged-in history is stale
       pagedMore = null;
     }
+    const highlightKey = log.highlight_key ?? null;
+    if (lastLog && highlightKey !== lastHighlightKey) {
+      extraCommits = []; // the paged rows carry the old publication highlight
+      pagedMore = null;
+    }
     lastHead = status.head;
+    lastHighlightKey = highlightKey;
     lastStatus = status;
     lastLog = log;
     // Every live poll writes the shape through as received: it carries no patch
@@ -1610,6 +1633,7 @@ export function mountGitPane(
     lastHead = cachedStatus.head;
     lastStatus = cachedStatus;
     lastLog = cachedLog;
+    lastHighlightKey = cachedLog.highlight_key ?? null;
     if (selected === undefined) selected = defaultSelection();
     renderAndFetch();
   };
@@ -1620,8 +1644,17 @@ export function mountGitPane(
   // moves — the git watcher stales a run the instant files land in it. A
   // project's own checkout is not an entity the bridge names, and its state
   // moves with the feed, so that scope watches the board instead.
+  const refreshCheckout = () => {
+    poll();
+    // A mounted workspace aggregate deliberately has no private watcher: the
+    // workspace source already stays on this fast path because its durable id
+    // is not a bridge worktree entity. Trigger its serialized conditional read
+    // from the same push/tick, even when HEAD and the visible commit page stay
+    // unchanged.
+    if (scope.workspace_id && reviewMounted) review?.refreshDiff?.();
+  };
   const watcher = watchChanges({
-    refresh: poll,
+    refresh: refreshCheckout,
     intervalMs: GIT_PANE_POLL_MS,
     entity: scope.workspace_id || scope.run_id || scope.worktree_id || null,
     // A workspace source is watched at its own cadence rather than standing

@@ -2,6 +2,21 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Which commit rows a caller needs classified. Run/worktree histories retain
+/// their base-branch meaning; workspace histories use the publication base
+/// shared with `git.unpushed`.
+#[derive(Debug, Clone, Copy)]
+pub enum LogHighlight<'a> {
+    AheadOfBase(&'a str),
+    Unpushed,
+}
+
+struct CommitMarker {
+    field: &'static str,
+    commits: HashSet<git2::Oid>,
+    key: String,
+}
+
 pub const GIT_SHOW_MAX_PATCH_BYTES: usize = 1_048_576;
 
 /// Cap on the `files` array of the status payload — same relay-frame
@@ -130,7 +145,7 @@ pub(super) fn commit_summary_json(commit: &git2::Commit) -> Value {
 fn commits_ahead_of(
     repo: &git2::Repository,
     base_branch: &str,
-) -> Result<HashSet<git2::Oid>, String> {
+) -> Result<(HashSet<git2::Oid>, String), String> {
     let base_tip = repo
         .revparse_single(base_branch)
         .map_err(|e| format!("cannot resolve base branch {base_branch}: {e}"))?
@@ -139,15 +154,19 @@ fn commits_ahead_of(
     let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
     walk.push_head().map_err(|e| e.to_string())?;
     walk.hide(base_tip.id()).map_err(|e| e.to_string())?;
-    walk.map(|oid| oid.map_err(|e| e.to_string())).collect()
+    let commits = walk
+        .map(|oid| oid.map_err(|e| e.to_string()))
+        .collect::<Result<HashSet<_>, _>>()?;
+    let key = crate::diff::fnv1a64_hex(&format!("ahead_of_base\0{}", base_tip.id()));
+    Ok((commits, key))
 }
 
 /// One page of commit history from HEAD, topological newest-first. With
-/// `mark_ahead_of` (run scope), each entry carries `ahead_of_base`; without
-/// it (project scope) the field is omitted entirely.
+/// a highlight mode each entry carries the matching boolean and the result
+/// carries a key for that classification. Project scope omits both entirely.
 pub fn log_page(
     repo_path: &Path,
-    mark_ahead_of: Option<&str>,
+    highlight: Option<LogHighlight<'_>>,
     limit: usize,
     skip: usize,
 ) -> Result<Value, String> {
@@ -156,8 +175,23 @@ pub fn log_page(
     if head_commit_id(&repo)?.is_none() {
         return Ok(json!({ "branch": branch, "commits": [], "more": false }));
     }
-    let ahead_set = match mark_ahead_of {
-        Some(base_branch) => Some(commits_ahead_of(&repo, base_branch)?),
+    let marker = match highlight {
+        Some(LogHighlight::AheadOfBase(base_branch)) => {
+            let (commits, key) = commits_ahead_of(&repo, base_branch)?;
+            Some(CommitMarker {
+                field: "ahead_of_base",
+                commits,
+                key,
+            })
+        }
+        Some(LogHighlight::Unpushed) => {
+            let (commits, key) = super::unpushed::unpublished_commits(&repo)?;
+            Some(CommitMarker {
+                field: "unpushed",
+                commits,
+                key,
+            })
+        }
         None => None,
     };
     let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
@@ -172,8 +206,8 @@ pub fn log_page(
         };
         let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
         let mut entry = commit_summary_json(&commit);
-        if let Some(ahead) = &ahead_set {
-            entry["ahead_of_base"] = json!(ahead.contains(&oid));
+        if let Some(marker) = &marker {
+            entry[marker.field] = json!(marker.commits.contains(&oid));
         }
         commits.push(entry);
     }
@@ -182,7 +216,11 @@ pub fn log_page(
         .transpose()
         .map_err(|e| e.to_string())?
         .is_some();
-    Ok(json!({ "branch": branch, "commits": commits, "more": more }))
+    let mut payload = json!({ "branch": branch, "commits": commits, "more": more });
+    if let Some(marker) = marker {
+        payload["highlight_key"] = json!(marker.key);
+    }
+    Ok(payload)
 }
 
 /// Whether `hash` is an acceptable `git.show` argument: 4–40 lowercase hex

@@ -55,25 +55,39 @@ describe("custom device picker", () => {
   it("reveals device settings by closing the rail on a phone", () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     document.querySelector(".device-picker-toggle").click();
-    document.querySelector('[data-settings-device="b"]').click();
+    document.querySelector('[data-settings-device="a"]').click();
     expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
   });
-  it("the cog still routes to settings", () => {
+  it("keeps an online device's cog routing to settings", () => {
     document.querySelector(".device-picker-toggle").click();
-    document.querySelector('[data-settings-device="b"]').click();
-    expect(go).toHaveBeenCalledWith({ name: "device", id: "b" });
+    document.querySelector('[data-settings-device="a"]').click();
+    expect(go).toHaveBeenCalledWith({ name: "device", id: "a" });
     expect(App.deviceFilter).toBe(null);
     expect(document.querySelector(".device-picker-menu").hidden).toBe(true);
   });
   it('offers an "All devices" row, first and pressed while nothing is filtered', () => {
     document.querySelector(".device-picker-toggle").click();
-    expect(choices().map(labelOf)).toEqual(["All devices", "Laptop", "Desktop (offline)"]);
+    expect(choices().map(labelOf)).toEqual(["All devices", "Laptop", "Desktop"]);
     expect(choices()[0].dataset.filterDevice).toBe("");
     expect(choices().map((button) => button.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
     expect(toggleLabel()).toBe("All devices");
     // The account's own rows keep their way to that machine's settings; the
     // all-devices row is about no machine, so it has no cog.
     expect(choices()[0].closest(".device-picker-row").querySelector("[data-settings-device]")).toBeNull();
+  });
+  it("shows an offline icon instead of a settings control, while still allowing its filter", () => {
+    document.querySelector(".device-picker-toggle").click();
+    const row = choices()[2].closest(".device-picker-row");
+    const offline = row.querySelector(".device-picker-offline");
+
+    expect(row.querySelector('[data-settings-device="b"]')).toBeNull();
+    expect(offline.getAttribute("aria-label")).toBe("Device offline");
+    expect(offline.getAttribute("title")).toBe("Device offline");
+    expect(offline.tabIndex).toBe(-1);
+
+    choices()[2].click();
+    expect(App.deviceFilter).toBe("b");
+    expect(toggleLabel()).toBe("Desktop");
   });
   // The rows in the rail say why a machine cannot be asked anything; the picker
   // is the same account list and says the same word, so a bridge answering in a
@@ -83,7 +97,8 @@ describe("custom device picker", () => {
     adoptBridgeSelection(contextFor("a"), { version: "0.9.0", unsupported: "bridge" }, null);
     paintDevicePicker();
     document.querySelector(".device-picker-toggle").click();
-    expect(choices().map(labelOf)).toEqual(["All devices", "Laptop (update)", "Desktop (offline)"]);
+    expect(choices().map(labelOf)).toEqual(["All devices", "Laptop (update)", "Desktop"]);
+    expect(document.querySelector('[data-settings-device="a"]')).not.toBeNull();
   });
 
   // The account list is one read behind the session: a machine whose session
@@ -91,8 +106,48 @@ describe("custom device picker", () => {
   it("calls a machine away once its own session has gone, whatever the list says", () => {
     deviceAnswering("a");
     setContextOffline("a", { offline: true });
-    paintDevicePicker();
-    expect(labelOf(choices()[1])).toBe("Laptop (offline)");
+    expect(labelOf(choices()[1])).toBe("Laptop");
+    expect(choices()[1].closest(".device-picker-row").querySelector('[data-settings-device="a"]')).toBeNull();
+    expect(choices()[1].closest(".device-picker-row").querySelector(".device-picker-offline")).not.toBeNull();
+  });
+
+  it("restores the cog as a lost connection reconnects", () => {
+    deviceAnswering("a");
+    setContextOffline("a", { offline: true });
+    expect(document.querySelector('[data-settings-device="a"]')).toBeNull();
+
+    setContextOffline("a", { offline: false });
+    expect(document.querySelector('[data-settings-device="a"]')).not.toBeNull();
+  });
+
+  it("keeps an open menu and its row focused when that device goes offline", () => {
+    deviceAnswering("a");
+    document.querySelector(".device-picker-toggle").click();
+    document.querySelector('[data-settings-device="a"]').focus();
+
+    setContextOffline("a", { offline: true });
+
+    expect(document.querySelector(".device-picker-menu").hidden).toBe(false);
+    expect(document.querySelector('[data-settings-device="a"]')).toBeNull();
+    expect(document.activeElement.dataset.filterDevice).toBe("a");
+  });
+
+  it("does not route a stale settings cog after the device becomes offline", () => {
+    document.querySelector(".device-picker-toggle").click();
+    App.devices[0].status = "offline";
+    document.querySelector('[data-settings-device="a"]').click();
+
+    expect(go).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-settings-device="a"]')).toBeNull();
+    expect(document.querySelector(".device-picker-offline")).not.toBeNull();
+  });
+
+  it("uses the same offline icon for a blocked connection", () => {
+    deviceAnswering("a");
+    setContextOffline("a", { offline: true, blocked: "timeout" });
+
+    expect(labelOf(choices()[1])).toBe("Laptop");
+    expect(choices()[1].closest(".device-picker-row").querySelector(".device-picker-offline")).not.toBeNull();
   });
 
   // A machine the account calls online that this client has not opened yet is
@@ -145,5 +200,15 @@ describe("custom device picker", () => {
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(document.activeElement).toBe(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    toggle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement.dataset.filterDevice).toBe("b");
+    // Native button activation is what Enter/Space does in the browser. The
+    // static offline icon is absent from this tab sequence.
+    document.activeElement.click();
+    expect(App.deviceFilter).toBe("b");
   });
 });

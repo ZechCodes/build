@@ -54,7 +54,7 @@ describe("workspace inbox rows", () => {
         name: "Checkout",
         root: "/work/checkout",
         status: "active",
-        work_summary: { pushes: 3, additions: 42, deletions: 7 },
+        work_summary: { pushes: 3, behind: 2, additions: 42, deletions: 7 },
         directories: [
           { id: "docs", source_id: "source-docs", is_git: false },
           { id: "api", source_id: "source-api", is_git: true },
@@ -70,7 +70,7 @@ describe("workspace inbox rows", () => {
       sourceId: "source-api",
       tab: "changes",
     });
-    expect(entry.facts).toBe("3 pushes · +42 −7");
+    expect(entry.facts).toBe("↑3 ↓2 +42 −7");
     // No destructive verb on a workspace row that is not clean: the Done
     // action is `data-done="…"` (the menu item) or `data-workspace-done`; the
     // always-present `data-done-error` slot is where a refusal is painted, not
@@ -103,10 +103,20 @@ describe("workspace inbox rows", () => {
       ]);
       expect(malformed.facts).toBe("Work summary unavailable");
     }
-    const [clean] = entriesOf([
+    const [legacy] = entriesOf([
       { id: "workspace-4", project_id: "project-1", work_summary: { pushes: 0, additions: 0, deletions: 0 } },
     ]);
-    expect(clean.facts).toBe("0 pushes · +0 −0");
+    expect(legacy.facts).toBe("↑0 +0 −0");
+    const [withBehind] = entriesOf([
+      { id: "workspace-5", project_id: "project-1", work_summary: { pushes: 0, behind: 4, additions: 0, deletions: 0 } },
+    ]);
+    expect(withBehind.facts).toBe("↑0 ↓4 +0 −0");
+    for (const invalid of ["1", -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const [malformed] = entriesOf([
+        { id: "workspace-6", project_id: "project-1", work_summary: { pushes: 0, behind: invalid, additions: 0, deletions: 0 } },
+      ]);
+      expect(malformed.facts).toBe("Work summary unavailable");
+    }
   });
 
   // A checkout the bridge could not build has no work to summarize, and saying

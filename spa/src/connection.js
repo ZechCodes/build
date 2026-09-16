@@ -17,6 +17,7 @@
 import * as transport from "@build/secure-transport";
 import { RELAY_URL } from "./config.js";
 import { createRelayRendezvous } from "./core/rendezvous.js";
+import { createRendezvousLifecycle } from "./core/rendezvousLifecycle.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { connectionDiagnosticHistory } from "./core/connectionDiagnostics.js";
@@ -52,15 +53,11 @@ import { deliverFeed, joinFeed } from "./core/taskFeed.js";
 // them because a machine can be dialled before it has a context — a connect
 // that fails never lands one — and the context carries the same object, so
 // anything holding a device can find the way to it.
-const rendezvousByDevice = new Map();
-
 /** The way to one machine, opened on demand by whatever needs it. A relay
  *  socket today; a direct-network listener is a second implementation of the
  *  same interface, and nothing below this line would know (rule 7). */
-function rendezvousFor(deviceId) {
-  const known = rendezvousByDevice.get(deviceId);
-  if (known) return known;
-  const rendezvous = createRelayRendezvous({
+const rendezvousLifecycle = createRendezvousLifecycle((deviceId) =>
+  createRelayRendezvous({
     deviceId,
     relayUrl: RELAY_URL,
     transport,
@@ -69,49 +66,19 @@ function rendezvousFor(deviceId) {
     // The api-pinned transport key, never a relay-supplied one: the relay is an
     // untrusted broker and session keys are sealed exclusively to that key.
     getPinnedDeviceKey: pinnedDeviceTransportKey,
-  });
-  rendezvousByDevice.set(deviceId, rendezvous);
-  return rendezvous;
-}
-
-// How many things on one machine need its rendezvous open right now: a connect
-// sequence negotiating, an ICE restart asking for one, a terminal session being
-// minted. The relay is not held between them (rule 4), so the last to let go
-// closes it.
-const negotiating = new Map(); // deviceId → how many
-const rendezvousEra = new Map(); // deviceId → forced-close generation
-
-/** Ask for this machine's rendezvous and say it is wanted open. */
-function holdRendezvous(deviceId) {
-  negotiating.set(deviceId, (negotiating.get(deviceId) || 0) + 1);
-  return rendezvousFor(deviceId);
-}
-
-/** Done negotiating. Nothing else waiting on it closes the socket. */
-function releaseRendezvous(deviceId, expectedEra = null) {
-  if (expectedEra !== null && (rendezvousEra.get(deviceId) || 0) !== expectedEra) return;
-  const left = (negotiating.get(deviceId) || 1) - 1;
-  if (left > 0) {
-    negotiating.set(deviceId, left);
-    return;
-  }
-  closeRendezvous(deviceId);
-}
+  }),
+);
 
 /** Close this machine's rendezvous whoever was holding it: the device is
  *  blocked, or gone, and nothing is negotiating with it any more. */
 function closeRendezvous(deviceId) {
-  rendezvousEra.set(deviceId, (rendezvousEra.get(deviceId) || 0) + 1);
-  negotiating.delete(deviceId);
-  rendezvousByDevice.get(deviceId)?.close();
+  rendezvousLifecycle.forDevice(deviceId).forceClose();
 }
 
 /** Let go of every rendezvous (sign-out, teardown): they are this account's,
  *  and a socket left open is a socket for an account that has gone. */
 export function forgetRendezvousSockets() {
-  for (const deviceId of [...rendezvousByDevice.keys()]) closeRendezvous(deviceId);
-  rendezvousByDevice.clear();
-  negotiating.clear();
+  rendezvousLifecycle.clear();
 }
 
 // ---- the connect sequence (spec rules 2 and 3) -------------------------------
@@ -137,10 +104,10 @@ const reasonOf = (error) => error?.blockedReason || "failed";
  * found — except a key that is not the one this account pinned, which is not an
  * outage at all: the machine answering is not the machine that was paired.
  */
-async function mintAppSession(deviceId) {
+async function mintAppSession(deviceId, rendezvous) {
   try {
     return await openSession({
-      rendezvous: rendezvousFor(deviceId),
+      rendezvous,
       transport,
       deviceId,
       // One device's offline state pauses one device's calls.
@@ -167,16 +134,28 @@ async function mintAppSession(deviceId) {
  * the channels opening let it go, and a connection that failed asks for it back
  * before it offers the restart.
  */
-function openDirectLink(deviceId, session) {
+function openDirectLink(deviceId, session, sessionLease) {
+  let restartLease = null;
   return openPeerLink({
     signal: (method, params) => failingAs("refused", session.call(method, params)),
     fetchIceServers: () => failingAs("ice-servers", fetchIceServers()),
     onPush: session.onPush,
     diagnosticId: `${deviceId}:${session.sessionId}`,
-    onConnected: () => releaseRendezvous(deviceId),
+    onConnected: () => {
+      restartLease?.release();
+      restartLease = null;
+    },
     onFailed: async () => {
-      holdRendezvous(deviceId);
-      await session.reattachSignaling();
+      const lease = sessionLease.reacquire();
+      if (!lease) throw new Error(`stale rendezvous restart for ${deviceId}`);
+      restartLease = lease;
+      try {
+        await session.reattachSignaling();
+      } catch (error) {
+        lease.release();
+        if (restartLease === lease) restartLease = null;
+        throw error;
+      }
     },
   });
 }
@@ -198,28 +177,22 @@ async function connectOverChannels(deviceId, stillWanted = () => true) {
   if (!globalThis.RTCPeerConnection) {
     throw becauseOf(new Error("this browser cannot open a direct connection"), "no-webrtc");
   }
-  holdRendezvous(deviceId); // until the channels are open, or the device is blocked
-  const session = await mintAppSession(deviceId);
+  const sessionLease = rendezvousLifecycle.forDevice(deviceId).acquire();
+  let session;
   let link;
   try {
-    link = await openDirectLink(deviceId, session);
-  } catch (error) {
-    closeQuietly(session); // nothing ever carried it
-    throw error;
-  }
-  if (!stillWanted()) {
-    // Closed before the link is dropped, so the session reports no loss on the
-    // way out: this machine is not offline, it is one this dial no longer has.
-    closeQuietly(session);
-    link.close();
-    throw new Error(`device ${deviceId} is no longer on this account`);
-  }
-  try {
-    return await landSession(session, link);
+    session = await mintAppSession(deviceId, sessionLease.rendezvous);
+    link = await openDirectLink(deviceId, session, sessionLease);
+    if (!stillWanted()) {
+      throw new Error(`device ${deviceId} is no longer on this account`);
+    }
+    return await landSession(session, link, sessionLease.release);
   } catch (error) {
     closeQuietly(session);
-    link.close();
+    link?.close();
     throw error;
+  } finally {
+    sessionLease.release();
   }
 }
 
@@ -324,21 +297,15 @@ function followTerminalsIfTheirs(context, options) {
  * again the moment neither this mint nor a negotiation needs it.
  */
 async function mintTerminalSession(deviceId) {
-  const rendezvous = holdRendezvous(deviceId);
-  const era = rendezvousEra.get(deviceId) || 0;
+  const lease = rendezvousLifecycle.forDevice(deviceId).acquire();
   try {
-    const minted = await rendezvous.mint({});
-    let released = false;
+    const minted = await lease.rendezvous.mint({});
     return {
       ...minted,
-      release: () => {
-        if (released) return;
-        released = true;
-        releaseRendezvous(deviceId, era);
-      },
+      release: lease.release,
     };
   } catch (error) {
-    releaseRendezvous(deviceId, era);
+    lease.release();
     throw error;
   }
 }
@@ -438,8 +405,7 @@ export function retireDevice(deviceId) {
   // blocked on the way out.
   closeQuietly(context?.session);
   dropPeerLink(context);
-  closeRendezvous(deviceId);
-  rendezvousByDevice.delete(deviceId);
+  rendezvousLifecycle.retire(deviceId);
   securityStops.delete(deviceId);
   return retireDeviceContext(deviceId);
 }
@@ -559,7 +525,7 @@ export function greetLiveBridge(context, { suppressFailure = true } = {}) {
  *
  *  Nothing is dispatched to the user's surfaces before both channels are open
  *  (rule 2), so this is the first moment anything is asked of the machine. */
-async function landSession(session, link) {
+async function landSession(session, link, releaseInitialLease) {
   const previous = contextFor(session.deviceId);
   // Closed before its link is dropped: a session told it lost its carrier would
   // block the very device that is landing.
@@ -580,7 +546,7 @@ async function landSession(session, link) {
     initialGreeting = false;
   }
   if (contextFor(session.deviceId)?.session !== session) throw new Error("session replaced during greeting");
-  releaseRendezvous(session.deviceId);
+  releaseInitialLease();
   // A device the feed is not polling yet — the account's first session, one a
   // late device just opened — gets its own board watcher and reads it as soon
   // as its greeting is in.

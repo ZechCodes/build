@@ -401,6 +401,77 @@ describe("a connection that goes after it was live", () => {
     await sayItCarries();
     expect(reopened.readyState).toBe(3);
   });
+
+  it("keeps an overlapping terminal mint open when a restart finishes", async () => {
+    let askForRestart = null;
+    let sayItCarries = null;
+    const link = fakeLink();
+    peerLink.open.mockImplementation(async ({ fetchIceServers, signal, onConnected, onFailed }) => {
+      await fetchIceServers();
+      await signal("rtc.offer", { sdp: "v=0" });
+      askForRestart = onFailed;
+      sayItCarries = onConnected;
+      return link;
+    });
+    await connect("dev-a");
+
+    const terminalSession = await terminals.mint("dev-a");
+    await askForRestart();
+    const sharedSocket = sockets().at(-1);
+    await sayItCarries();
+
+    expect(sharedSocket.readyState).toBe(1);
+    terminalSession.release();
+    expect(sharedSocket.readyState).toBe(3);
+  });
+
+  it("keeps the initial lease through a restart that finishes during the greeting", async () => {
+    let finishGreeting;
+    let askForRestart = null;
+    let sayItCarries = null;
+    greetings.greet.mockImplementationOnce(
+      () => new Promise((resolve) => { finishGreeting = resolve; }),
+    );
+    peerLink.open.mockImplementationOnce(async ({ signal, onConnected, onFailed }) => {
+      await signal("rtc.offer", { sdp: "v=0" });
+      askForRestart = onFailed;
+      sayItCarries = onConnected;
+      return fakeLink();
+    });
+    App.devices = [{ id: "dev-a", name: "Laptop", status: "online" }];
+
+    const connecting = connectDevice("dev-a");
+    await settle();
+    await askForRestart();
+    const reopened = sockets().at(-1);
+    await sayItCarries();
+
+    expect(reopened.readyState).toBe(1);
+    finishGreeting(true);
+    await connecting;
+    expect(reopened.readyState).toBe(3);
+  });
+
+  it("ignores restart callbacks captured before force close and a new retry", async () => {
+    let staleRestart = null;
+    const firstLink = fakeLink();
+    peerLink.open.mockImplementationOnce(async ({ signal, onFailed }) => {
+      await signal("rtc.offer", { sdp: "v=0" });
+      staleRestart = onFailed;
+      return firstLink;
+    });
+    await connect("dev-a");
+
+    goOffline("dev-a");
+    const replacement = fakeLink();
+    linkOpensWith(replacement);
+    await connectDevice("dev-a");
+    const opened = sockets().length;
+
+    await expect(staleRestart()).rejects.toThrow(/stale rendezvous restart/);
+    expect(sockets()).toHaveLength(opened);
+    expect(contextFor("dev-a").peerLink).toBe(replacement);
+  });
 });
 
 describe("the terminals' session", () => {

@@ -534,8 +534,9 @@ main#root.surface { max-width:none;
 .file table { min-width:100%; }
 .file td.code { white-space:pre; }
 .file { container-type:inline-size; background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:clip; }
-.file .fhead { position:sticky; top:var(--diff-sticky-top, 0); z-index:3; display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--line2); background:var(--panel); font-family:var(--mono); font-size:12.5px; }
-.file .fidentity, .file .fmeta, .file .factions { display:contents; }
+.file .fhead { position:sticky; top:var(--diff-sticky-top, 0); z-index:3; display:flex; align-items:center; gap:7px; padding:7px 10px; border-bottom:1px solid var(--line2); background:var(--panel); font-family:var(--mono); font-size:12.5px; }
+.file .fidentity, .file .fmeta { display:contents; }
+.file .factions { display:inline-flex; align-items:center; gap:2px; flex:none; }
 .file .fhead .fpath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .file .fhead .fb { font-size:9px; font-weight:700; letter-spacing:.04em; padding:1px 5px; border-radius:4px; }
 .fb.EDIT { background:var(--accent-soft); color:var(--accent); } .fb.ADD { background:var(--green-bg); color:var(--green); } .fb.DEL { background:var(--red-bg); color:var(--red); }
@@ -699,20 +700,20 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    glyphs at three sizes. The icons come from the app's pack (core/icons.js) and
    are sized here, once. */
 .fcmt, .fopen, .fapprove { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
-  border-radius:5px; padding:4px 7px; cursor:pointer; margin-left:6px; flex:none;
+  border-radius:5px; min-width:28px; min-height:28px; padding:5px 6px; cursor:pointer; flex:none;
   display:inline-flex; align-items:center; gap:5px; }
 .fcmt svg, .fopen svg, .fapprove svg { width:16px; height:16px; flex:none; }
 .fcmt:hover, .fopen:hover, .fapprove:hover { background:var(--accent-soft); color:var(--accent); }
 .fedited { margin-left:7px; color:var(--dim); font-size:11px; white-space:nowrap; }
 @container (max-width: 600px) {
   .file .fhead { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:5px 7px; }
-  .file .fidentity { display:flex; align-items:flex-start; gap:9px; min-width:0; }
+  .file .fidentity { display:flex; align-items:flex-start; gap:7px; min-width:0; }
   .file .fhead .fpath { overflow:visible; text-overflow:clip; white-space:normal; overflow-wrap:anywhere; }
   .file .fmeta { display:flex; grid-column:1 / -1; grid-row:2; align-items:center; flex-wrap:wrap; gap:5px 9px; }
-  .file .fhead:has(.fselect-box) .fmeta { padding-left:calc(13px + 9px); }
+  .file .fhead:has(.fselect-box) .fmeta { padding-left:calc(13px + 7px); }
   .file .fmeta .pm, .file .fmeta .fedited, .file .fmeta .fchanged { margin-left:0; }
   .file .factions { display:flex; align-items:center; align-self:start; gap:2px; }
-  .file .factions > .fcmt, .file .factions > .fopen, .file .factions > .fapprove { margin-left:0; padding-inline:5px; }
+  .file .factions > .fcmt, .file .factions > .fopen, .file .factions > .fapprove { padding-inline:5px; }
   .file .fhead:has(.fmenu-pop) .fidentity { grid-column:1 / -1; }
   .file .fhead:has(.fmenu-pop) .factions { grid-column:1 / -1; grid-row:3; flex-wrap:wrap; justify-content:flex-end; }
 }

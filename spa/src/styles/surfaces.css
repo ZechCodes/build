@@ -24,12 +24,12 @@
 /* The per-file ⋯: the file's own verbs, disclosed in the header rather than in
    a floating layer — the file block clips its own overflow, and a menu that
    gets clipped is a menu nobody can click. */
-.fmenu-host { display:inline-flex; align-items:center; gap:6px; flex:none; }
+.fmenu-host { display:inline-flex; align-items:center; gap:4px; flex:none; }
 .fmenu { font:inherit; font-size:13px; line-height:1; color:var(--dim); background:none; border:none;
-  border-radius:5px; padding:3px 6px; cursor:pointer; }
+  border-radius:5px; min-width:28px; min-height:28px; padding:5px 6px; cursor:pointer; }
 .fmenu:hover { background:var(--accent-soft); color:var(--accent); }
 .fmenu[aria-expanded="true"] { background:var(--accent-soft); color:var(--accent); }
-.fmenu-pop { display:inline-flex; gap:6px; }
+.fmenu-pop { display:inline-flex; gap:4px; }
 
 /* Generated files are collapsed, never filtered away: one count line at the
    bottom of the stack, and the whole group opens from it. */

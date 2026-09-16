@@ -27,6 +27,8 @@
   /* What the collapsed toolbar clears: the floating toggle's 12px offset, its
      box, and the 8px gap before the toolbar content. */
   --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
+  --chat-glass-opacity:72%;
+  --chat-glass-blur:6px;
 }
 
 /* The frame is viewport-locked (styles.css body): the page never scrolls, each
@@ -584,11 +586,16 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 /* position:relative — the rail is the frame its own popover is laid in (below):
    the unpinned panel hangs off the strip's edge, and nothing else in the view
    column is the right thing to measure that from. */
-#agent-rail { display:flex; min-height:0; position:relative; background:var(--bg); }
+#agent-rail { --agent-panel:min(420px, calc(100vw - 120px));
+  display:flex; min-height:0; position:relative; background:var(--bg);
+  width:calc(var(--agent-panel) + var(--agent-strip));
+  transition:width 240ms cubic-bezier(.2,.8,.2,1); }
+#agent-rail.rail-unpinned { width:var(--agent-strip); }
 /* position:relative — the strip has to be able to rise above the popover's
    scrim (below): the card is anchored to a bubble, and pressing the bubble
    beside it has to reach that agent rather than the way out. */
 .rail-strip { flex:none; width:var(--agent-strip); display:flex; position:relative;
+  margin-left:auto;
   flex-direction:column; align-items:center; gap:8px; padding:10px 0;
   border-left:1px solid var(--line); overflow-y:auto; }
 /* A bubble is the agent: the face it wears, its unread count, and a pulse while
@@ -650,9 +657,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    to the bottom edge: the thread runs under it rather than carrying it along,
    and a box grown by what is being typed takes its room from the thread above
    instead of pushing itself off the panel. */
-.rail-panel { flex:none; width:min(420px, calc(100vw - 120px)); position:relative;
+.rail-panel { flex:none; width:var(--agent-panel); position:relative;
   display:flex; flex-direction:column; min-height:0;
-  border-left:1px solid var(--line); }
+  border-left:1px solid var(--line);
+  transition:border-radius 160ms cubic-bezier(.2,.8,.2,1),
+    box-shadow 160ms cubic-bezier(.2,.8,.2,1),
+    background-color 160ms cubic-bezier(.2,.8,.2,1); }
 /* ---- the conversation, unpinned --------------------------------------------
    The pin in the panel's head (core/pinControl.js, the inbox's own control)
    says which of two things the conversation is. Pinned it is the column above:
@@ -662,15 +672,29 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    notch at the bubble it was opened from, over a scrim that is also the way out
    of it. The shape the away inbox wears at the other edge of the frame
    (body.inbox-collapsed #inbox-rail, above), turned round to face the strip. */
-.rail-scrim { position:fixed; inset:0; z-index:35; background:var(--scrim); }
+.rail-scrim { position:fixed; inset:0; z-index:35; background:var(--scrim);
+  opacity:1; transition:opacity 160ms cubic-bezier(.2,.8,.2,1); }
+.rail-scrim-hidden { opacity:0; pointer-events:none; }
 /* Over that scrim: the strip is what the card is anchored TO, so pressing the
    agent beside the open one re-anchors the card instead of dismissing it. */
 #agent-rail.rail-popover .rail-strip { z-index:37; }
 #agent-rail.rail-popover .rail-panel { position:absolute; z-index:36;
   top:10px; bottom:10px; right:var(--agent-strip); left:auto;
-  width:min(420px, calc(100vw - 120px));
+  width:var(--agent-panel);
   border:1px solid var(--line3, var(--line)); border-radius:10px;
   background:var(--panel); box-shadow:0 18px 48px var(--shadow); }
+/* Card chrome changes with the panel's own 160ms movement. On the first
+   240ms leg the panel keeps the shape it started with while the work takes or
+   gives back the reserved column. */
+#agent-rail[data-panel-transition="popover"][data-panel-transition-phase="layout"] .rail-panel {
+  border:0; border-left:1px solid var(--line); border-radius:0;
+  background:var(--bg); box-shadow:none; }
+#agent-rail[data-panel-transition="pinned"][data-panel-transition-phase="layout"] .rail-panel {
+  border:1px solid var(--line3, var(--line)); border-radius:10px;
+  background:var(--panel); box-shadow:0 18px 48px var(--shadow); }
+@media (prefers-reduced-motion: reduce) {
+  #agent-rail, .rail-panel, .rail-scrim { transition:none; }
+}
 /* The notch rides the bubble: core/agentRail.js measures whichever bubble is
    open and writes --rail-anchor, the offset along the panel's edge that points
    at it. Clamped, so a bubble at either end of a long strip still gets a notch
@@ -755,9 +779,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-composer .composer { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow:hidden;
   border:1px solid var(--line); border-radius:12px; background:transparent; }
 .rail-composer .composer::before { content:""; position:absolute; z-index:0; inset:0; border-radius:inherit;
-  background:var(--panel); background:color-mix(in srgb, var(--panel) 86%, transparent);
-  -webkit-backdrop-filter:blur(16px); backdrop-filter:blur(16px); pointer-events:none; }
-.rail-composer .composer > * { position:relative; z-index:1; }
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); pointer-events:none; }
+.rail-composer .composer > :not(.composer-dropmask) { position:relative; z-index:1; }
+.rail-composer .composer > .composer-dropmask { position:absolute; inset:0; z-index:2; }
 .rail-composer .composer:focus-within { border-color:var(--accent);
   box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .rail-composer .composer textarea { flex:1 1 auto; min-height:36px; max-height:40vh; overflow-y:auto;
@@ -862,18 +887,28 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-surfaces-viewer { position:absolute; z-index:35; left:10px; right:10px; bottom:100%;
   max-height:min(46vh, 420px); overflow:hidden; margin:0 0 9px;
   display:flex; flex-direction:column;
-  border:1px solid var(--line3); border-radius:10px; background:var(--panel);
+  border:1px solid var(--line3); border-radius:10px; background:transparent;
   box-shadow:0 14px 34px var(--shadow); }
+.rail-surfaces-viewer::before { content:""; position:absolute; z-index:0; inset:0; border-radius:inherit;
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); pointer-events:none; }
+.rail-surfaces-viewer > * { position:relative; z-index:1; }
 .rail-surfaces-viewer[hidden] { display:none; }
 .surface-popover-head { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
   min-height:42px; padding:8px 10px 7px 14px; border-bottom:1px solid var(--line);
-  background:var(--panel); }
+  background:transparent; }
 .surface-popover-head strong { color:var(--ink); font-size:13.5px; font-weight:600; }
-.surface-popover-kind { color:var(--dim); font-size:11px; }
 .surface-popover-body { min-height:0; overflow-y:auto; }
-.surface-popover-close { margin-left:auto; display:grid; place-items:center; width:28px; height:28px;
-  border:0; border-radius:7px; background:none; color:var(--ink2); cursor:pointer; font:20px/1 var(--sans); }
-.surface-popover-close:hover { background:var(--panel2); color:var(--ink); }
+.surface-popover-actions { margin-left:auto; display:flex; align-items:center; gap:2px; }
+.surface-history-toggle, .surface-popover-close { position:relative; display:grid; place-items:center; width:28px; height:28px;
+  padding:0; border:0; border-radius:7px; background:none; color:var(--ink2); cursor:pointer; }
+.surface-history-toggle:hover, .surface-popover-close:hover,
+.surface-history-toggle[aria-pressed="true"] { background:var(--panel2); color:var(--ink); }
+.surface-history-toggle svg, .surface-popover-close svg { width:15px; height:15px; }
+.surface-history-count { position:absolute; right:1px; bottom:0; min-width:13px; height:13px; padding:0 2px;
+  display:grid; place-items:center; border-radius:7px; background:var(--panel2); color:var(--ink2);
+  font-size:8px; font-weight:650; font-variant-numeric:tabular-nums; line-height:1; }
+.surface-history-toggle[hidden] { display:none; }
 .surface-workflow-choice { display:inline-flex; align-items:center; gap:5px;
   padding:2px 8px; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
   color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
@@ -938,7 +973,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-agent-unavailable { color:var(--dim); }
 .surface-agent-fact .surface-row-jump { padding:0; color:var(--accent); }
 .surface-running, .surface-completed-rows { display:flex; flex-direction:column; gap:2px; }
-.surface-completed { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; }
+.surface-completed[open] { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; }
+.rail-surfaces-viewer .surface-completed-head { display:none; }
 .surface-completed-head { padding:2px 6px; cursor:pointer; color:var(--dim); font-size:10.5px;
   list-style:none; }
 .surface-completed-head::-webkit-details-marker { display:none; }
@@ -995,7 +1031,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      there are more agents than fit. It leaves the rail's own box out of the
      flow — the rail costs the work nothing here — and the strip's leading edge,
      which is the seam it alone draws, is its top rather than its left. */
-  #agent-rail { position:static; }
+  #agent-rail, #agent-rail.rail-unpinned { position:static; width:0; transition:none; }
   .rail-strip { position:absolute; z-index:31;
     left:0; right:0; bottom:var(--console-space);
     width:auto; height:var(--agent-strip);

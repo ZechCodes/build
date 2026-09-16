@@ -1520,7 +1520,9 @@ describe("the creation sheet", () => {
 // instead — above the console bar, which keeps the very bottom — and the
 // conversation opens above the strip rather than beside it.
 describe("the bubble strip on a phone", () => {
-  const phoneRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === PHONE_QUERY);
+  const phoneRule = (selector) => cssRules().find((rule) =>
+    enclosingAtRule(rule.at) === PHONE_QUERY &&
+    rule.selector.split(",").map((part) => part.trim()).includes(selector));
 
   it("runs across the column's foot instead of down its edge", () => {
     const strip = phoneRule(".rail-strip");
@@ -1539,7 +1541,10 @@ describe("the bubble strip on a phone", () => {
     expect(declaration(strip.body, "border-top")).toBe("1px solid var(--line)");
     // The strip leaves the rail's box out of the flow, so the work keeps the
     // whole width — and the rail's desktop column is untouched.
-    expect(declaration(phoneRule("#agent-rail").body, "position")).toBe("static");
+    const rail = phoneRule("#agent-rail");
+    expect(declaration(rail.body, "position")).toBe("static");
+    expect(declaration(rail.body, "width")).toBe("0");
+    expect(declaration(phoneRule("#agent-rail.rail-unpinned").body, "width")).toBe("0");
     expect(declaration(baseRule("#agent-rail").body, "grid-column")).toBe("3");
   });
 

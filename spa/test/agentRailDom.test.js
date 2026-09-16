@@ -298,6 +298,26 @@ describe("the conversation panel's pin", () => {
 
   afterEach(() => atWidth(1024));
 
+  it("uses the inbox timing while the rail gives workspace width back", () => {
+    expect(shellCss).toMatch(/#agent-rail \{[^}]*transition:width 240ms cubic-bezier\(\.2,\.8,\.2,1\)/);
+    expect(shellCss).toMatch(/\.rail-panel \{[^}]*transition:border-radius 160ms/);
+    expect(shellCss).toMatch(/#agent-rail\.rail-unpinned \{ width:var\(--agent-strip\); \}/);
+    expect(shellCss).toMatch(/#agent-rail, #agent-rail\.rail-unpinned \{ position:static; width:0; transition:none; \}/);
+    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*#agent-rail, \.rail-panel, \.rail-scrim \{ transition:none; \}/);
+  });
+
+  it("keeps the attachment drop target over the full glass composer", () => {
+    expect(shellCss).toMatch(/\.rail-composer \.composer > :not\(\.composer-dropmask\) \{ position:relative; z-index:1; \}/);
+    expect(shellCss).toMatch(/\.rail-composer \.composer > \.composer-dropmask \{ position:absolute; inset:0; z-index:2; \}/);
+  });
+
+  it("shares the clearer glass values with the activity viewer", () => {
+    expect(shellCss).toMatch(/--chat-glass-opacity:72%;/);
+    expect(shellCss).toMatch(/--chat-glass-blur:6px;/);
+    expect(shellCss.match(/color-mix\(in srgb, var\(--panel\) var\(--chat-glass-opacity\), transparent\)/g)).toHaveLength(2);
+    expect(shellCss.match(/backdrop-filter:blur\(var\(--chat-glass-blur\)\)/g)).toHaveLength(4);
+  });
+
   it("says what pressing it does, in the inbox's words", async () => {
     atWidth(1024);
     await mount();
@@ -334,6 +354,30 @@ describe("the conversation panel's pin", () => {
     // Unpinned, a fresh mount is the strip alone until a bubble is pressed.
     expect(panel()).toBeNull();
     expect(scrim()).toBeNull();
+  });
+
+  it("keeps the live panel, composer, draft, focus, and history position across pin changes", async () => {
+    atWidth(1024);
+    await mount();
+    const standingPanel = panel();
+    const input = standingPanel.querySelector("#railinput");
+    const history = standingPanel.querySelector(".rail-body");
+    input.value = "still drafting";
+    Object.defineProperties(history, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 500 },
+    });
+    history.scrollTop = 37;
+    input.focus();
+
+    pin().click();
+    await flush();
+
+    expect(panel()).toBe(standingPanel);
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(input.value).toBe("still drafting");
+    expect(document.activeElement).toBe(input);
+    expect(history.scrollTop).toBe(37);
   });
 
   it("pins a popover back into the column", async () => {

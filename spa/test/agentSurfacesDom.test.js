@@ -58,6 +58,7 @@ const viewerRows = (selector) => standing(`${selector} > .surface-row`);
 const runningRows = () => viewerRows(".surface-running");
 const completedRows = () => viewerRows(".surface-completed-rows");
 const completedFold = () => document.querySelector(".surface-completed");
+const historyToggle = () => document.querySelector(".surface-history-toggle");
 const phaseSections = () => standing(".surface-phase");
 const agentRowsIn = (section) => [...section.querySelectorAll(`.surface-row:not([${EXITING_ATTRIBUTE}])`)];
 const agentLabelsIn = (section) =>
@@ -225,6 +226,22 @@ describe("the pill that lingers after the work stops", () => {
 });
 
 describe("painting the viewer", () => {
+  it("names the card with only its kind and keeps the history control beside close", async () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    await pressPill(AGENT_ENTRY_KIND);
+
+    const head = document.querySelector(".surface-popover-head");
+    expect(head.querySelector("strong").textContent).toBe("Agents");
+    expect(head.textContent).not.toContain("Activity");
+    expect([...head.querySelectorAll("button")].map((button) => button.className)).toEqual([
+      "surface-history-toggle",
+      "surface-popover-close",
+    ]);
+    expect(head.querySelector(".surface-popover-close").getAttribute("aria-label")).toBe("Close Agents");
+    surfaces.dispose();
+  });
+
   it("keeps the rows, the draft and the focus across a set that changes nothing", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
@@ -489,14 +506,23 @@ describe("the control a subagent row jumps from", () => {
 });
 
 describe("the fold the finished rows sit under", () => {
-  it("holds every finished row and counts them, leaving the running ones above it", async () => {
+  it("holds every finished row behind the header history control, leaving no footer label", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
     await pressPill(AGENT_ENTRY_KIND);
 
     expect(runningRows().map((row) => row.dataset.key)).toEqual(["s2"]);
     expect(completedRows().map((row) => row.dataset.key)).toEqual(["s1"]);
-    expect(completedFold().querySelector(".surface-completed-head").textContent.trim()).toBe("Completed (1)");
+    expect(completedFold().querySelector(".surface-completed-head").hidden).toBe(true);
+    expect(historyToggle().querySelector(".surface-history-count").textContent).toBe("1");
+    expect(historyToggle().getAttribute("aria-label")).toBe("Show completed history (1)");
+    expect(historyToggle().title).toBe("Show completed history (1)");
+    expect(historyToggle().getAttribute("aria-pressed")).toBe("false");
+
+    historyToggle().click();
+    expect(completedFold().open).toBe(true);
+    expect(historyToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(historyToggle().getAttribute("aria-label")).toBe("Hide completed history (1)");
     surfaces.dispose();
   });
 
@@ -507,6 +533,7 @@ describe("the fold the finished rows sit under", () => {
 
     expect(runningRows()).toHaveLength(1);
     expect(completedFold()).toBe(null);
+    expect(historyToggle().hidden).toBe(true);
     surfaces.dispose();
   });
 
@@ -520,10 +547,12 @@ describe("the fold the finished rows sit under", () => {
     surfaces.set(finished);
     expect(completedFold()).not.toBe(null);
     expect(completedRows().map((row) => row.dataset.key)).toEqual(["sh1"]);
+    expect(historyToggle().hidden).toBe(false);
 
     surfaces.set(snapshot());
     expect(completedFold()).toBe(null);
     expect(runningRows().map((row) => row.dataset.key)).toEqual(["sh1"]);
+    expect(historyToggle().hidden).toBe(true);
     surfaces.dispose();
   });
 
@@ -531,8 +560,8 @@ describe("the fold the finished rows sit under", () => {
     const surfaces = mount();
     surfaces.set(snapshot());
     await pressPill(AGENT_ENTRY_KIND);
+    historyToggle().click();
     const fold = completedFold();
-    fold.open = true;
     const [finishedRow] = completedRows();
 
     const moved = snapshot();
@@ -541,7 +570,28 @@ describe("the fold the finished rows sit under", () => {
 
     expect(completedFold()).toBe(fold);
     expect(fold.open).toBe(true);
+    expect(historyToggle().getAttribute("aria-pressed")).toBe("true");
     expect(completedRows()[0]).toBe(finishedRow);
+    surfaces.dispose();
+  });
+
+  it("opens history when an expanded running agent completes, keeping its detail open", async () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    await pressPill(AGENT_ENTRY_KIND);
+    const running = document.querySelector('.surface-running > [data-key="s2"]');
+    running.querySelector(".surface-agent-summary").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const finished = snapshot();
+    finished.subagents[1] = { ...finished.subagents[1], state: "done", result: "Review complete" };
+    surfaces.set(finished);
+
+    const completed = document.querySelector('.surface-completed-rows > [data-key="s2"]');
+    expect(completed.open).toBe(true);
+    expect(completedFold().open).toBe(true);
+    expect(historyToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(historyToggle().getAttribute("aria-label")).toBe("Hide completed history (2)");
     surfaces.dispose();
   });
 
@@ -554,7 +604,8 @@ describe("the fold the finished rows sit under", () => {
     both.subagents[1] = { ...both.subagents[1], state: "done" };
     surfaces.set(both);
 
-    expect(completedFold().querySelector(".surface-completed-head").textContent.trim()).toBe("Completed (2)");
+    expect(historyToggle().querySelector(".surface-history-count").textContent).toBe("2");
+    expect(historyToggle().getAttribute("aria-label")).toBe("Show completed history (2)");
     expect(completedRows().map((row) => row.dataset.key)).toEqual(["s1", "s2"]);
     expect(runningRows()).toEqual([]);
     surfaces.dispose();

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
 import {
+  AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
   SHELL_ENTRY_KIND,
   WORKFLOW_ENTRY_KIND,
@@ -166,6 +167,64 @@ describe("the rows of an open viewer", () => {
 
     await settleMotion();
     expect(viewerHost().contains(arriving)).toBe(false);
+  });
+});
+
+describe("completed history", () => {
+  it("grows and shrinks from the header control with the card's height motion", async () => {
+    const surfaces = mount();
+    surfaces.set(surfacesSnapshot());
+    pillOf(AGENT_ENTRY_KIND).click();
+    await settleMotion();
+
+    const completed = viewerHost().querySelector(".surface-completed");
+    const history = viewerHost().querySelector(".surface-history-toggle");
+    started.length = 0;
+    history.click();
+    await motionBeat();
+
+    expect(history.getAttribute("aria-pressed")).toBe("true");
+    expect(animationsOn(completed)[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
+    await settleMotion();
+    expect(completed.open).toBe(true);
+
+    started.length = 0;
+    history.click();
+    await motionBeat();
+    expect(history.getAttribute("aria-pressed")).toBe("false");
+    expect(animationsOn(completed)[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
+    await settleMotion();
+    expect(completed.open).toBe(false);
+  });
+
+  it("keeps an explicit close through a poll during its exit, then opens normally again", async () => {
+    const surfaces = mount();
+    surfaces.set(surfacesSnapshot());
+    pillOf(AGENT_ENTRY_KIND).click();
+    await settleMotion();
+
+    const completed = viewerHost().querySelector(".surface-completed");
+    const history = viewerHost().querySelector(".surface-history-toggle");
+    history.click();
+    await settleMotion();
+    completed.querySelector(".surface-agent-summary").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    history.click();
+    const updated = surfacesSnapshot();
+    updated.subagents[0] = { ...updated.subagents[0], tokens: 1400 };
+    surfaces.set(updated);
+    await settleMotion();
+
+    expect(history.getAttribute("aria-pressed")).toBe("false");
+    expect(completed.open).toBe(false);
+    expect(completed.hidden).toBe(false);
+
+    history.click();
+    await settleMotion();
+    expect(history.getAttribute("aria-pressed")).toBe("true");
+    expect(completed.open).toBe(true);
+    expect(completed.hidden).toBe(false);
   });
 });
 

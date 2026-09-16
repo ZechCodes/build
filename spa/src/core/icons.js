@@ -32,6 +32,7 @@ export { default as ICON_MESSAGE_SQUARE } from "lucide-static/icons/message-squa
 export { default as ICON_EXTERNAL_LINK } from "lucide-static/icons/external-link.svg?raw";
 export { default as ICON_CHECK } from "lucide-static/icons/check.svg?raw";
 export { default as ICON_REFRESH } from "lucide-static/icons/refresh-cw.svg?raw";
+export { default as ICON_HISTORY } from "lucide-static/icons/history.svg?raw";
 export { default as ICON_GIT_MERGE } from "lucide-static/icons/git-merge.svg?raw";
 export { default as ICON_FILE } from "lucide-static/icons/file.svg?raw";
 export { default as ICON_GIT_BRANCH } from "lucide-static/icons/git-branch.svg?raw";

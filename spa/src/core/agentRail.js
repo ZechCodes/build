@@ -104,9 +104,10 @@ import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js"
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
-import { PIN_CLASS, pinButtonHtml } from "./pinControl.js";
+import { PIN_CLASS, pinButtonHtml, syncPinButton } from "./pinControl.js";
 import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
+import { createChatPanelMotion } from "./chatPanelMotion.js";
 import "../styles/shell.css";
 
 /** How often the rail re-reads its work item. The same cadence the detail
@@ -635,6 +636,7 @@ export function mountAgentRail(host, context) {
   let surfacesBlock = null;
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
+  let panelMotion = null;
 
 
   const agentIdOf = (agent) => agent.id;
@@ -925,13 +927,20 @@ export function mountAgentRail(host, context) {
    *  nothing behind it to put away. */
   const syncScrim = (showing) => {
     const standing = host.querySelector(`#${RAIL_SCRIM_ID}`);
-    if (!showing) return standing?.remove();
-    if (standing) return;
-    const scrim = document.createElement("div");
-    scrim.className = "rail-scrim";
-    scrim.id = RAIL_SCRIM_ID;
-    scrim.onclick = () => dismissPopover();
-    host.insertBefore(scrim, host.firstChild);
+    const direction = host.dataset.panelTransition;
+    const phase = host.dataset.panelTransitionPhase;
+    const retained = direction === "pinned";
+    if (!showing && !retained) return standing?.remove();
+    const scrim = standing || document.createElement("div");
+    if (!standing) {
+      scrim.className = "rail-scrim";
+      scrim.id = RAIL_SCRIM_ID;
+      scrim.onclick = () => dismissPopover();
+      host.insertBefore(scrim, host.firstChild);
+    }
+    const hidden = (direction === "popover" && phase === "layout") ||
+      (direction === "pinned" && phase === "panel");
+    scrim.classList.toggle("rail-scrim-hidden", hidden);
   };
 
   /** Which bubble the popover points at, and where its notch sits along the
@@ -951,6 +960,7 @@ export function mountAgentRail(host, context) {
 
   const syncPopover = () => {
     const showing = popoverOpen && !pinned;
+    host.classList.toggle("rail-unpinned", !pinned);
     host.classList.toggle(POPOVER_CLASS, showing);
     syncScrim(showing);
     const panel = host.querySelector("#rail-panel");
@@ -969,6 +979,7 @@ export function mountAgentRail(host, context) {
   /** Off the screen, whichever way it was on it. A pinned panel is unpinned to
    *  get it out of the column; an unpinned one just closes. */
   const closePanel = () => {
+    panelMotion?.cancel();
     if (pinned) setPinned(false, { reveal: false });
     popoverOpen = false;
     disposeTui();
@@ -977,6 +988,7 @@ export function mountAgentRail(host, context) {
   /** The three ways out of a popover: the scrim under it, Escape, and going
    *  somewhere else. None of them is a change of mind about the pin. */
   const dismissPopover = () => {
+    panelMotion?.cancel();
     if (pinned || !popoverOpen) return;
     popoverOpen = false;
     disposeTui();
@@ -1035,7 +1047,7 @@ export function mountAgentRail(host, context) {
     const shownMode = shownPanelMode();
     // The head is rewritten only when what it SAYS changed: the name, whether
     // this agent can be taken back off, and whether it has a basement.
-    const wantedHead = `${who}:${provider}:${heading.text}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}:${pinned ? "pinned" : "loose"}`;
+    const wantedHead = `${who}:${provider}:${heading.text}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
@@ -1085,6 +1097,8 @@ export function mountAgentRail(host, context) {
       panel.dataset.head = wantedHead;
       wireHead(panel);
     }
+    const pin = panel.querySelector(`.${PIN_CLASS}`);
+    if (pin) syncPinButton(pin, { subject: PANEL_SUBJECT, pinned });
     paintSurfaceMenu();
     syncSurfaceOverlay();
     if (shownMode === "chat") {
@@ -1105,10 +1119,15 @@ export function mountAgentRail(host, context) {
     const remove = panel.querySelector(".rail-remove");
     if (remove) remove.onclick = () => removeAgent(remove);
     const pin = panel.querySelector(`.${PIN_CLASS}`);
-    if (pin) pin.onclick = () => {
-      setPinned(!pinned);
-      paint();
-    };
+    if (pin) pin.onclick = () => panelMotion.run({
+      panel,
+      direction: pinned ? "popover" : "pinned",
+      scroller: panel.querySelector(".rail-body"),
+      apply: () => {
+        setPinned(!pinned);
+        paint();
+      },
+    });
   };
 
   // ---- chat -----------------------------------------------------------------
@@ -2277,10 +2296,14 @@ export function mountAgentRail(host, context) {
   statusTicker = setInterval(paintRailStatus, 1000);
   document.addEventListener("keydown", dismissOnEscape);
   window.addEventListener("hashchange", dismissPopover);
+  const cancelPanelMotion = () => panelMotion.cancel();
+  panelMotion = createChatPanelMotion(host, { onPhase: syncPopover });
+  window.addEventListener("resize", cancelPanelMotion);
 
   return {
     dispose() {
       disposed = true;
+      panelMotion.cancel();
       if (poll) poll.dispose();
       poll = null;
       clearInterval(statusTicker);
@@ -2298,8 +2321,9 @@ export function mountAgentRail(host, context) {
       releaseFaces();
       document.removeEventListener("keydown", dismissOnEscape);
       window.removeEventListener("hashchange", dismissPopover);
+      window.removeEventListener("resize", cancelPanelMotion);
       if (ownsChatRepository) chatRepository.dispose();
-      host.classList.remove(POPOVER_CLASS);
+      host.classList.remove(POPOVER_CLASS, "rail-unpinned");
       host.innerHTML = "";
     },
   };

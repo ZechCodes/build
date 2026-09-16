@@ -3,6 +3,7 @@ import { EXPANDED_ATTRIBUTE, patchElement } from "./domPatch.js";
 import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { EXITING_ATTRIBUTE, patchList } from "./patchList.js";
 import { elapsedClock } from "./agentRailModel.js";
+import { ICON_HISTORY, ICON_X } from "./icons.js";
 import { openModal } from "./modal.js";
 import {
   AGENT_ENTRY_KIND,
@@ -146,7 +147,7 @@ function expandClippedText(event) {
 
 const CLIP_KEYS = ["Enter", " "];
 
-export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = false, modelLabel }) {
+export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = false, modelLabel, historyControl = null }) {
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
@@ -156,6 +157,21 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   let surfaces = null;
   let selectedWorkflowIndex = 0;
   let ticker = null;
+  let completedCount = 0;
+  let historyOpen = false;
+
+  const syncHistoryControl = (count = completedCount) => {
+    if (!historyControl) return;
+    const action = historyOpen ? "Hide" : "Show";
+    const label = `${action} completed history (${count})`;
+    historyControl.hidden = count === 0;
+    historyControl.disabled = count === 0;
+    historyControl.setAttribute("aria-pressed", String(historyOpen));
+    historyControl.setAttribute("aria-label", label);
+    historyControl.title = label;
+    const countElement = historyControl.querySelector(".surface-history-count");
+    if (countElement) countElement.textContent = String(count);
+  };
 
   const paintRowClocks = () => {
     const nowMs = Date.now();
@@ -180,17 +196,23 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   };
 
   const completedFoldContainer = (count) => {
+    completedCount = count;
     const standing = host.querySelector(COMPLETED_FOLD_SELECTOR);
     if (!count) {
       if (standing) standing.remove();
+      historyOpen = false;
+      syncHistoryControl();
       return null;
     }
     if (!standing) {
       host.querySelector(SURFACE_SELECTOR.viewer).appendChild(el(completedFoldHtml(count)));
-      return host.querySelector(SURFACE_SELECTOR.completed);
+    } else {
+      patchElement(standing.querySelector(COMPLETED_FOLD_HEAD_SELECTOR), el(completedFoldHeadHtml(count)));
     }
-    patchElement(standing.querySelector(COMPLETED_FOLD_HEAD_SELECTOR), el(completedFoldHeadHtml(count)));
-    return standing.querySelector(SURFACE_SELECTOR.completed);
+    const completed = host.querySelector(COMPLETED_FOLD_SELECTOR);
+    completed.querySelector(COMPLETED_FOLD_HEAD_SELECTOR).hidden = !!historyControl;
+    syncHistoryControl();
+    return completed.querySelector(SURFACE_SELECTOR.completed);
   };
 
   const paintList = (container, list) => {
@@ -207,6 +229,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       paintList(element.querySelector(inner.selector), inner);
     });
     if (list.folded && list.rows.some((row) => openedAgentKeys.has(row.key))) {
+      historyOpen = true;
       container.closest(COMPLETED_FOLD_SELECTOR).open = true;
     }
   };
@@ -229,7 +252,30 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       if (!container) continue;
       paintList(container, list);
     }
+    syncHistoryControl();
     tickWhileAnyRowIsRunning();
+  };
+
+  const onHistoryPress = () => {
+    const completed = host.querySelector(COMPLETED_FOLD_SELECTOR);
+    if (!completed) return;
+    historyOpen = !historyOpen;
+    if (historyOpen) {
+      completed.open = true;
+      completed.hidden = true;
+      reveal(completed, { axis: "height" });
+    } else {
+      for (const row of completed.querySelectorAll("details.surface-agent[open]")) {
+        openedAgentKeys.delete(row.dataset.key);
+        row.open = false;
+      }
+      hide(completed, { axis: "height" }).then(() => {
+        if (historyOpen || !completed.isConnected) return;
+        completed.open = false;
+        completed.hidden = false;
+      });
+    }
+    syncHistoryControl();
   };
 
   const onViewerPress = (event) => {
@@ -259,10 +305,15 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       return;
     }
     const completed = event.target.closest(COMPLETED_FOLD_SELECTOR);
-    if (!completed || completed.open) return;
-    for (const row of completed.querySelectorAll("details.surface-agent[open]")) {
-      openedAgentKeys.delete(row.dataset.key);
-      row.open = false;
+    if (completed) {
+      if (!historyControl) historyOpen = completed.open;
+      syncHistoryControl();
+      if (!completed.open) {
+        for (const row of completed.querySelectorAll("details.surface-agent[open]")) {
+          openedAgentKeys.delete(row.dataset.key);
+          row.open = false;
+        }
+      }
     }
   };
 
@@ -270,6 +321,8 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   host.addEventListener("click", onViewerPress);
   host.addEventListener("keydown", onViewerKey);
   host.addEventListener("toggle", onViewerToggle, true);
+  historyControl?.addEventListener("click", onHistoryPress);
+  syncHistoryControl(0);
 
   return {
     kind,
@@ -282,6 +335,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       host.removeEventListener("click", onViewerPress);
       host.removeEventListener("keydown", onViewerKey);
       host.removeEventListener("toggle", onViewerToggle, true);
+      historyControl?.removeEventListener("click", onHistoryPress);
       host.innerHTML = "";
     },
   };
@@ -331,13 +385,22 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     let canvas = viewerHost.querySelector(".surface-popover-body");
     if (!canvas) {
       viewerHost.innerHTML = `<div class="surface-popover-head">
-        <strong>Activity</strong><span class="surface-popover-kind"></span>
-        <button type="button" class="surface-popover-close" aria-label="Close activity">×</button>
+        <strong class="surface-popover-kind"></strong>
+        <span class="surface-popover-actions">
+          <button type="button" class="surface-history-toggle" aria-pressed="false" hidden>
+            ${ICON_HISTORY}<span class="surface-history-count"></span>
+          </button>
+          <button type="button" class="surface-popover-close">${ICON_X}</button>
+        </span>
       </div><div class="surface-popover-body"></div>`;
       viewerHost.querySelector(".surface-popover-close").onclick = () => closeOpenSurface({ restoreFocus: true });
       canvas = viewerHost.querySelector(".surface-popover-body");
     }
-    viewerHost.querySelector(".surface-popover-kind").textContent = surfaceKindLabel(kind);
+    const label = surfaceKindLabel(kind);
+    viewerHost.querySelector(".surface-popover-kind").textContent = label;
+    const closeButton = viewerHost.querySelector(".surface-popover-close");
+    closeButton.setAttribute("aria-label", `Close ${label}`);
+    closeButton.title = `Close ${label}`;
     return canvas;
   };
 
@@ -373,7 +436,13 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     }
     closingFrame = null;
     if (viewer) viewer.dispose();
-    viewer = mountSurfaceViewer(viewerCanvas(kind), kind, { onOpenThreadItem, modelLabel, compact: true });
+    const canvas = viewerCanvas(kind);
+    viewer = mountSurfaceViewer(canvas, kind, {
+      onOpenThreadItem,
+      modelLabel,
+      compact: true,
+      historyControl: viewerHost.querySelector(".surface-history-toggle"),
+    });
     reveal(viewerHost, { axis: "height" });
     viewer.set(surfaces);
   };

@@ -259,6 +259,7 @@ impl<'a> RelayConnection<'a> {
             }
             "session_closed" => {
                 if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
+                    crate::rtc::diagnostic(session_id, "relay_session_closed");
                     self.intake.close_session(session_id, &self.carrier);
                 }
             }

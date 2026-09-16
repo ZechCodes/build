@@ -4,6 +4,31 @@ Recurring checks on the live stack (namespace `8ly`). One-time deploy and
 cutover steps live in [`k8s/CUTOVER.md`](k8s/CUTOVER.md); how to run the stack
 locally is in [`README.md`](README.md).
 
+## Diagnosing a dropped device connection
+
+Before refreshing a browser tab that lost its connection, run
+`JSON.stringify(buildConnectionDiagnostics(), null, 2)` in its developer console.
+This returns the last 100 connection events, including negotiation, state changes,
+restart outcomes and deadlines. The history stays in that tab's memory and is
+cleared by a reload. It contains timestamps and connection identifiers, not SDP,
+candidate addresses, credentials or application content.
+
+Match the session identifier and timestamp with the bridge's stderr. A macOS
+LaunchAgent writes this to `~/.build/log/bridge.err.log`; a Linux service writes
+to `journalctl --user -u build-bridge`. Diagnostic lines contain `timestamp_ms`
+(Unix milliseconds) and the session identifier. They distinguish:
+
+- Peer and ICE connection-state changes.
+- DataChannel opening, closing, read termination and write failure.
+- A session binding to a channel and the number of carriers remaining when one
+  closes. Releasing the relay with a channel still bound should keep it alive.
+- A client close frame, an explicit `rtc.close`, and the relay releasing a session.
+
+Collect both sides for the same attempt: a successful ICE pair alone does not
+prove the application session was attached to its DataChannel before signaling
+closed. A restart is successful only once the peer is connected and both channels
+are open again.
+
 ## Monthly — Cloudflare TURN usage
 
 Cloudflare TURN is free to 1000 GB of egress to clients per month and $0.05

@@ -57,6 +57,7 @@ class FakePeerConnection extends FakeEventTarget {
     this.remoteCandidates = [];
     this.connectionState = "new";
     this.closed = false;
+    this.autoConnect = true;
     FakePeerConnection.instances.push(this);
   }
   createDataChannel(label, init) {
@@ -72,6 +73,13 @@ class FakePeerConnection extends FakeEventTarget {
   }
   async setRemoteDescription(description) {
     this.remoteDescriptions.push(description);
+    if (this.autoConnect && [...this.channels.values()].every(({ readyState }) => readyState === "open")) {
+      this.connectionState = "connected";
+      this.emit("connectionstatechange");
+    }
+  }
+  setConfiguration(config) {
+    this.config = config;
   }
   async addIceCandidate(candidate) {
     this.remoteCandidates.push(candidate);
@@ -124,6 +132,8 @@ async function upgrade(options) {
   const peer = stood.peer();
   peer.channels.get("app").open();
   peer.channels.get("term").open();
+  peer.connectionState = "connected";
+  peer.emit("connectionstatechange");
   return { ...stood, peer, resolved: await stood.link };
 }
 
@@ -218,6 +228,54 @@ describe("openPeerLink", () => {
     expect(peer.closed).toBe(false); // the same channels keep carrying
   });
 
+  it("does not report a restart restored while stale channels are open but the peer is not connected", async () => {
+    const restored = [];
+    const { peer } = await upgrade({ onConnected: () => restored.push("up") });
+    peer.autoConnect = false;
+    peer.fail();
+    await tick();
+    await tick();
+    expect(restored).toEqual([]);
+
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    await tick();
+    expect(restored).toEqual(["up"]);
+  });
+
+  it("cancels a pending restart and its deadline when the link closes", async () => {
+    vi.useFakeTimers();
+    try {
+      let offers = 0;
+      let finishRestart;
+      const stood = stand({
+        signalImpl: async (method) => {
+          if (method !== "rtc.offer") return {};
+          offers += 1;
+          if (offers === 1) return { sdp: "v=0 answer" };
+          return new Promise((resolve) => { finishRestart = resolve; });
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const peer = stood.peer();
+      peer.channels.get("app").open();
+      peer.channels.get("term").open();
+      peer.connectionState = "connected";
+      peer.emit("connectionstatechange");
+      const link = await stood.link;
+      peer.fail();
+      await vi.advanceTimersByTimeAsync(0);
+      link.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(0);
+      finishRestart({ sdp: "v=0 late answer" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(peer.remoteDescriptions).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("closes the link when the restart itself fails, so the session falls back", async () => {
     let offers = 0;
     const stood = stand({
@@ -232,6 +290,8 @@ describe("openPeerLink", () => {
     const peer = stood.peer();
     peer.channels.get("app").open();
     peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
     const { app, term } = await stood.link;
     const lost = [];
     app.onClose(() => lost.push("app"));
@@ -261,12 +321,12 @@ describe("openPeerLink", () => {
   it("says when it is connected: once the channels open, and after every restart", async () => {
     const connected = [];
     const { peer } = await upgrade({ onConnected: () => connected.push("up") });
-    expect(connected).toEqual(["up"]);
+    expect(connected).toEqual([]); // initial relay handoff belongs to the acknowledged app greeting
 
     peer.fail();
     await tick();
     await tick();
-    expect(connected).toEqual(["up", "up"]);
+    expect(connected).toEqual(["up"]);
   });
 
   it("waits for the caller to reopen the rendezvous before it offers a restart", async () => {
@@ -322,10 +382,12 @@ describe("openPeerLink", () => {
       const peer = stood.peer();
       peer.channels.get("app").open();
       peer.channels.get("term").open();
+      peer.connectionState = "connected";
+      peer.emit("connectionstatechange");
       await stood.link;
 
       expect(vi.getTimerCount()).toBe(0); // the open deadline is not still ticking
-      expect(peer.listenerCount("connectionstatechange")).toBe(1); // only the restart watcher
+      expect(peer.listenerCount("connectionstatechange")).toBe(2); // restart watcher and diagnostic observer
       for (const channel of peer.channels.values()) expect(channel.listenerCount("open")).toBe(0);
     } finally {
       vi.useRealTimers();

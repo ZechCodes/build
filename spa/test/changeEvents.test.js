@@ -321,6 +321,12 @@ describe("the greeting", () => {
     expect(pollIntervalMs(1600)).toBe(1600);
   });
 
+  it("requires an actual transport acknowledgement for a strict initial greeting", async () => {
+    const dropped = new Error("your device went offline");
+    await expect(greetBridge(async () => { throw dropped; }, { deviceId: "dev-a", strict: true })).rejects.toBe(dropped);
+    await expect(greetBridge(async () => { throw new Error("unknown method: session.hello"); }, { strict: true })).resolves.toBe(false);
+  });
+
   it("refetches every surface, whichever mode it lands in", async () => {
     const armedRefresh = vi.fn();
     watchChanges({ refresh: armedRefresh, intervalMs: 2000 });

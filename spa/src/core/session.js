@@ -141,6 +141,7 @@ export async function openSession({
 
   return {
     deviceId,
+    sessionId: minted.sessionId,
     /** The raw rpc through the installed adapter, when there is one: every
      *  refusal a caller sees is then an `ApiError` with a code, whichever
      *  1.x bridge answered. Before a greeting, the raw rpc. */

@@ -192,10 +192,9 @@ const fakeLink = () => ({ app: fakeCarrier("app"), term: fakeCarrier("term"), cl
  *  offer goes over the signaling wire, and the caller is told the channels are
  *  open before the link is handed back. */
 function linkOpensWith(linkFor) {
-  peerLink.open.mockImplementation(async ({ fetchIceServers, signal, onConnected }) => {
+  peerLink.open.mockImplementation(async ({ fetchIceServers, signal }) => {
     const iceServers = await fetchIceServers();
     const answer = await signal("rtc.offer", { sdp: "v=0", ice_servers: iceServers });
-    await onConnected();
     return typeof linkFor === "function" ? linkFor(answer.deviceId) : linkFor;
   });
 }

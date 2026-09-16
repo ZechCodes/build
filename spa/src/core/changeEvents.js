@@ -616,13 +616,14 @@ function capabilitiesFor(greeting, call) {
  *  says nothing here and is left on the legacy events. */
 const advertisesSubscriptions = (greeting, call) => capabilitiesFor(greeting, call).changes.subscriptions === true;
 
-async function hello(call, subscriptions) {
+async function hello(call, subscriptions, strict = false) {
   try {
     return await call("session.hello", {
       client: clientDeclaration(),
       ...(subscriptions ? { changes: "subscriptions" } : {}),
     });
-  } catch {
+  } catch (error) {
+    if (strict && !/unknown method|method not found/i.test(String(error?.message || ""))) throw error;
     return null; // an old bridge, or one that dropped mid-greeting
   }
 }
@@ -636,14 +637,14 @@ async function hello(call, subscriptions) {
  * that does not serve it ignores the field and answers legacy, which puts the
  * client back where it started.
  */
-async function negotiate(call, deviceId, isCurrent) {
+async function negotiate(call, deviceId, isCurrent, strict) {
   const want = bridgeFor(deviceId)?.want === true;
-  const greeting = await hello(call, want);
+  const greeting = await hello(call, want, strict);
   // A slower old device can answer after its session has been replaced. Its
   // features and gap belong to that old session, not to this device now.
   if (!isCurrent()) return { greeting, current: false };
   if (want || !advertisesSubscriptions(greeting, call)) return { greeting, current: true };
-  const asked = await hello(call, true);
+  const asked = await hello(call, true, strict);
   if (!isCurrent()) return { greeting, current: false };
   return { greeting: asked || greeting, current: true };
 }
@@ -705,9 +706,10 @@ export async function greetBridge(
     isCurrent = () => true,
     onGreeting = () => {},
     install = (selection) => (selection.unsupported ? null : selection.create(call)),
+    strict = false,
   } = {},
 ) {
-  const { greeting, current } = await negotiate(call, deviceId, isCurrent);
+  const { greeting, current } = await negotiate(call, deviceId, isCurrent, strict);
   if (!current) return changeEventsArmed(deviceId);
   const state = bridgeState(deviceId);
   state.apiVersion = greetingVersion(greeting);

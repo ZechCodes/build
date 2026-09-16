@@ -29,15 +29,22 @@ use tokio::sync::mpsc;
 use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfiguration,
-    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionIceEvent,
-    RTCPeerConnectionState, RTCSessionDescription, RTCStatsReport, RTCStatsReportEntry,
-    StatsSelector,
+    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceConnectionState, RTCIceServer,
+    RTCPeerConnectionIceEvent, RTCPeerConnectionState, RTCSessionDescription, RTCStatsReport,
+    RTCStatsReportEntry, StatsSelector,
 };
 
 use rtc::ice::mdns::MulticastDnsMode;
 
 use crate::carrier::{self, CarrierHandle, FrameIntake, OutboundEnvelope, SessionSender};
 use crate::transport_ledger::{TransportEvent, TransportLedger, TransportPath};
+
+/// Content-free lifecycle events share a wall clock with browser diagnostics.
+/// Debug formatting escapes session ids so a wire value cannot forge log lines.
+pub(crate) fn diagnostic(session_id: &str, event: &str) {
+    let timestamp = time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+    eprintln!("rtc: timestamp_ms={timestamp} session={session_id:?} {event}");
+}
 
 pub(crate) mod chunk;
 mod policy;
@@ -158,6 +165,7 @@ impl SessionPeers {
     /// The browser gave up on the peer carrier: tear this session's peer down
     /// and leave the session working over the relay.
     pub fn close(&self, session_id: &str) -> Result<(), RtcError> {
+        diagnostic(session_id, "close_requested");
         let peer = self
             .take(session_id)
             .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))?;
@@ -171,6 +179,7 @@ impl SessionPeers {
     /// there waits on a socket.
     pub fn end_session(&self, session_id: &str) {
         if let Some(peer) = self.take(session_id) {
+            diagnostic(session_id, "session_ended_closing_peer");
             tokio::spawn(async move { peer.close().await });
         }
     }
@@ -436,7 +445,12 @@ impl WebrtcPeer {
             let channel = connection
                 .create_data_channel(label, Some(negotiated_channel(id)))
                 .await?;
-            carriers.push(DataChannelCarrier::ride(channel, self.intake.clone()));
+            carriers.push(DataChannelCarrier::ride(
+                channel,
+                self.intake.clone(),
+                self.session_id.clone(),
+                label,
+            ));
         }
         Ok(Negotiation {
             connection,
@@ -571,9 +585,14 @@ impl PeerConnectionEventHandler for PeerEvents {
     }
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        diagnostic(&self.session_id, &format!("connection_state={state}"));
         if state == RTCPeerConnectionState::Connected {
             let _ = self.connected.send(());
         }
+    }
+
+    async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
+        diagnostic(&self.session_id, &format!("ice_state={state}"));
     }
 }
 
@@ -745,11 +764,23 @@ struct DataChannelCarrier {
 }
 
 impl DataChannelCarrier {
-    fn ride(channel: Arc<dyn DataChannel>, intake: Arc<FrameIntake>) -> Self {
+    fn ride(
+        channel: Arc<dyn DataChannel>,
+        intake: Arc<FrameIntake>,
+        session_id: String,
+        label: &'static str,
+    ) -> Self {
         let (carrier, envelopes) = CarrierHandle::open_channel();
         DataChannelCarrier {
-            writer: tokio::spawn(write_envelopes(channel.clone(), envelopes)),
-            reader: tokio::spawn(pump_channel_events(channel, intake, carrier)),
+            writer: tokio::spawn(write_envelopes(
+                channel.clone(),
+                envelopes,
+                session_id.clone(),
+                label,
+            )),
+            reader: tokio::spawn(pump_channel_events(
+                channel, intake, carrier, session_id, label,
+            )),
         }
     }
 }
@@ -770,6 +801,8 @@ impl Drop for DataChannelCarrier {
 async fn write_envelopes(
     channel: Arc<dyn DataChannel>,
     mut envelopes: mpsc::UnboundedReceiver<OutboundEnvelope>,
+    session_id: String,
+    label: &'static str,
 ) {
     while let Some(outbound) = envelopes.recv().await {
         let Some(json) = as_channel_text(&outbound) else {
@@ -777,6 +810,7 @@ async fn write_envelopes(
         };
         for message in chunk::split(&json) {
             if channel.send_text(&message).await.is_err() {
+                diagnostic(&session_id, &format!("channel={label} write_failed"));
                 return;
             }
         }
@@ -805,22 +839,33 @@ async fn pump_channel_events(
     channel: Arc<dyn DataChannel>,
     intake: Arc<FrameIntake>,
     carrier: CarrierHandle,
+    session_id: String,
+    label: &'static str,
 ) {
     let riding = RidingChannel { intake, carrier };
     let mut reassembler = chunk::Reassembler::default();
     while let Some(event) = channel.poll().await {
         match event {
+            DataChannelEvent::OnOpen => diagnostic(&session_id, &format!("channel={label} opened")),
             DataChannelEvent::OnMessage(message) => {
-                if let Err(e) = riding.accept(&mut reassembler, &message.data).await {
-                    eprintln!("rtc: channel closed mid-message: {e}");
+                if riding
+                    .accept(&mut reassembler, &message.data)
+                    .await
+                    .is_err()
+                {
+                    diagnostic(&session_id, &format!("channel={label} reassembly_failed"));
                     let _ = channel.close().await;
                     break;
                 }
             }
-            DataChannelEvent::OnClose => break,
+            DataChannelEvent::OnClose => {
+                diagnostic(&session_id, &format!("channel={label} closed"));
+                break;
+            }
             _ => {}
         }
     }
+    diagnostic(&session_id, &format!("channel={label} reader_ended"));
 }
 
 /// This channel as one of the wires the intake's sessions ride. Dropping it —

@@ -461,7 +461,12 @@ impl SessionRegistry {
             .get_mut(&envelope.session_id)
             .ok_or_else(|| CarrierError::UnknownSession(envelope.session_id.clone()))?;
         let frame = transport::decrypt_envelope(&open.key, envelope)?;
-        open.carriers.insert(carrier.id, carrier.kind);
+        if open.carriers.insert(carrier.id, carrier.kind).is_none() {
+            crate::rtc::diagnostic(
+                &envelope.session_id,
+                &format!("carrier_bound kind={:?}", carrier.kind),
+            );
+        }
         let sender = SessionSender::keyed(
             &envelope.session_id,
             open.key.clone(),
@@ -479,6 +484,13 @@ impl SessionRegistry {
         let Some(left) = open.carriers.remove(&carrier.id) else {
             return Vec::new();
         };
+        crate::rtc::diagnostic(
+            session_id,
+            &format!(
+                "carrier_released kind={left:?} remaining={}",
+                open.carriers.len()
+            ),
+        );
         if !open.carriers.is_empty() {
             self.note_carrier_left(session_id, left, open);
             return Vec::new();
@@ -494,6 +506,13 @@ impl SessionRegistry {
             let Some(left) = open.carriers.remove(&carrier.id) else {
                 return true;
             };
+            crate::rtc::diagnostic(
+                session_id,
+                &format!(
+                    "carrier_closed kind={left:?} remaining={}",
+                    open.carriers.len()
+                ),
+            );
             if open.carriers.is_empty() {
                 ended.push(self.ended(session_id, open));
                 return false;
@@ -625,6 +644,7 @@ impl FrameIntake {
     ) -> Result<(), CarrierError> {
         let (frame, sender) = self.registry.admit(&envelope, carrier)?;
         if frame.frame_type == transport::CLOSE_FRAME_TYPE {
+            crate::rtc::diagnostic(&envelope.session_id, "client_close_frame");
             self.close_ended(self.registry.end(&envelope.session_id));
             return Ok(());
         }

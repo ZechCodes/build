@@ -19,6 +19,7 @@ import { RELAY_URL } from "./config.js";
 import { createRelayRendezvous } from "./core/rendezvous.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
+import { connectionDiagnosticHistory } from "./core/connectionDiagnostics.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, rememberSelectedDevice } from "./app.js";
@@ -168,6 +169,7 @@ function openDirectLink(deviceId, session) {
     signal: (method, params) => failingAs("refused", session.call(method, params)),
     fetchIceServers: () => failingAs("ice-servers", fetchIceServers()),
     onPush: session.onPush,
+    diagnosticId: `${deviceId}:${session.sessionId}`,
     onConnected: () => releaseRendezvous(deviceId),
     onFailed: async () => {
       holdRendezvous(deviceId);
@@ -175,6 +177,10 @@ function openDirectLink(deviceId, session) {
     },
   });
 }
+
+// Intentionally content-free and bounded; support can ask a user to run this
+// after a failure without requiring the console to have been open beforehand.
+globalThis.buildConnectionDiagnostics = connectionDiagnosticHistory;
 
 /**
  * Find this machine, open its connection, and put the session on it.
@@ -205,8 +211,13 @@ async function connectOverChannels(deviceId, stillWanted = () => true) {
     link.close();
     throw new Error(`device ${deviceId} is no longer on this account`);
   }
-  session.peer(link.app); // rule 2: the channel is the carrier, and the first one
-  return landSession(session, link);
+  try {
+    return await landSession(session, link);
+  } catch (error) {
+    closeQuietly(session);
+    link.close();
+    throw error;
+  }
 }
 
 // The machines this layer has a connect in flight at, and the attempt itself: a
@@ -491,11 +502,12 @@ export async function openDeviceSettingsSession(deviceId, { onLost = () => {} } 
  *  settles nothing — the session died before it said anything — is released
  *  here instead: the feed waits on that promise, and a machine whose greeting
  *  went missing must not be left unread for ever. */
-export function greetLiveBridge(context) {
+export function greetLiveBridge(context, { suppressFailure = true } = {}) {
   const session = context?.session;
   if (!session) return Promise.resolve(false);
   const repository = context.chatRepository;
-  return greetBridge(session.call, {
+  const greeting = greetBridge(session.call, {
+    strict: !suppressFailure,
     deviceId: session.deviceId,
     // The device's context may have been retargeted onto a newer session while
     // this greeting was in flight; that greeting belongs to the session that
@@ -510,15 +522,20 @@ export function greetLiveBridge(context) {
       adoptBridgeSelection(context, selection, adapter);
       return adapter;
     },
-  })
-    .catch(() => {
-      /* the session died mid-greeting; the next one greets again */
-    })
-    .finally(() => {
+  }).catch((error) => {
+    // Wake greeting-dependent reads only after this failed session is marked
+    // unavailable; otherwise the feed can send a request between the rejected
+    // hello and the outer connection attempt's cleanup.
+    if (!suppressFailure && contextFor(session.deviceId)?.session === session) {
+      setContextOffline(session.deviceId, blockedMark(reasonOf(error)));
+    }
+    throw error;
+  }).finally(() => {
       // Only this session's own: a newer one has armed a greeting of its own,
       // and what this one failed to say is no answer about that bridge.
       if (context.session === session) releaseGreeting(context);
     });
+  return suppressFailure ? greeting.catch(() => false) : greeting;
 }
 
 /** Everything a device gets the moment it is live over its channels: the
@@ -528,7 +545,7 @@ export function greetLiveBridge(context) {
  *
  *  Nothing is dispatched to the user's surfaces before both channels are open
  *  (rule 2), so this is the first moment anything is asked of the machine. */
-function landSession(session, link) {
+async function landSession(session, link) {
   const previous = contextFor(session.deviceId);
   // Closed before its link is dropped: a session told it lost its carrier would
   // block the very device that is landing.
@@ -538,10 +555,18 @@ function landSession(session, link) {
   holdPeerLink(context, link);
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
-  session.onCarrier(() => greetLiveBridge(context));
-  // What this bridge speaks is asked for before anything else is asked of it,
-  // and nothing waits on the answer but this device's own first read.
-  greetLiveBridge(context);
+  let initialGreeting = true;
+  session.onCarrier(() => greetLiveBridge(context, { suppressFailure: !initialGreeting }));
+  // Bind the app channel before releasing signaling. The carrier callback is
+  // the acknowledged session.hello, so the relay cannot disappear in the gap
+  // between WebRTC opening and the application session becoming usable.
+  try {
+    await session.peer(link.app);
+  } finally {
+    initialGreeting = false;
+  }
+  if (contextFor(session.deviceId)?.session !== session) throw new Error("session replaced during greeting");
+  releaseRendezvous(session.deviceId);
   // A device the feed is not polling yet — the account's first session, one a
   // late device just opened — gets its own board watcher and reads it as soon
   // as its greeting is in.

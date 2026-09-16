@@ -140,8 +140,10 @@ function fakePeerLink(deviceId) {
  *  channel closing, or by the layer handing it back — it reports the loss
  *  exactly as the real session does: nothing else ever carried it. */
 function fakeSession(deviceId, onLost = () => {}) {
+  let carrierChanged = () => {};
   const session = {
     deviceId,
+    sessionId: `session-${deviceId}`,
     call: vi.fn(async (method) => {
       if (method === "session.hello" && greetings.has(deviceId)) return greetings.get(deviceId)();
       if (method === "board.list") return { items: [{ id: `${deviceId}-row`, project_id: "proj-1", title: "Work" }] };
@@ -154,10 +156,13 @@ function fakeSession(deviceId, onLost = () => {}) {
     }),
     peer: vi.fn((carrier) => {
       if (!carrier && !session.closed) onLost();
+      return carrier ? carrierChanged() : undefined;
     }),
     fail: vi.fn(),
+    installAdapter: vi.fn((selection) => selection?.create?.(session.call) || null),
+    adapter: vi.fn(() => null),
     onPush: () => () => {},
-    onCarrier: vi.fn(),
+    onCarrier: vi.fn((fn) => { carrierChanged = fn; }),
     reattachSignaling: vi.fn(async () => {}),
     closed: false,
     close: vi.fn(() => {
@@ -218,10 +223,9 @@ beforeEach(() => {
     return fakeSession(deviceId, options.onLost);
   });
   wire.openPeerLink.mockReset();
-  wire.openPeerLink.mockImplementation(async ({ signal, onConnected }) => {
+  wire.openPeerLink.mockImplementation(async ({ signal }) => {
     const { deviceId } = await signal("rtc.offer", { sdp: "v=0" });
     if (unlinkable.has(deviceId)) throw Object.assign(new Error("no channels"), { blockedReason: "timeout" });
-    await onConnected();
     return fakePeerLink(deviceId);
   });
   unsubscribe = subscribeFeed((snapshot) => (feed = snapshot));
@@ -289,11 +293,24 @@ describe("per-device connections", () => {
 
     expect(boardReads("dev-a")).toBe(0);
     expect(boardReads("dev-b")).toBeGreaterThan(0); // the other machine is not held up
+    expect(rendezvousFor.get("dev-a").close).not.toHaveBeenCalled();
+    expect(rendezvousFor.get("dev-b").close).toHaveBeenCalled();
 
     greet({});
     await flush();
 
     expect(boardReads("dev-a")).toBeGreaterThan(0);
+    expect(rendezvousFor.get("dev-a").close).toHaveBeenCalled();
+  });
+
+  it("closes a failed handoff instead of treating a network error as an old bridge", async () => {
+    greetings.set("dev-a", async () => { throw new Error("request timed out"); });
+    await connectEveryDevice();
+    expect(boardReads("dev-a")).toBe(0);
+    expect(contextFor("dev-a").offline).toBe(true);
+    expect(lastSession("dev-a").closed).toBe(true);
+    expect(linksFor.get("dev-a").close).toHaveBeenCalled();
+    expect(boardReads("dev-b")).toBeGreaterThan(0);
   });
 
   // A bridge that predates `session.hello` refuses the verb, and that refusal is

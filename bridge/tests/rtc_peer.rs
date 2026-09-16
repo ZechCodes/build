@@ -488,11 +488,17 @@ async fn a_channel_that_carried_last_ends_the_session_with_it() {
         .send(json!({ "type": "session_closed", "session_id": session.session_id }))
         .await
         .expect("the relay carries the session_closed");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The reported production failure was five seconds after handoff. Stay
+    // idle beyond that window, then prove the channel still answers traffic.
+    tokio::time::sleep(Duration::from_secs(6)).await;
     assert!(
         reports.try_recv().is_err(),
         "the session did not end with the relay carrier the channel outlived"
     );
+
+    let still_connected = peer.app.call("session.hello", json!({})).await;
+    assert_eq!(still_connected["ok"], true, "{still_connected}");
+    drain_reports(&mut reports);
 
     peer.app.close().await;
 

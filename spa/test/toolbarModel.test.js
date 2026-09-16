@@ -252,6 +252,15 @@ describe("workspace navigation", () => {
     expect(workspaceMenuModel({ ...scope, query: "pay" }).map((row) => row.id)).toEqual(["ws-1"]);
   });
 
+  it.each(["", "  ", "Bridge wire interface / 🦊"])("preserves the chosen workspace name %j in the menu and toolbar", (name) => {
+    const workspace = { ...workspaces[0], name };
+    expect(workspaceMenuModel({ workspaces: [workspace] })[0].name).toBe(name);
+    expect(toolbarIdentity(
+      { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1" },
+      { items: [], projects, workspaces: [workspace] },
+    ).label).toBe(name);
+  });
+
   it("leaves another machine's workspaces out of the menu", () => {
     const elsewhere = stampWorkspace({ id: "ws-9", project_id: "p1", name: "payment-work" }, "dev-2");
     expect(

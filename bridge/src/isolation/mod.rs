@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::git_process::GitError;
 
+pub(crate) use directory::remove_directory_with_rift_root;
 pub use directory::{copy_directory, copy_directory_with_rift_root};
 pub use rift::RiftBackend;
 pub use worktree::WorktreeBackend;
@@ -185,7 +186,9 @@ pub fn directory_name(path: &Path) -> Option<String> {
 /// provisioned beneath it.
 fn workspace_of(path: &Path) -> Option<String> {
     let parent = path.parent()?;
-    if !parent.join(crate::workspace::MANIFEST_FILE).is_file() {
+    if !parent.join(crate::workspace::MANIFEST_FILE).is_file()
+        && !parent.join(crate::workspace::PENDING_MARKER_FILE).is_file()
+    {
         return None;
     }
     directory_name(parent)

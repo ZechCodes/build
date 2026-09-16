@@ -1,8 +1,8 @@
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{model_choice_from, require_str, AppState, DeferredGit, DeferredWork};
-use crate::isolation::Isolation;
+use crate::isolation::{remove_directory_with_rift_root, Isolation};
 use crate::workspace::{Workspace, WorkspaceDirectory, WorkspaceRegistry, WorkspaceSource};
-use crate::worktree::{copy_directory_with_rift_root, WorktreeManager};
+use crate::worktree::{copy_directory_with_rift_root, Worktree, WorktreeManager};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,8 @@ struct WorkspaceCreateWork {
     rift_root: PathBuf,
     workspace_id: String,
     workspace_name: String,
+    workspace: Workspace,
+    unpublished: bool,
     sources: Vec<WorkspaceSource>,
     isolation: Isolation,
 }
@@ -23,44 +25,67 @@ impl DeferredGitWork for WorkspaceCreateWork {
     }
 
     fn run(&self, _params: &Value) -> Result<Value, String> {
-        let mut registry = WorkspaceRegistry::load(&self.registry_root)?;
-        let workspace = registry.provision(
-            &self.workspace_id,
+        let mut registry = match WorkspaceRegistry::load(&self.registry_root) {
+            Ok(registry) => registry,
+            Err(error) => {
+                if !self.unpublished {
+                    return Err(error);
+                }
+                let cleanup = std::fs::remove_dir_all(&self.workspace.root);
+                return match cleanup {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
+                        Err(error)
+                    }
+                    Err(cleanup_error) => Err(format!(
+                        "{error}; additionally could not remove {}: {cleanup_error}",
+                        self.workspace.root.display()
+                    )),
+                };
+            }
+        };
+        if !self.unpublished {
+            let workspace = registry.provision(
+                &self.workspace_id,
+                &self.sources,
+                self.isolation,
+                |source, destination, isolation| self.materialize(source, destination, isolation),
+            )?;
+            return Ok(workspace_json(&workspace));
+        }
+        let result = registry.provision_unpublished(
+            self.workspace.clone(),
             &self.sources,
             self.isolation,
-            |source, destination, isolation| {
-                if source.is_git {
-                    let manager = WorktreeManager::new(
-                        &source.path,
-                        destination.parent().unwrap_or(destination),
-                    )
-                    .with_rift_registry_root(&self.rift_root);
-                    let effective = if manager.availability().lock_reason(isolation).is_some() {
-                        Isolation::Worktree
-                    } else {
-                        isolation
-                    };
-                    let checkout = manager
-                        .create_workspace_checkout(
-                            &self.workspace_name,
-                            &source.base_branch,
-                            destination,
-                            effective,
-                        )
-                        .map_err(|error| error.to_string())?;
-                    Ok((Some(checkout.worktree.recorded_branch), effective))
-                } else {
-                    let resolved = copy_directory_with_rift_root(
-                        &source.path,
-                        destination,
-                        isolation,
-                        &self.rift_root,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    Ok((None, resolved.isolation))
-                }
-            },
-        )?;
+            |source, destination, isolation| self.materialize(source, destination, isolation),
+        );
+        let workspace = match result {
+            Ok(workspace) => workspace,
+            Err(failure) => {
+                let (error, workspace) = *failure;
+                let cleanup =
+                    self.rollback(&workspace).and_then(|_| {
+                        match std::fs::remove_dir_all(&workspace.root) {
+                            Ok(()) => Ok(()),
+                            Err(remove_error)
+                                if remove_error.kind() == std::io::ErrorKind::NotFound =>
+                            {
+                                Ok(())
+                            }
+                            Err(remove_error) => Err(format!(
+                                "remove incomplete workspace {}: {remove_error}",
+                                workspace.root.display()
+                            )),
+                        }
+                    });
+                return match cleanup {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) => Err(format!(
+                        "{error}; additionally could not fully roll back workspace creation: {cleanup_error}"
+                    )),
+                };
+            }
+        };
         Ok(workspace_json(&workspace))
     }
 
@@ -68,8 +93,97 @@ impl DeferredGitWork for WorkspaceCreateWork {
         if let Err(error) = app.workspaces.reload() {
             eprintln!("reload workspaces after creation: {error}");
         }
-        app.workspaces
-            .fail_if_still_provisioning(&self.workspace_id);
+        if !self.unpublished {
+            app.workspaces
+                .fail_if_still_provisioning(&self.workspace_id);
+        }
+    }
+}
+
+impl WorkspaceCreateWork {
+    fn materialize(
+        &self,
+        source: &WorkspaceSource,
+        destination: &Path,
+        isolation: Isolation,
+    ) -> Result<(Option<String>, Isolation), String> {
+        if source.is_git {
+            let manager =
+                WorktreeManager::new(&source.path, destination.parent().unwrap_or(destination))
+                    .with_rift_registry_root(&self.rift_root);
+            let effective = if manager.availability().lock_reason(isolation).is_some() {
+                Isolation::Worktree
+            } else {
+                isolation
+            };
+            let checkout = manager
+                .create_workspace_checkout(
+                    &self.workspace_name,
+                    &source.base_branch,
+                    destination,
+                    effective,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok((Some(checkout.worktree.recorded_branch), effective))
+        } else {
+            let resolved = copy_directory_with_rift_root(
+                &source.path,
+                destination,
+                isolation,
+                &self.rift_root,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok((None, resolved.isolation))
+        }
+    }
+
+    fn rollback(&self, workspace: &Workspace) -> Result<(), String> {
+        let mut failures = Vec::new();
+        for directory in workspace.directories.iter().rev() {
+            if directory.status != crate::workspace::DirectoryStatus::Ready {
+                continue;
+            }
+            let Some(source) = self
+                .sources
+                .iter()
+                .find(|source| source.id == directory.source_id)
+            else {
+                continue;
+            };
+            let removed = if let Some(branch) = directory.branch.as_ref() {
+                let manager = WorktreeManager::new(
+                    &source.path,
+                    directory.path.parent().unwrap_or(&directory.path),
+                )
+                .with_rift_registry_root(&self.rift_root);
+                manager.remove(&Worktree {
+                    name: directory
+                        .path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    path: directory.path.clone(),
+                    recorded_branch: branch.clone(),
+                    base_branch: directory.base_branch.clone(),
+                })
+            } else {
+                remove_directory_with_rift_root(
+                    &source.path,
+                    &directory.path,
+                    directory.effective_isolation.unwrap_or(Isolation::Worktree),
+                    &self.rift_root,
+                )
+            };
+            if let Err(error) = removed {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
     }
 }
 
@@ -234,8 +348,6 @@ impl AppState {
         let requested_name = params
             .get("name")
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
             .unwrap_or("workspace");
         let sources = self
             .sources_for(&project_id)?
@@ -264,7 +376,7 @@ impl AppState {
                     .and_then(|project| project.isolation)
                     .unwrap_or(self.isolation)
             });
-        let workspace = self.workspaces.begin_with_isolation(
+        let workspace = self.workspaces.prepare_with_isolation(
             &project_id,
             requested_name,
             &sources,
@@ -275,7 +387,14 @@ impl AppState {
                 registry_root: self.workspaces.root().to_path_buf(),
                 rift_root: self.project_worktrees_root(&project_id),
                 workspace_id: workspace.id.clone(),
-                workspace_name: workspace.name.clone(),
+                workspace_name: workspace
+                    .root
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                workspace: workspace.clone(),
+                unpublished: true,
                 sources,
                 isolation,
             }),
@@ -384,7 +503,14 @@ impl AppState {
                 registry_root: self.workspaces.root().to_path_buf(),
                 rift_root: self.project_worktrees_root(&workspace.project_id),
                 workspace_id: workspace.id.clone(),
-                workspace_name: workspace.name,
+                workspace_name: workspace
+                    .root
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                workspace: workspace.clone(),
+                unpublished: false,
                 sources,
                 isolation: workspace.isolation,
             }),
@@ -607,7 +733,9 @@ impl AppState {
                     continue;
                 };
                 let path = worktree.path().to_path_buf();
-                if held_paths.iter().any(|held| same_path(held, &path)) {
+                if crate::workspace::is_managed_workspace_mount(&path)
+                    || held_paths.iter().any(|held| same_path(held, &path))
+                {
                     continue;
                 }
                 let id = crate::worktree::external_worktree_id(&path);
@@ -626,6 +754,7 @@ impl AppState {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if crate::isolation::Isolation::of(&path) != Some(Isolation::Rift)
+                    || crate::workspace::is_managed_workspace_mount(&path)
                     || held_paths.iter().any(|held| same_path(held, &path))
                 {
                     continue;

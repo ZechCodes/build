@@ -182,13 +182,32 @@ impl WorktreeManager {
         let branch = self.branch_name(&name);
         repo.branch(&branch, &base_commit, false)?;
         if let Err(error) = backend.materialize(&self.repo_path, &branch, destination) {
+            if let Err(cleanup_error) = backend.remove(&self.repo_path, destination) {
+                eprintln!(
+                    "checkout {}: could not unwind failed materialization: {cleanup_error}",
+                    destination.display()
+                );
+            }
             if let Ok(mut created) = repo.find_branch(&branch, git2::BranchType::Local) {
                 let _ = created.delete();
             }
             return Err(error);
         }
         let teardown = BranchTeardown::DeletesBranch;
-        record_branch_teardown(destination, teardown)?;
+        if let Err(error) = record_branch_teardown(destination, teardown) {
+            // Materialization succeeded, so unwind both halves before
+            // returning the metadata failure to the caller.
+            if let Err(cleanup_error) = backend.remove(&self.repo_path, destination) {
+                eprintln!(
+                    "checkout {}: could not unwind after recording teardown failed: {cleanup_error}",
+                    destination.display()
+                );
+            }
+            if let Ok(mut created) = repo.find_branch(&branch, git2::BranchType::Local) {
+                let _ = created.delete();
+            }
+            return Err(error);
+        }
         Ok(NamedBranchCheckout {
             worktree: Worktree {
                 name,

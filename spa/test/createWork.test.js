@@ -56,7 +56,30 @@ beforeEach(() => {
 describe("workspace creation", () => {
   it("is the only active creation kind and omits inherited optional values", () => {
     expect(CREATE_KINDS).toEqual(["workspace"]);
-    expect(workspaceCreateParams({ projectId: "p1", name: "  ", isolation: "" })).toEqual({ project_id: "p1" });
+    expect(workspaceCreateParams({ projectId: "p1", name: "", isolation: "" })).toEqual({ project_id: "p1", name: "" });
+  });
+
+  it.each(["  ", "Bridge wire interface", "../feature: *?🦊", "a".repeat(500)])("sends the exact display name %j", (name) => {
+    expect(workspaceCreateParams({ projectId: "p1", name })).toEqual({ project_id: "p1", name });
+  });
+
+  it("shows timed out creation in the modal instead of leaving it busy", async () => {
+    bridge.call = vi.fn().mockRejectedValue(Object.assign(new Error("Request timed out"), { timedOut: true, uncertain: true }));
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "Payments", navigate });
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(modal().querySelector(".create-error").textContent).toBe("Request timed out");
+    expect(modal().querySelector("[data-create-go]").disabled).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed workspace reply in the error modal", async () => {
+    bridge.call = vi.fn().mockResolvedValue({ ...CREATED, status: "failed", directories: [{ error: "Checkout failed" }] });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "Payments", navigate });
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(modal().querySelector(".create-error").textContent).toBe("Checkout failed");
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("creates all project sources and opens the returned workspace on its device", async () => {
@@ -67,7 +90,7 @@ describe("workspace creation", () => {
     modal().querySelector("#create-work-isolation").dispatchEvent(new Event("change"));
     modal().querySelector("[data-create-go]").click();
     await flush();
-    expect(bridge.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: "Release", isolation: "rift" });
+    expect(bridge.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: " Release ", isolation: "rift" });
     expect(navigate).toHaveBeenCalledWith({
       name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes",
     });
@@ -83,7 +106,7 @@ describe("workspace creation", () => {
     modal().querySelector("[data-create-go]").click();
     await flush();
 
-    expect(other).toHaveBeenCalledWith("workspace.create", { project_id: "p1" });
+    expect(other).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: "" });
     expect(bridge.call).not.toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "dev-2" }));
   });
@@ -101,6 +124,7 @@ describe("workspace creation", () => {
     expect(modal().querySelector(".create-error").textContent).toContain("filesystem operation");
     expect(modal().querySelector("#create-work-input").value).toBe("Release");
     expect(modal().querySelector("[data-create-go]").disabled).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
     modal().querySelector("[data-create-go]").click();
     await flush();
     expect(bridge.call).toHaveBeenCalledTimes(2);
@@ -116,6 +140,38 @@ describe("workspace creation", () => {
     expect(bridge.call).toHaveBeenCalledTimes(1);
     complete({ id: "ws-1", project_id: "p1", directories: [] });
     await flush();
+  });
+
+  it("freezes the submitted fields and keeps failures visible despite pending dismissal attempts", async () => {
+    let fail;
+    bridge.call = vi.fn(() => new Promise((resolve, reject) => { fail = reject; }));
+    const dialog = openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "Payments", navigate });
+    const input = modal().querySelector("#create-work-input");
+    input.value = "  Bridge wire interface  ";
+    input.dispatchEvent(new Event("input"));
+    modal().querySelector("[data-create-go]").click();
+    expect(modal().querySelector("#create-work-input").value).toBe("  Bridge wire interface  ");
+    expect(modal().querySelector("#create-work-input").disabled).toBe(true);
+    expect(modal().querySelector("#create-work-isolation").disabled).toBe(true);
+    expect(modal().querySelector("[data-create-cancel]").disabled).toBe(true);
+    modal().querySelector("[data-create-cancel]").click();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    document.querySelector("#create-scrim").click();
+    dialog.close();
+    await motionBeat();
+    expect(modal()).not.toBeNull();
+
+    fail(new Error("Checkout failed"));
+    await flush();
+    expect(modal().querySelector(".create-error").textContent).toBe("Checkout failed");
+    expect(modal().querySelector("#create-work-input").value).toBe("  Bridge wire interface  ");
+    expect(modal().querySelector("#create-work-input").disabled).toBe(false);
+    expect(modal().querySelector("#create-work-isolation").disabled).toBe(false);
+    expect(modal().querySelector("[data-create-cancel]").disabled).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await motionBeat();
+    expect(modal()).toBeNull();
   });
 
   // No context for the device is a machine this client cannot ask anything:
@@ -143,7 +199,7 @@ describe("workspace creation", () => {
     setContextOffline("dev-1", { offline: false });
     modal().querySelector("[data-create-go]").click();
     await flush();
-    expect(bridge.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1" });
+    expect(bridge.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: "" });
     expect(navigate).toHaveBeenCalled();
   });
 

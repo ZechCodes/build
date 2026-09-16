@@ -20,6 +20,11 @@ const entriesOf = (workspaces, items = []) => {
 };
 
 describe("workspace inbox rows", () => {
+  it.each(["", "  ", "Bridge wire interface / 🦊"])("keeps the chosen workspace display name %j", (name) => {
+    const [entry] = entriesOf([{ id: "workspace-1", project_id: "project-1", name, root: "/normalized/path" }]);
+    expect(entry.name).toBe(name);
+  });
+
   it("shows the owning conversation's unread and running state without matching branch names", () => {
     const workspaces = [
       { id: "run-1", project_id: "project-1", status: "ready" },

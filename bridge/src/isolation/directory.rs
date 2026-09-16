@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use super::{Isolation, ResolvedIsolation, RiftBackend, WorktreeError};
+use super::{Isolation, IsolationBackend, ResolvedIsolation, RiftBackend, WorktreeError};
 
 /// Copy the ordinary directory tree at `source` to the new `destination`.
 ///
@@ -60,6 +60,31 @@ pub fn copy_directory_with_rift_root(
     })?;
     let backend = RiftBackend::with_registry_root(destination_root, rift_root, "rift");
     copy_directory_with_backend(source, destination, requested, &backend)
+}
+
+/// Remove an ordinary directory copy through the backend that created it.
+pub(crate) fn remove_directory_with_rift_root(
+    source: &Path,
+    destination: &Path,
+    isolation: Isolation,
+    rift_root: &Path,
+) -> Result<(), WorktreeError> {
+    if !destination.exists() {
+        return Ok(());
+    }
+    match isolation {
+        Isolation::Worktree => std::fs::remove_dir_all(destination).map_err(Into::into),
+        Isolation::Rift => {
+            let destination_root = destination.parent().ok_or_else(|| {
+                WorktreeError::Refused(format!(
+                    "destination has no parent directory: {}",
+                    destination.display()
+                ))
+            })?;
+            RiftBackend::with_registry_root(destination_root, rift_root, "rift")
+                .remove(source, destination)
+        }
+    }
 }
 
 fn copy_directory_with_backend(

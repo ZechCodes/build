@@ -15,6 +15,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const MANIFEST_FILE: &str = ".build-workspace.json";
+pub(crate) const PENDING_MARKER_FILE: &str = ".build-workspace.pending";
+
+pub(crate) fn is_managed_workspace_mount(path: &Path) -> bool {
+    path.parent().is_some_and(|parent| {
+        parent.join(PENDING_MARKER_FILE).is_file() || parent.join(MANIFEST_FILE).is_file()
+    })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -414,7 +421,25 @@ impl WorkspaceRegistry {
         sources: &[WorkspaceSource],
         isolation: Isolation,
     ) -> Result<Workspace, String> {
-        validate_segment("workspace name", name)?;
+        let workspace = self.prepare_with_isolation(project_id, name, sources, isolation)?;
+        if let Err(error) = persist(&workspace) {
+            let _ = fs::remove_dir_all(&workspace.root);
+            return Err(error);
+        }
+        self.workspaces
+            .insert(workspace.id.clone(), workspace.clone());
+        Ok(workspace)
+    }
+
+    /// Reserve an unpublished workspace container. New workspace creation
+    /// uses this so list/get cannot observe a half-built record.
+    pub fn prepare_with_isolation(
+        &self,
+        project_id: &str,
+        name: &str,
+        sources: &[WorkspaceSource],
+        isolation: Isolation,
+    ) -> Result<Workspace, String> {
         let mut mounts = std::collections::HashSet::new();
         for source in sources {
             validate_segment("source mount", &source.mount)?;
@@ -429,9 +454,16 @@ impl WorkspaceRegistry {
                 project_root.display()
             )
         })?;
-        let root = unique_path(&project_root, name);
-        fs::create_dir(&root)
-            .map_err(|error| format!("create workspace {}: {error}", root.display()))?;
+        // The name is user-facing text.  It must survive byte-for-byte in the
+        // record, while only a bounded, portable derivative reaches a path.
+        let root = create_unique_dir(&project_root, &crate::worktree::slugify(name))?;
+        if let Err(error) = fs::write(root.join(PENDING_MARKER_FILE), b"") {
+            let _ = fs::remove_dir_all(&root);
+            return Err(format!(
+                "mark pending workspace {}: {error}",
+                root.display()
+            ));
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let directories = sources
             .iter()
@@ -461,8 +493,55 @@ impl WorkspaceRegistry {
             isolation,
             managed: true,
         };
-        persist(&workspace)?;
-        self.workspaces.insert(id, workspace.clone());
+        Ok(workspace)
+    }
+
+    /// Materialize and publish a workspace as one externally visible action.
+    /// The error carries the updated private record so callers can unwind
+    /// every checkout that succeeded before the failure.
+    pub fn provision_unpublished<F>(
+        &mut self,
+        mut workspace: Workspace,
+        sources: &[WorkspaceSource],
+        isolation: Isolation,
+        mut materialize: F,
+    ) -> Result<Workspace, Box<(String, Workspace)>>
+    where
+        F: FnMut(&WorkspaceSource, &Path, Isolation) -> Result<(Option<String>, Isolation), String>,
+    {
+        for source in sources {
+            let Some(directory) = workspace
+                .directories
+                .iter_mut()
+                .find(|directory| directory.source_id == source.id)
+            else {
+                continue;
+            };
+            match materialize(source, &directory.path, isolation) {
+                Ok((branch, effective_isolation)) => {
+                    directory.branch = branch;
+                    directory.effective_isolation = Some(effective_isolation);
+                    directory.status = DirectoryStatus::Ready;
+                }
+                Err(error) => return Err(Box::new((error, workspace))),
+            }
+        }
+        if workspace
+            .directories
+            .iter()
+            .any(|directory| directory.status != DirectoryStatus::Ready)
+        {
+            return Err(Box::new((
+                "workspace creation did not materialize every source".to_string(),
+                workspace,
+            )));
+        }
+        workspace.status = WorkspaceStatus::Ready;
+        if let Err(error) = persist(&workspace) {
+            return Err(Box::new((error, workspace)));
+        }
+        self.workspaces
+            .insert(workspace.id.clone(), workspace.clone());
         Ok(workspace)
     }
 
@@ -914,7 +993,12 @@ fn persist(workspace: &Workspace) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(workspace)
         .map_err(|error| format!("serialize workspace {}: {error}", workspace.id))?;
     atomic_write(&manifest, &bytes)
-        .map_err(|error| format!("publish workspace manifest {}: {error}", manifest.display()))
+        .map_err(|error| format!("publish workspace manifest {}: {error}", manifest.display()))?;
+    // Once the durable manifest exists it carries the same checkout identity.
+    // Marker cleanup is cosmetic and must not turn a published success into a
+    // reported failure.
+    let _ = fs::remove_file(workspace.root.join(PENDING_MARKER_FILE));
+    Ok(())
 }
 
 fn atomic_write(destination: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
@@ -952,15 +1036,20 @@ fn validate_segment(kind: &str, segment: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn unique_path(parent: &Path, requested: &str) -> PathBuf {
-    let first = parent.join(requested);
-    if !first.exists() {
-        return first;
+fn create_unique_dir(parent: &Path, requested: &str) -> Result<PathBuf, String> {
+    for suffix in 1_u64.. {
+        let candidate = if suffix == 1 {
+            parent.join(requested)
+        } else {
+            parent.join(format!("{requested}-{suffix}"))
+        };
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create workspace {}: {error}", candidate.display())),
+        }
     }
-    (2..)
-        .map(|suffix| parent.join(format!("{requested}-{suffix}")))
-        .find(|candidate| !candidate.exists())
-        .expect("an unbounded suffix sequence has an unused path")
+    unreachable!("an unbounded suffix sequence has an unused path")
 }
 
 #[cfg(test)]
@@ -976,6 +1065,43 @@ mod tests {
             is_git: false,
             base_branch: "main".to_string(),
         }
+    }
+
+    #[test]
+    fn free_form_workspace_name_is_preserved_while_its_path_is_safe_and_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        let sources = vec![source(temp.path(), "one", "one")];
+        let mut registry = WorkspaceRegistry::load(temp.path().join("workspaces")).unwrap();
+        let name = format!("  A / surprising 🦀 workspace .. {}  ", "x".repeat(200));
+
+        let workspace = registry.begin("project", &name, &sources).unwrap();
+
+        assert_eq!(workspace.name, name);
+        let directory_name = workspace.root.file_name().unwrap().to_string_lossy();
+        assert!(directory_name.len() <= 50, "{directory_name}");
+        assert!(directory_name
+            .chars()
+            .all(|character| character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || character == '-'));
+        assert!(workspace
+            .root
+            .starts_with(temp.path().join("workspaces/project")));
+    }
+
+    #[test]
+    fn empty_and_whitespace_workspace_names_are_preserved() {
+        let temp = tempfile::tempdir().unwrap();
+        let sources = vec![source(temp.path(), "one", "one")];
+        let mut registry = WorkspaceRegistry::load(temp.path().join("workspaces")).unwrap();
+
+        let empty = registry.begin("project", "", &sources).unwrap();
+        let spaces = registry.begin("project", "   ", &sources).unwrap();
+
+        assert_eq!(empty.name, "");
+        assert_eq!(spaces.name, "   ");
+        assert_eq!(empty.root.file_name().unwrap(), "task");
+        assert_eq!(spaces.root.file_name().unwrap(), "task-2");
     }
 
     #[test]

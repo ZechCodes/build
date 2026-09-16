@@ -62,7 +62,7 @@ export function workspaceMenuModel({ workspaces = [], projectKey = null, workspa
     .filter((workspace) => !projectKey || workspace.projectKey === projectKey)
     .map((workspace) => ({
       ...workspace,
-      name: workspace.name || workspace.id,
+      name: workspace.name ?? workspace.id,
       current: workspace.workspaceKey === workspaceKey,
     }));
   return fuzzyRank(entries, query, (entry) => entry.name);
@@ -88,7 +88,7 @@ const STANDING = {
     // A workspace is not a feed row: it is a record of its own, found among the
     // workspaces below rather than among the items.
     rowIs: () => () => false,
-    label: (route, row, carried) => carried.workspace?.name || route.workspaceId || "Workspace",
+    label: (route, row, carried) => carried.workspace?.name ?? route.workspaceId ?? "Workspace",
     carries: (route, { workspaces }) => {
       const workspace = workspaces.find((candidate) => candidate.workspaceKey === routeWorkspaceKey(route)) || null;
       return {

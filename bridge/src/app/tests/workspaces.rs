@@ -1,6 +1,7 @@
 use super::*;
 
 mod git_init_deferred;
+mod pending_adoption;
 
 fn app(root: &Path) -> AppState {
     let root = std::fs::canonicalize(root).unwrap();
@@ -1133,25 +1134,152 @@ fn a_workspace_with_a_failed_plain_source_cannot_finish() {
     ));
     assert_eq!(create["ok"], false, "{create:?}");
     let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
-    let failed = listed["result"]["workspaces"]
-        .as_array()
+    let workspaces = listed["result"]["workspaces"].as_array().unwrap();
+    assert_eq!(workspaces.len(), 1, "{listed:?}");
+    assert_eq!(
+        workspaces[0]["workspace_id"],
+        format!("legacy-{project_id}")
+    );
+    let project_workspace_root = state.workspaces.root().join(project_id);
+    assert!(
+        !project_workspace_root.exists()
+            || std::fs::read_dir(project_workspace_root)
+                .unwrap()
+                .next()
+                .is_none(),
+        "failed creation must remove its workspace directory"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_later_source_failure_removes_prior_git_checkout_branch_and_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "repo");
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    assert!(Command::new("mkfifo")
+        .arg(plain.join("unsupported-fifo"))
+        .status()
         .unwrap()
-        .iter()
-        .find(|workspace| workspace["status"] == "failed")
-        .unwrap_or_else(|| panic!("failed provisioning remains recoverable: {listed:?}"));
-    let finish = state.handle(req(
-        "workspace.finish",
-        json!({"workspace_id": failed["workspace_id"]}),
+        .success());
+    let refs_before = crate::git_process::run_git(
+        &repo,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/build"],
+    )
+    .unwrap();
+    let worktrees_before =
+        crate::git_process::run_git(&repo, &["worktree", "list", "--porcelain"]).unwrap();
+    let mut state = app(tmp.path());
+    let project = state.handle(req(
+        "project.add",
+        json!({
+            "name": "mixed",
+            "sources": [
+                {"name": "repo", "path": repo},
+                {"name": "plain", "path": plain}
+            ]
+        }),
     ));
-    assert_eq!(finish["ok"], false, "{finish:?}");
-    let after = state.handle(req(
+    assert_eq!(project["ok"], true, "{project:?}");
+    let project_id = project["result"]["project_id"].as_str().unwrap();
+
+    let create = state.handle(req(
+        "workspace.create",
+        json!({
+            "project_id": project_id,
+            "name": "Bridge wire interface / 🦀",
+            "isolation": "worktree"
+        }),
+    ));
+
+    assert_eq!(create["ok"], false, "{create:?}");
+    let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
+    assert!(
+        listed["result"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "failed workspace was published: {listed:?}"
+    );
+    assert_eq!(
+        crate::git_process::run_git(
+            &repo,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/build"]
+        )
+        .unwrap(),
+        refs_before,
+        "the branch cut for the first source must be removed"
+    );
+    assert_eq!(
+        crate::git_process::run_git(&repo, &["worktree", "list", "--porcelain"]).unwrap(),
+        worktrees_before,
+        "the linked-worktree registration must be removed"
+    );
+    let project_workspace_root = state.workspaces.root().join(project_id);
+    assert!(
+        !project_workspace_root.exists()
+            || std::fs::read_dir(project_workspace_root)
+                .unwrap()
+                .next()
+                .is_none(),
+        "failed creation must remove its unpublished root"
+    );
+}
+
+#[test]
+fn workspace_create_preserves_free_form_name_and_uses_a_safe_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "repo");
+    let mut state = app(tmp.path());
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"].as_str().unwrap();
+    let name = "  Bridge wire interface / 🦀 ..  ";
+
+    let created = create_workspace(&mut state, project_id, name);
+    let workspace = state.handle(req(
         "workspace.get",
-        json!({"workspace_id": failed["workspace_id"]}),
+        json!({"workspace_id": created["workspace_id"]}),
     ));
-    assert_eq!(after["result"]["status"], "failed", "{after:?}");
-    assert!(failed["root"]
-        .as_str()
-        .is_some_and(|root| Path::new(root).is_dir()));
+
+    assert_eq!(workspace["ok"], true, "{workspace:?}");
+    assert_eq!(workspace["result"]["name"], name);
+    assert_eq!(
+        workspace["result"]["directories"][0]["branch"],
+        "build/bridge-wire-interface"
+    );
+    let root = Path::new(workspace["result"]["root"].as_str().unwrap());
+    assert_eq!(root.file_name().unwrap(), "bridge-wire-interface");
+}
+
+#[test]
+fn repeated_workspace_names_use_distinct_checkout_registrations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "repo");
+    let mut state = app(tmp.path());
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"].as_str().unwrap();
+
+    let first = create_workspace(&mut state, project_id, "same name");
+    let second = create_workspace(&mut state, project_id, "same name");
+    let first = state.handle(req(
+        "workspace.get",
+        json!({"workspace_id": first["workspace_id"]}),
+    ));
+    let second = state.handle(req(
+        "workspace.get",
+        json!({"workspace_id": second["workspace_id"]}),
+    ));
+
+    assert_eq!(first["ok"], true, "{first:?}");
+    assert_eq!(second["ok"], true, "{second:?}");
+    assert_ne!(first["result"]["root"], second["result"]["root"]);
+    assert_ne!(
+        first["result"]["directories"][0]["branch"],
+        second["result"]["directories"][0]["branch"]
+    );
+    assert!(Path::new(first["result"]["directories"][0]["path"].as_str().unwrap()).is_dir());
+    assert!(Path::new(second["result"]["directories"][0]["path"].as_str().unwrap()).is_dir());
 }
 
 #[test]

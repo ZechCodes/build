@@ -69,7 +69,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     projectId: workspace.project_id,
     projectKey: workspace.projectKey,
     project: firstText(projectNames.get(workspace.projectKey), workspace.project, workspace.project_id),
-    name: firstText(workspace.name, workspace.root, "Workspace"),
+    name: workspace.name ?? firstText(workspace.root, "Workspace"),
     title: firstText(workspace.root, workspace.name, "Workspace"),
     entityId: entityIdOf(conversation),
     state: entryState(activity),

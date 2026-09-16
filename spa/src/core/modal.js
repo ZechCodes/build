@@ -4,7 +4,7 @@ export function modalDialogHtml(innerHtml, { className = "" } = {}) {
   return `<div class="modal${className ? ` ${className}` : ""}" role="dialog" aria-modal="true">${innerHtml}</div>`;
 }
 
-export function openModal({ dialogHtml, scrimId = "", onClose = null, host = document.body }) {
+export function openModal({ dialogHtml, scrimId = "", onClose = null, canDismiss = () => true, host = document.body }) {
   const scrim = document.createElement("div");
   scrim.className = host === document.body ? "modal-scrim" : "modal-scrim modal-scrim-local";
   if (scrimId) scrim.id = scrimId;
@@ -29,11 +29,11 @@ export function openModal({ dialogHtml, scrimId = "", onClose = null, host = doc
   const onKeydown = (event) => {
     if (event.key !== "Escape") return;
     event.stopPropagation();
-    close();
+    if (canDismiss()) close();
   };
   document.addEventListener("keydown", onKeydown, { capture: true });
   scrim.onclick = (event) => {
-    if (event.target === scrim) close();
+    if (event.target === scrim && canDismiss()) close();
   };
 
   onScreen.then(() => {

@@ -80,7 +80,7 @@ describe("dedicated conversation separation from diff review", () => {
       body: "rename this",
       anchor: { artifact: "diff", path: "a.txt", line_start: 1, line_end: 1 },
     });
-    expect(request.params.messages[1]).toEqual({ body: "tighten the whole change set", anchor: null });
+    expect(request.params.messages[1]).toEqual({ body: "tighten the whole change set", anchor: null, viewing_context: { version: 1, items: [{ kind: "diff", mode: "all", path: "a.txt" }] } });
     expect(calls.some((call) => call.method === "thread.post")).toBe(false);
     plug.unmount();
   });

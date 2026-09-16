@@ -125,11 +125,10 @@ export function commitAllPaths(status) {
   return ((status && status.files) || []).map((file) => file.path);
 }
 
-/** Comments need an agent to reach: only a run-backed scope has a conversation
- *  to post them into. A bare project/worktree checkout renders the same diffs
- *  without the ✎. */
+/** Runs and workspace sources can reach a conversation. Bare project
+ * checkouts render the same diffs without comment controls. */
 export function commentsSupported(scope) {
-  return Boolean(scope && scope.run_id);
+  return Boolean(scope && (scope.run_id || (scope.workspace_id && scope.source_id)));
 }
 
 /** The reviewer is mid-comment — the poll must not rebuild the diff under them

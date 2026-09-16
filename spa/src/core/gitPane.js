@@ -11,6 +11,8 @@
 // in flight. The pure helpers (poll key, option lists) are exported for unit
 // tests; mountGitPane is the only DOM-touching entry point.
 
+import { workspaceCommentMessages } from "./workspaceCommentMessages.js";
+import { reviewCommentContext } from "./reviewCommentContext.js";
 import { esc } from "./text.js";
 import { directoryCacheId } from "./directoryScope.js";
 import { gitToolbarHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
@@ -61,11 +63,12 @@ export const GIT_PANE_POLL_MS = 1600;
 /** Workspace directories review everything not represented by their push
  * destination. The plug is created here so every workspace Git pane gets the
  * aggregate without each hosting view having to remember special wiring. */
-export function createWorkspaceReview({ scope, callRpc, navigate = null, viewingContext = null, onBaseChange = () => {} }) {
+export function createWorkspaceReview({ scope, callRpc, navigate = null, viewingContext = null, onBaseChange = () => {}, submit = null }) {
   let base = { kind: "empty", label: null };
   const plug = createReviewPlug({
     navigate,
     viewingContext,
+    submit,
     entity: scope.workspace_id,
     cacheEntity: directoryCacheId(scope),
     fetchDiff: async (ifDiffKey) => {
@@ -78,7 +81,7 @@ export function createWorkspaceReview({ scope, callRpc, navigate = null, viewing
         base = payload.base;
         if (changed) onBaseChange();
       }
-      return { ...payload, commentable: false };
+      return { ...payload, commentable: Boolean(submit) };
     },
   });
   return {
@@ -419,8 +422,20 @@ export function mountGitPane(
     viewingContext = null,
   } = {},
 ) {
+  const submitComments = async (messages) => {
+    const destination = agentSelection.scope();
+    if (scope.workspace_id) {
+      const metadata = await callRpc("workspace.get", { workspace_id: scope.workspace_id, ...MUTATION_THREAD_PAGE });
+      messages = workspaceCommentMessages(messages, metadata.workspace || metadata, scope.source_id);
+      const { entity_id } = await callRpc("workspace.ensure_conversation", { workspace_id: scope.workspace_id });
+      if (!entity_id) throw new Error("Workspace conversation is unavailable");
+      await callRpc("thread.post", { entity_id, ...destination, messages, ...MUTATION_THREAD_PAGE });
+    } else {
+      await callRpc("run.request_changes", { run_id: scope.run_id, ...destination, messages, ...MUTATION_THREAD_PAGE });
+    }
+  };
   if (!review && scope?.workspace_id && scope?.source_id) {
-    review = createWorkspaceReview({ scope, callRpc, navigate, viewingContext, onBaseChange: () => render() });
+    review = createWorkspaceReview({ scope, callRpc, navigate, viewingContext, submit: submitComments, onBaseChange: () => render() });
   }
   const parsedDiffs = createParsedDiffCache();
   const viewport = createDiffViewport({ repaint: () => renderAndFetch() });
@@ -648,7 +663,7 @@ export function mountGitPane(
   // Disagreeing with the pass. Only a run has a pass to disagree with (and a
   // run_id to name in the RPC), so a bare worktree or the primary checkout
   // mounts none and its stack draws no offers.
-  const overrides = commentsSupported(scope)
+  const overrides = scope?.run_id
     ? createTriageOverrides({
         post: ({ hunk_id, direction, note }) => {
           if (!triageEnabled()) throw new Error("Review prioritization is turned off.");
@@ -682,14 +697,13 @@ export function mountGitPane(
         submit: async (messages) => {
           const reviewedChangeset = selected;
           const reviewedViews = renderedViews;
-          const destination = agentSelection.scope();
-          const context = viewingContext?.snapshot?.();
-          await callRpc("run.request_changes", {
-            run_id: scope.run_id,
-            ...destination,
-            messages: context ? messages.map((message) => ({ ...message, viewing_context: context })) : messages,
-            ...MUTATION_THREAD_PAGE,
+          const context = reviewCommentContext({
+            paths: renderedViews.map((file) => file.path), selected: marks.selected,
+            mode: selected === "uncommitted" ? "uncommitted" : null,
+            commit: selected === "uncommitted" ? null : selected,
+            snapshot: viewingContext?.snapshot?.(),
           });
+          await submitComments(messages.map((message) => ({ ...message, viewing_context: context })));
           viewingContext?.clearSelectionIfMatches?.(context);
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
@@ -708,7 +722,7 @@ export function mountGitPane(
    *  primary checkout renders the plain stack it always did. The pass is read
    *  fresh on every paint — a re-triage lands under this pane while it is open. */
   const triageOverlay = (patch) => {
-    if (!commentsSupported(scope) || !triageEnabled()) return null;
+    if (!scope?.run_id || !triageEnabled()) return null;
     return {
       triage: currentTriage(),
       patch: patch || "",

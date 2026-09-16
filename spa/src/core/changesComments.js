@@ -143,6 +143,7 @@ export function createCommentLayer({
       onChange();
     } catch (e) {
       notifyError("Sending comments failed", (e && e.message) || "error");
+      throw e;
     } finally {
       sending = false;
       renderActions();

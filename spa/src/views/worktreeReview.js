@@ -174,7 +174,7 @@ export function createWorktreeReview({
     submit: async (messages) => {
       try {
         const context = viewingContext?.snapshot?.();
-        const contextualMessages = context ? messages.map((message) => ({ ...message, viewing_context: context })) : messages;
+        const contextualMessages = context ? messages.map((message) => ({ ...message, viewing_context: message.viewing_context || context })) : messages;
         await act(() => adopt("run.request_changes", { messages: contextualMessages }));
         viewingContext?.clearSelectionIfMatches?.(context);
       } catch (e) {

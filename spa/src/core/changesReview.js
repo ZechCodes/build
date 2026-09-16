@@ -14,6 +14,7 @@
 // popover, and typed text, and a rebuild mid-action would wipe a busy button.
 
 import "../styles/surfaces.css";
+import { reviewCommentContext } from "./reviewCommentContext.js";
 import { readCached, writeCached } from "./localCache.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, pathOf } from "./diff.js";
@@ -152,7 +153,12 @@ export function createReviewPlug({
     ? createCommentLayer({
         readNote: () => noteReader(),
         submit: async (messages) => {
-          await submit(messages);
+          const context = reviewCommentContext({
+            paths: renderedFiles.map((file) => file.path), selected: marks.selected,
+            mode: "all", snapshot: viewingContext?.snapshot?.(),
+          });
+          await submit(messages.map((message) => ({ ...message, viewing_context: context })));
+          viewingContext?.clearSelectionIfMatches?.(context);
           // Stamp what was just reviewed: the next pass marks what moved.
           reviewStamps = stampReview(renderedViews());
           diffKey = null; // the stamp changes what is drawn — force the rebuild

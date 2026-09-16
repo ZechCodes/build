@@ -134,7 +134,7 @@ export function createTaskReview({
       return callRpc("run.request_changes", {
         run_id: taskId,
         ...agentSelection.scope(),
-        messages: context ? messages.map((message) => ({ ...message, viewing_context: context })) : messages,
+        messages: context ? messages.map((message) => ({ ...message, viewing_context: message.viewing_context || context })) : messages,
         ...MUTATION_THREAD_PAGE,
       }).then((result) => { viewingContext?.clearSelectionIfMatches?.(context); return result; });
     },

@@ -196,3 +196,96 @@ describe("the Changes surface, opened on its review aggregate", () => {
     pane.dispose();
   });
 });
+
+describe("workspace comments", () => {
+  async function workspacePane({ fail = false } = {}) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const calls = [];
+    const callRpc = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "git.status") return tree.status();
+      if (method === "git.diff") return tree.diff(params);
+      if (method === "git.log") return { branch: "main", commits: [], more: false };
+      if (method === "git.unpushed") return { patch: PATCH + PATCH.replaceAll("src/a.js", "src/b.js"), base: { kind: "empty" } };
+      if (method === "workspace.get") return { workspace: { root: "/work", directories: [{ source_id: "s", path: "/work/source" }] } };
+      if (method === "workspace.ensure_conversation") return { entity_id: "workspace-thread" };
+      if (method === "thread.post" && fail) throw new Error("offline");
+      return {};
+    };
+    const pane = mountGitPane(container, {
+      scope: { workspace_id: "w", source_id: "s" }, callRpc,
+      agentSelection: { scope: () => ({ agent_id: "selected-agent" }) },
+    });
+    await settle();
+    return { pane, container, calls };
+  }
+
+  it("offers file comments and both composer verbs, sending all files to the selected agent", async () => {
+    const { pane, container, calls } = await workspacePane();
+    expect(container.querySelector(".fcmt")).not.toBeNull();
+    expect(container.querySelector(".csinput").placeholder).toContain("or write a commit message");
+    container.querySelector(".csinput").value = "Please fix these";
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    const posted = calls.find(({ method }) => method === "thread.post").params;
+    expect(posted.entity_id).toBe("workspace-thread");
+    expect(posted.agent_id).toBe("selected-agent");
+    expect(posted.messages[0]).toMatchObject({ body: "Please fix these", viewing_context: { items: [{ kind: "diff", path: "source/src/a.js", mode: "all" }, { kind: "diff", path: "source/src/b.js", mode: "all" }] } });
+    expect(calls.some(({ method }) => method === "git.commit")).toBe(false);
+    pane.dispose();
+  });
+
+  it("comments on selected files without narrowing the commit path logic", async () => {
+    const { pane, container, calls } = await workspacePane();
+    const checkbox = container.querySelector('.fselect-box');
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    container.querySelector(".csinput").value = "Only this file";
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    const posted = calls.find(({ method }) => method === "thread.post").params;
+    expect(posted.messages[0].viewing_context.items).toEqual([{ kind: "diff", path: "source/src/a.js", mode: "all" }]);
+    pane.dispose();
+  });
+
+  it("sends an anchored whole-file comment without ambient context", async () => {
+    const { pane, container, calls } = await workspacePane();
+    await click(container.querySelector(".fcmt"));
+    document.querySelector(".cp-input").value = "Split this up";
+    await click(document.querySelector(".cp-save"));
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    const posted = calls.find(({ method }) => method === "thread.post").params;
+    expect(posted.messages[0]).toMatchObject({ body: "Split this up", anchor: { artifact: "diff", path: "source/src/a.js" } });
+    pane.dispose();
+  });
+
+  it("anchors selected text with ambient context disabled", async () => {
+    const { pane, container, calls } = await workspacePane();
+    const code = container.querySelector('tr.add .code');
+    code.closest(".file").classList.remove("capped");
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    range.getBoundingClientRect = () => ({ top: 0, bottom: 10, left: 0, right: 30, width: 30, height: 10 });
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    code.dispatchEvent(new window.Event("pointerup", { bubbles: true }));
+    await settle();
+    await click(document.querySelector(".cp-add"));
+    document.querySelector(".cp-input").value = "Rename this";
+    await click(document.querySelector(".cp-save"));
+    selection.removeAllRanges();
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    const posted = calls.find(({ method }) => method === "thread.post").params;
+    expect(posted.messages[0]).toMatchObject({ body: "Rename this", anchor: { path: "source/src/a.js", snippet: "new", line_start: 1, line_end: 1, side: "new" } });
+    pane.dispose();
+  });
+
+  it("keeps a failed comment draft for retry", async () => {
+    const { pane, container } = await workspacePane({ fail: true });
+    container.querySelector(".csinput").value = "Keep my comment";
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    expect(container.querySelector(".csinput").value).toBe("Keep my comment");
+    expect(container.querySelector(".csbox-actions .btn:not(.caret)").disabled).toBe(false);
+    pane.dispose();
+  });
+});

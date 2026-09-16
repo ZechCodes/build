@@ -3583,7 +3583,7 @@ describe("the viewer above the conversation footer", () => {
   it("is an independently scrolling popover anchored above the footer", () => {
     const viewerRule = shellCss.match(/\.rail-surfaces-viewer \{[^}]*\}/)[0];
     const composerRule = shellCss.match(/\.rail-composer \{[^}]*\}/)[0];
-    expect(composerRule).toMatch(/position:relative/);
+    expect(composerRule).toMatch(/position:absolute/);
     expect(viewerRule).toMatch(/position:absolute/);
     expect(viewerRule).toMatch(/bottom:100%/);
     expect(viewerRule).toMatch(/max-height:min\(46vh, 420px\)/);

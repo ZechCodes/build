@@ -1444,7 +1444,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 
 /* The tray sits ABOVE the text: what you are sending should be visible while
    you write the sentence about it, not below the fold of the box. */
-.composer-tray { display:flex; flex-wrap:wrap; gap:6px; padding:8px 8px 2px; }
+.composer-tray { display:flex; flex-wrap:wrap; gap:5px; padding:0 2px 5px; }
 .composer-chip { display:flex; align-items:center; gap:8px; max-width:230px;
   border:1px solid var(--line); border-radius:9px; padding:5px 6px; background:var(--panel); }
 .composer-chip.uploading { opacity:.65; }

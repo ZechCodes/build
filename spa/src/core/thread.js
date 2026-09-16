@@ -22,6 +22,7 @@ import { providerLabel } from "./modelPicker.js";
 import { viewingContextChipsHtml } from "./viewingContext.js";
 import { ICON_CHECK } from "./icons.js";
 import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
+import { setMotionRowHtml } from "./motion.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -1822,10 +1823,12 @@ function mountViewingContext(root, inputId, viewingContext) {
   const paint = (context = viewingContext?.snapshot?.()) => {
     if (!tray) return;
     const expanded = new Set([...tray.querySelectorAll("details[data-context-group][open]")].map((detail) => detail.dataset.contextGroup));
-    tray.innerHTML = viewingContextChipsHtml(context, { removable: true });
-    tray.hidden = !context?.items?.length;
+    const holder = document.createElement("div");
+    holder.innerHTML = viewingContextChipsHtml(context, { removable: true });
+    holder.querySelectorAll("details[data-context-group]").forEach((detail) => { detail.open = expanded.has(detail.dataset.contextGroup); });
+    setMotionRowHtml(tray, holder.innerHTML);
     tray.querySelectorAll("details[data-context-group]").forEach((detail) => { detail.open = expanded.has(detail.dataset.contextGroup); });
-    tray.querySelectorAll("button").forEach((button) => {
+    tray.querySelectorAll(":scope > :not([data-motion-snapshot]) button").forEach((button) => {
       button.onclick = () => {
         const group = button.closest("[data-context-indices]");
         if (group) viewingContext.removeMany(group.dataset.contextIndices.split(",").map(Number));

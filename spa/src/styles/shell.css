@@ -707,8 +707,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    nothing on a tick that says nothing; this is the belt beside it. (Chrome and
    Android honour it; Safari ignores the property and loses nothing.) */
 .rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-anchor:none;
-  padding:14px 16px calc(18px + var(--surface-popover-clearance, 0px));
-  scroll-padding-bottom:var(--surface-popover-clearance, 0px); }
+  padding:14px 16px calc(18px + var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px));
+  scroll-padding-bottom:calc(var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px)); }
 /* The PTY takes the whole panel: no padding, no scrolling of its own — the
    terminal is its own viewport, and the pane sizes it to this box. The
    composer is gone in TUI mode, so this row is the whole column below the
@@ -745,11 +745,22 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-harness-choice .rail-harness-icon { width:16px; height:16px; }
 @media (prefers-reduced-motion: reduce) { .rail-harness-choice { transition:none; } }
 
-/* The pinned box. Out of the scroll entirely, so its bottom edge is the
-   panel's. */
-.rail-composer { position:relative; flex:none; padding:9px 14px 13px; border-top:1px solid var(--line);
-  background:var(--panel); }
-.rail-composer .thread-composer { margin-left:0; }
+/* The footer floats over the conversation. Its measured height is reserved in
+   the scroller, so the last message can still move wholly above it. */
+.rail-composer { position:absolute; z-index:4; right:0; bottom:0; left:0; flex:none;
+  max-height:calc(100% - var(--surface-head)); display:flex; flex-direction:column;
+  padding:4px 14px 13px; background:linear-gradient(transparent, var(--panel) 10px); }
+.rail-composer .thread-composer { flex:1 1 auto; min-height:0; margin-left:0; display:flex; flex-direction:column; overflow:hidden; }
+.rail-composer .chat-recovery { flex:0 1 auto; min-height:0; max-height:80px; overflow-y:auto; }
+.rail-composer .composer { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow:hidden;
+  border:1px solid var(--line); border-radius:12px; background:var(--bg); }
+.rail-composer .composer:focus-within { border-color:var(--accent);
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.rail-composer .composer textarea { flex:1 1 auto; min-height:36px; max-height:40vh; overflow-y:auto;
+  border:0; border-radius:12px 12px 0 0; padding:9px 11px 1px; background:transparent; box-shadow:none; }
+.rail-composer .composer textarea:focus { border-color:transparent; box-shadow:none; }
+.rail-composer .composer-bar { flex:none; padding:2px 5px 5px; }
+.rail-composer .composer-send,.rail-composer .composer-attach { width:30px; height:30px; }
 /* Growing upward has to stop somewhere, or a pasted paragraph would swallow
    the conversation it is a reply to. Past this the box scrolls its own text.
    The panel is the height of the view column, so 40vh is about 40% of it.
@@ -757,9 +768,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    stylesheets land in. */
 .rail-composer .composer textarea { max-height:40vh; }
 .composer-context,.message-viewing-context{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
-.composer-context{padding:7px 8px 0}
+.composer-context{padding:0 2px 5px}
+.rail-composer .composer-context,.rail-composer .composer-tray{flex:0 1 auto;min-height:0;max-height:min(18vh,110px);overflow-y:auto}
+.composer-context[hidden],.composer-tray[hidden],.chat-recovery[hidden]{display:none}
 .message-viewing-context{margin:0 0 7px}
-.viewing-context-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--ink2);font-size:11px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.viewing-context-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 7px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--ink2);font-size:11px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .viewing-context-chip.selection{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,var(--line))}
 .viewing-context-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .viewing-context-chip button{flex:none;border:0;background:none;color:inherit;padding:0;cursor:pointer;font:inherit}

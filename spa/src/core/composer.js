@@ -15,6 +15,7 @@
 import { esc } from "./text.js";
 import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_SQUARE, ICON_X } from "./icons.js";
 import { menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
+import { setMotionRowHtml } from "./motion.js";
 import {
   modelMenuLabel,
   modelMenuSelection,
@@ -159,9 +160,9 @@ export function composerHtml({
        <button type="button" class="composer-attach" id="${esc(parts.attach)}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>`
     : "";
   return `<div class="thread-composer">
+    <div class="composer-context" id="${esc(parts.context)}" hidden></div>
+    ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
     <div class="composer${attachable ? " attachable" : ""}">
-      <div class="composer-context" id="${esc(parts.context)}" hidden></div>
-      ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
       <textarea id="${esc(inputId)}" rows="1" placeholder="${esc(placeholder)}"></textarea>
       <div class="composer-bar">
         ${modelMenu ? `<div class="composer-choice-controls">
@@ -169,7 +170,6 @@ export function composerHtml({
           <div class="composer-reasoning" id="${esc(parts.reasoningMenu)}"></div>
         </div>` : ""}
         <span class="hint" id="${esc(hintId)}"></span>
-        <span class="composer-shortcut" aria-hidden="true">⌘↵</span>
         <div class="composer-actions">
           ${attachControls}
           <div class="composer-send-control" id="${esc(parts.sendControl)}">${sendControlHtml({ sendId, canInterrupt })}</div>
@@ -221,13 +221,13 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
     modelSlot.innerHTML = menuButtonMarkup(
       modelMenuLabel(catalog, provider, { ...choice, effort: "" }, activeModel),
       modelSelectorOptions(catalog, provider, choice),
-      { title: modelMenuTitle(catalog, provider, choice, activeModel) },
+      { title: modelMenuTitle(catalog, provider, choice, activeModel), arrow: false },
     );
     closeModelMenu = mountSplitMenu(modelSlot, { onChoose: choose }).closeMenu;
     const reasoningOptions = reasoningSelectorOptions(catalog, provider, choice, activeModel, activeEffort);
     reasoningSlot.hidden = reasoningOptions.length === 0;
     reasoningSlot.innerHTML = reasoningOptions.length
-      ? menuButtonMarkup(reasoningSelectorLabel(catalog, provider, choice, activeModel, activeEffort), reasoningOptions, { title: "Reasoning level for the next turn" })
+      ? menuButtonMarkup(reasoningSelectorLabel(catalog, provider, choice, activeModel, activeEffort), reasoningOptions, { title: "Reasoning level for the next turn", arrow: false })
       : "";
     closeReasoningMenu = reasoningOptions.length
       ? mountSplitMenu(reasoningSlot, { onChoose: choose }).closeMenu
@@ -278,9 +278,8 @@ export function mountComposerAttachments(root, {
   };
 
   const render = () => {
-    tray.hidden = entries.length === 0;
-    tray.innerHTML = entries.map(chipHtml).join("");
-    tray.querySelectorAll(".composer-chip-remove").forEach((button) => {
+    setMotionRowHtml(tray, entries.map(chipHtml).join(""));
+    tray.querySelectorAll(":scope > .composer-chip .composer-chip-remove").forEach((button) => {
       button.onclick = () => {
         entries = entries.filter((_, index) => index !== Number(button.dataset.index));
         persist();

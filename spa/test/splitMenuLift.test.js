@@ -38,13 +38,15 @@ describe("a split menu that opens inside a scrolling container", () => {
     const { container, caret, menu } = mountMenuInside(scrollingHost());
     container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 500, bottom: 530, left: 900, right: 980 });
     Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
+    Object.defineProperty(menu, "offsetWidth", { value: 180, configurable: true });
 
     caret.click();
 
     expect(menu.hidden).toBe(false);
     expect(menu.style.position).toBe("fixed");
     expect(menu.style.bottom).toBe("306px");
-    expect(menu.style.right).toBe("220px");
+    expect(menu.style.left).toBe("800px");
+    expect(menu.style.right).toBe("auto");
     expect(menu.style.top).toBe("");
   });
 
@@ -52,13 +54,29 @@ describe("a split menu that opens inside a scrolling container", () => {
     const { container, caret, menu } = mountMenuInside(scrollingHost());
     container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 40, bottom: 70, left: 900, right: 980 });
     Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
+    Object.defineProperty(menu, "offsetWidth", { value: 180, configurable: true });
 
     caret.click();
 
     expect(menu.style.position).toBe("fixed");
     expect(menu.style.top).toBe("76px");
-    expect(menu.style.right).toBe("220px");
+    expect(menu.style.left).toBe("800px");
+    expect(menu.style.right).toBe("auto");
     expect(menu.style.bottom).toBe("");
+  });
+
+  it("clamps a wide menu inside the viewport gutter", () => {
+    const { container, caret, menu } = mountMenuInside(scrollingHost());
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 300, bottom: 330, left: 10, right: 100 });
+    Object.defineProperties(menu, {
+      offsetHeight: { value: 90, configurable: true },
+      offsetWidth: { value: 180, configurable: true },
+    });
+
+    caret.click();
+
+    expect(menu.style.left).toBe("8px");
+    expect(menu.style.right).toBe("auto");
   });
 
   it("closes when the container scrolls, and takes its inline placement with it", async () => {
@@ -73,6 +91,7 @@ describe("a split menu that opens inside a scrolling container", () => {
 
     expect(menu.hidden).toBe(true);
     expect(menu.style.position).toBe("");
+    expect(menu.style.left).toBe("");
     expect(menu.style.bottom).toBe("");
     expect(menu.style.right).toBe("");
   });

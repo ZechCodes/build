@@ -56,7 +56,7 @@ import {
   removeRecord,
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
-import { hide, motionSettled, reveal } from "./motion.js";
+import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
@@ -106,13 +106,13 @@ import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
 import { PIN_CLASS, pinButtonHtml } from "./pinControl.js";
 import { providerInSameFamily } from "./providerCatalog.js";
+import { mountComposerClearance } from "./composerClearance.js";
 import "../styles/shell.css";
 
 /** How often the rail re-reads its work item. The same cadence the detail
  *  surfaces have always polled at: fast enough that a reply appears while you
  *  are still looking at the panel. */
 const RAIL_POLL_MS = 1600;
-
 /** How close to the top of the conversation counts as asking for the page
  *  above it. Not zero: a reader flicking upwards should have the history on
  *  its way before they land, so the join is one they scroll through rather
@@ -628,6 +628,7 @@ export function mountAgentRail(host, context) {
   // move — which shape it is wearing — and the model menu on the other side of
   // the row. Null whenever the panel is not showing the conversation.
   let composerControl = null;
+  let disposeComposerClearance = null;
   let composerModelMenu = null;
   let composerController = null;
   let unsubscribeComposerController = null;
@@ -908,6 +909,8 @@ export function mountAgentRail(host, context) {
     } else if (!panelOut() && panel) {
       disposeTui();
       disposeSurfaces();
+      disposeComposerClearance?.();
+      disposeComposerClearance = null;
       closeSurfaceMenu?.();
       panel.remove();
     }
@@ -1039,6 +1042,8 @@ export function mountAgentRail(host, context) {
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
       disposeSurfaces();
+      disposeComposerClearance?.();
+      disposeComposerClearance = null;
       closeSurfaceMenu?.();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned })}
         <div class="rail-body" id="rail-body"></div>
@@ -1475,7 +1480,7 @@ export function mountAgentRail(host, context) {
     const recoveryHost = host.querySelector("#rail-chat-recovery");
     if (!recoveryHost) return;
     const controller = composerController || controllerInFocus();
-    recoveryHost.innerHTML = chatRecoveryHtml(controller);
+    setMotionRowHtml(recoveryHost, chatRecoveryHtml(controller));
     recoveryHost.querySelectorAll(".chat-recovery-entry button").forEach((button) => {
       button.onclick = async () => {
         const operationId = button.closest("[data-operation]").dataset.operation;
@@ -1603,6 +1608,7 @@ export function mountAgentRail(host, context) {
     mountSurfaces(panel);
     syncComposer();
     syncSurfaces();
+    disposeComposerClearance = mountComposerClearance(panel);
   };
 
   const surfaceModelLabel = (modelId) => {
@@ -2283,6 +2289,8 @@ export function mountAgentRail(host, context) {
       unsubscribeFeed();
       disposeTui();
       disposeSurfaces();
+      disposeComposerClearance?.();
+      disposeComposerClearance = null;
       closeSurfaceMenu?.();
       composerControl?.dispose?.();
       unsubscribeComposerController?.();

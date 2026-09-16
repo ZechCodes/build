@@ -10,6 +10,7 @@ import {
   motionHooks,
   motionSettled,
   reveal,
+  setMotionRowHtml,
   settleHidden,
 } from "../src/core/motion.js";
 
@@ -95,6 +96,50 @@ describe("revealing an element", () => {
 
     expect(started).toHaveLength(0);
     expect(pill.hidden).toBe(false);
+  });
+});
+
+describe("changing an optional row", () => {
+  it("crossfades changed children even when the row height stays the same", () => {
+    const started = recordAnimations();
+    const row = elementSized(200, 30);
+    row.innerHTML = '<span data-key="one">one</span>';
+
+    setMotionRowHtml(row, '<span data-key="two">two</span>');
+
+    expect(row.querySelector('[data-key="two"]')).not.toBeNull();
+    expect(row.querySelector("[data-motion-snapshot]").textContent).toBe("one");
+    expect(started.some((run) => run.keyframes[0].opacity === 1 && run.keyframes[1].opacity === 0)).toBe(true);
+    expect(started.some((run) => run.keyframes[0].opacity === 0 && run.keyframes[1].opacity === 1)).toBe(true);
+  });
+
+  it("cancels a stale snapshot before a rapid follow-up paints", () => {
+    recordAnimations();
+    const row = elementSized(200, 30);
+    row.innerHTML = '<span data-key="one">one</span>';
+
+    setMotionRowHtml(row, '<span data-key="two">two</span>');
+    setMotionRowHtml(row, '<span data-key="three">three</span>');
+
+    const snapshots = row.querySelectorAll("[data-motion-snapshot]");
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].textContent).toBe("two");
+    expect(snapshots[0].querySelector("[data-motion-snapshot]")).toBeNull();
+    expect(snapshots[0].inert).toBe(true);
+    expect(snapshots[0].getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("keeps a departing row's contents until its height exit finishes", async () => {
+    const started = recordAnimations();
+    const row = elementSized(200, 30);
+    row.innerHTML = "<span>leaving</span>";
+
+    const leaving = setMotionRowHtml(row, "");
+    await tick();
+    expect(row.textContent).toBe("leaving");
+    started[0].finish();
+    await leaving;
+    expect(row.textContent).toBe("");
   });
 });
 

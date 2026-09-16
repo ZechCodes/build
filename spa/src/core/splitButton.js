@@ -40,11 +40,11 @@ function menuItemsHtml(options) {
  *  rows a split button's caret drops. For a menu that is a selection rather
  *  than a verb — there is no default action to press, so there is no primary
  *  button to press it with. Wire it with `mountSplitMenu`. */
-export function menuButtonMarkup(label, options, { title = "", icon = false } = {}) {
+export function menuButtonMarkup(label, options, { title = "", icon = false, arrow = true } = {}) {
   const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
   const opener = icon
     ? `<button type="button" class="iconbtn caret"${titled}>${esc(label)}</button>`
-    : `<button type="button" class="btn mini caret"${titled}>${esc(label)} ▾</button>`;
+    : `<button type="button" class="btn mini caret"${titled}>${esc(label)}${arrow ? " ▾" : ""}</button>`;
   return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
     ${opener}
     <div class="splitmenu" hidden>${menuItemsHtml(options)}</div>
@@ -96,29 +96,32 @@ const MENU_GAP_PX = 6;
 function scrollingAncestorOf(element) {
   for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
     const overflowY = getComputedStyle(ancestor).overflowY;
-    if (overflowY === "auto" || overflowY === "scroll") return ancestor;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "hidden") return ancestor;
   }
   return null;
 }
 
-function placeMenuFromButtonBox(menu, buttonBox, menuHeight) {
+function placeMenuFromButtonBox(menu, buttonBox, { width: menuWidth, height: menuHeight }) {
   const opensAbove = buttonBox.top - MENU_GAP_PX >= menuHeight;
+  const viewportGap = 8;
+  const left = Math.max(viewportGap, Math.min(buttonBox.right - menuWidth, window.innerWidth - menuWidth - viewportGap));
   menu.style.position = "fixed";
-  menu.style.right = `${window.innerWidth - buttonBox.right}px`;
+  menu.style.left = `${left}px`;
+  menu.style.right = "auto";
   menu.style.top = opensAbove ? "" : `${buttonBox.bottom + MENU_GAP_PX}px`;
   menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "";
 }
 
-function menuHeightWhenShown(menu) {
-  if (!menu.hidden) return menu.offsetHeight;
+function menuSizeWhenShown(menu) {
+  if (!menu.hidden) return { width: menu.offsetWidth, height: menu.offsetHeight };
   menu.hidden = false;
-  const height = menu.offsetHeight;
+  const size = { width: menu.offsetWidth, height: menu.offsetHeight };
   menu.hidden = true;
-  return height;
+  return size;
 }
 
 function liftMenuOutOfScroll(container, menu, closeMenu) {
-  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect(), menuHeightWhenShown(menu));
+  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect(), menuSizeWhenShown(menu));
   const onViewportMoved = () => closeMenu();
   document.addEventListener("scroll", onViewportMoved, { capture: true });
   window.addEventListener("resize", onViewportMoved);
@@ -126,6 +129,7 @@ function liftMenuOutOfScroll(container, menu, closeMenu) {
     document.removeEventListener("scroll", onViewportMoved, { capture: true });
     window.removeEventListener("resize", onViewportMoved);
     menu.style.position = "";
+    menu.style.left = "";
     menu.style.top = "";
     menu.style.bottom = "";
     menu.style.right = "";

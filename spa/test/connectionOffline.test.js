@@ -820,11 +820,64 @@ describe("per-device connections", () => {
     const stale = lastSession("dev-b");
     expect(stale).not.toBe(landed);
     expect(stale.close).toHaveBeenCalled();
-    expect(linksFor.get("dev-b").close).toHaveBeenCalled();
+    // Cancellation won before the stale session could begin its next async
+    // phase, so it did not negotiate a peer link of its own.
+    expect(linksFor.get("dev-b")).toBe(landedLink);
     // …and the machine the account has is left exactly as it was landed.
     expect(contextFor("dev-b")?.session).toBe(landed);
     expect(landed.close).not.toHaveBeenCalled();
     expect(landedLink.close).not.toHaveBeenCalled();
+  });
+
+  it("cancels a delayed greeting on reset without touching a fresh same-id attempt", async () => {
+    let finishOldGreeting;
+    greetings.set("dev-a", () => new Promise((resolve) => { finishOldGreeting = resolve; }));
+    const oldConnection = connectDevice("dev-a");
+    await flush();
+    const oldSession = lastSession("dev-a");
+    const oldLink = linksFor.get("dev-a");
+
+    resetApplication();
+    await expect(oldConnection).rejects.toThrow(/retired/);
+    greetings.delete("dev-a");
+    const freshContext = await connectDevice("dev-a");
+    const freshSession = lastSession("dev-a");
+    const freshLink = linksFor.get("dev-a");
+
+    finishOldGreeting({});
+    await flush();
+
+    expect(oldSession.close).toHaveBeenCalled();
+    expect(oldLink.close).toHaveBeenCalled();
+    expect(contextFor("dev-a")).toBe(freshContext);
+    expect(freshContext.session).toBe(freshSession);
+    expect(freshSession.close).not.toHaveBeenCalled();
+    expect(freshLink.close).not.toHaveBeenCalled();
+  });
+
+  it("cancels a mint on reset before it can create or land a context", async () => {
+    let finishOldMint;
+    wire.openSession.mockImplementationOnce((options) => new Promise((resolve) => {
+      finishOldMint = () => resolve(fakeSession(options.deviceId, options.onLost));
+    }));
+    const oldConnection = connectDevice("dev-a");
+    await flush();
+
+    resetApplication();
+    await expect(oldConnection).rejects.toThrow(/retired/);
+    const freshContext = await connectDevice("dev-a");
+    const freshSession = freshContext.session;
+    const freshLink = linksFor.get("dev-a");
+
+    finishOldMint();
+    await flush();
+    const staleSession = lastSession("dev-a");
+
+    expect(staleSession).not.toBe(freshSession);
+    expect(staleSession.close).toHaveBeenCalled();
+    expect(contextFor("dev-a")).toBe(freshContext);
+    expect(freshSession.close).not.toHaveBeenCalled();
+    expect(freshLink.close).not.toHaveBeenCalled();
   });
 
   // The key offered for this machine is not the key the account pinned, so the
@@ -846,6 +899,7 @@ describe("per-device connections", () => {
     await openDeviceSessions().settled;
     await connectDevice("dev-b").catch(() => {});
     expect(openedFor("dev-b")).toHaveLength(dialled);
+    expect(contextFor("dev-b").blocked).toBe("refused");
   });
 
   it("stops asking for a device whose key stopped matching while it was open", async () => {

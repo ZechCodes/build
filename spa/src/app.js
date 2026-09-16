@@ -71,13 +71,15 @@ export function resetApplication() {
   pendingLeaveDecision = null;
   App.routeLeaveGuard = null;
   App.viewingContext?.setEnabled?.(false);
+  // Invalidate attempt authority before retiring contexts: a late greeting or
+  // mint belongs to the old account and cannot land while teardown runs.
+  forgetRendezvousSockets();
   resetDeviceContexts();
   // The terminals are on nobody now, so the next route that names a device is a
   // move however familiar the name, and home has been followed for nobody.
   terminalRouteDeviceId = null;
   forgetHomeFollow();
   forgetSecurityStops();
-  forgetRendezvousSockets();
   clearCacheScope();
 }
 

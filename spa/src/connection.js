@@ -18,6 +18,7 @@ import * as transport from "@build/secure-transport";
 import { RELAY_URL } from "./config.js";
 import { createRelayRendezvous } from "./core/rendezvous.js";
 import { createRendezvousLifecycle } from "./core/rendezvousLifecycle.js";
+import { createDeviceConnectionAttempts } from "./core/deviceConnectionAttempts.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { connectionDiagnosticHistory } from "./core/connectionDiagnostics.js";
@@ -69,15 +70,20 @@ const rendezvousLifecycle = createRendezvousLifecycle((deviceId) =>
   }),
 );
 
+// One explicit attempt owner per device. This stage owns only the attempt and
+// its provisional resources; deviceContexts remains the availability model.
+const connectionAttempts = createDeviceConnectionAttempts();
+
 /** Close this machine's rendezvous whoever was holding it: the device is
  *  blocked, or gone, and nothing is negotiating with it any more. */
 function closeRendezvous(deviceId) {
   rendezvousLifecycle.forDevice(deviceId).forceClose();
 }
 
-/** Let go of every rendezvous (sign-out, teardown): they are this account's,
- *  and a socket left open is a socket for an account that has gone. */
+/** Let go of every attempt and rendezvous (sign-out, teardown): they are this
+ *  account's, and none may land or remain open after the account has gone. */
 export function forgetRendezvousSockets() {
+  connectionAttempts.clear();
   rendezvousLifecycle.clear();
 }
 
@@ -104,7 +110,7 @@ const reasonOf = (error) => error?.blockedReason || "failed";
  * found — except a key that is not the one this account pinned, which is not an
  * outage at all: the machine answering is not the machine that was paired.
  */
-async function mintAppSession(deviceId, rendezvous) {
+async function mintAppSession(deviceId, rendezvous, attempt) {
   try {
     return await openSession({
       rendezvous,
@@ -113,12 +119,14 @@ async function mintAppSession(deviceId, rendezvous) {
       // One device's offline state pauses one device's calls.
       isPaused: () => contextFor(deviceId)?.offline === true,
       // The only carrier this session ever had has gone (rule 3's `lost`).
-      onLost: () => goOffline(deviceId),
+      onLost: () => {
+        if (attempt.isCurrent()) goOffline(deviceId);
+      },
       // The bridge saying something moved. A frame nobody asked for reaches the
       // surfaces showing that device's state — except the signaling pushes,
       // which belong to the upgrade negotiating them.
       onPush: (payload) => {
-        if (!isSignaling(payload.type)) dispatchChangeEvent(payload, deviceId);
+        if (attempt.isCurrent() && !isSignaling(payload.type)) dispatchChangeEvent(payload, deviceId);
       },
     });
   } catch (error) {
@@ -134,7 +142,7 @@ async function mintAppSession(deviceId, rendezvous) {
  * the channels opening let it go, and a connection that failed asks for it back
  * before it offers the restart.
  */
-function openDirectLink(deviceId, session, sessionLease) {
+function openDirectLink(deviceId, session, sessionLease, attempt) {
   let restartLease = null;
   return openPeerLink({
     signal: (method, params) => failingAs("refused", session.call(method, params)),
@@ -146,6 +154,7 @@ function openDirectLink(deviceId, session, sessionLease) {
       restartLease = null;
     },
     onFailed: async () => {
+      if (!attempt.isCurrent()) throw new Error(`stale rendezvous restart for ${deviceId}`);
       const lease = sessionLease.reacquire();
       if (!lease) throw new Error(`stale rendezvous restart for ${deviceId}`);
       restartLease = lease;
@@ -173,7 +182,7 @@ globalThis.buildConnectionDiagnostics = connectionDiagnosticHistory;
  * this dial's to close — and nothing else is, because by then the machine may
  * have been handed back and a newer dial may have landed a session at it.
  */
-async function connectOverChannels(deviceId, stillWanted = () => true) {
+async function connectOverChannels(deviceId, attempt) {
   if (!globalThis.RTCPeerConnection) {
     throw becauseOf(new Error("this browser cannot open a direct connection"), "no-webrtc");
   }
@@ -181,39 +190,20 @@ async function connectOverChannels(deviceId, stillWanted = () => true) {
   let session;
   let link;
   try {
-    session = await mintAppSession(deviceId, sessionLease.rendezvous);
-    link = await openDirectLink(deviceId, session, sessionLease);
-    if (!stillWanted()) {
-      throw new Error(`device ${deviceId} is no longer on this account`);
+    session = await mintAppSession(deviceId, sessionLease.rendezvous, attempt);
+    if (!attempt.own(session, closeQuietly)) throw new Error(`connection attempt for ${deviceId} was cancelled`);
+    link = await openDirectLink(deviceId, session, sessionLease, attempt);
+    if (!attempt.own(link, (owned) => owned.close())) {
+      throw new Error(`connection attempt for ${deviceId} was cancelled`);
     }
-    return await landSession(session, link, sessionLease.release);
-  } catch (error) {
-    closeQuietly(session);
-    link?.close();
-    throw error;
+    const context = await landSession(session, link, sessionLease.release, attempt);
+    if (!attempt.isCurrent()) throw new Error(`connection attempt for ${deviceId} was cancelled`);
+    attempt.release(session);
+    attempt.release(link);
+    return context;
   } finally {
     sessionLease.release();
   }
-}
-
-// The machines this layer has a connect in flight at, and the attempt itself: a
-// second caller — the presence poll, a reader pressing Retry — joins the one in
-// flight rather than opening a second session at the same machine.
-const dialling = new Map(); // deviceId → the connect in flight
-
-// Which dial at one machine is the one this layer is still waiting on. Retiring
-// a device moves its count on, so a connect in flight at a machine the account
-// has let go of lands nothing and blocks nothing: whatever it says is about a
-// machine nobody has.
-const dialEra = new Map(); // deviceId → which dial
-
-/** Whether the account still has the machine this dial was started for. */
-const stillAsking = (deviceId, era) => dialEra.get(deviceId) === era;
-
-/** Call off whatever is being dialled at this machine. */
-function stopDialling(deviceId) {
-  dialEra.set(deviceId, (dialEra.get(deviceId) || 0) + 1);
-  dialling.delete(deviceId);
 }
 
 /**
@@ -227,35 +217,26 @@ function stopDialling(deviceId) {
  */
 export function connectDevice(deviceId) {
   handTerminalsTheirMint();
-  const inFlight = dialling.get(deviceId);
-  if (inFlight) return inFlight;
-  const era = (dialEra.get(deviceId) || 0) + 1;
-  dialEra.set(deviceId, era);
-  const attempt = connectOnce(deviceId, era).finally(() => {
-    if (dialling.get(deviceId) === attempt) dialling.delete(deviceId);
-  });
-  dialling.set(deviceId, attempt);
-  return attempt;
+  return connectionAttempts.forDevice(deviceId).connect(
+    (attempt) => connectOnce(deviceId, attempt),
+    { onFailure: (error) => connectionFailed(deviceId, error) },
+  );
 }
 
-async function connectOnce(deviceId, era) {
+async function connectOnce(deviceId, attempt) {
   // Barred for good: offering the same pinned key to the same impostor again
   // would neither fix that nor tell anyone about it.
   if (securityStops.has(deviceId)) throw new Error(securityStops.get(deviceId));
-  try {
-    // It may answer after the account has let it go, and the machine it answers
-    // for is not the machine this dial was started for any more: nothing it
-    // opened is landed, and nothing that outlived it is touched.
-    return await connectOverChannels(deviceId, () => stillAsking(deviceId, era));
-  } catch (error) {
-    // A machine the account has let go of is not blocked: blocking it would put
-    // it back in the rail, greyed, with a Retry that dials a device nobody has.
-    if (stillAsking(deviceId, era)) {
-      barredBySecurity(deviceId, error);
-      blockDevice(deviceId, reasonOf(error));
-    }
-    throw error;
-  }
+  return connectOverChannels(deviceId, attempt);
+}
+
+/** Apply only the failure the controller committed as authoritative. */
+function connectionFailed(deviceId, error) {
+  // A retry refused by the existing security stop did not try a connection.
+  // Keep the original refusal rather than relabeling it as an ordinary outage.
+  if (securityStops.has(deviceId)) return;
+  barredBySecurity(deviceId, error);
+  blockDevice(deviceId, reasonOf(error));
 }
 
 /** Put this device's streams on the connection that just opened. The two
@@ -366,13 +347,15 @@ export function deviceWentAway(deviceId) {
   // the machine that was about to answer — on a list that is up to a heartbeat
   // window out of date. The dial says how it went, and the next poll writes
   // what the account says over it.
-  if (dialling.has(deviceId)) return;
+  if (connectionAttempts.isConnecting(deviceId)) return;
   standDown(deviceId, {});
 }
 
 /** One machine stops answering, however it stopped. The mark says why, and the
  *  same mark is what everything waiting on that machine is refused with. */
 function standDown(deviceId, mark) {
+  const attempts = connectionAttempts.forDevice(deviceId);
+  if (!attempts.connecting) attempts.cancel();
   const context = knownDeviceContext(deviceId);
   setContextOffline(deviceId, mark);
   // Closed before the link is dropped: a session told it lost its carrier would
@@ -400,7 +383,7 @@ export function retireDevice(deviceId) {
   const context = contextFor(deviceId);
   // A dial in flight at this machine is called off first: whatever it lands or
   // fails at is about a machine the account no longer has.
-  stopDialling(deviceId);
+  connectionAttempts.retire(deviceId);
   // Closed first: this machine is not lost, it is gone, and nothing is to be
   // blocked on the way out.
   closeQuietly(context?.session);
@@ -482,7 +465,7 @@ export async function openDeviceSettingsSession(deviceId, { onLost = () => {} } 
  *  settles nothing — the session died before it said anything — is released
  *  here instead: the feed waits on that promise, and a machine whose greeting
  *  went missing must not be left unread for ever. */
-export function greetLiveBridge(context, { suppressFailure = true } = {}) {
+export function greetLiveBridge(context, { suppressFailure = true, isAuthoritative = () => true } = {}) {
   const session = context?.session;
   if (!session) return Promise.resolve(false);
   const repository = context.chatRepository;
@@ -492,7 +475,7 @@ export function greetLiveBridge(context, { suppressFailure = true } = {}) {
     // The device's context may have been retargeted onto a newer session while
     // this greeting was in flight; that greeting belongs to the session that
     // asked for it, not to the one the device is on now.
-    isCurrent: () => contextFor(session.deviceId)?.session === session,
+    isCurrent: () => isAuthoritative() && contextFor(session.deviceId)?.session === session,
     onGreeting: (greeting) => repository?.configureCapabilities(greeting),
     // The session first, so a gate that lets the app back in finds it there;
     // then the device's context, which is where every surface reads what this
@@ -506,7 +489,7 @@ export function greetLiveBridge(context, { suppressFailure = true } = {}) {
     // Wake greeting-dependent reads only after this failed session is marked
     // unavailable; otherwise the feed can send a request between the rejected
     // hello and the outer connection attempt's cleanup.
-    if (!suppressFailure && contextFor(session.deviceId)?.session === session) {
+    if (!suppressFailure && isAuthoritative() && contextFor(session.deviceId)?.session === session) {
       setContextOffline(session.deviceId, blockedMark(reasonOf(error)));
     }
     throw error;
@@ -525,7 +508,8 @@ export function greetLiveBridge(context, { suppressFailure = true } = {}) {
  *
  *  Nothing is dispatched to the user's surfaces before both channels are open
  *  (rule 2), so this is the first moment anything is asked of the machine. */
-async function landSession(session, link, releaseInitialLease) {
+async function landSession(session, link, releaseInitialLease, attempt) {
+  if (!attempt.isCurrent()) throw new Error(`connection attempt for ${session.deviceId} was cancelled`);
   const previous = contextFor(session.deviceId);
   // Closed before its link is dropped: a session told it lost its carrier would
   // block the very device that is landing.
@@ -536,7 +520,10 @@ async function landSession(session, link, releaseInitialLease) {
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   let initialGreeting = true;
-  session.onCarrier(() => greetLiveBridge(context, { suppressFailure: !initialGreeting }));
+  session.onCarrier(() => greetLiveBridge(context, {
+    suppressFailure: !initialGreeting,
+    isAuthoritative: attempt.isCurrent,
+  }));
   // Bind the app channel before releasing signaling. The carrier callback is
   // the acknowledged session.hello, so the relay cannot disappear in the gap
   // between WebRTC opening and the application session becoming usable.
@@ -545,6 +532,7 @@ async function landSession(session, link, releaseInitialLease) {
   } finally {
     initialGreeting = false;
   }
+  if (!attempt.isCurrent()) throw new Error(`connection attempt for ${session.deviceId} was cancelled`);
   if (contextFor(session.deviceId)?.session !== session) throw new Error("session replaced during greeting");
   releaseInitialLease();
   // A device the feed is not polling yet — the account's first session, one a
@@ -708,7 +696,7 @@ function guessAtStaleDevices() {
  *  not barred. */
 function neverAsked(device) {
   if (securityStops.has(device.id) || contextFor(device.id)) return false;
-  return !dialling.has(device.id);
+  return !connectionAttempts.isConnecting(device.id);
 }
 
 /**
@@ -722,7 +710,7 @@ function neverAsked(device) {
 function wantsSession(device) {
   const context = contextFor(device.id);
   if (securityStops.has(device.id)) return false; // barred: retrying offers the same key to the same impostor
-  if (dialling.has(device.id) || context?.blocked) return false;
+  if (connectionAttempts.isConnecting(device.id) || context?.blocked) return false;
   return device.status === "online" && !canAnswer(context);
 }
 

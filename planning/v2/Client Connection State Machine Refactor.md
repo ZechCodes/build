@@ -1,6 +1,6 @@
 # Client connection state-machine refactor
 
-Status: stage 1 implemented; subsequent stages planned.
+Status: stages 1 and 2 implemented; subsequent stages planned.
 Baseline: `39838a88` (2026-09-16). No production rollout in this stage.
 
 ## Objective
@@ -42,10 +42,35 @@ The three users share this ownership mechanism:
 This stage is deliberately not the complete device state machine. Existing
 device availability and terminal-follow policy remain in place.
 
+## Stage 2: connection-attempt ownership
+
+Replace `dialling` and `dialEra` with a per-device attempt controller. Its states
+are `idle`, `connecting`, `succeeded`, `failed`, and `retired`. These describe
+an attempt, not the device's ongoing availability: a successful attempt does
+not imply the device can still answer later.
+
+The controller owns deduplication, attempt identity, cancellation, retirement,
+and resources acquired before handoff. Register the shared promise before
+starting work so synchronous reentrant callers cannot create a second attempt.
+Cancellation invalidates authority before running cleanup; resources arriving
+after cancellation are disposed rather than adopted. A retired owner never
+reopens, and account teardown retires pending attempts.
+
+The connection coordinator must check attempt authority across every async
+landing boundary, including the initial greeting. Only the current attempt may
+publish a session, change failure state, or transfer resources to a live device
+context. A stale success, failure, or cleanup cannot change a replacement
+attempt, another device, or a newly initialized account.
+
+Keep session cleanup before peer cleanup, preserve original failure causes,
+and retain security-stop and explicit-retry behavior. Device availability,
+long-lived peer ownership, and terminal-follow policy are still separate;
+do not present this step as their completed migration.
+
 ## Subsequent stages
 
-1. A per-device lifecycle controller owns connection attempts, session and peer
-   resources, cancellation, security refusals, and named lifecycle events.
+1. Extend per-device lifecycle ownership to established session and peer
+   resources, security refusals, and named connection-loss/presence events.
 2. Device-context availability becomes a projection of that controller. Remove
    competing offline/blocked writers only when the controller is authoritative;
    do not maintain a shadow state machine beside the old booleans.
@@ -61,6 +86,13 @@ device availability and terminal-follow policy remain in place.
 Write failing transition tests before implementation. For stage 1, cover
 overlapping leases, duplicate release, force-close followed by retry, permanent
 retirement, and teardown followed by re-registering the same device.
+
+For stage 2, cover exact shared-promise identity, synchronous reentry,
+immediate retry after settlement, prompt cancellation of never-settling work,
+late resource disposal, and stale completion after replacement. Cleanup must
+continue after a throwing disposer and invalidate authority before callbacks.
+Exercise account reset and retirement during the initial greeting through the
+real coordinator, retaining device-isolation and security-refusal regressions.
 
 Integration tests must exercise the real connection coordinator: delayed initial
 greeting, terminal confirmation overlapping ICE restart, and stale restart

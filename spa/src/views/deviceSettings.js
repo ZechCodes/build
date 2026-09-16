@@ -14,16 +14,15 @@ import { openDeviceSettingsSession } from "../connection.js";
 import { openBrowser } from "../sheets/browser.js";
 import { standUpDevicePanels } from "./devicePanels.js";
 
-export async function renderDeviceSettings() {
-  const device = App.devices.find((item) => item.id === App.route.id);
-  const root = $("#root");
+export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; } } = {}) {
+  const device = App.devices.find((item) => item.id === deviceId);
   root.classList.add("device-settings");
   if (!device) {
     root.innerHTML = '<div class="board-head"><h1>Device not found</h1></div><p>This device is no longer paired with your account.</p><a class="btn" href="#/account/settings">Account settings</a>';
     return;
   }
   root.innerHTML = `
-    <a class="btn mini" href="#/account/settings">Account settings</a>
+    ${embedded ? "" : '<a class="btn mini" href="#/account/settings">Local settings</a>'}
     <div class="board-head"><div><h1>${esc(device.name)} settings</h1><p>The projects this machine holds, and how agents run on it.</p></div></div>
     <div id="device-projects-panel"></div>
     <div class="panel">
@@ -48,11 +47,11 @@ export async function renderDeviceSettings() {
     if (browserOpen) $("#scrim").classList.remove("show");
     browserOpen = false;
   };
-  App.viewDispose = () => {
+  registerDispose(() => {
     active = false;
     closeBrowser();
     session?.close();
-  };
+  });
   // Nothing here can be read or written without the connection, so a panel that
   // asks after it has gone is refused in the account's own words for a machine
   // that is not there.

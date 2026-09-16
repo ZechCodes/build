@@ -251,6 +251,10 @@ use conversations::{
 pub struct AppState {
     /// Registered projects and the entity bindings that route work to them.
     projects: ProjectRegistry,
+    /// Prevent new mutations while project cleanup runs with the mutex released.
+    project_deletion_in_progress: bool,
+    /// Deferred filesystem work claimed under the mutex and not yet applied.
+    active_deferred_filesystem_jobs: usize,
     worktrees_root: std::path::PathBuf,
     /// Durable multi-source workspaces plus adopted legacy Git-root checkouts.
     workspaces: crate::workspace::WorkspaceRegistry,
@@ -493,6 +497,8 @@ impl AppState {
                 });
         let mut state = AppState {
             projects: ProjectRegistry::new(),
+            project_deletion_in_progress: false,
+            active_deferred_filesystem_jobs: 0,
             worktrees_root,
             workspaces,
             projects_dir: default_projects_dir(),

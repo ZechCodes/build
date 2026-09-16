@@ -41,6 +41,8 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 vi.mock("../src/core/inboxShell.js", () => ({ goFromInbox: (...args) => navigate(...args) }));
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => createWorkspace(...args) }));
+const projectSettings = vi.fn();
+vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => projectSettings(...args) }));
 const newRepoSheet = vi.fn();
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: (...args) => newRepoSheet(...args) }));
 
@@ -132,6 +134,7 @@ beforeEach(async () => {
   navigate.mockReset();
   createWorkspace.mockReset();
   newRepoSheet.mockReset();
+  projectSettings.mockReset();
   refreshFeed.mockClear();
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
@@ -279,6 +282,21 @@ describe("a workspace's Done", () => {
 });
 
 describe("the projects face", () => {
+  it("opens settings on the owning device and leaves a deleted project's route", async () => {
+    feed([], [project("project-1", "Website", "dev-2")]);
+    setInboxView("projects");
+    document.querySelector('[data-project-settings="dev-2/project-1"]').click();
+    expect(projectSettings).toHaveBeenCalledWith("project-1", expect.any(Object));
+    const options = projectSettings.mock.calls[0][1];
+    await options.callRpc("project.list");
+    expect(laptopCall).toHaveBeenCalledWith("project.list");
+    expect(workshopCall).not.toHaveBeenCalled();
+    App.route = { name: "workspace", deviceId: "dev-2", projectId: "project-1", workspaceId: "workspace-1" };
+    await options.onDeleted();
+    expect(navigate).toHaveBeenCalledWith({ name: "inbox" });
+    expect(refreshFeed).toHaveBeenCalledWith("dev-2");
+  });
+
   it("groups workspaces under their projects, by the account-wide project name", () => {
     feed([
       workspace(),

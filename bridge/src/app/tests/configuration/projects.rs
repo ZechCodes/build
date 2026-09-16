@@ -941,3 +941,45 @@ fn config_persists_projects_and_dir_across_reload() {
             .contains("myprojects")
     );
 }
+
+#[test]
+fn configured_project_ids_survive_gaps_and_keep_the_allocator_above_deleted_ids() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_repo_directory, repo) = init_repo();
+    let (_added_directory, added_repo) = init_repo();
+    let config = directory.path().join("config.json");
+    std::fs::write(
+        &config,
+        serde_json::to_vec(&json!({
+            "next_project": 9,
+            "projects": [{ "id": "proj-3", "path": repo, "base_branch": "main" }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut state = AppState::new_unrooted(
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+    assert_eq!(state.projects.at(0).id, "proj-3");
+    assert_eq!(state.add_project(added_repo, "main".to_string()), "proj-9");
+    state.persist();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(saved["projects"][0]["id"], "proj-3");
+    assert_eq!(saved["next_project"], 10);
+    let restored = AppState::new_unrooted(
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+    assert_eq!(restored.projects.at(0).id, "proj-3");
+    assert_eq!(restored.projects.at(1).id, "proj-9");
+    assert_eq!(restored.projects.next_id(), 10);
+}

@@ -510,6 +510,7 @@ impl AppState {
         params: &Value,
         done: DeferredDone,
     ) -> Result<Value, String> {
+        self.active_deferred_filesystem_jobs -= 1;
         let DeferredDone {
             outcome: done,
             check,
@@ -581,6 +582,9 @@ impl AppState {
     pub(in crate::app) fn take_deferred(&mut self) -> Option<DeferredJob> {
         let check = self.deferred_result_check.take();
         let work = self.deferred_work.take()?;
+        // Claim before either the relay or MCP drain releases the mutex.
+        // All variants can observe filesystem state that deletion would remove.
+        self.active_deferred_filesystem_jobs += 1;
         Some(DeferredJob { work, check })
     }
 

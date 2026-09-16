@@ -16,6 +16,7 @@ pub(in crate::app) struct ProjectSource {
     pub(in crate::app) remote: Option<String>,
 }
 
+mod deletion;
 mod lifecycle;
 mod list;
 mod project_registry;
@@ -127,6 +128,9 @@ impl AppState {
     }
 
     pub(in crate::app) fn restore_configured_projects(&mut self, config: &Value) {
+        if let Some(next) = config.get("next_project").and_then(Value::as_u64) {
+            self.projects.reserve_ids_through(next);
+        }
         let projects = config
             .get("projects")
             .and_then(Value::as_array)
@@ -150,7 +154,28 @@ impl AppState {
             if !repo.exists() {
                 continue;
             }
-            let id = self.add_project(repo, base);
+            let number = project
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| id.strip_prefix("proj-"))
+                .and_then(|id| id.parse::<u64>().ok())
+                .filter(|number| *number > 0 && *number < u64::MAX)
+                .unwrap_or(self.projects.next_id());
+            let repo = std::fs::canonicalize(&repo).unwrap_or(repo);
+            let id = if let Some(existing) = self.projects.find_by_canonical_path(&repo) {
+                existing.id.clone()
+            } else {
+                if self.projects.get(&format!("proj-{number}")).is_some() {
+                    continue;
+                }
+                let candidate = self.project_candidate_at(
+                    repo.clone(),
+                    base,
+                    repo.join(".git").exists(),
+                    Some(number),
+                );
+                self.insert_project(candidate)
+            };
             if let Some(entries) = stored_sources {
                 let sources = entries
                     .iter()
@@ -239,6 +264,16 @@ impl AppState {
         base_branch: String,
         is_git: bool,
     ) -> ProjectCandidate {
+        self.project_candidate_at(repo_path, base_branch, is_git, None)
+    }
+
+    fn project_candidate_at(
+        &self,
+        repo_path: std::path::PathBuf,
+        base_branch: String,
+        is_git: bool,
+        restored_number: Option<u64>,
+    ) -> ProjectCandidate {
         let name = repo_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -253,7 +288,13 @@ impl AppState {
             base_branch: base_branch.clone(),
             remote: None,
         }];
-        self.project_candidate_with_sources(repo_path, base_branch, is_git, sources)
+        self.project_candidate_with_sources_at(
+            repo_path,
+            base_branch,
+            is_git,
+            sources,
+            restored_number,
+        )
     }
 
     fn project_candidate_with_sources(
@@ -263,11 +304,25 @@ impl AppState {
         is_git: bool,
         sources: Vec<ProjectSource>,
     ) -> ProjectCandidate {
+        self.project_candidate_with_sources_at(repo_path, base_branch, is_git, sources, None)
+    }
+
+    fn project_candidate_with_sources_at(
+        &self,
+        repo_path: std::path::PathBuf,
+        base_branch: String,
+        is_git: bool,
+        sources: Vec<ProjectSource>,
+        restored_number: Option<u64>,
+    ) -> ProjectCandidate {
         let worktrees_root = self.worktrees_root.clone();
         let agent = self.agent.clone();
         let bridge_exe = self.bridge_exe.clone();
-        self.projects
-            .candidate(repo_path, base_branch, move |id, repo_path, base_branch| {
+        self.projects.candidate_with_id(
+            restored_number.unwrap_or(self.projects.next_id()),
+            repo_path,
+            base_branch,
+            move |id, repo_path, base_branch| {
                 let id = id.into_string();
                 let name = repo_path
                     .file_name()
@@ -291,7 +346,8 @@ impl AppState {
                     orch,
                     isolation: None,
                 }
-            })
+            },
+        )
     }
 
     fn insert_project(&mut self, project: ProjectCandidate) -> String {

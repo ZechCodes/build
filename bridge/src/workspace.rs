@@ -268,6 +268,11 @@ impl WorkspaceRegistry {
         }
     }
 
+    pub(crate) fn forget_project(&mut self, project_id: &str) {
+        self.workspaces
+            .retain(|_, workspace| workspace.project_id != project_id);
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

@@ -3,6 +3,7 @@ use super::*;
 mod git_init_deferred;
 
 fn app(root: &Path) -> AppState {
+    let root = std::fs::canonicalize(root).unwrap();
     AppState::new_unrooted(root.join("worktrees"), "main", true, "/tmp/test-mcp.sock")
 }
 
@@ -1151,4 +1152,225 @@ fn a_workspace_with_a_failed_plain_source_cannot_finish() {
     assert!(failed["root"]
         .as_str()
         .is_some_and(|root| Path::new(root).is_dir()));
+}
+
+#[test]
+fn project_delete_requires_confirmation_and_removes_workspaces_but_preserves_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let other_repo = init_repo_named(dir.path(), "other");
+    let config = dir.path().join("config.json");
+    let mut state = app(dir.path()).with_config(&config).unwrap();
+    state.store = Some(crate::store::Store::new(dir.path().join("tasks")).unwrap());
+    let project_id = state.add_project(repo.clone(), "main".into());
+    let other_id = state.add_project(other_repo.clone(), "main".into());
+    let workspace = create_workspace(&mut state, &project_id, "delete-me");
+    let conversation = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace["workspace_id"]}),
+    ));
+    assert_eq!(conversation["ok"], true, "{conversation}");
+    let conversation_id = conversation["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let other_workspace = create_workspace(&mut state, &other_id, "keep-me");
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    let kept_root = PathBuf::from(other_workspace["root"].as_str().unwrap());
+    let refused = state.handle(req("project.delete", json!({"project_id": project_id})));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(root.exists());
+    assert!(state.project(&project_id).is_some());
+    let deleted = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(deleted["ok"], true, "{deleted}");
+    assert_eq!(deleted["result"]["deleted"], true);
+    assert_project_deletion_state(
+        &state,
+        &project_id,
+        &other_id,
+        &conversation_id,
+        &root,
+        &repo,
+        &kept_root,
+    );
+    assert_project_deletion_persisted(dir.path(), &config, &project_id, &other_id);
+}
+
+fn assert_project_deletion_state(
+    state: &AppState,
+    project_id: &str,
+    other_id: &str,
+    conversation_id: &str,
+    root: &Path,
+    repo: &Path,
+    kept_root: &Path,
+) {
+    assert!(!root.exists());
+    assert!(repo.join(".git").exists());
+    assert!(kept_root.exists());
+    assert!(state.project(project_id).is_none());
+    assert!(!state.runs.contains_key(conversation_id));
+    assert!(state
+        .store
+        .as_ref()
+        .unwrap()
+        .load_all_runs()
+        .unwrap()
+        .is_empty());
+    assert!(state.project(other_id).is_some());
+    assert!(state.workspaces.list(Some(project_id)).is_empty());
+    assert!(!state.project_deletion_in_progress);
+}
+
+fn assert_project_deletion_persisted(
+    app_root: &Path,
+    config: &Path,
+    project_id: &str,
+    other_id: &str,
+) {
+    let restored = app(app_root).with_config(config).unwrap();
+    assert!(restored.project(project_id).is_none());
+    assert!(restored.project(other_id).is_some());
+    assert!(restored.workspaces.list(Some(project_id)).is_empty());
+}
+
+#[test]
+fn project_delete_persistence_failure_preserves_project_and_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let mut state = app(dir.path())
+        .with_config(dir.path().join("config.json"))
+        .unwrap();
+    let project_id = state.add_project(repo.clone(), "main".into());
+    let workspace = create_workspace(&mut state, &project_id, "keep-me");
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    state.config_persist_failure = Some(ConfigPersistStep::Write);
+    let refused = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(root.exists());
+    assert!(state.project(&project_id).is_some());
+    assert!(!state.project_deletion_in_progress);
+}
+
+#[test]
+fn project_delete_cleanup_failure_keeps_project_retryable() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let mut state = app(dir.path());
+    let project_id = state.add_project(repo.clone(), "main".into());
+    let workspace = create_workspace(&mut state, &project_id, "retry-me");
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    let parked = dir.path().join("parked");
+    std::fs::rename(&root, &parked).unwrap();
+    std::fs::write(&root, "simulate a replaced workspace directory").unwrap();
+    let refused = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(state.project(&project_id).is_some());
+    assert!(!state.project_deletion_in_progress);
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(&parked, &root).unwrap();
+    state.workspaces.reload().unwrap();
+    let deleted = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(deleted["ok"], true, "{deleted}");
+    assert!(!root.exists());
+    assert!(repo.exists());
+}
+
+#[test]
+fn project_delete_blocks_mutations_until_filesystem_cleanup_settles() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let mut state = app(dir.path());
+    let project_id = state.add_project(repo, "main".into());
+    state
+        .project_delete(&json!({"project_id": project_id, "confirm": true}))
+        .unwrap();
+    assert!(state.project_deletion_in_progress);
+    // The runtime normally takes this work immediately before releasing its lock.
+    let pending = state.deferred_work.take();
+    let refused = state.handle(req("settings.set", json!({"triage_enabled": true})));
+    assert_eq!(refused["ok"], false, "{refused}");
+    let read = state.handle(req("settings.get", json!({})));
+    assert_eq!(read["ok"], true, "{read}");
+    state.deferred_work = pending;
+}
+
+#[test]
+fn project_delete_refuses_a_workspace_containing_a_source_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let mut state = app(dir.path());
+    let project_id = state.add_project(repo.clone(), "main".into());
+    let workspace = create_workspace(&mut state, &project_id, "protected");
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    state.project_at_mut(0).sources[0].path = root.clone();
+    let refused = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(root.exists());
+    assert!(repo.exists());
+    assert!(state.project(&project_id).is_some());
+}
+
+#[test]
+fn project_delete_waits_for_existing_filesystem_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let mut state = app(dir.path());
+    let project_id = state.add_project(repo.clone(), "main".into());
+    let status_params = json!({"project_id": project_id});
+    let (status, deferred) = state.dispatch_deferring("git.status", &status_params);
+    assert!(status.is_ok(), "{status:?}");
+    let deferred = deferred.expect("git status releases the state lock");
+    let refused = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(state.project(&project_id).is_some());
+    assert!(repo.exists());
+    assert!(!state.project_deletion_in_progress);
+    state
+        .apply_deferred("git.status", &status_params, deferred.run())
+        .unwrap();
+    let deleted = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(deleted["ok"], true, "{deleted}");
+}
+
+#[test]
+fn project_delete_preserves_another_projects_source_inside_its_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let mut state = app(dir.path());
+    let project_id = state.add_project(repo.clone(), "main".into());
+    let workspace = create_workspace(&mut state, &project_id, "shared-source");
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    let nested_source = PathBuf::from(workspace["directories"][0]["path"].as_str().unwrap());
+    let other_id = state.add_project(nested_source.clone(), "main".into());
+    let refused = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(root.exists());
+    assert!(nested_source.exists());
+    assert!(state.project(&project_id).is_some());
+    assert!(state.project(&other_id).is_some());
 }

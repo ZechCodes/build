@@ -56,6 +56,19 @@ impl ProjectRegistry {
         }
     }
 
+    pub(in crate::app) fn remove(&mut self, project_id: &str) {
+        self.projects.retain(|project| project.id != project_id);
+        let entities: Vec<_> = self
+            .entity_project
+            .iter()
+            .filter(|(_, id)| id.as_str() == project_id)
+            .map(|(entity, _)| entity.clone())
+            .collect();
+        for entity in entities {
+            self.unbind_entity(&entity);
+        }
+    }
+
     pub(in crate::app) fn iter(&self) -> impl Iterator<Item = &Project> {
         self.projects.iter()
     }
@@ -196,28 +209,51 @@ impl ProjectRegistry {
         self.projects.clear();
     }
 
-    #[cfg(test)]
     pub(in crate::app) fn next_id(&self) -> u64 {
         self.next_project
     }
 
+    pub(super) fn reserve_ids_through(&mut self, next: u64) {
+        self.next_project = self.next_project.max(next);
+    }
+
+    pub(super) fn candidate_with_id(
+        &self,
+        number: u64,
+        repo_path: PathBuf,
+        base_branch: String,
+        build: impl FnOnce(ProjectId, &Path, &str) -> Project,
+    ) -> ProjectCandidate {
+        let project = build(
+            ProjectId(format!("proj-{number}")),
+            &repo_path,
+            &base_branch,
+        );
+        ProjectCandidate { project }
+    }
+
     /// Build a project under the next id without changing registry state.
+    #[cfg(test)]
     pub(super) fn candidate(
         &self,
         repo_path: PathBuf,
         base_branch: String,
         build: impl FnOnce(ProjectId, &Path, &str) -> Project,
     ) -> ProjectCandidate {
-        let id = ProjectId(format!("proj-{}", self.next_project));
-        let project = build(id, &repo_path, &base_branch);
-        ProjectCandidate { project }
+        self.candidate_with_id(self.next_project, repo_path, base_branch, build)
     }
 
     /// Publish only after the caller's durability step has succeeded.
     pub(super) fn publish(&mut self, candidate: ProjectCandidate) -> ProjectId {
         let id = ProjectId(candidate.project.id.clone());
+        let number = candidate
+            .project
+            .id
+            .strip_prefix("proj-")
+            .and_then(|id| id.parse::<u64>().ok())
+            .expect("project IDs are allocated numerically");
         self.projects.push(candidate.project);
-        self.next_project += 1;
+        self.reserve_ids_through(number + 1);
         id
     }
 

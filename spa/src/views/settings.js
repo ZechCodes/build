@@ -85,7 +85,8 @@ function creationFallbackNote(devices, shownId) {
  * the list, the way every other surface that greys what a lost machine holds
  * is told (core/deviceContexts.js). The listener is this page's teardown.
  */
-function mountCreationDevice() {
+function mountCreationDevice(root, registerDispose) {
+  const $ = (selector) => root.querySelector(selector);
   const select = $("#creationdev");
   if (!select) return;
   let offered = null; // the options last painted, so a repaint that says the
@@ -106,12 +107,16 @@ function mountCreationDevice() {
     chooseCreationDevice(select.value);
     paint(select.value);
   };
-  App.viewDispose = onDeviceStateChanged(() => paint(App.selectedDeviceId));
+  registerDispose(onDeviceStateChanged(() => paint(App.selectedDeviceId)));
 }
 
-export async function renderSettings() {
-  $("#root").innerHTML = `
-    <div class="board-head"><div><h1>Settings</h1><p>Your keys, your custody.</p></div></div>
+export async function renderSettings({ root = $("#root"), registerDispose = (dispose) => { App.viewDispose = dispose; }, isCurrent = () => true, onDevicesChanged = () => {} } = {}) {
+  const $ = (selector) => root.querySelector(selector);
+  let disposeCreation = null;
+  let disposePairing = null;
+  registerDispose(() => { disposeCreation?.(); disposePairing?.(); });
+  root.innerHTML = `
+    <div class="board-head"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div></div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
     <div class="panel">
       <h3>🔒 What our servers see</h3>
@@ -167,6 +172,7 @@ export async function renderSettings() {
     </div>`;
 
   await mountAgentDefaults();
+  if (!isCurrent()) return;
   bindThemeControl($("#themepick"));
 
   // The agent defaults panel: the same three selectors the New issue sheet hides
@@ -176,6 +182,7 @@ export async function renderSettings() {
     const providerSelect = $("#defprovider");
     if (!providerSelect) return;
     const catalog = await deviceCatalog(null);
+    if (!isCurrent()) return;
     let current = loadAgentDefaults();
     const note = $("#defsaved");
 
@@ -211,6 +218,7 @@ export async function renderSettings() {
     const toggle = $("#pushtoggle");
     const stateLabel = $("#pushstate");
     const state = await pushState();
+    if (!isCurrent()) return;
     toggle.disabled = state === "unsupported" || state === "denied";
     if (state === "unsupported") {
       toggle.textContent = "Not available";
@@ -227,12 +235,14 @@ export async function renderSettings() {
     }
   };
   await refreshPushToggle();
+  if (!isCurrent()) return;
   $("#pushtoggle").onclick = async () => {
     const toggle = $("#pushtoggle");
     toggle.disabled = true;
     $("#pusherr").textContent = "";
     try {
       const state = await pushState();
+      if (!isCurrent()) return;
       if (state === "enabled") await disablePush();
       else await enablePush();
     } catch (e) {
@@ -246,6 +256,8 @@ export async function renderSettings() {
   const refreshDeviceList = async () => {
     try {
       const devices = await refreshDevices();
+      if (!isCurrent()) return;
+      onDevicesChanged();
       $("#devlist").innerHTML = devices.length
         ? devices.map(deviceRowHtml).join("")
         : '<div class="dim" style="font-size:13px">No devices yet. Install the bridge above, then add it with its pairing code.</div>';
@@ -272,8 +284,9 @@ export async function renderSettings() {
     }
   };
   await refreshDeviceList();
-  $("#adddev").onclick = () => openAddDevice(refreshDeviceList);
-  mountCreationDevice();
+  if (!isCurrent()) return;
+  $("#adddev").onclick = () => { disposePairing = openAddDevice(refreshDeviceList); };
+  mountCreationDevice(root, (dispose) => { disposeCreation = dispose; });
 
   // The same block the first-run gate mounts — one renderer, two hosts. It is
   // the only thing here that asks the api rather than the bridge, and nothing
@@ -283,7 +296,7 @@ export async function renderSettings() {
   // #downloadserr, so a slow round trip leaves a "loading…" line — not a page
   // of dead buttons, and not a caller (renderAccount, which mounts the account
   // nav next) waiting on the api's clock.
-  void mountDownloads($("#root"), {
+  void mountDownloads(root, {
     fetchDownloads,
     mintInstallCommand,
     platformKey: currentPlatformKey(),

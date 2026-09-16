@@ -134,7 +134,6 @@ impl DiffCache {
 
     /// Removes only project-owned cache values. In-flight/superseded claims stay
     /// held until their existing computation settles.
-    #[cfg(test)]
     pub(in crate::app) fn remove_project(&mut self, project_id: &str) {
         self.project_cache.remove(project_id);
     }

@@ -6,7 +6,7 @@ import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
 import { renderWorkspace } from "./views/workspaceView.js";
 import { renderIssue } from "./views/issueView.js";
-import { renderDeviceSettings } from "./views/deviceSettings.js";
+import { isSettingsRoute, renderSettingsModal } from "./views/settingsModal.js";
 import { renderAccount } from "./views/account.js";
 import { renderCaptureDecision } from "./views/captureDecision.js";
 import { renderResolving } from "./views/resolving.js";
@@ -66,6 +66,7 @@ export const App = {
  * cases so one test's devices cannot answer the next one's reads.
  */
 export function resetApplication() {
+  settingsReturnRoute = { name: "inbox" };
   routeAttempt += 1;
   pendingLeaveDecision = null;
   App.routeLeaveGuard = null;
@@ -204,7 +205,6 @@ const VIEWS = {
   issue: renderIssue,
   capture: renderCaptureDecision,
   account: renderAccount,
-  device: renderDeviceSettings,
   resolve: renderResolving,
 };
 
@@ -256,8 +256,15 @@ export function unmountView() {
   }
 }
 
+let settingsReturnRoute = { name: "inbox" };
+
 export function render() {
   unmountView();
+  if (isSettingsRoute(App.route)) {
+    renderSettingsModal(settingsReturnRoute);
+    return;
+  }
+  settingsReturnRoute = { ...App.route };
   inboxRouteChanged(); // keep the rail tracking the route
   toolbarRouteChanged(); // …and the toolbar naming where you are standing
   followRouteDevice(); // …and the terminals typing at the machine it names

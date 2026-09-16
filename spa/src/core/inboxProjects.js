@@ -12,7 +12,7 @@
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
-import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
+import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
 import { clashingNames, dimDeviceHtml } from "./inbox.js";
 
 /** What a project is called: its name, or the bare id when the device has
@@ -156,6 +156,7 @@ export function projectHeadHtml(block, ui = {}) {
     ${foldButtonHtml(block, folded)}
     <button class="${nameClasses}" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}${deviceTagHtml(block)}</button>
     ${unread}
+    <button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>
     ${create}
   </div>`;
 }

@@ -366,7 +366,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    + stand in the same column either way. */
 .inbox-project.inbox-flat { border:0; box-shadow:none; padding:0 5px; margin-bottom:2px; }
 .inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 0; }
-.inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg { width:16px; height:16px; display:block; }
+.inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg, .inbox-project-settings svg { width:16px; height:16px; display:block; }
 /* The chevron's column is the rows' state-dot column: the rows sit 2px in and
    pad 6px, the dot is 8px wide — centre 12px; the fold pads 4px round a 16px
    icon — centre 12px. The Recent toggle's caret is padded the same. */
@@ -380,7 +380,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-project-name:hover { background:var(--line2); color:var(--ink); }
 .inbox-project-name.inbox-unroutable:hover { background:none; color:var(--ink2); }
 .inbox-project-head .inbox-unread { margin-left:0; }
-.inbox-project-create { flex:none; }
+.inbox-project-create, .inbox-project-settings { flex:none; }
 .inbox-project-rows { padding:2px 2px 0; }
 .inbox-folded .inbox-project-rows, .inbox-folded .inbox-recent { display:none; }
 .inbox-project .inbox-recent { margin:2px 0 0; border-top:0; padding-top:0; }

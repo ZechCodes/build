@@ -1617,3 +1617,33 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   *, *::before, *::after { scroll-behavior:auto !important; animation-duration:.01ms !important;
     animation-iteration-count:1 !important; transition-duration:.01ms !important; }
 }
+
+/* Settings overlays the shell; nested sheets remain above its surface. */
+.settings-open > #scrim { z-index:140; }
+.settings-scrim { position:fixed; inset:0; z-index:100; background:var(--scrim); display:grid; place-items:center; padding:24px; }
+.settings-modal { width:min(1080px, 100%); height:min(820px, 90vh); background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:14px; box-shadow:0 20px 70px var(--shadow); display:grid; grid-template-columns:220px minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); overflow:hidden; }
+.settings-modal > header { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--line); }
+.settings-modal > header h2 { margin:0; font-size:18px; }
+.settings-sidebar { padding:16px 12px; overflow:auto; border-right:1px solid var(--line); }
+.settings-sidebar .btn { display:flex; flex-direction:column; align-items:flex-start; width:100%; text-align:left; margin-bottom:6px; white-space:normal; overflow-wrap:anywhere; }
+.settings-sidebar .btn[aria-current] { background:var(--accent); color:var(--bg); }
+.settings-sidebar h3 { margin:22px 8px 10px; font-size:12px; color:var(--ink2); }
+.settings-sidebar small { font-size:11px; opacity:.75; }
+.settings-content { padding:24px; overflow:auto; min-width:0; }
+.settings-content .board-head { margin-top:0; }
+.settings-content .projfolder { flex-wrap:wrap; }
+.settings-content code { white-space:normal; overflow-wrap:anywhere; }
+.settings-sidebar .settings-archive { margin-top:22px; }
+@media (max-width:600px) {
+  .settings-scrim { padding:8px; }
+  .settings-modal { height:calc(100dvh - 16px); grid-template-columns:minmax(0,1fr); grid-template-rows:auto auto minmax(0,1fr); }
+  .settings-content { padding:14px; }
+  .settings-sidebar { display:flex; gap:8px; padding:10px 14px; border-right:0; border-bottom:1px solid var(--line); overflow-x:auto; }
+  .settings-sidebar h3 { display:none; }
+  .settings-sidebar .btn { flex:0 0 130px; margin:0; font-size:12px; justify-content:center; }
+  .settings-content .panel { padding:14px; }
+  .settings-content .row { flex-wrap:wrap; }
+  .settings-content .row .k { flex-basis:100%; width:auto; }
+  .settings-content .row .v { min-width:0; max-width:100%; }
+  .settings-content .segmented, .settings-content .projrow { flex-wrap:wrap; }
+}

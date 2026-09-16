@@ -136,6 +136,8 @@ const FIXTURE_PROBE_REACHES_OUTSIDE: &[&str] = &[
     "project.add",
     "project.clone",
     "project.create",
+    // Its confirmed fixture would remove the project used by later probes.
+    "project.delete",
     "settings.set",
     // Both provision on disk: a create copies every source of the project it
     // names, and an init writes a repository into a directory it resolved.

@@ -82,7 +82,13 @@ pub(in crate::app) fn dispatch_frame(
         .unwrap_or_else(|| json!({}));
 
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
-        Some(outcome) => outcome.map_err(ApiError::from),
+        Some(outcome) => outcome.map_err(|error| {
+            if error == PROJECT_DELETION_IN_PROGRESS {
+                ApiError::unavailable(error)
+            } else {
+                ApiError::from(error)
+            }
+        }),
         // The caller is named for the frame: the `changes.*` verbs push to
         // it, and `routed` carries only the state.
         None => crate::api::v1::changes::with_session(&sender, || {
@@ -103,6 +109,9 @@ fn session_scoped(
     params: &Value,
     timer: &FrameTimer,
 ) -> Option<Result<Value, String>> {
+    if !allowed_during_project_deletion(method) && timer.lock(state).project_deletion_in_progress {
+        return Some(Err(PROJECT_DELETION_IN_PROGRESS.to_string()));
+    }
     Some(match method {
         // The greeting: what this bridge can do for the session, and — for the
         // capabilities that need somewhere to send to — the subscription
@@ -235,6 +244,78 @@ pub(in crate::app) fn err(e: OrchestratorError) -> String {
 /// once, so every required param reads the same to the client.
 pub(in crate::app) fn missing_param(key: &str) -> String {
     format!("missing required param: {key}")
+}
+
+const PROJECT_DELETION_IN_PROGRESS: &str =
+    "a project is being deleted; retry after deletion completes";
+
+/// Keep observations and session subscriptions available during filesystem cleanup.
+/// New verbs default to blocked until their read-only behavior is established.
+fn allowed_during_project_deletion(method: &str) -> bool {
+    matches!(
+        method,
+        "ping"
+            | "session.hello"
+            | "bridge.stats"
+            | "changes.list"
+            | "changes.subscribe"
+            | "changes.unsubscribe"
+            | "rtc.offer"
+            | "rtc.ice"
+            | "rtc.close"
+            | "term.list"
+            | "term.attach"
+            | "term.ack"
+            | "term.resize"
+            | "agent.attach"
+            | "agent.list"
+            | "stream.events"
+            | "stream.state"
+            | "archive.list"
+            | "archived.list"
+            | "board.list"
+            | "capture.get"
+            | "capture.list"
+            | "models.list"
+            | "project.list"
+            | "project.diff"
+            | "settings.get"
+            | "fs.list"
+            | "fs.read"
+            | "fs.tree"
+            | "git.branches"
+            | "git.diff"
+            | "git.log"
+            | "git.refs"
+            | "git.show"
+            | "git.status"
+            | "git.unpushed"
+            | "issue.diff"
+            | "issue.stage_diff"
+            | "issue.doc"
+            | "issue.get"
+            | "issue.list"
+            | "issue.stage_doc"
+            | "issue.stages"
+            | "plan.doc"
+            | "plan.get"
+            | "plan.list"
+            | "plan.stage_doc"
+            | "plan.stages"
+            | "run.diff"
+            | "run.stage_diff"
+            | "run.get"
+            | "branch.get"
+            | "worktree.diff"
+            | "thread.activity"
+            | "thread.attachment"
+            | "thread.operation"
+            | "thread.page"
+            | "thread.revision"
+            | "workspace.get"
+            | "workspace.list"
+            | "workspace.git_init_options"
+    )
 }
 
 /// Legacy documents remain readable, but workspaces no longer launch or
@@ -384,6 +465,9 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<Value, ApiError> {
+        if self.project_deletion_in_progress && !allowed_during_project_deletion(method) {
+            return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
+        }
         if retired_planning_operation(method) {
             // `unavailable`, not `internal`: the verb is served and its
             // refusal is understood — the capability behind it is gone.

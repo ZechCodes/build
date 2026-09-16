@@ -31,6 +31,7 @@ impl AppState {
         prospective_project: Option<&Project>,
     ) -> Value {
         json!({
+            "next_project": self.projects.next_id() + u64::from(prospective_project.is_some()),
             "projects_dir": projects_dir.display().to_string(),
             "default_harness": default_harness,
             "agent_modes": self.agent_modes,
@@ -39,6 +40,7 @@ impl AppState {
             "router_model": self.router_choice,
             "projects": self.projects.iter().chain(prospective_project).map(|p| {
                 let mut entry = json!({
+                    "id": p.id,
                     "path": p.repo_path.display().to_string(),
                     "base_branch": p.base_branch,
                     "sources": p.sources.iter().map(|source| json!({

@@ -36,6 +36,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ArchiveListResult
         ),
         v1_method!("archived.list", archived_list, NoParams, ArchivedListResult),
+        v1_method!(
+            "project.delete",
+            project_delete,
+            ProjectDeleteParams,
+            ProjectDeleteResult
+        ),
         v1_method!("project.list", project_list, NoParams, ProjectListResult),
         v1_method!("project.add", project_add, ProjectAddParams, ProjectRow),
         v1_method!(
@@ -106,6 +112,20 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 }
 
 // ---------------------------------------------------------------- params ---
+
+/// Delete a project and its workspaces after explicit confirmation.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectDeleteParams {
+    pub project_id: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectDeleteResult {
+    pub project_id: String,
+    pub deleted: bool,
+}
 
 /// A verb that names one project and nothing else: `archive.list`,
 /// `project.init_git`.
@@ -702,20 +722,25 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 5] = [
+const CONFLICTS: [&str; 9] = [
     "is already a git repository",
     "is not a git repository",
     "already became",
     "has already been answered",
     "the router has not asked anything",
+    "Wait for workspace provisioning",
+    "Stop running agents before deleting",
+    "Cannot delete a workspace containing",
+    "Cannot delete a workspace whose source checkout",
 ];
 
 /// A refusal the client can fix by asking differently: a value that is not
 /// one of the ones on offer, or a request that names nothing to do. The three
 /// harness names read alike because the two aliases and the harness itself
 /// are one setting.
-const INVALID: [&str; 11] = [
+const INVALID: [&str; 12] = [
     "invalid project name",
+    "project.delete requires confirm: true",
     "nothing to set",
     "text is empty",
     "no option was offered at position",
@@ -813,6 +838,13 @@ fn project_set_remote(
     params: ProjectSetRemoteParams,
 ) -> Result<Answer<ProjectRow>, ApiError> {
     answer(app.project_set_remote(&params.wire())).map_err(refine)
+}
+
+fn project_delete(
+    app: &mut AppState,
+    params: ProjectDeleteParams,
+) -> Result<Answer<ProjectDeleteResult>, ApiError> {
+    answer(app.project_delete(&params.wire())).map_err(refine)
 }
 
 fn project_set_isolation(
@@ -930,6 +962,11 @@ mod tests {
     #[test]
     fn the_project_set_remote_fixture_round_trips() {
         round_trips("project.set_remote");
+    }
+
+    #[test]
+    fn the_project_delete_fixture_round_trips() {
+        round_trips("project.delete");
     }
 
     #[test]

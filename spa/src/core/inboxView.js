@@ -61,6 +61,7 @@ import {
 } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
+import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
@@ -391,6 +392,7 @@ function pressed(controls, target) {
 const BLOCK_CONTROLS = [
   ["data-project-fold", (control) => toggleFold(control.dataset.projectFold)],
   ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
+  ["data-project-settings", (control) => settingsForBlock(control.dataset.projectSettings)],
   ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
   ["data-new-project", () => openNewProject()],
 ];
@@ -441,6 +443,18 @@ function openMenu(key) {
 function openBlockHead(projectKey) {
   const block = blockOf(projectKey);
   if (block && block.route) goFromInbox(block.route);
+}
+
+function settingsForBlock(projectKey) {
+  const block = blockOf(projectKey);
+  if (!block) return;
+  openProjectSettings(block.id, {
+    callRpc: verbCall(block),
+    onDeleted: async () => {
+      if (routeProjectKey(App.route) === block.projectKey) goFromInbox({ name: "inbox" });
+      await refreshFeed(block.deviceId);
+    },
+  });
 }
 
 /** The + opens the create surface on this block's project, with the block

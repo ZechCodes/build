@@ -97,7 +97,7 @@ export function paintDeviceState(list, { entryFor, blockFor }) {
 const ROW_CONTROLS = ".inbox-menu .mi, [data-workspace-done]";
 
 /** And what a project block offers: the + that starts work in it. */
-const BLOCK_CONTROLS = ":scope > .inbox-project-head .inbox-project-create";
+const BLOCK_CONTROLS = ":scope > .inbox-project-head .inbox-project-create, :scope > .inbox-project-head .inbox-project-settings";
 
 /** One row or block: greyed while its own device cannot answer, and every
  *  control named by `controls` shut with the reason. A row this client holds

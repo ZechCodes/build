@@ -6,6 +6,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
 
+const confirmAction = vi.fn();
+vi.mock("../src/core/confirm.js", () => ({ confirmAction: (...args) => confirmAction(...args) }));
+
 const PROJECT = {
   project_id: "proj-1",
   name: "build",
@@ -17,6 +20,7 @@ const PROJECT = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  confirmAction.mockReset();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
@@ -190,5 +194,68 @@ describe("openProjectSettings", () => {
     expect(sheet.querySelector("img")).toBeNull();
     expect(sheet.querySelector("b")).toBeNull();
     expect(sheet.querySelector("#psname").value).toBe('"><img src=x>');
+  });
+});
+
+describe("project deletion", () => {
+  const caller = () => vi.fn(async (method) => method === "project.list" ? { projects: [PROJECT] } : {});
+
+  it("requires confirmation and leaves the project untouched on cancel", async () => {
+    confirmAction.mockResolvedValue(false);
+    const callRpc = caller();
+    openProjectSettings(PROJECT.project_id, { callRpc });
+    await flush();
+    document.querySelector("#psdelete").click();
+    await flush();
+    expect(confirmAction).toHaveBeenCalledWith(expect.objectContaining({ danger: true, title: "Delete build?" }));
+    expect(callRpc).not.toHaveBeenCalledWith("project.delete", expect.anything());
+    expect(document.querySelector("#psdelete").disabled).toBe(false);
+    expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
+  });
+
+  it("deletes through the project's device only after confirmation and refreshes its caller", async () => {
+    confirmAction.mockResolvedValue(true);
+    const callRpc = caller();
+    const onDeleted = vi.fn();
+    openProjectSettings(PROJECT.project_id, { callRpc, onDeleted });
+    await flush();
+    document.querySelector("#psdelete").click();
+    await flush();
+    expect(callRpc).toHaveBeenCalledWith("project.delete", { project_id: PROJECT.project_id, confirm: true });
+    expect(onDeleted).toHaveBeenCalledWith(PROJECT);
+    expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
+  });
+
+  it("keeps a newer sheet open when an earlier deletion finishes", async () => {
+    confirmAction.mockResolvedValue(true);
+    let finishDelete;
+    const callRpc = vi.fn((method) => method === "project.list"
+      ? Promise.resolve({ projects: [PROJECT] })
+      : new Promise((resolve) => { finishDelete = resolve; }));
+    openProjectSettings(PROJECT.project_id, { callRpc });
+    await flush();
+    document.querySelector("#psdelete").click();
+    await flush();
+    expect(document.querySelector("#pssave").disabled).toBe(true);
+    document.querySelector("#sheet").innerHTML = "Another sheet";
+    finishDelete({ deleted: true });
+    await flush();
+    expect(document.querySelector("#sheet").textContent).toBe("Another sheet");
+    expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
+  });
+
+  it("shows deletion failures and allows retry without closing", async () => {
+    confirmAction.mockResolvedValue(true);
+    const callRpc = caller().mockImplementation(async (method) => {
+      if (method === "project.list") return { projects: [PROJECT] };
+      throw new Error("Workspace is busy");
+    });
+    openProjectSettings(PROJECT.project_id, { callRpc });
+    await flush();
+    document.querySelector("#psdelete").click();
+    await flush();
+    expect(document.querySelector("#pserr").textContent).toBe("Workspace is busy");
+    expect(document.querySelector("#psdelete").disabled).toBe(false);
+    expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
   });
 });

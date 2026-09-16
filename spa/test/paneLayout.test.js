@@ -1155,13 +1155,12 @@ describe("the view column's seam with the agent rail", () => {
 // The pin in the panel's head says which of two things the conversation is.
 // Pinned it is the column the seam tests above measure — half the frame, beside
 // the work, costing the work its width. Unpinned it is a card ON the strip,
-// pointing with a notch at the bubble it was opened from, over a scrim that is
-// also the way out of it: the shape the away inbox wears at the other edge of
-// the frame, turned round to face the strip.
+// pointing with a notch at the bubble it was opened from while the work around
+// it remains interactive.
 describe("the conversation panel unpinned", () => {
   const POPOVER = "#agent-rail.rail-popover .rail-panel";
 
-  it("floats as a card on the strip's edge, over a scrim", () => {
+  it("floats as a card on the strip's edge without covering the work", () => {
     const card = baseRule(POPOVER);
     expect(card).toBeTruthy();
     expect(declaration(card.body, "position")).toBe("absolute");
@@ -1173,26 +1172,22 @@ describe("the conversation panel unpinned", () => {
     expect(declaration(railBox.body, "position")).toBe("relative");
     expect(enclosingAtRule(railBox.at)).toBeNull();
 
-    const scrim = baseRule(".rail-scrim");
-    expect(declaration(scrim.body, "position")).toBe("fixed");
-    expect(declaration(scrim.body, "inset")).toBe("0");
-    expect(declaration(scrim.body, "background")).toBe("var(--scrim)");
-    // …and it lies under the card it dismisses.
-    expect(Number(declaration(scrim.body, "z-index")))
-      .toBeLessThan(Number(declaration(card.body, "z-index")));
+    expect(baseRule(".rail-scrim")).toBeUndefined();
   });
 
-  it("holds the strip over the scrim, so the next bubble re-anchors the card", () => {
-    // The scrim is what dismisses the card, and it lies over everything under
-    // it — including the row of bubbles the card is anchored to. Pressing
-    // another agent has to reach that agent, not the way out, so the strip
-    // rides above the scrim while the card is open.
+  it("holds the strip over the card so the next bubble re-anchors it", () => {
     const lifted = baseRule("#agent-rail.rail-popover .rail-strip");
     expect(lifted).toBeTruthy();
     expect(Number(declaration(lifted.body, "z-index")))
-      .toBeGreaterThan(Number(declaration(baseRule(".rail-scrim").body, "z-index")));
+      .toBeGreaterThan(Number(declaration(baseRule(POPOVER).body, "z-index")));
     // …which it can only do from a position of its own.
     expect(declaration(baseRule(".rail-strip").body, "position")).toBe("relative");
+  });
+
+  it("anchors every panel beside the strip while the rail changes width", () => {
+    const standing = baseRule(".rail-panel");
+    expect(declaration(standing.body, "position")).toBe("absolute");
+    expect(declaration(standing.body, "right")).toBe("var(--agent-strip)");
   });
 
   it("points its notch at the bubble it was opened from", () => {

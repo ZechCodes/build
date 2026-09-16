@@ -8,6 +8,8 @@ import { isAtBottom } from "./paintKeepingPlace.js";
 export const CHAT_LAYOUT_TRANSITION_MS = 240;
 export const CHAT_PANEL_TRANSITION_MS = 160;
 const EASING = "cubic-bezier(.2,.8,.2,1)";
+const CONCEALED_CLASS = "rail-panel-concealed";
+const OPENING_CLASS = "rail-panel-opening";
 const INLINE_GEOMETRY = ["position", "left", "top", "width", "height", "max-height", "margin", "z-index"];
 
 const usableRect = (rect) => !!rect?.width && !!rect?.height;
@@ -63,9 +65,61 @@ function holdScrollPlace(scroller) {
 }
 
 const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+const computedStyleOf = (element) => typeof globalThis.getComputedStyle === "function"
+  ? globalThis.getComputedStyle(element)
+  : null;
+
+function openingFrame(panel) {
+  const inlineTransition = panel.style.transition;
+  panel.style.transition = "none";
+  panel.classList.add(OPENING_CLASS);
+  panel.getBoundingClientRect();
+  const transform = computedStyleOf(panel)?.transform;
+  panel.classList.remove(OPENING_CLASS);
+  if (inlineTransition) panel.style.transition = inlineTransition;
+  else panel.style.removeProperty("transition");
+  return {
+    opacity: "0",
+    transform: transform && transform !== "none"
+      ? transform
+      : "translateX(10px) scale(.985)",
+  };
+}
+
+function revealPanel(panel, { opening, apply, finish }) {
+  const startsClosed = opening || panel.classList.contains(CONCEALED_CLASS);
+  panel.classList.remove(CONCEALED_CLASS);
+  if (!startsClosed || reducedMotion()) {
+    apply();
+    return null;
+  }
+  const from = openingFrame(panel);
+  apply();
+  const animation = panel.animate?.([from, { opacity: "1", transform: "none" }], {
+    duration: CHAT_PANEL_TRANSITION_MS,
+    easing: EASING,
+  });
+  if (!animation) return null;
+  animation.onfinish = finish;
+  animation.oncancel = finish;
+  return () => animation.cancel();
+}
+
+function concealPanel(panel, apply, finish) {
+  apply();
+  if (reducedMotion()) {
+    panel.classList.add(CONCEALED_CLASS);
+    return null;
+  }
+  const timer = setTimeout(() => {
+    panel.classList.add(CONCEALED_CLASS);
+    finish();
+  }, CHAT_PANEL_TRANSITION_MS);
+  return () => clearTimeout(timer);
+}
 
 /** One controller per mounted rail. `apply` changes pin state and paints it;
- * `direction` exists only to let the rail coordinate its card chrome/scrim. */
+ * `direction` exists only to let the rail coordinate its card chrome. */
 export function createChatPanelMotion(host, { onPhase = () => {} } = {}) {
   let generation = 0;
   let cleanup = null;
@@ -156,5 +210,25 @@ export function createChatPanelMotion(host, { onPhase = () => {} } = {}) {
     };
   };
 
-  return { run, cancel };
+  /** Keep the live panel mounted while it fades away. Accessibility changes
+   * happen with `apply`; `visibility:hidden` waits for the fade so it remains
+   * paintable, and is cancelled if the reader reverses direction mid-flight. */
+  const setVisible = ({ panel, visible, apply, opening = false }) => {
+    cancel();
+    if (!panel) {
+      apply();
+      return;
+    }
+
+    const current = ++generation;
+    const finish = () => {
+      if (current !== generation) return;
+      cleanup = null;
+    };
+    cleanup = visible
+      ? revealPanel(panel, { opening, apply, finish })
+      : concealPanel(panel, apply, finish);
+  };
+
+  return { run, setVisible, cancel };
 }

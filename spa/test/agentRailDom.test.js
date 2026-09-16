@@ -266,7 +266,9 @@ describe("where the conversation panel starts", () => {
 
     bubbles()[0].click();
     await flush();
-    expect(panel()).toBeNull();
+    expect(panel()).toBeTruthy();
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    expect(panel().hasAttribute("inert")).toBe(true);
   });
 
   it("holds a phone reader's own choice across mounts", async () => {
@@ -294,16 +296,15 @@ describe("where the conversation panel starts", () => {
 describe("the conversation panel's pin", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
   const pin = () => panel().querySelector(".pinbtn");
-  const scrim = () => railHost().querySelector("#rail-scrim");
 
   afterEach(() => atWidth(1024));
 
   it("uses the inbox timing while the rail gives workspace width back", () => {
     expect(shellCss).toMatch(/#agent-rail \{[^}]*transition:width 240ms cubic-bezier\(\.2,\.8,\.2,1\)/);
-    expect(shellCss).toMatch(/\.rail-panel \{[^}]*transition:border-radius 160ms/);
-    expect(shellCss).toMatch(/#agent-rail\.rail-unpinned \{ width:var\(--agent-strip\); \}/);
-    expect(shellCss).toMatch(/#agent-rail, #agent-rail\.rail-unpinned \{ position:static; width:0; transition:none; \}/);
-    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*#agent-rail, \.rail-panel, \.rail-scrim \{ transition:none; \}/);
+    expect(shellCss).toMatch(/\.rail-panel \{[^}]*border-radius 160ms/);
+    expect(shellCss).toMatch(/#agent-rail\.rail-unpinned, #agent-rail\.rail-collapsed \{ width:var\(--agent-strip\); \}/);
+    expect(shellCss).toMatch(/#agent-rail, #agent-rail\.rail-unpinned, #agent-rail\.rail-collapsed \{ position:static; width:0; transition:none; \}/);
+    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*#agent-rail, \.rail-panel \{ transition:none; \}/);
   });
 
   it("keeps the attachment drop target over the full glass composer", () => {
@@ -327,11 +328,11 @@ describe("the conversation panel's pin", () => {
     expect(pin().querySelector("svg")).toBeTruthy();
   });
 
-  it("renders no scrim while the panel is pinned", async () => {
+  it("renders no interaction-blocking scrim", async () => {
     atWidth(1024);
     await mount();
     expect(panel()).toBeTruthy();
-    expect(scrim()).toBeNull();
+    expect(railHost().querySelector("#rail-scrim")).toBeNull();
     expect(railHost().classList.contains("rail-popover")).toBe(false);
     expect(panel().dataset.anchor).toBe("");
   });
@@ -344,7 +345,7 @@ describe("the conversation panel's pin", () => {
     // The conversation stays on screen, as a card over the work rather than a
     // column beside it — the same move the inbox's pin makes.
     expect(railHost().classList.contains("rail-popover")).toBe(true);
-    expect(scrim()).toBeTruthy();
+    expect(railHost().querySelector("#rail-scrim")).toBeNull();
     expect(pin().getAttribute("aria-pressed")).toBe("false");
     expect(pin().title).toBe("Pin the conversation");
     expect(localStorage.getItem("build.rail.expanded")).toBe("0");
@@ -353,7 +354,6 @@ describe("the conversation panel's pin", () => {
     await mount();
     // Unpinned, a fresh mount is the strip alone until a bubble is pressed.
     expect(panel()).toBeNull();
-    expect(scrim()).toBeNull();
   });
 
   it("keeps the live panel, composer, draft, focus, and history position across pin changes", async () => {
@@ -388,7 +388,7 @@ describe("the conversation panel's pin", () => {
     pin().click();
     await flush();
     expect(railHost().classList.contains("rail-popover")).toBe(false);
-    expect(scrim()).toBeNull();
+    expect(railHost().querySelector("#rail-scrim")).toBeNull();
     expect(localStorage.getItem("build.rail.expanded")).toBe("1");
 
     rail.dispose();
@@ -399,7 +399,6 @@ describe("the conversation panel's pin", () => {
 
 describe("the unpinned panel's popover", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
-  const scrim = () => railHost().querySelector("#rail-scrim");
 
   beforeEach(() => {
     atWidth(390);
@@ -416,7 +415,7 @@ describe("the unpinned panel's popover", () => {
     // every box it measures is at the origin; the browser check is the
     // orchestrator's.
     expect(panel().style.getPropertyValue("--rail-anchor")).toBe("0px");
-    expect(scrim()).toBeTruthy();
+    expect(railHost().querySelector("#rail-scrim")).toBeNull();
   });
 
   it("re-anchors on the next bubble rather than closing", async () => {
@@ -429,16 +428,38 @@ describe("the unpinned panel's popover", () => {
     expect(panel().dataset.anchor).toBe("ag-1");
   });
 
-  it("is dismissed by the scrim", async () => {
+  it("is dismissed by an outside press without consuming the target click", async () => {
     await mount();
     bubbles()[1].click();
     await flush();
-    scrim().click();
+    const outside = document.createElement("button");
+    const clicked = vi.fn();
+    outside.onclick = clicked;
+    document.body.append(outside);
+    const press = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+    outside.dispatchEvent(press);
+    outside.click();
     await flush();
-    expect(panel()).toBeNull();
-    expect(scrim()).toBeNull();
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    expect(press.defaultPrevented).toBe(false);
+    expect(clicked).toHaveBeenCalledOnce();
     // Dismissing a popover is not unpinning anything: the choice stands.
     expect(localStorage.getItem("build.rail.expanded")).toBeNull();
+  });
+
+  it("leaves the panel's confirmation popover usable", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    panel().querySelector(".rail-remove").click();
+    await flush();
+    const confirm = document.querySelector(".confirm-popover");
+    const cancel = confirm.querySelector("[data-confirm-cancel]");
+    cancel.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
+    cancel.click();
+    await flush();
+    expect(confirm.isConnected).toBe(false);
   });
 
   it("is dismissed by Escape", async () => {
@@ -447,7 +468,7 @@ describe("the unpinned panel's popover", () => {
     await flush();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flush();
-    expect(panel()).toBeNull();
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
   });
 
   it("leaves Escape to a surface that already answered it", async () => {
@@ -467,7 +488,43 @@ describe("the unpinned panel's popover", () => {
     await flush();
     window.dispatchEvent(new window.HashChangeEvent("hashchange"));
     await flush();
-    expect(panel()).toBeNull();
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("does not report reading from the retained panel while it is collapsed", async () => {
+    payload = branchRow({
+      agents: [agent({ unread_count: 2 })],
+      run: { run_id: "run-3", thread: { items: [
+        { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
+        { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
+      ], sessions: [] } },
+    });
+    await mount();
+    bubbles()[0].click();
+    await flush();
+    const history = panel().querySelector(".rail-body");
+    bubbles()[0].click();
+    await flush();
+    markSeen.mockClear();
+
+    payload = branchRow({
+      agents: [agent({ unread_count: 3 })],
+      run: { run_id: "run-3", thread: { items: [
+        { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
+        { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
+        { id: "m-3", type: "message", data: { sequence: 3, role: "agent", body: "three" } },
+      ], sessions: [] } },
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(markSeen).not.toHaveBeenCalled();
+    expect(history.textContent).not.toContain("three");
+
+    bubbles()[0].click();
+    await flush();
+    expect(history.textContent).toContain("three");
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3);
   });
 
   it("takes its listeners with it when the rail goes", async () => {
@@ -500,9 +557,33 @@ describe("the bubble strip", () => {
     expect(bubbles()[1].classList.contains("active")).toBe(true);
     bubbles()[1].click();
     await flush();
-    expect(panel()).toBe(null);
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
     // …and the strip is still there with the panel shut.
     expect(bubbles().length).toBe(3);
+  });
+
+  it("collapses and restores the same pinned panel without changing the pin choice", async () => {
+    await mount();
+    const standing = panel();
+    const input = standing.querySelector("#railinput");
+    input.value = "kept draft";
+    input.focus();
+
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBe(standing);
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    expect(bubbles()[0].getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(bubbles()[0]);
+    expect(localStorage.getItem("build.rail.expanded")).toBeNull();
+
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBe(standing);
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
+    expect(panel().querySelector("#railinput").value).toBe("kept draft");
+    expect(bubbles()[0].getAttribute("aria-expanded")).toBe("true");
+    expect(railHost().classList.contains("rail-unpinned")).toBe(false);
   });
 
   it("repaints the header icon when a provider update arrives", async () => {

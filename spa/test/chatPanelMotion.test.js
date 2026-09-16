@@ -97,6 +97,17 @@ describe("the conversation panel geometry transition", () => {
     expect(host.dataset.panelTransition).toBe("pinned");
   });
 
+  it("releases pin geometry when the panel is collapsed mid-transition", () => {
+    const motion = createChatPanelMotion(host);
+    motion.run({ panel, direction: "popover", apply: () => { target = rect(500, 30, 380, 560); } });
+
+    motion.setVisible({ panel, visible: false, apply: () => panel.setAttribute("aria-hidden", "true") });
+
+    expect(panel.style.position).toBe("");
+    vi.advanceTimersByTime(CHAT_LAYOUT_TRANSITION_MS);
+    expect(animations).toHaveLength(0);
+  });
+
   it("releases fixed geometry when dismissal, resize, navigation, or disposal cancels it", () => {
     const motion = createChatPanelMotion(host);
     motion.run({ panel, direction: "popover", apply: () => { target = rect(500, 30, 380, 560); } });
@@ -141,5 +152,46 @@ describe("the conversation panel geometry transition", () => {
     // Browsers clamp this request to their maximum (380 here); jsdom records
     // the requested scrollHeight verbatim because it has no layout engine.
     expect(scroller.scrollTop).toBe(480);
+  });
+
+  it("conceals a collapsed panel only after its exit transition", () => {
+    const apply = vi.fn(() => panel.setAttribute("aria-hidden", "true"));
+    const motion = createChatPanelMotion(host);
+
+    motion.setVisible({ panel, visible: false, apply });
+
+    expect(apply).toHaveBeenCalledOnce();
+    expect(panel.classList.contains("rail-panel-concealed")).toBe(false);
+    vi.advanceTimersByTime(CHAT_PANEL_TRANSITION_MS);
+    expect(panel.classList.contains("rail-panel-concealed")).toBe(true);
+  });
+
+  it("animates the first reveal from a measured concealed frame", () => {
+    const motion = createChatPanelMotion(host);
+    motion.setVisible({ panel, visible: true, opening: true, apply: () => panel.setAttribute("aria-hidden", "false") });
+
+    expect(animations).toHaveLength(1);
+    expect(animations[0].frames[0].opacity).toBe("0");
+    expect(animations[0].frames[1]).toEqual({ opacity: "1", transform: "none" });
+    expect(animations[0].options.duration).toBe(CHAT_PANEL_TRANSITION_MS);
+  });
+
+  it("cancels a stale conceal when collapse is rapidly reversed", () => {
+    const motion = createChatPanelMotion(host);
+    motion.setVisible({ panel, visible: false, apply: () => panel.setAttribute("aria-hidden", "true") });
+    vi.advanceTimersByTime(CHAT_PANEL_TRANSITION_MS / 2);
+    motion.setVisible({ panel, visible: true, apply: () => panel.setAttribute("aria-hidden", "false") });
+    vi.runAllTimers();
+
+    expect(panel.getAttribute("aria-hidden")).toBe("false");
+    expect(panel.classList.contains("rail-panel-concealed")).toBe(false);
+  });
+
+  it("conceals immediately when reduced motion is requested", () => {
+    matchMedia.mockReturnValue({ matches: true });
+    const motion = createChatPanelMotion(host);
+    motion.setVisible({ panel, visible: false, apply: () => panel.setAttribute("aria-hidden", "true") });
+
+    expect(panel.classList.contains("rail-panel-concealed")).toBe(true);
   });
 });

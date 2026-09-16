@@ -84,19 +84,19 @@ const pressEscape = () =>
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
 const watchDocumentListeners = (watchedType) => {
-  let live = 0;
+  const live = new Set();
   const add = document.addEventListener.bind(document);
   const remove = document.removeEventListener.bind(document);
   document.addEventListener = (type, ...rest) => {
-    if (type === watchedType) live += 1;
+    if (type === watchedType) live.add(rest[0]);
     return add(type, ...rest);
   };
   document.removeEventListener = (type, ...rest) => {
-    if (type === watchedType) live -= 1;
+    if (type === watchedType) live.delete(rest[0]);
     return remove(type, ...rest);
   };
   return {
-    count: () => live,
+    count: () => live.size,
     stop: () => {
       delete document.addEventListener;
       delete document.removeEventListener;
@@ -463,7 +463,7 @@ describe("what the ⋯ leaves on the document", () => {
 });
 
 describe("collapsing the panel a surface stands over", () => {
-  it("takes the overlay and the pills' grace timer down with the panel", async () => {
+  it("closes the overlay while retaining panel state until disposal", async () => {
     await mount();
     menuCaret().click();
     menuItem(SHELL_ENTRY_KIND).click();
@@ -473,12 +473,18 @@ describe("collapsing the panel a surface stands over", () => {
     await poll(finishedShells());
     expect(timers.count()).toBe(1);
 
+    const standingPanel = document.getElementById("rail-panel");
     document.querySelector(".rail-bubble").click();
     await flush();
 
-    expect(document.getElementById("rail-panel")).toBe(null);
+    expect(document.getElementById("rail-panel")).toBe(standingPanel);
+    expect(standingPanel.getAttribute("aria-hidden")).toBe("true");
+    expect(standingPanel.hasAttribute("inert")).toBe(true);
     expect(overlay()).toBe(null);
     expect(document.querySelector(".modal-scrim")).toBe(null);
+    expect(timers.count()).toBeGreaterThanOrEqual(1);
+    rail.dispose();
+    rail = null;
     expect(timers.count()).toBe(0);
     timers.stop();
   });

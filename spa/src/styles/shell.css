@@ -590,10 +590,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   display:flex; min-height:0; position:relative; background:var(--bg);
   width:calc(var(--agent-panel) + var(--agent-strip));
   transition:width 240ms cubic-bezier(.2,.8,.2,1); }
-#agent-rail.rail-unpinned { width:var(--agent-strip); }
-/* position:relative — the strip has to be able to rise above the popover's
-   scrim (below): the card is anchored to a bubble, and pressing the bubble
-   beside it has to reach that agent rather than the way out. */
+#agent-rail.rail-unpinned, #agent-rail.rail-collapsed { width:var(--agent-strip); }
+/* position:relative — the strip rises above the card it anchors, so pressing
+   the bubble beside the open one reaches that agent. */
 .rail-strip { flex:none; width:var(--agent-strip); display:flex; position:relative;
   margin-left:auto;
   flex-direction:column; align-items:center; gap:8px; padding:10px 0;
@@ -657,26 +656,29 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    to the bottom edge: the thread runs under it rather than carrying it along,
    and a box grown by what is being typed takes its room from the thread above
    instead of pushing itself off the panel. */
-.rail-panel { flex:none; width:var(--agent-panel); position:relative;
-  display:flex; flex-direction:column; min-height:0;
+.rail-panel { width:var(--agent-panel); position:absolute; z-index:30;
+  top:0; bottom:0; right:var(--agent-strip);
+  display:flex; flex-direction:column; min-height:0; background:var(--bg);
   border-left:1px solid var(--line);
-  transition:border-radius 160ms cubic-bezier(.2,.8,.2,1),
+  opacity:1; transform:none; transform-origin:center right;
+  transition:opacity 160ms cubic-bezier(.2,.8,.2,1),
+    transform 160ms cubic-bezier(.2,.8,.2,1),
+    border-radius 160ms cubic-bezier(.2,.8,.2,1),
     box-shadow 160ms cubic-bezier(.2,.8,.2,1),
     background-color 160ms cubic-bezier(.2,.8,.2,1); }
+.rail-panel[aria-hidden="true"], .rail-panel.rail-panel-opening {
+  opacity:0; transform:translateX(10px) scale(.985);
+  pointer-events:none; }
+.rail-panel.rail-panel-concealed { visibility:hidden; }
 /* ---- the conversation, unpinned --------------------------------------------
    The pin in the panel's head (core/pinControl.js, the inbox's own control)
    says which of two things the conversation is. Pinned it is the column above:
    half the frame, beside the work, costing the work its width.
 
-   Unpinned it is a card ON the strip — laid over the work, pointing with a
-   notch at the bubble it was opened from, over a scrim that is also the way out
-   of it. The shape the away inbox wears at the other edge of the frame
+   Unpinned it is a card ON the strip — laid over the work and pointing with a
+   notch at the bubble it was opened from. Outside input remains available, as
+   it does beside the unpinned inbox. The shape the away inbox wears
    (body.inbox-collapsed #inbox-rail, above), turned round to face the strip. */
-.rail-scrim { position:fixed; inset:0; z-index:35; background:var(--scrim);
-  opacity:1; transition:opacity 160ms cubic-bezier(.2,.8,.2,1); }
-.rail-scrim-hidden { opacity:0; pointer-events:none; }
-/* Over that scrim: the strip is what the card is anchored TO, so pressing the
-   agent beside the open one re-anchors the card instead of dismissing it. */
 #agent-rail.rail-popover .rail-strip { z-index:37; }
 #agent-rail.rail-popover .rail-panel { position:absolute; z-index:36;
   top:10px; bottom:10px; right:var(--agent-strip); left:auto;
@@ -693,7 +695,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   border:1px solid var(--line3, var(--line)); border-radius:10px;
   background:var(--panel); box-shadow:0 18px 48px var(--shadow); }
 @media (prefers-reduced-motion: reduce) {
-  #agent-rail, .rail-panel, .rail-scrim { transition:none; }
+  #agent-rail, .rail-panel { transition:none; }
 }
 /* The notch rides the bubble: core/agentRail.js measures whichever bubble is
    open and writes --rail-anchor, the offset along the panel's edge that points
@@ -1031,7 +1033,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      there are more agents than fit. It leaves the rail's own box out of the
      flow — the rail costs the work nothing here — and the strip's leading edge,
      which is the seam it alone draws, is its top rather than its left. */
-  #agent-rail, #agent-rail.rail-unpinned { position:static; width:0; transition:none; }
+  #agent-rail, #agent-rail.rail-unpinned, #agent-rail.rail-collapsed { position:static; width:0; transition:none; }
   .rail-strip { position:absolute; z-index:31;
     left:0; right:0; bottom:var(--console-space);
     width:auto; height:var(--agent-strip);
@@ -1050,6 +1052,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     top:calc(var(--toolbar-h) + 1px); bottom:calc(var(--console-space) + var(--agent-strip));
     z-index:30; width:auto; background:var(--bg);
     box-shadow:0 8px 24px var(--shadow-soft); }
+  .rail-panel[aria-hidden="true"], .rail-panel.rail-panel-opening {
+    transform:translateY(10px) scale(.985); }
   /* Unpinned, the same room read as a card: it sits ABOVE the strip and points
      down at the bubble it was opened from, because that is where the strip is
      now. Its height clears everything its bottom stands on AND the toolbar it

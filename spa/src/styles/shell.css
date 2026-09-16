@@ -745,6 +745,18 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .viewing-context-detail summary{cursor:pointer;list-style:none}
 .viewing-context-detail pre{max-width:320px;max-height:160px;overflow:auto;margin:5px 0 0;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);white-space:pre-wrap;font-size:11px}
 .viewing-context-detail>button{margin-top:4px;border:0;background:none;color:var(--ink2);cursor:pointer;font:inherit;font-size:11px}
+
+.viewing-context-group{position:relative;min-width:0;max-width:100%;font-size:11px}
+.viewing-context-files{min-width:0;max-width:100%}
+.viewing-context-files summary{display:flex;width:100%;box-sizing:border-box;cursor:pointer;list-style:none}
+.viewing-context-files summary::-webkit-details-marker{display:none}
+.viewing-context-files summary::before{content:"▸";flex:none}
+.viewing-context-files[open] summary::before{content:"▾"}
+.viewing-context-group.removable summary{padding-right:27px}
+.viewing-context-count{flex:none}
+.viewing-context-remove{position:absolute;top:1px;right:4px;width:22px;height:22px;padding:0;border:0;border-radius:999px;background:none;color:var(--ink2);cursor:pointer;font:inherit}
+.viewing-context-remove:hover{color:var(--ink);background:var(--line)}
+.viewing-context-file-list{margin:5px 0 0;padding:7px 10px;max-height:160px;overflow:auto;list-style:none;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink2);line-height:18px;overflow-wrap:anywhere}
 /* A row that scrolls sideways rather than wrapping or squeezing what is in it,
    with no scrollbar to show for it. */
 .scrollstrip { overflow-x:auto; scrollbar-width:none; }

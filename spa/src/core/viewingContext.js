@@ -189,10 +189,12 @@ export function createViewingContext(options = {}) {
       const current = (api.snapshot()?.items || []).filter((item) => item.kind === "selection");
       if (sent.length && JSON.stringify(sent) === JSON.stringify(current)) api.clearSelection();
     },
-    remove(index) {
-      const joined = [...artifact, ...selection];
-      const removed = joined.filter((item) => !dismissed.has(itemIdentity(item)))[index];
-      if (removed) dismissed.add(itemIdentity(removed));
+    remove(index) { api.removeMany([index]); },
+    removeMany(indices) {
+      const visible = [...artifact, ...selection].filter((item) => !dismissed.has(itemIdentity(item)));
+      for (const index of indices) {
+        if (visible[index]) dismissed.add(itemIdentity(visible[index]));
+      }
       announce();
     },
     setVisibleDiffs(scroller, mode) {
@@ -230,8 +232,43 @@ const selectionChip = (item, index, removable) => `<details class="viewing-conte
   <pre>${esc(item.text)}</pre>${removable ? '<button type="button" aria-label="Remove context">Remove</button>' : ""}
 </details>`;
 
+const contextGroupKey = (item) => {
+  if (item.kind === "diff") return `diff-${item.mode}`;
+  return item.kind === "file" ? "file" : null;
+};
+
+function contextGroups(items) {
+  const groups = [];
+  const byKey = new Map();
+  items.forEach((item, index) => {
+    const key = contextGroupKey(item);
+    let group = key ? byKey.get(key) : null;
+    if (!group) {
+      group = { key, entries: [] };
+      groups.push(group);
+      if (key) byKey.set(key, group);
+    }
+    group.entries.push({ item, index });
+  });
+  return groups;
+}
+
+const fileGroupChip = ({ key, entries }, removable) => {
+  const label = chipLabel(entries[0].item);
+  const count = entries.length > 1 ? ` <span class="viewing-context-count">+${entries.length - 1}</span>` : "";
+  return `<div class="viewing-context-group${removable ? " removable" : ""}" data-context-indices="${entries.map(({ index }) => index).join(",")}">
+    <details class="viewing-context-files" data-context-group="${esc(key)}">
+      <summary class="viewing-context-chip" title="${esc(label)}"><span class="viewing-context-label">${esc(label)}</span>${count}</summary>
+      <ul class="viewing-context-file-list">${entries.map(({ item }) => `<li>${esc(item.path)}</li>`).join("")}</ul>
+    </details>${removable ? '<button class="viewing-context-remove" type="button" aria-label="Remove context">×</button>' : ""}
+  </div>`;
+};
+
 export function viewingContextChipsHtml(context, { removable = false } = {}) {
-  return (context?.items || []).map((item, index) => item.kind === "selection" ? selectionChip(item, index, removable) :
-    `<span class="viewing-context-chip" data-context-kind="${esc(item.kind)}" data-context-index="${index}" title="${esc(chipLabel(item))}"><span class="viewing-context-label">${esc(chipLabel(item))}</span>${removable ? `<button type="button" aria-label="Remove context">×</button>` : ""}</span>`,
-  ).join("");
+  return contextGroups(context?.items || []).map((group) => {
+    if (group.key) return fileGroupChip(group, removable);
+    const { item, index } = group.entries[0];
+    if (item.kind === "selection") return selectionChip(item, index, removable);
+    return `<span class="viewing-context-chip" data-context-kind="${esc(item.kind)}" data-context-index="${index}" title="${esc(chipLabel(item))}"><span class="viewing-context-label">${esc(chipLabel(item))}</span>${removable ? '<button type="button" aria-label="Remove context">×</button>' : ""}</span>`;
+  }).join("");
 }

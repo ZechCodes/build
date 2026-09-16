@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createViewingContext,
   viewingContextChipsHtml,
@@ -116,5 +116,63 @@ describe("viewing context", () => {
     const context = createViewingContext({ maxSelectionBytes: 4 });
     context.setSelection([{ kind: "selection", path: "a.js", text: "😀x" }]);
     expect(context.snapshot().items[0].text).toBe("😀");
+  });
+});
+
+
+describe("grouped viewing context pills", () => {
+  const diffs = ["bridge/Cargo.toml", "bridge/examples/dev_relay.rs", "bridge/src/agent.rs"]
+    .map((path) => ({ kind: "diff", path, mode: "all" }));
+
+  it("condenses all files into one expandable pill with one separate remove button", () => {
+    const host = document.createElement("div");
+    host.innerHTML = viewingContextChipsHtml({ version: 1, items: diffs }, { removable: true });
+    expect(host.querySelectorAll(".viewing-context-chip")).toHaveLength(1);
+    expect(host.querySelector("summary").textContent).toBe("All changes: bridge/Cargo.toml +2");
+    expect([...host.querySelectorAll("li")].map((row) => row.textContent)).toEqual(diffs.map((item) => item.path));
+    expect(host.querySelector("details").open).toBe(false);
+    expect(host.querySelectorAll("button")).toHaveLength(1);
+    expect(host.querySelector("summary button")).toBeNull();
+    host.querySelector("summary").click();
+    expect(host.querySelector("details").open).toBe(true);
+  });
+
+  it("keeps diff modes and selected excerpts distinct and escapes file names", () => {
+    const host = document.createElement("div");
+    host.innerHTML = viewingContextChipsHtml({ version: 1, items: [
+      diffs[0],
+      { kind: "selection", path: "bridge/Cargo.toml", text: "selected text" },
+      { kind: "diff", path: "<img src=x onerror=alert(1)>", mode: "uncommitted" },
+      diffs[1],
+    ] });
+    expect(host.querySelectorAll(".viewing-context-group")).toHaveLength(2);
+    expect(host.querySelector("[data-context-group=diff-all] summary").textContent).toBe("All changes: bridge/Cargo.toml +1");
+    expect(host.querySelector("[data-context-group=diff-uncommitted] summary").textContent).toBe("Uncommitted: <img src=x onerror=alert(1)>");
+    expect(host.querySelector(".viewing-context-detail pre").textContent).toBe("selected text");
+    expect(host.querySelector("img")).toBeNull();
+    expect(host.querySelector("button")).toBeNull();
+  });
+
+  it("removes the entire group in one update while preserving selected excerpts", () => {
+    const context = createViewingContext();
+    context.set({ version: 1, items: diffs });
+    context.setSelection([{ kind: "selection", path: diffs[0].path, text: "keep this excerpt" }]);
+    const listener = vi.fn();
+    context.subscribe(listener);
+    context.removeMany([0, 1, 2]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(context.snapshot().items).toEqual([{ kind: "selection", path: diffs[0].path, text: "keep this excerpt" }]);
+    const scroller = document.createElement("div");
+    scroller.getBoundingClientRect = () => ({ top: 0, bottom: 100, left: 0, right: 100 });
+    for (const item of diffs) {
+      const file = document.createElement("div");
+      file.className = "file";
+      file.dataset.key = item.path;
+      file.getBoundingClientRect = () => ({ top: 0, bottom: 100, left: 0, right: 100 });
+      scroller.append(file);
+    }
+    context.setVisibleDiffs(scroller, "all");
+    expect(context.snapshot().items).toHaveLength(1);
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });

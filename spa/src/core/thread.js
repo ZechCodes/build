@@ -1821,10 +1821,16 @@ function mountViewingContext(root, inputId, viewingContext) {
   const tray = root.querySelector(`#${composerPartIds(inputId).context}`);
   const paint = (context = viewingContext?.snapshot?.()) => {
     if (!tray) return;
+    const expanded = new Set([...tray.querySelectorAll("details[data-context-group][open]")].map((detail) => detail.dataset.contextGroup));
     tray.innerHTML = viewingContextChipsHtml(context, { removable: true });
     tray.hidden = !context?.items?.length;
+    tray.querySelectorAll("details[data-context-group]").forEach((detail) => { detail.open = expanded.has(detail.dataset.contextGroup); });
     tray.querySelectorAll("button").forEach((button) => {
-      button.onclick = () => viewingContext?.remove?.(Number(button.closest("[data-context-index]").dataset.contextIndex));
+      button.onclick = () => {
+        const group = button.closest("[data-context-indices]");
+        if (group) viewingContext.removeMany(group.dataset.contextIndices.split(",").map(Number));
+        else viewingContext?.remove?.(Number(button.closest("[data-context-index]").dataset.contextIndex));
+      };
     });
   };
   const unsubscribe = viewingContext?.subscribe?.(paint);

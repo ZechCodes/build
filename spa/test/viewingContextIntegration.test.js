@@ -3,6 +3,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createChatRepository } from "../src/core/chatRepository.js";
 import { createViewingContext } from "../src/core/viewingContext.js";
+import { composerHtml } from "../src/core/composer.js";
+import { wireThreadComposer } from "../src/core/thread.js";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { renderFilesTab } from "../src/views/files.js";
 import { patchFor, worktreeOf } from "./gitWireFixture.js";
@@ -218,5 +220,34 @@ describe("viewing context across SPA surfaces and outgoing messages", () => {
 
     expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }));
     repository.dispose();
+  });
+});
+
+
+describe("composer context groups", () => {
+  it("retains expansion during updates and dismisses every file with one click", () => {
+    const viewingContext = createViewingContext();
+    viewingContext.set({ version: 1, items: [
+      { kind: "diff", path: "a.js", mode: "all" },
+      { kind: "diff", path: "b.js", mode: "all" },
+      { kind: "diff", path: "c.js", mode: "all" },
+    ] });
+    document.body.innerHTML = composerHtml({ inputId: "ci", sendId: "cs", hintId: "ch", placeholder: "Message" });
+    const control = wireThreadComposer(document.body, {
+      ids: { input: "ci", send: "cs", hint: "ch" }, viewingContext,
+      readDraft: () => "", writeDraft: () => {}, onSubmit: async () => {},
+    });
+    const tray = document.querySelector(".composer-context");
+    expect(tray.querySelectorAll("button")).toHaveLength(1);
+    tray.querySelector("summary").click();
+    viewingContext.setSelection([{ kind: "selection", path: "a.js", text: "keep" }]);
+    expect(tray.querySelector(".viewing-context-files").open).toBe(true);
+    tray.querySelector(".viewing-context-remove").click();
+    expect(tray.querySelector(".viewing-context-group")).toBeNull();
+    expect(viewingContext.snapshot().items).toEqual([{ kind: "selection", path: "a.js", text: "keep" }]);
+    tray.querySelector("button").click();
+    expect(viewingContext.snapshot()).toBeUndefined();
+    expect(tray.hidden).toBe(true);
+    control.dispose();
   });
 });

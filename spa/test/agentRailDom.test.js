@@ -768,7 +768,7 @@ describe("the painter behind a bubble", () => {
 describe("taking an agent back off the branch", () => {
   const twoAgents = (over = {}) => branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })], ...over });
   const removeButton = () => panel().querySelector(".rail-remove");
-  const confirmModal = () => document.getElementById("confirm-scrim");
+  const confirmModal = () => document.querySelector(".confirm-popover");
 
   const openSecondAgent = async () => {
     payload = twoAgents();
@@ -789,8 +789,8 @@ describe("taking an agent back off the branch", () => {
   };
   const railBodyNow = () => railHost().querySelector("#rail-body");
   const confirmEveryModal = () => {
-    document.querySelectorAll(".modal-scrim").forEach((scrim) => {
-      const ok = scrim.querySelector("[data-confirm-ok]");
+    document.querySelectorAll(".modal-scrim, .confirm-popover").forEach((dialog) => {
+      const ok = dialog.querySelector("[data-confirm-ok]");
       if (ok) ok.click();
     });
   };
@@ -838,8 +838,35 @@ describe("taking an agent back off the branch", () => {
     removeButton().click();
     await flush();
     expect(confirmModal()).toBeTruthy();
+    expect(document.getElementById("confirm-scrim")).toBeNull();
     confirmModal().querySelector("[data-confirm-cancel]").click();
     await flush();
+    expect(callsTo("agent.remove")).toEqual([]);
+  });
+
+  it("cancels the question when the conversation changes", async () => {
+    await openSecondAgent();
+    removeButton().click();
+    await flush();
+    expect(confirmModal()).toBeTruthy();
+
+    bubbles()[0].click();
+    await flush();
+
+    expect(confirmModal()).toBeNull();
+    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(callsTo("agent.remove")).toEqual([]);
+  });
+
+  it("cancels the question when the rail is disposed", async () => {
+    await mount();
+    removeButton().click();
+    await flush();
+    rail.dispose();
+    rail = null;
+    await flush();
+
+    expect(confirmModal()).toBeNull();
     expect(callsTo("agent.remove")).toEqual([]);
   });
 

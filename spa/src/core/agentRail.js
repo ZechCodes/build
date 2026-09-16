@@ -47,7 +47,7 @@ import { railStatusLeadClass, railStatusLeadHtml, railWhoHtml } from "./agentRai
 import { createGitStatusTicker } from "./gitStatusTicker.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
-import { confirmAction } from "./confirm.js";
+import { confirmActionAt } from "./confirm.js";
 import {
   insertRecord,
   isProvisionalKey,
@@ -1098,7 +1098,7 @@ export function mountAgentRail(host, context) {
       };
     }
     const remove = panel.querySelector(".rail-remove");
-    if (remove) remove.onclick = () => removeAgent();
+    if (remove) remove.onclick = () => removeAgent(remove);
     const pin = panel.querySelector(`.${PIN_CLASS}`);
     if (pin) pin.onclick = () => {
       setPinned(!pinned);
@@ -2128,11 +2128,13 @@ export function mountAgentRail(host, context) {
    * refusal is said the standard way and the same button is still there to try
    * again with.
    */
-  const removeAgent = async () => {
+  const removeAgent = async (anchor) => {
     const agent = settledAgentInFocus();
     if (!agent || !entity.entityId) return;
+    const entityId = entity.entityId;
     const call = chatRepository.currentCall();
-    if (!(await confirmAction(removeAgentConfirm(agent, entity.kind)))) return;
+    if (!(await confirmActionAt(anchor, removeAgentConfirm(agent, entity.kind)))) return;
+    if (disposed || entity.entityId !== entityId || settledAgentInFocus()?.id !== agent.id) return;
     if (isPending(pendingAgentsScope(), agent.id)) return;
     const records = [removeRecord(agent.id)];
     const remaining = projectPending(visibleAgents(), records, { keyOf: agentIdOf });
@@ -2140,7 +2142,7 @@ export function mountAgentRail(host, context) {
     await runOptimistic({
       scope: pendingAgentsScope(),
       records,
-      call: () => call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id }),
+      call: () => call("agent.remove", { entity_id: entityId, agent_id: agent.id }),
       failureSummary: "Could not remove the agent",
       onRevert: () => {
         openConversation(agent.id);

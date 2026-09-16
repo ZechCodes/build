@@ -1251,6 +1251,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .confirm-warnings { margin:12px 0 0; padding:9px 12px 9px 26px; font-size:13px; color:var(--amber);
   background:var(--amber-bg); border:1px solid color-mix(in srgb, var(--amber) 40%, transparent); border-radius:8px;
   display:flex; flex-direction:column; gap:6px; }
+.confirm-popover { position:fixed; z-index:151; width:min(400px, calc(100vw - 16px)); overflow:auto;
+  background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px;
+  box-shadow:0 12px 36px var(--shadow); }
+.confirm-popover h3 { margin:0 0 3px; font-size:15px; }
+.confirm-popover .sub { color:var(--ink2); font-size:13px; }
+.confirm-popover .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
 
 /* Durable plan/diff conversation — a GitHub-style issue activity timeline. */
 .review-thread { background:transparent; }

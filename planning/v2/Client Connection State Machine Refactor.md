@@ -1,6 +1,6 @@
 # Client connection state-machine refactor
 
-Status: stages 1 through 3 implemented; terminal-follow refactor remains planned.
+Status: all four planned stages implemented locally; rollout not performed.
 Baseline: `39838a88` (2026-09-16). No production rollout in this stage.
 
 ## Objective
@@ -95,14 +95,40 @@ results. Retired context getters stay retired even if the same device ID is
 registered again. Preserve retry eligibility, outage timestamps,
 sticky security refusals, and the existing rendezvous lease protocol.
 
-## Subsequent stages
+## Stage 4: terminal-follow ownership
 
-1. A terminal-follow controller owns an atomic device/session/carrier identity
-   and its pending transition, replacing separate follow-generation and carrier
-   tracking. Preserve isolated terminal-handshake failure and stale-reply guards.
-2. Keep account-wide presence, home-device selection, and view routing outside
-   the individual connection machines. Views request actions and observe state;
-   they do not manage transport resources.
+A terminal-follow controller owns an atomic device/context/session/carrier
+identity and its pending transition. Replace the manager's separate follow
+generation, pending-follow, carrier, and acknowledged-carrier variables. The
+manager retains lazy socket creation, route/home policy, status subscriptions,
+and the synchronous follow-request result used by routing.
+
+Capture the chosen context and carrier when starting a transition. Verify that
+capture at every async boundary and after synchronous effects; a late mint or
+confirmation cannot be attributed to a replacement channel. Commit pending
+ownership before invoking socket or lease callbacks, since those can reenter.
+Retain the previous confirmed connection while minting a move to another device;
+detach an unconfirmed superseded session so its late ping cannot report live.
+
+Keep the terminal session's rendezvous lease through acknowledged confirmation,
+then release it exactly once. Cancellation and failure release acquired leases;
+late arrivals release their own leases without affecting the current follow.
+No carrier means no acknowledgement: release an unadopted mint immediately
+and mint afresh when a carrier arrives, rather than pinning an idle rendezvous.
+Preserve fresh sessions on same-device
+reconnect, isolated terminal-handshake failure, and explicit retry policy.
+The controller never closes the shared app/terminal peer channels.
+
+Application reset invalidates pending follows before teardown and prevents stale
+results from attaching to a new account. Do not create a terminal socket merely
+to reset it. TerminalSocket continues to own crypto/RPC, terminal registrations,
+reattachment, and liveness; its transport machinery is not duplicated here.
+
+## Boundaries retained
+
+Keep account-wide presence, home-device selection, and view routing outside
+the individual connection machines. Views request actions and observe state;
+they do not manage transport resources.
 
 ## Verification gates
 
@@ -125,6 +151,14 @@ registration. Cover loss while another attempt is pending, reentrant and throwin
 cleanup, security refusal across Retry/presence, and greeting failure before
 feed wakeup. Audit production writers so no parallel transport/availability
 record remains in the coordinator or contexts.
+
+For stage 4, cover duplicate follow requests, superseded mint/confirmation,
+same-device replacement, synchronous reentry, null-carrier adoption, failure
+and retry, and reset followed by same-ID registration. Include context/carrier
+changes without another follow call. Assert lease release exactly once and
+that a stale completion cannot detach the current socket or release its lease.
+Use real manager/socket tests for pending ping replacement, reset, isolated
+confirmation failure, and continued connectivity beyond five seconds.
 
 Integration tests must exercise the real connection coordinator: delayed initial
 greeting, terminal confirmation overlapping ICE restart, and stale restart

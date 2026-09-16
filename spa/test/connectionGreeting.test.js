@@ -26,6 +26,7 @@ vi.mock("../src/core/peerLink.js", () => ({
 }));
 vi.mock("../src/terminal/manager.js", () => ({
   followTerminalDevice: () => {},
+  resetTerminalManager: () => {},
   terminalDeviceId: () => null,
   terminalManager: () => null,
   subscribeTerminalStatus: () => () => {},

@@ -33,6 +33,7 @@ vi.mock("../src/api.js", () => ({
 // connection layer hands over is kept, because that is rule 5's seam.
 vi.mock("../src/terminal/manager.js", () => ({
   followTerminalDevice: (...args) => terminals.followTerminalDevice(...args),
+  resetTerminalManager: () => {},
   terminalDeviceId: () => terminals.deviceId,
   provideTerminalSessions: (mint) => {
     terminals.mint = mint;

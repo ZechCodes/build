@@ -14,6 +14,9 @@ export function createStatusHub() {
       current = status;
       for (const subscriber of subscribers) subscriber(status);
     },
+    clear() {
+      current = null;
+    },
     subscribe(fn) {
       subscribers.add(fn);
       if (current !== null) fn(current);

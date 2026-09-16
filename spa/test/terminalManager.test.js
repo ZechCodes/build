@@ -47,11 +47,12 @@ vi.mock("../src/terminal/session.js", () => ({
     peer(carrier) {
       this.carriers.push(carrier);
     }
+    close() {}
   },
 }));
 
 const { App } = await import("../src/app.js");
-const { followTerminalDevice, provideTerminalSessions, terminalManager } = await import("../src/terminal/manager.js");
+const { followTerminalDevice, provideTerminalSessions, resetTerminalManager, terminalManager } = await import("../src/terminal/manager.js");
 
 /** Every device a terminal session was asked for, and whether the mint answers.
  *  Minting one is the connection layer's — it owns that device's rendezvous —
@@ -75,9 +76,8 @@ const settle = async () => {
 
 /** The one socket the manager owns, as if its session were already on
  *  `deviceId`, with its records cleared. */
-function socketOn(deviceId) {
+function socketOn() {
   const socket = terminalManager();
-  socket.deviceId = deviceId;
   socket.adopted.length = 0;
   socket.adoptedWith.length = 0;
   socket.carriers.length = 0;
@@ -91,6 +91,7 @@ const online = (id) => ({ id, status: "online" });
 const live = (deviceId, extra = {}) => contexts.set(deviceId, { deviceId, call: async () => ({}), ...extra });
 
 beforeEach(() => {
+  resetTerminalManager();
   App.devices = [online("dev-a"), online("dev-b")];
   App.selectedDeviceId = "dev-a";
   App.route = { name: "inbox" };
@@ -127,7 +128,7 @@ describe("the device the terminals follow", () => {
   });
 
   it("a route change to another device mints that device's session, once", async () => {
-    live("dev-b");
+    live("dev-b", { peerLink: { term: { id: "term-b" } } });
     const socket = socketOn("dev-a");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
@@ -140,9 +141,12 @@ describe("the device the terminals follow", () => {
   });
 
   it("the same device mints nothing", async () => {
-    live("dev-b");
-    const socket = socketOn("dev-b");
+    live("dev-b", { peerLink: { term: { id: "term-b" } } });
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+    const socket = socketOn("dev-b");
+    await settle();
+    mints.asked.length = 0;
+    socket.adopted.length = 0;
 
     followTerminalDevice();
     await settle();
@@ -242,8 +246,12 @@ describe("the device the terminals follow", () => {
   // ending up with none.
   it("leaves the shells where they are when the mint is refused", async () => {
     live("dev-b");
+    live("dev-a", { peerLink: { term: { id: "term-a" } } });
+    const socket = socketOn();
+    await settle();
+    socket.adopted.length = 0;
+    mints.asked.length = 0;
     mints.refuse = true;
-    const socket = socketOn("dev-a");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
     expect(followTerminalDevice()).toBe(true);
@@ -256,9 +264,11 @@ describe("the device the terminals follow", () => {
   // A link to a machine this client has never opened mounts a notice, not a
   // surface, and no shell types at a machine that is not there: the terminals
   // stay on the home device rather than being dropped onto an empty one.
-  it("leaves them on the home device when the route's machine was never opened here", () => {
-    live("dev-a");
-    const socket = socketOn("dev-a");
+  it("leaves them on the home device when the route's machine was never opened here", async () => {
+    live("dev-a", { peerLink: { term: { id: "term-a" } } });
+    const socket = socketOn();
+    await settle();
+    mints.asked.length = 0;
     App.route = { name: "branch", deviceId: "dev-c", projectId: "p1" }; // never opened here
 
     followTerminalDevice();
@@ -271,11 +281,17 @@ describe("the device the terminals follow", () => {
   // outage must not move its shells to another machine under a surface about
   // this one. They stay put, and the socket's own reconnect brings them back
   // here when the machine does.
-  it("keeps them on a machine that has gone offline since", () => {
+  it("keeps them on a machine that has gone offline since", async () => {
     live("dev-a");
-    live("dev-b", { offline: true });
-    const socket = socketOn("dev-b");
+    const devB = { deviceId: "dev-b", call: async () => ({}), peerLink: { term: { id: "term-b" } } };
+    contexts.set("dev-b", devB);
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+    const socket = socketOn("dev-b");
+    await settle();
+    devB.offline = true;
+    socket.carriers.length = 0;
+    socket.adopted.length = 0;
+    mints.asked.length = 0;
 
     followTerminalDevice();
 
@@ -287,10 +303,14 @@ describe("the device the terminals follow", () => {
   // the link is about, so the shells go there — but not yet. Dropping the socket
   // onto it re-attaches every open tab against a machine that cannot answer, and
   // the tabs come back empty; they stay where they are until it can.
-  it("does not move the socket onto a known device that is offline when the link arrives", () => {
-    live("dev-a");
+  it("does not move the socket onto a known device that is offline when the link arrives", async () => {
+    live("dev-a", { peerLink: { term: { id: "term-a" } } });
     live("dev-b", { offline: true });
     const socket = socketOn("dev-a");
+    await settle();
+    socket.carriers.length = 0;
+    socket.adopted.length = 0;
+    mints.asked.length = 0;
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
     expect(followTerminalDevice()).toBe(false);
@@ -308,6 +328,10 @@ describe("the device the terminals follow", () => {
     live("dev-a", { peerLink: { term: { id: "term-a" } } });
     live("dev-b", { peerLink: { term } });
     const socket = socketOn("dev-a");
+    await settle();
+    socket.carriers.length = 0;
+    socket.adopted.length = 0;
+    mints.asked.length = 0;
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
     expect(followTerminalDevice()).toBe(true);
@@ -342,8 +366,12 @@ describe("the device the terminals follow", () => {
   it("leaves the shells on their own machine's channel when the mint is refused", async () => {
     live("dev-a", { peerLink: { term: { id: "term-a" } } });
     live("dev-b", { peerLink: { term: { id: "term-b" } } });
+    const socket = socketOn();
+    await settle();
+    socket.adopted.length = 0;
+    socket.carriers.length = 0;
+    mints.asked.length = 0;
     mints.refuse = true;
-    const socket = socketOn("dev-a");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
     followTerminalDevice();
@@ -367,11 +395,15 @@ describe("the device the terminals follow", () => {
     expect(socket.carriers.at(-1)).toBe(term);
   });
 
-  it("takes the terminals off a peer channel the device they follow does not own", () => {
+  it("takes the terminals off a peer channel the device they follow does not own", async () => {
     live("dev-a", { peerLink: { term: { id: "term-a" } } });
-    live("dev-b");
+    const devB = { deviceId: "dev-b", call: async () => ({}), peerLink: { term: { id: "term-b" } } };
+    contexts.set("dev-b", devB);
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
     const socket = socketOn("dev-b");
+    await settle();
+    devB.peerLink = null;
+    socket.carriers.length = 0;
 
     followTerminalDevice();
 

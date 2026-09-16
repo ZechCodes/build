@@ -43,6 +43,7 @@ vi.mock("../src/terminal/manager.js", () => ({
   // app spine's business and not this suite's: they answer, and nothing moves.
   terminalDeviceId: () => null,
   followTerminalDevice: () => {},
+  resetTerminalManager: () => {},
   // Minting a terminal session is the connection layer's (spec rule 5); no
   // suite here opens one.
   provideTerminalSessions: () => {},

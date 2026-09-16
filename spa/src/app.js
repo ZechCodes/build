@@ -17,7 +17,7 @@ import { clearCacheScope } from "./core/cacheScope.js";
 import { resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
 import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "./connection.js";
-import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
+import { followTerminalDevice, resetTerminalManager, terminalDeviceId } from "./terminal/manager.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 // Which machines the rail lists (core/deviceFilter.js). Minted here, beside the
@@ -73,6 +73,7 @@ export function resetApplication() {
   App.viewingContext?.setEnabled?.(false);
   // Invalidate attempt authority before retiring contexts: a late greeting or
   // mint belongs to the old account and cannot land while teardown runs.
+  resetTerminalManager();
   forgetRendezvousSockets();
   resetDeviceContexts();
   // The terminals are on nobody now, so the next route that names a device is a

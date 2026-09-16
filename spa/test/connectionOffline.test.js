@@ -32,6 +32,7 @@ vi.mock("../src/api.js", () => ({
 }));
 vi.mock("../src/terminal/manager.js", () => ({
   followTerminalDevice: (...args) => terminals.followTerminalDevice(...args),
+  resetTerminalManager: () => {},
   terminalDeviceId: (...args) => terminals.terminalDeviceId(...args),
   provideTerminalSessions: (mint) => {
     mints.provided = mint;

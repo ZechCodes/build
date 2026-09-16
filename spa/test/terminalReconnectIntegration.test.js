@@ -36,8 +36,9 @@ vi.mock("../src/core/deviceContexts.js", async () => ({
   contextFor: (deviceId) => contexts.get(deviceId) || null,
 }));
 
-const { followTerminalDevice, provideTerminalSessions, subscribeTerminalStatus, terminalManager } =
+const { followTerminalDevice, provideTerminalSessions, resetTerminalManager, subscribeTerminalStatus, terminalManager } =
   await import("../src/terminal/manager.js");
+const { App } = await import("../src/app.js");
 
 function answeringCarrier(name, { answerImmediately = true } = {}) {
   const envelopeListeners = new Set();
@@ -76,12 +77,14 @@ const settle = async () => {
 };
 
 describe("terminal session handoff after a bridge restart", () => {
-  afterAll(() => terminalManager().close());
+  afterAll(() => resetTerminalManager());
 
   beforeEach(() => {
+    resetTerminalManager();
     contexts.clear();
     events.length = 0;
     sessions.length = 0;
+    App.route = { name: "branch", deviceId: "dev-a", projectId: "project-a" };
   });
 
   it("remints, proves the replacement session before releasing its lease, and stays live past five seconds", async () => {
@@ -229,5 +232,111 @@ describe("terminal session handoff after a bridge restart", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("remints the original device when a route returns while another device is confirming", async () => {
+    const slowB = answeringCarrier("slow-b", { answerImmediately: false });
+    const carrierA = answeringCarrier("carrier-a");
+    contexts.set("dev-a", { deviceId: "dev-a", call: async () => ({}), peerLink: { term: carrierA } });
+    contexts.set("dev-b", { deviceId: "dev-b", call: async () => ({}), peerLink: { term: slowB } });
+    provideTerminalSessions(async (deviceId) => {
+      const number = sessions.length + 1;
+      const lease = {
+        sessionId: `${deviceId}-${number}`,
+        sessionKeyB64: `${deviceId}-key-${number}`,
+        deviceId,
+        release: vi.fn(),
+      };
+      sessions.push(lease);
+      return lease;
+    });
+
+    terminalManager();
+    await settle();
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "project-b" };
+    followTerminalDevice();
+    await settle();
+    expect(events).toContain("slow-b:ping");
+
+    App.route = { name: "branch", deviceId: "dev-a", projectId: "project-a" };
+    followTerminalDevice();
+    await settle();
+
+    expect(sessions.map((session) => session.deviceId)).toEqual(["dev-a", "dev-b", "dev-a"]);
+    expect(events.filter((event) => event === "carrier-a:ping")).toHaveLength(2);
+  });
+
+  it("drops an old-account mint after reset and reconnects the same device id with a fresh socket", async () => {
+    let resolveOld;
+    const oldMint = new Promise((resolve) => { resolveOld = resolve; });
+    const oldLease = {
+      sessionId: "old-account",
+      sessionKeyB64: "old-key",
+      deviceId: "dev-a",
+      release: vi.fn(),
+    };
+    provideTerminalSessions(() => oldMint);
+    contexts.set("dev-a", {
+      deviceId: "dev-a",
+      call: async () => ({}),
+      peerLink: { term: answeringCarrier("old-account") },
+    });
+    terminalManager();
+    await settle();
+
+    resetTerminalManager();
+    const inheritedStatus = vi.fn();
+    const unsubscribe = subscribeTerminalStatus(inheritedStatus);
+    expect(inheritedStatus).not.toHaveBeenCalled();
+    unsubscribe();
+    const replacement = answeringCarrier("replacement-account");
+    contexts.set("dev-a", { deviceId: "dev-a", call: async () => ({}), peerLink: { term: replacement } });
+    provideTerminalSessions(async () => ({
+      sessionId: "new-account",
+      sessionKeyB64: "new-key",
+      deviceId: "dev-a",
+      release: vi.fn(),
+    }));
+    const freshSocket = terminalManager();
+    await settle();
+    resolveOld(oldLease);
+    await settle();
+
+    expect(freshSocket.deviceId).toBe("dev-a");
+    expect(events).toContain("replacement-account:ping");
+    expect(events).not.toContain("old-account:ping");
+    expect(oldLease.release).toHaveBeenCalledOnce();
+  });
+
+  it("does not resurrect a carrier when a connecting status synchronously moves to another device", async () => {
+    const carrierA = answeringCarrier("reentrant-a");
+    const carrierB = answeringCarrier("reentrant-b");
+    contexts.set("dev-a", { deviceId: "dev-a", call: async () => ({}), peerLink: { term: carrierA } });
+    contexts.set("dev-b", { deviceId: "dev-b", call: async () => ({}), peerLink: { term: carrierB } });
+    let resolveB;
+    const waitingB = new Promise((resolve) => { resolveB = resolve; });
+    provideTerminalSessions((deviceId) => deviceId === "dev-a"
+      ? Promise.resolve({ sessionId: "reentrant-a", sessionKeyB64: "key-a", deviceId, release: vi.fn() })
+      : waitingB);
+
+    const statuses = [];
+    let moved = false;
+    const unsubscribe = subscribeTerminalStatus((status) => {
+      statuses.push(status);
+      if (status !== "connecting" || moved) return;
+      moved = true;
+      App.route = { name: "branch", deviceId: "dev-b", projectId: "project-b" };
+      followTerminalDevice();
+    });
+    terminalManager();
+    await settle();
+
+    expect(events).not.toContain("reentrant-a:ping");
+    expect(statuses).not.toContain("connected");
+
+    resolveB({ sessionId: "reentrant-b", sessionKeyB64: "key-b", deviceId: "dev-b", release: vi.fn() });
+    await settle();
+    expect(events).toContain("reentrant-b:ping");
+    unsubscribe();
   });
 });

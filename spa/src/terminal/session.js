@@ -142,7 +142,7 @@ export class TerminalSocket {
    * handed over is passed in again, and re-taken under the new session's key,
    * which is what re-attaches every open terminal on it.
    */
-  adoptTerminalSession(session, carrier = null, { confirm = false } = {}) {
+  adoptTerminalSession(session, carrier = null, { confirm = false, isCurrent = () => true } = {}) {
     this._closed = false;
     // A session being replaced is not one being lost: the old session's calls
     // end with it, and nobody is told the shells are gone when they are moving.
@@ -154,6 +154,9 @@ export class TerminalSocket {
     // Not `_reportLost` when there is no wire: a machine whose channel has yet
     // to open is one the panes are waiting on, which is connecting.
     this._report("connecting");
+    // A status observer can synchronously move the terminals again. Do not let
+    // the superseded adoption install its old carrier after that newer move.
+    if (!isCurrent()) return undefined;
     return carrier ? this._switch.peer(carrier) : undefined;
   }
 

@@ -3,6 +3,7 @@ import { notifyError } from "../core/notify.js";
 import { confirmAction } from "../core/confirm.js";
 import { esc } from "../core/text.js";
 import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../core/isolation.js";
+import { settingsSheetHtml } from "./settingsSheet.js";
 
 const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
@@ -17,22 +18,25 @@ const sourcesHtml = (project) => !project.sources?.length ? "" : `<fieldset styl
  *  sheet has already resolved that, so nothing here asks which device it is. */
 export function openProjectSettings(projectId, { callRpc, onDeleted }) {
   const sheet = $("#sheet");
-  sheet.innerHTML = `<h3>Project settings</h3><div class="sub">Loading…</div>`;
+  sheet.innerHTML = settingsSheetHtml({ title: "Project settings", bodyHtml: '<div class="sub">Loading…</div>' });
   $("#scrim").classList.add("show");
 
   const close = () => $("#scrim").classList.remove("show");
 
   const paintMissing = (message) => {
-    sheet.innerHTML = `<h3>Project settings</h3>
-      <div class="sub">${esc(message)}</div>
-      <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`;
+    sheet.innerHTML = settingsSheetHtml({
+      title: "Project settings",
+      bodyHtml: `<div class="sub">${esc(message)}</div>
+        <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`,
+    });
     $("#pscancel").onclick = close;
   };
 
   const paint = (project) => {
-    sheet.innerHTML = `
-      <h3>Project settings</h3>
-      <div class="sub">Name, location and base branch come from the repository Build was pointed at.</div>
+    sheet.innerHTML = settingsSheetHtml({
+      title: "Project settings",
+      subtitleHtml: "Name, location and base branch come from the repository Build was pointed at.",
+      bodyHtml: `
       ${field("Name", "psname", project.name)}
       ${field("Repository path", "pspath", project.path)}
       ${field("Base branch", "psbranch", project.base_branch)}
@@ -47,7 +51,8 @@ export function openProjectSettings(projectId, { callRpc, onDeleted }) {
         <h4>Delete project</h4>
         <p class="sub">Delete this project and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
         <button class="btn danger" id="psdelete">Delete project…</button>
-      </section>`;
+      </section>`,
+    });
     mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), settings: project });
     $("#pscancel").onclick = close;
     $("#psdelete").onclick = () => deleteProject(project, { callRpc, onDeleted, close });

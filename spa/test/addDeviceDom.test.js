@@ -10,6 +10,13 @@ beforeEach(() => {
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
+it("keeps the pairing title outside the scrolling settings body", () => {
+  openAddDevice(vi.fn());
+  const frame = document.querySelector("#sheet > .settings-sheet-frame");
+  expect(frame.querySelector(":scope > .settings-sheet-header h3").textContent).toBe("Add a device");
+  expect(frame.querySelector(":scope > .settings-sheet-body #paircode")).not.toBeNull();
+});
+
 it("a disposed lookup cannot paint or close the next pairing sheet", async () => {
   let finish;
   lookupDevice.mockReturnValue(new Promise((resolve) => { finish = resolve; }));

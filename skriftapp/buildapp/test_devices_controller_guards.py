@@ -42,6 +42,7 @@ def test_browser_routes_use_shared_browser_and_desktop_auth_guard():
         "/api/devices/lookup",
         "/api/devices/approve",
         "/api/devices/{device_id:uuid}/revoke",
+        "/api/devices/{device_id:uuid}/rename",
         "/api/gateway-token",
     }
     for handler in _route_handlers():

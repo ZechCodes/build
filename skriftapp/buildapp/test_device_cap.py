@@ -105,3 +105,33 @@ def test_revoking_a_device_frees_its_slot(client):
 def test_another_users_devices_do_not_count(client):
     store(client, *(_approved(uuid4()) for _ in range(MAX_DEVICES_PER_USER)), _pending("ABCD-EFGH"))
     assert client.post("/api/devices/approve", json={"code": "ABCD-EFGH"}).is_success
+
+
+def test_an_owned_device_can_be_renamed_and_the_name_is_persisted(client):
+    device = _approved(USER)
+    store(client, device)
+
+    response = client.post(
+        f"/api/devices/{device.id}/rename", json={"name": "  Workshop  "}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"device_id": str(device.id), "name": "Workshop"}
+    assert client.get("/api/devices").json()["devices"][0]["name"] == "Workshop"
+
+
+def test_renaming_refuses_another_users_device_and_an_invalid_name(client):
+    owned = _approved(USER)
+    another_users = _approved(uuid4())
+    store(client, owned, another_users)
+
+    assert client.post(
+        f"/api/devices/{another_users.id}/rename", json={"name": "Mine"}
+    ).status_code == 404
+    assert client.post(
+        f"/api/devices/{owned.id}/rename", json={"name": "   "}
+    ).status_code == 400
+    assert client.post(
+        f"/api/devices/{owned.id}/rename", json={"name": "x" * 256}
+    ).status_code == 400
+    assert client.get("/api/devices").json()["devices"][0]["name"] == "owned"

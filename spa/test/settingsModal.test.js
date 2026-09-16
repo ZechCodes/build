@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-const { App, go, markRoute, local, device, listeners } = vi.hoisted(() => ({
+const { App, go, markRoute, local, device, archive, paintDevicePicker, listeners } = vi.hoisted(() => ({
   App: { route: { name: "account", page: "settings" }, devices: [], viewDispose: null },
-  go: vi.fn(), markRoute: vi.fn(), local: vi.fn(), device: vi.fn(), listeners: new Set(),
+  go: vi.fn(), markRoute: vi.fn(), local: vi.fn(), device: vi.fn(), archive: vi.fn(), paintDevicePicker: vi.fn(), listeners: new Set(),
 }));
 vi.mock("../src/app.js", () => ({ App, go, markRoute }));
+vi.mock("../src/devices.js", () => ({ paintDevicePicker }));
 vi.mock("../src/views/settings.js", () => ({ renderSettings: local }));
 vi.mock("../src/views/deviceSettings.js", () => ({ renderDeviceSettings: device }));
+vi.mock("../src/views/archive.js", () => ({ renderArchive: archive }));
 vi.mock("../src/core/deviceContexts.js", () => ({ onDeviceStateChanged: (listener) => {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -20,6 +22,7 @@ beforeEach(() => {
   App.route = { name: "account", page: "settings" };
   local.mockImplementation(async ({ root }) => { root.innerHTML = '<button>Preference</button>'; });
   device.mockImplementation(async ({ root, deviceId }) => { root.textContent = deviceId; });
+  archive.mockImplementation(({ root }) => { root.innerHTML = '<h1>Archive</h1>'; });
 });
 afterEach(() => { App.viewDispose?.(); App.viewDispose = null; });
 describe("settings modal", () => {
@@ -87,8 +90,48 @@ describe("settings modal", () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
     expect(document.activeElement.id).toBe('first');
   });
-  it("retains archive as a page", () => {
-    expect(isSettingsRoute({ name: "account", page: "archive" })).toBe(false);
+  it("keeps archive inside the modal and disposes it when switching sections", async () => {
+    const dispose = vi.fn();
+    archive.mockImplementation(({ root, registerDispose }) => {
+      root.innerHTML = '<h1>Archive</h1>';
+      registerDispose(dispose);
+    });
+    App.route = { name: "account", page: "archive" };
+    renderSettingsModal();
+    await flush();
+
+    expect(document.querySelector('[role="dialog"] h1').textContent).toBe("Archive");
+    expect(document.querySelector('.settings-archive').getAttribute('aria-current')).toBe('page');
+    expect(archive).toHaveBeenCalledOnce();
+    document.querySelector('[data-local]').click();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(markRoute).toHaveBeenLastCalledWith({ name: "account", page: "settings" });
+  });
+
+  it("keeps focus on Archive while marking it selected", async () => {
+    renderSettingsModal();
+    await flush();
+    const link = document.querySelector('.settings-archive');
+    link.focus();
+    link.click();
+    await flush();
+
+    expect(document.activeElement).toBe(document.querySelector('.settings-archive'));
+    expect(document.activeElement.getAttribute('aria-current')).toBe('page');
+  });
+
+  it("returns from a direct archive route to the surface beneath the modal", async () => {
+    const returnRoute = { name: "workspace", deviceId: "a", projectId: "p1", workspaceId: "w1" };
+    App.route = { name: "account", page: "archive" };
+    renderSettingsModal(returnRoute);
+    await flush();
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(go).toHaveBeenCalledWith(returnRoute);
+  });
+
+  it("treats direct archive links as settings routes", () => {
+    expect(isSettingsRoute({ name: "account", page: "archive" })).toBe(true);
     expect(isSettingsRoute({ name: "account", page: "devices" })).toBe(true);
     expect(isSettingsRoute({ name: "device", id: "a" })).toBe(true);
   });

@@ -10,6 +10,8 @@ it("uses the supplied device connection and initial folder", async () => {
   const callRpc = vi.fn().mockResolvedValue(listing("/device-projects"));
   const onChoose = vi.fn();
   await openBrowser({ title: "Projects", callRpc, startPath: "/device-projects", onChoose });
+  expect(document.querySelector("#sheet > .settings-sheet-frame > .settings-sheet-header h3").textContent).toBe("Projects");
+  expect(document.querySelector(".settings-sheet-body .browse-list")).not.toBeNull();
   expect(callRpc).toHaveBeenCalledWith("fs.list", { path: "/device-projects" });
   document.querySelector("#choosecur").click();
   expect(onChoose).toHaveBeenCalledWith("/device-projects");
@@ -23,6 +25,7 @@ it("can render inside a host without replacing its surrounding controls", async 
   expect(document.querySelector("#outside")).not.toBeNull();
   expect(host.querySelector("#choosecur")).not.toBeNull();
   expect(host.querySelector("#bcancel")).toBeNull();
+  expect(host.querySelector(".settings-sheet-frame")).toBeNull();
 });
 it("creates a directory in the current folder and opens it", async () => {
   const callRpc = vi.fn()

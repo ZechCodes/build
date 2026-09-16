@@ -28,8 +28,8 @@ const readDeviceArchive = (context) =>
 
 const POLL_MS = 15000;
 
-export function renderArchive() {
-  const root = $("#root");
+export function renderArchive(options = {}) {
+  const root = options.root || $("#root");
   root.innerHTML = `
     <div class="board-head"><div><h1>Archive</h1><p>Work you marked done, across every project.</p></div></div>
     <div id="archive-list"><div class="empty">Loading the archive…</div></div>`;
@@ -39,9 +39,10 @@ export function renderArchive() {
   let openKey = null;
   let painted = false;
   let paintedFrom = null; // what the page currently stands on
+  const archiveList = () => root.querySelector("#archive-list");
 
   const draw = () => {
-    const host = $("#archive-list");
+    const host = archiveList();
     if (!host) return;
     // The archive is history, and the poll reads the same history over and over.
     // A rebuild would drop a selection someone is copying a path out of and the
@@ -75,7 +76,7 @@ export function renderArchive() {
   // away, or an account with no machine on it right now. Whatever is already on
   // screen stays; a first read that lands nothing says so.
   const sayUnavailable = () => {
-    const host = $("#archive-list");
+    const host = archiveList();
     if (!disposed && !painted && host) {
       host.innerHTML = '<div class="empty">The archive is unavailable right now. It will retry.</div>';
     }
@@ -83,7 +84,7 @@ export function renderArchive() {
 
   const load = async () => {
     const answers = await Promise.all(liveContexts().map(readDeviceArchive));
-    if (disposed) return;
+    if (disposed || options.isCurrent?.() === false) return;
     const landed = answers.filter((answer) => answer !== null);
     if (!landed.length) {
       sayUnavailable();
@@ -96,16 +97,18 @@ export function renderArchive() {
   };
 
   let watcher = null;
-  App.viewDispose = () => {
+  const dispose = () => {
     disposed = true;
     if (watcher) watcher.dispose();
     watcher = null;
   };
+  if (options.registerDispose) options.registerDispose(dispose);
+  else App.viewDispose = dispose;
   // The read is not awaited: the page (and the account nav above it) must be on
   // screen even when the device is unreachable and the read never lands.
   load();
   // Archiving is a lifecycle move, which is feed state: the board's own event
   // is what says this list changed.
   watcher = watchChanges({ refresh: load, intervalMs: POLL_MS });
-  App.poll = watcher;
+  if (!options.registerDispose) App.poll = watcher;
 }

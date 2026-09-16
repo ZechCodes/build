@@ -259,12 +259,13 @@ describe("render dispatch", () => {
     expect(root().querySelector('[data-stage="s1"]').textContent).toContain("First half");
   });
 
-  it("keeps the account pages on the reading column", async () => {
+  it("opens a direct archive route in the settings modal", async () => {
     App.route = { name: "account", page: "archive" };
     render();
     await flush();
     expect(root().className).toBe("");
-    expect(root().textContent).toContain("Archive");
+    expect(document.querySelector('[role="dialog"]').textContent).toContain("Archive");
+    expect(document.querySelector('.settings-archive').getAttribute('aria-current')).toBe('page');
   });
 
   it("rewrites a legacy URL to the work item the feed says it is", async () => {

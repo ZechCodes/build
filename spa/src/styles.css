@@ -213,8 +213,10 @@ main { max-width:min(1180px, 100%); margin:0 auto;
    A record opens under the row it belongs to, so it reads as that row's inside
    rather than as the next thing on the page. */
 .account-nav { margin-bottom:16px; }
-.archive-row { cursor:pointer; }
-.archive-record { max-width:none; margin:-4px 0 12px; }
+.card.archive-row { cursor:pointer; background:transparent; border:0; border-bottom:1px solid var(--line); border-radius:0; padding:16px 8px; margin:0; box-shadow:none; }
+.archive-row:hover, .archive-row[aria-expanded="true"] { background:var(--line2); border-color:var(--line); box-shadow:none; }
+.archive-row .chip { background:none; border-radius:0; padding-right:0; }
+.archive-record { max-width:none; margin:0; padding:12px 8px 20px; background:transparent; border:0; border-bottom:1px solid var(--line); border-radius:0; box-shadow:none; }
 /* ---- full-height worktree surfaces (task / external worktree / main) ----
    The tab bar is the top of the view; #tabbody is the one scroll container
    (so the sticky actionbar pins to its bottom). `bare` tabs (terminals)
@@ -1622,16 +1624,29 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .settings-open > #scrim { z-index:140; }
 .settings-scrim { position:fixed; inset:0; z-index:100; background:var(--scrim); display:grid; place-items:center; padding:24px; }
 .settings-modal { width:min(1080px, 100%); height:min(820px, 90vh); background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:14px; box-shadow:0 20px 70px var(--shadow); display:grid; grid-template-columns:220px minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); overflow:hidden; }
-.settings-modal > header { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--line); }
-.settings-modal > header h2 { margin:0; font-size:18px; }
-.settings-sidebar { padding:16px 12px; overflow:auto; border-right:1px solid var(--line); }
-.settings-sidebar .btn { display:flex; flex-direction:column; align-items:flex-start; width:100%; text-align:left; margin-bottom:6px; white-space:normal; overflow-wrap:anywhere; }
-.settings-sidebar .btn[aria-current] { background:var(--accent); color:var(--bg); }
+.settings-modal > header { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; min-height:48px; padding:8px 16px; border-bottom:1px solid var(--line); }
+.settings-modal > header h2 { margin:0; font-size:15px; font-weight:600; }
+.settings-modal [data-settings-close] { display:grid; place-items:center; width:30px; height:30px; padding:0; border:0; border-radius:4px; background:transparent; color:var(--ink2); font-size:18px; font-weight:400; }
+.settings-sidebar { padding:12px 10px; overflow:auto; border-right:1px solid var(--line); }
+.settings-sidebar .btn { border:0; border-radius:0; background:transparent; box-shadow:none; color:var(--ink2); padding:8px 10px; font-size:13px; font-weight:500; display:flex; flex-direction:column; align-items:flex-start; width:100%; text-align:left; margin-bottom:6px; white-space:normal; overflow-wrap:anywhere; }
+.settings-sidebar .btn:hover { background:var(--line2); color:var(--ink); }
+.settings-sidebar .btn[aria-current] { background:var(--accent-soft); color:var(--accent); }
 .settings-sidebar h3 { margin:22px 8px 10px; font-size:12px; color:var(--ink2); }
 .settings-sidebar small { font-size:11px; opacity:.75; }
-.settings-content { padding:24px; overflow:auto; min-width:0; }
+.settings-content { padding:20px 24px; overflow:auto; min-width:0; }
 .settings-content .board-head { margin-top:0; }
+.settings-content h1 { font-size:20px; line-height:1.35; overflow-wrap:anywhere; }
+.settings-content .board-head p { font-size:13px; }
+.settings-content .panel { max-width:none; background:transparent; border:0; border-top:1px solid var(--line); border-radius:0; box-shadow:none; padding:22px 0; margin:0; }
+.settings-content .archive-record { padding:12px 8px 20px; border-top:0; border-bottom:1px solid var(--line); }
+:is(.settings-content, .device-settings) .projrow { flex-wrap:wrap; gap:8px 12px; }
+:is(.settings-content, .device-settings) .projrow > * { min-width:0; max-width:100%; overflow-wrap:anywhere; }
+:is(.settings-content, .device-settings) .projrow .pname { flex-basis:100%; }
+:is(.settings-content, .device-settings) .projrow .ppath { flex:1 1 240px; }
+:is(.settings-content, .device-settings) .projrow .setremote { margin-left:0; }
 .settings-content .projfolder { flex-wrap:wrap; }
+.device-settings #device-name { flex:1 1 180px; min-width:0; width:auto; }
+.device-settings #device-name-form .projfolder { max-width:480px; }
 .settings-content code { white-space:normal; overflow-wrap:anywhere; }
 .settings-sidebar .settings-archive { margin-top:22px; }
 @media (max-width:600px) {
@@ -1641,9 +1656,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   .settings-sidebar { display:flex; gap:8px; padding:10px 14px; border-right:0; border-bottom:1px solid var(--line); overflow-x:auto; }
   .settings-sidebar h3 { display:none; }
   .settings-sidebar .btn { flex:0 0 130px; margin:0; font-size:12px; justify-content:center; }
-  .settings-content .panel { padding:14px; }
+  .settings-content .panel { padding:18px 0; }
   .settings-content .row { flex-wrap:wrap; }
   .settings-content .row .k { flex-basis:100%; width:auto; }
   .settings-content .row .v { min-width:0; max-width:100%; }
-  .settings-content .segmented, .settings-content .projrow { flex-wrap:wrap; }
+  .settings-content .segmented, :is(.settings-content, .device-settings) .projrow { flex-wrap:wrap; }
 }

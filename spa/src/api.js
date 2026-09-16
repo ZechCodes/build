@@ -68,6 +68,16 @@ export async function revokeDevice(deviceId) {
   if (!response.ok) throw new Error("revoke failed");
 }
 
+export async function renameDevice(deviceId, name) {
+  const response = await fetch(`/api/devices/${deviceId}/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) throw new Error(await refusalDetail(response, "name could not be saved"));
+  return response.json();
+}
+
 export async function fetchIceServers() {
   const response = await fetch("/api/rtc/ice-servers", { method: "POST" });
   if (!response.ok) throw new Error("could not mint ICE servers");

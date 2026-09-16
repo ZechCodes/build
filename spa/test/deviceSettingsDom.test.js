@@ -3,7 +3,7 @@
 // where they are kept, and how agents run there — read and written over the
 // connection this page opens to that machine, and nothing else.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelCatalog, contextFor, refreshFeed } =
+const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelCatalog, contextFor, refreshFeed, renameDevice, revokeDevice, retireDevice, confirmAction } =
   vi.hoisted(() => ({
     App: { devices: [], viewDispose: null },
     openSession: vi.fn(),
@@ -13,11 +13,15 @@ const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelC
     refreshModelCatalog: vi.fn(async () => ({})),
     contextFor: vi.fn(),
     refreshFeed: vi.fn(),
+    renameDevice: vi.fn(),
+    revokeDevice: vi.fn(),
+    retireDevice: vi.fn(),
+    confirmAction: vi.fn(),
   }));
 vi.mock("../src/app.js", () => ({ App, render: () => {} }));
 vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
-  retireDevice: () => {},
+  retireDevice: (...args) => retireDevice(...args),
   openDeviceSettingsSession: openSession,
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   syncHome: () => {},
@@ -32,6 +36,8 @@ vi.mock("../src/connection.js", () => ({
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo }));
 vi.mock("../src/sheets/setRemote.js", () => ({ openSetRemote }));
+vi.mock("../src/api.js", () => ({ renameDevice, revokeDevice }));
+vi.mock("../src/core/confirm.js", () => ({ confirmAction }));
 // The page reads this machine's own context for one thing only: whether its
 // bridge speaks an API major this tab can read. The rest of the module is named
 // because core/deviceNotice.js — which words that answer — imports it.
@@ -90,6 +96,7 @@ beforeEach(() => {
   };
   openSession.mockResolvedValue(session);
   refreshModelCatalog.mockResolvedValue({});
+  confirmAction.mockResolvedValue(false);
   contextFor.mockImplementation((deviceId) => (deviceId === "other" ? { refreshModelCatalog } : null));
 });
 
@@ -215,6 +222,140 @@ describe("the machine's own panels", () => {
   });
 });
 describe("device settings", () => {
+  it("renames the account's device and refreshes the modal sidebar", async () => {
+    renameDevice.mockResolvedValue({ device_id: "other", name: "Workshop" });
+    const onDevicesChanged = vi.fn();
+    await renderDeviceSettings({ onDevicesChanged });
+
+    const name = document.querySelector("#device-name");
+    name.value = "  Workshop  ";
+    document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+
+    expect(renameDevice).toHaveBeenCalledWith("other", "Workshop");
+    expect(App.devices[0].name).toBe("Workshop");
+    expect(document.querySelector("h1").textContent).toBe("Workshop settings");
+    expect(document.querySelector("#device-name-status").textContent).toBe("Saved.");
+    expect(onDevicesChanged).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the confirmed device name when a rename is refused", async () => {
+    renameDevice.mockRejectedValue(new Error("Name could not be saved"));
+    await renderDeviceSettings();
+    const name = document.querySelector("#device-name");
+    name.value = "Workshop";
+    document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+
+    expect(App.devices[0].name).toBe("Other machine");
+    expect(name.value).toBe("Other machine");
+    expect(document.querySelector("#device-name-status").textContent).toBe("Name could not be saved");
+  });
+
+  it("updates the current device record when a presence refresh lands during rename", async () => {
+    let finishRename;
+    renameDevice.mockReturnValue(new Promise((resolve) => { finishRename = resolve; }));
+    await renderDeviceSettings();
+    document.querySelector("#device-name").value = "Workshop";
+    document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    App.devices = [{ id: "other", name: "Other machine", status: "online" }];
+    finishRename({ device_id: "other", name: "Workshop" });
+    await flush();
+
+    expect(App.devices[0].name).toBe("Workshop");
+  });
+
+  it("finishes a rename in the shared device store after its settings panel closes", async () => {
+    let finishRename;
+    renameDevice.mockReturnValue(new Promise((resolve) => { finishRename = resolve; }));
+    const onDevicesChanged = vi.fn();
+    await renderDeviceSettings({ onDevicesChanged });
+    document.querySelector("#device-name").value = "Workshop";
+    document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    App.viewDispose();
+    finishRename({ device_id: "other", name: "Workshop" });
+    await flush();
+
+    expect(App.devices[0].name).toBe("Workshop");
+    expect(onDevicesChanged).toHaveBeenCalled();
+  });
+
+  it("leaves the device paired when deactivation is cancelled", async () => {
+    await renderDeviceSettings();
+    document.querySelector("#device-deactivate").click();
+    await flush();
+
+    expect(confirmAction).toHaveBeenCalledWith(expect.objectContaining({ danger: true }));
+    expect(revokeDevice).not.toHaveBeenCalled();
+    expect(document.querySelector("#device-deactivate").disabled).toBe(false);
+  });
+
+  it("keeps device settings open and retryable when deactivation fails", async () => {
+    confirmAction.mockResolvedValue(true);
+    revokeDevice.mockRejectedValue(new Error("Could not deactivate device"));
+    await renderDeviceSettings();
+    document.querySelector("#device-deactivate").click();
+    await flush();
+    await flush();
+
+    expect(App.devices).toHaveLength(1);
+    expect(retireDevice).not.toHaveBeenCalled();
+    expect(document.querySelector("#device-deactivate-status").textContent).toBe("Could not deactivate device");
+    expect(document.querySelector("#device-deactivate").disabled).toBe(false);
+  });
+
+  it.each(["online", "offline"])("deactivates an %s device and retires all of its local resources", async (status) => {
+    App.devices[0].status = status;
+    confirmAction.mockResolvedValue(true);
+    revokeDevice.mockResolvedValue();
+    const onDevicesChanged = vi.fn();
+    const onDeviceDeactivated = vi.fn();
+    await renderDeviceSettings({ onDevicesChanged, onDeviceDeactivated });
+    document.querySelector("#device-deactivate").click();
+    await flush();
+    await flush();
+
+    expect(revokeDevice).toHaveBeenCalledWith("other");
+    expect(retireDevice).toHaveBeenCalledWith("other");
+    expect(App.devices).toEqual([]);
+    expect(onDevicesChanged).toHaveBeenCalled();
+    expect(onDeviceDeactivated).toHaveBeenCalledWith("other");
+  });
+
+  it("finishes local cleanup when the settings panel closes during revocation", async () => {
+    let finishRevoke;
+    confirmAction.mockResolvedValue(true);
+    revokeDevice.mockReturnValue(new Promise((resolve) => { finishRevoke = resolve; }));
+    const onDeviceDeactivated = vi.fn();
+    await renderDeviceSettings({ onDeviceDeactivated });
+    document.querySelector("#device-deactivate").click();
+    await flush();
+    App.viewDispose();
+    finishRevoke();
+    await flush();
+
+    expect(App.devices).toEqual([]);
+    expect(retireDevice).toHaveBeenCalledWith("other");
+    expect(onDeviceDeactivated).not.toHaveBeenCalled();
+  });
+
+  it("closes an initial settings connection that lands after deactivation", async () => {
+    let finishOpen;
+    openSession.mockReturnValue(new Promise((resolve) => { finishOpen = resolve; }));
+    confirmAction.mockResolvedValue(true);
+    revokeDevice.mockResolvedValue();
+    const rendering = renderDeviceSettings();
+    document.querySelector("#device-deactivate").click();
+    await flush();
+    await flush();
+    finishOpen(session);
+    await rendering;
+
+    expect(App.devices).toEqual([]);
+    expect(session.close).toHaveBeenCalled();
+    expect(session.call).not.toHaveBeenCalled();
+  });
+
   it("shows bridge-owned preferences on the named device and saves isolation through its pinned session", async () => {
     await renderDeviceSettings();
 

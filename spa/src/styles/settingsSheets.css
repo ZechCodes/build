@@ -1,0 +1,35 @@
+.sheet:has(> .settings-sheet-frame) {
+  display:flex;
+  flex-direction:column;
+  padding:0;
+  overflow:hidden;
+}
+
+.settings-sheet-frame {
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  max-height:82dvh;
+}
+
+.settings-sheet-header {
+  flex:none;
+  min-height:48px;
+  padding:8px 16px;
+  border-bottom:1px solid var(--line);
+  display:flex;
+  align-items:center;
+}
+
+.sheet .settings-sheet-header h3 {
+  margin:0;
+  font-size:15px;
+  font-weight:600;
+}
+
+.settings-sheet-body {
+  min-height:0;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  padding:16px;
+}

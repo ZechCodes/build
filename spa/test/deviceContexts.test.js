@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app.js";
 import {
   adoptBridgeSelection,
+  adoptDeviceConnection,
   adoptDeviceSession,
   canAnswer,
   contextFor,
@@ -106,6 +107,25 @@ describe("the device context registry", () => {
     expect(contextFor("dev-b")).toBe(staying);
     expect(staying.cacheScope.active()).toBe(true);
     expect(staying.session.close).not.toHaveBeenCalled();
+  });
+
+  it("projects established fields read-only and retires both resources once", () => {
+    const session = fakeSession("dev-a");
+    const peerLink = { close: vi.fn() };
+    const { context } = adoptDeviceConnection(session, peerLink);
+
+    expect(() => { context.session = null; }).toThrow(TypeError);
+    expect(() => { context.peerLink = null; }).toThrow(TypeError);
+    expect(() => { context.offline = true; }).toThrow(TypeError);
+
+    retireDeviceContext("dev-a");
+    retireDeviceContext("dev-a");
+
+    expect(session.close).toHaveBeenCalledTimes(1);
+    expect(peerLink.close).toHaveBeenCalledTimes(1);
+    expect(context.session).toBe(null);
+    expect(context.peerLink).toBe(null);
+    expect(context.offline).toBe(true);
   });
 
   // One predicate, not two: "the contexts that can answer" and "can this

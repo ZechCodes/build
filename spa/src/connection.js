@@ -27,20 +27,32 @@ import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, rememberSelectedDevice } from "./app.js";
 import {
   adoptBridgeSelection,
-  adoptDeviceSession,
+  adoptDeviceConnection,
+  blockCurrentDevice,
+  blockDeviceConnection,
   canAnswer,
+  clearDeviceSecurityStops,
   closeQuietly,
   contextFor,
+  deviceContextEra,
+  deviceContextIdentity,
+  deviceSecurityStopText,
+  existingDeviceLifecycle,
+  greetingToken,
   homeContext,
   knownContexts,
   knownDeviceContext,
   liveContexts,
+  loseDeviceConnection,
+  markDevicePresenceAway,
   onDeviceStateChanged,
+  refuseDeviceConnection,
   releaseGreeting,
+  retryDeviceConnection,
+  resetDeviceContexts,
   retireDeviceContext,
-  setContextOffline,
 } from "./core/deviceContexts.js";
-import { blockedMark, deviceAwayMark, deviceAwayText } from "./core/deviceAway.js";
+import { deviceAwayText } from "./core/deviceAway.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { pinnedDeviceTransportKey } from "./devices.js";
 import { followTerminalDevice, provideTerminalSessions, terminalDeviceId } from "./terminal/manager.js";
@@ -84,6 +96,7 @@ function closeRendezvous(deviceId) {
  *  account's, and none may land or remain open after the account has gone. */
 export function forgetRendezvousSockets() {
   connectionAttempts.clear();
+  resetDeviceContexts();
   rendezvousLifecycle.clear();
 }
 
@@ -110,7 +123,7 @@ const reasonOf = (error) => error?.blockedReason || "failed";
  * found — except a key that is not the one this account pinned, which is not an
  * outage at all: the machine answering is not the machine that was paired.
  */
-async function mintAppSession(deviceId, rendezvous, attempt) {
+async function mintAppSession(deviceId, rendezvous, authority) {
   try {
     return await openSession({
       rendezvous,
@@ -120,13 +133,13 @@ async function mintAppSession(deviceId, rendezvous, attempt) {
       isPaused: () => contextFor(deviceId)?.offline === true,
       // The only carrier this session ever had has gone (rule 3's `lost`).
       onLost: () => {
-        if (attempt.isCurrent()) goOffline(deviceId);
+        if (authority.current()) authority.lose();
       },
       // The bridge saying something moved. A frame nobody asked for reaches the
       // surfaces showing that device's state — except the signaling pushes,
       // which belong to the upgrade negotiating them.
       onPush: (payload) => {
-        if (attempt.isCurrent() && !isSignaling(payload.type)) dispatchChangeEvent(payload, deviceId);
+        if (authority.current() && !isSignaling(payload.type)) dispatchChangeEvent(payload, deviceId);
       },
     });
   } catch (error) {
@@ -142,7 +155,7 @@ async function mintAppSession(deviceId, rendezvous, attempt) {
  * the channels opening let it go, and a connection that failed asks for it back
  * before it offers the restart.
  */
-function openDirectLink(deviceId, session, sessionLease, attempt) {
+function openDirectLink(deviceId, session, sessionLease, authority) {
   let restartLease = null;
   return openPeerLink({
     signal: (method, params) => failingAs("refused", session.call(method, params)),
@@ -154,7 +167,7 @@ function openDirectLink(deviceId, session, sessionLease, attempt) {
       restartLease = null;
     },
     onFailed: async () => {
-      if (!attempt.isCurrent()) throw new Error(`stale rendezvous restart for ${deviceId}`);
+      if (!authority.current()) throw new Error(`stale rendezvous restart for ${deviceId}`);
       const lease = sessionLease.reacquire();
       if (!lease) throw new Error(`stale rendezvous restart for ${deviceId}`);
       restartLease = lease;
@@ -189,18 +202,36 @@ async function connectOverChannels(deviceId, attempt) {
   const sessionLease = rendezvousLifecycle.forDevice(deviceId).acquire();
   let session;
   let link;
+  let lifetime = null;
+  const contextEra = deviceContextEra();
+  const contextIdentity = deviceContextIdentity(deviceId);
+  const authority = {
+    current: () => deviceContextEra() === contextEra
+      && deviceContextIdentity(deviceId) === contextIdentity
+      && (lifetime?.current() ?? attempt.isCurrent()),
+    lose: () => lifetime && loseEstablishedConnection(deviceId, lifetime),
+  };
   try {
-    session = await mintAppSession(deviceId, sessionLease.rendezvous, attempt);
+    session = await mintAppSession(deviceId, sessionLease.rendezvous, authority);
+    if (!authority.current()) {
+      closeQuietly(session);
+      throw new Error(`connection attempt for ${deviceId} was cancelled`);
+    }
     if (!attempt.own(session, closeQuietly)) throw new Error(`connection attempt for ${deviceId} was cancelled`);
-    link = await openDirectLink(deviceId, session, sessionLease, attempt);
+    link = await openDirectLink(deviceId, session, sessionLease, authority);
     if (!attempt.own(link, (owned) => owned.close())) {
       throw new Error(`connection attempt for ${deviceId} was cancelled`);
     }
-    const context = await landSession(session, link, sessionLease.release, attempt);
+    if (!authority.current()) throw new Error(`connection attempt for ${deviceId} was cancelled`);
+    const landed = await landSession(session, link, sessionLease.release, attempt, authority, (adopted) => {
+      lifetime = adopted;
+      attempt.release(session);
+      attempt.release(link);
+      attempt.own(adopted, () => loseEstablishedConnection(deviceId, adopted));
+    });
     if (!attempt.isCurrent()) throw new Error(`connection attempt for ${deviceId} was cancelled`);
-    attempt.release(session);
-    attempt.release(link);
-    return context;
+    attempt.release(lifetime);
+    return landed.context;
   } finally {
     sessionLease.release();
   }
@@ -217,16 +248,20 @@ async function connectOverChannels(deviceId, attempt) {
  */
 export function connectDevice(deviceId) {
   handTerminalsTheirMint();
+  const identity = deviceContextIdentity(deviceId);
   return connectionAttempts.forDevice(deviceId).connect(
     (attempt) => connectOnce(deviceId, attempt),
-    { onFailure: (error) => connectionFailed(deviceId, error) },
+    { onFailure: (error) => {
+      if (deviceContextIdentity(deviceId) === identity) connectionFailed(deviceId, error);
+    } },
   );
 }
 
 async function connectOnce(deviceId, attempt) {
   // Barred for good: offering the same pinned key to the same impostor again
   // would neither fix that nor tell anyone about it.
-  if (securityStops.has(deviceId)) throw new Error(securityStops.get(deviceId));
+  const securityStop = existingDeviceLifecycle(deviceId)?.snapshot().securityStop;
+  if (securityStop) throw new Error(securityStop);
   return connectOverChannels(deviceId, attempt);
 }
 
@@ -234,32 +269,11 @@ async function connectOnce(deviceId, attempt) {
 function connectionFailed(deviceId, error) {
   // A retry refused by the existing security stop did not try a connection.
   // Keep the original refusal rather than relabeling it as an ordinary outage.
-  if (securityStops.has(deviceId)) return;
-  barredBySecurity(deviceId, error);
-  blockDevice(deviceId, reasonOf(error));
-}
-
-/** Put this device's streams on the connection that just opened. The two
- *  channels are one connection: whichever goes first takes the other, and the
- *  session hears that as its carrier going, which is rule 3's `lost`. */
-function holdPeerLink(context, link) {
-  context.peerLink = link;
-  for (const carrier of [link.app, link.term]) {
-    carrier.onClose(() => {
-      if (context.peerLink === link) dropPeerLink(context);
-    });
-  }
-}
-
-/** Idempotent, and the single point where both streams are handed back at once:
- *  nothing may go on riding a peer connection that is going away. */
-function dropPeerLink(context) {
-  const link = context?.peerLink;
-  if (!link) return;
-  context.peerLink = null;
-  context.session?.peer(null);
-  followTerminalsIfTheirs(context);
-  link.close();
+  if (existingDeviceLifecycle(deviceId)?.snapshot().securityStop) return;
+  closeRendezvous(deviceId);
+  if (error?.securityCritical) refuseDeviceConnection(deviceId, error.message);
+  else blockCurrentDevice(deviceId, reasonOf(error));
+  syncHome(contextFor(deviceId));
 }
 
 /** One device's peer link opened or closed. The terminals move only when they
@@ -267,6 +281,15 @@ function dropPeerLink(context) {
  *  wrong machine, and nothing about the wire theirs rides has changed. */
 function followTerminalsIfTheirs(context, options) {
   if (context.deviceId === terminalDeviceId()) followTerminalDevice(options);
+}
+
+function loseEstablishedConnection(deviceId, lifetime) {
+  if (!lifetime.current()) return false;
+  if (!connectionAttempts.isConnecting(deviceId)) closeRendezvous(deviceId);
+  const { context, changed } = loseDeviceConnection(deviceId, lifetime);
+  if (!changed) return false;
+  syncHome(context);
+  return true;
 }
 
 /**
@@ -315,7 +338,11 @@ function handTerminalsTheirMint() {
  * rather than held for a channel that is not coming.
  */
 function blockDevice(deviceId, reason) {
-  standDown(deviceId, blockedMark(reason));
+  const attempts = connectionAttempts.forDevice(deviceId);
+  if (!attempts.connecting) attempts.cancel();
+  closeRendezvous(deviceId);
+  blockCurrentDevice(deviceId, reason);
+  syncHome(contextFor(deviceId));
 }
 
 /**
@@ -348,25 +375,13 @@ export function deviceWentAway(deviceId) {
   // window out of date. The dial says how it went, and the next poll writes
   // what the account says over it.
   if (connectionAttempts.isConnecting(deviceId)) return;
-  standDown(deviceId, {});
-}
-
-/** One machine stops answering, however it stopped. The mark says why, and the
- *  same mark is what everything waiting on that machine is refused with. */
-function standDown(deviceId, mark) {
   const attempts = connectionAttempts.forDevice(deviceId);
-  if (!attempts.connecting) attempts.cancel();
-  const context = knownDeviceContext(deviceId);
-  setContextOffline(deviceId, mark);
-  // Closed before the link is dropped: a session told it lost its carrier would
-  // report this same machine lost, through this same path, all over again.
-  context.session?.fail?.(new Error(deviceAwayMark(context)));
-  closeQuietly(context.session);
-  dropPeerLink(context);
+  attempts.cancel();
   closeRendezvous(deviceId);
+  markDevicePresenceAway(deviceId);
   // Home may have moved off it — and if it has not, the surfaces that follow
   // home still have to say the device they are about cannot be reached.
-  syncHome(context);
+  syncHome(contextFor(deviceId));
 }
 
 /**
@@ -380,43 +395,25 @@ function standDown(deviceId, mark) {
  * machine the account no longer has.
  */
 export function retireDevice(deviceId) {
-  const context = contextFor(deviceId);
   // A dial in flight at this machine is called off first: whatever it lands or
   // fails at is about a machine the account no longer has.
   connectionAttempts.retire(deviceId);
   // Closed first: this machine is not lost, it is gone, and nothing is to be
   // blocked on the way out.
-  closeQuietly(context?.session);
-  dropPeerLink(context);
   rendezvousLifecycle.retire(deviceId);
-  securityStops.delete(deviceId);
   return retireDeviceContext(deviceId);
-}
-
-// A machine this client will not dial again for the life of the tab: the key
-// offered for it was not the key this account pinned, so whatever answered is
-// not the machine that was paired. What it said is kept for the screen that has
-// room to say it.
-const securityStops = new Map(); // deviceId → what the refusal said
-
-/** Whether this failure is a stop rather than an outage — and if it is, the
- *  machine is barred here, once, wherever the error was caught. */
-function barredBySecurity(deviceId, error) {
-  if (!error?.securityCritical) return false;
-  securityStops.set(deviceId, error.message);
-  return true;
 }
 
 /** What to say about a machine this client has stopped dialling, or "" while
  *  every machine is merely unreachable. A stop is the one connection failure a
  *  reader can act on and the only one that never resolves itself, so the
  *  screen holding the app says it out loud. */
-export const securityStopText = () => [...securityStops.values()][0] || "";
+export const securityStopText = deviceSecurityStopText;
 
 /** Let go of every bar (sign-out, teardown): they are this account's, and the
  *  next account's machines have not been refused anything. */
 export function forgetSecurityStops() {
-  securityStops.clear();
+  clearDeviceSecurityStops();
 }
 
 // ---- a settings page's view of a device --------------------------------------
@@ -465,9 +462,15 @@ export async function openDeviceSettingsSession(deviceId, { onLost = () => {} } 
  *  settles nothing — the session died before it said anything — is released
  *  here instead: the feed waits on that promise, and a machine whose greeting
  *  went missing must not be left unread for ever. */
-export function greetLiveBridge(context, { suppressFailure = true, isAuthoritative = () => true } = {}) {
+export function greetLiveBridge(context, {
+  suppressFailure = true,
+  isAuthoritative = () => true,
+  lifetime = null,
+} = {}) {
+  if (!isAuthoritative()) return Promise.resolve(false);
   const session = context?.session;
   if (!session) return Promise.resolve(false);
+  const greetingAuthority = greetingToken(context);
   const repository = context.chatRepository;
   const greeting = greetBridge(session.call, {
     strict: !suppressFailure,
@@ -490,13 +493,13 @@ export function greetLiveBridge(context, { suppressFailure = true, isAuthoritati
     // unavailable; otherwise the feed can send a request between the rejected
     // hello and the outer connection attempt's cleanup.
     if (!suppressFailure && isAuthoritative() && contextFor(session.deviceId)?.session === session) {
-      setContextOffline(session.deviceId, blockedMark(reasonOf(error)));
+      if (lifetime) blockDeviceConnection(session.deviceId, lifetime, reasonOf(error));
     }
     throw error;
   }).finally(() => {
       // Only this session's own: a newer one has armed a greeting of its own,
       // and what this one failed to say is no answer about that bridge.
-      if (context.session === session) releaseGreeting(context);
+      releaseGreeting(context, greetingAuthority);
     });
   return suppressFailure ? greeting.catch(() => false) : greeting;
 }
@@ -508,21 +511,34 @@ export function greetLiveBridge(context, { suppressFailure = true, isAuthoritati
  *
  *  Nothing is dispatched to the user's surfaces before both channels are open
  *  (rule 2), so this is the first moment anything is asked of the machine. */
-async function landSession(session, link, releaseInitialLease, attempt) {
-  if (!attempt.isCurrent()) throw new Error(`connection attempt for ${session.deviceId} was cancelled`);
-  const previous = contextFor(session.deviceId);
-  // Closed before its link is dropped: a session told it lost its carrier would
-  // block the very device that is landing.
-  if (previous?.session && previous.session !== session) closeQuietly(previous.session);
-  dropPeerLink(previous); // it was carrying the session this one replaces
-  const context = adoptDeviceSession(session);
-  holdPeerLink(context, link);
+async function landSession(session, link, releaseInitialLease, attempt, authority, onAdopt) {
+  if (!authority.current()) throw new Error(`connection attempt for ${session.deviceId} was cancelled`);
+  let context = knownDeviceContext(session.deviceId);
+  let lifetime;
+  attempt.release(session);
+  attempt.release(link);
+  try {
+    ({ context, lifetime } = adoptDeviceConnection(session, link, () => {
+      session.peer(null);
+      followTerminalsIfTheirs(context);
+    }));
+  } catch (error) {
+    closeQuietly(session);
+    link.close();
+    throw error;
+  }
+  onAdopt(lifetime);
+  if (!lifetime.current()) throw new Error("session replaced during adoption");
+  for (const carrier of [link.app, link.term]) {
+    carrier.onClose(() => loseEstablishedConnection(session.deviceId, lifetime));
+  }
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   let initialGreeting = true;
   session.onCarrier(() => greetLiveBridge(context, {
     suppressFailure: !initialGreeting,
-    isAuthoritative: attempt.isCurrent,
+    isAuthoritative: () => lifetime.current(),
+    lifetime,
   }));
   // Bind the app channel before releasing signaling. The carrier callback is
   // the acknowledged session.hello, so the relay cannot disappear in the gap
@@ -532,8 +548,9 @@ async function landSession(session, link, releaseInitialLease, attempt) {
   } finally {
     initialGreeting = false;
   }
-  if (!attempt.isCurrent()) throw new Error(`connection attempt for ${session.deviceId} was cancelled`);
-  if (contextFor(session.deviceId)?.session !== session) throw new Error("session replaced during greeting");
+  if (!attempt.isCurrent() || !authority.current()) {
+    throw new Error(`connection attempt for ${session.deviceId} was cancelled`);
+  }
   releaseInitialLease();
   // A device the feed is not polling yet — the account's first session, one a
   // late device just opened — gets its own board watcher and reads it as soon
@@ -541,7 +558,7 @@ async function landSession(session, link, releaseInitialLease, attempt) {
   joinFeed(context);
   syncHome(context);
   followTerminalsIfTheirs(context, { freshSession: true });
-  return context;
+  return { context, lifetime };
 }
 
 // The device followHomeContext was last run for. Home itself is derived — the
@@ -669,8 +686,8 @@ function dialEach(deviceIds) {
 function askBlockedMachinesAgain() {
   const cleared = [];
   for (const context of knownContexts()) {
-    if (!context.blocked || securityStops.has(context.deviceId)) continue;
-    setContextOffline(context.deviceId, { sinceMs: context.offlineSince, blocked: null });
+    if (!context.blocked || existingDeviceLifecycle(context.deviceId)?.snapshot().securityStop) continue;
+    retryDeviceConnection(context.deviceId);
     cleared.push(context.deviceId);
   }
   return cleared;
@@ -695,7 +712,7 @@ function guessAtStaleDevices() {
  *  never been blocked (no context either way), has no dial on it now, and is
  *  not barred. */
 function neverAsked(device) {
-  if (securityStops.has(device.id) || contextFor(device.id)) return false;
+  if (existingDeviceLifecycle(device.id)?.snapshot().securityStop || contextFor(device.id)) return false;
   return !connectionAttempts.isConnecting(device.id);
 }
 
@@ -709,7 +726,7 @@ function neverAsked(device) {
  */
 function wantsSession(device) {
   const context = contextFor(device.id);
-  if (securityStops.has(device.id)) return false; // barred: retrying offers the same key to the same impostor
+  if (existingDeviceLifecycle(device.id)?.snapshot().securityStop) return false;
   if (connectionAttempts.isConnecting(device.id) || context?.blocked) return false;
   return device.status === "online" && !canAnswer(context);
 }

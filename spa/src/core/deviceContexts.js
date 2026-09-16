@@ -16,9 +16,16 @@ import { createModelCatalog } from "./modelCatalog.js";
 import { disarmChangeEvents } from "./changeEvents.js";
 import { deviceAwayMark } from "./deviceAway.js";
 import { dropFeedDevice } from "./taskFeed.js";
+import { createDeviceLifecycles } from "./deviceLifecycle.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
+const deviceLifecycles = createDeviceLifecycles();
 const stateListeners = new Set(); // told when a device's ability to answer changes
+let registryEra = 0;
+const deviceEras = new Map();
+
+export const deviceContextEra = () => registryEra;
+export const deviceContextIdentity = (deviceId) => `${registryEra}:${deviceEras.get(deviceId) || 0}`;
 
 /**
  * Hear when some device starts or stops being able to answer.
@@ -56,10 +63,9 @@ const asking = (context, transport) => (...asked) =>
   (canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context))));
 
 function createDeviceContext(deviceId) {
+  const lifecycle = deviceLifecycles.forDevice(deviceId);
   const context = {
     deviceId,
-    session: null, // { deviceId, call, onPush, peer, onCarrier, close } or null while offline
-    call: null, // session.call, retargeted on every re-adoption
     rpc: null, // asking this machine; stood up below, over the context itself
     cacheScope: scopeFor(deviceId),
     chatRepository: null,
@@ -67,14 +73,16 @@ function createDeviceContext(deviceId) {
     apiVersion: null, // the `api_version` it greeted with
     unsupported: null, // "app" | "bridge" when no adapter here speaks to it
     greeted: null, // this session's greeting, once one is in flight (connection.js)
-    offline: false, // written only by setContextOffline (connection.js owns the policy)
-    offlineSince: null,
-    blocked: null, // why no direct connection could be made, when that is why it is away (rule 3)
-    peerLink: null,
     /** Still the registry's context for this device, and still able to address
      *  the cache: what a late answer must ask before it writes anything. */
     active: () => contexts.get(deviceId) === context && Boolean(context.cacheScope?.active()),
   };
+  for (const field of ["session", "call", "peerLink", "offline", "offlineSince", "blocked"]) {
+    Object.defineProperty(context, field, {
+      enumerable: true,
+      get: () => lifecycle.snapshot()[field],
+    });
+  }
   /** The one spelling of "ask this machine", and the only caller anything
    *  outside this module holds. A reconnect replaces the transport under a
    *  surface that is still mounted: a caller captured at mount would go on
@@ -136,7 +144,7 @@ function forgetBridgeSelection(context) {
 // What releases each device's armed greeting, kept beside the contexts rather
 // than on them: a promise's own settle is not something a surface should be
 // able to reach for.
-const greetingReleases = new Map(); // context → release
+const greetingReleases = new Map(); // context → { promise, release }
 
 /**
  * Arm this device's greeting: the promise a reader that must not ask before the
@@ -150,16 +158,24 @@ const greetingReleases = new Map(); // context → release
  * bridge had said which API major it speaks.
  */
 function armGreeting(context) {
-  context.greeted = new Promise((release) => greetingReleases.set(context, release));
+  let release;
+  const promise = new Promise((settle) => { release = settle; });
+  const token = { promise, release };
+  greetingReleases.set(context, token);
+  context.greeted = promise;
 }
+
+export const greetingToken = (context) => greetingReleases.get(context) || null;
 
 /** This device's greeting has settled, however it settled: an adapter was
  *  selected, a side was named behind, or the session died with nothing said.
  *  connection.js releases that last one, so a lost greeting never leaves a
  *  device unread. */
-export function releaseGreeting(context) {
+export function releaseGreeting(context, token) {
   if (!context) return;
-  greetingReleases.get(context)?.();
+  const current = greetingReleases.get(context);
+  if (arguments.length > 1 && current !== token) return;
+  current?.release();
   greetingReleases.delete(context);
 }
 
@@ -196,12 +212,18 @@ export function liveContexts() {
  *  reconnect keeps the scope and the repository and only takes the new
  *  transport; a device seen for the first time gets both. */
 export function adoptDeviceSession(session) {
+  return adoptDeviceConnection(session).context;
+}
+
+/** Atomically hand an established app session and its peer resources to the
+ * device owner. The returned token is the only authority callbacks from this
+ * connection lifetime may use. */
+export function adoptDeviceConnection(session, peerLink = null, onDetached = () => {}) {
   const context = contextFor(session.deviceId) || createDeviceContext(session.deviceId);
-  context.session = session;
-  context.call = session.call;
-  context.offline = false;
-  context.offlineSince = null;
-  context.blocked = null; // a machine that is answering is not one nothing could reach
+  const lifetime = deviceLifecycles.forDevice(session.deviceId).adopt({ session, peerLink, onDetached });
+  if (!lifetime.current() || contexts.get(session.deviceId) !== context) {
+    return { context, lifetime };
+  }
   // A reconnect re-greets, and the bridge answering it may not be the version
   // that answered last time: what the last greeting settled is not this one's.
   forgetBridgeSelection(context);
@@ -211,8 +233,46 @@ export function adoptDeviceSession(session) {
   // it twice. It still refuses when the machine cannot answer.
   bindRepository(context, asking(context, () => session.call));
   announceDeviceState(); // this device can answer again
-  return context;
+  return { context, lifetime };
 }
+
+export const existingDeviceLifecycle = (deviceId) => deviceLifecycles.existing(deviceId);
+export const deviceSecurityStopText = () => deviceLifecycles.securityStopText();
+export const clearDeviceSecurityStops = () => deviceLifecycles.clearSecurityStops();
+
+function commandDeviceLifecycle(deviceId, command) {
+  const context = knownDeviceContext(deviceId);
+  const changed = command(deviceLifecycles.forDevice(deviceId), context);
+  if (changed) announceDeviceState();
+  return { context, changed };
+}
+
+function commandCapturedLifetime(deviceId, lifetime, command) {
+  const context = contexts.get(deviceId);
+  const owner = deviceLifecycles.existing(deviceId);
+  if (!context || !owner) return { context: null, changed: false };
+  const changed = command(owner, lifetime);
+  if (changed) announceDeviceState();
+  return { context, changed };
+}
+
+export const loseDeviceConnection = (deviceId, lifetime) =>
+  commandCapturedLifetime(deviceId, lifetime, (owner, captured) => owner.lose(captured));
+
+export const blockDeviceConnection = (deviceId, lifetime, reason) =>
+  commandCapturedLifetime(deviceId, lifetime, (owner, captured) => owner.block(captured, reason));
+
+export const blockCurrentDevice = (deviceId, reason) =>
+  commandDeviceLifecycle(deviceId, (owner) => owner.blockCurrent(reason));
+
+export const markDevicePresenceAway = (deviceId) =>
+  commandDeviceLifecycle(deviceId, (owner) => owner.presenceAway());
+
+export const refuseDeviceConnection = (deviceId, message) =>
+  commandDeviceLifecycle(deviceId, (owner) => owner.refuse(message));
+
+export const retryDeviceConnection = (deviceId) =>
+  commandDeviceLifecycle(deviceId, (owner) => owner.retry());
 
 function bindRepository(context, call) {
   if (context.chatRepository) {
@@ -239,13 +299,12 @@ export function retireDeviceContext(deviceId) {
   const context = contexts.get(deviceId);
   if (!context) return null;
   contexts.delete(deviceId);
+  deviceEras.set(deviceId, (deviceEras.get(deviceId) || 0) + 1);
   context.chatRepository?.dispose();
   dropFeedDevice(deviceId);
   disarmChangeEvents(deviceId);
   releaseScope(deviceId);
-  closeQuietly(context.session);
-  context.session = null;
-  context.call = null;
+  deviceLifecycles.retire(deviceId);
   releaseGreeting(context); // nothing will greet it now
   announceDeviceState(); // this device can answer nothing, ever again
   return context;
@@ -265,19 +324,10 @@ export function closeQuietly(session) {
 export function setContextOffline(deviceId, mark = {}) {
   const context = contexts.get(deviceId);
   if (context) {
-    writeOfflineMark(context, mark);
+    deviceLifecycles.forDevice(deviceId).setAvailability(mark);
     announceDeviceState();
   }
   return context || null;
-}
-
-// Going offline without a stamp means "as of now"; coming back online has no
-// time to keep. A mark that names no reason is a machine that is merely away —
-// its bridge has gone — rather than one nothing could reach (rule 3).
-function writeOfflineMark(context, { offline = true, sinceMs = null, blocked = null }) {
-  context.offline = Boolean(offline);
-  context.offlineSince = context.offline ? sinceMs || Date.now() : null;
-  context.blocked = context.offline ? blocked : null;
 }
 
 /**
@@ -315,6 +365,9 @@ export function deviceFeedView(snapshot, deviceId = null) {
 }
 
 export function resetDeviceContexts() {
+  registryEra += 1;
   for (const deviceId of [...contexts.keys()]) retireDeviceContext(deviceId);
   contexts.clear();
+  deviceLifecycles.clear();
+  deviceEras.clear();
 }

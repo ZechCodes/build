@@ -95,4 +95,30 @@ describe("what a greeting settles on the device it greeted", () => {
     expect(context.unsupported).toBe("app");
     expect(canAnswer(context)).toBe(false);
   });
+
+  it("does not release a replacement barrier when an old re-greeting captured none", async () => {
+    const { context, session } = await greet("dev-a", { api_version: "1.0.0" });
+    let finishOld;
+    session.call.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+    const oldGreeting = greetLiveBridge(context);
+
+    let finishReplacement;
+    const hello = new Promise((resolve) => { finishReplacement = resolve; });
+    const replacement = bridgeAnswering("dev-a", hello);
+    expect(adoptDeviceSession(replacement)).toBe(context);
+    let barrierReleased = false;
+    context.greeted.then(() => { barrierReleased = true; });
+    const newGreeting = greetLiveBridge(context);
+
+    finishOld({ api_version: "1.0.0" });
+    await oldGreeting;
+
+    expect(barrierReleased).toBe(false);
+    expect(replacement.installAdapter).not.toHaveBeenCalled();
+
+    finishReplacement({ api_version: "1.0.0" });
+    await newGreeting;
+    expect(barrierReleased).toBe(true);
+    expect(replacement.installAdapter).toHaveBeenCalledTimes(1);
+  });
 });

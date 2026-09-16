@@ -67,13 +67,14 @@ vi.mock("../src/core/changeEvents.js", () => ({
 }));
 
 const { App, resetApplication } = await import("../src/app.js");
-const { contextFor } = await import("../src/core/deviceContexts.js");
+const { contextFor, onDeviceStateChanged } = await import("../src/core/deviceContexts.js");
 const {
   connectDevice,
   goOffline,
   greetLiveBridge,
   openDeviceSessions,
   openDeviceSettingsSession,
+  retireDevice,
   securityStopText,
 } = await import("../src/connection.js");
 
@@ -235,6 +236,22 @@ beforeEach(() => {
 });
 
 describe("the connect sequence", () => {
+  it("has only the lifecycle owner dispose resources when adoption reentrantly retires", async () => {
+    const link = fakeLink();
+    linkOpensWith(link);
+    let stop = () => {};
+    stop = onDeviceStateChanged(() => {
+      if (!contextFor("dev-a")?.session) return;
+      stop();
+      retireDevice("dev-a");
+    });
+
+    await expect(connectDevice("dev-a")).rejects.toThrow(/cancelled|replaced|retired/);
+
+    expect(link.close).toHaveBeenCalledTimes(1);
+    expect(contextFor("dev-a")).toBe(null);
+  });
+
   it("mints over the rendezvous, rides the channels, and closes the relay", async () => {
     const link = fakeLink();
     linkOpensWith(link);

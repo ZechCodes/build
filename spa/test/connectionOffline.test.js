@@ -55,7 +55,7 @@ const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 const mints = vi.hoisted(() => ({ provided: null }));
 
 const { App, resetApplication, rememberSelectedDevice } = await import("../src/app.js");
-const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts } = await import(
+const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts, resetDeviceContexts } = await import(
   "../src/core/deviceContexts.js"
 );
 const {
@@ -163,6 +163,7 @@ function fakeSession(deviceId, onLost = () => {}) {
     adapter: vi.fn(() => null),
     onPush: () => () => {},
     onCarrier: vi.fn((fn) => { carrierChanged = fn; }),
+    fireCarrier: () => carrierChanged(),
     reattachSignaling: vi.fn(async () => {}),
     closed: false,
     close: vi.fn(() => {
@@ -1324,6 +1325,55 @@ describe("per-device connections", () => {
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
   });
 
+  it("does not close a replacement rendezvous when the established link is lost mid-dial", async () => {
+    await connectEveryDevice();
+    const oldLink = linksFor.get("dev-a");
+    slowMs.set("dev-a", 20);
+    const replacement = connectDevice("dev-a");
+    await flush();
+    rendezvousFor.get("dev-a").close.mockClear();
+
+    oldLink.app.drop();
+
+    expect(rendezvousFor.get("dev-a").close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(20);
+    await replacement;
+    expect(contextFor("dev-a").offline).toBe(false);
+  });
+
+  it("does not land or re-block a pending dial after the context registry resets", async () => {
+    slowMs.set("dev-a", 20);
+    const pending = connectDevice("dev-a");
+    const rejected = expect(pending).rejects.toThrow(/cancelled/);
+    await flush();
+
+    resetDeviceContexts();
+    await vi.advanceTimersByTimeAsync(20);
+
+    await rejected;
+    expect(contextFor("dev-a")).toBe(null);
+    expect(wire.openPeerLink).not.toHaveBeenCalled();
+  });
+
+  it("closes the provisional session before a late peer after reset", async () => {
+    const events = [];
+    let releasePeer;
+    wire.openPeerLink.mockImplementation(() => new Promise((resolve) => { releasePeer = resolve; }));
+    const pending = connectDevice("dev-a");
+    const rejected = expect(pending).rejects.toThrow(/cancelled/);
+    await flush();
+    const session = lastSession("dev-a");
+    session.close.mockImplementation(() => events.push("session"));
+    const link = fakePeerLink("dev-a");
+    link.close.mockImplementation(() => events.push("peer"));
+
+    resetDeviceContexts();
+    releasePeer(link);
+    await rejected;
+
+    expect(events).toEqual(["session", "peer"]);
+  });
+
   it("marks a machine plainly away when its bridge is simply gone", async () => {
     await connectEveryDevice();
     const session = lastSession("dev-a");
@@ -1335,5 +1385,24 @@ describe("per-device connections", () => {
     expect(contextFor("dev-a").blocked).toBe(null);
     expect(session.fail.mock.calls[0][0].message).toBe("Device offline");
     expect(goOffline("dev-a")).toBe(undefined); // and losing it again is no news
+  });
+
+  it("ignores an old carrier callback while its replacement greeting is pending", async () => {
+    await connectEveryDevice();
+    const oldSession = lastSession("dev-a");
+    await loseTheLink("dev-a");
+    let releaseGreeting;
+    greetings.set("dev-a", () => new Promise((resolve) => { releaseGreeting = resolve; }));
+
+    const replacement = connectDevice("dev-a");
+    await flush();
+    const newSession = lastSession("dev-a");
+    const hellosBefore = newSession.call.mock.calls.filter(([method]) => method === "session.hello").length;
+
+    await oldSession.fireCarrier();
+
+    expect(newSession.call.mock.calls.filter(([method]) => method === "session.hello")).toHaveLength(hellosBefore);
+    releaseGreeting({ api_version: "1.0.0", capabilities: {} });
+    await replacement;
   });
 });

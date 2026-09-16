@@ -1,6 +1,6 @@
 # Client connection state-machine refactor
 
-Status: stages 1 and 2 implemented; subsequent stages planned.
+Status: stages 1 through 3 implemented; terminal-follow refactor remains planned.
 Baseline: `39838a88` (2026-09-16). No production rollout in this stage.
 
 ## Objective
@@ -67,17 +67,40 @@ and retain security-stop and explicit-retry behavior. Device availability,
 long-lived peer ownership, and terminal-follow policy are still separate;
 do not present this step as their completed migration.
 
+## Stage 3: established connections and availability
+
+One per-device lifecycle owns established session and peer resources, availability,
+and the security refusal. The attempt controller remains a separate submachine:
+starting a replacement attempt does not by itself make a usable connection
+unavailable. An attempt identity and an established connection identity have
+different lifetimes and must not substitute for each other.
+
+Context transport and availability fields become read-only projections of that
+owner. Existing adoption and offline helpers delegate commands to the same owner;
+they must not maintain a second mutable availability record. Contexts still own
+drafts, repositories, cache scope, and greeting capability selection. Unsupported
+API versions remain distinct from transport failure in `canAnswer`.
+
+Connection loss, presence-away, retry preparation, greeting failure, replacement,
+security refusal, and retirement pass through lifecycle commands. Commit state
+and invalidate the old connection's authority before invoking resource cleanup
+or observer callbacks. Close the session before its peer, tolerate failed
+disposers, and prevent old callbacks from affecting a replacement or another
+device. A strict greeting failure marks the device unavailable before releasing
+the greeting barrier and waking feed reads.
+
+Account teardown cancels pending attempts and closes established resources.
+Direct context retirement closes established resources and invalidates pending
+results. Retired context getters stay retired even if the same device ID is
+registered again. Preserve retry eligibility, outage timestamps,
+sticky security refusals, and the existing rendezvous lease protocol.
+
 ## Subsequent stages
 
-1. Extend per-device lifecycle ownership to established session and peer
-   resources, security refusals, and named connection-loss/presence events.
-2. Device-context availability becomes a projection of that controller. Remove
-   competing offline/blocked writers only when the controller is authoritative;
-   do not maintain a shadow state machine beside the old booleans.
-3. A terminal-follow controller owns an atomic device/session/carrier identity
+1. A terminal-follow controller owns an atomic device/session/carrier identity
    and its pending transition, replacing separate follow-generation and carrier
    tracking. Preserve isolated terminal-handshake failure and stale-reply guards.
-4. Keep account-wide presence, home-device selection, and view routing outside
+2. Keep account-wide presence, home-device selection, and view routing outside
    the individual connection machines. Views request actions and observe state;
    they do not manage transport resources.
 
@@ -93,6 +116,15 @@ late resource disposal, and stale completion after replacement. Cleanup must
 continue after a throwing disposer and invalidate authority before callbacks.
 Exercise account reset and retirement during the initial greeting through the
 real coordinator, retaining device-isolation and security-refusal regressions.
+
+For stage 3, verify established ownership through replacement, channel loss,
+presence-away, and retirement. Old connection callbacks must have no authority
+over a new connection. Assert read-only context projection, preserved context
+identity across reconnect, and retirement of captured contexts across same-ID
+registration. Cover loss while another attempt is pending, reentrant and throwing
+cleanup, security refusal across Retry/presence, and greeting failure before
+feed wakeup. Audit production writers so no parallel transport/availability
+record remains in the coordinator or contexts.
 
 Integration tests must exercise the real connection coordinator: delayed initial
 greeting, terminal confirmation overlapping ICE restart, and stale restart

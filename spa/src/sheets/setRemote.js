@@ -2,16 +2,19 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
+import { settingsSheetHtml } from "./settingsSheet.js";
 
 /** Opened with the caller of the machine this project is on: the page that
  *  lists the project has already resolved that. */
 export function openSetRemote(project, onDone, { callRpc }) {
-  $("#sheet").innerHTML = `
-    <h3>Set remote</h3>
-    <div class="sub">Origin remote for <strong>${esc(project.name)}</strong>. Leave empty to clear.</div>
+  $("#sheet").innerHTML = settingsSheetHtml({
+    title: "Set remote",
+    subtitleHtml: `Origin remote for <strong>${esc(project.name)}</strong>. Leave empty to clear.`,
+    bodyHtml: `
     <div class="field"><label>Remote URL</label><input id="srurl" placeholder="git@github.com:org/repo.git" style="width:100%" value="${esc(project.remote || "")}" /></div>
     <div class="row"><button class="btn" id="srcancel" style="margin-left:auto">Cancel</button><button class="btn primary" id="srdo">Save</button></div>
-    <div class="adderr" id="srerr"></div>`;
+    <div class="adderr" id="srerr"></div>`,
+  });
   $("#scrim").classList.add("show");
   $("#srurl").focus();
   $("#srcancel").onclick = () => $("#scrim").classList.remove("show");

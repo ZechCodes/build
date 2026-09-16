@@ -6,6 +6,7 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
+import { settingsSheetHtml } from "./settingsSheet.js";
 
 const missingDirectory = (error) => /No such file or directory \(os error 2\)$/.test(error?.message || "");
 
@@ -41,7 +42,7 @@ export async function openBrowser(opts) {
   const sheet = $("#sheet");
   const container = opts.container || sheet;
   const embedded = container !== sheet;
-  const titleHtml = embedded ? "" : `<h3>${esc(opts.title)}</h3>`;
+  const present = (bodyHtml) => embedded ? bodyHtml : settingsSheetHtml({ title: opts.title, bodyHtml });
   const cancelHtml = embedded ? "" : '<button class="btn" id="bcancel" style="margin-left:auto">Cancel</button>';
   let request = 0;
   const cancel = () => {
@@ -72,8 +73,7 @@ export async function openBrowser(opts) {
       !opts.gitOnly || data.is_git
         ? `<button class="btn primary" id="choosecur" data-path="${esc(data.path)}">${opts.gitOnly ? "Use this repo" : "Use this folder"}</button>`
         : "";
-    container.innerHTML = `
-      ${titleHtml}
+    container.innerHTML = present(`
       <div class="browse-path">${esc(data.path)}</div>
       <label class="toggle browse-toggle"><input type="checkbox" id="showhidden" ${showHidden ? "checked" : ""}> Show hidden${hiddenCount && !showHidden ? ` (${hiddenCount})` : ""}</label>
       <div class="browse-list">
@@ -82,7 +82,7 @@ export async function openBrowser(opts) {
       </div>
       ${createDirectoryHtml(opts.allowCreateDirectory)}
       <div class="row">${footer}${cancelHtml}</div>
-      <div class="adderr" id="berr"></div>`;
+      <div class="adderr" id="berr"></div>`);
     container.querySelector("#showhidden").onchange = (e) => {
       showHidden = e.target.checked;
       paint();
@@ -152,8 +152,8 @@ export async function openBrowser(opts) {
     paint();
   };
   $("#scrim").classList.add("show");
-  container.innerHTML = `${titleHtml}<div class="dim browse-loading" style="padding:14px">loading…</div>
-    ${cancelHtml}<div class="adderr" id="berr" role="status"></div>`;
+  container.innerHTML = present(`<div class="dim browse-loading" style="padding:14px">loading…</div>
+    ${cancelHtml}<div class="adderr" id="berr" role="status"></div>`);
   bindCancel(container, cancel);
   await nav(opts.startPath || null, Boolean(opts.startPath && opts.fallbackFromMissingStart));
 }

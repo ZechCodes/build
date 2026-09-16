@@ -31,6 +31,8 @@ describe("openProjectSettings", () => {
     await flush();
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
     const sheet = document.getElementById("sheet");
+    expect(sheet.querySelector(":scope > .settings-sheet-frame > .settings-sheet-header h3").textContent).toBe("Project settings");
+    expect(sheet.querySelector(".settings-sheet-body #psname")).not.toBeNull();
     expect(sheet.querySelector("#psname").value).toBe("build");
     expect(sheet.querySelector("#pspath").value).toBe("/Users/z/Projects/build");
     expect(sheet.querySelector("#psbranch").value).toBe("main");

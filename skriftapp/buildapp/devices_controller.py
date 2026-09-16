@@ -105,6 +105,7 @@ def device_summary(device: Device, now: datetime) -> dict:
 #: How many approved devices one account may hold. Enforced at approval — the
 #: one moment a device becomes an account's — so revoking frees a slot.
 MAX_DEVICES_PER_USER = 3
+MAX_DEVICE_NAME_LENGTH = 255
 
 
 class DevicesController(Controller):
@@ -295,6 +296,32 @@ class DevicesController(Controller):
         device.status = "offline"
         await db_session.commit()
         return Response({"device_id": str(device_id), "approved": False})
+
+    @post(
+        "/api/devices/{device_id:uuid}/rename",
+        guards=[build_auth_guard],
+        status_code=HTTP_200_OK,
+    )
+    async def rename(
+        self, device_id: UUID, request: Request, db_session: AsyncSession
+    ) -> Response:
+        """Rename a device owned by the current account."""
+        user_id = require_user(request)
+        device = await db_session.get(Device, device_id)
+        if device is None or device.owner_user_id != user_id or not device.approved:
+            raise NotFoundException("device not found")
+        body = await read_json_object(request)
+        supplied_name = body.get("name")
+        name = supplied_name.strip() if isinstance(supplied_name, str) else ""
+        if not name:
+            raise ClientException("device name required")
+        if len(name) > MAX_DEVICE_NAME_LENGTH:
+            raise ClientException(
+                f"device name must be {MAX_DEVICE_NAME_LENGTH} characters or fewer"
+            )
+        device.name = name
+        await db_session.commit()
+        return Response({"device_id": str(device_id), "name": name})
 
     @post("/api/gateway-token", guards=[build_auth_guard])
     async def gateway_token(self, request: Request, db_session: AsyncSession) -> Response:

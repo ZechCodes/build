@@ -5,16 +5,18 @@
 // workspace requests, or a late folder selection, to a different host. That is
 // also why every panel here is handed this page's caller: the account page holds
 // what is the account's, and every answer on this one belongs to this machine.
+import { renameDevice, revokeDevice } from "../api.js";
+import { confirmAction } from "../core/confirm.js";
 import { $ } from "../dom.js";
 import { deviceOfflineText, esc } from "../core/text.js";
 import { deviceOfflineNotice } from "../core/deviceNotice.js";
 import { contextFor } from "../core/deviceContexts.js";
 import { App } from "../app.js";
-import { openDeviceSettingsSession } from "../connection.js";
+import { openDeviceSettingsSession, retireDevice } from "../connection.js";
 import { openBrowser } from "../sheets/browser.js";
 import { standUpDevicePanels } from "./devicePanels.js";
 
-export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; } } = {}) {
+export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; }, onDevicesChanged = () => {}, onDeviceDeactivated } = {}) {
   const device = App.devices.find((item) => item.id === deviceId);
   root.classList.add("device-settings");
   if (!device) {
@@ -23,7 +25,17 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   }
   root.innerHTML = `
     ${embedded ? "" : '<a class="btn mini" href="#/account/settings">Local settings</a>'}
-    <div class="board-head"><div><h1>${esc(device.name)} settings</h1><p>The projects this machine holds, and how agents run on it.</p></div></div>
+    <div class="board-head"><div><h1 id="device-settings-title">${esc(device.name)} settings</h1><p>The projects this machine holds, and how agents run on it.</p></div></div>
+    <div class="panel">
+      <h3>Device name</h3>
+      <form id="device-name-form">
+        <div class="field"><label for="device-name">Name</label>
+        <div class="projfolder"><input id="device-name" name="name" value="${esc(device.name)}" maxlength="255" required>
+          <button class="btn" type="submit">Save</button></div>
+        </div>
+        <p id="device-name-status" role="status" aria-live="polite"></p>
+      </form>
+    </div>
     <div id="device-projects-panel"></div>
     <div class="panel">
       <h3>Projects folder</h3>
@@ -33,16 +45,30 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       <p id="device-settings-status" role="status" aria-live="polite"></p>
       <button class="btn mini" id="device-settings-retry" hidden>Retry</button>
     </div>
-    <div id="device-bridge-panels"></div>`;
+    <div id="device-bridge-panels"></div>
+    <div class="panel danger-zone">
+      <h3>Deactivate device</h3>
+      <p class="dim">Remove this device's access to your account. It will need to be paired again before it can reconnect.</p>
+      <button class="btn danger" id="device-deactivate" type="button">Deactivate device…</button>
+      <p id="device-deactivate-status" role="status" aria-live="polite"></p>
+    </div>`;
   const pathLabel = root.querySelector("#device-projects-path");
   const change = root.querySelector("#device-projects-change");
   const status = root.querySelector("#device-settings-status");
   const retry = root.querySelector("#device-settings-retry");
+  const nameForm = root.querySelector("#device-name-form");
+  const nameInput = root.querySelector("#device-name");
+  const nameStatus = root.querySelector("#device-name-status");
+  const nameTitle = root.querySelector("#device-settings-title");
+  const deactivate = root.querySelector("#device-deactivate");
+  const deactivateStatus = root.querySelector("#device-deactivate-status");
   let active = true;
   let connectionAttempt = 0;
   let session = null;
   let browserOpen = false;
   let savingAttempt = null;
+  let savingName = false;
+  let deactivating = false;
   const closeBrowser = () => {
     if (browserOpen) $("#scrim").classList.remove("show");
     browserOpen = false;
@@ -52,6 +78,70 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     closeBrowser();
     session?.close();
   });
+  nameForm.onsubmit = async (event) => {
+    event.preventDefault();
+    const name = nameInput.value.trim();
+    if (!active || savingName || !name) return;
+    savingName = true;
+    nameForm.querySelector("button").disabled = true;
+    nameStatus.textContent = "Saving…";
+    try {
+      const renamed = await renameDevice(device.id, name);
+      storeDeviceName(device, renamed.name);
+      onDevicesChanged();
+      if (!active) return;
+      nameInput.value = renamed.name;
+      nameTitle.textContent = `${renamed.name} settings`;
+      nameStatus.textContent = "Saved.";
+    } catch (error) {
+      if (!active) return;
+      nameInput.value = device.name;
+      nameStatus.textContent = error.message;
+    } finally {
+      if (active) nameForm.querySelector("button").disabled = false;
+      savingName = false;
+    }
+  };
+  deactivate.onclick = async () => {
+    if (deactivating) return;
+    deactivating = true;
+    deactivate.disabled = true;
+    deactivateStatus.textContent = "";
+    const confirmed = await confirmAction({
+      title: `Deactivate ${device.name}?`,
+      warnings: ["This device must be paired again before it can reconnect."],
+      actions: ["Revoke this device's access to your account.", "Close its active connection and remove its local session data."],
+      confirmLabel: "Deactivate device",
+      danger: true,
+    });
+    if (!active) return;
+    if (!confirmed) {
+      deactivating = false;
+      deactivate.disabled = false;
+      deactivate.focus();
+      return;
+    }
+    deactivate.textContent = "Deactivating…";
+    try {
+      await revokeDevice(device.id);
+      const wasActive = active;
+      active = false;
+      connectionAttempt += 1;
+      App.devices = App.devices.filter((item) => item.id !== device.id);
+      session?.close();
+      session = null;
+      retireDevice(device.id);
+      onDevicesChanged();
+      if (!wasActive) return;
+      showDeactivated(root, onDeviceDeactivated, device.id);
+    } catch (error) {
+      if (!active) return;
+      deactivating = false;
+      deactivateStatus.textContent = error.message;
+      deactivate.textContent = "Deactivate device…";
+      deactivate.disabled = false;
+    }
+  };
   // Nothing here can be read or written without the connection, so a panel that
   // asks after it has gone is refused in the account's own words for a machine
   // that is not there.
@@ -148,6 +238,17 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     return;
   }
   await connect();
+}
+
+function storeDeviceName(renderedDevice, name) {
+  const currentDevice = App.devices.find((item) => item.id === renderedDevice.id);
+  if (currentDevice) currentDevice.name = name;
+  renderedDevice.name = name;
+}
+
+function showDeactivated(root, onDeviceDeactivated, deviceId) {
+  if (onDeviceDeactivated) onDeviceDeactivated(deviceId);
+  else root.innerHTML = '<div class="board-head"><h1>Device deactivated</h1></div><p>This device must be paired again before it can reconnect.</p><a class="btn" href="#/account/settings">Local settings</a>';
 }
 
 /**

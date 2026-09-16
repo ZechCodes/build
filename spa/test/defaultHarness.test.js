@@ -304,7 +304,8 @@ describe("the device's settings page", () => {
 
     const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
-    expect(at("Projects")).toBe(0);
+    expect(at("Device name")).toBe(0);
+    expect(at("Projects")).toBe(1);
     expect(at("Agent modes")).toBe(at("Projects folder") + 1);
     expect(at("Fallback agent")).toBe(at("Agent modes") + 1);
     expect(at("Work isolation")).toBe(at("Fallback agent") + 1);

@@ -351,20 +351,15 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-recent-caret { flex:none; display:flex; }
 .inbox-recent-count { margin-left:auto; font-family:var(--mono); }
 
-/* ---- the projects face ----
-   The inbox, grouped by project. Each block is a box: its head — fold, name,
-   unread, the + that creates — and its rows; the block holding the branch or
-   issue the route stands on wears the composer's focused look. The unrouted
-   captures stand above every block on their own. */
+/* Projects share a flat list, separated by rules; selection belongs to the header. */
 .inbox-unsorted:not(:empty) { margin-bottom:8px; }
-.inbox-project { border:1px solid var(--line); border-radius:12px; padding:4px 4px 5px;
-  margin-bottom:8px; transition:border-color .12s ease, box-shadow .12s ease; }
-.inbox-project.active { border-color:var(--accent);
-  box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
-/* A block with nothing live is flat: no box, just its head and its quiet rows.
-   The 5px inset is the boxed block's border + padding, so the chevron and the
-   + stand in the same column either way. */
-.inbox-project.inbox-flat { border:0; box-shadow:none; padding:0 5px; margin-bottom:2px; }
+.inbox-project { border:0; border-bottom:1px solid var(--line); border-radius:0;
+  padding:6px 4px 8px; margin-bottom:4px; }
+.inbox-project.active > .inbox-project-head { background:var(--accent-soft); }
+.inbox-project.active > .inbox-project-head .inbox-project-name { color:var(--accent); }
+.inbox-project-head:hover { background:var(--line2); }
+.inbox-project .inbox-project-name { border-radius:0; }
+.srow.inbox-entry { border-radius:0; }
 .inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 0; }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg, .inbox-project-settings svg { width:16px; height:16px; display:block; }
 /* The chevron's column is the rows' state-dot column: the rows sit 2px in and

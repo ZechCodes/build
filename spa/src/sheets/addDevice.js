@@ -4,17 +4,21 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { lookupDevice, approveDevice } from "../api.js";
+import { settingsSheetHtml } from "./settingsSheet.js";
 
 export function openAddDevice(onDone) {
   const sheet = $("#sheet");
   const scrim = $("#scrim");
-  sheet.innerHTML = `
-    <h3>Add a device</h3><div class="sub">Enter the pairing code your bridge printed on startup.</div>
+  sheet.innerHTML = settingsSheetHtml({
+    title: "Add a device",
+    subtitleHtml: "Enter the pairing code your bridge printed on startup.",
+    bodyHtml: `
     <input id="paircode" placeholder="e.g. WXYZ-4F2K" style="text-transform:uppercase" />
     <div class="row"><button class="btn" id="pcancel" style="margin-left:auto">Cancel</button>
       <button class="btn primary" id="plookup">Look up</button></div>
     <div id="pairbox"></div>
-    <div class="adderr" id="perr"></div>`;
+    <div class="adderr" id="perr"></div>`,
+  });
   const input = sheet.querySelector("#paircode");
   const error = sheet.querySelector("#perr");
   const pairbox = sheet.querySelector("#pairbox");

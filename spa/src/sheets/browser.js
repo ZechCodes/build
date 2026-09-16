@@ -9,6 +9,15 @@ import { esc } from "../core/text.js";
 
 const missingDirectory = (error) => /No such file or directory \(os error 2\)$/.test(error?.message || "");
 
+async function listDirectory(callRpc, path, fallback, isCurrent) {
+  try {
+    return await callRpc("fs.list", path ? { path } : {});
+  } catch (error) {
+    if (!fallback || !missingDirectory(error) || !isCurrent()) throw error;
+    return callRpc("fs.list", {});
+  }
+}
+
 function bindCancel(container, cancel) {
   const button = container.querySelector("#bcancel");
   if (button) button.onclick = cancel;
@@ -129,13 +138,8 @@ export async function openBrowser(opts) {
     const version = ++request;
     const loading = container.firstElementChild;
     try {
-      let next;
-      try {
-        next = await callRpc("fs.list", path ? { path } : {});
-      } catch (error) {
-        if (!fallbackFromMissingStart || !missingDirectory(error) || version !== request || !loading.isConnected) throw error;
-        next = await callRpc("fs.list", {});
-      }
+      const next = await listDirectory(callRpc, path, fallbackFromMissingStart,
+        () => version === request && loading.isConnected);
       if (version !== request || !loading.isConnected) return;
       data = next;
     } catch (e) {

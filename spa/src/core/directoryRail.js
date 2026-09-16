@@ -17,13 +17,13 @@
 // the whole rail, the arrows walking within it, which is what a rail of two
 // controls owes the keyboard.
 
-import { ICON_FILE_DIFF, ICON_FOLDER_TREE } from "./icons.js";
+import { ICON_FOLDER, ICON_GIT_GRAPH } from "./icons.js";
 import { changesTabLabel, esc, filesTabLabel } from "./text.js";
 
 /** The rail's faces, in reading order: what moved, then what is there. */
 export const DIRECTORY_TABS = [
-  { id: "changes", label: changesTabLabel, icon: ICON_FILE_DIFF },
-  { id: "files", label: filesTabLabel, icon: ICON_FOLDER_TREE },
+  { id: "changes", label: changesTabLabel, icon: ICON_GIT_GRAPH },
+  { id: "files", label: filesTabLabel, icon: ICON_FOLDER },
 ];
 
 /** Where an arrow takes the highlight, as steps along the rail. Home and End

@@ -112,8 +112,13 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 #inbox-collapse { display:grid; height:var(--inbox-toggle); padding:0; place-items:center; }
 #inbox-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding-bottom:12px; }
 .inbox-foot { border-top:1px solid var(--line); padding-top:8px; display:flex;
-  flex-direction:column; gap:8px; }
-.inbox-foot #devpick { max-width:100%; }
+  align-items:center; gap:6px; }
+.inbox-foot #devpick { flex:1 1 auto; min-width:0; max-width:100%; }
+.inbox-account { flex:none; display:grid; width:34px; height:34px; padding:0;
+  place-items:center; border:0; border-radius:7px; background:none; color:var(--dim); cursor:pointer; }
+.inbox-account:hover, .inbox-account:focus-visible, .inbox-account.active { color:var(--accent); background:var(--accent-soft); }
+.inbox-account:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.inbox-account svg { display:block; width:17px; height:17px; }
 /* The floating reopen toggle, only while the rail is away: pinned, the rail is
    already the inbox and this would only stand on top of it. The pin in the
    rail's own head is the control at that width. */
@@ -375,8 +380,21 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   color:var(--ink2); }
 .inbox-project-name:hover { background:var(--line2); color:var(--ink); }
 .inbox-project-name.inbox-unroutable:hover { background:none; color:var(--ink2); }
-.inbox-project-head .inbox-unread { margin-left:0; }
+.inbox-project-head .inbox-unread { flex:none; margin-left:2px; }
+.inbox-project-tools { flex:none; display:grid; align-items:center; justify-items:end; margin-left:auto; }
+.inbox-project-device, .inbox-project-actions { grid-area:1 / 1; }
+.inbox-project-device { max-width:88px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  padding:0 4px; transition:opacity 120ms ease; }
+.inbox-project-actions { display:flex; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
+.inbox-project-head:hover .inbox-project-device,
+.inbox-project-head:focus-within .inbox-project-device { opacity:0; }
+.inbox-project-head:hover .inbox-project-actions,
+.inbox-project-head:focus-within .inbox-project-actions { opacity:1; pointer-events:auto; }
 .inbox-project-create, .inbox-project-settings { flex:none; }
+@media (hover:none) {
+  .inbox-project-device { opacity:0; }
+  .inbox-project-actions { opacity:1; pointer-events:auto; }
+}
 .inbox-project-rows { padding:2px 2px 0; }
 .inbox-folded .inbox-project-rows, .inbox-folded .inbox-recent { display:none; }
 .inbox-project .inbox-recent { margin:2px 0 0; border-top:0; padding-top:0; }
@@ -423,12 +441,11 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   align-items:center; justify-content:flex-start; gap:4px; }
 .dirtab { position:relative; display:flex; align-items:center; justify-content:center;
   width:32px; height:32px; padding:0;
-  border:1px solid transparent; border-radius:8px; background:none; color:var(--ink2); cursor:pointer;
+  border:0; border-radius:0; background:none; color:var(--ink2); cursor:pointer;
   font:inherit; }
-.dirtab:hover { background:var(--panel2); color:var(--ink); }
+.dirtab:hover { color:var(--ink); }
 .dirtab:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-.dirtab.active { border-color:color-mix(in srgb, var(--accent) 45%, var(--line));
-  background:color-mix(in srgb, var(--accent) 12%, var(--panel)); color:var(--accent); }
+.dirtab.active { color:var(--accent); }
 .dirtab.active::before { content:""; position:absolute; left:-5px; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
 .dirtab svg { width:18px; height:18px; display:block; }

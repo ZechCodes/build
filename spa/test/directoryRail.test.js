@@ -29,9 +29,11 @@ describe("the directory rail's markup", () => {
     // no label is written beside the glyph at any width.
     expect(changes.textContent.trim()).toBe("");
     expect(changes.querySelector("svg")).toBeTruthy();
+    expect(changes.innerHTML).toContain("git-graph");
     expect(changes.getAttribute("title")).toBe("Changes");
     expect(changes.getAttribute("aria-label")).toBe("Changes");
     expect(files.getAttribute("aria-label")).toBe("Files");
+    expect(files.innerHTML).toContain('class="lucide lucide-folder"');
   });
 
   it("says which face the surface is standing on, to the eye and to the reader", () => {

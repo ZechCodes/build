@@ -101,6 +101,8 @@ describe("the shell's markup", () => {
     }
     // Account lives at the foot of the inbox rail.
     expect(document.querySelector("#inbox-rail .inbox-foot #nav-account")).toBeTruthy();
+    expect(document.getElementById("nav-account").tagName).toBe("BUTTON");
+    expect(document.getElementById("nav-account").getAttribute("aria-label")).toBe("Settings");
     // The retired sidebar model is gone.
     expect(document.getElementById("sidebar")).toBeNull();
     expect(document.getElementById("side-open")).toBeNull();

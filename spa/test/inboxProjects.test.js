@@ -90,3 +90,25 @@ describe("the machine said after a project name", () => {
     expect(tagFor(projects)(projects[1])).toBe("");
   });
 });
+
+describe("the project header actions", () => {
+  it("keeps the device and hover actions together, with unread at the far edge", () => {
+    const block = {
+      projectKey: "dev-1/p1",
+      name: "relaydb",
+      route: { name: "workspace" },
+      entries: [],
+      recent: [],
+      unreadCount: 4,
+      clash: true,
+      deviceName: "workshop",
+    };
+    const html = projectHeadHtml(block);
+    expect(html).toContain('class="inbox-project-tools"');
+    expect(html).toContain('class="inbox-project-device"');
+    expect(html).toContain("workshop");
+    expect(html).toContain('class="iconbtn inbox-project-settings"');
+    expect(html).toContain('class="iconbtn inbox-project-create"');
+    expect(html.indexOf("inbox-project-actions")).toBeLessThan(html.indexOf("badge inbox-unread"));
+  });
+});

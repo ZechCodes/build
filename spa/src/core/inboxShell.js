@@ -8,7 +8,7 @@ import { App, go } from "../app.js";
 import { inboxListRouteChanged, mountInboxList, openNewProject, setInboxView } from "./inboxView.js";
 import { loadRailView, persistRailView, railViewSwitchHtml } from "./railMode.js";
 import { subscribeInboxAttentionCount } from "./inboxAttention.js";
-import { ICON_PIN, ICON_PLUS } from "./icons.js";
+import { ICON_PIN, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
 import { syncPinButton } from "./pinControl.js";
 import "../styles/shell.css";
 
@@ -274,6 +274,8 @@ export function initInboxRail() {
     return;
   }
   mounted = true;
+  const account = $("#nav-account");
+  if (account) account.innerHTML = ICON_SETTINGS;
   const startsCollapsed = railStartsCollapsed(localStorage.getItem(COLLAPSED_KEY), window.innerWidth);
   setInboxCollapsed(startsCollapsed, { animate: false, persist: false, reveal: false });
   // One toggle in two places: the head button docks or puts the rail away, and

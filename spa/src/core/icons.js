@@ -35,5 +35,5 @@ export { default as ICON_REFRESH } from "lucide-static/icons/refresh-cw.svg?raw"
 export { default as ICON_GIT_MERGE } from "lucide-static/icons/git-merge.svg?raw";
 export { default as ICON_FILE } from "lucide-static/icons/file.svg?raw";
 export { default as ICON_GIT_BRANCH } from "lucide-static/icons/git-branch.svg?raw";
-export { default as ICON_FILE_DIFF } from "lucide-static/icons/file-diff.svg?raw";
-export { default as ICON_FOLDER_TREE } from "lucide-static/icons/folder-tree.svg?raw";
+export { default as ICON_GIT_GRAPH } from "lucide-static/icons/git-graph.svg?raw";
+export { default as ICON_FOLDER } from "lucide-static/icons/folder.svg?raw";

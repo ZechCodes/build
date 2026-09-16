@@ -152,12 +152,12 @@ export function projectHeadHtml(block, ui = {}) {
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
   const title = block.route ? `Open ${block.name}'s workspace` : `${block.name} has no workspace to open`;
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
+  const device = deviceTagHtml(block);
   return `<div class="inbox-project-head">
     ${foldButtonHtml(block, folded)}
-    <button class="${nameClasses}" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}${deviceTagHtml(block)}</button>
+    <button class="${nameClasses}" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}</button>
+    <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions"><button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>${create}</span></span>
     ${unread}
-    <button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>
-    ${create}
   </div>`;
 }
 

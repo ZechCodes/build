@@ -79,6 +79,7 @@ function rendezvousFor(deviceId) {
 // minted. The relay is not held between them (rule 4), so the last to let go
 // closes it.
 const negotiating = new Map(); // deviceId → how many
+const rendezvousEra = new Map(); // deviceId → forced-close generation
 
 /** Ask for this machine's rendezvous and say it is wanted open. */
 function holdRendezvous(deviceId) {
@@ -87,7 +88,8 @@ function holdRendezvous(deviceId) {
 }
 
 /** Done negotiating. Nothing else waiting on it closes the socket. */
-function releaseRendezvous(deviceId) {
+function releaseRendezvous(deviceId, expectedEra = null) {
+  if (expectedEra !== null && (rendezvousEra.get(deviceId) || 0) !== expectedEra) return;
   const left = (negotiating.get(deviceId) || 1) - 1;
   if (left > 0) {
     negotiating.set(deviceId, left);
@@ -99,6 +101,7 @@ function releaseRendezvous(deviceId) {
 /** Close this machine's rendezvous whoever was holding it: the device is
  *  blocked, or gone, and nothing is negotiating with it any more. */
 function closeRendezvous(deviceId) {
+  rendezvousEra.set(deviceId, (rendezvousEra.get(deviceId) || 0) + 1);
   negotiating.delete(deviceId);
   rendezvousByDevice.get(deviceId)?.close();
 }
@@ -308,8 +311,8 @@ function dropPeerLink(context) {
 /** One device's peer link opened or closed. The terminals move only when they
  *  are on that device — another device's channel carries the stream to the
  *  wrong machine, and nothing about the wire theirs rides has changed. */
-function followTerminalsIfTheirs(context) {
-  if (context.deviceId === terminalDeviceId()) followTerminalDevice();
+function followTerminalsIfTheirs(context, options) {
+  if (context.deviceId === terminalDeviceId()) followTerminalDevice(options);
 }
 
 /**
@@ -322,10 +325,21 @@ function followTerminalsIfTheirs(context) {
  */
 async function mintTerminalSession(deviceId) {
   const rendezvous = holdRendezvous(deviceId);
+  const era = rendezvousEra.get(deviceId) || 0;
   try {
-    return await rendezvous.mint({});
-  } finally {
-    releaseRendezvous(deviceId);
+    const minted = await rendezvous.mint({});
+    let released = false;
+    return {
+      ...minted,
+      release: () => {
+        if (released) return;
+        released = true;
+        releaseRendezvous(deviceId, era);
+      },
+    };
+  } catch (error) {
+    releaseRendezvous(deviceId, era);
+    throw error;
   }
 }
 
@@ -572,7 +586,7 @@ async function landSession(session, link) {
   // as its greeting is in.
   joinFeed(context);
   syncHome(context);
-  followTerminalsIfTheirs(context);
+  followTerminalsIfTheirs(context, { freshSession: true });
   return context;
 }
 

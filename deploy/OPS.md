@@ -6,6 +6,17 @@ locally is in [`README.md`](README.md).
 
 ## Diagnosing a dropped device connection
 
+First check that the bridge process itself is stable. On macOS,
+`launchctl print gui/$(id -u)/ing.getbuild.bridge` shows its PID, run count,
+and last terminating signal. Repeated startup messages and a changing PID
+point to process restarts, not necessarily a WebRTC failure.
+
+Deployment helpers must be one-shot jobs, never `KeepAlive` services. A helper
+that successfully restarts the bridge and exits will otherwise be launched
+again indefinitely. After deployment, verify that the helper job is removed
+and the bridge PID remains unchanged beyond the helper's delay. Keep
+`KeepAlive` enabled for the bridge daemon itself.
+
 Before refreshing a browser tab that lost its connection, run
 `JSON.stringify(buildConnectionDiagnostics(), null, 2)` in its developer console.
 This returns the last 100 connection events, including negotiation, state changes,
@@ -28,6 +39,13 @@ Collect both sides for the same attempt: a successful ICE pair alone does not
 prove the application session was attached to its DataChannel before signaling
 closed. A restart is successful only once the peer is connected and both channels
 are open again.
+
+The app and terminal streams use separate encrypted sessions on the same peer.
+After a bridge restart, both need fresh sessions. A terminal session must receive
+an acknowledged channel request before its rendezvous lease is released, even
+when no terminal panes are mounted. A terminal ping timeout can close the shared
+peer without an earlier ICE failure; correlate terminal diagnostics as well as
+peer state changes when investigating a five-second drop.
 
 ## Monthly — Cloudflare TURN usage
 

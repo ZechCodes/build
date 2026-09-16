@@ -413,7 +413,9 @@ describe("the terminals' session", () => {
 
     expect(minted.deviceId).toBe("dev-a");
     expect(sockets()).toHaveLength(before + 1); // reopened for the mint…
-    expect(sockets().at(-1).readyState).toBe(3); // …and closed again once it landed
+    expect(sockets().at(-1).readyState).toBe(1); // held until the channel acknowledges it
+    minted.release();
+    expect(sockets().at(-1).readyState).toBe(3); // …then closed by its lease owner
     // A second session on the same rendezvous, with an id of its own.
     const [appInit] = sockets()[0].sent.filter((message) => message.type === "session_init");
     const [termInit] = sockets().at(-1).sent.filter((message) => message.type === "session_init");

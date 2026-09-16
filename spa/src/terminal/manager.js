@@ -25,6 +25,12 @@ let peerCarrier = null;
  *  rendezvous, which the connection layer owns. Until it is provided, nothing
  *  can type anywhere: a terminal session is not this module's to open. */
 let mintTerminalSession = async () => null;
+// Every decision to follow a device supersedes any mint still crossing the
+// rendezvous. Device identity alone is not enough: a reconnect can replace a
+// peer link on the same device while the old mint is still in flight.
+let followGeneration = 0;
+let pendingFollow = null;
+let acknowledgedCarrier = null;
 
 /** Hand this module the mint. Called once, by the layer that owns the
  *  rendezvous of every device. */
@@ -101,9 +107,9 @@ export function terminalManager() {
  * hands both streams back at once; a second listener on the same carrier would
  * run that fallback twice, through two owners of one fact.
  */
-function terminalsRideOn(carrier, session = null) {
+function terminalsRideOn(carrier, session = null, { confirm = false } = {}) {
   peerCarrier = carrier || null;
-  if (session) return socket?.adoptTerminalSession(session, peerCarrier);
+  if (session) return socket?.adoptTerminalSession(session, peerCarrier, { confirm });
   socket?.peer(peerCarrier);
 }
 
@@ -117,9 +123,9 @@ function terminalsRideOn(carrier, session = null) {
  * would come back against a machine with no session to open a PTY on. The
  * shells stay where they are, and the caller asks again when the machine can.
  */
-function moveTerminalsTo(deviceId) {
+function moveTerminalsTo(deviceId, generation) {
   if (!canAnswer(contextFor(deviceId))) return false;
-  adoptSessionOn(deviceId);
+  adoptSessionOn(deviceId, generation);
   return true;
 }
 
@@ -147,16 +153,61 @@ const termChannelOf = (deviceId) => contextFor(deviceId)?.peerLink?.term || null
  * lands after the shells have moved on again is dropped, because the session it
  * carries is the wrong machine's.
  */
-function adoptSessionOn(deviceId) {
+function adoptSessionOn(deviceId, generation) {
   Promise.resolve()
     .then(() => mintTerminalSession(deviceId))
-    .then((session) => {
-      if (!session || !socket || terminalDeviceId() !== deviceId) return;
-      terminalsRideOn(termChannelOf(deviceId), session);
-    })
+    .then((session) => acceptMintedSession(session, deviceId, generation))
     .catch(() => {
+      clearPendingFollow(generation);
       /* that machine cannot mint one; the shells stay where they are */
     });
+}
+
+const clearPendingFollow = (generation) => {
+  if (pendingFollow?.generation === generation) pendingFollow = null;
+};
+
+const currentFollowIs = (deviceId, generation) =>
+  Boolean(socket && generation === followGeneration && terminalDeviceId() === deviceId);
+
+async function acceptMintedSession(session, deviceId, generation) {
+  if (!session) return clearPendingFollow(generation);
+  try {
+    if (!currentFollowIs(deviceId, generation)) return;
+    await terminalsRideOn(termChannelOf(deviceId), session, { confirm: true });
+    if (generation === followGeneration) acknowledgedCarrier = termChannelOf(deviceId);
+  } catch {
+    // A terminal session that was not acknowledged is not allowed to tear down
+    // the app half of the shared peer.
+    if (socket && generation === followGeneration) socket.peer(null);
+  } finally {
+    session.release?.();
+    clearPendingFollow(generation);
+  }
+}
+
+function beginFreshFollow(deviceId, carrier, freshSession) {
+  const generation = ++followGeneration;
+  pendingFollow = { deviceId, carrier, generation };
+  if (freshSession) socket.peer(null);
+  const moving = moveTerminalsTo(deviceId, generation);
+  if (!moving) clearPendingFollow(generation);
+  return moving;
+}
+
+const alreadyFollowing = (deviceId, carrier) =>
+  pendingFollow?.deviceId === deviceId && pendingFollow.carrier === carrier;
+
+const needsFreshFollow = (deviceId, carrier, freshSession) =>
+  Boolean(socket && (socket.deviceId !== deviceId || freshSession || (carrier && carrier !== acknowledgedCarrier)));
+
+function keepCurrentFollow(deviceId) {
+  if (pendingFollow) {
+    followGeneration += 1;
+    pendingFollow = null;
+  }
+  terminalsRideOn(termChannelOf(deviceId));
+  return true;
 }
 
 /**
@@ -170,11 +221,13 @@ function adoptSessionOn(deviceId) {
  * the shells took the move: a machine that cannot answer keeps neither the
  * socket nor the carrier, and the shells stay on the machine they are on.
  */
-export function followTerminalDevice() {
+export function followTerminalDevice({ freshSession = false } = {}) {
   const deviceId = terminalDeviceId();
+  const carrier = termChannelOf(deviceId);
+  if (alreadyFollowing(deviceId, carrier)) return true;
   // Another machine: the session and that machine's wire go over together when
   // the mint lands. The shells keep the channel they are riding until then.
-  if (socket && socket.deviceId !== deviceId) return moveTerminalsTo(deviceId);
-  terminalsRideOn(termChannelOf(deviceId));
-  return true;
+  return needsFreshFollow(deviceId, carrier, freshSession)
+    ? beginFreshFollow(deviceId, carrier, freshSession)
+    : keepCurrentFollow(deviceId);
 }

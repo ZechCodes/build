@@ -25,6 +25,7 @@
 
 import { createSessionRpc } from "../core/sessionRpc.js";
 import { createSessionSwitch } from "../core/sessionSwitch.js";
+import { recordConnectionDiagnostic } from "../core/connectionDiagnostics.js";
 
 const textEncoder = new TextEncoder();
 const b64encodeBytes = (u8) => btoa(String.fromCharCode(...u8));
@@ -101,6 +102,7 @@ export class TerminalSocket {
     //            onOutput, onSnapshot, onClosed, onLive }
     this._terms = new Map();
     this._connected = false;
+    this._confirmNextCarrier = false;
     this._connectWaiters = [];
     // Agent frames that arrived before their attach response named the wire id
     // they belong to: term_id → [frame]. Only ever non-empty while an agent
@@ -140,13 +142,14 @@ export class TerminalSocket {
    * handed over is passed in again, and re-taken under the new session's key,
    * which is what re-attaches every open terminal on it.
    */
-  adoptTerminalSession(session, carrier = null) {
+  adoptTerminalSession(session, carrier = null, { confirm = false } = {}) {
     this._closed = false;
     // A session being replaced is not one being lost: the old session's calls
     // end with it, and nobody is told the shells are gone when they are moving.
     this._replacing = true;
     this._switch.peer(null);
     this._openSession(session);
+    this._confirmNextCarrier = confirm;
     this._replacing = false;
     // Not `_reportLost` when there is no wire: a machine whose channel has yet
     // to open is one the panes are waiting on, which is connecting.
@@ -461,7 +464,22 @@ export class TerminalSocket {
     // channel of a device whose mint is still in flight. Adopting that session
     // re-takes the wire, and that is the connection.
     if (!this._rpc) return;
-    await this._reattachAll();
+    const rpc = this._rpc;
+    const wire = this._switch.active();
+    const diagnosticId = `${this.deviceId}:${this._session.sessionId}`;
+    if (this._confirmNextCarrier) {
+      this._confirmNextCarrier = false;
+      try {
+        await this._call("ping", {}, 3000);
+        recordConnectionDiagnostic(diagnosticId, "terminal-session", { state: "confirmed" });
+      } catch (error) {
+        recordConnectionDiagnostic(diagnosticId, "terminal-session", { state: "confirmation-failed" });
+        throw error;
+      }
+    }
+    if (this._rpc !== rpc || this._switch.active() !== wire) return;
+    await this._reattachAll(() => this._rpc === rpc && this._switch.active() === wire);
+    if (this._rpc !== rpc || this._switch.active() !== wire) return;
     this._connected = true;
     this._report("connected");
     this._connectWaiters.splice(0).forEach(({ resolve }) => resolve());
@@ -474,8 +492,9 @@ export class TerminalSocket {
   /// terminal / dropped the run → onClosed("reaped") + deregister, never an
   /// eternal per-reconnect retry. Each snapshot resets that term's cursor to the
   /// response cursor first (snapshot resync, not byte replay).
-  async _reattachAll() {
+  async _reattachAll(isCurrent = () => true) {
     for (const [termId, entry] of [...this._terms]) {
+      if (!isCurrent()) return;
       entry.lastCursor = 0;
       entry.attached = false;
       entry.preAttach = [];
@@ -486,19 +505,24 @@ export class TerminalSocket {
         const r = entry.kind === "agent"
           ? await this._call("agent.attach", { ...entry.attachParams, cols: entry.cols, rows: entry.rows })
           : await this._call("term.attach", { ...entry.attachParams, term_id: termId, cols: entry.cols, rows: entry.rows });
+        if (!isCurrent()) return;
         // A worktree that moved (or an agent that opened while we were away)
         // answers with a different wire id: follow it rather than stream into
         // an id nothing pushes to.
         if (entry.kind === "agent") this._rekeyAgent(termId, entry, r.term_id);
         this._applyAttachResult(entry, r);
       } catch (e) {
-        if (/unknown (term_id|id)/.test(e.message || "")) {
-          this._forgetTerm(termId);
-          entry.onClosed("reaped");
-        }
+        if (!isCurrent()) return;
+        this._handleAttachFailure(e, termId, entry);
         // Other failures leave the entry registered — the next reconnect retries.
       }
     }
+  }
+
+  _handleAttachFailure(error, termId, entry) {
+    if (!/unknown (term_id|id)/.test(error.message || "")) return;
+    this._forgetTerm(termId);
+    entry.onClosed("reaped");
   }
 
   /** One live frame off whichever carrier brought it, routed to the terminal
@@ -603,6 +627,7 @@ export class TerminalSocket {
   // path to the bridge is down → the wire goes and the shells are lost.
   async _watchLiveness() {
     const mine = (this._liveness = {}); // one watch per connection, the newest
+    const diagnosticId = `${this.deviceId}:${this._session?.sessionId || "terminal"}`;
     while (this._liveness === mine && !this._closed) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       if (this._liveness !== mine || this._closed) return;
@@ -615,10 +640,16 @@ export class TerminalSocket {
         // The wire that did not answer is the one that goes: closing a carrier
         // is how it reports itself gone, and its owner decides what that costs
         // — an ICE restart, or the device blocked.
-        if (this._liveness === mine) wire.close();
+        this._closeUnresponsiveWire(mine, wire, diagnosticId);
         return;
       }
     }
+  }
+
+  _closeUnresponsiveWire(liveness, wire, diagnosticId) {
+    if (this._liveness !== liveness) return;
+    recordConnectionDiagnostic(diagnosticId, "terminal-session", { state: "liveness-timeout" });
+    wire.close();
   }
 
   _call(method, params = {}, timeoutMs) {
@@ -632,6 +663,7 @@ export class TerminalSocket {
   /// caller that wants it says so by asking again, rather than by holding a
   /// promise nothing will settle.
   _reportLost() {
+    this._liveness = null;
     // Every pending ack was read on the wire that just went: the bridge it would
     // report to cannot be reached, and the next attach rebases each cursor.
     for (const entry of this._terms.values()) this._cancelPendingAck(entry);

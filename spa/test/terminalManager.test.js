@@ -56,11 +56,17 @@ const { followTerminalDevice, provideTerminalSessions, terminalManager } = await
 /** Every device a terminal session was asked for, and whether the mint answers.
  *  Minting one is the connection layer's — it owns that device's rendezvous —
  *  so here it is a double the test drives. */
-const mints = { asked: [], refuse: false };
+const mints = { asked: [], refuse: false, pending: null, released: [] };
 provideTerminalSessions(async (deviceId) => {
   mints.asked.push(deviceId);
   if (mints.refuse) throw new Error(`cannot reach ${deviceId}`);
-  return { sessionId: `sess-${deviceId}`, sessionKeyB64: `key-${deviceId}`, deviceId };
+  if (mints.pending) return mints.pending(deviceId);
+  return {
+    sessionId: `sess-${deviceId}`,
+    sessionKeyB64: `key-${deviceId}`,
+    deviceId,
+    release: () => mints.released.push(deviceId),
+  };
 });
 
 const settle = async () => {
@@ -91,6 +97,8 @@ beforeEach(() => {
   contexts.clear();
   mints.asked.length = 0;
   mints.refuse = false;
+  mints.pending = null;
+  mints.released.length = 0;
 });
 
 describe("the carrier the terminals are given", () => {
@@ -127,7 +135,8 @@ describe("the device the terminals follow", () => {
     await settle();
 
     expect(mints.asked).toEqual(["dev-b"]);
-    expect(socket.adopted).toEqual([{ sessionId: "sess-dev-b", sessionKeyB64: "key-dev-b", deviceId: "dev-b" }]);
+    expect(socket.adopted).toEqual([expect.objectContaining({ sessionId: "sess-dev-b", sessionKeyB64: "key-dev-b", deviceId: "dev-b" })]);
+    expect(mints.released).toEqual(["dev-b"]);
   });
 
   it("the same device mints nothing", async () => {
@@ -140,6 +149,76 @@ describe("the device the terminals follow", () => {
 
     expect(mints.asked).toEqual([]);
     expect(socket.adopted).toEqual([]);
+  });
+
+  it("mints a fresh session when the same device gets a replacement peer link", async () => {
+    const term = { id: "replacement-term-b" };
+    live("dev-b", { peerLink: { term } });
+    const socket = socketOn("dev-b");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    followTerminalDevice({ freshSession: true });
+    await settle();
+
+    expect(mints.asked).toEqual(["dev-b"]);
+    expect(socket.adoptedWith).toEqual([term]);
+    expect(socket.carriers).toEqual([null, term]);
+  });
+
+  it("recognizes a replacement carrier even when the caller does not flag it fresh", async () => {
+    const term = { id: "new-term-b" };
+    live("dev-b", { peerLink: { term } });
+    const socket = socketOn("dev-b");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    followTerminalDevice();
+    await settle();
+
+    expect(mints.asked).toEqual(["dev-b"]);
+    expect(socket.adoptedWith).toEqual([term]);
+  });
+
+  it("can retry the same follow intent after its mint is refused", async () => {
+    const term = { id: "term-b" };
+    live("dev-b", { peerLink: { term } });
+    socketOn("dev-b");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+    mints.refuse = true;
+
+    followTerminalDevice({ freshSession: true });
+    await settle();
+    mints.refuse = false;
+    followTerminalDevice({ freshSession: true });
+    await settle();
+
+    expect(mints.asked).toEqual(["dev-b", "dev-b"]);
+  });
+
+  it("does not let an older mint overwrite the session for a newer peer link", async () => {
+    const firstTerm = { id: "first-term-b" };
+    const secondTerm = { id: "second-term-b" };
+    const answers = [];
+    mints.pending = (deviceId) => new Promise((resolve) => answers.push(() => resolve({
+      sessionId: `sess-${answers.length}-${deviceId}`,
+      sessionKeyB64: `key-${answers.length}-${deviceId}`,
+      deviceId,
+      release: () => mints.released.push(deviceId),
+    })));
+    live("dev-b", { peerLink: { term: firstTerm } });
+    const socket = socketOn("dev-b");
+    App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
+
+    followTerminalDevice({ freshSession: true });
+    await Promise.resolve();
+    live("dev-b", { peerLink: { term: secondTerm } });
+    followTerminalDevice({ freshSession: true });
+    await Promise.resolve();
+    answers[1]();
+    await settle();
+    answers[0]();
+    await settle();
+
+    expect(socket.adoptedWith).toEqual([secondTerm]);
   });
 
   // The session is minted over a relay round trip, and the shells can move
@@ -236,7 +315,7 @@ describe("the device the terminals follow", () => {
 
     await settle();
 
-    expect(socket.adopted).toEqual([{ sessionId: "sess-dev-b", sessionKeyB64: "key-dev-b", deviceId: "dev-b" }]);
+    expect(socket.adopted).toEqual([expect.objectContaining({ sessionId: "sess-dev-b", sessionKeyB64: "key-dev-b", deviceId: "dev-b" })]);
     expect(socket.carriers).toEqual([term]);
   });
 
@@ -275,7 +354,7 @@ describe("the device the terminals follow", () => {
     expect(socket.deviceId).toBe("dev-a");
   });
 
-  it("followTerminalDevice hands over the route device's peer term channel", () => {
+  it("followTerminalDevice hands over the route device's peer term channel", async () => {
     const term = { id: "term-b" };
     live("dev-a", { peerLink: { term: { id: "term-a" } } });
     live("dev-b", { peerLink: { term } });
@@ -283,6 +362,7 @@ describe("the device the terminals follow", () => {
     const socket = socketOn("dev-b");
 
     followTerminalDevice();
+    await settle();
 
     expect(socket.carriers.at(-1)).toBe(term);
   });

@@ -453,11 +453,14 @@ describe("an account with more than one device", () => {
   // which hands the reader whichever one happens to hold the same numbered
   // project. Creation already knows the machine it asked, so the route says it.
   it("opens a new project on the machine it was made on", () => {
-    App.selectedDeviceId = "dev-2";
+    App.selectedDeviceId = "dev-1";
+    App.deviceFilter = "dev-1";
     twoDevices();
 
     openNewProject();
-    newRepoSheet.mock.calls[0][0]({ project_id: "project-1", base_branch: "main" });
+    const [done, options] = newRepoSheet.mock.calls[0];
+    expect(options.defaultDeviceId).toBe("dev-1");
+    done({ project_id: "project-1", base_branch: "main" }, { id: "dev-2", name: "laptop" });
 
     expect(navigate).toHaveBeenCalledWith({
       name: "branch",
@@ -466,6 +469,26 @@ describe("an account with more than one device", () => {
       branch: "main",
       tab: "changes",
     });
+  });
+
+  it("defaults project creation to the sidebar device instead of the remembered home device", () => {
+    App.selectedDeviceId = "dev-1";
+    App.deviceFilter = "dev-2";
+    twoDevices();
+
+    openNewProject();
+
+    expect(newRepoSheet.mock.calls[0][1].defaultDeviceId).toBe("dev-2");
+  });
+
+  it("leaves the project device unselected when the sidebar shows all devices", () => {
+    App.selectedDeviceId = "dev-1";
+    App.deviceFilter = null;
+    twoDevices();
+
+    openNewProject();
+
+    expect(newRepoSheet.mock.calls[0][1].defaultDeviceId).toBeNull();
   });
 });
 

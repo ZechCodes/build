@@ -49,7 +49,7 @@ import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
 import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
-import { creationTarget, paintDeviceState, verbCall } from "./inboxDevices.js";
+import { creationCall, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import {
@@ -461,21 +461,22 @@ function createInBlock(projectKey) {
 }
 
 /** The one control above every block, and the rail head's own: a project the
- *  account does not have yet. It is made where creation goes, over that
- *  machine's own connection; while no machine can answer there is nowhere to
- *  make it, and the rail says so. */
+ * account does not have yet. The sheet honors the rail's device filter or asks
+ * explicitly when the rail is showing every device. */
 export function openNewProject() {
-  const target = creationTarget("No device can take a new project");
-  if (!target) return;
-  openNewRepo((project) => {
+  openNewRepo((project, target) => {
     // The machine that made it is the machine it is on: the answer to a fresh
     // project.create is not a feed row and carries no device of its own, and a
     // device-less route is resolved by asking every machine — which would hand
     // the reader another machine's project of the same number.
-    const route = projectRoute({ ...project, deviceId: target.deviceId });
+    const route = projectRoute({ ...project, deviceId: target.id });
     if (route) goFromInbox(route);
-    refreshFeed();
-  }, target);
+    refreshFeed(target.id);
+  }, {
+    devices: App.devices,
+    defaultDeviceId: App.deviceFilter,
+    callRpcFor: creationCall,
+  });
 }
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */

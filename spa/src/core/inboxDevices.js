@@ -170,6 +170,13 @@ export function creationTarget(refusal) {
   return null;
 }
 
+/** The reconnect-aware caller for an explicitly chosen creation device. */
+export function creationCall(deviceId) {
+  const context = contextFor(deviceId);
+  if (context?.rpc) return context.rpc;
+  return () => Promise.reject(new Error(deviceOfflineNotice(deviceId)));
+}
+
 /**
  * Why creation cannot go anywhere right now.
  *

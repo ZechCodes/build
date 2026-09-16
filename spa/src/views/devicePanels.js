@@ -47,11 +47,12 @@ export async function standUpDevicePanels({ projectsHost, bridgeHost, callRpc, d
   bridgeHost.innerHTML = BRIDGE_PANELS.map((panel) => panel.html()).join("");
   await mountDeviceProjects(projectsHost, {
     callRpc,
+    deviceId: device.id,
     deviceName: device.name,
     // The rail is where the new project is looked for next: the app's own
     // context for this machine reads it again. It has none while the machine
     // has never answered the app itself, and then there is nothing to re-read.
-    onProjectCreated: () => refreshFeed(device.id),
+    onProjectCreated: (_project, target) => refreshFeed(target.id),
   });
   const options = { callRpc, onSaved: () => refreshAccountCatalog(device.id) };
   for (const panel of BRIDGE_PANELS) await panel.mount(bridgeHost, options);

@@ -9,6 +9,15 @@ import { openNewRepo } from "../src/sheets/newRepo.js";
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 let callRpc;
 const openSheet = (onDone) => openNewRepo(onDone, { callRpc, deviceName: "Laptop" });
+const devices = [{ id: "desk", name: "Desktop" }, { id: "lap", name: "Laptop" }];
+const openSelectableSheet = (onDone, defaultDeviceId) => {
+  const calls = {
+    desk: vi.fn(async (method) => method === "settings.get" ? { projects_dir: "/desk-projects" } : { project_id: "desk-project" }),
+    lap: vi.fn(async (method) => method === "settings.get" ? { projects_dir: "/lap-projects" } : { project_id: "lap-project" }),
+  };
+  openNewRepo(onDone, { devices, defaultDeviceId, callRpcFor: (id) => calls[id] });
+  return calls;
+};
 beforeEach(() => {
   vi.resetAllMocks(); document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   callRpc = vi.fn(async (method) => method === "settings.get" ? { projects_dir: "/projects" } : { project_id: "p1" });
@@ -72,4 +81,84 @@ it("shows the message its machine's caller refuses with", async () => {
   callRpc.mockRejectedValueOnce(new Error("Device offline"));
   document.querySelector("#nrdo").click(); await flush();
   expect(document.querySelector("#nrerr").textContent).toBe("Device offline");
+});
+
+it("requires an explicit device when the rail shows all devices", () => {
+  openSelectableSheet();
+  expect(document.querySelector("#nrdevice").value).toBe("");
+  expect(document.querySelector("#nrdevice option").textContent).toBe("Choose a device");
+  document.querySelector("#nrname").value = "docs";
+  document.querySelector("#nraddremote").click();
+  const remote = document.querySelector("[data-source-value]");
+  remote.value = "https://example.com/docs.git"; remote.dispatchEvent(new Event("input"));
+  document.querySelector("#nrdo").click();
+  expect(document.querySelector("#nrerr").textContent).toBe("Choose a device.");
+  expect(document.activeElement).toBe(document.querySelector("#nrdevice"));
+});
+
+it("switches every local operation to the chosen device and clears only machine-local paths", async () => {
+  const done = vi.fn();
+  const calls = openSelectableSheet(done, "desk");
+  document.querySelector("#nrname").value = "suite";
+  document.querySelector("#nraddfolder").click(); await flush();
+  expect(calls.desk).toHaveBeenCalledWith("settings.get");
+  openBrowser.mock.calls[0][0].onChoose("/desk-projects/api");
+  document.querySelector("#nraddremote").click();
+  const remote = document.querySelector("[data-source-value]");
+  remote.value = "https://example.com/web.git"; remote.dispatchEvent(new Event("input"));
+
+  const selector = document.querySelector("#nrdevice");
+  selector.value = "lap"; selector.dispatchEvent(new Event("change"));
+  expect(document.querySelector("#nrname").value).toBe("suite");
+  expect(document.querySelector("[data-source-value]").value).toBe("https://example.com/web.git");
+  expect(document.querySelector("[data-source-row]").textContent).toContain("No folder selected");
+  expect(document.querySelector("#nrerr").textContent).toContain("Choose local folders again");
+
+  document.querySelector("[data-choose-source]").click(); await flush();
+  expect(calls.lap).toHaveBeenCalledWith("settings.get");
+  expect(openBrowser.mock.calls[1][0].startPath).toBe("/lap-projects");
+  expect(openBrowser.mock.calls[1][0].callRpc).toBe(calls.lap);
+  openBrowser.mock.calls[1][0].onChoose("/lap-projects/api");
+  document.querySelector("#nrdo").click(); await flush();
+  expect(calls.lap).toHaveBeenCalledWith("project.create", {
+    name: "suite",
+    sources: [{ path: "/lap-projects/api", name: "api" }, { remote: "https://example.com/web.git", name: "web" }],
+  });
+  expect(done).toHaveBeenCalledWith({ project_id: "lap-project" }, devices[1]);
+});
+
+it("never caches a stale projects folder after returning and switching devices", async () => {
+  let resolveDesk;
+  const desk = vi.fn(() => new Promise((resolve) => { resolveDesk = resolve; }));
+  const lap = vi.fn(async () => ({ projects_dir: "/lap-projects" }));
+  openNewRepo(undefined, { devices, defaultDeviceId: "desk", callRpcFor: (id) => id === "desk" ? desk : lap });
+
+  document.querySelector("#nraddfolder").click();
+  document.querySelector("#nrback").click();
+  const selector = document.querySelector("#nrdevice");
+  selector.value = "lap"; selector.dispatchEvent(new Event("change"));
+  document.querySelector("[data-choose-source]").click(); await flush();
+  expect(openBrowser.mock.calls[0][0].startPath).toBe("/lap-projects");
+
+  resolveDesk({ projects_dir: "/desk-projects" }); await flush();
+  document.querySelector("#nrback").click();
+  document.querySelector("[data-choose-source]").click(); await flush();
+  expect(lap).toHaveBeenCalledTimes(1);
+  expect(openBrowser.mock.calls[1][0].startPath).toBe("/lap-projects");
+});
+
+it("disables device selection while project creation is in flight", async () => {
+  let finishCreate;
+  const lap = vi.fn((method) => method === "project.create"
+    ? new Promise((resolve) => { finishCreate = resolve; })
+    : Promise.resolve({ projects_dir: "/lap-projects" }));
+  openNewRepo(undefined, { devices, defaultDeviceId: "lap", callRpcFor: () => lap });
+  document.querySelector("#nrname").value = "docs";
+  document.querySelector("#nraddremote").click();
+  const remote = document.querySelector("[data-source-value]");
+  remote.value = "https://example.com/docs.git"; remote.dispatchEvent(new Event("input"));
+
+  document.querySelector("#nrdo").click();
+  expect(document.querySelector("#nrdevice").disabled).toBe(true);
+  finishCreate({ project_id: "p1" }); await flush();
 });

@@ -10,6 +10,8 @@ import { esc } from "../core/text.js";
 import { isolationLabel } from "../core/isolation.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { openSetRemote } from "../sheets/setRemote.js";
+import { App } from "../app.js";
+import { creationCall } from "../core/inboxDevices.js";
 
 export function deviceProjectsPanelHtml() {
   return `<div class="panel" data-device-projects>
@@ -41,7 +43,7 @@ const projectRowHtml = (project) => `
  * Mounting is what reads, so a page that reconnects mounts again: a list read
  * over a connection that has gone is a list of what WAS there.
  */
-export async function mountDeviceProjects(host, { callRpc, deviceName, onProjectCreated }) {
+export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName, onProjectCreated }) {
   const panel = host.querySelector("[data-device-projects]");
   const list = panel.querySelector("#projlist");
 
@@ -68,11 +70,15 @@ export async function mountDeviceProjects(host, { callRpc, deviceName, onProject
 
   panel.querySelector("#newrepo").onclick = () =>
     openNewRepo(
-      async (project) => {
+      async (project, target) => {
         await refresh();
-        onProjectCreated?.(project);
+        onProjectCreated?.(project, target);
       },
-      { callRpc, deviceName },
+      {
+        devices: App.devices,
+        defaultDeviceId: deviceId,
+        callRpcFor: (chosenId) => chosenId === deviceId ? callRpc : creationCall(chosenId),
+      },
     );
 
   await refresh();

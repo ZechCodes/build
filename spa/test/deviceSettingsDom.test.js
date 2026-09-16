@@ -106,8 +106,9 @@ describe("the machine's own panels", () => {
 
     document.querySelector("#newrepo").click();
     const addOptions = openNewRepo.mock.calls[0][1];
-    expect(addOptions.deviceName).toBe("Other machine");
-    await addOptions.callRpc("project.create", { name: "docs" });
+    expect(addOptions.defaultDeviceId).toBe("other");
+    expect(addOptions.devices).toContainEqual(expect.objectContaining({ id: "other", name: "Other machine" }));
+    await addOptions.callRpcFor("other")("project.create", { name: "docs" });
     expect(session.call).toHaveBeenLastCalledWith("project.create", { name: "docs" });
 
     document.querySelector("#projlist .setremote").click();

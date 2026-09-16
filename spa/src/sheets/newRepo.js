@@ -1,20 +1,29 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App } from "../app.js";
 import { openBrowser } from "./browser.js";
 
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
-/** Opened with the caller of the machine the project is going on, and that
- *  machine's name: whoever opens the sheet has already resolved which one that
- *  is, so nothing here asks. A caller whose machine goes away refuses on its
- *  own, in that machine's words. */
-export function openNewRepo(onDone, { callRpc, deviceName }) {
+/** The account-wide sheet chooses a device, while a contextual surface can
+ * still pin one caller. Each caller is already bound to its machine and keeps
+ * its own reconnect/offline behavior. */
+export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devices, defaultDeviceId, callRpcFor }) {
   const sheet = $("#sheet"), scrim = $("#scrim");
   const draft = { name: "", sources: [] };
+  const selectable = Array.isArray(devices);
+  const choices = selectable ? devices : [{ id: deviceId || "pinned", name: deviceName }];
+  let selectedDeviceId = defaultDeviceId && choices.some((device) => device.id === defaultDeviceId) ? defaultDeviceId : (selectable ? "" : choices[0].id);
   let active = true, busy = false, serial = 0, version = 0, projectsDir;
+  const selectedDevice = () => choices.find((device) => device.id === selectedDeviceId) || null;
+  const selectedCall = () => selectable ? callRpcFor(selectedDeviceId) : callRpc;
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
   const close = () => { active = false; version += 1; scrim.classList.remove("show"); };
+  const disableForm = (disabled) => sheet.querySelectorAll("button,input,select").forEach((node) => { node.disabled = disabled; });
+  const finish = (project, target) => {
+    close();
+    if (selectable) onDone?.(project, target);
+    else onDone?.(project);
+  };
   const remember = () => {
     if (sheet.querySelector("#nrname")) draft.name = $("#nrname").value;
   };
@@ -27,19 +36,22 @@ export function openNewRepo(onDone, { callRpc, deviceName }) {
   const addSource = (kind) => { const source = { id: ++serial, kind, path: "", remote: "", name: "", base_branch: "", automaticName: true }; draft.sources.push(source); return source; };
   const submit = async (params) => {
     if (busy) return;
+    const target = selectedDevice();
+    if (!target) return;
+    const targetCall = selectedCall();
     busy = true;
     const anchor = sheet.firstElementChild;
-    sheet.querySelectorAll("button,input").forEach((node) => { node.disabled = true; });
+    disableForm(true);
     $("#nrdo").setAttribute("aria-busy", "true"); $("#nrerr").textContent = "";
     try {
-      const project = await callRpc("project.create", params);
+      const project = await targetCall("project.create", params);
       if (!visible(anchor)) return;
-      close(); onDone?.(project);
+      finish(project, target);
     } catch (error) { if (visible(anchor)) $("#nrerr").textContent = error.message; }
     finally {
       busy = false;
       if (visible(anchor)) {
-        sheet.querySelectorAll("button,input").forEach((node) => { node.disabled = false; });
+        disableForm(false);
         $("#nrdo")?.removeAttribute("aria-busy");
       }
     }
@@ -59,6 +71,7 @@ export function openNewRepo(onDone, { callRpc, deviceName }) {
     return null;
   };
   const invalidSource = () => {
+    if (!selectedDevice()) return ["Choose a device.", "#nrdevice"];
     if (!draft.name.trim()) return ["Enter a project name.", "#nrname"];
     if (!draft.sources.length) return ["Add at least one workspace folder.", "#nraddfolder"];
     const names = new Set();
@@ -68,32 +81,69 @@ export function openNewRepo(onDone, { callRpc, deviceName }) {
     }
     return null;
   };
+  const requireDevice = () => {
+    if (selectedDevice()) return true;
+    $("#nrerr").textContent = "Choose a device.";
+    $("#nrdevice")?.focus();
+    return false;
+  };
+  const currentBrowser = (requestVersion, host) => requestVersion === version && visible(host);
+  const loadProjectsDir = async (targetCall, requestVersion, targetId) => {
+    if (projectsDir !== undefined) return true;
+    const nextProjectsDir = (await targetCall("settings.get")).projects_dir;
+    if (requestVersion !== version || targetId !== selectedDeviceId) return false;
+    projectsDir = nextProjectsDir;
+    return true;
+  };
+  const chooseSource = (sourceId, requestVersion, targetId, host, path) => {
+    if (requestVersion !== version || targetId !== selectedDeviceId || !visible(host)) return;
+    const source = draft.sources.find((item) => item.id === sourceId);
+    if (!source) return;
+    source.path = path;
+    if (source.automaticName) source.name = uniqueName(path, source);
+    paint();
+  };
   const browseFor = async (sourceId) => {
     remember(); const requestVersion = ++version;
+    if (!requireDevice()) return;
+    const targetId = selectedDeviceId;
+    const targetCall = selectedCall();
     if (!draft.sources.some((source) => source.id === sourceId)) return;
     sheet.innerHTML = `<h3>Choose folder</h3><p class="sub">Choose a folder to add to ${esc(draft.name.trim() || "this project")}.</p><div id="nrbrowser"></div><button class="btn" id="nrback" type="button">Back</button><div class="adderr" id="nrerr" role="status"></div>`;
     $("#nrback").onclick = paint;
     try {
-      if (projectsDir === undefined) projectsDir = (await callRpc("settings.get")).projects_dir;
+      if (!await loadProjectsDir(targetCall, requestVersion, targetId)) return;
       const host = $("#nrbrowser");
-      if (requestVersion !== version || !visible(host)) return;
+      if (!currentBrowser(requestVersion, host)) return;
       if (!projectsDir) throw new Error("This device did not return a projects folder.");
-      await openBrowser({ title: "Choose a workspace folder", gitOnly: false, allowCreateDirectory: true, startPath: projectsDir, callRpc, container: host, onChoose: (path) => {
-        if (requestVersion !== version || !visible(host)) return;
-        const source = draft.sources.find((item) => item.id === sourceId);
-        if (!source) return;
-        source.path = path; if (source.automaticName) source.name = uniqueName(path, source); paint();
-      }});
-    } catch (error) { if (requestVersion === version && active) $("#nrerr").textContent = error.message; }
+      await openBrowser({ title: "Choose a workspace folder", gitOnly: false, allowCreateDirectory: true, startPath: projectsDir, callRpc: targetCall, container: host, onChoose: (path) => chooseSource(sourceId, requestVersion, targetId, host, path) });
+    } catch (error) { if (currentBrowser(requestVersion, $("#nrbrowser"))) $("#nrerr").textContent = error.message; }
   };
   const paintSources = () => {
     version += 1;
-    sheet.innerHTML = `<h3>Add project</h3><p class="sub">Add Git remotes or folders from ${esc(deviceName)}. Each becomes a folder in the project.</p><form id="nrform">
+    const target = selectedDevice();
+    const selector = selectable ? `<div class="field"><label for="nrdevice">Device</label><select id="nrdevice"><option value="">Choose a device</option>${choices.map((device) => `<option value="${esc(device.id)}"${device.id === selectedDeviceId ? " selected" : ""}>${esc(device.name)}</option>`).join("")}</select></div>` : "";
+    const subtitle = target ? `Add Git remotes or folders from ${esc(target.name)}. Each becomes a folder in the project.` : "Choose the device where this project will be created.";
+    sheet.innerHTML = `<h3>Add project</h3><p class="sub">${subtitle}</p><form id="nrform">
+      ${selector}
       <div class="field"><label for="nrname">Project name</label><input id="nrname" required value="${esc(draft.name)}"></div>
       <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
       <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
     $("#nrcancel").onclick = close;
-    $("#nraddfolder").onclick = () => { remember(); void browseFor(addSource("path").id); };
+    if (selectable) $("#nrdevice").onchange = (event) => {
+      remember();
+      selectedDeviceId = event.target.value;
+      projectsDir = undefined;
+      let cleared = false;
+      draft.sources.forEach((source) => { if (source.kind === "path" && source.path) { source.path = ""; cleared = true; } });
+      paint();
+      if (cleared) $("#nrerr").textContent = "Choose local folders again for the selected device.";
+    };
+    $("#nraddfolder").onclick = () => {
+      remember();
+      if (!requireDevice()) return;
+      void browseFor(addSource("path").id);
+    };
     $("#nraddremote").onclick = () => { remember(); const source = addSource("remote"); paint(); $(`#nrsource-${source.id}`)?.focus(); };
     sheet.querySelectorAll("[data-source-value]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceValue)); source.remote = input.value; if (source.automaticName) { source.name = uniqueName(input.value, source); $(`#nrmount-${source.id}`).value = source.name; } });
     sheet.querySelectorAll("[data-source-name]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceName)); source.name = input.value; source.automaticName = false; });

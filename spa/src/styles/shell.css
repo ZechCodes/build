@@ -405,18 +405,25 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    issue the route stands on wears the composer's focused look. The unrouted
    captures stand above every block on their own. */
 .inbox-unsorted:not(:empty) { display:flex; flex-direction:column; gap:4px; }
-/* Nested inside the rail's --panel, so the block is a step of tone with a
-   radius and no outline; the standing block wears the accent bar down its
-   leading edge, the same mark the standing row wears. */
-.inbox-project { position:relative; border:0; border-radius:10px; background:var(--panel2);
-  padding:5px 5px 6px; margin-bottom:0;
+/* The blocks are bands of the rail, not cards in it: each one bleeds back
+   through the list's side padding to the rail's own edges, so a block has no
+   right edge to read as a border, and the standing block's accent bar sits on
+   the rail's leading edge the way the commit rail's does. The band's inset
+   pays the padding it swallowed plus the boxed block's old 5px, so the
+   chevron, the + and the rows keep the column they stood in. The bands
+   separate by the gap between them, never by a line. The standing block is
+   its fill alone: the accent bar belongs to the standing ROW inside it, and a
+   second bar on the band drew the same mark twice. */
+.inbox-projects { display:flex; flex-direction:column; gap:8px; }
+.inbox-project { position:relative; border:0; border-radius:0; background:var(--panel2);
+  --inbox-band-bleed:calc(10px + env(safe-area-inset-left, 0px));
+  margin:0 -10px 0 calc(var(--inbox-band-bleed) * -1);
+  padding:5px 15px 6px calc(var(--inbox-band-bleed) + 5px);
   transition:background-color .12s ease, box-shadow .12s ease; }
-.inbox-project.active { background:var(--accent-soft);
-  box-shadow:inset 3px 0 0 var(--accent-fill, var(--accent)); }
-/* A block with nothing live is flat: no box, just its head and its quiet rows.
-   The 5px inset is the boxed block's border + padding, so the chevron and the
-   + stand in the same column either way. */
-.inbox-project.inbox-flat { border:0; box-shadow:none; background:none; padding:0 5px; }
+.inbox-project.active { background:var(--accent-soft); }
+/* A block with nothing live is flat: no band, just its head and its quiet
+   rows on the same column as a boxed block's. */
+.inbox-project.inbox-flat { border:0; box-shadow:none; background:none; padding-top:0; padding-bottom:0; }
 .inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 0; }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg, .inbox-project-settings svg { width:16px; height:16px; display:block; }
 /* The chevron's column is the rows' state-dot column: the rows sit 2px in and

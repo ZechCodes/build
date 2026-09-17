@@ -93,7 +93,7 @@ const flush = async () => {
 const warmTree = worktreeOf({ "src/a.js": "new line" });
 const warmStatus = () => warmTree.status({ head: "abc", stat: { insertions: 1, deletions: 0 } });
 
-const snapshot = (items) => ({ items, plans: [], runs: [], externalWorktrees: [], projects: [], primaryChanges: [] });
+const snapshot = (items) => ({ items, plans: [], runs: [], externalWorktrees: [], projects: [] });
 
 /** What subscribers get: the merge, with every device's own view beside it. */
 const merged = (byDevice) => ({ ...snapshot(Object.values(byDevice).flatMap((view) => view.items)), devices: byDevice });

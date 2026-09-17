@@ -26,7 +26,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: async () => {},
-  primaryRunIdFor: () => null,
 }));
 vi.mock("../src/core/inboxView.js", () => ({
   markSeen: async () => {},

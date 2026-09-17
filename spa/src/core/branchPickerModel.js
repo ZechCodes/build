@@ -10,7 +10,7 @@
 // a landing place, and orders nothing of its own.
 
 import { fuzzyRank } from "./fuzzy.js";
-import { primaryAdoptScope, worktreeAdoptScope } from "./adoption.js";
+import { worktreeAdoptScope } from "./adoption.js";
 import { branchNamePreview } from "./toolbarModel.js";
 
 /** What each row promises, in the words the human reads on it. */
@@ -34,12 +34,6 @@ const runAdopt = (scope) => ({ method: "run.adopt", params: scope });
  */
 const HOLDER_START = {
   run: () => ({ intent: "open", detail: "open in a run", call: null, emptyCheckout: false }),
-  primary_checkout: (projectId) => ({
-    intent: "adopt",
-    detail: "checked out in the primary checkout",
-    call: runAdopt(primaryAdoptScope(projectId)),
-    emptyCheckout: false,
-  }),
   external_worktree: (projectId, holder) => ({
     intent: "adopt",
     detail: "checked out in another worktree",
@@ -81,9 +75,9 @@ const cutStart = (projectId, query) => ({
 
 /**
  * Where a pressed row lands. Every checkout of this project — a run, an
- * adopted worktree, the primary checkout, a branch just cut — is opened by the
- * branch it is on, so one route serves them all. A row with no branch of its
- * own learns it from the answer that made it.
+ * adopted worktree, a branch just cut — is opened by the branch it is on, so
+ * one route serves them all. A row with no branch of its own learns it from the
+ * answer that made it.
  *
  * The composer is focused for a checkout with nobody in it, which opens on the
  * ghost composer where the first message belongs; a run already has a

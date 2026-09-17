@@ -226,17 +226,10 @@ const pendingItem = (row) => ({
  * on its own until its record lands under the same id, at which point the record
  * is the row and the placeholder is gone.
  *
- * One card is listed under no id at all: a project's primary checkout is the
- * repository, and it carries a null `worktree_id`, `run_id` and `issue_id`.
- * Adopting it is the verb that acts on that card, so its row names the primary
- * of a project instead, and that is the third way a row finds its card.
  */
 export function mergePendingRows(items = [], pending = []) {
   const rows = [...(items || [])];
   const cardOf = (row) => (item) => {
-    // The account-wide name of the project, not the bare id one machine minted:
-    // every machine has a `proj-1`, and the rail lists all of them.
-    if (row.primary) return !!item.primary && item.projectKey === row.projectKey;
     const id = entityIdOf(item);
     return id !== null && (id === row.entity_id || id === row.checkout_id);
   };
@@ -285,8 +278,8 @@ const ms = (iso) => {
 };
 
 /** What names a row in the DOM — the one name every row has. Usually the
- *  entity id; a project's primary checkout is the repository, which takes no
- *  attention and has no entity, and it is still a row you open and clear.
+ *  entity id; a checkout nobody has claimed has no entity, and it is still a
+ *  row you open and clear.
  *
  *  A row with no entity is named by its project, and a project is only named
  *  once you also say which device it is on (core/deviceKey.js): two machines
@@ -300,14 +293,13 @@ export const entryKeyOf = (item) => {
 
 /**
  * How `entity.dismiss` names the row being cleared. An entity is named by its
- * id; a row with no entity is named by what it is: the project's own checkout
- * (`primary: true`), or a branch in the project. In either case the bridge
- * records the current message boundary, and a later user or agent message
- * clears that marker. Null means the row cannot be named on the wire.
+ * id; a row with no entity is named by what it is, a branch in the project. In
+ * either case the bridge records the current message boundary, and a later user
+ * or agent message clears that marker. Null means the row cannot be named on
+ * the wire.
  */
 export function dismissParamsOf(entry) {
   if (entry.entityId) return { entity_id: entry.entityId };
-  if (entry.primary && entry.projectId) return { project_id: entry.projectId, primary: true };
   if (entry.projectId && entry.branch) return { project_id: entry.projectId, branch: entry.branch };
   return null;
 }
@@ -411,7 +403,6 @@ function toCaptureEntry(item) {
     canFinish: false,
     merged: false,
     warnings: [],
-    primary: false,
     facts: "",
     route: entryRoute(item),
     // What the user said is when they said it. A capture this client is still
@@ -474,7 +465,6 @@ function toEntry(item) {
     // fate turns on when its branch is deleted.
     merged: item.state === "merged",
     warnings: warningsOf(item),
-    primary: !!item.primary,
     facts: entryFactsText(item),
     route: entryRoute(item),
     anchorMs: ms(item.anchor),

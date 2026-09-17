@@ -3,9 +3,9 @@
 // then routes every call through the adopted run_id. Adoption happens at most
 // once; a refused adopt leaves the checkout un-adopted so the next action retries.
 //
-// Two checkouts adopt this way and they take the same path: an external
-// worktree (`worktree_id`) and the project's primary checkout (`primary: true`),
-// the repo root as a super-worktree. Only the scope the adopt names differs.
+// One checkout adopts this way: an external worktree (`worktree_id`), which is
+// the only kind of checkout there is to claim. A project's own checkout is the
+// template its workspaces are cut from, and the bridge refuses an adopt of it.
 
 import { replyOrNothing } from "./session.js";
 
@@ -24,10 +24,6 @@ const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 /** The `run.adopt` params naming one external worktree — the shape both the
  *  transparent adopter and an explicit adoption send, defined once. */
 export const worktreeAdoptScope = (projectId, worktreeId) => ({ project_id: projectId, worktree_id: worktreeId });
-
-/** The `run.adopt` params naming a project's primary checkout, adopted as a
- *  super-worktree: what it is, not an id. */
-export const primaryAdoptScope = (projectId) => ({ project_id: projectId, primary: true });
 
 /** A run-RPC caller for one checkout that transparently adopts on first use.
  *  `adoptScope` is the run.adopt params naming that checkout. */
@@ -98,18 +94,13 @@ export function createAdoptingCall(call, projectId, worktreeId) {
   return createScopedAdoptingCall(call, worktreeAdoptScope(projectId, worktreeId));
 }
 
-/** A run-RPC caller for a project's primary checkout — the repo root, adopted
- *  as a super-worktree. The bridge enforces one owner per project, so a reload
- *  or a second browser converges on the run that already owns it. */
-export function createPrimaryAdoptingCall(call, projectId) {
-  return createScopedAdoptingCall(call, primaryAdoptScope(projectId));
-}
-
 /** What checkout a scope names, as one string — the key an adopter is kept
- *  under. A scope Build already owns (a run) needs no adopter and has no key. */
+ *  under. A scope Build already owns (a run) needs no adopter and has no key,
+ *  and neither has one that names no worktree: an external worktree is the only
+ *  thing left to adopt. */
 function checkoutKey(scope) {
-  if (!scope || !scope.project_id || scope.run_id) return null;
-  return scope.worktree_id ? `worktree:${scope.worktree_id}` : `primary:${scope.project_id}`;
+  if (!scope || !scope.project_id || scope.run_id || !scope.worktree_id) return null;
+  return `worktree:${scope.worktree_id}`;
 }
 
 /**
@@ -131,12 +122,7 @@ export function createAdopters(call) {
     const key = checkoutKey(scope);
     if (!key) return null;
     if (!byCheckout.has(key)) {
-      byCheckout.set(
-        key,
-        scope.worktree_id
-          ? createAdoptingCall(call, scope.project_id, scope.worktree_id)
-          : createPrimaryAdoptingCall(call, scope.project_id),
-      );
+      byCheckout.set(key, createAdoptingCall(call, scope.project_id, scope.worktree_id));
     }
     return byCheckout.get(key);
   };

@@ -1,5 +1,5 @@
 // The Files tab — a worktree browser shared by all three surfaces (task,
-// external worktree, primary "main" checkout). Left pane: one-directory-at-a-time
+// external worktree, plain folder). Left pane: one-directory-at-a-time
 // tree (fs.tree) with a breadcrumb and a `..` row below the root. Right pane: a
 // per-type preview of the selected file (fs.read).
 //
@@ -263,8 +263,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     treeEl.querySelectorAll(".ffile").forEach((row) => (row.onclick = () => selectFile(joinPath(dir, row.dataset.file), row)));
   };
 
-  // The local cache's address for one directory's listing. A primary checkout
-  // names no entity and takes no part.
+  // The local cache's address for one directory's listing. A project-scoped
+  // one names no entity and takes no part.
   const cacheEntityId = () => directoryCacheId(scope);
   const treeAddress = (path) =>
     cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "tree", sub: path }) || null : null;

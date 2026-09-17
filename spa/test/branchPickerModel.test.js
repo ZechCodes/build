@@ -70,13 +70,12 @@ describe("the branch picker's rows", () => {
     expect(row.detail).toContain("worktree");
   });
 
-  it("adopts the primary checkout by what it is, not by an id", () => {
-    const [row] = rowsFor([branch("main", { is_current: true, ...heldBy("primary_checkout", "wt-root") })]);
-    expect(row).toMatchObject({
-      verb: INTENT_VERB.adopt,
-      call: { method: "run.adopt", params: { project_id: "p1", primary: true } },
-    });
-    expect(row.detail).toContain("primary");
+  // The project's own repository is not a place to work: the bridge refuses an
+  // adopt of it, so the row says the branch is taken and asks for nothing.
+  it("leaves a branch the project's own repository holds alone", () => {
+    const [row] = rowsFor([branch("main", { is_current: true, ...heldBy("project_repository", "wt-root") })]);
+    expect(row).toMatchObject({ verb: INTENT_VERB.open, call: null });
+    expect(row.detail).toContain("elsewhere");
   });
 
   it("leaves a branch held by a checkout this build has no name for alone, asking the bridge for nothing", () => {

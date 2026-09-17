@@ -1,5 +1,5 @@
 // The unified tab-row helper shared by every worktree-backed surface (task,
-// external worktree, primary "main" checkout, plan). DOM-light: it renders and
+// external worktree, plan). DOM-light: it renders and
 // owns the `.tabs` row (selection, closable ×, the new-tab `+`, the trailing
 // right cluster) — content painting stays with the views, which mount into
 // their own `#tabbody`.

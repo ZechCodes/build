@@ -18,7 +18,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
   },
   deliverFeed: () => subscribers.forEach((fn) => fn(merged)),
   dropFeedDevice: () => {},
-  primaryRunIdFor: () => null,
   refreshFeed: () => {},
   startFeed: () => {},
   stopFeed: () => {},
@@ -35,7 +34,6 @@ const viewFor = (deviceId) => ({
   runs: [row(deviceId, `${deviceId}-run`)],
   externalWorktrees: [row(deviceId, `${deviceId}-wt`)],
   pending: [row(deviceId, `${deviceId}-pending`)],
-  primaryChanges: [row(deviceId, `${deviceId}-primary`)],
   projects: [row(deviceId, `${deviceId}-project`)],
 });
 

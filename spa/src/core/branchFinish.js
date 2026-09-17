@@ -49,15 +49,14 @@ function branchFinishOptions(branch) {
  * The close-out control for one `branch.get` row: `{ shown, options }`.
  *
  * `shown` false hides it outright — a branch no checkout on this device carries
- * has nothing to delete, and a project's primary checkout IS the repository, so
- * there is nothing to file away and everything to lose. `can_finish` is the
+ * has nothing to delete. `can_finish` is the
  * bridge's own answer to "is there anything here to finish at all"; it is a
  * structural fact, never a judgement about the state of the work, so a shown
  * control is always ready to press.
  */
 export function branchCloseout(row) {
   const hidden = { shown: false, options: [] };
-  if (!row || row.primary || !row.can_finish) return hidden;
+  if (!row || !row.can_finish) return hidden;
   if (!row.run_id && !row.worktree_id) return hidden;
   return { shown: true, options: branchFinishOptions(row.branch) };
 }

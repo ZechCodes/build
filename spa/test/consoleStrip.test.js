@@ -151,9 +151,12 @@ describe("the head the mount paints", () => {
     expect(region().querySelector(".console-controls .console-new")).toBeNull();
   });
 
-  it("offers no + where there is no checkout to open a shell in", async () => {
-    bridge.call = vi.fn(async () => ({ project_id: "p1", branch: "loose", run_id: null, worktree_id: null, primary: false }));
-    panel = mountConsole(region(), branchAddress({ branch: "loose" }));
+  // A row that names neither a run nor a worktree still has a directory — the
+  // project's own. It is a route naming no project at all that has nowhere to
+  // open a shell.
+  it("offers no + where there is no directory to open a shell in", async () => {
+    bridge.call = vi.fn(async () => ({ branch: "loose", run_id: null, worktree_id: null }));
+    panel = mountConsole(region(), branchAddress({ branch: "loose", projectId: null }));
     await flush();
     await settleMotion();
     expect(strip()).toBeTruthy();

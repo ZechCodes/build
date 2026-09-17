@@ -4,7 +4,6 @@ import {
   ADOPT_REASK_MS,
   createAdopters,
   createAdoptingCall,
-  createPrimaryAdoptingCall,
 } from "../src/core/adoption.js";
 
 describe("createAdoptingCall", () => {
@@ -103,7 +102,7 @@ describe("an adoption the browser stopped waiting for", () => {
       }
       return { ok: true };
     });
-    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    const adopting = createAdoptingCall(call, "proj-1", "wt-late");
 
     const first = adopting.runCall("agent.start", {});
     await vi.advanceTimersByTimeAsync(0);
@@ -169,7 +168,7 @@ describe("an adoption the browser stopped waiting for", () => {
       if (method === "run.adopt") throw timedOut();
       return { ok: true };
     });
-    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    const adopting = createAdoptingCall(call, "proj-1", "wt-silent");
 
     const action = adopting.runCall("agent.start", {});
     action.catch(() => {});
@@ -181,34 +180,35 @@ describe("an adoption the browser stopped waiting for", () => {
   });
 });
 
-// The primary checkout adopts through the same latch: only the scope it names
-// differs (the repo root has no worktree id), and the run it mints owns the
-// repository the user works in directly.
-describe("createPrimaryAdoptingCall", () => {
-  it("adopts the project's primary checkout, then routes through the minted run", async () => {
+// The latch itself: what an adopter does once the checkout is claimed, and what
+// it does when a run already owns it. An external worktree is the only kind of
+// checkout there is to adopt — a project's own is the template its workspaces
+// are cut from, and the bridge refuses an adopt of it.
+describe("the adopted run an adopter holds", () => {
+  it("adopts the worktree, then routes through the minted run", async () => {
     const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-main" } : { ok: true }));
-    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    const adopting = createAdoptingCall(call, "proj-1", "wt-1");
 
     await adopting.runCall("agent.start", { provider: "claude" });
 
-    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", { project_id: "proj-1", primary: true });
+    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", { project_id: "proj-1", worktree_id: "wt-1" });
     expect(call).toHaveBeenNthCalledWith(2, "agent.start", { run_id: "run-main", provider: "claude" });
     expect(adopting.adoptedRunId()).toBe("run-main");
   });
 
   it("mints the run on the picked provider", async () => {
     const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-main" } : { ok: true }));
-    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    const adopting = createAdoptingCall(call, "proj-1", "wt-1");
     adopting.setAdoptParams({ provider: "codex" });
     await adopting.adopt();
-    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", { project_id: "proj-1", primary: true, provider: "codex" });
+    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", { project_id: "proj-1", worktree_id: "wt-1", provider: "codex" });
   });
 
   // Reconnect after a reload: the run that already owns the checkout is learned
   // read-only, so nothing is minted and every later call routes through it.
   it("binds to a run that already owns the checkout without adopting", async () => {
     const call = vi.fn(async () => ({ ok: true }));
-    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    const adopting = createAdoptingCall(call, "proj-1", "wt-1");
     adopting.seedAdoptedRun("run-existing");
     expect(adopting.adoptedRunId()).toBe("run-existing");
 
@@ -220,7 +220,7 @@ describe("createPrimaryAdoptingCall", () => {
 
   it("ignores a seed once the checkout has been adopted here", async () => {
     const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-mine" } : { ok: true }));
-    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    const adopting = createAdoptingCall(call, "proj-1", "wt-1");
     await adopting.adopt();
     adopting.seedAdoptedRun("run-other");
     expect(adopting.adoptedRunId()).toBe("run-mine");
@@ -232,7 +232,7 @@ describe("createPrimaryAdoptingCall", () => {
   it("releases the checkout so the next action adopts again", async () => {
     let minted = 0;
     const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: `run-${++minted}` } : { ok: true }));
-    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    const adopting = createAdoptingCall(call, "proj-1", "wt-1");
     await adopting.adopt();
     adopting.releaseAdoptedRun();
     expect(adopting.adoptedRunId()).toBe(null);
@@ -269,16 +269,12 @@ describe("createAdopters", () => {
     expect(other).not.toBe(one);
   });
 
-  it("adopts the primary checkout when the scope names no worktree", async () => {
-    const call = scopeCall();
-    const adopterFor = createAdopters(call);
-    await adopterFor({ project_id: "p1" }).adopt();
-    expect(call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", primary: true });
-  });
-
-  it("has no adopter for a checkout Build already owns, or for no checkout at all", () => {
+  // A scope that names no worktree names nothing to adopt: a project-scoped one
+  // is the project's own directory, and the bridge refuses an adopt of it.
+  it("has no adopter for a checkout Build already owns, for a project's own directory, or for no checkout at all", () => {
     const adopterFor = createAdopters(scopeCall());
     expect(adopterFor({ run_id: "run-3" })).toBe(null);
+    expect(adopterFor({ project_id: "p1" })).toBe(null);
     expect(adopterFor(null)).toBe(null);
   });
 });

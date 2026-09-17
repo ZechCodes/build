@@ -10,12 +10,12 @@
 // #tabbody is flush against the toolbar, nothing above it spends the height.
 // core/branchFinish.js decides when Done is offered and what it promises.
 //
-// The surface resolves what stands under the branch with `branch.get`: a run,
-// a bare worktree, or the primary checkout. That resolution names the git
-// scope the tab bodies read, and which review plug the Changes rail carries —
-// a run's aggregate review diff (taskReview) or a bare worktree's
-// adopt-on-comment diff (worktreeReview). The primary checkout browses its
-// own commits with no aggregate entry.
+// The surface resolves what stands under the branch with `branch.get`: a run
+// or a bare worktree. That resolution names the git scope the tab bodies read,
+// and which review plug the Changes rail carries — a run's aggregate review
+// diff (taskReview) or a bare worktree's adopt-on-comment diff
+// (worktreeReview). A plain folder has neither: it is the project's own
+// directory, and it browses files with no review entry at all.
 //
 // A branch name comes from the repo: untrusted, and escaped everywhere it is
 // painted.
@@ -60,15 +60,19 @@ import "../styles/surfaces.css";
 const ROW_POLL_MS = 1600;
 
 /** The git scope of what stands under the branch row: exactly one of
- *  { run_id } / { project_id, worktree_id } / { project_id } (primary), or
- *  null when the row names no checkout this device holds. Pure. */
+ *  { run_id } / { project_id, worktree_id } / { project_id }, or null when
+ *  there is no row at all and no project to fall back on.
+ *
+ *  A row that names neither a run nor a worktree is the project's own
+ *  directory — the repository the branch is checked out in, or a plain folder
+ *  with no git in it — and the project alone names that. Pure. */
 export function branchScope(row, projectId) {
   if (!row) return null;
   if (row.run_id) return { run_id: row.run_id };
   const project = row.project_id || projectId;
   if (!project) return null;
   if (row.worktree_id) return { project_id: project, worktree_id: row.worktree_id };
-  return row.primary ? { project_id: project } : null;
+  return { project_id: project };
 }
 
 /** What the Changes rail's review plug is made for — a plug survives repaints
@@ -78,7 +82,7 @@ export function reviewKeyOf(scope) {
   if (!scope) return null;
   if (scope.run_id) return `run:${scope.run_id}`;
   if (scope.worktree_id) return `worktree:${scope.worktree_id}`;
-  return null; // the primary checkout has no aggregate review entry
+  return null; // a plain folder has no aggregate review entry
 }
 
 /** Background adoption may change a Files pane's backing while it owns a
@@ -87,7 +91,7 @@ export function shouldRetainDirtyFilesPane(tab, pane) {
   return tab === "files" && Boolean(pane?.hasUnsavedChanges?.());
 }
 
-const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primary" : "none")}`;
+const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "folder" : "none")}`;
 
 /** Where the Files tab is standing: the URL says, so a sent link opens the same
  *  file and a reload keeps the reader's place. Pure. */
@@ -292,7 +296,7 @@ export async function renderBranch() {
 
   /** The plug for the Changes rail's aggregate entry, made once per backing.
    *  A run reviews through its own diff and verbs; a bare worktree adopts on
-   *  the first comment or action; the primary checkout carries none. */
+   *  the first comment or action; a plain folder carries none. */
   const reviewFor = (scope) => {
     const key = reviewKeyOf(scope);
     if (!key) return null;

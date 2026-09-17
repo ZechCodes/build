@@ -135,7 +135,7 @@ export function mountAgentPane(host, target, { onLive, onExit }) {
 /** Mount the Agent tab's BODY for a worktree: its one agent as a full PTY, with
  *  a quiet chip whenever no session is live.
  *
- *  The same body on every worktree surface (task, external worktree, primary
+ *  The same body on every worktree surface (task, external worktree, plain
  *  checkout, plan). Mounting it starts NOTHING: a worktree no agent has run in
  *  attaches to an empty screen and shows `idleLabel`. An agent begins when a
  *  human→agent verb delivers a turn, never because a tab was opened.

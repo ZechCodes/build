@@ -171,15 +171,15 @@ export const NO_WORKTREE_CHOSEN = "Choose the branch to implement into.";
 
 /**
  * The checkouts an implementation can be sent into: the project's branch rows,
- * minus the ones that cannot host one. The primary checkout is the repository
- * itself, not a worktree to hand over, and a branch already carrying another
- * issue's implementation would make neither issue's diff readable — the bridge
- * refuses both, so neither is offered.
+ * minus the ones that cannot host one. A row that names no worktree has no
+ * checkout to hand over, and a branch already carrying another issue's
+ * implementation would make neither issue's diff readable — the bridge refuses
+ * both, so neither is offered.
  */
 export function worktreeChoices(items, { projectId, issueId = null } = {}) {
   return (items || [])
     .filter((row) => row && row.kind === "branch" && row.project_id === projectId)
-    .filter((row) => row.worktree_id && !row.primary)
+    .filter((row) => row.worktree_id)
     .filter((row) => !row.issue_id || row.issue_id === issueId)
     .map((row) => ({ id: row.worktree_id, label: row.branch || row.title || row.worktree_id }));
 }

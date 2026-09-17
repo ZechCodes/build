@@ -14,7 +14,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
     return () => feedSubscribers.delete(listener);
   },
   refreshFeed: async () => {},
-  primaryRunIdFor: () => null,
   dropFeedDevice: () => {},
   startFeed: () => {},
   stopFeed: () => {},

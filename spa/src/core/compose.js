@@ -157,7 +157,6 @@ export function captureRow(capture, { projectName = "", deviceId = null } = {}) 
     worktree_path: null,
     worktree_id: null,
     run_id: null,
-    primary: false,
     routing,
     question: capture.question || null,
   };

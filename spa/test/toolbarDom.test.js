@@ -69,7 +69,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
   deliverFeed: () => subscribers.forEach((fn) => fn(feed)),
-  primaryRunIdFor: () => null,
   dropFeedDevice: () => {},
 }));
 const notifyError = vi.fn();

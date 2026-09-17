@@ -120,24 +120,29 @@ describe("whose terminals the console holds", () => {
 
   it("scopes a checkout Build never cut to the worktree itself", () => {
     const context = { kind: "branch", projectId: "p1", branch: "loose" };
-    const row = { project_id: "p1", run_id: null, worktree_id: "wt-9", primary: false };
+    const row = { project_id: "p1", run_id: null, worktree_id: "wt-9" };
     expect(consoleScope(context, row)).toEqual({ project_id: "p1", worktree_id: "wt-9" });
   });
 
-  it("scopes main to the primary checkout — the repository itself", () => {
+  // A row that names neither a run nor a worktree is the project's own
+  // directory — the repository this branch is checked out in, or a plain folder
+  // with no git in it. The project alone names it.
+  it("scopes a row with no checkout under it to the project's own directory", () => {
     const context = { kind: "branch", projectId: "p1", branch: "main" };
-    const row = { project_id: "p1", run_id: null, worktree_id: null, primary: true };
-    expect(consoleScope(context, row)).toEqual({ project_id: "p1" });
+    expect(consoleScope(context, { project_id: "p1", run_id: null, worktree_id: null, is_git: false })).toEqual({ project_id: "p1" });
+    expect(consoleScope(context, { project_id: "p1", run_id: null, worktree_id: null })).toEqual({ project_id: "p1" });
+    // The project comes off the route when the row does not carry one.
+    expect(consoleScope(context, { run_id: null, worktree_id: null })).toEqual({ project_id: "p1" });
   });
 
-  it("scopes an issue to the primary checkout, where its agent runs", () => {
+  it("scopes an issue to the project's own checkout, where its agent runs", () => {
     expect(consoleScope({ kind: "issue", projectId: "p1", issueId: "i-1" }, null)).toEqual({ project_id: "p1" });
   });
 
-  it("names no directory when the branch answered with nothing to stand in", () => {
+  it("names no directory when the branch answered with nothing at all", () => {
     const context = { kind: "branch", projectId: "p1", branch: "gone" };
     expect(consoleScope(context, null)).toBeNull();
-    expect(consoleScope(context, { project_id: "p1", run_id: null, worktree_id: null, primary: false })).toBeNull();
+    expect(consoleScope({ kind: "branch", projectId: null, branch: "gone" }, { run_id: null })).toBeNull();
     expect(consoleScope({ kind: "issue", projectId: null, issueId: "i-1" }, null)).toBeNull();
   });
 });

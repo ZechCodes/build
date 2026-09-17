@@ -347,7 +347,6 @@ describe("the feed's cached boot paint", () => {
     runs: [],
     externalWorktrees: [],
     pending: [],
-    primaryChanges: [],
     projects: [],
     ...over,
   });

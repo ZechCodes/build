@@ -12,13 +12,15 @@ import { branchRowIn, deviceFeedNow } from "../core/feedRows.js";
 const NO_SEED = { row: null, defaultTab: "changes" };
 
 /** The one row a project with no git in it has: its folder, browsable in the
- *  Files tab. */
+ *  Files tab. It names no run and no worktree, which is what says the row IS
+ *  the project's own directory — the project alone names it, and that is the
+ *  scope its Files tab and its terminals read under (core/consoleModel.js,
+ *  views/branchView.js branchScope). */
 const folderRow = (project, projectId, branch) => ({
   kind: "branch",
   project_id: projectId,
   project: project.name,
   branch,
-  primary: true,
   is_git: false,
 });
 

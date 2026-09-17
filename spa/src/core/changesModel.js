@@ -72,7 +72,7 @@ export function hasUncommittedChanges(status) {
 
 /** Where the surface opens: on the review aggregate wherever the surface has
  *  one — everything this branch carries against its base is what a reviewer
- *  came to read, committed or not. Without an aggregate (the primary checkout,
+ *  came to read, committed or not. Without an aggregate (a plain folder,
  *  a bare project) it opens on the uncommitted changeset while the tree is
  *  dirty, otherwise at the commit list with nothing selected (a clean branch
  *  gets no commit box). */

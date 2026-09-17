@@ -37,16 +37,13 @@ const GIT_ACTION_RPC = {
 const COMMENTABLE_STATES = ["review", "building"];
 
 // The merge option set. Adopted tasks add "Merge & release" (un-adopt after
-// merge, keeping the user's worktree). A primary run (adopted around the repo
-// root) narrows to commit and push: the bridge refuses merging the primary
-// checkout — its branch is what a merge would target. Descriptions carry the
-// raw base branch — the split button escapes them.
-export function reviewMergeOptions(adopted, base, primary = false) {
+// merge, keeping the user's worktree). Descriptions carry the raw base branch —
+// the split button escapes them.
+export function reviewMergeOptions(adopted, base) {
   const commitAndPush = [
     { id: "commit", label: "Commit", menuLabel: "Commit", description: "commit the work, stay on the branch", busyLabel: "committing…" },
     { id: "push", menuLabel: "Push", description: "commit, then push this branch to origin", busyLabel: "pushing…" },
   ];
-  if (primary) return commitAndPush;
   const options = [
     { id: "merge_prune", label: "Merge", menuLabel: "Merge & clean up", description: `commit, merge into ${base}, remove the worktree + branch`, busyLabel: "merging…" },
     { id: "merge_keep", menuLabel: "Merge & keep worktree", description: `merge into ${base}, keep the worktree and branch`, busyLabel: "merging…" },
@@ -162,7 +159,7 @@ export function createTaskReview({
       const task = getTask();
       if (!task || task.state !== "review") return false;
       mountSplitButton(actions, {
-        options: reviewMergeOptions(task.adopted, task.base_branch || "main", task.primary),
+        options: reviewMergeOptions(task.adopted, task.base_branch || "main"),
         run: (optionId) => runGitAction(optionId, task),
         flight: gitFlight,
         variant: "mini",

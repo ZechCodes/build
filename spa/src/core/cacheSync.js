@@ -84,8 +84,9 @@ const syncContext = (context) =>
   };
 
 /** The git scope a feed row's checkout answers under — the same derivation the
- *  branch surface makes (views/branchView.js branchScope), minus the primary
- *  case: a primary row names no entity, so it never reaches here. */
+ *  branch surface makes (views/branchView.js branchScope), minus the project's
+ *  own directory: a row that names neither a run nor a worktree holds no
+ *  entity, so it never reaches here. */
 function gitScopeOf(row) {
   if (row.kind === "issue") return null;
   if (row.run_id) return { run_id: row.run_id };

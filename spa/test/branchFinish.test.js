@@ -44,13 +44,6 @@ describe("whether a branch can be closed out here", () => {
     expect(branchCloseout(branchRow({ run_id: "run-1", worktree_id: "wt-1" })).shown).toBe(true);
   });
 
-  // The primary checkout IS the repository: there is nothing to file away and
-  // everything to lose. Never offer it.
-  it("hides the control on a project's primary checkout", () => {
-    expect(branchCloseout(branchRow({ primary: true, worktree_id: null, can_finish: false })).shown).toBe(false);
-    expect(branchCloseout(branchRow({ primary: true, run_id: "run-1" })).shown).toBe(false);
-  });
-
   it("hides the control when no checkout on this device carries the branch", () => {
     expect(branchCloseout(null).shown).toBe(false);
     expect(branchCloseout(branchRow({ worktree_id: null, run_id: null })).shown).toBe(false);

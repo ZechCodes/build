@@ -7,7 +7,7 @@
 // worktree adopted earlier still switches to it).
 
 import { describe, it, expect, vi } from "vitest";
-import { startAdoptedAgent, createPrimaryAdoptingCall } from "../src/core/adoption.js";
+import { startAdoptedAgent, createAdoptingCall } from "../src/core/adoption.js";
 
 const fakeAdopting = () => ({
   setAdoptParams: vi.fn(),
@@ -48,15 +48,15 @@ describe("startAdoptedAgent", () => {
     expect(adopting.runCall).toHaveBeenCalledWith("agent.start", { provider: "codex" });
   });
 
-  // The primary checkout starts the same way: the pressed card mints the run
-  // that owns the repo root, then names itself on the start.
-  it("adopts the primary checkout on the provider the card named", async () => {
+  // Through a real adopter: the pressed card mints the run that owns the
+  // checkout, then names itself on the start.
+  it("mints the run on the provider the card named, then starts on it", async () => {
     const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-main" } : { ok: true }));
-    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    const adopting = createAdoptingCall(call, "proj-1", "wt-1");
 
     await startAdoptedAgent(adopting, "claude");
 
-    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", { project_id: "proj-1", primary: true, provider: "claude" });
+    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", { project_id: "proj-1", worktree_id: "wt-1", provider: "claude" });
     expect(call).toHaveBeenNthCalledWith(2, "agent.start", { run_id: "run-main", provider: "claude" });
   });
 });

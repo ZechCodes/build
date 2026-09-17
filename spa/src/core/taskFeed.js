@@ -19,8 +19,8 @@ const watchers = new Map(); // deviceId → the board watcher polling it
 let cadenceMs = null; // the interval the feed is running at, or null while stopped
 
 /** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
- *  pending, projects, primaryChanges, devices}); the current snapshot (if any)
- *  is delivered immediately. Returns unsubscribe. */
+ *  pending, projects, devices}); the current snapshot (if any) is delivered
+ *  immediately. Returns unsubscribe. */
 export function subscribeFeed(fn) {
   subscribers.add(fn);
   if (byDevice.size) fn(merged());
@@ -36,15 +36,6 @@ const merged = () => mergeFeeds(byDevice, App.devices.map((device) => device.id)
 export function deliverFeed() {
   const snapshot = merged();
   subscribers.forEach((fn) => fn(snapshot));
-}
-
-/** The run that owns a project's primary checkout, or null while nobody has
- *  adopted it. The bridge stamps the owner onto the feed's primary-changes
- *  entry, which makes this a READ: a surface can bind to an existing owner
- *  without minting one. A terminal run has let go, so it is reported as null. */
-export function primaryRunIdFor(feed, projectKey) {
-  const entry = ((feed && feed.primaryChanges) || []).find((e) => e.projectKey === projectKey);
-  return (entry && entry.run_id) || null;
 }
 
 /** Read one device — if it can be asked anything at all. A machine that is away,

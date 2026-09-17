@@ -271,8 +271,7 @@ function scopesOf(watcher) {
 }
 
 /** Board scope carries feed-level state only. A surface that watches the board
- *  and reads git (the primary checkout's pane) is trimmed here rather than
- *  refused there. */
+ *  and reads git as well is trimmed here rather than refused there. */
 const kindsFor = (watcher, scope) =>
   scope.kind === "board" ? watcher.kinds.filter((kind) => kind === "state") : watcher.kinds;
 

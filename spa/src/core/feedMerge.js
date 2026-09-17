@@ -24,7 +24,6 @@ const WIRE_FIELDS = Object.freeze({
   runs: "runs",
   externalWorktrees: "external_worktrees",
   pending: "pending",
-  primaryChanges: "primary_changes",
 });
 
 /** The collections a snapshot carries: the board's, in the order the wire names

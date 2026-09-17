@@ -22,13 +22,12 @@ const feedItems = [
 ];
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    fn({ items: feedItems, plans: [], runs: [], externalWorktrees: [], projects: [], primaryChanges: [] });
+    fn({ items: feedItems, plans: [], runs: [], externalWorktrees: [], projects: [] });
     return () => {};
   },
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: () => {},
-  primaryRunIdFor: () => null,
   dropFeedDevice: () => {},
 }));
 

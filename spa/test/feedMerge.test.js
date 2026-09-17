@@ -15,7 +15,6 @@ const board = (over = {}) => ({
   runs: [{ run_id: "run-1", project_id: "proj-1" }],
   external_worktrees: [{ worktree_id: "wt-1", project_id: "proj-2" }],
   pending: [{ entity_id: "wt-9", project_id: "proj-1", state: "creating" }],
-  primary_changes: [{ project_id: "proj-2", run_id: "run-2" }],
   workspace_summaries: [{ workspace_id: "ws-1", work_summary: { pushes: 2, additions: 8, deletions: 1 } }],
   ...over,
 });
@@ -32,7 +31,7 @@ const workspaceList = {
 describe("reading one device's wire", () => {
   it("stamps every row of every collection with deviceId, and projectKey where it names a project_id", () => {
     const view = liveFeedSnapshot(board(), projectList, workspaceList, "dev-a");
-    for (const field of ["items", "plans", "runs", "externalWorktrees", "pending", "primaryChanges"]) {
+    for (const field of ["items", "plans", "runs", "externalWorktrees", "pending"]) {
       expect(view[field], field).toHaveLength(1);
       expect(view[field][0].deviceId, field).toBe("dev-a");
       expect(view[field][0].projectKey, field).toBe(`dev-a/${view[field][0].project_id}`);
@@ -61,7 +60,6 @@ describe("reading one device's wire", () => {
       runs: [],
       externalWorktrees: [],
       pending: [],
-      primaryChanges: [],
       projects: [],
       workspaces: [],
     });
@@ -118,7 +116,7 @@ describe("merging the devices", () => {
       "dev-b/ws-dev-b",
       "dev-c/ws-dev-c",
     ]);
-    for (const field of ["plans", "runs", "externalWorktrees", "pending", "primaryChanges"]) {
+    for (const field of ["plans", "runs", "externalWorktrees", "pending"]) {
       expect(merged[field], field).toEqual([]);
     }
   });

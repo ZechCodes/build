@@ -81,32 +81,6 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     plug.unmount();
   });
 
-  // The bridge refuses merging the primary checkout (its branch is what a merge
-  // would target), so its review surface must not offer it — commit and push are
-  // the git actions that work there.
-  it("offers commit and push, never merge, on a primary run", async () => {
-    const callRpc = (method) =>
-      method === "run.diff" ? Promise.resolve({ patch: PATCH, stat: {}, files: [] }) : Promise.resolve({});
-    const plug = createTaskReview({
-      taskId: "rp",
-      callRpc,
-      getTask: () => ({ ...TASK, branch: "main", adopted: true, primary: true }),
-      isOffline: () => false,
-      onMerged: () => {},
-    });
-    const host = document.createElement("div");
-    const toolbar = document.createElement("div");
-    toolbar.className = "gtmerge";
-    document.body.append(toolbar, host);
-    plug.mount(host, { gitActions: () => toolbar });
-    await vi.advanceTimersByTimeAsync(0);
-
-    const lead = toolbar.querySelector(".btn:not(.caret)");
-    expect(lead.textContent).toBe("Commit");
-    expect(host.querySelector('[data-action="merge_prune"]')).toBe(null);
-    plug.unmount();
-  });
-
   // The reviewer opens the merge menu to reach an option in it. The 1.6s poll
   // must not shut it before they get there.
   it("leaves the open merge menu standing through a poll tick, and still runs its item", async () => {
@@ -154,7 +128,7 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
 
 describe("reviewMergeOptions", () => {
   it("keeps the merge variants for a worktree run", () => {
-    expect(reviewMergeOptions(true, "main", false).map((o) => o.id)).toEqual([
+    expect(reviewMergeOptions(true, "main").map((o) => o.id)).toEqual([
       "merge_prune",
       "merge_keep",
       "merge_release",
@@ -164,9 +138,9 @@ describe("reviewMergeOptions", () => {
     ]);
   });
 
-  it("narrows to commit and push for a primary run", () => {
-    const options = reviewMergeOptions(true, "main", true);
-    expect(options.map((o) => o.id)).toEqual(["commit", "push"]);
-    expect(options[0].label ?? options[0].menuLabel).toBe("Commit");
+  // Only an adopted run can be released back to the user; a run Build cut has
+  // nothing to hand back.
+  it("leaves out Merge & release on a run Build cut itself", () => {
+    expect(reviewMergeOptions(false, "main").map((o) => o.id)).not.toContain("merge_release");
   });
 });

@@ -386,61 +386,6 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(entry.route).toBeNull();
   });
 
-  // The project's own checkout is the one listed card with no id of its own:
-  // adopting it publishes a row naming the primary of the project, and the card
-  // it is running on is right there on the board.
-  it("says on a project's primary card that its checkout is being adopted", () => {
-    const primary = branch({
-      branch: "main",
-      run_id: null,
-      worktree_id: null,
-      primary: true,
-      can_finish: false,
-      anchor: ago(1),
-    });
-    const items = mergePendingRows(
-      [primary],
-      [creating({ entity_id: "run-new", checkout_id: "wt-repo-root", primary: true, title: "relaydb" })],
-    );
-    expect(items).toHaveLength(1);
-    const entries = listed(items);
-    expect(entries).toHaveLength(1);
-    expect(entries[0].key).toBe("branch:dev-1/p1:main");
-    expect(entries[0].facts).toBe("Creating…");
-    expect(entries[0].placeholder).toBe(false);
-  });
-
-  // Two machines both mint a `p1`, so what names the project on a pending row
-  // is the account-wide name. Matching on the bare id would say the laptop's
-  // adopt on the desktop's primary card — whichever of them the merge listed
-  // first.
-  it("says it on the primary card of the device the verb is running on", () => {
-    const primaryOn = (deviceId) =>
-      branch({
-        deviceId,
-        projectKey: `${deviceId}/p1`,
-        branch: "main",
-        run_id: null,
-        worktree_id: null,
-        primary: true,
-        can_finish: false,
-        anchor: ago(1),
-      });
-    const items = mergePendingRows(
-      [primaryOn("dev-2"), primaryOn("dev-1")],
-      [
-        creating({
-          entity_id: "run-new",
-          checkout_id: "wt-repo-root",
-          primary: true,
-          title: "relaydb",
-        }),
-      ],
-    );
-    expect(items).toHaveLength(2);
-    expect(items.filter((item) => item.pending).map((item) => item.projectKey)).toEqual(["dev-1/p1"]);
-  });
-
   it("reads a state it has never heard of as work in flight, not as nothing", () => {
     const entries = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
     expect(entries).toHaveLength(1);
@@ -640,20 +585,16 @@ describe("a row the user cleared", () => {
   });
 
   // What the clear says on the wire: an entity by its id; a row with none by
-  // what it IS — the project's checkout (primary), or a branch in the project.
+  // what it IS — a branch in the project.
   it("names the row being cleared the way the bridge expects", () => {
     const [run] = listed([branch()]);
     expect(dismissParamsOf(run)).toEqual({ entity_id: "run-1" });
-    const [primary] = listed([
-      branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false }),
-    ]);
-    expect(dismissParamsOf(primary)).toEqual({ project_id: "p1", primary: true });
     const [bare] = listed([branch({ run_id: null, issue_id: null, worktree_id: null })]);
     expect(dismissParamsOf(bare)).toEqual({ project_id: "p1", branch: "build/login" });
   });
 
   it("has no name for a row that is neither an entity nor a project's branch", () => {
-    expect(dismissParamsOf({ entityId: null, projectId: "", branch: null, primary: false })).toBeNull();
+    expect(dismissParamsOf({ entityId: null, projectId: "", branch: null })).toBeNull();
   });
 });
 
@@ -1146,8 +1087,8 @@ describe("what names a row", () => {
   });
 
   it("still names a cleared row on the wire by its bare project id", () => {
-    const [entry] = listed([branch({ run_id: null, worktree_id: null, branch: "main", primary: true })]);
-    expect(dismissParamsOf(entry)).toEqual({ project_id: "p1", primary: true });
+    const [entry] = listed([branch({ run_id: null, worktree_id: null, branch: "main" })]);
+    expect(dismissParamsOf(entry)).toEqual({ project_id: "p1", branch: "main" });
   });
 });
 

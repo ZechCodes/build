@@ -340,8 +340,7 @@ describe("the rail's poll on an unchanged conversation", () => {
       startFeed: () => {},
       stopFeed: () => {},
       refreshFeed: async () => {},
-      primaryRunIdFor: () => null,
-    }));
+        }));
     vi.doMock("../src/core/inboxView.js", () => ({
       markSeen: async () => {},
       noteSelfAction: async () => {},

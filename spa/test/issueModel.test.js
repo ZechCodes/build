@@ -230,7 +230,7 @@ describe("assignment targets", () => {
 describe("worktreeChoices", () => {
   const rows = [
     { kind: "branch", project_id: "p1", branch: "feature-x", worktree_id: "wt-1" },
-    { kind: "branch", project_id: "p1", branch: "main", worktree_id: "wt-main", primary: true },
+    { kind: "branch", project_id: "p1", branch: "main", worktree_id: null },
     { kind: "branch", project_id: "p1", branch: "build/other", worktree_id: "wt-2", issue_id: "issue-2" },
     { kind: "branch", project_id: "p1", branch: "build/mine", worktree_id: "wt-3", issue_id: "issue-1" },
     { kind: "branch", project_id: "p2", branch: "elsewhere", worktree_id: "wt-4" },
@@ -244,9 +244,12 @@ describe("worktreeChoices", () => {
     ]);
   });
 
-  it("leaves out the primary checkout and branches another issue is implementing", () => {
+  // A row with no worktree has no checkout to hand over — the project's own
+  // base checkout is listed that way — and a branch another issue is already
+  // implementing into would make neither issue's diff readable.
+  it("leaves out a row with no checkout and branches another issue is implementing", () => {
     const ids = worktreeChoices(rows, { projectId: "p1", issueId: "issue-1" }).map((choice) => choice.id);
-    expect(ids).not.toContain("wt-main");
+    expect(ids).toEqual(["wt-1", "wt-3"]);
     expect(ids).not.toContain("wt-2");
   });
 

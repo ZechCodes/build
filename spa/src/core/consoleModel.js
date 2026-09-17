@@ -2,8 +2,8 @@
 //
 // The console is the bottom of the view column: a shut bar by default, a half
 // panel, or an overlay over the whole work surface. What it holds is the
-// terminals of the checkout the selected work item stands in — a branch's
-// worktree, or the primary checkout for an issue and for main. This module
+// terminals of the checkout the selected work item stands in — a workspace's
+// root, a branch's worktree, or the project's own directory. This module
 // answers the questions that have nothing to do with the DOM: how big it is,
 // how big it should be next, which directory its terminals live in, whether a
 // keystroke belongs to it, and which terminal a pre-redesign URL asked for.
@@ -85,7 +85,7 @@ export function grownConsoleSize(size) {
  * `{project_id}`), or null when nothing here names a directory.
  *
  * `row` is the branch's `branch.get` payload; an issue needs none — its agent
- * runs on the primary checkout, which the project alone names.
+ * runs in the project's own checkout, which the project alone names.
  */
 const scopeResolvers = {
   // A workspace owns its terminals as a whole. Its selected source directory
@@ -101,9 +101,10 @@ function branchConsoleScope(context, row) {
   const projectId = row.project_id || context.projectId;
   if (!projectId) return null;
   if (row.worktree_id) return { project_id: projectId, worktree_id: row.worktree_id };
-  // A branch row with neither is the repository itself: main, in the checkout
-  // every project is cloned into.
-  return row.primary ? { project_id: projectId } : null;
+  // A row with neither is the project's own directory — the repository this
+  // branch is checked out in, or a plain folder with no git in it. The project
+  // alone names it.
+  return { project_id: projectId };
 }
 
 export function consoleScope(context, row) {

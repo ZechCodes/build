@@ -35,7 +35,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
   deliverFeed: () => deliver(),
-  primaryRunIdFor: () => null,
   dropFeedDevice: () => {},
   joinFeed: () => {},
 }));

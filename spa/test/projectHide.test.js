@@ -20,7 +20,6 @@ const view = () => ({
   runs: [],
   externalWorktrees: [],
   pending: [],
-  primaryChanges: [],
   projects: [
     { id: "proj-1", projectKey: "dev-1/proj-1", deviceId: "dev-1", name: "relaydb" },
     { id: "proj-2", projectKey: "dev-1/proj-2", deviceId: "dev-1", name: "dotfiles" },

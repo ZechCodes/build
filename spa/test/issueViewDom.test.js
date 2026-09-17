@@ -645,7 +645,7 @@ describe("the issue view", () => {
       stages: [stage({ state: "approved", approval: "approved" })],
       loadWorkItems: async () => [
         { kind: "branch", project_id: "proj-1", branch: "feature-x", worktree_id: "wt-1" },
-        { kind: "branch", project_id: "proj-1", branch: "main", worktree_id: "wt-main", primary: true },
+        { kind: "branch", project_id: "proj-1", branch: "main", worktree_id: null },
       ],
     });
     host.querySelector("#assigntoggle").click();
@@ -655,7 +655,7 @@ describe("the issue view", () => {
     target.dispatchEvent(new Event("change"));
     await flush();
     const branch = document.querySelector(".assign-pop #assignworktreeid");
-    // The primary checkout is the repository, not a worktree to hand over.
+    // A row with no worktree has no checkout to hand over.
     expect([...branch.options].map((option) => option.value)).toEqual(["", "wt-1"]);
     branch.value = "wt-1";
     branch.dispatchEvent(new Event("change"));

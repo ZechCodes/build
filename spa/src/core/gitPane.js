@@ -463,7 +463,7 @@ export function mountGitPane(
   let reviewMounted = false; // the review plug currently owns the detail host
   let hint = ""; // sticky action hint/error, re-applied after each repaint
   const showCache = new Map(); // hash → git.show payload (commits are immutable)
-  // The local cache's address for this checkout. A primary checkout names no
+  // The local cache's address for this checkout. A project-scoped one names no
   // entity, so it takes no part — nothing to key by, nothing evicted with it.
   const cacheEntityId = directoryCacheId(scope);
   const cacheAddress = (kind, sub) =>
@@ -684,8 +684,8 @@ export function mountGitPane(
   };
 
   // Disagreeing with the pass. Only a run has a pass to disagree with (and a
-  // run_id to name in the RPC), so a bare worktree or the primary checkout
-  // mounts none and its stack draws no offers.
+  // run_id to name in the RPC), so a bare worktree mounts none and its stack
+  // draws no offers.
   const overrides = scope?.run_id
     ? createTriageOverrides({
         post: ({ hunk_id, direction, note }) => {
@@ -741,8 +741,8 @@ export function mountGitPane(
     : null;
 
   /** The triage overlay for the stack being drawn, or null on a surface that
-   *  has no pass to read: only a run is triaged, so a bare worktree or the
-   *  primary checkout renders the plain stack it always did. The pass is read
+   *  has no pass to read: only a run is triaged, so a bare worktree renders
+   *  the plain stack it always did. The pass is read
    *  fresh on every paint — a re-triage lands under this pane while it is open. */
   const triageOverlay = (patch) => {
     if (!scope?.run_id || !triageEnabled()) return null;

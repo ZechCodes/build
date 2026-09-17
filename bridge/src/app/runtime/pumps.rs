@@ -294,13 +294,16 @@ pub(in crate::app) fn end_of_session(
     s.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
 }
 
-/// Pump one session's reported activity into the conversation it speaks in.
+/// Pump one session's reported activity and surface revisions.
 ///
 /// The mirror of [`spawn_tab_pump`] for a session protocol that has no bytes. Where the
 /// byte pump paints a stream into a grid, this one posts what the agent
 /// reported doing as the activity kinds — reasoning, tool calls, narration and
 /// background work — which are conversation, classed `Status`: they move no
 /// unread count, reach no Issue conversation and pull nobody in.
+/// Surface revisions independently invalidate the owning entity, including an
+/// initial invalidation after subscription, so a carrier does not need an
+/// activity stream merely to publish its cached surface snapshot.
 ///
 /// It owes the same death rites, minus the screen's half: on close the tab goes
 /// not live and the conversation's session lineage ends. There is no
@@ -311,18 +314,20 @@ pub(in crate::app) fn end_of_session(
 ///
 /// It carries the session it pumps for the same reason the byte pump does, and
 /// asks [`still_pumping`] at every acquisition: what it writes belongs to that
-/// session, and a tab holding a different one is somebody else's.
+/// session, and a tab holding a different one is somebody else's. A surface
+/// watch closing only retires that watch; only activity EOF performs the death
+/// rites because the revision channel is not a session-lifetime signal.
 pub(in crate::app) fn spawn_activity_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
     session: Arc<dyn AgentSession>,
     instance: Option<SessionInstance>,
-    rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
+    mut rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
     mut surfaces_changed: Option<tokio::sync::watch::Receiver<u64>>,
 ) {
-    let Some(mut rx) = rx else {
+    if rx.is_none() && surfaces_changed.is_none() {
         return;
-    };
+    }
     if tokio::runtime::Handle::try_current().is_err() {
         // Sync unit tests drive the registry without a runtime; there is
         // nothing to spawn the pump onto.
@@ -330,27 +335,20 @@ pub(in crate::app) fn spawn_activity_pump(
     }
     let state = Arc::clone(state);
     tokio::spawn(async move {
+        if surfaces_changed.is_some()
+            && !publish_surface_invalidation(&state, &key, &session, instance.as_ref())
+        {
+            return;
+        }
         loop {
-            let woke = match surfaces_changed.as_mut() {
-                Some(revision) => tokio::select! {
-                    reported = rx.recv() => PumpWake::Reported(reported),
-                    noticed = revision.changed() => match noticed {
-                        Ok(()) => PumpWake::SurfacesMoved,
-                        Err(_) => PumpWake::SurfacesUnwatchable,
-                    },
-                },
-                None => PumpWake::Reported(rx.recv().await),
+            let Some(woke) = next_pump_wake(&mut rx, &mut surfaces_changed).await else {
+                return;
             };
             let reported = match woke {
                 PumpWake::SurfacesMoved => {
-                    let s = state.lock().unwrap();
-                    let Some(instance) = instance.as_ref() else {
-                        return;
-                    };
-                    if !still_pumping_instance(&s, &key, &session, instance) {
+                    if !publish_surface_invalidation(&state, &key, &session, instance.as_ref()) {
                         return;
                     }
-                    s.note_entity_changed(&instance.entity_id);
                     continue;
                 }
                 PumpWake::SurfacesUnwatchable => {
@@ -459,6 +457,44 @@ pub(in crate::app) fn spawn_activity_pump(
             }
         }
     });
+}
+
+async fn next_pump_wake(
+    activity: &mut Option<broadcast::Receiver<crate::harness::ActivityReport>>,
+    surfaces: &mut Option<tokio::sync::watch::Receiver<u64>>,
+) -> Option<PumpWake> {
+    match (activity.as_mut(), surfaces.as_mut()) {
+        (Some(activity), Some(surfaces)) => Some(tokio::select! {
+            reported = activity.recv() => PumpWake::Reported(reported),
+            noticed = surfaces.changed() => match noticed {
+                Ok(()) => PumpWake::SurfacesMoved,
+                Err(_) => PumpWake::SurfacesUnwatchable,
+            },
+        }),
+        (Some(activity), None) => Some(PumpWake::Reported(activity.recv().await)),
+        (None, Some(surfaces)) => Some(match surfaces.changed().await {
+            Ok(()) => PumpWake::SurfacesMoved,
+            Err(_) => PumpWake::SurfacesUnwatchable,
+        }),
+        (None, None) => None,
+    }
+}
+
+fn publish_surface_invalidation(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    session: &Arc<dyn AgentSession>,
+    instance: Option<&SessionInstance>,
+) -> bool {
+    let Some(instance) = instance else {
+        return false;
+    };
+    let state = state.lock().unwrap();
+    if !still_pumping_instance(&state, key, session, instance) {
+        return false;
+    }
+    state.note_entity_changed(&instance.entity_id);
+    true
 }
 
 /// The terminal's capture point: ask every live agent session for the

@@ -377,6 +377,123 @@ async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
 }
 
 #[tokio::test]
+async fn a_surface_only_session_invalidates_its_owning_entity() {
+    let (dir, repo) = init_repo();
+    let (state, _handler, _sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    let revision = SurfaceRevision::default();
+    let key = {
+        let mut s = state.lock().unwrap();
+        let root = insert_run(
+            &mut s,
+            &repo,
+            dir.path(),
+            "run-surface-only",
+            RunState::Building,
+        );
+        insert_dictated_agent_tab(
+            &mut s,
+            &root,
+            "run-surface-only",
+            DictatedSession::reporting(AgentStatus::Working).moving_surfaces_on(revision.clone()),
+        )
+    };
+    spawn_activity_pump(&state, key, None);
+    let initial_events = change_events(&settled_pushes(&mut rx, &session_key).await);
+    assert!(
+        initial_events.contains(&json!({ "type": "entity.changed", "id": "run-surface-only" })),
+        "subscription publishes the already-cached initial snapshot: {initial_events:?}"
+    );
+
+    revision.bump();
+
+    let events = change_events(&settled_pushes(&mut rx, &session_key).await);
+    assert!(
+        events.contains(&json!({ "type": "entity.changed", "id": "run-surface-only" })),
+        "a surface revision invalidates detail without an activity stream: {events:?}"
+    );
+    let s = state.lock().unwrap();
+    assert!(
+        activity_rows(primary_thread(&s.runs["run-surface-only"].agents)).is_empty(),
+        "surface invalidation does not mint a conversation row"
+    );
+    drop(s);
+    drop(dir);
+}
+
+#[tokio::test]
+async fn a_surface_only_pump_stops_when_its_session_is_replaced() {
+    let revision = SurfaceRevision::default();
+    let (dir, app, run_id) = a_branch_whose_agent_runs(
+        "feature-replaced-surface",
+        DictatedSession::reporting(AgentStatus::Working).moving_surfaces_on(revision.clone()),
+    );
+    let root = app.entity_agent_root(&run_id).expect("the agent root");
+    let agent_id = primary_agent_id(&app, &run_id);
+    let key = TabKey::agent(&root, &agent_id);
+    let state = app.shared();
+    let before_pump = Arc::strong_count(&state);
+    spawn_activity_pump(&state, key.clone(), None);
+    wait_for(Duration::from_secs(5), || {
+        (Arc::strong_count(&state) == before_pump + 1).then_some(())
+    })
+    .await
+    .expect("the surface-only pump starts");
+
+    insert_agent_tab(
+        &mut state.lock().unwrap(),
+        &root,
+        &run_id,
+        &agent_id,
+        DictatedSession::reporting(AgentStatus::Working),
+    );
+    revision.bump();
+
+    wait_for(Duration::from_secs(5), || {
+        (Arc::strong_count(&state) == before_pump).then_some(())
+    })
+    .await
+    .expect("the replaced session's surface pump retires");
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live,
+        "the stale surface notification leaves the replacement live"
+    );
+    drop(dir);
+}
+
+#[tokio::test]
+async fn closing_a_surface_only_watch_does_not_end_the_session() {
+    let (revision_sender, watched) = tokio::sync::watch::channel(0u64);
+    let (_dir, state, key) = a_run_with_a_dictated_tab(
+        "run-surface-watch-closed",
+        DictatedSession::reporting(AgentStatus::Working)
+            .watching_a_revision_the_caller_can_close(watched),
+    );
+    let before_pump = Arc::strong_count(&state);
+    spawn_activity_pump(&state, key.clone(), None);
+
+    drop(revision_sender);
+
+    wait_for(Duration::from_secs(5), || {
+        (Arc::strong_count(&state) == before_pump).then_some(())
+    })
+    .await
+    .expect("the closed surface-only watch retires its pump");
+    let s = state.lock().unwrap();
+    assert!(
+        s.session_registry.test_tab(&key).unwrap().live,
+        "a surface watch is not the session's lifetime stream"
+    );
+    drop(s);
+    assert_eq!(open_session_count(&state, "run-surface-watch-closed"), 1);
+}
+
+#[tokio::test]
 async fn the_pump_ends_with_the_activity_stream_though_the_revision_stays_open() {
     let revision = SurfaceRevision::default();
     let (_dir, state, key) = a_run_with_a_dictated_tab(

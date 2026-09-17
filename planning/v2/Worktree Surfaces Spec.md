@@ -49,6 +49,18 @@ adopted on the repo root and `row:<project_id>:primary` attention keys; both loa
 the stale key is ignored and pruned, and no discard verb may remove a checkout
 whose canonical path is the project's repository.
 
+In the SPA the "main" entry is replaced by the project's own page
+(`planning/v2/workspaces.md`, "The project page"), and the client's half of the
+retirement went with it: `primaryAdoptScope` / `createPrimaryAdoptingCall`, the
+branch picker's `primary_checkout` row, the feed's `primaryChanges` collection
+and `primaryRunIdFor`, the `primary` field on inbox entries and rail entities,
+the pending-row arm that matched a project's own card, and the
+`{project_id, primary: true}` dismissal. What a checkout IS is read off the
+row's shape instead of the retired flag: a branch row that names neither a run
+nor a worktree is the project's own directory, and `{project_id}` is the scope
+it answers under — which is what a plain folder (a project with no git in it)
+has always been.
+
 ---
 
 ## 0. Global decisions (read first)

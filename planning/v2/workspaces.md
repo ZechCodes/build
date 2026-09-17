@@ -103,6 +103,30 @@ Finish never deletes the workspace checkout or any workspace files. Retention is
 part of the recovery contract: the user can return to the completed workspace,
 inspect it, and continue manual work from the files that were used to finish.
 
+## The project page
+
+A project has a surface of its own: `#/project/<project_id>`, and
+`#/device/<device_id>/project/<project_id>` where the machine is named. It is
+about the project, never about the project's checkout — that checkout is what
+workspaces are cut from and has no surface at all — so every URL that used to
+open it lands here instead.
+
+The main pane is the project's workspaces: the same rows the landing rail groups
+into that project's block, in the same order, each opening its own workspace.
+Beside them the page says what each workspace is standing on and how its checkout
+is doing. A project nobody has cut a workspace in yet is named and empty, which
+is the ordinary first state of a project rather than a missing one; the empty
+state points at the + that makes the first workspace.
+
+The toolbar names the project and carries the page's two verbs: the + and the
+cog that opens project settings. The rail is the project's own agent, mounted on
+the owner `project.ensure_conversation` answers with.
+
+A project belongs to one machine, and every machine mints a `proj-1`, so a
+project URL that names no device is a question: it parks on the same resolve hop
+every other work URL parks on, and the feed's projects answer it — which is what
+lets a project with no rows of any kind still open.
+
 ## Project conversations
 
 A project is a conversation owner in its own right, the way a workspace is:

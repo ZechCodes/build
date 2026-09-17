@@ -3030,6 +3030,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     [...railStatusPills().querySelectorAll(".surface-pill")].map((pill) => pill.dataset.surfaceKind);
   const pillCount = (kind) =>
     railStatusPills().querySelector(`[data-surface-kind="${kind}"] .surface-pill-count`).textContent.trim();
+  const openTasks = () => railStatusPills().querySelector('[data-surface-kind="checklist"]').click();
   const answerNothing = () => {
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
@@ -3064,23 +3065,25 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual([]);
-    expect(railHost().querySelector(".agent-observation-checklist").textContent).toContain("wire the seed");
+    expect(pillKinds()).toEqual(["checklist"]);
+    openTasks();
+    expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
   });
 
   it("seeds the same snapshot whole while the grace still holds", async () => {
     await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["shells"]);
-    expect(railHost().querySelector(".agent-observation-checklist").textContent).toContain("Last known");
+    expect(pillKinds()).toEqual(["shells", "checklist"]);
+    openTasks();
+    expect(railHost().querySelector(".surface-checklist-context").textContent).toContain("Last known");
   });
 
   it("offers the seeded kinds in the header menu before the first read answers", async () => {
     await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
     answerNothing();
     await mount();
-    expect(menuKinds()).toEqual(["shells"]);
+    expect(menuKinds()).toEqual(["shells", "checklist"]);
   });
 
   it("opens the remembered kind's viewer on the saved snapshot", async () => {
@@ -3120,8 +3123,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await mount();
     bubbles()[1].click();
     await flush();
-    expect(pillKinds()).toEqual([]);
-    expect(railHost().querySelector(".agent-observation-checklist").textContent).toContain("wire the seed");
+    expect(pillKinds()).toEqual(["checklist"]);
+    openTasks();
+    expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
   });
 
   it("drops a seed whose agent was left while the read was in flight", async () => {
@@ -3145,7 +3149,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
       return {};
     });
     await mount();
-    expect(railHost().querySelector(".agent-observation-checklist").textContent).toContain("old process step");
+    expect(pillKinds()).toEqual(["checklist"]);
+    openTasks();
+    expect(railHost().querySelector(".surface-checklist").textContent).toContain("old process step");
 
     answer(branchRow({
       agents: [agent({ surface_session_generation: "surface-session-2", surfaces: null })],
@@ -3153,6 +3159,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await flush();
 
     expect(railHost().querySelector(".agent-observation-host").hidden).toBe(true);
+    expect(pillKinds()).toEqual([]);
     expect(railHost().textContent).not.toContain("old process step");
   });
 

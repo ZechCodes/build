@@ -722,14 +722,13 @@ describe("diff file headers", () => {
 // styles/surfaces.css — the columns are the surfaces' own, not the primitive's.
 describe("the tail of a reading column", () => {
   const surfaceRules = () => rulesIn(strippedSurfaces);
-  const COLUMNS = [".gitpane .cdetail-host", ".issueview .ivviewer"];
-
   it("pays its scroll-end room on the tail, not on the column", () => {
-    const [column] = surfaceRules().filter(
-      (rule) => rule.selector.split(",").map((part) => part.trim()).join(",") === COLUMNS.join(","),
-    );
-    expect(column).toBeTruthy();
-    expect(declaration(column.body, "padding-bottom")).toBe("0");
+    const changesColumn = surfaceRules().find((rule) => rule.selector === ".gitpane .cdetail-host");
+    const issueColumn = surfaceRules().find((rule) => rule.selector === ".issueview .ivviewer");
+    expect(changesColumn).toBeTruthy();
+    expect(declaration(changesColumn.body, "padding-bottom")).toBeNull();
+    expect(issueColumn).toBeTruthy();
+    expect(declaration(issueColumn.body, "padding-bottom")).toBe("0");
     // The issue viewer ends on whatever it was written with; the Changes column
     // ends on the keyed stack, which is the one block always at its foot.
     const [tail] = surfaceRules().filter((rule) => rule.selector.includes(":last-child:not(.actionbar)"));
@@ -741,17 +740,19 @@ describe("the tail of a reading column", () => {
     expect(declaration(stack.body, "padding-bottom")).toBe("var(--pane-bottom)");
   });
 
-  it("makes the bar opaque over itself and fades above it", () => {
+  it("gives the bar glass over the content scrolling beneath it", () => {
     // The primitive's gradient fades to nothing across the bar's own box, which
     // puts the hint and whatever is passing under it in the same pixels.
     const [bar] = surfaceRules().filter((rule) => rule.selector.includes("> .actionbar"));
     expect(bar).toBeTruthy();
-    expect(declaration(bar.body, "background")).toBe("var(--bg)");
-    expect(declaration(bar.body, "box-shadow")).toMatch(/var\(--bg\)$/);
+    expect(declaration(bar.body, "background")).toContain("var(--chat-glass-opacity)");
+    expect(declaration(bar.body, "backdrop-filter")).toBe("blur(var(--chat-glass-blur))");
+    expect(declaration(bar.body, "box-shadow")).toBe("none");
     // The changeset's bar lives in the tray it is painted with, and the tray is
     // no box of its own — so the rule names the tray, not the whole column.
     expect(bar.selector).toContain(".gitpane .cstray > .actionbar");
-    expect(bar.selector).toContain(".issueview .ivviewer > .actionbar");
+    const issueBar = surfaceRules().find((rule) => rule.selector === ".issueview .ivviewer > .actionbar");
+    expect(declaration(issueBar.body, "background")).toBe("var(--bg)");
   });
 });
 
@@ -1085,9 +1086,7 @@ describe("the view column's seam with the agent rail", () => {
     expect(surface).toBeTruthy();
     expect(declaration(surface.body, "margin")).toBe("0");
     expect(sideBorders(surface)).toEqual([]);
-    expect(declaration(surface.body, "padding")).toBe(
-      "0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0",
-    );
+    expect(declaration(surface.body, "padding")).toBe("0 env(safe-area-inset-right, 0px) 0 0");
   });
 
   it("gives each divide one border, stated by the surface that begins at it", () => {

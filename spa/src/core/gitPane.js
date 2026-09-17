@@ -57,6 +57,7 @@ import { el } from "../dom.js";
 import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
 import { createReviewPlug } from "./changesReview.js";
+import { mountMeasuredHeight } from "./measuredInset.js";
 
 export const GIT_PANE_POLL_MS = 1600;
 
@@ -514,11 +515,23 @@ export function mountGitPane(
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport drop-down, re-wired per skeleton
+  let stopCommitMeasurement = () => {};
+  let stopToolbarMeasurement = () => {};
   // What the rail was last drawn from — the same parts its trigger names.
   let railParts = { status: null, log: null, selected: null, review: null };
   let paintChangesetInto = null;
   let contextFrame = 0;
   let contextCommit = null;
+
+  const measureCommitHost = (host) => {
+    stopCommitMeasurement();
+    stopCommitMeasurement = mountMeasuredHeight(host, host?.closest(".cdetail"), "--git-commit-height");
+  };
+
+  const measureToolbar = (toolbar) => {
+    stopToolbarMeasurement();
+    stopToolbarMeasurement = mountMeasuredHeight(toolbar, toolbar?.closest(".cdetail"), "--git-toolbar-height");
+  };
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -618,9 +631,8 @@ export function mountGitPane(
     return true;
   };
 
-  // The persistent skeleton: a left rail drives a right pane whose top carries
-  // the toolbar/banner (so the rail runs the pane's full height) and whose
-  // scrolling body is the detail host. The row is the shell's two-column
+  // The persistent skeleton: a left rail drives a right pane whose toolbar and
+  // measured composer float over the full-height scrolling detail host. The row is the shell's two-column
   // primitive, so its width and gutters match every other tab. Each region
   // updates
   // independently so a poll repaint never clobbers the review plug's DOM.
@@ -634,6 +646,8 @@ export function mountGitPane(
           <div class="gp-commit"></div>
         </section>
       </div></div>`;
+    measureCommitHost(container.querySelector(".gp-commit"));
+    measureToolbar(container.querySelector(".gp-toolbar"));
     // The rail is the drawer on a narrow viewport. Both kinds of row it holds —
     // a set of changes, a commit — put something in the detail column behind
     // it, so both close it; the "show more" row, which only lengthens the rail,
@@ -1521,6 +1535,8 @@ export function mountGitPane(
       review.unmount(); // its host is about to be wiped with the skeleton
       reviewMounted = false;
     }
+    stopCommitMeasurement();
+    stopToolbarMeasurement();
     container.innerHTML = `<div class="gitpane"><div class="empty giterror">${esc(message)}</div></div>`;
   };
 
@@ -1672,6 +1688,8 @@ export function mountGitPane(
   return {
     dispose() {
       disposed = true;
+      stopCommitMeasurement();
+      stopToolbarMeasurement();
       watcher.dispose();
       editedTimeWatcher.dispose();
       document.removeEventListener("pointerdown", onOutsidePointerDown);

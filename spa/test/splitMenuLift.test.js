@@ -47,7 +47,7 @@ describe("a split menu that opens inside a scrolling container", () => {
     expect(menu.style.bottom).toBe("306px");
     expect(menu.style.left).toBe("800px");
     expect(menu.style.right).toBe("auto");
-    expect(menu.style.top).toBe("");
+    expect(menu.style.top).toBe("auto");
   });
 
   it("opens below the button when there is no room above it", () => {
@@ -62,7 +62,7 @@ describe("a split menu that opens inside a scrolling container", () => {
     expect(menu.style.top).toBe("76px");
     expect(menu.style.left).toBe("800px");
     expect(menu.style.right).toBe("auto");
-    expect(menu.style.bottom).toBe("");
+    expect(menu.style.bottom).toBe("auto");
   });
 
   it("clamps a wide menu inside the viewport gutter", () => {

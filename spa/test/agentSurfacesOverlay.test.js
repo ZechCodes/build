@@ -286,6 +286,37 @@ describe("the conversation header's menu", () => {
     expect(menuCaret().closest(".splitbtn").classList.contains("splitbtn-icon")).toBe(true);
   });
 
+  it("opens from the glass header's containing block and accepts an item click", async () => {
+    await mount();
+    const caret = menuCaret();
+    const menu = openMenuElement();
+    const split = caret.closest(".splitbtn");
+    panel().style.overflowY = "hidden";
+    const headerOffset = { left: 700, top: 12 };
+    split.getBoundingClientRect = () => ({ left: 800, right: 832, top: 20, bottom: 48, width: 32, height: 28 });
+    Object.defineProperties(menu, {
+      offsetWidth: { configurable: true, value: 180 },
+      offsetHeight: { configurable: true, value: 96 },
+    });
+    // backdrop-filter makes the fixed menu resolve from the header rather
+    // than the viewport. Model that browser geometry so this test catches a
+    // menu that opens successfully but lands beyond the visible panel.
+    menu.getBoundingClientRect = () => ({
+      left: headerOffset.left + (Number.parseFloat(menu.style.left) || 0),
+      top: headerOffset.top + (Number.parseFloat(menu.style.top) || 0),
+      width: 180,
+      height: 96,
+    });
+
+    caret.click();
+
+    expect(menu.hidden).toBe(false);
+    expect(menu.getBoundingClientRect()).toMatchObject({ left: 652, top: 54 });
+    menuItem(SHELL_ENTRY_KIND).click();
+    await flush();
+    expect(overlay()).not.toBe(null);
+  });
+
   it("is absent while the agent has no surfaces at all", async () => {
     payload = branchRow({ surfaces: null });
     await mount();

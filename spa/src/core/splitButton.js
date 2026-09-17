@@ -108,20 +108,52 @@ function placeMenuFromButtonBox(menu, buttonBox, { width: menuWidth, height: men
   menu.style.position = "fixed";
   menu.style.left = `${left}px`;
   menu.style.right = "auto";
-  menu.style.top = opensAbove ? "" : `${buttonBox.bottom + MENU_GAP_PX}px`;
-  menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "";
+  menu.style.top = opensAbove ? "auto" : `${buttonBox.bottom + MENU_GAP_PX}px`;
+  menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "auto";
+  return opensAbove
+    ? { left, edge: "bottom", bottom: buttonBox.top - MENU_GAP_PX }
+    : { left, edge: "top", top: buttonBox.bottom + MENU_GAP_PX };
 }
 
 function menuSizeWhenShown(menu) {
-  if (!menu.hidden) return { width: menu.offsetWidth, height: menu.offsetHeight };
+  const wasHidden = menu.hidden;
   menu.hidden = false;
-  const size = { width: menu.offsetWidth, height: menu.offsetHeight };
-  menu.hidden = true;
+  const rendered = menu.getBoundingClientRect();
+  const size = {
+    width: rendered.width || menu.offsetWidth,
+    height: rendered.height || menu.offsetHeight,
+  };
+  menu.hidden = wasHidden;
   return size;
 }
 
+/** `position:fixed` is viewport-relative until an ancestor has transform,
+ * filter, or backdrop-filter. Glass headers use the latter, making the same
+ * coordinates relative to the header and sending a nominally open menu past
+ * the viewport. Measure where the browser actually put it and compensate. */
+function correctFixedMenuOffset(menu, wanted) {
+  const wasHidden = menu.hidden;
+  menu.hidden = false;
+  const placed = menu.getBoundingClientRect();
+  if (!placed.width || !placed.height) {
+    menu.hidden = wasHidden;
+    return;
+  }
+  const scaleX = placed.width / menu.offsetWidth || 1;
+  const scaleY = placed.height / menu.offsetHeight || 1;
+  menu.hidden = wasHidden;
+  menu.style.left = `${Number.parseFloat(menu.style.left) + (wanted.left - placed.left) / scaleX}px`;
+  if (wanted.edge === "top") {
+    menu.style.top = `${Number.parseFloat(menu.style.top) + (wanted.top - placed.top) / scaleY}px`;
+  } else {
+    menu.style.bottom = `${Number.parseFloat(menu.style.bottom) + (placed.bottom - wanted.bottom) / scaleY}px`;
+  }
+}
+
 function liftMenuOutOfScroll(container, menu, closeMenu) {
-  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect(), menuSizeWhenShown(menu));
+  const buttonBox = container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect();
+  const wanted = placeMenuFromButtonBox(menu, buttonBox, menuSizeWhenShown(menu));
+  correctFixedMenuOffset(menu, wanted);
   const onViewportMoved = () => closeMenu();
   document.addEventListener("scroll", onViewportMoved, { capture: true });
   window.addEventListener("resize", onViewportMoved);

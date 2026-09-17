@@ -1658,7 +1658,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 }
 .sheet, .modal { background:var(--panel); }
 .file, .browse-list, .modal-create .branch-picker { border-color:var(--line); box-shadow:0 4px 16px var(--shadow-soft); }
-.file .fhead { background:var(--panel); }
+.file .fhead {
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 .empty.gone, .fpidle { color:var(--ink2); }
 .notice { border-color:var(--line3); background:var(--panel); box-shadow:0 14px 38px var(--shadow); }
 .notice-x, .notice-expand, .iconbtn, .fmenu, .tdial, .workspace-refrow, .ivassign-head,

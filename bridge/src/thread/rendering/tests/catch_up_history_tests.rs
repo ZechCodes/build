@@ -135,3 +135,24 @@ fn the_merged_packet_keeps_the_newest_messages_up_to_its_limit() {
         "- agent: on it"
     );
 }
+
+/// A cold agent reads the conversation as markdown, so the packet has to say
+/// what the payload's JSON says: this line is on the user's side of the
+/// conversation, and the user did not write it.
+#[test]
+fn the_packet_names_the_agent_that_sent_a_message() {
+    let mut thread = Thread::new("run-dispatched");
+    thread.post_user_from_agent(
+        "finish the toast",
+        AgentIdentity {
+            id: "router-7".to_string(),
+        },
+        "2026-09-17T09:00:00Z",
+    );
+    thread.post_user("and rebase it", None, "2026-09-17T09:01:00Z");
+
+    assert_eq!(
+        thread.catch_up_markdown(40),
+        "- user [from agent router-7]: finish the toast\n- user: and rebase it"
+    );
+}

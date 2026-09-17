@@ -185,8 +185,9 @@ pub(super) fn catch_up_lines<'a>(
         .rev()
         .filter_map(|item| match item {
             ThreadItem::Message(message) => Some(format!(
-                "- {}{}: {}{}{}",
+                "- {}{}{}: {}{}{}",
                 message.role.as_str(),
+                sender_note(message.from_agent.as_deref()),
                 match message.reported_outcome() {
                     Some(outcome) => format!(" [{}]", outcome.as_str()),
                     None => String::new(),
@@ -201,6 +202,14 @@ pub(super) fn catch_up_lines<'a>(
         .collect();
     lines.reverse();
     lines.join("\n")
+}
+
+/// Who sent a message, when it was not the human. The packet is markdown, so
+/// a sender only reaches a cold agent if it is written into the line — and the
+/// role beside it says `user` for the same words, because that is the side of
+/// the conversation they arrived on.
+pub(super) fn sender_note(from_agent: Option<&super::AgentIdentity>) -> String {
+    from_agent.map_or_else(String::new, |sender| format!(" [from agent {}]", sender.id))
 }
 
 /// Render message context exactly once in markdown catch-up. On the wire it

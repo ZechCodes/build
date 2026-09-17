@@ -106,18 +106,47 @@ impl OperationPayload {
         // Keep the reviewer's words first. Provider slash commands are parsed
         // only when the slash is the first token; putting Build's delivery
         // envelope ahead of it turns commands such as `/goal ...` into prose.
+        let sender = self.sender_note();
         let user_prompt = self
             .messages
             .first()
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
             prompt
         }
+    }
+
+    /// One line naming the agent these words came from, when an agent sent
+    /// them rather than the human. Empty for everything the human said.
+    ///
+    /// The payload carries `from_agent` on the message itself, but the message
+    /// is JSON inside a prompt written in the user's voice, and the sentence
+    /// around it is what an agent actually reads. So the envelope says it too:
+    /// this is work being handed over, and the person to answer is not here.
+    fn sender_note(&self) -> String {
+        let mut senders: Vec<&str> = self
+            .messages
+            .iter()
+            .filter_map(|message| message.from_agent.as_deref())
+            .map(|sender| sender.id.as_str())
+            .collect();
+        senders.dedup();
+        if senders.is_empty() {
+            return String::new();
+        }
+        let named: Vec<String> = senders
+            .iter()
+            .map(|sender| format!("agent `{sender}`"))
+            .collect();
+        format!(
+            "\nThese messages came from {}, not from the user.\n",
+            named.join(" and ")
+        )
     }
 
     /// Commands that must reach the provider's command parser byte-for-byte.
@@ -277,6 +306,34 @@ mod tests {
         );
         assert!(cold.contains("Build conversation protocol"), "{cold}");
         assert!(!cold.contains("read_unread_messages"), "{cold}");
+    }
+
+    /// Words another agent sent are named as such in the envelope, not only in
+    /// the payload's JSON: a harness that answers them as if the user had
+    /// asked is answering the wrong person.
+    #[test]
+    fn words_another_agent_sent_say_whose_they_are() {
+        let handed_over = OperationPayload {
+            messages: vec![ThreadMessage {
+                from_agent: Some(Box::new(crate::thread::AgentIdentity {
+                    id: "router-7".into(),
+                })),
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+
+        let prompt = handed_over.legacy_delivery_prompt(false, AgentProvider::Claude);
+        assert!(
+            prompt.contains("These messages came from agent `router-7`, not from the user."),
+            "{prompt}"
+        );
+        assert!(
+            !payload()
+                .legacy_delivery_prompt(false, AgentProvider::Claude)
+                .contains("came from agent"),
+            "the user's own words claim no sender"
+        );
     }
 
     #[test]

@@ -182,6 +182,11 @@ final for this build unless the reviewer overrides them in the thread.
   agent id as the router's is from `router-`): `list_workspaces`,
   `list_workspace_agents`, plus the conversation tools. Read-only, scoped to the
   project its owner is bound to. See `workspaces.md`, "The project agent".
+  - 2026-09-17: the writes landed beside the reads — `create_workspace`,
+    `add_workspace_agent`, `remove_workspace_agent`, `message_workspace_agent`,
+    each a thin wrapper over the verb the client calls, each scoped by the same
+    owner binding rather than by an argument. Deleting a workspace and adding a
+    directory to one are deferred by policy: both are how a project loses work.
 - **Inert issues**: `issue.create` gains `dispatch: false` (router default) —
   a record in the store, no worktree, no agent, until the user opens it and
   sends a message or triggers implement.

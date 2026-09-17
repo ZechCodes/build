@@ -480,10 +480,16 @@ fn mcp_tool_names(owner_id: &str) -> Vec<&'static str> {
             "list_projects",
             "list_work",
             "read_conversation",
-            "create_issue",
             "dispatch_branch",
             "ask_user",
             "post_thread_message",
+        ],
+        crate::mcp::McpSurface::Project => vec![
+            "list_workspaces",
+            "list_workspace_agents",
+            "post_thread_message",
+            "search_conversation",
+            "set_topic",
         ],
     }
 }

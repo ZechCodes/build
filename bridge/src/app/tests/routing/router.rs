@@ -944,7 +944,7 @@ fn neither_session_kind_can_call_the_others_tools() {
         .unwrap_err();
     assert!(
         router_reaching_in.contains("read_unread_messages")
-            && router_reaching_in.contains("coding agent's tool"),
+            && router_reaching_in.contains("coding tool"),
         "{router_reaching_in}"
     );
 }

@@ -382,6 +382,14 @@ pub enum BridgeAction {
         body: String,
         waiting: bool,
     },
+    /// The workspaces of the project this agent belongs to. Project only, and
+    /// read-only: which project is asked about comes from the agent's owner.
+    ListWorkspaces,
+    /// The agents on one of this project's workspaces. Project only, and
+    /// read-only.
+    ListWorkspaceAgents {
+        workspace_id: String,
+    },
 }
 
 /// The choices an `ask_user` call offered beside its question. Absent reads as
@@ -420,49 +428,79 @@ impl BridgeAction {
             BridgeAction::DispatchBranch { .. } => "dispatch_branch",
             BridgeAction::AskUser { .. } => "ask_user",
             BridgeAction::RouterMessage { .. } => "post_thread_message",
+            BridgeAction::ListWorkspaces => "list_workspaces",
+            BridgeAction::ListWorkspaceAgents { .. } => "list_workspace_agents",
         }
     }
 
-    /// Which surface this action belongs to. The socket enforces it against the
-    /// session that sent it, so a harness cannot reach the other surface's tools
+    /// Which surfaces carry this action. The socket enforces it against the
+    /// session that sent it, so a harness cannot reach another surface's tools
     /// by writing the frame itself.
-    pub fn surface(&self) -> McpSurface {
+    ///
+    /// A conversation tool is on every surface that HAS a conversation, which
+    /// is why this is a list; a work verb belongs to exactly one surface, and
+    /// is what [`surface_name`](Self::surface_name) names.
+    pub fn surfaces(&self) -> &'static [McpSurface] {
         match self {
-            BridgeAction::ReadUnreadMessages
-            | BridgeAction::ReadOperationMessages { .. }
-            | BridgeAction::PostThreadMessage { .. }
+            BridgeAction::ReadUnreadMessages | BridgeAction::ReadOperationMessages { .. } => {
+                &[McpSurface::Coding]
+            }
+            BridgeAction::PostThreadMessage { .. }
             | BridgeAction::SearchConversation { .. }
-            | BridgeAction::SetTopic { .. } => McpSurface::Coding,
+            | BridgeAction::SetTopic { .. } => &[McpSurface::Coding, McpSurface::Project],
             BridgeAction::ListProjects
             | BridgeAction::ListWork
             | BridgeAction::ReadConversation { .. }
             | BridgeAction::CreateIssue { .. }
             | BridgeAction::DispatchBranch { .. }
             | BridgeAction::AskUser { .. }
-            | BridgeAction::RouterMessage { .. } => McpSurface::Router,
+            | BridgeAction::RouterMessage { .. } => &[McpSurface::Router],
+            BridgeAction::ListWorkspaces | BridgeAction::ListWorkspaceAgents { .. } => {
+                &[McpSurface::Project]
+            }
         }
+    }
+
+    /// Whether a session on `surface` may call this action at all.
+    pub fn allowed_on(&self, surface: McpSurface) -> bool {
+        self.surfaces().contains(&surface)
+    }
+
+    /// The surface an error names when refusing this action: the first one it
+    /// is on, which for everything that can be refused is its only one.
+    pub fn surface_name(&self) -> &'static str {
+        self.surfaces()
+            .first()
+            .copied()
+            .unwrap_or(McpSurface::Coding)
+            .as_str()
     }
 }
 
 /// Which set of tools a session gets.
 ///
-/// Not a permission flag on one server: two surfaces, and a session is on
+/// Not a permission flag on one server: three surfaces, and a session is on
 /// exactly one of them for its whole life. A coding agent never sees the
-/// router's tools and a router never sees a coding agent's, so neither can
-/// reach the other's by asking.
+/// router's tools, a router never sees a coding agent's, and a project agent
+/// sees neither's — so none of them can reach another's by asking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpSurface {
     Coding,
     Router,
+    /// The agent of a project's conversation owner: it reads the project's
+    /// workspaces and talks, and holds no checkout to change.
+    Project,
 }
 
 impl McpSurface {
     /// The surface an owner id names. The id itself carries the answer — a
-    /// router session's id is prefixed — so the surface can never disagree with
-    /// the session it was resolved for.
+    /// router session's id is prefixed, and so is a project agent's — so the
+    /// surface can never disagree with the session it was resolved for.
     pub fn for_owner(owner_id: &str) -> McpSurface {
         if crate::router::is_router_agent(owner_id) {
             McpSurface::Router
+        } else if crate::agent::is_project_agent(owner_id) {
+            McpSurface::Project
         } else {
             McpSurface::Coding
         }
@@ -472,6 +510,7 @@ impl McpSurface {
         match self {
             McpSurface::Coding => "coding",
             McpSurface::Router => "router",
+            McpSurface::Project => "project",
         }
     }
 }
@@ -583,6 +622,120 @@ impl DoneServer {
             "name": "post_thread_message",
             "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete after dispatching, Blocked when routing cannot proceed, Waiting when you need the user's answer, or Working for a progress update.",
             "inputSchema": Self::router_message_input_schema()
+        }])
+    }
+
+    /// The coding agent's tools: its conversation, and nothing about anyone
+    /// else's work.
+    fn coding_tools() -> Value {
+        json!([{
+            "name": "post_thread_message",
+            // MUST agree with the "Build conversation protocol"
+            // block in `conversation_prompt` (orchestrator.rs),
+            // which is canonical — change both together.
+            //
+            // Deliberately self-contained rather than a pointer at
+            // that block: this description is re-sent on every
+            // tools/list and so outlives context compaction, which
+            // means it is the ONE statement guaranteed to still be
+            // in context when an ambiguous message actually arrives.
+            // A pointer would resolve to nothing exactly then.
+            "description": "Send a message to the user. This tool is the only way the user can see your messages; terminal output and ordinary assistant responses are not visible to them. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome. Complete and Blocked must include the current phase and any required phase outputs.",
+            "inputSchema": Self::message_input_schema()
+        }, {
+            "name": "search_conversation",
+            "description": SEARCH_CONVERSATION_DESCRIPTION,
+            "inputSchema": Self::search_conversation_input_schema()
+        }, {
+            "name": "set_topic",
+            "description": SET_TOPIC_DESCRIPTION,
+            "inputSchema": Self::set_topic_input_schema()
+        }])
+    }
+
+    /// The conversation search schema, shared by every surface that has a
+    /// conversation to search.
+    fn search_conversation_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Case-insensitive text to look for in message bodies and event summaries." },
+                "file": { "type": "string", "description": "A worktree-relative path, or the tail of one: finds items that referenced that file." },
+                "commit": { "type": "string", "description": "A commit sha, short or full: finds items that referenced it." },
+                "stage": { "type": "string", "description": "A stage id: finds items linked to that stage." },
+                "role": { "type": "string", "enum": ["user", "agent", "event"], "description": "Only what the reviewer wrote, only what an agent wrote, or only what the bridge recorded." },
+                "since_sequence": { "type": "integer", "minimum": 0, "description": "Only items after this sequence number — page back through a conversation you have already partly read." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+            }
+        })
+    }
+
+    /// The topic schema, shared for the same reason.
+    fn set_topic_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "topic": { "type": "string", "description": "The objective, in 2-4 words. Title-case the first word, no trailing period. Examples: \"Unify prompt delivery\", \"Fix login redirect\"." }
+            },
+            "required": ["topic"]
+        })
+    }
+
+    /// The tools this session is shown. One inventory per surface, resolved
+    /// from the id the session was opened with, so the list a harness is given
+    /// and the calls the socket accepts can never be two different answers.
+    fn tools(&self) -> Value {
+        match self.surface {
+            McpSurface::Coding => Self::coding_tools(),
+            McpSurface::Router => Self::router_tools(),
+            McpSurface::Project => Self::project_tools(),
+        }
+    }
+
+    /// The project agent's message schema: a status and a sentence. No phase —
+    /// it plans nothing, builds nothing and validates nothing, so there is no
+    /// phase for it to claim.
+    fn project_message_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string", "enum": ["Complete", "Blocked", "Waiting", "Working"] },
+                "body": { "type": "string", "description": "What you have to say, in the user's terms. Complete when the question is answered, Waiting when you need them, Working for a progress update while you keep reading." }
+            },
+            "required": ["status", "body"]
+        })
+    }
+
+    /// The project agent's tools. Read this project's workspaces and the agents
+    /// on them, and talk. Everything that CHANGES a workspace is somewhere else
+    /// on purpose: this agent holds no checkout.
+    fn project_tools() -> Value {
+        json!([{
+            "name": "list_workspaces",
+            "description": "Every workspace in your project: its id and name, the branch it stands on and how its checkout is doing. Which project is read comes from who you are — there is nothing to pass, and no other project is reachable from here.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }, {
+            "name": "list_workspace_agents",
+            "description": "The agents on one workspace's conversation, in rail order: who each one is, what it runs on, and whether it is working right now. Read-only — you cannot post to them.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." }
+                },
+                "required": ["workspace_id"]
+            }
+        }, {
+            "name": "post_thread_message",
+            "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete when you have answered, Blocked when you cannot, Waiting when you need the user, or Working for a progress update while you keep reading.",
+            "inputSchema": Self::project_message_input_schema()
+        }, {
+            "name": "search_conversation",
+            "description": SEARCH_CONVERSATION_DESCRIPTION,
+            "inputSchema": Self::search_conversation_input_schema()
+        }, {
+            "name": "set_topic",
+            "description": SET_TOPIC_DESCRIPTION,
+            "inputSchema": Self::set_topic_input_schema()
         }])
     }
 
@@ -741,59 +894,8 @@ impl DoneServer {
                     ..Handled::default()
                 }
             }
-            "tools/list" if self.surface == McpSurface::Router => Handled {
-                reply: Some(result(id, json!({ "tools": Self::router_tools() }))),
-                ..Handled::default()
-            },
             "tools/list" => Handled {
-                reply: Some(result(
-                    id,
-                    json!({
-                        "tools": [{
-                            "name": "post_thread_message",
-                            // MUST agree with the "Build conversation protocol"
-                            // block in `conversation_prompt` (orchestrator.rs),
-                            // which is canonical — change both together.
-                            //
-                            // Deliberately self-contained rather than a pointer at
-                            // that block: this description is re-sent on every
-                            // tools/list and so outlives context compaction, which
-                            // means it is the ONE statement guaranteed to still be
-                            // in context when an ambiguous message actually arrives.
-                            // A pointer would resolve to nothing exactly then.
-                            "description": "Send a message to the user. This tool is the only way the user can see your messages; terminal output and ordinary assistant responses are not visible to them. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome. Complete and Blocked must include the current phase and any required phase outputs.",
-                            "inputSchema": Self::message_input_schema()
-                        }, {
-                            "name": "search_conversation",
-                            // The one tool a session with no memory of the work
-                            // needs to know exists, so the description says what
-                            // to do INSTEAD of scrolling: ask a question.
-                            "description": "Search your Build conversation history — every past message and event, including the ones from sessions before yours. Use it whenever you need context you do not have: what was decided about a file, why a commit was made, what the reviewer already asked for. Search rather than replay: never scroll the terminal or re-read the whole conversation to find something. Filters combine, results are newest first, and each hit is an excerpt with its sequence number, not the full item.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "query": { "type": "string", "description": "Case-insensitive text to look for in message bodies and event summaries." },
-                                    "file": { "type": "string", "description": "A worktree-relative path, or the tail of one: finds items that referenced that file." },
-                                    "commit": { "type": "string", "description": "A commit sha, short or full: finds items that referenced it." },
-                                    "stage": { "type": "string", "description": "A stage id: finds items linked to that stage." },
-                                    "role": { "type": "string", "enum": ["user", "agent", "event"], "description": "Only what the reviewer wrote, only what an agent wrote, or only what the bridge recorded." },
-                                    "since_sequence": { "type": "integer", "minimum": 0, "description": "Only items after this sequence number — page back through a conversation you have already partly read." },
-                                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
-                                }
-                            }
-                        }, {
-                            "name": "set_topic",
-                            "description": SET_TOPIC_DESCRIPTION,
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "topic": { "type": "string", "description": "The objective, in 2-4 words. Title-case the first word, no trailing period. Examples: \"Unify prompt delivery\", \"Fix login redirect\"." }
-                                },
-                                "required": ["topic"]
-                            }
-                        }]
-                    }),
-                )),
+                reply: Some(result(id, json!({ "tools": self.tools() }))),
                 report: None,
                 ..Handled::default()
             },
@@ -811,43 +913,36 @@ impl DoneServer {
             .and_then(|p| p.get("name"))
             .and_then(Value::as_str)
             .unwrap_or("");
-        if self.surface == McpSurface::Router {
-            return self.handle_router_tools_call(id, name, params);
+        match self.surface {
+            McpSurface::Router => self.handle_router_tools_call(id, name, params),
+            McpSurface::Project => Self::handle_project_tools_call(id, name, params),
+            McpSurface::Coding => self.handle_coding_tools_call(id, name, params),
         }
+    }
+
+    /// The project surface's `tools/call`: two read-only reads of the project
+    /// the agent belongs to, and the conversation tools every agent has.
+    fn handle_project_tools_call(id: Value, name: &str, params: Option<&Value>) -> Handled {
+        match name {
+            "list_workspaces" => acted(id, BridgeAction::ListWorkspaces),
+            "list_workspace_agents" => match required_argument(params, "workspace_id") {
+                Ok(workspace_id) => acted(id, BridgeAction::ListWorkspaceAgents { workspace_id }),
+                Err(message) => refused(id, message),
+            },
+            "search_conversation" => search_action(id, params),
+            "set_topic" => topic_action(id, params),
+            "post_thread_message" => project_message(id, params),
+            other => refused(id, format!("unknown tool: {other}")),
+        }
+    }
+
+    /// The coding surface's `tools/call`.
+    fn handle_coding_tools_call(&self, id: Value, name: &str, params: Option<&Value>) -> Handled {
         if name == "search_conversation" {
-            let arguments = params
-                .and_then(|p| p.get("arguments"))
-                .cloned()
-                .unwrap_or(Value::Null);
-            return match conversation_query(&arguments) {
-                Ok(query) => Handled {
-                    action: Some(BridgeAction::SearchConversation { query }),
-                    action_id: Some(id),
-                    ..Handled::default()
-                },
-                Err(message) => Handled {
-                    reply: Some(tool_error(id, message)),
-                    ..Handled::default()
-                },
-            };
+            return search_action(id, params);
         }
         if name == "set_topic" {
-            let topic = params
-                .and_then(|p| p.get("arguments"))
-                .and_then(|arguments| arguments.get("topic"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            return match normalized_topic(topic) {
-                Ok(topic) => Handled {
-                    action: Some(BridgeAction::SetTopic { topic }),
-                    action_id: Some(id),
-                    ..Handled::default()
-                },
-                Err(message) => Handled {
-                    reply: Some(tool_error(id, message)),
-                    ..Handled::default()
-                },
-            };
+            return topic_action(id, params);
         }
         if name == "post_thread_message" {
             let arguments = params
@@ -1252,11 +1347,106 @@ fn error(id: Value, code: i64, message: &str) -> String {
 /// `completion_report` beside a one-sentence summary; the card it drew was
 /// noise under a sentence too short to stand alone, and the detail lived in
 /// the activity log nobody should have to open. Now the summary carries it.
+/// A tool call that became the action the daemon will run.
+fn acted(id: Value, action: BridgeAction) -> Handled {
+    Handled {
+        action: Some(action),
+        action_id: Some(id),
+        ..Handled::default()
+    }
+}
+
+/// A tool call the parser refused, with the reason the agent can act on.
+fn refused(id: Value, message: impl Into<String>) -> Handled {
+    Handled {
+        reply: Some(tool_error(id, message.into())),
+        ..Handled::default()
+    }
+}
+
+/// One required string argument, trimmed, or why the call cannot be made.
+fn required_argument(params: Option<&Value>, field: &str) -> Result<String, String> {
+    params
+        .and_then(|p| p.get("arguments"))
+        .and_then(|arguments| arguments.get(field))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("{field} is required"))
+}
+
+/// `search_conversation`, on every surface that has a conversation.
+fn search_action(id: Value, params: Option<&Value>) -> Handled {
+    let arguments = params
+        .and_then(|p| p.get("arguments"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    match conversation_query(&arguments) {
+        Ok(query) => acted(id, BridgeAction::SearchConversation { query }),
+        Err(message) => refused(id, message),
+    }
+}
+
+/// `set_topic`, on every surface that has a conversation.
+fn topic_action(id: Value, params: Option<&Value>) -> Handled {
+    let topic = params
+        .and_then(|p| p.get("arguments"))
+        .and_then(|arguments| arguments.get("topic"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match normalized_topic(topic) {
+        Ok(topic) => acted(id, BridgeAction::SetTopic { topic }),
+        Err(message) => refused(id, message),
+    }
+}
+
+/// A project agent's message: a status and a sentence, and no phase to report.
+/// Complete and Blocked end the turn the way they do everywhere else; they end
+/// no phase, because a project agent runs none.
+fn project_message(id: Value, params: Option<&Value>) -> Handled {
+    let arguments = params
+        .and_then(|p| p.get("arguments"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let status = match arguments
+        .get("status")
+        .cloned()
+        .map(serde_json::from_value::<MessageStatus>)
+    {
+        Some(Ok(status)) => status,
+        Some(Err(error)) => return refused(id, format!("invalid status: {error}")),
+        None => return refused(id, "status is required"),
+    };
+    let body = arguments
+        .get("body")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|body| !body.is_empty());
+    let Some(body) = body else {
+        return refused(id, "body is required");
+    };
+    acted(
+        id,
+        BridgeAction::PostThreadMessage {
+            still_working: status == MessageStatus::Working,
+            body: body.to_string(),
+            anchor: None,
+            links: Vec::new(),
+            options: Vec::new(),
+        },
+    )
+}
+
 const SUMMARY_DESCRIPTION: &str = "The full report of this phase, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.";
 
 /// What `set_topic` says about itself on every `tools/list`. The cold prompt
 /// asks for the call; this is what is still in context when the agent makes
 /// it, so it carries the shape rule itself.
+/// The one tool a session with no memory of the work needs to know exists, so
+/// the description says what to do INSTEAD of scrolling: ask a question.
+const SEARCH_CONVERSATION_DESCRIPTION: &str = "Search your Build conversation history — every past message and event, including the ones from sessions before yours. Use it whenever you need context you do not have: what was decided about a file, why a commit was made, what the reviewer already asked for. Search rather than replay: never scroll the terminal or re-read the whole conversation to find something. Filters combine, results are newest first, and each hit is an excerpt with its sequence number, not the full item.";
+
 const SET_TOPIC_DESCRIPTION: &str = "Name what this conversation is about, in 2-4 words: the objective you are setting out to achieve, not the steps. The conversation header shows it in place of the harness name, and says \"Starting\" until you call this. Call it first thing in a new conversation, and again if the objective changes.";
 
 /// The most bytes a topic may carry after normalization. Four words leave
@@ -2145,13 +2335,18 @@ mod tests {
             DoneServer::for_owner("agent-01H").surface(),
             McpSurface::Coding
         );
+        assert_eq!(
+            DoneServer::for_owner("project-01H").surface(),
+            McpSurface::Project
+        );
         assert_eq!(DoneServer::new("router-abc").surface(), McpSurface::Coding);
     }
 
-    /// Two surfaces share the message tool. A coding agent never sees
-    /// a router tool and a router never sees a coding one.
+    /// Every surface shares the message tool and nothing else it is not meant
+    /// to have: a coding agent never sees a router tool, a router never sees a
+    /// coding one, and a project agent sees neither surface's work verbs.
     #[test]
-    fn the_two_surfaces_advertise_their_exact_tool_inventories() {
+    fn every_surface_advertises_its_exact_tool_inventory() {
         assert_eq!(
             tool_names(&router()),
             vec![
@@ -2168,6 +2363,100 @@ mod tests {
             vec!["post_thread_message", "search_conversation", "set_topic",],
             "the coding surface is unchanged by the router's arrival"
         );
+        assert_eq!(
+            tool_names(&project()),
+            vec![
+                "list_workspaces",
+                "list_workspace_agents",
+                "post_thread_message",
+                "search_conversation",
+                "set_topic",
+            ]
+        );
+    }
+
+    // ==== the project surface ===============================================
+
+    fn project() -> DoneServer {
+        DoneServer::for_owner("project-01H")
+    }
+
+    /// The project surface is read-only about the project and ordinary about
+    /// its conversation: two reads scoped to the project the agent belongs to,
+    /// and the conversation tools every agent with a conversation has.
+    #[test]
+    fn every_project_tool_emits_its_typed_action() {
+        let call = |name: &str, arguments: &str| {
+            project().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+            ))
+        };
+
+        assert!(matches!(
+            call("list_workspaces", "{}").action,
+            Some(BridgeAction::ListWorkspaces)
+        ));
+        assert!(matches!(
+            call("list_workspace_agents", r#"{"workspace_id":"ws-1"}"#).action,
+            Some(BridgeAction::ListWorkspaceAgents { ref workspace_id }) if workspace_id == "ws-1"
+        ));
+        assert!(matches!(
+            call("set_topic", r#"{"topic":"Cut a workspace"}"#).action,
+            Some(BridgeAction::SetTopic { ref topic }) if topic == "Cut a workspace"
+        ));
+        assert!(matches!(
+            call("search_conversation", r#"{"query":"workspace"}"#).action,
+            Some(BridgeAction::SearchConversation { .. })
+        ));
+
+        let missing = call("list_workspace_agents", "{}");
+        assert_eq!(
+            parse(&missing.reply.unwrap())["result"]["isError"],
+            true,
+            "a workspace read with no workspace named is a tool error"
+        );
+        assert!(missing.action.is_none());
+    }
+
+    /// The project agent has no phases — it builds nothing — so its message
+    /// asks for none, and a terminal one reports no lifecycle outcome.
+    #[test]
+    fn a_project_message_carries_a_status_and_never_a_phase() {
+        let h = project().handle_message(r#"{"jsonrpc":"2.0","id":71,"method":"tools/list"}"#);
+        let v = parse(&h.reply.unwrap());
+        let schema = &v["result"]["tools"][2]["inputSchema"];
+        assert!(schema["properties"]["phase"].is_null(), "{schema}");
+        assert_eq!(
+            schema["properties"]["status"]["enum"],
+            json!(["Complete", "Blocked", "Waiting", "Working"])
+        );
+
+        let done = project().handle_message(
+            r#"{"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"two workspaces, both idle"}}}"#,
+        );
+        assert!(done.report.is_none(), "a project agent reports no phase");
+        assert!(matches!(
+            done.action,
+            Some(BridgeAction::PostThreadMessage { still_working: false, ref body, .. })
+                if body == "two workspaces, both idle"
+        ));
+
+        let working = project().handle_message(
+            r#"{"jsonrpc":"2.0","id":73,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Working","body":"reading the workspaces"}}}"#,
+        );
+        assert!(matches!(
+            working.action,
+            Some(BridgeAction::PostThreadMessage {
+                still_working: true,
+                ..
+            })
+        ));
+
+        let empty = project().handle_message(
+            r#"{"jsonrpc":"2.0","id":74,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"  "}}}"#,
+        );
+        assert_eq!(parse(&empty.reply.unwrap())["result"]["isError"], true);
+        assert!(empty.action.is_none());
     }
 
     /// The router's completion message reports the one phase a router has, so the schema
@@ -2398,12 +2687,69 @@ mod tests {
             true
         );
         assert!(router_asking_for_coding.action.is_none());
+
+        for (server, tool) in [
+            (project(), "dispatch_branch"),
+            (project(), "list_projects"),
+            (server(), "list_workspaces"),
+            (router(), "list_workspace_agents"),
+        ] {
+            let refused = server.handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+            ));
+            assert_eq!(
+                parse(&refused.reply.unwrap())["result"]["isError"],
+                true,
+                "{tool}"
+            );
+            assert!(refused.action.is_none(), "{tool}");
+        }
     }
 
     /// The socket enforces the same split on the frames themselves, so it needs
     /// each action to say which surface it belongs to.
     #[test]
     fn every_action_names_its_tool_and_its_surface() {
+        // A conversation tool is on every surface that has a conversation; a
+        // work verb is on exactly one.
+        for (action, surface, allowed) in [
+            (
+                BridgeAction::SetTopic { topic: "T".into() },
+                McpSurface::Coding,
+                true,
+            ),
+            (
+                BridgeAction::SetTopic { topic: "T".into() },
+                McpSurface::Project,
+                true,
+            ),
+            (
+                BridgeAction::SetTopic { topic: "T".into() },
+                McpSurface::Router,
+                false,
+            ),
+            (BridgeAction::ListWorkspaces, McpSurface::Project, true),
+            (BridgeAction::ListWorkspaces, McpSurface::Coding, false),
+            (BridgeAction::ListProjects, McpSurface::Project, false),
+        ] {
+            assert_eq!(
+                action.allowed_on(surface),
+                allowed,
+                "{} on {}",
+                action.tool_name(),
+                surface.as_str()
+            );
+        }
+        assert_eq!(BridgeAction::ListWorkspaces.tool_name(), "list_workspaces");
+        assert_eq!(
+            BridgeAction::ListWorkspaceAgents {
+                workspace_id: "ws-1".into()
+            }
+            .tool_name(),
+            "list_workspace_agents"
+        );
+        assert_eq!(BridgeAction::ListWorkspaces.surface_name(), "project");
+
         for (action, name, surface) in [
             (
                 BridgeAction::ReadUnreadMessages,
@@ -2426,7 +2772,7 @@ mod tests {
             ),
         ] {
             assert_eq!(action.tool_name(), name);
-            assert_eq!(action.surface(), surface, "{name}");
+            assert!(action.allowed_on(surface), "{name}");
         }
     }
 

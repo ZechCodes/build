@@ -179,10 +179,11 @@ impl AppState {
         capture_id: &str,
         action: BridgeAction,
     ) -> Result<Value, String> {
-        if action.surface() != crate::mcp::McpSurface::Router {
+        if !action.allowed_on(crate::mcp::McpSurface::Router) {
             return Err(format!(
-                "{} is a coding agent's tool; this session routes captures",
-                action.tool_name()
+                "{} is a {} tool; this session routes captures",
+                action.tool_name(),
+                action.surface_name()
             ));
         }
         // A router reaches one destination. A second route from the same

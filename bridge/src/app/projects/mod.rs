@@ -16,6 +16,7 @@ pub(in crate::app) struct ProjectSource {
     pub(in crate::app) remote: Option<String>,
 }
 
+mod agent_tools;
 mod conversation;
 mod deletion;
 mod lifecycle;

@@ -327,7 +327,10 @@ impl AppState {
     /// run that adopted them. Only a live run may win that fallback: a
     /// historical terminal run must never steal a newly adopted checkout's
     /// conversation.
-    fn workspace_conversation_owner(&self, workspace: &Workspace) -> Option<String> {
+    pub(in crate::app) fn workspace_conversation_owner(
+        &self,
+        workspace: &Workspace,
+    ) -> Option<String> {
         if self.runs.contains_key(&workspace.id) {
             return Some(workspace.id.clone());
         }

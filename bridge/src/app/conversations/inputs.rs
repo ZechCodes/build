@@ -81,12 +81,14 @@ pub(in crate::app) fn apply_thread_action(
         BridgeAction::SetTopic { .. } => {
             Err("set_topic is answered by the daemon, not one conversation".to_string())
         }
-        // The router's tools are about which work item a capture becomes, so
-        // none of them is a thread operation. The socket refuses them before
-        // this point; this arm is the type system agreeing.
-        router_tool => Err(format!(
-            "{} is a router tool and reaches no conversation",
-            router_tool.tool_name()
+        // Every other surface's tools are about work items, workspaces and
+        // agents, so none of them is a thread operation. The socket refuses
+        // them before this point; this arm is the type system agreeing, and it
+        // names the surface the tool is actually on.
+        elsewhere => Err(format!(
+            "{} is a {} tool and reaches no conversation",
+            elsewhere.tool_name(),
+            elsewhere.surface_name()
         )),
     }
 }

@@ -313,14 +313,26 @@ impl AppState {
         agent_id: &str,
         action: BridgeAction,
     ) -> Result<Value, String> {
-        // The router's tools reach across every project and create work. A
-        // coding agent is scoped to the checkout it was given, and stays there
-        // however its harness frames the request.
-        if action.surface() != crate::mcp::McpSurface::Coding {
+        // The surface a session is on is a property of the SESSION — its agent
+        // id says which one — and the gate is here as well as in the tool
+        // inventory each surface is shown: a harness that writes its own frames
+        // must not reach past the surface it was opened on.
+        let surface = crate::mcp::McpSurface::for_owner(agent_id);
+        if !action.allowed_on(surface) {
             return Err(format!(
-                "{} is a router tool; this session works one checkout",
-                action.tool_name()
+                "{} is a {} tool; this session is on the {} surface",
+                action.tool_name(),
+                action.surface_name(),
+                surface.as_str()
             ));
+        }
+        // The project reads answer about the project this agent belongs to, and
+        // the daemon holds the binding that says which one that is.
+        if matches!(action, BridgeAction::ListWorkspaces) {
+            return self.project_agent_workspaces(entity_id);
+        }
+        if let BridgeAction::ListWorkspaceAgents { workspace_id } = &action {
+            return self.project_agent_workspace_agents(entity_id, workspace_id);
         }
         if let BridgeAction::ReadOperationMessages { operation_id } = &action {
             return self.read_operation_messages_for_agent(entity_id, agent_id, operation_id);

@@ -19,10 +19,17 @@ import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { rememberDeviceFilter } from "./core/deviceFilter.js";
-import { deviceWentAway, openDeviceSessions, syncHome } from "./connection.js";
+import { deviceWentAway, openDeviceSessions, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
+
+let presenceGeneration = 0;
 
 export async function refreshDevices() {
-  App.devices = await fetchDevices();
+  const generation = ++presenceGeneration;
+  const accountEpoch = App.accountEpoch;
+  const devices = await fetchDevices();
+  if (generation !== presenceGeneration || accountEpoch !== App.accountEpoch) throw new Error("stale device presence read");
+  App.devices = devices;
+  syncDeviceRecoveryPresence(devices);
   forgetFilterOnMissingDevice();
   paintDevicePicker();
   return App.devices;
@@ -80,6 +87,7 @@ export function watchPresence({ intervalMs = PRESENCE_INTERVAL_MS } = {}) {
 
 /** Stop following it (the gate took the app back, the account signed out). */
 export function stopWatchingPresence() {
+  presenceGeneration += 1;
   clearInterval(presenceTimer);
   presenceTimer = null;
   if (onVisibilityChange) document.removeEventListener("visibilitychange", onVisibilityChange);

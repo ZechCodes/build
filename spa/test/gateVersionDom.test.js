@@ -40,6 +40,7 @@ vi.mock("../src/devices.js", () => ({
   stopWatchingPresence: () => {},
 }));
 vi.mock("../src/connection.js", () => ({
+  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   openDeviceSettingsSession: async () => ({}),
   chooseCreationDevice: () => {},
@@ -75,6 +76,7 @@ const root = () => document.getElementById("root");
 let adoptBridgeSelection;
 let adoptDeviceSession;
 let contextFor;
+let setContextOffline;
 let gate;
 
 /** A paired machine whose bridge has just greeted, with what its greeting
@@ -93,7 +95,7 @@ beforeEach(async () => {
   App.updateAvailable = false;
   document.body.innerHTML = bodyHtml;
   document.body.className = "";
-  ({ adoptBridgeSelection, adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js"));
+  ({ adoptBridgeSelection, adoptDeviceSession, contextFor, setContextOffline } = await import("../src/core/deviceContexts.js"));
   gate = await import("../src/views/gate.js");
 });
 
@@ -182,6 +184,25 @@ describe("the version gates", () => {
 
     expect(App.gated).toBe(false);
     expect(document.body.classList.contains("gated")).toBe(false);
+    expect(root().querySelector("h1")).toBe(null);
+  });
+
+  it("keeps the mounted workspace when the compatible online device starts recovering", async () => {
+    enterApp();
+    App.devices = [
+      { id: "d1", name: "studio", status: "online" },
+      { id: "d2", name: "laptop", status: "online" },
+    ];
+    greeted("d2", { major: 1, version: "1.1.0", unsupported: null });
+    greeted("d1", { unsupported: "app", version: "2.0.0" });
+    await flush();
+    unmountView.mockClear();
+
+    setContextOffline("d2", { blocked: "lost" });
+    await flush();
+
+    expect(App.gated).toBe(false);
+    expect(unmountView).not.toHaveBeenCalled();
     expect(root().querySelector("h1")).toBe(null);
   });
 

@@ -7,6 +7,25 @@ const blockedBy = (reason, message) => Object.assign(new Error(message), { block
 const safeState = (state) => (["new", "connecting", "connected", "disconnected", "failed", "closed"].includes(state) ? state : "unknown");
 const safeIceState = (state) => (["new", "checking", "connected", "completed", "disconnected", "failed", "closed"].includes(state) ? state : "unknown");
 
+function createRecoveryStatus() {
+  const listeners = new Set();
+  let state = { epoch: 0, recovering: false };
+  const transition = (recovering) => {
+    state = { epoch: state.epoch + 1, recovering };
+    for (const listener of [...listeners]) listener(state);
+  };
+  return {
+    snapshot: () => state,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    begin: () => transition(true),
+    end: () => transition(false),
+    clear: () => listeners.clear(),
+  };
+}
+
 export async function openPeerLink({ signal, fetchIceServers, onPush, onConnected = () => {}, onFailed = () => {},
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection, openTimeoutMs = OPEN_TIMEOUT_MS, diagnosticId = "peer" }) {
   const diagnostic = (event, detail = {}) => recordConnectionDiagnostic(diagnosticId, event, detail);
@@ -14,6 +33,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const peer = new RTCPeerConnectionImpl({ iceServers });
   const channels = CHANNELS.map(([label, id]) => peer.createDataChannel(label, { negotiated: true, id, ordered: true }));
   const carriers = channels.map((channel) => openCarrier({ channel }));
+  const recovery = createRecoveryStatus();
   let torn = false;
   let cancelWait = () => {};
   let stopWatching = () => {};
@@ -46,6 +66,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     torn = true;
     cancelWait();
     stopWatching();
+    recovery.clear();
     unsubscribe();
     for (const stopObserving of observed.splice(0)) stopObserving();
     peer.removeEventListener("icecandidate", outgoingCandidate);
@@ -68,6 +89,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   }
 
   stopWatching = watchForFailure(peer, diagnostic, async () => {
+    recovery.begin();
     try {
       await withinDeadline(openTimeoutMs, async (remaining) => {
         await onFailed();
@@ -81,6 +103,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       }, (cancel) => (cancelWait = cancel));
       if (torn) return;
       diagnostic("connected", { phase: "restart" });
+      recovery.end();
       await onConnected();
     } catch (error) {
       diagnostic("restart-failed", { reason: error?.blockedReason === "timeout" ? "timeout" : "failed" });
@@ -88,7 +111,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     }
   });
   const [app, term] = carriers;
-  return { app, term, close: tearDown };
+  return { app, term, recovery, close: tearDown };
 }
 
 async function offer(peer, signal, iceServers, options, ensureActive) {

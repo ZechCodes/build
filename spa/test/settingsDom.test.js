@@ -34,6 +34,7 @@ const call = vi.fn(async (method) => {
 
 vi.mock("../src/app.js", () => ({ App, go: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
+  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   chooseCreationDevice: (...args) => chooseCreationDevice(...args),
   retireDevice: (...args) => retireDevice(...args),
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),

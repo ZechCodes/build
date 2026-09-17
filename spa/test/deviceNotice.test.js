@@ -8,8 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The one thing a reader can do about a machine nothing could reach is ask
 // again, and running the sequence is the connection layer's (rule 3).
-const connection = vi.hoisted(() => ({ connectDevice: vi.fn(async () => null) }));
+const connection = vi.hoisted(() => ({ connectDevice: vi.fn(async () => null), recovery: new Map(), listeners: new Set() }));
 vi.mock("../src/connection.js", () => ({
+  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: (id) => connection.recovery.get(id) || null,
+  onDeviceRecoveryChanged: (listener) => { connection.listeners.add(listener); return () => connection.listeners.delete(listener); },
   connectDevice: (...args) => connection.connectDevice(...args),
   chooseCreationDevice: () => {},
   deviceWentAway: () => {},
@@ -37,6 +39,8 @@ import {
 import { fakeSession } from "./deviceSessionFixture.js";
 
 beforeEach(() => {
+  connection.recovery.clear();
+  connection.listeners.clear();
   App.devices = [{ id: "dev-1", name: "workshop", status: "offline" }];
 });
 
@@ -135,6 +139,32 @@ describe("naming the machine over a surface that is already open", () => {
 
     expect(strips()).toHaveLength(0);
     expect(host.classList.contains("device-away")).toBe(false);
+  });
+
+  it("does not insert a strip or move mounted content during online recovery", () => {
+    mountDeviceStrip(host, context);
+    const content = host.querySelector(".tab");
+    App.devices[0].status = "online";
+    connection.recovery.set("dev-1", { deviceId: "dev-1", status: "attempting", failedAttempts: 0 });
+
+    setContextOffline("dev-1", blockedMark("lost"));
+
+    expect(strips()).toHaveLength(0);
+    expect(host.firstElementChild).toBe(content);
+  });
+
+  it("shows a fatal reason when recovery stops", () => {
+    App.devices[0].status = "online";
+    connection.recovery.set("dev-1", { deviceId: "dev-1", status: "attempting", failedAttempts: 0 });
+    mountDeviceStrip(host, context);
+    setContextOffline("dev-1", blockedMark("no-webrtc"));
+    expect(strips()).toHaveLength(0);
+
+    connection.recovery.delete("dev-1");
+    connection.listeners.forEach((listener) => listener());
+
+    expect(strips()).toHaveLength(1);
+    expect(strips()[0].textContent).toContain("direct connection");
   });
 
   // "This is what it last said" is a promise about what is on screen. A surface

@@ -18,8 +18,8 @@ import {
 } from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
 import { connectDevice, openDeviceSessions, securityStopText } from "../connection.js";
-import { deviceAwayWord } from "../core/deviceAway.js";
-import { contextFor, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
+import { deviceAwayText, deviceAwayWord } from "../core/deviceAway.js";
+import { contextFor, existingDeviceLifecycle, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
 import { paintDevicePicker, readPresence, refreshDevices, stopWatchingPresence, watchPresence } from "../devices.js";
 import { renderAppBehindBridgeGate, renderBridgeBehindAppGate } from "./versionGate.js";
@@ -112,7 +112,25 @@ function handBackToReader() {
  */
 export function holdAppWhileNoDeviceAnswers() {
   stopWatchingDevices?.();
-  const readAccount = () => (liveContexts().length ? leaveHold() : holdForDevices());
+  const readAccount = () => {
+    if (liveContexts().length) return leaveHold();
+    if (gatedContext() && !hasOnlineRecoveryCandidate()) return holdForDevices();
+    if (allDevicesOffline()) return holdForDevices();
+    // Before the first presence read there is no state to put on screen, but a
+    // device landing still owes the shell its one handoff (feed, route, chrome).
+    if (!App.devices.length) {
+      holding = true;
+      return;
+    }
+    // A pre-connection listener is waiting to perform the shell's one-time
+    // handoff when the first context lands. Once contexts exist, losing them
+    // while presence remains online is recovery and keeps the shell in place.
+    if (!knownContexts().length) {
+      holding = true;
+      return;
+    }
+    leaveHold();
+  };
   stopWatchingDevices = onDeviceStateChanged(readAccount);
   readAccount();
 }
@@ -122,11 +140,10 @@ export function holdAppWhileNoDeviceAnswers() {
  *  in a shape this tab cannot read — so it gets the version gate rather than
  *  the waiting screen.
  *
- *  The waiting screen carries the account's presence with it: nothing retries
- *  on its own any more (spec rule 3), so this is the reader that hears a
- *  machine come back — on the gate's own three seconds rather than the app's
- *  fifteen, because a page that can do nothing else is waiting for exactly
- *  this. */
+ *  The waiting screen carries the account's presence with it. This is the
+ *  reader that hears an actually offline machine come back, on the gate's own
+ *  three seconds rather than the app's fifteen. Online connection recovery is
+ *  owned by connection.js and never takes the mounted workspace away. */
 function holdForDevices() {
   if (holding && holdIsOnScreen()) {
     // The screen is up and what the machines say has changed under it: one of
@@ -145,6 +162,8 @@ function holdForDevices() {
   renderWaiting(App.devices);
   watchForOnline();
 }
+
+const allDevicesOffline = () => App.devices.length > 0 && App.devices.every((device) => device.status === "offline");
 
 /** Whether the screen this hold stands on is still on the page. A hold is only
  *  as good as what it put there: one whose screen has been taken down leaves a
@@ -194,8 +213,9 @@ function watchForOnline() {
   stopWatchingForOnline();
   const generation = gateGeneration;
   App._watch = setInterval(async () => {
-    const devices = (await readPresence()) || [];
+    const devices = await readPresence();
     if (generation !== gateGeneration) return;
+    if (!devices) return;
     if (!devices.length) {
       stopWatchingForOnline();
       await renderOnboarding();
@@ -205,7 +225,10 @@ function watchForOnline() {
     try {
       await enterApp();
     } catch {
-      /* warming up */
+      if (generation !== gateGeneration) return;
+      if (!renderFatalConnectionState() && devices.some((device) => device.status === "online")) {
+        enterShellWhileRecovering();
+      }
     }
   }, 3000);
 }
@@ -389,6 +412,50 @@ function renderWaiting(devices) {
   $("#addmore").onclick = () => openAddDevice(boot);
 }
 
+function renderConnectionRefusal(message) {
+  setGate(true);
+  $("#root").innerHTML = `
+    <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
+      <h1 style="margin:0 0 6px">Couldn’t connect securely</h1>
+      <p class="settings-intro">Build stopped connecting to protect this device.</p>
+      <div class="adderr" id="oerr">${esc(message)}</div>
+    </div>`;
+}
+
+function renderDirectConnectionUnavailable(context) {
+  setGate(true);
+  const name = deviceNameOf(App.devices, context.deviceId);
+  $("#root").innerHTML = `
+    <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
+      <h1 style="margin:0 0 6px">Direct connection unavailable</h1>
+      <p class="settings-intro">${esc(deviceAwayText(context, name))}</p>
+    </div>`;
+}
+
+function renderPresenceUnavailable() {
+  setGate(true);
+  $("#root").innerHTML = `
+    <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
+      <h1 style="margin:0 0 6px">Loading your devices…</h1>
+      <p class="settings-intro">Build couldn’t refresh device status. Your last known workspace is unchanged.</p>
+      <div class="wait-row"><button class="btn" id="retrybtn">Retry now</button></div>
+    </div>`;
+  $("#retrybtn").onclick = () => boot();
+  const generation = gateGeneration;
+  App._watch = setInterval(() => {
+    if (generation === gateGeneration) boot();
+  }, 3000);
+}
+
+function enterShellWhileRecovering() {
+  handBackToReader();
+  startCacheSync();
+  initInboxRail();
+  initToolbar();
+  render();
+  holdAppWhileNoDeviceAnswers();
+}
+
 // ---- the version gates (wire spec step 2.5) ----------------------------------
 //
 // Every greeting selects an adapter for the bridge that answered it, or names
@@ -446,14 +513,66 @@ async function showBridgeBehindGate(context) {
   }
 }
 
+async function readDevicesForBoot(generation) {
+  try {
+    return await refreshDevices();
+  } catch {
+    if (generation !== gateGeneration) return null;
+    if (App.devices.some((device) => device.status === "online")) {
+      if (App.gated) enterShellWhileRecovering();
+    } else {
+      renderPresenceUnavailable();
+    }
+    return null;
+  }
+}
+
+async function finishFailedBoot(generation) {
+  if (renderFatalConnectionState()) return;
+  const refreshedDevices = await readDevicesForBoot(generation);
+  if (!refreshedDevices || generation !== gateGeneration) return;
+  if (!refreshedDevices.length) return renderOnboarding();
+  if (!allDevicesOffline()) return enterShellWhileRecovering();
+  renderWaiting(refreshedDevices);
+  watchForOnline();
+}
+
+function renderFatalConnectionState() {
+  const refusal = securityStopText();
+  if (refusal) {
+    if (hasOnlineRecoveryCandidate()) return false;
+    renderConnectionRefusal(refusal);
+    return true;
+  }
+  if (gatedContext()) {
+    if (hasOnlineRecoveryCandidate()) return false;
+    holdForDevices();
+    return true;
+  }
+  const unsupportedTransport = knownContexts().find((context) => context.blocked === "no-webrtc");
+  if (!unsupportedTransport) return false;
+  if (hasOnlineRecoveryCandidate()) return false;
+  renderDirectConnectionUnavailable(unsupportedTransport);
+  return true;
+}
+
+function hasOnlineRecoveryCandidate() {
+  const barred = new Set(
+    knownContexts()
+      .filter((context) =>
+        context.unsupported ||
+        context.blocked === "no-webrtc" ||
+        existingDeviceLifecycle(context.deviceId)?.snapshot().securityStop)
+      .map((context) => context.deviceId),
+  );
+  return App.devices.some((device) => device.status === "online" && !barred.has(device.id));
+}
+
 export async function boot({ retry = false } = {}) {
   const generation = ++gateGeneration;
-  if (App._watch) {
-    clearInterval(App._watch);
-    App._watch = null;
-  }
-  setGate(true);
-  const devices = await refreshDevices();
+  stopWatchingForOnline();
+  const devices = await readDevicesForBoot(generation);
+  if (!devices) return;
   if (generation !== gateGeneration) return;
   if (!devices.length) {
     await renderOnboarding();
@@ -466,8 +585,5 @@ export async function boot({ retry = false } = {}) {
     /* API presence is only a hint; the relay is not ready yet → waiting */
   }
   if (generation !== gateGeneration) return;
-  const refreshedDevices = await refreshDevices();
-  if (generation !== gateGeneration) return;
-  renderWaiting(refreshedDevices);
-  watchForOnline();
+  await finishFailedBoot(generation);
 }

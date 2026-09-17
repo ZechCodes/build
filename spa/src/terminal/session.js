@@ -102,6 +102,8 @@ export class TerminalSocket {
     //            onOutput, onSnapshot, onClosed, onLive }
     this._terms = new Map();
     this._connected = false;
+    this._recovery = null;
+    this._stopRecovery = noop;
     this._confirmNextCarrier = false;
     this._connectWaiters = [];
     // Agent frames that arrived before their attach response named the wire id
@@ -142,7 +144,7 @@ export class TerminalSocket {
    * handed over is passed in again, and re-taken under the new session's key,
    * which is what re-attaches every open terminal on it.
    */
-  adoptTerminalSession(session, carrier = null, { confirm = false, isCurrent = () => true } = {}) {
+  adoptTerminalSession(session, carrier = null, { confirm = false, isCurrent = () => true, recovery = null } = {}) {
     this._closed = false;
     // A session being replaced is not one being lost: the old session's calls
     // end with it, and nobody is told the shells are gone when they are moving.
@@ -157,7 +159,7 @@ export class TerminalSocket {
     // A status observer can synchronously move the terminals again. Do not let
     // the superseded adoption install its old carrier after that newer move.
     if (!isCurrent()) return undefined;
-    return carrier ? this._switch.peer(carrier) : undefined;
+    return carrier ? this.peer(carrier, { recovery }) : undefined;
   }
 
   /**
@@ -167,14 +169,29 @@ export class TerminalSocket {
    * below it: with no channel the shells have nothing to type down, and every
    * caller waiting on one is told so rather than left hanging.
    */
-  peer(carrier) {
+  peer(carrier, { recovery = null } = {}) {
     const wasCarrying = Boolean(this._switch.active());
+    this._bindRecovery(carrier ? recovery : null);
     const riding = this._switch.peer(carrier);
     // Losing a wire is the switch's own report. "There is no wire" told to a
     // socket that had none is not a change it can see, and the callers waiting
     // on a machine with no channel are owed the same answer.
     if (!wasCarrying && !this._switch.active()) this._reportLost();
     return riding;
+  }
+
+  _bindRecovery(recovery) {
+    if (this._recovery === recovery) return;
+    this._stopRecovery();
+    this._stopRecovery = noop;
+    this._recovery = recovery;
+    this._liveness = null;
+    if (!recovery) return;
+    this._stopRecovery = recovery.subscribe((state) => {
+      if (this._recovery !== recovery || this._closed) return;
+      this._liveness = null;
+      if (!state.recovering && this._switch.active() && this._connected) this._watchLiveness(true);
+    });
   }
 
   onStatus(fn) { this._onStatus = fn; } // 'connecting'|'connected'|'disconnected'
@@ -423,6 +440,7 @@ export class TerminalSocket {
   /** Permanent close — no reconnect. */
   close() {
     this._closed = true;
+    this._bindRecovery(null);
     this._switch.close();
     this._rpc?.rideOn(null); // nothing is asked or answered on this session again
     for (const entry of this._terms.values()) this._cancelPendingAck(entry);
@@ -628,24 +646,33 @@ export class TerminalSocket {
   // decrypted frame already proves the path, so it suppresses the probe (see
   // FRAME_PROOF_OF_LIFE_MS); only silence is probed, and a failed ping means the
   // path to the bridge is down → the wire goes and the shells are lost.
-  async _watchLiveness() {
+  async _watchLiveness(immediate = false) {
     const mine = (this._liveness = {}); // one watch per connection, the newest
     const diagnosticId = `${this.deviceId}:${this._session?.sessionId || "terminal"}`;
     while (this._liveness === mine && !this._closed) {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      if (this._liveness !== mine || this._closed) return;
-      if (Date.now() - this._rpc.lastFrameAt() < FRAME_PROOF_OF_LIFE_MS) continue;
-      const wire = this._switch.active();
-      if (!wire) return;
-      try {
-        await this._call("ping", {}, 3000);
-      } catch {
-        // The wire that did not answer is the one that goes: closing a carrier
-        // is how it reports itself gone, and its owner decides what that costs
-        // — an ICE restart, or the device blocked.
-        this._closeUnresponsiveWire(mine, wire, diagnosticId);
-        return;
-      }
+      await this._livenessDelay(immediate);
+      immediate = false;
+      if (!await this._probeLiveness(mine, diagnosticId)) return;
+    }
+  }
+
+  _livenessDelay(immediate) {
+    return immediate ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  async _probeLiveness(liveness, diagnosticId) {
+    if (this._liveness !== liveness || this._closed || this._recovery?.snapshot().recovering) return false;
+    if (Date.now() - this._rpc.lastFrameAt() < FRAME_PROOF_OF_LIFE_MS) return true;
+    const wire = this._switch.active();
+    if (!wire) return false;
+    try {
+      await this._call("ping", {}, 3000);
+      return this._liveness === liveness;
+    } catch {
+      // The wire that did not answer is the one that goes: closing a carrier
+      // is how it reports itself gone, and its owner decides what that costs.
+      this._closeUnresponsiveWire(liveness, wire, diagnosticId);
+      return false;
     }
   }
 
@@ -666,6 +693,7 @@ export class TerminalSocket {
   /// caller that wants it says so by asking again, rather than by holding a
   /// promise nothing will settle.
   _reportLost() {
+    this._bindRecovery(null);
     this._liveness = null;
     // Every pending ack was read on the wire that just went: the bridge it would
     // report to cannot be reached, and the next attach rebases each cursor.

@@ -9,7 +9,7 @@ import { deviceFrozenText, esc } from "./text.js";
 import { deviceAwayText } from "./deviceAway.js";
 import { deviceNameOf } from "./devicePolicy.js";
 import { canAnswer, contextFor, onDeviceStateChanged, routeContext } from "./deviceContexts.js";
-import { connectDevice } from "../connection.js";
+import { connectDevice, deviceRecoverySnapshot, onDeviceRecoveryChanged } from "../connection.js";
 
 /** What this client says about a machine it cannot reach, in the account's name
  *  for it — the one sentence, whether a surface prints it or a refused opener
@@ -26,6 +26,12 @@ const deviceFrozenNotice = (deviceId) => deviceFrozenText(deviceNameOf(App.devic
 /** The notice a link to an unreachable device stands in for a surface with. */
 const deviceOfflineHtml = (deviceId) => `<div class="empty">${esc(deviceOfflineNotice(deviceId))}</div>`;
 
+const listedOnline = (deviceId) => App.devices.some((device) => device.id === deviceId && device.status === "online");
+const recovering = (deviceId) => {
+  const state = deviceRecoverySnapshot(deviceId);
+  return listedOnline(deviceId) && state && !Array.isArray(state) && state.status !== "idle";
+};
+
 /**
  * Stand the notice up where a surface would go, and take it down again the
  * moment its machine can answer.
@@ -39,12 +45,19 @@ const deviceOfflineHtml = (deviceId) => `<div class="empty">${esc(deviceOfflineN
  * unsubscribe, which the next render runs.
  */
 export function mountDeviceNotice(root, deviceId) {
-  root.innerHTML = deviceOfflineHtml(deviceId);
-  const askAgain = retryControl(deviceId);
-  if (askAgain) root.querySelector(".empty").append(" ", askAgain);
-  App.viewDispose = onDeviceStateChanged(() => {
-    if (canAnswer(routeContext(App.route))) render();
-  });
+  const paint = () => {
+    if (canAnswer(routeContext(App.route))) return render();
+    const context = contextFor(deviceId);
+    const connecting = listedOnline(deviceId) && (!context?.blocked || recovering(deviceId));
+    root.innerHTML = connecting
+      ? `<div class="empty">Connecting to ${esc(deviceNameOf(App.devices, deviceId) || "device")}…</div>`
+      : deviceOfflineHtml(deviceId);
+    const askAgain = connecting ? null : retryControl(deviceId);
+    if (askAgain) root.querySelector(".empty").append(" ", askAgain);
+  };
+  paint();
+  const stops = [onDeviceStateChanged(paint), onDeviceRecoveryChanged(paint)];
+  App.viewDispose = () => stops.forEach((stop) => stop());
 }
 
 /** What a surface whose machine cannot answer says over itself. The frozen
@@ -72,11 +85,15 @@ const awayWords = (deviceId, hasContent) =>
  */
 export function mountDeviceStrip(host, context, { hasContent = () => true } = {}) {
   const paint = () =>
-    nameTheMachine(host, canAnswer(context) ? null : awayWords(context.deviceId, hasContent), context.deviceId);
+    nameTheMachine(
+      host,
+      canAnswer(context) || recovering(context.deviceId) ? null : awayWords(context.deviceId, hasContent),
+      context.deviceId,
+    );
   paint();
-  const stopListening = onDeviceStateChanged(paint);
+  const stops = [onDeviceStateChanged(paint), onDeviceRecoveryChanged(paint)];
   return () => {
-    stopListening();
+    stops.forEach((stop) => stop());
     nameTheMachine(host, null);
   };
 }

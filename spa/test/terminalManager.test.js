@@ -34,18 +34,22 @@ vi.mock("../src/terminal/session.js", () => ({
       // What each adopted session was handed to ride, and every wire this
       // socket was given by either route, in order.
       this.adoptedWith = [];
+      this.adoptOptions = [];
       this.carriers = [];
+      this.peerOptions = [];
       sockets.push(this);
     }
     onStatus() {}
-    adoptTerminalSession(session, carrier = null) {
+    adoptTerminalSession(session, carrier = null, options = {}) {
       this.adopted.push(session);
       this.adoptedWith.push(carrier);
+      this.adoptOptions.push(options);
       this.carriers.push(carrier);
       this.deviceId = session.deviceId;
     }
-    peer(carrier) {
+    peer(carrier, options = {}) {
       this.carriers.push(carrier);
+      this.peerOptions.push(options);
     }
     close() {}
   },
@@ -111,6 +115,16 @@ describe("the carrier the terminals are given", () => {
     followTerminalDevice();
 
     expect(term.onClose).not.toHaveBeenCalled();
+  });
+
+  it("hands the peer link recovery epoch to the terminal socket", async () => {
+    const recovery = { snapshot: vi.fn(), subscribe: vi.fn() };
+    live("dev-a", { peerLink: { term: { id: "term-a" }, recovery } });
+
+    const socket = socketOn();
+    await settle();
+
+    expect(socket.adoptOptions.at(-1).recovery).toBe(recovery);
   });
 });
 

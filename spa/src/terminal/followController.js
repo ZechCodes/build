@@ -3,6 +3,7 @@ const sameTarget = (left, right) => Boolean(
   && left.deviceId === right.deviceId
   && left.context === right.context
   && left.carrier === right.carrier
+  && left.recovery === right.recovery
 );
 
 const publicState = (phase, identity = null) => ({
@@ -79,7 +80,9 @@ export function createTerminalFollowController({ mint, adopt, ride, detach, isDe
 
   async function confirm(transition, session) {
     try {
-      await adopt(session, transition.target.carrier, () => desired(transition));
+      const stillDesired = () => desired(transition);
+      if (transition.target.recovery === undefined) await adopt(session, transition.target.carrier, stillDesired);
+      else await adopt(session, transition.target.carrier, stillDesired, transition.target.recovery);
       if (!desired(transition)) return abandon(transition);
       adopted = { ...adopted, phase: "confirmed" };
       pending = null;
@@ -145,7 +148,7 @@ export function createTerminalFollowController({ mint, adopt, ride, detach, isDe
     pending = null;
     adopted = { ...adopted, carrier: target.carrier };
     if (superseded?.phase === "confirming") safely(detach);
-    if (authority === operation) safely(() => ride(target.carrier));
+    if (authority === operation) safely(() => ride(target.carrier, target.recovery));
     release(superseded);
     return true;
   }
@@ -158,7 +161,7 @@ export function createTerminalFollowController({ mint, adopt, ride, detach, isDe
     const ownsAdopted = adopted?.deviceId === target.deviceId && adopted.context === target.context;
     if (ownsAdopted) {
       adopted = { ...adopted, carrier: null, phase: "disconnected" };
-      safely(() => ride(null));
+      safely(() => ride(null, null));
     }
     cleanTransition(superseded, interruptedConfirmation);
     return false;

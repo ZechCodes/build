@@ -117,8 +117,12 @@ function stillDesired(target) {
 function createFollowController(owner) {
   return createTerminalFollowController({
     mint: (deviceId) => mintTerminalSession(deviceId),
-    adopt: (session, carrier, isCurrent) => owner.adoptTerminalSession(session, carrier, { confirm: true, isCurrent }),
-    ride: (carrier) => owner.peer(carrier),
+    adopt: (session, carrier, isCurrent, recovery) => owner.adoptTerminalSession(session, carrier, {
+      confirm: true,
+      isCurrent,
+      recovery,
+    }),
+    ride: (carrier, recovery) => owner.peer(carrier, { recovery }),
     detach: () => owner.peer(null),
     isDesired: stillDesired,
   });
@@ -144,6 +148,7 @@ export function followTerminalDevice({ freshSession = false } = {}) {
     deviceId,
     context,
     carrier: context?.peerLink?.term || null,
+    recovery: context?.peerLink?.recovery || null,
     canAnswer: answerable,
     freshSession,
   });

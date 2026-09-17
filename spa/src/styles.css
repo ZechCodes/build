@@ -5,6 +5,22 @@
 @import "./styles/shell.css";
 @import "./styles/surfaces.css";
 
+#recovery-banners {
+  position:fixed; z-index:60; top:max(10px, env(safe-area-inset-top)); right:12px;
+  display:flex; flex-direction:column; align-items:flex-end; gap:6px;
+  pointer-events:none; max-width:min(360px, calc(100vw - 24px));
+}
+.recovery-banner {
+  padding:7px 11px; border:1px solid var(--line3); border-radius:999px;
+  background:var(--panel); color:var(--ink2); box-shadow:0 4px 16px var(--shadow-soft);
+  font-size:12px; line-height:1.35;
+}
+.sr-only {
+  position:absolute!important; width:1px!important; height:1px!important; padding:0!important;
+  margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important;
+  white-space:nowrap!important; border:0!important;
+}
+
 /* ---- theme tokens -----------------------------------------------------------
    Every colour in this file comes from here, and the two blocks below are the
    whole theme: `:root` is light, `:root[data-theme="dark"]` is dark, and

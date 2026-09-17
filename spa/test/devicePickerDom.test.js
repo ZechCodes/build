@@ -10,6 +10,7 @@ const { App, go } = vi.hoisted(() => ({ App: {}, go: vi.fn() }));
 vi.mock("../src/app.js", () => ({ App, go, DEVICE_FILTER_KEY: "build.deviceFilter" }));
 vi.mock("../src/api.js", () => ({ fetchDevices: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
+  syncDeviceRecoveryPresence: vi.fn(), deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   chooseCreationDevice: () => {},
   retireDevice: () => {},
   openDeviceSessions: vi.fn(),

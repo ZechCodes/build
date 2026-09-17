@@ -16,6 +16,7 @@ import { requestSheetDismiss } from "./core/sheetDismiss.js";
 import { installTheme } from "./core/theme.js";
 import { initCompose } from "./core/composeView.js";
 import { boot } from "./views/gate.js";
+import { mountRecoveryBanners } from "./recoveryBanner.js";
 
 // Before anything renders: index.html's inline stamp beat the first paint, this
 // takes ownership of the same attribute and keeps following the OS while the
@@ -49,6 +50,7 @@ initRouter();
 initDevicePicker();
 // Load captures saved by earlier builds so they can flush after connection.
 initCompose();
+mountRecoveryBanners();
 
 $("#nav-account").onclick = () => go({ name: "account", page: "settings" });
 $("#scrim").onclick = (e) => {

@@ -30,6 +30,7 @@ export const DEVICE_FILTER_KEY = "build.deviceFilter";
 // its drafts, whether it can answer — is held on that machine's context
 // (core/deviceContexts.js), because the app is on all of them at once.
 export const App = {
+  accountEpoch: 0,
   viewingContext: createViewingContext({ enabled: false }),
   route: { name: "inbox" },
   poll: null, // the current view's change watcher (core/changeEvents.js)
@@ -66,6 +67,7 @@ export const App = {
  * cases so one test's devices cannot answer the next one's reads.
  */
 export function resetApplication() {
+  App.accountEpoch += 1;
   settingsReturnRoute = { name: "inbox" };
   routeAttempt += 1;
   pendingLeaveDecision = null;

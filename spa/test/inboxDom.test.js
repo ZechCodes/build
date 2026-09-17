@@ -344,7 +344,7 @@ describe("the projects face", () => {
     expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true);
   });
 
-  it("keeps the active workspace marked in its project and opens only workspace routes", () => {
+  it("keeps the active workspace marked in its project and opens the project from its head", () => {
     feed([workspace(), workspace({ id: "workspace-2", project_id: "project-2", name: "Marketing", directories: [] })]);
     setInboxView("projects");
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "project-2", workspaceId: "workspace-2", tab: "changes" };
@@ -353,10 +353,10 @@ describe("the projects face", () => {
     expect(rows().map((row) => row.classList.contains("active"))).toEqual([false, true]);
     expect(document.querySelector('[data-project="dev-1/project-2"]').classList.contains("active")).toBe(true);
 
+    // The head is the project, not a workspace inside it: it opens the
+    // project's own page, which is where the block's workspaces are listed.
     document.querySelector('[data-project-open="dev-1/project-2"]').click();
-    expect(navigate).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "workspace", deviceId: "dev-1", projectId: "project-2", workspaceId: "workspace-2" }),
-    );
+    expect(navigate).toHaveBeenCalledWith({ name: "project", deviceId: "dev-1", projectId: "project-2" });
   });
 
   // A project with no workspaces is still one of the account's projects, so it
@@ -370,6 +370,9 @@ describe("the projects face", () => {
     expect(blocks()[1].querySelectorAll(".inbox-entry")).toHaveLength(0);
     expect(blocks()[1].querySelector("[data-project-fold]").disabled).toBe(true);
     expect(blocks()[0].querySelector("[data-project-fold]").disabled).toBe(false);
+    // Empty or not, its head opens the project: there is a page for it.
+    blocks()[1].querySelector("[data-project-open]").click();
+    expect(navigate).toHaveBeenCalledWith({ name: "project", deviceId: "dev-1", projectId: "project-2" });
   });
 
   it("creates a workspace in the project named by its group, on that project's machine", () => {

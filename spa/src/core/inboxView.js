@@ -45,7 +45,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
+import { routeProjectKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { canAnswer, contextFor, deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
 import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
@@ -238,7 +238,7 @@ const offlineDeviceIds = () =>
  *  block per project — every machine's, each head naming its machine where two
  *  machines use that project name. */
 function drawProjects(list, shown) {
-  const { unsorted, blocks } = workspaceProjectBlocks(shown, projects, routeWorkspaceKey(App.route), App.devices, offlineDeviceIds());
+  const { unsorted, blocks } = workspaceProjectBlocks(shown, projects, App.devices, offlineDeviceIds());
   entries = [...unsorted, ...blocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(blocks.map((block) => [block.projectKey, block]));
   const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
@@ -444,15 +444,17 @@ function openMenu(key) {
 
 // ---- project blocks -----------------------------------------------------------
 //
-// What a block's head can do: fold, open the project's checkout, and create —
+// What a block's head can do: fold, open the project's own page, and create —
 // a branch or an issue, on the one create surface, scoped to the block's
 // project. And the one control above every block: a new project. Which press
 // is which is the table BLOCK_CONTROLS, up with the other control tables.
 
-/** The block's name opens the project's workspace, when it has one. */
+/** The block's name opens the project's own page — its workspaces, and the
+ *  agent you talk to about the project. Every project has one, so every head
+ *  opens. */
 function openBlockHead(projectKey) {
   const block = blockOf(projectKey);
-  if (block && block.route) goFromInbox(block.route);
+  if (block) goFromInbox(block.route);
 }
 
 function settingsForBlock(projectKey) {

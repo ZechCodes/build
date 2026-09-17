@@ -98,14 +98,14 @@ export function defaultRunTab(run) {
  *  plan FROM a run (a sessionStorage marker records that run's id) and that run
  *  is still the plan's active run, the chevron returns to that run's Stages tab —
  *  the plan↔run round trip. A stale marker (run no longer active, or gone) falls
- *  back to the owning project — which is the inbox standing in it, because a
- *  project is a template and its own checkout is not a surface to land on
- *  (core/projectModel.js) — and a project-less plan to notifications. Pure so
- *  the routing is unit-testable; the view owns the sessionStorage read/removal. */
+ *  back to the owning project — its own page, because a project is a template
+ *  and its checkout is not a surface to land on (core/projectModel.js) — and a
+ *  project-less plan to notifications. Pure so the routing is unit-testable; the
+ *  view owns the sessionStorage read/removal. */
 export function planBackTarget({ returnRunId, activeRunId, projectId }) {
   if (returnRunId && returnRunId === activeRunId)
     return { name: "task", projectId, id: returnRunId, tab: "stages" };
-  if (projectId) return { name: "inbox", projectId };
+  if (projectId) return { name: "project", projectId };
   return { name: "notifications" };
 }
 

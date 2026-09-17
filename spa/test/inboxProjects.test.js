@@ -38,7 +38,6 @@ describe("workspace project blocks", () => {
         { id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Same" },
         { id: "p2", projectKey: "dev-1/p2", deviceId: "dev-1", name: "Empty" },
       ],
-      null,
       [{ id: "dev-1", name: "Laptop" }],
     );
     expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p2", "dev-1/p1", "dev-1/p9"]);
@@ -49,13 +48,21 @@ describe("workspace project blocks", () => {
     expect(projectHeadHtml(blocks[1], {})).toContain("New workspace in Same");
   });
 
-  it("uses the active workspace as its project's heading destination", () => {
-    const entries = ["first", "active"].map((workspaceId) => ({
-      ...entry(workspaceId, "p1", "Project"),
-      key: `workspace:dev-1/${workspaceId}`,
-    }));
-    const projects = [{ id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Project" }];
-    expect(workspaceProjectBlocks(entries, projects, "dev-1/active").blocks[0].route.workspaceId).toBe("active");
+  // The head is the project, so it opens the project's own page — whatever is
+  // inside the block, and whether or not anything is. Every block is routable.
+  it("opens its project's own page from the head, however empty the block", () => {
+    const projects = [
+      { id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Project" },
+      { id: "p2", projectKey: "dev-1/p2", deviceId: "dev-1", name: "Empty" },
+    ];
+    const { blocks } = workspaceProjectBlocks([entry("one", "p1", "Project")], projects);
+    expect(blocks.map((block) => block.route)).toEqual([
+      { name: "project", projectId: "p2", deviceId: "dev-1" },
+      { name: "project", projectId: "p1", deviceId: "dev-1" },
+    ]);
+    const head = projectHeadHtml(blocks[0], {});
+    expect(head).not.toContain("inbox-unroutable");
+    expect(head).toContain("Open Empty");
   });
 });
 

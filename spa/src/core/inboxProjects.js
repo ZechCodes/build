@@ -3,9 +3,9 @@
 // keyed by the account-wide project key and says the machine after its name
 // where two machines use that name.
 //
-// The block's head opens the workspace the route is standing in — failing that
-// the first one the project holds — and offers the one create surface behind a
-// +. A block folds shut by its chevron and stays that way until it is opened
+// The block's head opens the project's own page — its workspaces, and the agent
+// you talk to about the project — and offers the one create surface behind a +.
+// A block folds shut by its chevron and stays that way until it is opened
 // again; one with no workspace in it is flat, and its chevron has nothing to
 // fold.
 //
@@ -50,9 +50,10 @@ function projectsNamed(projects, rows) {
 }
 
 /** One project's block on the landing rail's workspace face: its workspaces,
- *  and the one the route is standing in as the block's own destination. */
-function workspaceBlockFor(project, grouped, tag, activeWorkspaceKey) {
-  const standing = grouped.find((entry) => entry.workspaceKey === activeWorkspaceKey && entry.route);
+ *  and the project's own page as the block's destination. Every project has one
+ *  — the page is about the project, not about anything inside it — so a block is
+ *  always routable, however empty it is. */
+function workspaceBlockFor(project, grouped, tag) {
   return {
     key: `project:${project.projectKey}`,
     id: project.id,
@@ -64,7 +65,7 @@ function workspaceBlockFor(project, grouped, tag, activeWorkspaceKey) {
     entries: grouped,
     recent: [],
     flat: grouped.length === 0,
-    route: (standing || grouped.find((entry) => entry.route))?.route || null,
+    route: { name: "project", projectId: project.id, deviceId: project.deviceId },
     unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, 0),
   };
 }
@@ -74,7 +75,7 @@ function workspaceBlockFor(project, grouped, tag, activeWorkspaceKey) {
  *  project key and never by a name or a bare id: two machines each mint a
  *  `proj-1`, and two projects may share a name — which is what the device tag
  *  on the head is for. */
-export function workspaceProjectBlocks(entries = [], projects = [], activeWorkspaceKey = null, devices = [], offlineDeviceIds = null) {
+export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null) {
   const named = projectsNamed(projects, entries);
   const tags = deviceTags([...named.values()], devices, offlineDeviceIds);
   const blocks = [...named.values()].sort((left, right) =>
@@ -85,7 +86,6 @@ export function workspaceProjectBlocks(entries = [], projects = [], activeWorksp
       project,
       entries.filter((entry) => entry.projectKey === project.projectKey),
       tags.get(project.projectKey),
-      activeWorkspaceKey,
     ),
   );
   return { unsorted: entries.filter((entry) => !entry.projectKey), blocks };
@@ -190,20 +190,19 @@ const hideButtonHtml = (block) =>
     ? `<button class="iconbtn inbox-project-hide" type="button" data-project-hide="${esc(block.projectKey)}" aria-label="Hide project ${esc(block.name)}" title="Hide project">${ICON_EYE_OFF}</button>`
     : "";
 
-/** The block's head: the fold, the name that opens the project's workspace,
- *  how much inside is waiting, and the + that starts another one. The fold is
+/** The block's head: the fold, the name that opens the project's own page,
+ *  how much inside is waiting, and the + that starts another workspace. The fold is
  *  disabled on a block with nothing to fold. `ui`: { folded } — the set of
  *  folded project keys, as blockIsFolded decides. */
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.projectKey));
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
-  const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
-  const title = block.route ? `Open ${block.name}'s workspace` : `${block.name} has no workspace to open`;
+  const title = `Open ${block.name}`;
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
   const device = deviceTagHtml(block);
   return `<div class="inbox-project-head">
     ${foldButtonHtml(block, folded)}
-    <button class="${nameClasses}" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}</button>
+    <button class="inbox-project-name" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}</button>
     <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${hideButtonHtml(block)}<button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>${create}</span></span>
     ${unread}
   </div>`;

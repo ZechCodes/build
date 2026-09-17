@@ -17,7 +17,7 @@ import { canAnswer, deviceFeedView, homeContext } from "./deviceContexts.js";
 import { deviceCall, deviceCatalog } from "./inboxDevices.js";
 import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
 import { UNASKED_CATALOG } from "./modelCatalog.js";
-import { loadAgentDefaults } from "./agentDefaults.js";
+import { agentDefaultsFor, agentDefaultsIn, loadAgentDefaults } from "./agentDefaults.js";
 import { isConfirmOpen } from "./confirm.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import {
@@ -316,8 +316,11 @@ function wireChoice(host) {
     box.choiceOpen = !box.choiceOpen;
     repaintChoice(host);
   };
+  // A model belongs to its provider, so a new provider starts from that
+  // harness's own saved model and effort rather than the old one's.
   const onChange = (changed) => () => {
-    box.choice = reconcileAgentChoice(readAgentChoice(host, CHOICE_PREFIX), changed);
+    const read = readAgentChoice(host, CHOICE_PREFIX);
+    box.choice = changed.providerChanged ? agentDefaultsFor(read.provider) : reconcileAgentChoice(read, changed);
     repaintChoice(host);
   };
   const provider = holder.querySelector(`#${CHOICE_PREFIX}-provider`);
@@ -346,6 +349,9 @@ function loadCatalogForPanel() {
     .then((loaded) => {
       if (box !== asked || loaded === box.catalog) return;
       box.catalog = loaded;
+      // The stored defaults name no harness until one is chosen; the catalog
+      // says which one that is, and brings that harness's preference with it.
+      if (!box.choice.provider) box.choice = agentDefaultsIn(loaded);
       if (box.advancedOpen) paintBox({ focus: false });
     })
     .catch(() => {});

@@ -22,7 +22,7 @@ import { createPatternRenderer } from "./agentCanvas.js";
 import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
-import { loadAgentDefaults } from "./agentDefaults.js";
+import { agentDefaultsFor, agentDefaultsIn } from "./agentDefaults.js";
 import {
   AGENT_STARTING,
   QUIET_SHAPE,
@@ -712,7 +712,7 @@ export function mountAgentRail(host, context) {
 
   const seedNewAgentDefaults = () => {
     if (!catalog || provisionalController().choice().provider) return;
-    writeNewAgentChoice(clampStoredAgentChoice(catalog, loadAgentDefaults()));
+    writeNewAgentChoice(clampStoredAgentChoice(catalog, agentDefaultsIn(catalog)));
   };
 
   /** That choice as `agent.add` params: empties omitted, so the harness's own
@@ -1284,10 +1284,9 @@ export function mountAgentRail(host, context) {
         return;
       }
       // A model belongs to its harness, so moving the highlight drops one
-      // chosen under the harness beside it.
-      writeNewAgentChoice(
-        reconcileAgentChoice({ ...newAgentChoice(), provider: card.dataset.provider }, { providerChanged: true }),
-      );
+      // chosen under the harness beside it and brings the pressed harness's
+      // own saved model and effort instead.
+      writeNewAgentChoice(clampStoredAgentChoice(catalog, agentDefaultsFor(card.dataset.provider)));
       paintChat();
       body.querySelector(".rail-harness-choice.chosen")?.focus();
     };

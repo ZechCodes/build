@@ -104,7 +104,8 @@ describe("what the menu offers", () => {
 
   it("offers the models of the harness the agent is on, and no harness of its own", () => {
     mount({ provider: "codex", model: "", effort: "" }, { provider: "codex" });
-    expect(button().textContent).toContain("Select model");
+    expect(button().textContent).toContain("Harness default");
+    expect(reasoningButton().textContent).toContain("Default effort");
     button().click();
     expect(items()).toEqual(["model:gpt"]);
     reasoningButton().click();
@@ -185,7 +186,7 @@ describe("the model the agent is running on", () => {
       { provider: "claude_adk", model: "claude-opus-5", effort: "" },
       { activeModel: "claude-haiku-4-5", activeEffort: "high" },
     );
-    expect(reasoningButton().textContent).toContain("Select effort");
+    expect(reasoningButton().textContent).toContain("Default effort");
     reasoningButton().click();
     expect(reasoningItem("effort:high").className).not.toContain("on");
   });

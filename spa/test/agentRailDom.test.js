@@ -2266,6 +2266,46 @@ describe("the chat tab of a branch with no agent", () => {
     });
   });
 
+  // Each harness has a preference of its own on the account page, so moving
+  // the highlight brings that harness's model and effort with it rather than
+  // starting from nothing — and the composer's menu says so at once.
+  it("seeds a pressed harness with its own saved model and effort", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "codex",
+      harnesses: { claude: { model: "claude-opus-5", effort: "high" }, codex: { model: "", effort: "" } },
+    }));
+    payload = agentless();
+    await mount();
+    expect(chosenCard().dataset.provider).toBe("codex");
+
+    card("claude_adk").click();
+    await flush();
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("high");
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+  });
+
+  it("starts on the catalog's default harness with that harness's saved preference when none is chosen", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "",
+      harnesses: { claude: { model: "claude-opus-5", effort: "high" } },
+    }));
+    payload = agentless();
+    await mount();
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+  });
+
   it("passes a custom saved model through for a compatible harness", async () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({
       provider: "claude_adk", model: "company-custom-model", effort: "custom",
@@ -2447,11 +2487,12 @@ describe("the composer's model menu", () => {
     expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
   });
 
-  it("asks for a model when an agent has never run and chose nothing", async () => {
+  it("says the harness's defaults stand when an agent has never run and chose nothing", async () => {
     payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Select model");
+    expect(modelMenuButton().textContent).toContain("Harness default");
+    expect(reasoningMenuButton().textContent).toContain("Default effort");
   });
 
   it("moves the label the instant a model is picked, before agent.choose answers", async () => {

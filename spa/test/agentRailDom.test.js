@@ -593,6 +593,43 @@ describe("the bubble strip", () => {
     expect(railHost().classList.contains("rail-unpinned")).toBe(false);
   });
 
+  // A file dragged onto another agent's bubble is for that agent: the drop
+  // opens its conversation with the file already in the box, ready to send.
+  it("takes a file dropped on a bubble into that agent's composer", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount();
+    expect(headWho(panel())).toBe("Claude Code 1");
+    const png = new File(["png"], "shot.png", { type: "image/png" });
+    const over = new Event("dragover", { bubbles: true, cancelable: true });
+    over.dataTransfer = { files: [], items: [], types: ["Files"], dropEffect: "none" };
+    bubbles()[1].dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(true);
+    expect(bubbles()[1].classList.contains("is-dropping")).toBe(true);
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    drop.dataTransfer = { files: [png], items: [], types: ["Files"] };
+    bubbles()[1].dispatchEvent(drop);
+    await flush();
+    expect(drop.defaultPrevented).toBe(true);
+    expect(bubbles()[1].classList.contains("is-dropping")).toBe(false);
+    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(bubbles()[1].classList.contains("active")).toBe(true);
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
+    const chips = [...panel().querySelectorAll(".composer-chip")];
+    expect(chips.map((chip) => chip.querySelector(".composer-chip-name").textContent)).toEqual(["shot.png"]);
+    expect(callsTo("thread.attach")[0].params).toMatchObject({ entity_id: "run-3", filename: "shot.png" });
+  });
+
+  it("ignores a file dropped on the + bubble", async () => {
+    await mount();
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    drop.dataTransfer = { files: [new File(["x"], "x.txt")], items: [], types: ["Files"] };
+    railHost().querySelector('[data-bubble="add"]').dispatchEvent(drop);
+    await flush();
+    expect(drop.defaultPrevented).toBe(false);
+    expect(panel().querySelectorAll(".composer-chip")).toHaveLength(0);
+    expect(callsTo("thread.attach")).toEqual([]);
+  });
+
   it("repaints the header icon when a provider update arrives", async () => {
     await mount();
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("claude_adk");

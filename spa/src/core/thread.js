@@ -11,6 +11,7 @@ import {
   autoGrow,
   composerHtml,
   composerPartIds,
+  attachmentGlyphHtml,
   formatAttachmentSize,
   isImageAttachment,
   mountComposerAttachments,
@@ -682,18 +683,22 @@ function attachmentsHtml(attachments, threadState) {
     .map((attachment) => {
       const path = esc(attachment.path || "");
       const name = esc(attachment.name || attachment.path || "file");
+      const size = esc(formatAttachmentSize(attachment.size));
       if (isImageAttachment(attachment.mime)) {
         const refused = threadState.attachment(attachment.path) === null ? " unavailable" : "";
         return `<figure class="thread-attachment-figure${refused}">
           <button type="button" class="thread-attachment-preview" aria-label="Open ${name}">
             <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
           </button>
-          <figcaption>${name}</figcaption>
+          <figcaption><span class="thread-attachment-name">${name}</span> <span class="thread-attachment-size">${size}</span></figcaption>
         </figure>`;
       }
-      return `<button type="button" class="thread-attachment" data-attachment-path="${path}" data-attachment-name="${name}">
-        <span class="thread-attachment-name">${name}</span>
-        <span class="thread-attachment-size">${esc(formatAttachmentSize(attachment.size))}</span>
+      return `<button type="button" class="thread-attachment" data-attachment-path="${path}" data-attachment-name="${name}" title="Download ${name}">
+        ${attachmentGlyphHtml(attachment.name, attachment.mime, "thread-attachment-glyph")}
+        <span class="thread-attachment-meta">
+          <span class="thread-attachment-name">${name}</span>
+          <span class="thread-attachment-size">${size}</span>
+        </span>
       </button>`;
     })
     .join("")}</div>`;
@@ -1991,5 +1996,14 @@ export function wireThreadComposer(root, {
     }
   };
 
-  return { setCanInterrupt, setBlocked, dispose: () => unsubscribeContext?.() };
+  return {
+    setCanInterrupt,
+    setBlocked,
+    /// Put files in the tray as a drop on the box would — for a drop that
+    /// landed somewhere else and was carried here.
+    addFiles: (files) => {
+      if (tray) tray.addFiles(files);
+    },
+    dispose: () => unsubscribeContext?.(),
+  };
 }

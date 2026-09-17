@@ -885,6 +885,7 @@ export function mountAgentRail(host, context) {
 
   const wireBubble = (button, bubble) => {
     button.onclick = () => pressBubble(button.dataset.bubble, button.dataset.agent);
+    wireBubbleDrop(button);
     const canvas = bubble.pattern ? button.querySelector("canvas.rail-glyph") : null;
     if (!canvas) return;
     faces.set(bubbleKey(bubble), {
@@ -896,6 +897,53 @@ export function mountAgentRail(host, context) {
       ink: null,
       dimmed: false,
     });
+  };
+
+  /// A file dragged onto a bubble is for that agent: the drop opens its
+  /// conversation and lands the file in the composer, as if it had been dropped
+  /// on the box. Only a bubble that IS a conversation takes one — the + is a
+  /// chooser, and a file is not an answer to "which harness".
+  const wireBubbleDrop = (button) => {
+    if (button.dataset.bubble === "add") return;
+    const dragged = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+    const over = (event) => {
+      if (!dragged(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      button.classList.add("is-dropping");
+    };
+    button.addEventListener("dragenter", over);
+    button.addEventListener("dragover", over);
+    button.addEventListener("dragleave", () => button.classList.remove("is-dropping"));
+    button.addEventListener("drop", (event) => {
+      button.classList.remove("is-dropping");
+      const files = [...(event.dataTransfer?.files || [])];
+      if (!files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dropFilesOnBubble(button.dataset.bubble, button.dataset.agent, files);
+    });
+  };
+
+  /// Files waiting for a composer: a drop that switched conversations lands
+  /// before the new conversation's box is wired when its history is still
+  /// loading, so they are held and handed over when it is.
+  let droppedFiles = null;
+  const deliverDroppedFiles = () => {
+    if (!droppedFiles || !composerControl) return;
+    const files = droppedFiles;
+    droppedFiles = null;
+    composerControl.addFiles(files);
+  };
+  const dropFilesOnBubble = (type, agentId, files) => {
+    droppedFiles = files;
+    if (type === "agent" && agentId && (agentId !== selectedId || addingAgent)) {
+      openAgent(agentId);
+      paint();
+      refresh();
+    }
+    if (!panelOut()) showPanel();
+    deliverDroppedFiles();
   };
 
   const releaseFacesLeftBehind = (keysPainted) => {
@@ -1109,6 +1157,7 @@ export function mountAgentRail(host, context) {
       if (shownMode === "tui") mountTui();
       else if (!rememberedConversationIsLoading() && entity.chatCapable !== false) {
         wireComposer(panel);
+        deliverDroppedFiles();
         if (autofocusComposerPending) {
           autofocusComposerPending = false;
           panel.querySelector(`#${COMPOSER_IDS.input}`)?.focus();

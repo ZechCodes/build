@@ -275,9 +275,20 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry { align-items:flex-start; gap:8px; padding:10px 13px; margin-bottom:0; }
 .inbox-entry.active::before { content:""; position:absolute; left:0; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
-/* Inside a band the row is inset from the band's edge; the bar is the band's
-   edge mark, so it reaches back to it rather than floating mid-band. */
-.inbox-project .inbox-entry.active::before { left:calc(-1 * (var(--inbox-band-bleed) + 5px)); }
+/* A row's fill runs the full width of the rail: the hover and the standing
+   fill reach the rail's own edges, not a card's edges a few pixels in from
+   them. The row pays its container's side padding back as its own, so its
+   text column stays exactly where it stood; only the fill grows. Outside a
+   band that padding is the list's; inside one it is the band's. */
+.inbox-entry { --inbox-row-bleed-left:calc(10px + env(safe-area-inset-left, 0px)); --inbox-row-bleed-right:10px;
+  border-radius:0;
+  margin-left:calc(-1 * var(--inbox-row-bleed-left)); margin-right:calc(-1 * var(--inbox-row-bleed-right));
+  padding-left:calc(13px + var(--inbox-row-bleed-left)); padding-right:calc(13px + var(--inbox-row-bleed-right)); }
+.inbox-project .inbox-entry { --inbox-row-bleed-left:calc(var(--inbox-band-bleed) + 5px); --inbox-row-bleed-right:15px; }
+/* The overlays that sit on the row's right edge keep to the column the words
+   use, not the gutter the fill now covers. */
+.inbox-entry .inbox-actions { right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); }
+.inbox-entry .inbox-facts-float { right:calc(10px + var(--inbox-row-bleed-right)); }
 .inbox-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
 .inbox-entry .sdot { margin-top:5px; }
 .inbox-line { display:flex; align-items:center; gap:6px; min-width:0; }
@@ -302,7 +313,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    over the line's right edge with the row's own background behind it, so a
    long name runs under it rather than wrapping. Its text starts where a live
    row's name does, past the dot column. */
-.inbox-quiet { padding:8px 10px 8px 26px; align-items:center; }
+.inbox-quiet { padding:8px calc(10px + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); align-items:center; }
 .inbox-quiet .inbox-line .stitle { font-size:12.5px; }
 .inbox-facts-float { position:absolute; right:10px; top:50%; transform:translateY(-50%);
   padding-left:10px; background:var(--panel); box-shadow:-10px 0 10px -6px var(--panel);
@@ -729,6 +740,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble.starting::after { content:""; position:absolute; inset:-3px;
   border-radius:50%; border:1px dashed var(--line3); opacity:.7;
   animation:rail-pulse 2.4s ease-in-out infinite; }
+/* A file held over a bubble: the bubble says it will take it. */
+.rail-bubble.is-dropping { border-color:var(--accent); border-style:solid; color:var(--accent);
+  background:color-mix(in srgb, var(--accent) 16%, var(--panel2));
+  box-shadow:0 0 0 3px var(--accent-soft); }
+.rail-bubble.is-dropping > * { pointer-events:none; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
 @keyframes rail-pulse { 0%,100% { opacity:.55; transform:scale(1); }

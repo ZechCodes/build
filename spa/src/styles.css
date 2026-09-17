@@ -1559,8 +1559,20 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .composer-chip.uploading { opacity:.65; }
 .composer-chip.failed { border-color:var(--red); }
 .composer-chip-thumb { flex:0 0 auto; width:30px; height:30px; border-radius:6px; object-fit:cover; background:var(--bg); }
-.composer-chip-glyph { flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
-  border-radius:6px; background:var(--bg); color:var(--dim); font:9px/1 var(--mono); font-weight:700; }
+/* The tile a file wears when it has no thumbnail: an icon for its kind, with
+   the extension pinned to the tile's foot so two code files still differ. The
+   same tile stands in the conversation after the send (.thread-attachment). */
+.attachment-glyph { position:relative; flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
+  border-radius:6px; background:var(--bg); color:var(--ink2); overflow:hidden; }
+.attachment-glyph svg { width:16px; height:16px; }
+.attachment-glyph-tag { position:absolute; left:0; right:0; bottom:0; padding:1px 0 2px; text-align:center;
+  font:700 6.5px/1 var(--mono); letter-spacing:.02em; color:var(--ink);
+  background:color-mix(in srgb, var(--panel) 70%, transparent); }
+.attachment-glyph[data-kind="image"] { color:var(--accent); }
+.attachment-glyph[data-kind="code"] { color:var(--green); }
+.attachment-glyph[data-kind="archive"] { color:var(--amber); }
+.attachment-glyph[data-kind="sheet"] { color:var(--green); }
+.attachment-glyph[data-kind="video"], .attachment-glyph[data-kind="audio"] { color:var(--accent); }
 .composer-chip-meta { display:flex; flex-direction:column; gap:1px; min-width:0; }
 .composer-chip-name { color:var(--ink2); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .composer-chip-note { color:var(--dim); font-size:10.5px; }
@@ -1621,13 +1633,20 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-attachment-figure figcaption { padding-top:4px; color:var(--dim); font-size:11px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .thread-attachment-figure.unavailable figcaption::after { content:" · unavailable"; color:var(--red); }
-.thread-attachment { display:flex; align-items:baseline; gap:8px; max-width:100%;
-  flex:0 0 auto;
-  border:1px solid var(--line); border-radius:8px; padding:7px 10px; background:var(--bg);
+/* A sent file is a card the reader can pick up: the kind's icon, the name,
+   and what it weighs — the same tile it wore in the tray before the send. */
+.thread-attachment { display:flex; align-items:center; gap:9px; max-width:min(260px, 100%);
+  flex:0 0 auto; text-align:left;
+  border:1px solid var(--line); border-radius:9px; padding:6px 10px 6px 6px; background:var(--bg);
   color:var(--ink2); cursor:pointer; font:12px var(--sans); }
-.thread-attachment:hover { border-color:var(--accent); color:var(--accent); }
-.thread-attachment-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.thread-attachment-size { flex:0 0 auto; color:var(--dim); font-size:11px; }
+.thread-attachment:hover { border-color:var(--accent); color:var(--ink); }
+.thread-attachment:hover .thread-attachment-name { color:var(--accent); }
+.thread-attachment-glyph { background:var(--panel2); }
+.thread-attachment-meta { display:flex; flex-direction:column; gap:1px; min-width:0; }
+.thread-attachment-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
+.thread-attachment-size { flex:0 0 auto; color:var(--dim); font-size:11px; font-family:var(--mono); }
+.thread-attachment-figure figcaption { display:flex; align-items:baseline; gap:6px; min-width:0; }
+.thread-attachment-figure figcaption .thread-attachment-name { flex:0 1 auto; color:var(--dim); }
 
 /* Conversation treatment shared by the full-page thread and the agent rail.
    Messages keep their metadata and rich children, but the transcript reads as

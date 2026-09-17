@@ -823,6 +823,33 @@ const resolvedRevisionHtml = (message) => message.resolved_by_revision
   ? `<div class="thread-message-resolution"><button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button></div>`
   : "";
 
+/// How much of a sender's id a chip can hold. Enough to tell two agents
+/// apart at a glance; the whole id is on the label a reader can reach for.
+const AGENT_CHIP_CHARS = 4;
+
+/// The mark an attributed message wears: the sender's id, short enough to sit
+/// in the avatar's circle, and "Agent" when the id has nothing to show.
+function agentChipLabel(id) {
+  const trimmed = String(id || "").trim();
+  const body = trimmed.includes("-") ? trimmed.slice(trimmed.indexOf("-") + 1) : trimmed;
+  const short = body.replace(/[^a-z0-9]/gi, "").slice(0, AGENT_CHIP_CHARS);
+  return short ? short.toUpperCase() : "Agent";
+}
+
+/// Who a bubble belongs to.
+///
+/// The human's initial, the agent's — or, for a message one agent sent into
+/// another agent's conversation, the sender's own chip. Such a message keeps
+/// the user's side of the thread, because that is the side anything addressed
+/// to the agent arrives on; only the mark changes, because the user did not
+/// write it. The chip is read aloud, unlike the two initials it replaces,
+/// because it is the only place the sender is said at all.
+function avatarHtml(message, user) {
+  const sender = message.from_agent && message.from_agent.id;
+  if (!sender) return `<span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>`;
+  return `<span class="thread-avatar from-agent" role="img" aria-label="Sent by agent ${esc(sender)}" title="Sent by agent ${esc(sender)}">${esc(agentChipLabel(sender))}</span>`;
+}
+
 function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   const user = message.role === "user";
   // `done` is message metadata, not a presentation type: on a thread written
@@ -836,7 +863,7 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   // row stands for, and how the panel reports what the reader's viewport has
   // reached (`readThroughSequence`).
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
-    <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
+    ${avatarHtml(message, user)}
     <div class="thread-comment-card">
       ${outcomeMarkerHtml(message.outcome, agentLabel)}
       ${resolvedRevisionHtml(message)}

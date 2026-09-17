@@ -1392,6 +1392,10 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-message { position:relative; margin-left:44px; min-width:0; }
 .thread-avatar { position:absolute; left:-44px; top:0; z-index:1; display:grid; place-items:center; width:38px; height:38px; border:3px solid var(--bg); border-radius:50%; background:var(--panel); color:var(--ink2); font-weight:700; font-size:12px; }
 .thread-message.user .thread-avatar { background:var(--accent-fill, var(--accent)); color:var(--accent-ink); }
+/* A message one agent sent keeps the user's side of the thread and loses the
+   user's colour: the accent is the reader's own voice, and these are not their
+   words. The id is smaller than an initial because it is four characters. */
+.thread-message.user .thread-avatar.from-agent { background:var(--panel); color:var(--ink2); font-size:9px; letter-spacing:0.02em; }
 .thread-comment-card { overflow:hidden; border-radius:8px; background:var(--panel); }
 .thread-event time { color:var(--dim); }
 /* A reported outcome is a status on the agent's own message, so its marker

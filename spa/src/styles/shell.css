@@ -1041,9 +1041,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      read in, and puts the one row that says what every agent is doing where a
      thumb cannot reach it. The strip runs across the foot of the view column
      instead, above whatever the console is showing, and scrolls sideways when
-     there are more agents than fit. It leaves the rail's own box out of the
-     flow — the rail costs the work nothing here — and the strip's leading edge,
-     which is the seam it alone draws, is its top rather than its left. */
+     there are more agents than fit. Its rail box costs the work no width, while
+     the view body reserves its height so controls pinned to a surface's foot
+     stay above it. The strip's leading edge, which is the seam it alone draws,
+     is its top rather than its left. */
+  body:not(.gated) #view-body:has(> #agent-rail:not(:empty)) { padding-bottom:var(--agent-strip); }
   #agent-rail, #agent-rail.rail-unpinned, #agent-rail.rail-collapsed { position:static; width:0; transition:none; }
   .rail-strip { position:absolute; z-index:31;
     left:0; right:0; bottom:var(--console-space);

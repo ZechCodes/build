@@ -108,6 +108,7 @@ import { PIN_CLASS, pinButtonHtml, syncPinButton } from "./pinControl.js";
 import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
+import { createChatTitleMotion } from "./chatTitleMotion.js";
 import "../styles/shell.css";
 
 /** How often the rail re-reads its work item. The same cadence the detail
@@ -527,6 +528,7 @@ export function mountAgentRail(host, context) {
   let poll = null;
   let disposed = false;
   let tui = null; // the mounted PTY pane, in TUI mode
+  let titleMotion = null;
   const transientThreadCache = createThreadCache();
   let threadCache = transientThreadCache;
   // Choosing the next agent's harness, with the chooser in the panel. Entered
@@ -1010,6 +1012,22 @@ export function mountAgentRail(host, context) {
 
   const wantedPanelBody = () => `${shownPanelMode()}:${panelBodyIdentity()}`;
 
+  const disposeTitleMotion = () => {
+    titleMotion?.dispose();
+    titleMotion = null;
+  };
+
+  const mountTitleMotion = (panel) => {
+    const title = panel.querySelector(".rail-who");
+    if (title) titleMotion = createChatTitleMotion(title);
+  };
+
+  const syncPanelTitle = (panel, fingerprint, title) => {
+    if (panel.dataset.title === fingerprint) return;
+    titleMotion?.show(title);
+    panel.dataset.title = fingerprint;
+  };
+
   const adoptPanelBody = (controller = null) => {
     const panel = host.querySelector("#rail-panel");
     if (panel) panel.dataset.body = controller
@@ -1042,13 +1060,15 @@ export function mountAgentRail(host, context) {
     // than rewritten, so the agent beside it that does have a terminal is still
     // where the human left it.
     const shownMode = shownPanelMode();
-    // The head is rewritten only when what it SAYS changed: the name, whether
-    // this agent can be taken back off, and whether it has a basement.
-    const wantedHead = `${who}:${provider}:${heading.text}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
+    // Structural head changes replace its controls; a topic change keeps this
+    // head mounted and moves only its title below.
+    const wantedHead = JSON.stringify([who, provider, removable, hasTerminal]);
+    const wantedTitle = JSON.stringify([who, heading.text, heading.starting]);
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
     if (panel.dataset.body !== wantedBody) {
+      disposeTitleMotion();
       disposeTui();
       disposeSurfaces();
       disposeComposerClearance?.();
@@ -1060,7 +1080,9 @@ export function mountAgentRail(host, context) {
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
           : ""}`;
       panel.dataset.head = wantedHead;
+      panel.dataset.title = wantedTitle;
       panel.dataset.body = wantedBody;
+      mountTitleMotion(panel);
       wireHead(panel);
       composerControl?.dispose?.();
       unsubscribeComposerController?.();
@@ -1077,12 +1099,11 @@ export function mountAgentRail(host, context) {
         }
       }
     } else if (panel.dataset.head !== wantedHead) {
-      // The name changed under the panel (an agent whose provider was picked
-      // after the fact, or one that just named its topic), or the last agent
-      // beside this one went away. Nothing
-      // else in the head can move on a poll, and rewriting it every tick would
-      // eat a press that landed mid-repaint.
+      // The agent's provider arrived after the fact, or the last agent beside
+      // this one went away. Rewriting on every poll would eat a press that
+      // landed mid-repaint.
       closeSurfaceMenu?.();
+      disposeTitleMotion();
       panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, {
         provider,
         removable,
@@ -1092,8 +1113,11 @@ export function mountAgentRail(host, context) {
         pinned,
       });
       panel.dataset.head = wantedHead;
+      panel.dataset.title = wantedTitle;
+      mountTitleMotion(panel);
       wireHead(panel);
     }
+    syncPanelTitle(panel, wantedTitle, { text: heading.text, title: who, starting: heading.starting });
     const pin = panel.querySelector(`.${PIN_CLASS}`);
     if (pin) syncPinButton(pin, { subject: PANEL_SUBJECT, pinned });
     paintSurfaceMenu();
@@ -2321,6 +2345,7 @@ export function mountAgentRail(host, context) {
       statusTicker = null;
       unsubscribePending();
       unsubscribeFeed();
+      disposeTitleMotion();
       disposeTui();
       disposeSurfaces();
       disposeComposerClearance?.();

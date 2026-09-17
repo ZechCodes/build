@@ -129,6 +129,12 @@ const flush = async () => {
   for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
+const finishTitleMotion = async (titleElement) => {
+  for (let turn = 0; turn < 80 && titleElement.dataset.titleMotion; turn += 1) {
+    await new Promise((done) => setTimeout(done, 10));
+  }
+};
+
 const CATALOG = {
   default_provider: "claude_adk",
   providers: [
@@ -1192,19 +1198,37 @@ describe("taking an agent back off the branch", () => {
 });
 
 describe("the conversation panel", () => {
-  it("wears the topic the agent named its work with, and shimmers until it has", async () => {
+  it("animates only a changed topic while preserving the live header and its focused controls", async () => {
     await mount();
     // Nothing named yet: the head says so, in the shimmering word.
-    expect(panel().querySelector(".rail-who").textContent).toBe("Starting");
-    expect(panel().querySelector(".rail-who").classList.contains("rail-who-starting")).toBe(true);
+    const standingHead = panel().querySelector(".rail-head");
+    const standingTitle = standingHead.querySelector(".rail-who");
+    const standingPin = standingHead.querySelector(".pinbtn");
+    expect(standingTitle.textContent).toBe("Starting");
+    expect(standingTitle.classList.contains("rail-who-starting")).toBe(true);
     expect(headWho(panel())).toBe("Claude Code 1");
+    standingPin.focus();
+
+    // An unchanged poll neither rebuilds the head nor starts title motion.
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(panel().querySelector(".rail-head")).toBe(standingHead);
+    expect(standingTitle.dataset.titleMotion).toBeUndefined();
+    expect(document.activeElement).toBe(standingPin);
 
     payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(panel().querySelector(".rail-who").textContent).toBe("Unify prompt delivery");
-    expect(panel().querySelector(".rail-who").classList.contains("rail-who-starting")).toBe(false);
+    expect(panel().querySelector(".rail-head")).toBe(standingHead);
+    expect(panel().querySelector(".pinbtn")).toBe(standingPin);
+    expect(panel().querySelector(".rail-who")).toBe(standingTitle);
+    expect(document.activeElement).toBe(standingPin);
+    expect(standingTitle.dataset.titleMotion).toBe("erasing");
+
+    await finishTitleMotion(standingTitle);
+    expect(standingTitle.textContent).toBe("Unify prompt delivery");
+    expect(standingTitle.classList.contains("rail-who-starting")).toBe(false);
     expect(headWho(panel())).toBe("Claude Code 1");
   });
 

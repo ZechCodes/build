@@ -110,7 +110,7 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 .inbox-head { flex:none; display:flex; align-items:center; gap:8px;
   /* 10px above the controls, and the list's own 10px below them: the same
      room on both sides, rather than a fixed head that centred them short. */
-  min-height:var(--toolbar-h); padding:10px 10px 0 calc(10px + env(safe-area-inset-left, 0px));
+  padding:10px 10px 0 calc(10px + env(safe-area-inset-left, 0px));
   margin:0; background:inherit; border-radius:inherit; }
 /* One width for the toggle wherever it stands — it is what the collapsed
    toolbar's clearance is derived from. */
@@ -412,6 +412,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    issue the route stands on wears the composer's focused look. The unrouted
    captures stand above every block on their own. */
 .inbox-unsorted:not(:empty) { display:flex; flex-direction:column; gap:4px; }
+/* Empty, it leaves the list's flow: a 0px child still costs the list a gap,
+   which landed as 4px of nothing above the first band. */
+.inbox-unsorted:empty { display:none; }
 /* The blocks are bands of the rail, not cards in it: each one bleeds back
    through the list's side padding to the rail's own edges, so a block has no
    right edge to read as a border, and the standing block's accent bar sits on

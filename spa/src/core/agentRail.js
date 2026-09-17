@@ -479,8 +479,8 @@ export function panelHeadHtml(who, mode, { provider = "", removable = false, has
     ${railWhoHtml(who, heading)}
     ${railTuiButtonHtml(mode, hasTerminal)}
     ${railRemoveButtonHtml(who, removable)}
-    ${surfaceMenuRegionHtml(surfaceOptions)}
     ${pinButtonHtml({ subject: PANEL_SUBJECT, pinned })}
+    ${surfaceMenuRegionHtml(surfaceOptions)}
   </div>`;
 }
 

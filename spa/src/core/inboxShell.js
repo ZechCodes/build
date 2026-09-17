@@ -38,25 +38,43 @@ export function setInboxCollapsed(on, { animate = true, persist = true, reveal =
   if (on) collapsedAt = Date.now();
   const rail = $("#inbox-rail");
   const before = rail?.getBoundingClientRect();
+  const foot = rail?.querySelector(".inbox-foot");
+  const beforeFootPadding = footerPadding(foot);
   document.body.classList.toggle("inbox-collapsed", on);
   document.body.classList.toggle("inbox-popover-open", on && reveal);
   persistCollapsedChoice(on, persist);
   syncInboxControls(on);
-  animateCollapsedChange(animate && wasCollapsed !== on, rail, before);
+  animateCollapsedChange(animate && wasCollapsed !== on, rail, before, foot, beforeFootPadding);
 }
 
 function persistCollapsedChoice(on, persist) {
   if (persist) localStorage.setItem(COLLAPSED_KEY, on ? "1" : "");
 }
 
-function animateCollapsedChange(changed, rail, before) {
-  if (changed) animateInboxTransition(rail, before);
+function animateCollapsedChange(changed, rail, before, foot, beforeFootPadding) {
+  if (changed) animateInboxTransition(rail, before, foot, beforeFootPadding);
 }
 
 let transitionRun = 0;
 let transitionCleanup = null;
 const LAYOUT_TRANSITION_MS = 240;
 const PANEL_TRANSITION_MS = 160;
+
+function footerPadding(foot) {
+  return foot ? getComputedStyle(foot).paddingBottom : "";
+}
+
+function holdFooterPadding(foot, before, after) {
+  if (foot && before !== after) foot.style.paddingBottom = before;
+}
+
+function animateFooterPadding(foot, before, after) {
+  if (!foot || before === after) return null;
+  return foot.animate?.(
+    [{ paddingBottom: before }, { paddingBottom: after }],
+    { duration: PANEL_TRANSITION_MS, easing: "cubic-bezier(.2,.8,.2,1)" },
+  ) || null;
+}
 
 function pinRailRect(rail, rect) {
   Object.assign(rail.style, {
@@ -77,21 +95,26 @@ function releaseRailRect(rail) {
   }
 }
 
-function animateInboxTransition(rail, before) {
+function animateInboxTransition(rail, before, foot, beforeFootPadding) {
   const run = ++transitionRun;
   transitionCleanup?.();
   transitionCleanup = null;
   if (!rail || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
   const after = rail.getBoundingClientRect();
+  const afterFootPadding = footerPadding(foot);
   if (!before?.width || !after.width) return;
   document.body.classList.add("inbox-transitioning");
   pinRailRect(rail, before);
+  holdFooterPadding(foot, beforeFootPadding, afterFootPadding);
   let animation = null;
+  let footAnimation = null;
   let settleTimer = null;
   const finish = () => {
     if (run !== transitionRun) return;
     clearTimeout(settleTimer);
+    footAnimation?.cancel();
     releaseRailRect(rail);
+    foot?.style.removeProperty("padding-bottom");
     document.body.classList.remove("inbox-transitioning");
     transitionCleanup = null;
   };
@@ -104,6 +127,7 @@ function animateInboxTransition(rail, before) {
       ],
       { duration: PANEL_TRANSITION_MS, easing: "cubic-bezier(.2,.8,.2,1)" },
     );
+    footAnimation = animateFooterPadding(foot, beforeFootPadding, afterFootPadding);
     if (!animation) return finish();
     pinRailRect(rail, after);
     animation.onfinish = finish;
@@ -111,8 +135,10 @@ function animateInboxTransition(rail, before) {
   }, LAYOUT_TRANSITION_MS);
   transitionCleanup = () => {
     clearTimeout(settleTimer);
+    footAnimation?.cancel();
     animation?.cancel();
     releaseRailRect(rail);
+    foot?.style.removeProperty("padding-bottom");
     document.body.classList.remove("inbox-transitioning");
   };
 }

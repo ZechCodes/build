@@ -208,9 +208,9 @@ describe("the panel's stylesheet", () => {
     expect(bodyRule()).toMatch(/min-height:0/);
   });
 
-  it("holds the composer out of the scroll, at the panel's bottom edge", () => {
-    expect(headRule()).toMatch(/flex:none/);
-    expect(composerRule()).toMatch(/flex:none/);
+  it("holds the glass header and composer over the scrolling conversation", () => {
+    expect(headRule()).toMatch(/position:absolute/);
+    expect(composerRule()).toMatch(/position:absolute/);
   });
 
   // Growth has to stop somewhere: a pasted paragraph that kept growing would

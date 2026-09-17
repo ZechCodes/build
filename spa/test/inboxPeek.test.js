@@ -349,6 +349,35 @@ describe("the floating card", () => {
     animations[0].onfinish();
     expect(document.body.classList.contains("inbox-transitioning")).toBe(false);
   });
+
+  it("holds a device-safe footer through layout, then moves it with the card", () => {
+    hoverCapability.matches = false;
+    const rail = document.getElementById("inbox-rail");
+    const foot = rail.querySelector(".inbox-foot");
+    rail.getBoundingClientRect = vi.fn(() => ({ left: 0, top: 0, width: 288, height: 700 }));
+    const railAnimation = { cancel: vi.fn(), oncancel: null, onfinish: null };
+    rail.animate = vi.fn(() => railAnimation);
+    const footAnimation = { cancel: vi.fn() };
+    foot.animate = vi.fn(() => footAnimation);
+    const nativeStyle = getComputedStyle;
+    vi.stubGlobal("getComputedStyle", vi.fn((element) => (
+      element === foot
+        ? { paddingBottom: document.body.classList.contains("inbox-collapsed") ? "6px" : "26px" }
+        : nativeStyle(element)
+    )));
+
+    setInboxCollapsed(true);
+    expect(foot.style.paddingBottom).toBe("26px");
+    expect(foot.animate).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(240);
+    expect(foot.animate).toHaveBeenCalledWith(
+      [{ paddingBottom: "26px" }, { paddingBottom: "6px" }],
+      { duration: 160, easing: "cubic-bezier(.2,.8,.2,1)" },
+    );
+    railAnimation.onfinish();
+    expect(footAnimation.cancel).toHaveBeenCalledOnce();
+    expect(foot.style.paddingBottom).toBe("");
+  });
 });
 
 describe("the peek's geometry", () => {

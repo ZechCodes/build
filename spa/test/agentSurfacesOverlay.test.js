@@ -195,7 +195,7 @@ describe("panelHeadHtml's surface menu", () => {
     expect(html).not.toContain("splitbtn");
   });
 
-  it("places the vertical menu after Done without a collapse control", () => {
+  it("places the pin between Done and the vertical menu without a collapse control", () => {
     const html = panelHeadHtml("Claude Code", "chat", {
       removable: true,
       surfaceOptions: [{ id: SHELL_ENTRY_KIND, label: "Shells", description: "1 running" }],
@@ -203,7 +203,8 @@ describe("panelHeadHtml's surface menu", () => {
     expect(html).toContain(`data-action="${SHELL_ENTRY_KIND}"`);
     expect(html).toContain("Shells");
     expect(html).toContain("1 running");
-    expect(html.indexOf("rail-remove")).toBeLessThan(html.indexOf("rail-surface-menu"));
+    expect(html.indexOf("rail-remove")).toBeLessThan(html.indexOf("pinbtn"));
+    expect(html.indexOf("pinbtn")).toBeLessThan(html.indexOf("rail-surface-menu"));
     expect(html).toContain(">Done</button>");
     expect(html).toContain("⋮");
     expect(html).not.toContain("rail-collapse");

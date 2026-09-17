@@ -312,11 +312,11 @@ describe("the conversation panel's pin", () => {
     expect(shellCss).toMatch(/\.rail-composer \.composer > \.composer-dropmask \{ position:absolute; inset:0; z-index:2; \}/);
   });
 
-  it("shares the clearer glass values with the activity viewer", () => {
+  it("shares the clearer glass values across the header, composer, and activity viewer", () => {
     expect(shellCss).toMatch(/--chat-glass-opacity:72%;/);
     expect(shellCss).toMatch(/--chat-glass-blur:6px;/);
-    expect(shellCss.match(/color-mix\(in srgb, var\(--panel\) var\(--chat-glass-opacity\), transparent\)/g)).toHaveLength(2);
-    expect(shellCss.match(/backdrop-filter:blur\(var\(--chat-glass-blur\)\)/g)).toHaveLength(4);
+    expect(shellCss.match(/color-mix\(in srgb, var\(--panel\) var\(--chat-glass-opacity\), transparent\)/g)).toHaveLength(3);
+    expect(shellCss.match(/backdrop-filter:blur\(var\(--chat-glass-blur\)\)/g)).toHaveLength(6);
   });
 
   it("says what pressing it does, in the inbox's words", async () => {

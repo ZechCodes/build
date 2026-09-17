@@ -1,0 +1,81 @@
+// The project page's main pane, as a pure model: the workspaces one project
+// holds, in the order they already stand in.
+//
+// The rail groups every device's workspaces into project blocks
+// (core/inboxProjects.js). The page is one of those blocks opened on its own,
+// so the grouping is reused rather than repeated: a row here and the same row
+// on the rail carry the same route, the same unread and the same order.
+//
+// What a block does not carry is what a workspace is standing on — the page has
+// room for the branch and the state, so those are read off the workspace record
+// beside the row.
+//
+// No DOM, no app imports; views/projectView.js renders these.
+
+import { workspaceEntries } from "./inbox.js";
+import { workspaceProjectBlocks } from "./inboxProjects.js";
+import { routeProjectKey } from "./deviceKey.js";
+import { workspaceStatusText } from "./workspaceModel.js";
+
+/** The branch a workspace is standing on: the first of its sources that is on
+ *  one. A workspace holds several checkouts and the row is one line, so the
+ *  first is what there is room to say; "" when none of them is a repository. */
+const branchOf = (workspace) =>
+  (workspace?.directories || []).map((directory) => directory.branch).find(Boolean) || "";
+
+/** One workspace as the page lists it: the rail's row, plus what that workspace
+ *  is standing on and how its checkout is doing. */
+const pageRow = (entry, workspace) => ({
+  key: entry.key,
+  workspaceId: entry.workspaceId,
+  workspaceKey: entry.workspaceKey,
+  name: entry.name,
+  route: entry.route,
+  state: entry.state,
+  unreadCount: entry.unreadCount,
+  muted: entry.muted,
+  facts: entry.facts,
+  branch: branchOf(workspace),
+  status: workspace?.status || "",
+  statusText: workspaceStatusText(workspace),
+});
+
+/** The one project block the rail would paint for this project, or null when no
+ *  device has listed it. Built from the rail's own grouping so the page and the
+ *  rail cannot disagree about what is in a project. */
+function projectBlock(feed, projectKey) {
+  const workspaces = feed?.workspaces || [];
+  const projects = feed?.projects || [];
+  const entries = workspaceEntries(workspaces, projects, feed?.items || []);
+  const { blocks } = workspaceProjectBlocks(entries, projects);
+  return blocks.find((candidate) => candidate.projectKey === projectKey) || null;
+}
+
+/** The block's rows, each read beside the workspace record it came from. */
+function pageRows(feed, block) {
+  const byKey = new Map((feed?.workspaces || []).map((workspace) => [workspace.workspaceKey, workspace]));
+  return (block?.entries || []).map((entry) => pageRow(entry, byKey.get(entry.workspaceKey)));
+}
+
+/**
+ * The project page for the project a route is standing in.
+ *
+ * `feed` is the merge every surface reads (core/taskFeed.js); `route` says which
+ * project, and a project is named by the pair (device, project id) — both
+ * machines mint a `proj-1`, so a route with no machine on it names no project
+ * and the page stands empty until the resolve hop supplies one.
+ */
+export function projectPageModel(feed, route) {
+  const projectKey = routeProjectKey(route);
+  const block = projectBlock(feed, projectKey);
+  const rows = pageRows(feed, block);
+  return {
+    projectKey,
+    projectId: route?.projectId || null,
+    deviceId: route?.deviceId || null,
+    name: block?.name || route?.projectId || "",
+    rows,
+    unreadCount: rows.reduce((total, row) => total + row.unreadCount, 0),
+    empty: rows.length === 0,
+  };
+}

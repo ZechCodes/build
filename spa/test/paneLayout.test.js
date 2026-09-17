@@ -701,7 +701,9 @@ describe("diff file headers", () => {
     expect(declaration(file.body, "overflow")).toBe("clip");
     expect(declaration(header.body, "position")).toBe("sticky");
     expect(declaration(header.body, "top")).toBe("var(--diff-sticky-top, 0)");
-    expect(declaration(header.body, "background")).toBe("var(--panel)");
+    // .file is a --panel2 slab now, so the glass the head is painted with is
+    // the slab's own tone — not the panel behind it.
+    expect(declaration(header.body, "background")).toBe("var(--panel2)");
     expect(Number(declaration(header.body, "z-index"))).toBeGreaterThan(
       Number(declaration(expandOverlay.body, "z-index")),
     );
@@ -752,7 +754,9 @@ describe("the tail of a reading column", () => {
     // no box of its own — so the rule names the tray, not the whole column.
     expect(bar.selector).toContain(".gitpane .cstray > .actionbar");
     const issueBar = surfaceRules().find((rule) => rule.selector === ".issueview .ivviewer > .actionbar");
-    expect(declaration(issueBar.body, "background")).toBe("var(--bg)");
+    // The fade is mixed from the panel it sits in: under the new near-black
+    // --bg a shell-toned bar would read as a hole in the panel.
+    expect(declaration(issueBar.body, "background")).toBe("var(--panel)");
   });
 });
 
@@ -1023,9 +1027,10 @@ describe("the directory rail", () => {
     for (const rule of rulesFor("#dir-rail")) {
       expect(enclosingAtRule(rule.at)).toBeNull();
     }
-    // The seam with the work is the rail's own, like every other divide in the
-    // shell.
-    expect(declaration(rail.body, "border-right")).toBe("1px solid var(--line3, var(--line))");
+    // The seam with the work is a step in tone, not a line: the rail carries
+    // --panel2 beside the work's --panel and draws no border at all.
+    expect(declaration(rail.body, "border")).toBe("0");
+    expect(declaration(rail.body, "background")).toContain("var(--panel2)");
   });
 
   it("keeps its cells at the head of the column, clear of the phone's bubble strip", () => {
@@ -1094,10 +1099,13 @@ describe("the view column's seam with the agent rail", () => {
     // on the panel inside it is the doubled seam: two rules for one divide,
     // which drift apart the moment either surface moves.
     expect(sideBorders(baseRule("#agent-rail"))).toEqual([]);
-    expect(sideBorders(baseRule(".rail-panel"))).toEqual(["border-left:1px solid var(--line)"]);
-    expect(sideBorders(baseRule(".rail-strip"))).toEqual(["border-left:1px solid var(--line)"]);
-    // Two surfaces, two leading edges, two borders — and no rule anywhere in
-    // the rail draws a trailing one for another surface's edge to land on.
+    expect(sideBorders(baseRule(".rail-panel"))).toEqual(["border:0"]);
+    expect(sideBorders(baseRule(".rail-strip"))).toEqual(["border:0"]);
+    // No divide in the rail is a line any more: the panel separates by its own
+    // --panel fill and radius floating on the shell, and the strip is bare. So
+    // there is nothing to double — and no rule anywhere in the rail draws a
+    // trailing border for another surface's edge to land on either.
+    expect(declaration(baseRule(".rail-panel").body, "background")).toBe("var(--panel)");
     const trailing = ["#agent-rail", ".rail-panel", ".rail-strip"].flatMap((selector) =>
       rulesFor(selector).map((rule) => declaration(rule.body, "border-right")).filter(Boolean),
     );
@@ -1278,8 +1286,6 @@ describe("the row of heads across a work surface", () => {
       // shared box.
       expect([selector, declaration(rule.body, "display")]).toEqual([selector, "flex"]);
       expect([selector, declaration(rule.body, "align-items")]).toEqual([selector, "center"]);
-      // …and one border under the row, so the shared height is a shared line.
-      expect([selector, declaration(rule.body, "border-bottom")]).toEqual([selector, "1px solid var(--line)"]);
     }
   });
 
@@ -1529,10 +1535,10 @@ describe("the bubble strip on a phone", () => {
     // More agents than fit scroll sideways rather than squeezing to nothing.
     expect(declaration(strip.body, "overflow-x")).toBe("auto");
     expect(declaration(baseRule(".rail-bubble").body, "flex")).toBe("none");
-    // Each divide is still stated by the surface that begins at it — and the
-    // strip's leading edge is its top now, not its left.
-    expect(declaration(strip.body, "border-left")).toBe("0");
-    expect(declaration(strip.body, "border-top")).toBe("1px solid var(--line)");
+    // On a phone the strip is a floating panel card across the foot — a --panel
+    // fill with a radius over the shell — rather than a bordered edge.
+    expect(declaration(strip.body, "border")).toBe("0");
+    expect(declaration(strip.body, "background")).toBe("var(--panel)");
     // The strip leaves the rail's box out of the flow, so the work keeps the
     // whole width — and the rail's desktop column is untouched.
     const rail = phoneRule("#agent-rail");

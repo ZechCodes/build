@@ -14,15 +14,13 @@ from litestar.exceptions import NotFoundException
 from litestar.response import Redirect, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from buildapp import download_tokens, releases
+from buildapp import releases
 from buildapp.accounts import account_email
 from buildapp.alpha_membership import is_alpha_member
-from buildapp.clock import utc_now
-from buildapp.desktop_auth import build_auth_guard, download_auth_guard
+from buildapp.desktop_auth import build_auth_guard
 from buildapp.email_message import provide_public_base_url
 from buildapp.invite_pages import APP_PATH, invite_only_outcome
 from buildapp.release_assets import AssetSource, provide_asset_source
-from buildapp.releases import DOWNLOAD_TOKEN_PARAM
 from buildapp.session_auth import login_redirect, require_user, session_user_id
 
 HERE = Path(__file__).parent
@@ -70,61 +68,29 @@ class BuildController(Controller):
     async def desktop(self, request: Request, db_session: AsyncSession) -> Response:
         return await self._render_spa(require_user(request), db_session)
 
-    @get("/downloads", guards=[build_auth_guard])
-    async def downloads(
-        self,
-        request: Request,
-        db_session: AsyncSession,
-        public_base_url: str,
-        asset_source: AssetSource,
-    ) -> dict:
-        """Where an alpha member gets the bridge. Rendering the page mints the member
-        a fresh install line, because the line is what they came for; every URL and
-        label comes from ``releases``."""
-        token = await download_tokens.mint(db_session, require_user(request), utc_now())
-        return releases.downloads_payload(
-            public_base_url, token, asset_source.releases_url
-        )
+    @get("/downloads")
+    async def downloads(self, public_base_url: str, asset_source: AssetSource) -> dict:
+        """Public metadata; downloading does not require app membership."""
+        return releases.downloads_payload(public_base_url, asset_source.releases_url)
 
-    @post("/downloads/token", guards=[build_auth_guard])
-    async def download_token(
-        self, request: Request, db_session: AsyncSession, public_base_url: str
-    ) -> Response:
-        """A fresh install line for a page that has been open a while. Same shape as
-        the gateway token: empty body, no CSRF header, 201 with the secret once."""
-        token = await download_tokens.mint(db_session, require_user(request), utc_now())
+    @post("/downloads/token")
+    async def download_token(self, public_base_url: str) -> Response:
+        """Compatibility for older clients: installation no longer expires."""
         return Response(
             {
-                "token": token,
-                "install_command": releases.install_command(public_base_url, token),
-                "expires_in_s": download_tokens.EXPIRES_IN_S,
+                "token": "",
+                "install_command": releases.install_command(public_base_url),
+                "expires_in_s": None,
             },
             status_code=201,
         )
 
-    @get("/downloads/{asset:str}", guards=[download_auth_guard])
-    async def download_asset(
-        self,
-        asset: str,
-        request: Request,
-        db_session: AsyncSession,
-        asset_source: AssetSource,
-    ) -> Response:
-        """One release asset, to a member's browser or to their install script. The
-        segment must be one this app publishes, the source decides how the bytes get
-        there, and a tarball — the last thing an install fetches — spends the token
-        that opened it."""
-        downloadable = releases.DOWNLOADABLE.get(asset)
-        if downloadable is None:
+    @get("/downloads/{asset:str}")
+    async def download_asset(self, asset: str, asset_source: AssetSource) -> Response:
+        name = releases.DOWNLOADABLE.get(asset)
+        if name is None:
             raise NotFoundException("no such download")
-        response = await asset_source.deliver(downloadable.name)
-        if downloadable.spends_token:
-            await download_tokens.spend(
-                db_session,
-                request.query_params.get(DOWNLOAD_TOKEN_PARAM),
-                require_user(request),
-            )
-        return response
+        return await asset_source.deliver(name)
 
     @staticmethod
     async def _render_spa(user_id, db_session: AsyncSession) -> Response:

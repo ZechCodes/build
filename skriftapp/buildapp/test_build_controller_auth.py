@@ -22,7 +22,7 @@ from skrift.auth.session_keys import SESSION_USER_ID
 
 from buildapp import controllers
 from buildapp.controllers import BuildController
-from buildapp.desktop_auth import build_auth_guard, download_auth_guard
+from buildapp.desktop_auth import build_auth_guard
 from buildapp.email_message import provide_public_base_url
 from buildapp.invite_pages import INVITE_ONLY_HEADING
 from buildapp.release_assets import provide_asset_source
@@ -95,13 +95,6 @@ def test_a_signed_in_account_with_no_invite_gets_the_invite_only_page():
     assert SIGNED_IN_ADDRESS in response.content
 
 
-def test_the_downloads_route_carries_the_membership_guard():
-    downloads = next(
-        handler for handler in _route_handlers() if "/downloads" in handler.paths
-    )
-    assert build_auth_guard in (downloads.guards or [])
-
-
 def test_the_download_routes_are_handed_everything_they_need_by_providers():
     """C3 gives these routes no query parameters. A value a handler declares but the
     app does not provide would silently become one, so this asserts the registered
@@ -131,11 +124,8 @@ def test_no_route_still_asks_for_a_releases_repository():
         assert "releases_repo" not in inspect.signature(handler.fn).parameters
 
 
-def test_the_asset_route_admits_an_install_lines_token_and_the_others_do_not():
-    for path in ("/downloads", "/downloads/token"):
+def test_only_the_download_routes_are_public():
+    for path in ("/downloads", "/downloads/token", "/downloads/{asset:str}"):
         handler = next(h for h in _route_handlers() if path in h.paths)
-        assert handler.guards == [build_auth_guard], path
-    asset_route = next(
-        h for h in _route_handlers() if "/downloads/{asset:str}" in h.paths
-    )
-    assert asset_route.guards == [download_auth_guard]
+        assert not handler.guards, path
+    assert BuildController.desktop.guards == [build_auth_guard]

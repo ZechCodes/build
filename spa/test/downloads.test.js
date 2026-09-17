@@ -37,16 +37,23 @@ describe("downloadsHtml", () => {
     expect(offered.map((a) => a.getAttribute("href"))).toEqual(DOWNLOADS.platforms.map((p) => p.url));
   });
 
-  it("puts no download token in any link — a member session is what opens the route", () => {
+  it("puts no download token in any public link", () => {
     const host = parse(downloadsHtml(DOWNLOADS, "macos-arm64"));
     expect(linkUrls(host).filter((url) => url.includes("t="))).toEqual([]);
   });
 
-  it("renders the install command verbatim, token and all, next to a Copy button", () => {
+  it("renders the public bridge command next to a Copy button", () => {
     const host = parse(downloadsHtml(DOWNLOADS, "macos-arm64"));
     expect(host.querySelector("#installcmd").textContent).toBe(DOWNLOADS.install_command);
-    expect(host.querySelector("#installcmd").textContent).toContain("?t=dl_");
+    expect(host.querySelector("#installcmd").textContent).not.toContain("?t=");
     expect(host.querySelector("#copycmd").textContent).toBe("Copy");
+  });
+
+  it("offers the public desktop installer and releases beside the bridge", () => {
+    const host = parse(downloadsHtml(DOWNLOADS, "linux-aarch64"));
+    expect(host.querySelector("#desktopinstallcmd").textContent).toBe(DOWNLOADS.desktop_install_command);
+    expect(host.querySelector("#desktopcopycmd").textContent).toBe("Copy");
+    expect(linkUrls(host)).toContain(DOWNLOADS.desktop_releases_url);
   });
 
   it("keeps the other three platforms reachable beside the checksums and the releases page", () => {
@@ -75,6 +82,8 @@ describe("downloadsHtml", () => {
     const hostile = {
       ...DOWNLOADS,
       install_command: '"><img src=x onerror=alert(1)>',
+      desktop_install_command: '"><img src=x>',
+      desktop_releases_url: '"><img src=x>',
       checksums_url: '"><img src=x>',
       releases_url: '"><img src=x>',
       platforms: [{ key: "macos-arm64", label: '"><img src=x>', url: '"><img src=x>' }],

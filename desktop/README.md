@@ -22,14 +22,23 @@ Chromium developer tools; packaged builds do not.
 
 ## Package
 
-Build an installer for the current platform:
+Build an unsigned local installer for the current platform, including locked
+dependency installation (run from the repository root):
 
 ```bash
-npm run dist
+node scripts/build-desktop.mjs
 ```
 
-Use `dist:mac`, `dist:win`, or `dist:linux` on the corresponding signing host.
-When no macOS signing identity is available, local builds receive an ad-hoc
-signature so macOS can run the hardened binary. A configured `CSC_LINK`,
+Output is in `desktop/dist/`. Add `--dir` for an unpacked application.
+This local script ignores signing credentials and disables notarization;
+on macOS it uses an ad-hoc signature and disables hardened runtime.
+See the root [README](../README.md#build-locally) for prerequisites and the
+signed Mac release workflow.
+
+For credential-aware packaging directly from this directory, use `npm run dist`,
+or `dist:mac`, `dist:win`, or `dist:linux` on the corresponding signing host.
+When no macOS signing identity is available, this lower-level command falls back
+to an ad-hoc signature; use the root script for runnable local builds with
+hardened runtime disabled. A configured `CSC_LINK`,
 `CSC_NAME`, or keychain identity takes precedence for production signing.
 Production macOS releases must also be notarized before distribution.

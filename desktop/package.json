@@ -71,6 +71,7 @@
     },
     "linux": {
       "category": "Development",
+      "maintainer": "Build <hello@getbuild.ing>",
       "icon": "assets/icon.png",
       "target": [
         "AppImage",

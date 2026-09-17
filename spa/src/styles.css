@@ -20,6 +20,10 @@
      which color it wants; it just resolves to the page's. --panel2 is the one
      exception: the faintly recessed fill under a gutter or a quiet card. */
   --bg:#f3f7f8; --panel:#f8fbfb; --panel2:#eaf1f2;
+  /* The shared top-level band above the inbox and the active view. It is
+     intentionally darker than either content surface; its own dim ink keeps
+     small labels readable against that denser fill. */
+  --shell-chrome:#e2ebed; --shell-chrome-dim:#506970;
   --ink:#13262c; --ink2:#496169; --dim:#5d747c;
   --line:#cbdadd; --line2:#dce7e9; --line3:#adc3c7;
   --accent:#006d43; --accent-fill:#51ffb4; --accent-soft:#ddffed; --accent-ink:#062719;
@@ -53,6 +57,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg:#07151b; --panel:#0b1b22; --panel2:#10262f;
+  --shell-chrome:#041016; --shell-chrome-dim:#839ea7;
   --ink:#e5f1f2; --ink2:#9db2b8; --dim:#839ea7;
   --line:#1b3640; --line2:#122a33; --line3:#31505a;
   /* Electric mint is a clear affordance against the dark ground. --green stays

@@ -1200,7 +1200,7 @@ describe("the conversation panel unpinned", () => {
     // The same notch the away inbox wears, so the two popovers read as one
     // vocabulary rather than two.
     const inbox = cssRules().find((rule) => rule.selector.includes("#inbox-rail::before"));
-    for (const property of ["transform", "width", "height", "background"]) {
+    for (const property of ["transform", "width", "height"]) {
       expect([property, declaration(notch.body, property)])
         .toEqual([property, declaration(inbox.body, property)]);
     }

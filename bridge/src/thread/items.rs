@@ -397,6 +397,17 @@ pub struct ThreadMessage {
     #[serde(default)]
     pub updated_sequence: u64,
     pub role: MessageRole,
+    /// The agent that sent this message, when an agent sent it and not the
+    /// human.
+    ///
+    /// [`role`](Self::role) says which side of the conversation a message is
+    /// on, not who wrote it: an instruction one agent hands another lands on
+    /// the inbound side, exactly where the human's words land, and names its
+    /// sender here. Absent on everything the human said, and on every record
+    /// written before agents could speak to each other — so a client that has
+    /// never heard of the field reads those messages exactly as it always has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_agent: Option<AgentIdentity>,
     /// Client mutation whose durable delivery owns this reviewer message.
     /// Managed messages are read through that exact operation and never by
     /// the legacy catch-all unread mailbox.

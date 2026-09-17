@@ -249,6 +249,25 @@ impl Thread {
         self.post_user_with_context(body, anchor, None, now)
     }
 
+    /// One agent's words in another agent's conversation.
+    ///
+    /// The role is the human's, because that is the side of the conversation
+    /// an instruction arrives on whoever wrote it; `from_agent` is who wrote
+    /// it. The two together are what let the agent reading it — and the human
+    /// watching — tell a hand-off from the user speaking.
+    pub fn post_user_from_agent(
+        &mut self,
+        body: impl Into<String>,
+        from_agent: AgentIdentity,
+        now: impl Into<String>,
+    ) -> String {
+        let id = self.post_user(body, None, now);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.from_agent = Some(from_agent);
+        }
+        id
+    }
+
     pub fn post_user_with_context(
         &mut self,
         body: impl Into<String>,
@@ -647,6 +666,7 @@ impl Thread {
             sequence,
             updated_sequence: sequence,
             role,
+            from_agent: None,
             done: false,
             outcome: None,
             completion_report: None,

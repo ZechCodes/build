@@ -472,6 +472,23 @@ The four cases, and what each end does:
 | 2.x | v1 adapter only | gate: update the app |
 | 1.x | v2 adapter only | gate: update the bridge (does not arise while the bridge serves N-1) |
 
+#### Step 2.6: `from_agent` on a thread message
+
+A thread message carries `from_agent: {"id": "<agent id>"}` when an agent
+wrote it and not the human. `role` stays `user`: it says which side of the
+conversation a message is on — inbound, where the human's words land — not
+who typed it, so `MessageRole` is unchanged and a client that has never
+heard of `from_agent` renders the message exactly as it always did. The
+field is omitted entirely on everything the human said, which makes it a
+minor, additive change (step 2.1).
+
+The router sets it on the instruction `branch.dispatch` lands in the new
+agent's conversation, and the message travels into the native delivery
+payload with it, so the receiving harness reads who is handing the work
+over. A message carrying `from_agent` never counts as the human
+interacting with the work: they did not send it, and the inbox must not
+say they did.
+
 ## Verification
 
 - `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt

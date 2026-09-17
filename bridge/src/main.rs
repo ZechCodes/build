@@ -764,8 +764,8 @@ fn mcp_stdio() {
     let session_token = std::env::var("BRIDGE_MCP_TOKEN").ok();
 
     // The owner id decides the tool surface: a router session's id is prefixed,
-    // so which tools a harness is offered can never disagree with which kind of
-    // session it is.
+    // and so is a project agent's, so which tools a harness is offered can never
+    // disagree with which kind of session it is.
     let server = build_bridge::mcp::DoneServer::for_owner(&owner_id);
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();

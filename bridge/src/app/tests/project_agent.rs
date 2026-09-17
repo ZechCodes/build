@@ -277,3 +277,46 @@ fn a_project_agents_cold_prompt_is_its_own_and_not_a_coding_agents() {
     assert!(coding.contains("Build conversation protocol"), "{coding}");
     assert!(!coding.contains("list_workspaces"), "{coding}");
 }
+
+/// A project agent's message reaches its own conversation, which is what makes
+/// the conversation tools generic rather than the coding surface's.
+#[test]
+fn a_project_agents_message_lands_on_its_own_conversation() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+
+    let posted = state
+        .on_agent_mcp_action(
+            &owner,
+            &agent_id,
+            BridgeAction::PostThreadMessage {
+                still_working: false,
+                body: "one workspace, nobody in it".to_string(),
+                anchor: None,
+                links: Vec::new(),
+                options: Vec::new(),
+            },
+        )
+        .expect("a project agent speaks to the user");
+    assert!(posted["message_id"].is_string(), "{posted:?}");
+
+    let conversation = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": owner, "agent_id": agent_id }),
+    ));
+    let bodies: Vec<&str> = conversation["result"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a page of items: {conversation:?}"))
+        .iter()
+        .filter_map(|item| item["data"]["body"].as_str())
+        .collect();
+    assert!(
+        bodies.contains(&"one workspace, nobody in it"),
+        "{conversation:?}"
+    );
+}

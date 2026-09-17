@@ -1,9 +1,16 @@
 //! The workspace family: the durable multi-source checkout the SPA opens
 //! work in (`workspace.list` / `workspace.get` / `workspace.create` /
-//! `workspace.retry` / `workspace.finish`), the conversation owner a
+//! `workspace.retry` / `workspace.finish`), the two verbs its settings sheet
+//! calls (`workspace.rename` / `workspace.delete`), the conversation owner a
 //! workspace mints on demand (`workspace.ensure_conversation`), and the Git
 //! initialization surface for a source that is not a repository yet
 //! (`workspace.git_init_options` / `workspace.init_git`).
+//!
+//! `rename` moves the record's pretty name and nothing else — not the folder,
+//! not the branches — and answers the detail `get` answers, so one call
+//! repaints. `delete` is the opposite end of `create`: it answers
+//! `{workspace_id, deleted}` under the lock and publishes the same shape from
+//! the drain, so it needs no placeholder.
 //!
 //! Same shape as `board.rs`: the implementations under `app/workspaces/` are
 //! untouched — each handler resolves its typed params, hands them to the
@@ -89,6 +96,18 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             WorkspaceFinishParams,
             WorkspaceFinishResult
         ),
+        v1_method!(
+            "workspace.rename",
+            workspace_rename,
+            WorkspaceRenameParams,
+            WorkspaceDetail
+        ),
+        v1_method!(
+            "workspace.delete",
+            workspace_delete,
+            WorkspaceIdParams,
+            WorkspaceDeleteResult
+        ),
     ]
 }
 
@@ -103,10 +122,19 @@ pub struct WorkspaceListParams {
 }
 
 /// A workspace named and nothing else asked of it: `workspace.retry` and
-/// `workspace.finish`.
+/// `workspace.delete`.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceIdParams {
     pub workspace_id: String,
+}
+
+/// The workspace's new human-facing name. Trimmed and refused empty by the
+/// implementation; the folder on disk and the branches in it are NOT renamed,
+/// so nothing here names a path.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceRenameParams {
+    pub workspace_id: String,
+    pub name: String,
 }
 
 /// Finish alone has a strict local-only mode used by the inbox. Keeping this
@@ -241,6 +269,15 @@ pub struct WorkspaceDetail {
     pub run: Option<Box<RunView>>,
 }
 
+/// What `workspace.delete` answers, the acknowledgement and the drain's own
+/// value alike — the whole removal is one fact, and the client that asked for
+/// it only needs to know it happened.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceDeleteResult {
+    pub workspace_id: String,
+    pub deleted: bool,
+}
+
 /// The conversation owner a workspace has, or the one it just minted.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceConversation {
@@ -321,7 +358,7 @@ pub struct WorkspaceInitGitResult {
 const BUSY: [&str; 1] = ["another filesystem operation is still running"];
 
 /// The request was legible and the workspace's own state said no.
-const CONFLICT: [&str; 9] = [
+const CONFLICT: [&str; 14] = [
     // `workspace.ensure_conversation: workspace is finished`, and its
     // provisioning and failed spellings.
     "workspace is ",
@@ -333,14 +370,22 @@ const CONFLICT: [&str; 9] = [
     "workspace.finish cannot verify",
     "workspace.finish could not verify",
     "project has no sources",
+    // Rename and delete: the workspace is not Build's to rewrite or remove,
+    // or something standing in it has to stop first.
+    "adopted workspaces are named by their own checkout",
+    "adopted checkouts are not Build's to remove",
+    "Wait for workspace provisioning to finish",
+    "Stop running agents before deleting the workspace",
+    "Cannot delete a workspace",
 ];
 
 /// A word in the request is not one this bridge knows. `unknown <thing>`
 /// otherwise reads as a missing entity, which these are not.
-const INVALID: [&str; 3] = [
+const INVALID: [&str; 4] = [
     "unknown isolation:",
     "unknown git init target:",
     "unknown agent provider:",
+    "workspace.rename: name cannot be empty",
 ];
 
 /// Name the refusal this family raised, where the sentence says what
@@ -431,6 +476,23 @@ fn workspace_finish(
     .map_err(refine)
 }
 
+fn workspace_rename(
+    app: &mut AppState,
+    params: WorkspaceRenameParams,
+) -> Result<Answer<WorkspaceDetail>, ApiError> {
+    answer(app.workspace_rename(&params.wire())).map_err(refine)
+}
+
+/// The removal itself runs off the app mutex, but the shape never changes:
+/// the acknowledgement here and the value the drain publishes are the same
+/// `{workspace_id, deleted}`, so no placeholder is needed.
+fn workspace_delete(
+    app: &mut AppState,
+    params: WorkspaceIdParams,
+) -> Result<Answer<WorkspaceDeleteResult>, ApiError> {
+    answer(app.workspace_delete(&params.wire())).map_err(refine)
+}
+
 // ----------------------------------------------------------------- tests ---
 
 #[cfg(test)]
@@ -480,6 +542,28 @@ mod tests {
     #[test]
     fn the_workspace_finish_fixture_round_trips() {
         round_trips("workspace.finish");
+    }
+
+    #[test]
+    fn the_workspace_rename_fixture_round_trips() {
+        round_trips("workspace.rename");
+    }
+
+    #[test]
+    fn the_workspace_delete_fixture_round_trips() {
+        round_trips("workspace.delete");
+    }
+
+    /// Renaming needs both words. A name-less rename would otherwise reach the
+    /// implementation and be refused there in different words.
+    #[test]
+    fn a_rename_missing_its_name_is_a_missing_param() {
+        let refused = parse_params::<WorkspaceRenameParams>(&serde_json::json!({
+            "workspace_id": "ws-1",
+        }))
+        .expect_err("naming no name is refused");
+        assert_eq!(refused.message(), "missing required param: name");
+        assert_eq!(refused.code(), "invalid_params");
     }
 
     /// The detail hands its params on to `run.get`, so the thread window has
@@ -570,6 +654,27 @@ mod tests {
             ("unknown isolation: btrfs", "invalid_params"),
             ("unknown git init target: everything", "invalid_params"),
             ("unknown agent provider: gpt", "invalid_params"),
+            ("workspace.rename: name cannot be empty", "invalid_params"),
+            (
+                "workspace.rename: adopted workspaces are named by their own checkout",
+                "conflict",
+            ),
+            (
+                "workspace.delete: adopted checkouts are not Build's to remove",
+                "conflict",
+            ),
+            (
+                "Wait for workspace provisioning to finish before deleting the workspace",
+                "conflict",
+            ),
+            (
+                "Stop running agents before deleting the workspace",
+                "conflict",
+            ),
+            (
+                "Cannot delete a workspace containing a source repository",
+                "conflict",
+            ),
             ("unknown workspace_id: ws-9", "not_found"),
             ("unknown source_id source-9 in workspace ws-1", "not_found"),
             ("unknown project_id: proj-9", "not_found"),

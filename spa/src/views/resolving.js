@@ -1,5 +1,5 @@
 // Where a URL that does not say enough waits. A pre-redesign URL names a run, a
-// worktree, a plan or a primary checkout by id; the new ones name a branch by
+// worktree or a plan by id; the new ones name a branch by
 // (project, branch) and an issue by (project, issue), and a work URL that names
 // no device names a project every machine mints its own `proj-1` of. The feed
 // carries what is missing, so this surface holds the screen until the devices

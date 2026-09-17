@@ -46,6 +46,22 @@ vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...ar
 const newRepoSheet = vi.fn();
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: (...args) => newRepoSheet(...args) }));
 
+// What hiding a project does to the cache is core/projectHide.js's own business
+// (test/projectHide.test.js). What matters here is the half the rail can see:
+// the project's rows leave the snapshot the feed is serving, and the rail
+// repaints without them. So the mock prunes this file's snapshot exactly as the
+// real drop prunes the feed's, and delivers.
+let hidden = [];
+vi.mock("../src/core/projectHide.js", () => ({
+  hideProject: async (target) => {
+    hidden.push(target);
+    for (const field of ["items", "projects", "workspaces"]) {
+      snapshot[field] = (snapshot[field] || []).filter((row) => row.projectKey !== target.projectKey);
+    }
+    deliver();
+  },
+}));
+
 const key = (deviceId, id) => `${deviceId}/${id}`;
 
 /** A project as the feed stamps it. */
@@ -131,6 +147,7 @@ let laptopCall;
 beforeEach(async () => {
   vi.resetModules();
   subscribers = [];
+  hidden = [];
   navigate.mockReset();
   createWorkspace.mockReset();
   newRepoSheet.mockReset();
@@ -455,6 +472,62 @@ describe("an account with more than one device", () => {
     expect(here.querySelector("[data-project-create]").hasAttribute("disabled")).toBe(false);
   });
 
+  // A block whose machine cannot be asked anything says why it is inert, and
+  // says it whether or not another machine shares the name: "which laptop" is
+  // not the reader's question once none of them can answer.
+  it("says Offline on a block whose machine is away, and on one nothing names", () => {
+    twoDevices();
+    setInboxView("projects");
+
+    setContextOffline("dev-2", { offline: true });
+
+    const tagOf = (projectKey) =>
+      document.querySelector(`[data-project="${projectKey}"] .inbox-project-device`).textContent.trim();
+    expect(tagOf("dev-2/project-1")).toBe("Offline");
+    expect(tagOf("dev-1/project-1")).toBe("workshop");
+
+    // A machine the account's device list has never heard of can answer for
+    // nothing either, so its block reads the same way.
+    App.devices = App.devices.filter((device) => device.id !== "dev-2");
+    setContextOffline("dev-2", { offline: false });
+    twoDevices();
+    expect(tagOf("dev-2/project-1")).toBe("Offline");
+  });
+
+  it("offers Hide only on a block whose machine is away", () => {
+    twoDevices();
+    setInboxView("projects");
+    expect(document.querySelectorAll("[data-project-hide]")).toHaveLength(0);
+
+    setContextOffline("dev-2", { offline: true });
+
+    expect([...document.querySelectorAll("[data-project-hide]")].map((button) => button.dataset.projectHide)).toEqual([
+      "dev-2/project-1",
+    ]);
+    // Everything else on an away block is shut with the reason; hide is the one
+    // thing that can still be done, so it stays live.
+    const hide = document.querySelector("[data-project-hide]");
+    expect(hide.hasAttribute("disabled")).toBe(false);
+
+    setContextOffline("dev-2", { offline: false });
+    expect(document.querySelectorAll("[data-project-hide]")).toHaveLength(0);
+  });
+
+  // Hide drops the project from the cache — which, on a machine that has gone,
+  // is everything it is. The block and its rows leave with it; the other
+  // machine's project of the same number is untouched.
+  it("takes the block and its rows off the rail when Hide is pressed", () => {
+    twoDevices();
+    setInboxView("projects");
+    setContextOffline("dev-2", { offline: true });
+
+    document.querySelector("[data-project-hide]").click();
+
+    expect(hidden).toEqual([{ deviceId: "dev-2", projectKey: "dev-2/project-1" }]);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1"]);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1"]);
+  });
+
   it("narrows the list to one machine without touching the route", () => {
     twoDevices();
     const standing = App.route;
@@ -470,7 +543,11 @@ describe("an account with more than one device", () => {
   // device-less, and a device-less link is resolved by asking every machine —
   // which hands the reader whichever one happens to hold the same numbered
   // project. Creation already knows the machine it asked, so the route says it.
-  it("opens a new project on the machine it was made on", () => {
+  //
+  // And it opens the RAIL standing in the new project, never that project's own
+  // checkout: a project is the template its workspaces are cut from, and the
+  // block is where the first one is made.
+  it("opens a new project's block on the machine it was made on, not its checkout", () => {
     App.selectedDeviceId = "dev-1";
     App.deviceFilter = "dev-1";
     twoDevices();
@@ -480,13 +557,7 @@ describe("an account with more than one device", () => {
     expect(options.defaultDeviceId).toBe("dev-1");
     done({ project_id: "project-1", base_branch: "main" }, { id: "dev-2", name: "laptop" });
 
-    expect(navigate).toHaveBeenCalledWith({
-      name: "branch",
-      deviceId: "dev-2",
-      projectId: "project-1",
-      branch: "main",
-      tab: "changes",
-    });
+    expect(navigate).toHaveBeenCalledWith({ name: "inbox", deviceId: "dev-2", projectId: "project-1" });
   });
 
   it("defaults project creation to the sidebar device instead of the remembered home device", () => {

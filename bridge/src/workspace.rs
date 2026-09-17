@@ -280,6 +280,42 @@ impl WorkspaceRegistry {
             .retain(|_, workspace| workspace.project_id != project_id);
     }
 
+    /// Give a workspace a new human-facing name.
+    ///
+    /// Only the label moves. The directory on disk and the branches inside it
+    /// are what every terminal, worktree registration and running agent is
+    /// already holding open, and the manifest is validated against its own
+    /// containing directory on every reload — so renaming the folder would
+    /// mean rebuilding the workspace, while renaming the record is a one-field
+    /// write that survives the next load exactly as it was made.
+    ///
+    /// Adopted checkouts are named by the directory Build found them in and
+    /// have no manifest to write, so there is nothing here to rename.
+    pub fn rename(&mut self, id: &str, name: &str) -> Result<Workspace, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("workspace.rename: name cannot be empty".to_string());
+        }
+        let workspace = self
+            .workspaces
+            .get_mut(id)
+            .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
+        if !workspace.managed {
+            return Err(
+                "workspace.rename: adopted workspaces are named by their own checkout".to_string(),
+            );
+        }
+        workspace.name = name.to_string();
+        persist(workspace)?;
+        Ok(workspace.clone())
+    }
+
+    /// Drop one workspace from the index, its root having been removed. The
+    /// manifest went with the directory, so the next reload agrees.
+    pub(crate) fn forget(&mut self, id: &str) {
+        self.workspaces.remove(id);
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

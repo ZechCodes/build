@@ -25,9 +25,11 @@
 import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
-import { subscribeFeed } from "./taskFeed.js";
+import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
+import { openWorkspaceSettings } from "../sheets/workspaceSettings.js";
+import { deviceCatalog } from "./inboxDevices.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import {
   projectMenuModel,
@@ -215,7 +217,10 @@ function paint({ entering = false } = {}) {
   const standing = identity();
   // Navigating into a work item scopes the menu to its project — the toolbar
   // reads as one sentence, so the two halves can never name different projects.
-  if (entering && standing.projectKey) rememberScope(standing.projectKey);
+  // A route that names a project but no work item scopes it too: that is where
+  // a project link lands now, since a project's own checkout is not a surface
+  // (core/router.js).
+  if (entering) rememberScope(standing.projectKey || routeProjectKey(App.route));
   const shown = {
     project: standing.project || nameOf(scopedProject()),
     kind: standing.kind,
@@ -252,6 +257,8 @@ function paint({ entering = false } = {}) {
     host.querySelectorAll("[data-directory]").forEach((control) => {
       control.onclick = () => openWorkspaceDirectory(control.dataset.directory);
     });
+    const settings = host.querySelector("[data-workspace-settings]");
+    if (settings) settings.onclick = () => openStandingWorkspaceSettings();
   }
   paintVerb();
   if (open) paintMenu();
@@ -441,6 +448,45 @@ function openCreate() {
     return;
   }
   openCreateWork({ projectId: project.id, deviceId: project.deviceId, projectName: nameOf(project), navigate: go });
+}
+
+/** The cog's sheet, on the workspace the route is standing in and the machine
+ *  that workspace is on.
+ *
+ *  The row the switcher last listed carries the name; a route whose list has
+ *  not answered yet still has the name the bar is printing, so the sheet opens
+ *  either way rather than making the reader wait for a read they can already
+ *  see the result of. */
+function openStandingWorkspaceSettings() {
+  const { deviceId, workspaceId } = App.route;
+  const context = contextFor(deviceId);
+  if (!canAnswer(context)) {
+    notifyError("That machine is not reachable.", "Workspace settings are read and written on the device the workspace is on.");
+    return;
+  }
+  openWorkspaceSettings(
+    {
+      id: workspaceId,
+      name: standingWorkspace()?.name || identity().label,
+      workspaceKey: routeWorkspaceKey(App.route),
+    },
+    {
+      callRpc: context.rpc,
+      catalog: deviceCatalog(deviceId),
+      // The name is printed by this bar and by every inbox row, so both are
+      // told rather than left to their next poll.
+      onRenamed: async () => {
+        await loadWorkspaces(routeProject(), workspaceId);
+        await refreshFeed(deviceId);
+      },
+      // Standing in a workspace that no longer exists is standing nowhere.
+      onDeleted: async () => {
+        workspacesByProject.delete(routeProjectKey(App.route));
+        go({ name: "inbox" });
+        await refreshFeed(deviceId);
+      },
+    },
+  );
 }
 
 /** The directories of the workspace the route is standing in, as menu rows for

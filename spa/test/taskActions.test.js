@@ -66,16 +66,18 @@ describe("planBackTarget — the plan chevron's return route", () => {
     });
   });
 
-  it("falls back to the project when the return marker is stale (no longer the active run)", () => {
+  // "The owning project" is the inbox standing in it: a project is a template,
+  // and its own checkout is not a surface to be returned to.
+  it("falls back to the project's inbox when the return marker is stale (no longer the active run)", () => {
     expect(planBackTarget({ returnRunId: "run-old", activeRunId: "run-7", projectId: "p1" })).toEqual({
-      name: "project",
+      name: "inbox",
       projectId: "p1",
     });
   });
 
-  it("falls back to the project when there is no return marker", () => {
+  it("falls back to the project's inbox when there is no return marker", () => {
     expect(planBackTarget({ returnRunId: null, activeRunId: "run-7", projectId: "p1" })).toEqual({
-      name: "project",
+      name: "inbox",
       projectId: "p1",
     });
   });
@@ -86,7 +88,7 @@ describe("planBackTarget — the plan chevron's return route", () => {
 
   it("does not return to a run when there is a marker but no active run (run gone)", () => {
     expect(planBackTarget({ returnRunId: "run-7", activeRunId: null, projectId: "p1" })).toEqual({
-      name: "project",
+      name: "inbox",
       projectId: "p1",
     });
   });

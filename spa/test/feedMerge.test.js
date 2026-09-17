@@ -6,7 +6,8 @@
 // of the snapshots and the device order, so it is tested as one.
 
 import { describe, it, expect } from "vitest";
-import { deviceView, liveFeedSnapshot, mergeFeeds } from "../src/core/feedMerge.js";
+import { deviceView, liveFeedSnapshot, mergeFeeds, projectEntityIds, withoutProject } from "../src/core/feedMerge.js";
+import { deviceKey } from "../src/core/deviceKey.js";
 
 const board = (over = {}) => ({
   items: [{ kind: "branch", project_id: "proj-1", branch: "build/login" }],
@@ -154,5 +155,46 @@ describe("one device's view of a merge", () => {
     const merged = mergeFeeds(new Map(), []);
     expect(deviceView(merged, "dev-a").items).toEqual([]);
     expect(deviceView(null, "dev-a").projects).toEqual([]);
+  });
+});
+
+// What hiding a project on a gone machine is made of (core/projectHide.js): the
+// same pruning runs over the snapshot in memory and the record on disk, so the
+// two cannot disagree about what is left.
+describe("taking one project's rows out of a view", () => {
+  const view = () =>
+    liveFeedSnapshot(board(), { projects: [{ project_id: "proj-1" }, { project_id: "proj-2" }] }, workspaceList, "dev-a");
+
+  it("drops that project's rows from every collection and leaves the rest", () => {
+    const pruned = withoutProject(view(), deviceKey("dev-a", "proj-1"));
+    expect(pruned.items).toEqual([]);
+    expect(pruned.plans).toEqual([]);
+    expect(pruned.projects.map((row) => row.id)).toEqual(["proj-2"]);
+    expect(pruned.workspaces.map((row) => row.id)).toEqual(["ws-2"]);
+    // Another project on the same machine keeps everything it had.
+    expect(pruned.externalWorktrees.map((row) => row.worktree_id)).toEqual(["wt-1"]);
+  });
+
+  // By the account-wide key, never the bare id: both machines mint a `proj-1`,
+  // and hiding one must not take the other's rows with it.
+  it("is keyed by the account-wide project key rather than the bare id", () => {
+    const here = view();
+    expect(withoutProject(here, deviceKey("dev-b", "proj-1"))).toEqual(here);
+    expect(withoutProject(here, "proj-1")).toEqual(here);
+  });
+
+  it("leaves a view alone when there is no project to name", () => {
+    const here = view();
+    expect(withoutProject(here, null)).toBe(here);
+    expect(withoutProject(null, "dev-a/proj-1")).toBeNull();
+  });
+
+  // The cache is keyed by (device, entity) and a project is not an entity of
+  // its own, so hiding one has to name every entity its rows are cached under.
+  it("names every id a project's rows are cached under", () => {
+    const ids = projectEntityIds(view(), deviceKey("dev-a", "proj-1"));
+    expect(new Set(ids)).toEqual(new Set(["plan-1", "run-1", "wt-9", "ws-1", "proj-1"]));
+    expect(projectEntityIds(view(), deviceKey("dev-a", "nothing"))).toEqual([]);
+    expect(projectEntityIds(null, "dev-a/proj-1")).toEqual([]);
   });
 });

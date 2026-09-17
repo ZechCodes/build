@@ -84,6 +84,43 @@ export function liveFeedSnapshot(board, projectList, workspaceList, deviceId) {
   return view;
 }
 
+/**
+ * One device's snapshot with a project's rows taken out of every collection.
+ *
+ * What the rail hides when a machine has gone (core/projectHide.js): a project
+ * on a machine that cannot answer is nothing but cache, and dropping it from the
+ * cache is the whole of hiding it — so the same pruning runs over the snapshot
+ * in memory and over the record on disk, and the two agree by construction.
+ *
+ * By the account-wide project key, never the bare id: both machines mint a
+ * `proj-1`, and hiding one must not take the other's rows with it.
+ */
+export function withoutProject(view, projectKey) {
+  if (!view || !projectKey) return view;
+  const pruned = { ...view };
+  for (const field of FEED_COLLECTIONS) {
+    pruned[field] = (view[field] || []).filter((row) => row.projectKey !== projectKey);
+  }
+  return pruned;
+}
+
+/** Every id a project's rows are cached under on their own device: the entity a
+ *  row holds its conversation as, the workspaces checked out for it, and the
+ *  project record itself. What hiding evicts, since the cache is keyed by
+ *  (device, entity) and a project is not an entity of its own. */
+export function projectEntityIds(view, projectKey) {
+  const ids = new Set();
+  for (const field of FEED_COLLECTIONS) {
+    for (const row of view?.[field] || []) {
+      if (row.projectKey !== projectKey) continue;
+      for (const id of [row.entity_id, row.run_id, row.issue_id, row.worktree_id, row.workspace_id, row.id]) {
+        if (id) ids.add(id);
+      }
+    }
+  }
+  return [...ids];
+}
+
 /** The devices' views in the order the account lists them; a device the list
  *  has not caught up with yet keeps its own place, last and stable. */
 function orderedViews(byDevice, deviceOrder) {

@@ -32,12 +32,14 @@ const { routeFromHash } = await import("../src/core/router.js");
 const { renderResolving } = await import("../src/views/resolving.js");
 const contexts = await import("../src/core/deviceContexts.js");
 
-const primaryRow = (deviceId, branch) => ({
+// The same legacy worktree id on two machines: both mint a `p1`, so a URL
+// carrying that id names a checkout in each of them and the account has to be
+// asked which one the reader meant.
+const checkoutRow = (deviceId, branch) => ({
   kind: "branch",
   project_id: "p1",
   branch,
-  primary: true,
-  worktree_id: `wt-${deviceId}`,
+  worktree_id: "wt-1",
   deviceId,
 });
 
@@ -93,10 +95,10 @@ describe("a legacy URL on an account with more than one device", () => {
     // The desktop's own `p1` sorts first in the merge.
     openSession("dev-1");
     openSession("dev-2");
-    const theirs = primaryRow("dev-2", "their-main");
-    const mine = primaryRow("dev-1", "main");
+    const theirs = checkoutRow("dev-2", "their-main");
+    const mine = checkoutRow("dev-1", "main");
     feedSnapshot = merge({ "dev-2": { items: [theirs] }, "dev-1": { items: [mine] } });
-    App.route = { name: "resolve", kind: "primary", projectId: "p1", tab: "changes" };
+    App.route = { name: "resolve", kind: "worktree", projectId: "p1", id: "wt-1", tab: "changes" };
 
     renderResolving();
 
@@ -110,10 +112,10 @@ describe("a legacy URL on an account with more than one device", () => {
   it("waits until every live device has answered rather than resolving on the first one", async () => {
     openSession("dev-1");
     openSession("dev-2");
-    const theirs = primaryRow("dev-2", "their-main");
-    const mine = primaryRow("dev-1", "main");
+    const theirs = checkoutRow("dev-2", "their-main");
+    const mine = checkoutRow("dev-1", "main");
     feedSnapshot = merge({ "dev-2": { items: [theirs] } });
-    App.route = { name: "resolve", kind: "primary", projectId: "p1", tab: "changes" };
+    App.route = { name: "resolve", kind: "worktree", projectId: "p1", id: "wt-1", tab: "changes" };
 
     renderResolving();
     expect(App.route.name).toBe("resolve"); // this device has not said anything yet
@@ -131,8 +133,8 @@ describe("a legacy URL on an account with more than one device", () => {
     vi.useFakeTimers();
     openSession("dev-1");
     openSession("dev-2"); // its board.list never lands
-    feedSnapshot = merge({ "dev-1": { items: [primaryRow("dev-1", "main")] } });
-    App.route = { name: "resolve", kind: "primary", projectId: "p1", tab: "changes" };
+    feedSnapshot = merge({ "dev-1": { items: [checkoutRow("dev-1", "main")] } });
+    App.route = { name: "resolve", kind: "worktree", projectId: "p1", id: "wt-1", tab: "changes" };
 
     renderResolving();
     expect(App.route.name).toBe("resolve");
@@ -150,9 +152,9 @@ describe("a legacy URL on an account with more than one device", () => {
     App.devices = [{ id: "dev-1", name: "This device", status: "offline" }];
     openSession("dev-1");
     contexts.setContextOffline("dev-1");
-    const mine = primaryRow("dev-1", "main");
+    const mine = checkoutRow("dev-1", "main");
     feedSnapshot = merge({ "dev-1": { items: [mine], cached: true } });
-    App.route = { name: "resolve", kind: "primary", projectId: "p1", tab: "changes" };
+    App.route = { name: "resolve", kind: "worktree", projectId: "p1", id: "wt-1", tab: "changes" };
 
     renderResolving();
 

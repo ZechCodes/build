@@ -6,6 +6,7 @@
 // says what the bar looks like for one identity.
 
 import { esc } from "./text.js";
+import { ICON_SETTINGS } from "./icons.js";
 
 /** One of the bar's popup triggers. The workspace switcher, the project
  *  selector and the collapsed directory menu are the same control wearing a
@@ -54,13 +55,22 @@ function directoryTabsHtml(directories) {
        })}`;
 }
 
+/** The cog at the far right, opposite the switcher at the far left: what this
+ *  workspace is called, what its agents start on, and the one way to delete it.
+ *  Only a route standing IN a workspace has one to settle, so only a workspace
+ *  identity gets the button. */
+const settingsButtonHtml = (kind) =>
+  kind === "workspace"
+    ? `<button class="iconbtn tb-settings" data-workspace-settings type="button" aria-label="Workspace settings" title="Workspace settings">${ICON_SETTINGS}</button>`
+    : "";
+
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
 export function toolbarHtml({ project, kind, label, directories = [] }) {
   return `<div class="toolbar">
     ${identityHtml({ project, kind, label })}
     ${directoryTabsHtml(directories)}
-    <div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>
+    <div class="tb-right">${settingsButtonHtml(kind)}<span class="tb-verb" id="tb-verb"></span></div>
   </div>`;
 }
 

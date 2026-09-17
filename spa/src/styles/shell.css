@@ -447,7 +447,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    quiet ones and its fold has nothing to open (below). */
 .inbox-project.inbox-flat { border:0; box-shadow:none; }
 .inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 0; }
-.inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg, .inbox-project-settings svg { width:16px; height:16px; display:block; }
+.inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg,
+.inbox-project-settings svg, .inbox-project-hide svg { width:16px; height:16px; display:block; }
 /* The chevron's column is the rows' state-dot column: the rows sit 2px in and
    pad 6px, the dot is 8px wide — centre 12px; the fold pads 4px round a 16px
    icon — centre 12px. The Recent toggle's caret is padded the same. */
@@ -465,8 +466,15 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-project-head .inbox-unread { flex:none; margin-left:2px; }
 .inbox-project-tools { flex:none; display:grid; align-items:center; justify-items:end; margin-left:auto; }
 .inbox-project-device, .inbox-project-actions { grid-area:1 / 1; }
+/* Which machine a block is on is a secondary tag, not a second name: it reads
+   once, when the reader wonders which of two `relaydb`s this is (or why a block
+   is inert — an offline machine says "Offline" here). Smaller, lighter and
+   quieter than the name it hangs off, so it qualifies rather than competes. The
+   same mark rides on the rows, where `.inbox-device` is the class it wears. */
 .inbox-project-device { max-width:88px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  padding:0 4px; pointer-events:none; transition:opacity 120ms ease; }
+  padding:0 4px; pointer-events:none; transition:opacity 120ms ease;
+  font-size:10px; font-weight:400; opacity:.72; }
+.inbox-device { font-size:.86em; font-weight:400; opacity:.78; }
 .inbox-project-actions { display:flex; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
 .inbox-project-head:hover .inbox-project-device,
 .inbox-project-head:focus-within .inbox-project-device { opacity:0; }
@@ -647,6 +655,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent-fill, var(--accent)); }
 .tb-directory-menu { display:none; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
+/* The pack ships 24x24, which is twice this row's font — size it here, once. */
+.tb-settings { flex:none; display:flex; align-items:center; padding:4px; border-radius:6px; }
+.tb-settings svg { width:16px; height:16px; display:block; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized
    down from the surface's old primary-button treatment: this is a fact in a

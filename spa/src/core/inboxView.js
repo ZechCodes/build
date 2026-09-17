@@ -47,11 +47,12 @@ import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
-import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
+import { canAnswer, contextFor, deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
 import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
 import { creationCall, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
+import { hideProject } from "./projectHide.js";
 import {
   blockIsFolded,
   projectBlockHtml,
@@ -225,11 +226,19 @@ function activeProjectKey(activeKey) {
   return routeProjectKey(App.route);
 }
 
+/** The machines that cannot be asked anything right now, by id — the account's
+ *  own list is the set of machines there are, and a machine's context says
+ *  whether it can answer (core/deviceContexts.js). A project whose machine is
+ *  not on the list at all is offline by the same rule: nothing can answer for
+ *  it, and deviceTags reads that off the list it is already handed. */
+const offlineDeviceIds = () =>
+  new Set(App.devices.map((device) => device.id).filter((id) => id && !canAnswer(contextFor(id))));
+
 /** The projects face: any workspaces whose project nothing lists, then one
  *  block per project — every machine's, each head naming its machine where two
  *  machines use that project name. */
 function drawProjects(list, shown) {
-  const { unsorted, blocks } = workspaceProjectBlocks(shown, projects, routeWorkspaceKey(App.route), App.devices);
+  const { unsorted, blocks } = workspaceProjectBlocks(shown, projects, routeWorkspaceKey(App.route), App.devices, offlineDeviceIds());
   entries = [...unsorted, ...blocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(blocks.map((block) => [block.projectKey, block]));
   const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
@@ -394,6 +403,7 @@ const BLOCK_CONTROLS = [
   ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
   ["data-project-settings", (control) => settingsForBlock(control.dataset.projectSettings)],
   ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
+  ["data-project-hide", (control) => hideBlock(control.dataset.projectHide)],
   ["data-new-project", () => openNewProject()],
 ];
 
@@ -474,17 +484,33 @@ function createInBlock(projectKey) {
   });
 }
 
+/** Put a block away: it goes from the rail, and everything cached under it on
+ *  its own machine goes with it (core/projectHide.js). Only an offline block
+ *  paints this control, and the fold the user had set for it goes too — a fold
+ *  is about a block that is there, and this one is not coming back the same
+ *  way. The rail repaints off the feed the drop delivers. */
+function hideBlock(projectKey) {
+  const block = blockOf(projectKey);
+  if (!block) return;
+  folds.delete(projectKey);
+  persistProjectFolds(folds, localStorage);
+  void hideProject({ deviceId: block.deviceId, projectKey });
+}
+
 /** The one control above every block, and the rail head's own: a project the
  * account does not have yet. The sheet honors the rail's device filter or asks
  * explicitly when the rail is showing every device. */
 export function openNewProject() {
   openNewRepo((project, target) => {
+    // A project is a template, so a fresh one opens the rail standing in it
+    // rather than its own checkout (core/projectModel.js) — the block is where
+    // the first workspace is made.
+    //
     // The machine that made it is the machine it is on: the answer to a fresh
     // project.create is not a feed row and carries no device of its own, and a
     // device-less route is resolved by asking every machine — which would hand
     // the reader another machine's project of the same number.
-    const route = projectRoute({ ...project, deviceId: target.id });
-    if (route) goFromInbox(route);
+    goFromInbox(projectRoute({ ...project, deviceId: target.id }));
     refreshFeed(target.id);
   }, {
     devices: App.devices,

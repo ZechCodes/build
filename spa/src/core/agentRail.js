@@ -22,7 +22,8 @@ import { createPatternRenderer } from "./agentCanvas.js";
 import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
-import { agentDefaultsFor, agentDefaultsIn } from "./agentDefaults.js";
+import { agentDefaultsForWorkspace, agentDefaultsInWorkspace } from "./workspaceDefaults.js";
+import { workspaceKey } from "./deviceKey.js";
 import {
   AGENT_STARTING,
   QUIET_SHAPE,
@@ -32,7 +33,8 @@ import {
   agentSessionAnswered,
   agentStartFailure,
   agentHeading,
-  agentTitle,
+  agentRemovalWho,
+  agentWho,
   canRemoveAgent,
   providerLabel,
   railBubbles,
@@ -463,10 +465,14 @@ function surfaceMenuRegionHtml(options) {
   return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(options)}</span>`;
 }
 
+/** What the remove button says it will do, in the same words as the
+ *  confirmation it opens (core/agentRailModel.js's `agentRemovalWho`). */
+const removeButtonTitle = (removalWho) => `Remove ${removalWho} from this branch`;
+
 /** The button that takes this agent off the branch, or nothing when it cannot be. */
-function railRemoveButtonHtml(who, removable) {
+function railRemoveButtonHtml(removalWho, removable) {
   if (!removable) return "";
-  const removeTitle = `Remove ${who} from this branch`;
+  const removeTitle = removeButtonTitle(removalWho);
   return `<button type="button" class="btn mini rail-remove" title="${esc(removeTitle)}"
         aria-label="${esc(removeTitle)}">Done</button>`;
 }
@@ -480,12 +486,12 @@ function railTuiButtonHtml(mode, hasTerminal) {
         aria-pressed="${showingTui}" title="${tuiTitle}">TUI</button>`;
 }
 
-export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null, pinned = true } = {}) {
+export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null, pinned = true, removalWho = "" } = {}) {
   return `<div class="rail-head">
     ${harnessIconHtml(provider)}
     ${railWhoHtml(who, heading)}
     ${railTuiButtonHtml(mode, hasTerminal)}
-    ${railRemoveButtonHtml(who, removable)}
+    ${railRemoveButtonHtml(removalWho || who, removable)}
     ${pinButtonHtml({ subject: PANEL_SUBJECT, pinned })}
     ${surfaceMenuRegionHtml(surfaceOptions)}
   </div>`;
@@ -710,9 +716,15 @@ export function mountAgentRail(host, context) {
   };
   const writeNewAgentChoice = (next) => provisionalController().setProvisionalChoice(next);
 
+  /** The account-wide name of the workspace this rail stands in, or null
+   *  outside one: a workspace's own agent defaults (core/workspaceDefaults.js)
+   *  layer over the account's, and only a rail inside one has any to layer. */
+  const railWorkspaceKey = () =>
+    railContext.kind === "workspace" ? workspaceKey(railContext.deviceId, railContext.workspaceId) : null;
+
   const seedNewAgentDefaults = () => {
     if (!catalog || provisionalController().choice().provider) return;
-    writeNewAgentChoice(clampStoredAgentChoice(catalog, agentDefaultsIn(catalog)));
+    writeNewAgentChoice(clampStoredAgentChoice(catalog, agentDefaultsInWorkspace(railWorkspaceKey(), catalog)));
   };
 
   /** That choice as `agent.add` params: empties omitted, so the harness's own
@@ -1092,6 +1104,15 @@ export function mountAgentRail(host, context) {
     panel.dataset.title = fingerprint;
   };
 
+  const syncRemoveWording = (panel, removalWho) => {
+    const remove = panel.querySelector(".rail-remove");
+    if (!remove) return;
+    const wanted = removeButtonTitle(removalWho);
+    if (remove.title === wanted) return;
+    remove.title = wanted;
+    remove.setAttribute("aria-label", wanted);
+  };
+
   const adoptPanelBody = (controller = null) => {
     const panel = host.querySelector("#rail-panel");
     if (panel) panel.dataset.body = controller
@@ -1104,10 +1125,13 @@ export function mountAgentRail(host, context) {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
     const agent = agentInFocus();
-    const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
-    // The head wears the topic the agent named its work with, and "Starting"
-    // until it has; the harness name stays as the hover title and the remove
-    // button's wording. The harness icon beside it says which harness.
+    // The head wears the topic the agent named its work with, and a shimmering
+    // "Starting" until it has. Hovering it says the topic in full — a head too
+    // narrow for a long topic still gives it up on hover — and the harness name
+    // while there is no topic to say. The harness icon beside it says which
+    // harness either way.
+    const who = agent ? agentWho(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
+    const removalWho = agent ? agentRemovalWho(agent) : who;
     const heading = agent ? agentHeading(agent) : { text: who, starting: false };
     const provider = agent?.provider || "";
     const settled = settledAgentInFocus();
@@ -1125,8 +1149,12 @@ export function mountAgentRail(host, context) {
     // where the human left it.
     const shownMode = shownPanelMode();
     // Structural head changes replace its controls; a topic change keeps this
-    // head mounted and moves only its title below.
-    const wantedHead = JSON.stringify([who, provider, removable, hasTerminal]);
+    // head mounted and moves only its title below — so the head is fingerprinted
+    // by WHICH agent it is open on rather than by what that agent is called.
+    // The id is what tells two starting agents on one harness apart: without it
+    // a strip of two unnamed Claude Codes has one fingerprint, and switching
+    // between them would leave the first one's head standing.
+    const wantedHead = JSON.stringify([agent ? agent.id : "", provider, removable, hasTerminal]);
     const wantedTitle = JSON.stringify([who, heading.text, heading.starting]);
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
@@ -1138,7 +1166,7 @@ export function mountAgentRail(host, context) {
       disposeComposerClearance?.();
       disposeComposerClearance = null;
       closeSurfaceMenu?.();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned, removalWho })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
@@ -1176,6 +1204,7 @@ export function mountAgentRail(host, context) {
         surfaceOptions: surfaceMenuOptionsInFocus(),
         heading,
         pinned,
+        removalWho,
       });
       panel.dataset.head = wantedHead;
       panel.dataset.title = wantedTitle;
@@ -1183,6 +1212,10 @@ export function mountAgentRail(host, context) {
       wireHead(panel);
     }
     syncPanelTitle(panel, wantedTitle, { text: heading.text, title: who, starting: heading.starting });
+    // The remove button names the agent by its topic too, and a topic arriving
+    // is not a structural change: it re-reads on the title's beat rather than
+    // waiting for a head the rail has no reason to rebuild.
+    syncRemoveWording(panel, removalWho);
     const pin = panel.querySelector(`.${PIN_CLASS}`);
     if (pin) syncPinButton(pin, { subject: PANEL_SUBJECT, pinned });
     paintSurfaceMenu();
@@ -1335,7 +1368,9 @@ export function mountAgentRail(host, context) {
       // A model belongs to its harness, so moving the highlight drops one
       // chosen under the harness beside it and brings the pressed harness's
       // own saved model and effort instead.
-      writeNewAgentChoice(clampStoredAgentChoice(catalog, agentDefaultsFor(card.dataset.provider)));
+      writeNewAgentChoice(
+        clampStoredAgentChoice(catalog, agentDefaultsForWorkspace(railWorkspaceKey(), card.dataset.provider)),
+      );
       paintChat();
       body.querySelector(".rail-harness-choice.chosen")?.focus();
     };

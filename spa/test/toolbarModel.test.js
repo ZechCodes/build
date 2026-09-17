@@ -127,8 +127,8 @@ describe("the project selector's menu", () => {
     const merged = [...projects, on("dev-2", { id: "p1", name: "relaydb" }), on("dev-2", { id: "p9", name: "notes" })];
     const menu = projectMenuModel({ projects: merged, devices, projectKey: "dev-1/p1" });
     const tagOf = (key) => deviceTagHtml(menu.find((project) => project.key === key));
-    expect(tagOf("dev-1/p1")).toBe(' <span class="dim">workshop</span>');
-    expect(tagOf("dev-2/p1")).toBe(' <span class="dim">laptop</span>');
+    expect(tagOf("dev-1/p1")).toBe(' <span class="dim inbox-device">workshop</span>');
+    expect(tagOf("dev-2/p1")).toBe(' <span class="dim inbox-device">laptop</span>');
     expect(tagOf("dev-2/p9")).toBe("");
     expect(tagOf("dev-1/p2")).toBe("");
   });
@@ -162,7 +162,9 @@ describe("the project selector's menu", () => {
 
   it("falls back to the id for a project with no name", () => {
     expect(projectMenuModel({ projects: [on("dev-1", { id: "p9" })], projectKey: "dev-1/p9" })).toEqual([
-      { key: "dev-1/p9", id: "p9", deviceId: "dev-1", name: "p9", deviceName: null, clash: false, current: true, unreadCount: 0 },
+      // `offline: false` always: the toolbar lists projects to go to, not
+      // machines to worry about, so it never asks which of them are away.
+      { key: "dev-1/p9", id: "p9", deviceId: "dev-1", name: "p9", deviceName: null, clash: false, offline: false, current: true, unreadCount: 0 },
     ]);
   });
 });
@@ -259,6 +261,33 @@ describe("workspace navigation", () => {
       { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1" },
       { items: [], projects, workspaces: [workspace] },
     ).label).toBe(name);
+  });
+
+  // The bar and its menu say what the user called a workspace, never the slug
+  // the bridge cut its folder and its branch from — the rail's rule, on the
+  // bar's own rows.
+  it("says the name a workspace was given rather than the slug its checkout took", () => {
+    const named = stampWorkspace(
+      { id: "ws-7", project_id: "p1", name: "Bridge wire interface", root: "/w/proj-1/bridge-wire-interface" },
+      "dev-1",
+    );
+    expect(workspaceMenuModel({ workspaces: [named] })[0].name).toBe("Bridge wire interface");
+    expect(toolbarIdentity(
+      { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-7" },
+      { items: [], projects, workspaces: [named] },
+    ).label).toBe("Bridge wire interface");
+  });
+
+  // A workspace the machine has not listed yet has no name to say, and the id
+  // the URL carries is the only honest stand-in; one it listed without a name
+  // is called after its folder, not its path.
+  it("stands in for a name the machine has not given yet", () => {
+    const nameless = stampWorkspace({ id: "ws-8", project_id: "p1", root: "/w/proj-1/build-login" }, "dev-1");
+    expect(workspaceMenuModel({ workspaces: [nameless] })[0].name).toBe("build-login");
+    expect(toolbarIdentity(
+      { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-8" },
+      { items: [], projects, workspaces: [] },
+    ).label).toBe("ws-8");
   });
 
   it("leaves another machine's workspaces out of the menu", () => {

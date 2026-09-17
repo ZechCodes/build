@@ -31,7 +31,7 @@ import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
-import { workspaceRun, workspaceStatusText } from "./workspaceModel.js";
+import { workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -73,8 +73,12 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     projectId: workspace.project_id,
     projectKey: workspace.projectKey,
     project: firstText(projectNames.get(workspace.projectKey), workspace.project, workspace.project_id),
-    name: workspace.name ?? firstText(workspace.root, "Workspace"),
-    title: firstText(workspace.root, workspace.name, "Workspace"),
+    // What the user called it, never the slug its folder and its branch were
+    // derived from (core/workspaceModel.js) — and the tooltip says the same
+    // thing the row does, because the checkout's path is machinery rather than
+    // a longer version of the name.
+    name: workspaceDisplayName(workspace),
+    title: workspaceDisplayName(workspace),
     entityId: entityIdOf(conversation),
     state: entryState(activity),
     unreadCount: activity.unread_count || 0,
@@ -628,8 +632,13 @@ function menuHtml(entry, open) {
 
 /** The machine something is on, said dim after its name. Minted here because a
  *  row wears it (projectTagHtml) and so does a project block's head
- *  (core/inboxProjects.js deviceTagHtml): it is one mark, in one place. */
-export const dimDeviceHtml = (deviceName) => (deviceName ? ` <span class="dim">${esc(deviceName)}</span>` : "");
+ *  (core/inboxProjects.js deviceTagHtml): it is one mark, in one place.
+ *
+ *  It wears a class of its own beside `dim` so it can be sized as well as
+ *  greyed: which machine a thing is on is a secondary fact about it — the
+ *  answer to "which of the two `relaydb`s is this", read once — and at the
+ *  row's own size it competed with the name it qualifies. */
+export const dimDeviceHtml = (deviceName) => (deviceName ? ` <span class="dim inbox-device">${esc(deviceName)}</span>` : "");
 
 /** The names in a list that more than one machine holds. A name the account
  *  uses once says which thing it is; one two machines both use does not, and

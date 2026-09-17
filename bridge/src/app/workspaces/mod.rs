@@ -6,6 +6,7 @@ use crate::worktree::{copy_directory_with_rift_root, Worktree, WorktreeManager};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+mod deletion;
 mod git_initialization;
 
 struct WorkspaceCreateWork {
@@ -486,6 +487,26 @@ impl AppState {
             gate: None,
         })));
         Ok(json!({ "workspace_id": workspace_id, "pending": true }))
+    }
+
+    /// Rename a workspace's human-facing name.
+    ///
+    /// Nothing on disk moves: the root directory and the branches inside it are
+    /// what terminals, worktree registrations and running agents already hold,
+    /// so the only thing this touches is the label a reader sees. Answers the
+    /// same detail `workspace.get` does, so the caller that renamed repaints
+    /// from one read rather than guessing what the record now says.
+    pub(crate) fn workspace_rename(&mut self, params: &Value) -> Result<Value, String> {
+        let workspace_id = require_str(params, "workspace_id")?;
+        let name = require_str(params, "name")?;
+        if self.workspaces.get(&workspace_id).is_none() {
+            self.adopt_legacy_workspaces();
+        }
+        self.workspaces.rename(&workspace_id, &name)?;
+        // The feed names workspaces, so every browser standing in one is
+        // showing the name that just changed.
+        self.note_board_changed();
+        self.workspace_get(&json!({ "workspace_id": workspace_id }))
     }
 
     pub(crate) fn workspace_retry(&mut self, params: &Value) -> Result<Value, String> {

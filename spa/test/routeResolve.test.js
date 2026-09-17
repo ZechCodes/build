@@ -26,10 +26,12 @@ describe("resolveLegacyRoute", () => {
     });
   });
 
-  it("resolves a project's primary checkout to its branch row", () => {
-    expect(resolveLegacyRoute({ kind: "primary", projectId: "p1", tab: "files" }, { items })).toEqual({
-      name: "branch", projectId: "p1", branch: "main", tab: "files",
-    });
+  // A project's own checkout is not a surface any more — a project is the
+  // template workspaces are cut from — so there is no kind to look one up by,
+  // and a URL that named one never reaches this module (core/router.js).
+  it("has no primary-checkout kind to resolve", () => {
+    expect(resolveLegacyRoute({ kind: "primary", projectId: "p1", tab: "files" }, { items })).toBeNull();
+    expect(routeFromHash("#/project/p1")).toEqual({ name: "inbox", projectId: "p1" });
   });
 
   it("resolves an issue id to its issue, keeping the stage deep-link", () => {
@@ -61,7 +63,7 @@ describe("resolveLegacyRoute", () => {
 
   it("answers null when nothing in the feed carries that id", () => {
     expect(resolveLegacyRoute({ kind: "run", id: "gone" }, { items })).toBeNull();
-    expect(resolveLegacyRoute({ kind: "primary", projectId: "p9" }, { items })).toBeNull();
+    expect(resolveLegacyRoute({ kind: "worktree", projectId: "p9", id: "gone" }, { items })).toBeNull();
     expect(resolveLegacyRoute({ kind: "issue", id: "nope" }, { items })).toBeNull();
     expect(resolveLegacyRoute({ kind: "run", id: "run-1" }, { items: [] })).toBeNull();
     expect(resolveLegacyRoute({ kind: "run", id: "run-1" }, { items: undefined })).toBeNull();
@@ -112,27 +114,29 @@ describe("pickDevice", () => {
 });
 
 describe("resolveLegacyRoute across devices", () => {
-  const primaryOn = (deviceId, branch) => ({
-    kind: "branch", project_id: "proj-1", branch, primary: true, worktree_id: `wt-${deviceId}`, deviceId,
+  // Both machines mint a `proj-1`, and a legacy id can name a checkout in each
+  // of them: the same worktree id on two devices is two different checkouts.
+  const checkoutOn = (deviceId, branch) => ({
+    kind: "branch", project_id: "proj-1", branch, worktree_id: "wt-1", deviceId,
   });
-  const collision = { items: [primaryOn("dev-b", "their-main"), primaryOn("dev-a", "main")] };
+  const collision = { items: [checkoutOn("dev-b", "their-main"), checkoutOn("dev-a", "main")] };
   const policy = { homeDeviceId: "dev-a", deviceOrder: ["dev-b", "dev-a"] };
 
   it("picks the home device's copy when a project id collides", () => {
-    expect(resolveLegacyRoute({ kind: "primary", projectId: "proj-1" }, collision, policy)).toEqual({
+    expect(resolveLegacyRoute({ kind: "worktree", projectId: "proj-1", id: "wt-1" }, collision, policy)).toEqual({
       name: "branch", deviceId: "dev-a", projectId: "proj-1", branch: "main", tab: "changes",
     });
   });
 
   it("picks the first online device when there is no home device", () => {
-    expect(resolveLegacyRoute({ kind: "primary", projectId: "proj-1" }, collision, { homeDeviceId: null, deviceOrder: ["dev-b", "dev-a"] })).toEqual({
+    expect(resolveLegacyRoute({ kind: "worktree", projectId: "proj-1", id: "wt-1" }, collision, { homeDeviceId: null, deviceOrder: ["dev-b", "dev-a"] })).toEqual({
       name: "branch", deviceId: "dev-b", projectId: "proj-1", branch: "their-main", tab: "changes",
     });
   });
 
   it("ignores the policy when only one device carries the id", () => {
-    const only = { items: [primaryOn("dev-b", "their-main")] };
-    expect(resolveLegacyRoute({ kind: "primary", projectId: "proj-1" }, only, policy)).toEqual({
+    const only = { items: [checkoutOn("dev-b", "their-main")] };
+    expect(resolveLegacyRoute({ kind: "worktree", projectId: "proj-1", id: "wt-1" }, only, policy)).toEqual({
       name: "branch", deviceId: "dev-b", projectId: "proj-1", branch: "their-main", tab: "changes",
     });
   });
@@ -140,13 +144,13 @@ describe("resolveLegacyRoute across devices", () => {
   // A URL that names a machine is not asking which one: `#/device/<d>/project/
   // <p>` says it outright, and the home device's `proj-1` is not what it meant.
   it("opens the device the URL named rather than asking the policy", () => {
-    expect(resolveLegacyRoute({ kind: "primary", projectId: "proj-1", deviceId: "dev-b" }, collision, policy)).toEqual({
+    expect(resolveLegacyRoute({ kind: "worktree", projectId: "proj-1", id: "wt-1", deviceId: "dev-b" }, collision, policy)).toEqual({
       name: "branch", deviceId: "dev-b", projectId: "proj-1", branch: "their-main", tab: "changes",
     });
   });
 
   it("answers nothing when the device the URL named carries no such row", () => {
-    expect(resolveLegacyRoute({ kind: "primary", projectId: "proj-1", deviceId: "dev-z" }, collision, policy)).toBeNull();
+    expect(resolveLegacyRoute({ kind: "worktree", projectId: "proj-1", id: "wt-1", deviceId: "dev-z" }, collision, policy)).toBeNull();
   });
 
   it("carries the device onto a resolved issue too", () => {

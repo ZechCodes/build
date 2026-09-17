@@ -45,6 +45,38 @@ describe("workspace inbox rows", () => {
     expect(entry.name).toBe(name);
   });
 
+  // The bridge keeps the typed name byte for byte and derives the CHECKOUT's
+  // folder and the branch it cuts from a bounded slug of it. Neither derivative
+  // is what the workspace is called, so neither may reach the row, its tooltip
+  // or anything else the reader looks at.
+  it("says the name the workspace was given, never the slug its folder and branch took", () => {
+    const [entry] = entriesOf([{
+      id: "workspace-1",
+      project_id: "project-1",
+      name: "Bridge wire interface",
+      root: "/home/zech/.build/workspaces/proj-1/bridge-wire-interface",
+      directories: [{ id: "api", source_id: "api", is_git: true, branch: "build/bridge-wire-interface" }],
+    }]);
+    expect(entry.name).toBe("Bridge wire interface");
+    expect(entry.title).toBe("Bridge wire interface");
+    for (const html of [inboxRowHtml(entry), inboxRowHtml(entry, { quiet: true })]) {
+      expect(html).toContain("Bridge wire interface");
+      expect(html).not.toContain("bridge-wire-interface");
+      expect(html).not.toContain(".build/workspaces");
+    }
+  });
+
+  // A checkout no bridge ever named — an older bridge, an adopted worktree —
+  // has only its folder to be called after. That is a last resort, and it is
+  // the folder rather than the path: a row is one line, and a path is not a
+  // name.
+  it("falls back to a nameless workspace's folder rather than its whole path", () => {
+    const [entry] = entriesOf([{ id: "external-1", project_id: "project-1", root: "/work/checkouts/build-login" }]);
+    expect(entry.name).toBe("build-login");
+    const [rootless] = entriesOf([{ id: "external-2", project_id: "project-1" }]);
+    expect(rootless.name).toBe("Workspace");
+  });
+
   it("shows the owning conversation's unread and running state without matching branch names", () => {
     const workspaces = [
       { id: "run-1", project_id: "project-1", status: "ready" },

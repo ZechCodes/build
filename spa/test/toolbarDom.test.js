@@ -340,6 +340,40 @@ describe("the workspace toolbar", () => {
   });
 });
 
+// The cog at the far right, opposite the switcher at the far left. It settles
+// the workspace you are STANDING in, so a route that stands in none has none.
+describe("the workspace settings cog", () => {
+  const cog = () => bar().querySelector("[data-workspace-settings]");
+
+  it("is absent on a legacy branch route, an issue and the inbox", () => {
+    expect(cog()).toBeNull();
+    App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
+    toolbarRouteChanged();
+    expect(cog()).toBeNull();
+    App.route = { name: "inbox" };
+    toolbarRouteChanged();
+    expect(cog()).toBeNull();
+  });
+
+  it("stands in the right-hand slot, before the verb, once the route is in a workspace", async () => {
+    await standOnWorkspace();
+    const button = cog();
+    expect(button).not.toBeNull();
+    expect(button.getAttribute("aria-label")).toBe("Workspace settings");
+    expect(button.parentElement.classList.contains("tb-right")).toBe(true);
+    expect(button.nextElementSibling.id).toBe("tb-verb");
+  });
+
+  it("opens the sheet on the workspace the bar is naming", async () => {
+    await standOnWorkspace();
+    cog().click();
+    await flush();
+    expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
+    expect(document.getElementById("wsname").value).toBe("payment-work");
+    document.getElementById("wscancel").click();
+  });
+});
+
 // The project menu, on main's chrome. Three things this bar used to carry are
 // retired with main's workspace toolbar, so their cases are gone rather than
 // restated: the item half's work menu on a legacy branch or issue route, the

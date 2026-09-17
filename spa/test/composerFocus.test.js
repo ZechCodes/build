@@ -255,7 +255,10 @@ describe("a work item that keeps losing its agent", () => {
     branch: "build/login",
     run_id: "run-3",
     worktree_id: "wt-3",
-    agents: [{ id: "ag-1", ordinal: 1, provider: "claude_adk", state: "exited", unread_count: 0, working: false }],
+    agents: [{
+      id: "ag-1", ordinal: 1, provider: "claude_adk", state: "exited",
+      unread_count: 0, working: false, topic: "Fix login redirect",
+    }],
     run: { run_id: "run-3", thread: { items: [], sessions: [] } },
   });
 
@@ -286,7 +289,8 @@ describe("a work item that keeps losing its agent", () => {
 
   /** Whose conversation the head says is open. The head wears the topic the
    *  agent named its work with (`set_topic`) and shimmers "Starting" until
-   *  there is one, so the harness name rides as the title. */
+   *  there is one, so the topic — the harness name while there is none — rides
+   *  as the title. */
   const headWho = () => document.querySelector(".rail-who").title;
 
   const typeInto = () => {
@@ -399,7 +403,7 @@ describe("a work item that keeps losing its agent", () => {
     expect(document.getElementById("railinput")).toBe(input);
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe("half a thought");
-    expect(headWho()).toBe("Claude Code 1");
+    expect(headWho()).toBe("Fix login redirect");
   });
 
   // The same tick that rebuilt the panel also rewrote the strip and the head:
@@ -413,7 +417,7 @@ describe("a work item that keeps losing its agent", () => {
     const strip = document.querySelector(".rail-strip");
     expect([...strip.querySelectorAll(".rail-bubble")].map((bubble) => bubble.dataset.bubble))
       .toEqual(["agent", "add"]);
-    expect(headWho()).toBe("Claude Code 1");
+    expect(headWho()).toBe("Fix login redirect");
   });
 
   // The guard is a hiccup filter, not a freeze: a branch whose run really has

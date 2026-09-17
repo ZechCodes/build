@@ -28,6 +28,7 @@ export { default as ICON_PIN } from "lucide-static/icons/pin.svg?raw";
 export { default as ICON_CHEVRON_DOWN } from "lucide-static/icons/chevron-down.svg?raw";
 export { default as ICON_SETTINGS } from "lucide-static/icons/settings.svg?raw";
 export { default as ICON_WIFI_OFF } from "lucide-static/icons/wifi-off.svg?raw";
+export { default as ICON_EYE_OFF } from "lucide-static/icons/eye-off.svg?raw";
 export { default as ICON_CHEVRON_RIGHT } from "lucide-static/icons/chevron-right.svg?raw";
 export { default as ICON_MESSAGE_SQUARE } from "lucide-static/icons/message-square.svg?raw";
 export { default as ICON_EXTERNAL_LINK } from "lucide-static/icons/external-link.svg?raw";

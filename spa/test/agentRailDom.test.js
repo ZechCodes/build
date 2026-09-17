@@ -103,11 +103,20 @@ const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
 
-const agent = (over = {}) => ({
-  id: "ag-1", ordinal: 1, provider: "claude_adk", state: "live",
-  unread_count: 0, unread_reason: null, working: false,
-  surface_session_generation: "surface-session-1", ...over,
-});
+/** The topic each fixture agent named its work with. The head and the bubbles
+ *  say the topic now, so it is the topic — not a harness and an ordinal — that
+ *  tells these cases which agent the panel is open on. An agent left out of the
+ *  table has named nothing yet, and says so. */
+const TOPICS = { "ag-1": "Fix login redirect", "ag-2": "Polish the rail" };
+
+const agent = (over = {}) => {
+  const row = {
+    id: "ag-1", ordinal: 1, provider: "claude_adk", state: "live",
+    unread_count: 0, unread_reason: null, working: false,
+    surface_session_generation: "surface-session-1", ...over,
+  };
+  return { topic: TOPICS[row.id] || "", ...row };
+};
 
 const branchRow = (over = {}) => ({
   kind: "branch",
@@ -163,9 +172,9 @@ const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
 const panel = () => railHost().querySelector(".rail-panel");
-/** Whose conversation the head says is open. The head wears the topic the agent
- *  named its work with (`set_topic`) and shimmers "Starting" until there is
- *  one, so the harness name and ordinal these cases pin rides as the title. */
+/** Whose conversation the head says is open. The head shimmers "Starting" until
+ *  the agent names its work, so its title — the topic in full, or the harness
+ *  while there is none — is what these cases pin. */
 const headWho = (root = railHost()) => root.querySelector(".rail-who").title;
 const tuiToggle = () => panel().querySelector(".rail-tui");
 const callsTo = (method) => calls.filter((call) => call.method === method);
@@ -560,7 +569,7 @@ describe("the bubble strip", () => {
     await mount();
     bubbles()[1].click();
     await flush();
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(bubbles()[1].classList.contains("active")).toBe(true);
     bubbles()[1].click();
     await flush();
@@ -598,7 +607,7 @@ describe("the bubble strip", () => {
   it("takes a file dropped on a bubble into that agent's composer", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     await mount();
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Fix login redirect");
     const png = new File(["png"], "shot.png", { type: "image/png" });
     const over = new Event("dragover", { bubbles: true, cancelable: true });
     over.dataTransfer = { files: [], items: [], types: ["Files"], dropEffect: "none" };
@@ -611,7 +620,7 @@ describe("the bubble strip", () => {
     await flush();
     expect(drop.defaultPrevented).toBe(true);
     expect(bubbles()[1].classList.contains("is-dropping")).toBe(false);
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(bubbles()[1].classList.contains("active")).toBe(true);
     expect(panel().getAttribute("aria-hidden")).toBe("false");
     const chips = [...panel().querySelectorAll(".composer-chip")];
@@ -634,12 +643,13 @@ describe("the bubble strip", () => {
     await mount();
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("claude_adk");
 
-    payload = branchRow({ agents: [agent({ provider: "codex_app_server" })] });
+    payload = branchRow({ agents: [agent({ provider: "codex_app_server", topic: "" })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
-    expect(headWho(panel())).toBe("Codex 1");
+    // Nothing named yet, so the hover falls back to the harness — the new one.
+    expect(headWho(panel())).toBe("Codex");
   });
 
   // The rail reads the row every 1.6s and nearly every read says the same
@@ -712,8 +722,10 @@ describe("the bubble strip", () => {
     expect(add.querySelector("canvas")).toBe(null);
     expect(add.textContent.trim()).toBe("+");
     // The name is still said where a name belongs — the tooltip and the
-    // accessible name — so two agents are still tellable apart in words.
-    expect(first.getAttribute("aria-label")).toBe("Claude Code 1");
+    // accessible name — and it is the work the agent named itself, not a
+    // harness and a number.
+    expect(first.getAttribute("aria-label")).toBe("Fix login redirect");
+    expect(second.getAttribute("aria-label")).toBe("Polish the rail");
   });
 
   // The corner badge is gone: an unread count is the whole face now, over a
@@ -1002,6 +1014,54 @@ describe("taking an agent back off the branch", () => {
     expect(removeButton()).toBe(null);
   });
 
+  // The button says what it will take away in the agent's own words, and the
+  // question behind it says the same ones.
+  it("names the agent it removes by the topic that agent set", async () => {
+    await openSecondAgent();
+    expect(removeButton().title).toBe('Remove "Polish the rail" from this branch');
+    expect(removeButton().getAttribute("aria-label")).toBe('Remove "Polish the rail" from this branch');
+    removeButton().click();
+    await flush();
+    expect(confirmModal().textContent).toContain('Remove "Polish the rail" from this branch?');
+  });
+
+  // A topic arriving keeps the head mounted — it is the title that moves, not
+  // the controls — so the button re-reads its wording on the title's beat
+  // rather than waiting for a rebuild that has no reason to happen.
+  it("points at an agent that has named nothing yet, and picks the name up when it arrives", async () => {
+    payload = branchRow({ agents: [agent({ topic: "" })] });
+    await mount();
+    const standing = removeButton();
+    expect(standing.title).toBe("Remove this Claude Code agent from this branch");
+
+    payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(removeButton()).toBe(standing);
+    expect(standing.title).toBe('Remove "Unify prompt delivery" from this branch');
+    expect(standing.getAttribute("aria-label")).toBe('Remove "Unify prompt delivery" from this branch');
+  });
+
+  // Two agents on one harness with nothing named yet read the same in every
+  // word the head has: the panel is open on an id, not on a name, and the
+  // button takes away the agent whose bubble is lit.
+  it("removes the agent the strip is lit on, even beside its twin", async () => {
+    payload = branchRow({ agents: [agent({ topic: "" }), agent({ id: "ag-2", ordinal: 2, topic: "" })] });
+    await mount();
+    expect(headWho(panel())).toBe("Claude Code");
+    bubbles()[1].click();
+    await flush();
+    expect(headWho(panel())).toBe("Claude Code");
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+  });
+
   it("asks before it removes, and does nothing at all when the answer is no", async () => {
     await openSecondAgent();
     removeButton().click();
@@ -1023,7 +1083,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(confirmModal()).toBeNull();
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Fix login redirect");
     expect(callsTo("agent.remove")).toEqual([]);
   });
 
@@ -1049,7 +1109,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Fix login redirect");
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -1088,7 +1148,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "unknown method: agent.remove");
     // Still open on the agent it failed to remove, still offering to try again.
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(removeButton()).toBeTruthy();
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
   });
@@ -1114,7 +1174,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(payload.agents.map((each) => each.id)).toEqual(["ag-1", "ag-2"]);
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Fix login redirect");
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(0);
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
     expect(notifyError).not.toHaveBeenCalled();
@@ -1175,7 +1235,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
     expect(removeButton()).toBeTruthy();
     expect(notifyError).toHaveBeenCalledTimes(1);
@@ -1201,7 +1261,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
     expect(bubbles()[1].classList.contains("active")).toBe(true);
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
   });
 
   it("removes an agent the create record still names", async () => {
@@ -1237,14 +1297,16 @@ describe("taking an agent back off the branch", () => {
 
 describe("the conversation panel", () => {
   it("animates only a changed topic while preserving the live header and its focused controls", async () => {
+    payload = branchRow({ agents: [agent({ topic: "" })] });
     await mount();
-    // Nothing named yet: the head says so, in the shimmering word.
+    // Nothing named yet: the head says so, in the shimmering word, and the
+    // hover falls back to the harness.
     const standingHead = panel().querySelector(".rail-head");
     const standingTitle = standingHead.querySelector(".rail-who");
     const standingPin = standingHead.querySelector(".pinbtn");
     expect(standingTitle.textContent).toBe("Starting");
     expect(standingTitle.classList.contains("rail-who-starting")).toBe(true);
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Claude Code");
     standingPin.focus();
 
     // An unchanged poll neither rebuilds the head nor starts title motion.
@@ -1267,12 +1329,12 @@ describe("the conversation panel", () => {
     await finishTitleMotion(standingTitle);
     expect(standingTitle.textContent).toBe("Unify prompt delivery");
     expect(standingTitle.classList.contains("rail-who-starting")).toBe(false);
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Unify prompt delivery");
   });
 
   it("carries the agent, the one way down to its screen, and a box to write in", async () => {
     await mount();
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Fix login redirect");
     const modes = [...panel().querySelectorAll(".rail-mode")];
     expect(modes).toHaveLength(1);
     expect(modes[0].textContent).toBe("TUI");
@@ -1574,7 +1636,7 @@ describe("the conversation panel", () => {
     bubbles()[1].click();
     await flush();
 
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
@@ -1721,7 +1783,7 @@ describe("the conversation panel", () => {
       bubbles()[1].click();
       await flush();
 
-      expect(headWho(panel())).toBe("Claude Code 2");
+      expect(headWho(panel())).toBe("Polish the rail");
       expect(panel().textContent).toContain("words from ag-2");
       expect(panel().textContent).not.toContain("words from ag-1");
     });
@@ -2271,7 +2333,7 @@ describe("the chat tab of a branch with no agent", () => {
     payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2 })] });
     vi.advanceTimersByTime(1600);
     await flush();
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
   });
 
   it("moves the highlight to the card that is pressed, and creates that one", async () => {
@@ -3355,7 +3417,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
 
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
     expect(bubbles()[0].classList.contains("active")).toBe(true);
-    expect(headWho(panel())).toBe("Claude Code 1");
+    // The agent the press made has named nothing yet: the head says its harness.
+    expect(headWho(panel())).toBe("Claude Code");
     expect(timeline().textContent).toContain("start here");
     expect(composer().value).toBe("");
     expect(callsTo("agent.add")).toHaveLength(1);

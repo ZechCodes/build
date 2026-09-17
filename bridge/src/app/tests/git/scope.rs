@@ -416,13 +416,10 @@ fn worktree_create_names_the_checkout_already_holding_a_branch() {
     let run_id = adopted_run(&mut state, &repo, dir.path(), "run-owned");
     add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
     let external_worktree_id = external_id(&mut state, &project_id, Some("by-hand"));
-    let primary_id = state
-        .project_at(0)
-        .orch
-        .worktrees()
-        .describe_primary("main")
+    let primary_id = crate::worktree::repository_branch_holder(&repo)
         .unwrap()
-        .id;
+        .expect("the repository is on a branch")
+        .0;
 
     for (branch, holder) in [
         ("run-owned", run_id.as_str()),
@@ -626,56 +623,4 @@ fn worktree_create_rejects_an_unknown_project() {
         json!({ "project_id": "proj-nope", "name": "scratch" }),
     ));
     assert_eq!(res["ok"], false, "{res:?}");
-}
-
-/// The rail shows a project's checkout as its branch plus its git status, so
-/// the summary has to carry the sync counts too — not only the working-tree
-/// diffstat. No upstream means no counts, which is a different thing from
-/// "level with upstream" and is reported as such.
-#[test]
-fn primary_changes_carries_ahead_behind_beside_the_diffstat() {
-    let (dir, repo, origin) = init_repo_with_origin();
-    let mut state = qa_state(&repo, dir.path());
-
-    // A local commit that origin has not seen: ahead 1, behind 0.
-    std::fs::write(repo.join("ahead.txt"), "local\n").unwrap();
-    git_in(&repo, &["add", "."]);
-    git_in(&repo, &["commit", "-m", "local only"]);
-    // …and an uncommitted edit, so both halves are non-zero at once.
-    std::fs::write(repo.join("dirty.txt"), "wip\n").unwrap();
-
-    let board = state.handle(req("board.list", json!({})));
-    let entry = board["result"]["primary_changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["branch"] == "main")
-        .cloned()
-        .unwrap_or_else(|| panic!("no primary entry: {board:?}"));
-    assert_eq!(entry["ahead"], 1, "{entry:?}");
-    assert_eq!(entry["behind"], 0, "{entry:?}");
-    assert!(entry["files_changed"].as_u64().unwrap() >= 1, "{entry:?}");
-    let _ = origin;
-}
-
-#[test]
-fn primary_changes_compares_an_untracked_branch_with_local_main() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    git_in(&repo, &["checkout", "-b", "topic"]);
-    std::fs::write(repo.join("topic.txt"), "topic\n").unwrap();
-    git_in(&repo, &["add", "."]);
-    git_in(&repo, &["commit", "-m", "topic"]);
-
-    let board = state.handle(req("board.list", json!({})));
-    let entry = board["result"]["primary_changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["branch"] == "topic")
-        .unwrap_or_else(|| panic!("no topic entry: {board:?}"));
-    assert!(entry["upstream"].is_null(), "{entry:?}");
-    assert_eq!(entry["comparison_ref"], "main", "{entry:?}");
-    assert_eq!(entry["ahead"], 1, "{entry:?}");
-    assert_eq!(entry["behind"], 0, "{entry:?}");
 }

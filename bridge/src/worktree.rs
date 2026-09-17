@@ -15,7 +15,9 @@ pub(crate) use command::{
     git_stdout, remotes_match, unix_now,
 };
 pub(crate) use comparison::branch_comparison;
-pub use discovery::{describe_checkout, primary_checkout_holder, sort_checkouts, ExternalWorktree};
+pub use discovery::{
+    describe_checkout, repository_branch_holder, sort_checkouts, ExternalWorktree,
+};
 pub use identity::{
     branch_name_for, canonical_planned_path, canonical_root, checked_out_branch,
     derive_adoption_goal, external_worktree_id, is_checkout_id, is_ref_name, is_usable_branch_name,

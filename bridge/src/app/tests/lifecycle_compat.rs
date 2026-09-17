@@ -80,7 +80,6 @@ fn public_success_carriers_typecheck(
     model_choice: crate::models::ModelChoice,
 ) {
     use crate::app::*;
-    use crate::orchestrator::AdoptionScope;
     use std::path::PathBuf;
 
     let adopted = RunAdopted {
@@ -88,7 +87,6 @@ fn public_success_carriers_typecheck(
         run_id: "run".into(),
         base_branch: "main".into(),
         checkout: checkout.clone(),
-        scope: AdoptionScope::ExternalWorktree,
         model_choice: model_choice.clone(),
     };
     let _ = Box::new(ImplementationOpened {
@@ -115,7 +113,6 @@ fn public_success_carriers_typecheck(
             run_id: "run".into(),
             base_branch: "main".into(),
             checkout: checkout.clone(),
-            scope: AdoptionScope::ExternalWorktree,
             model_choice: model_choice.clone(),
         },
         detail: crate::thread::ThreadDetail::Digest,
@@ -134,7 +131,6 @@ fn public_success_carriers_typecheck(
             run_id: "run".into(),
             base_branch: "main".into(),
             checkout,
-            scope: AdoptionScope::ExternalWorktree,
             model_choice: model_choice.clone(),
         },
         instruction: "work".into(),

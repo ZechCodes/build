@@ -38,8 +38,7 @@ pub(in crate::app) use self::board::cache::DiffCacheKey;
 #[cfg(test)]
 pub(in crate::app) use self::board::cache::EXTERNAL_SCAN_INTERVAL;
 pub(in crate::app) use self::board::cache::{
-    scan_may_yet_show_it, DiffComputeObserver, ExternalWorktreeRows, PRIMARY_SUMMARY_TTL,
-    WORKSPACE_SUMMARY_TTL,
+    scan_may_yet_show_it, DiffComputeObserver, ExternalWorktreeRows, WORKSPACE_SUMMARY_TTL,
 };
 pub(in crate::app) use self::board::views::{working_time_json, EntitylessRow};
 pub(in crate::app) use self::board_index::{BoardIndex, CacheEffect, RefreshClaim};

@@ -10,7 +10,7 @@ use crate::lifecycle::{
     ImplementationCheckout, OpenImplementation, PendingRow,
 };
 use crate::models::ModelChoice;
-use crate::orchestrator::{ActiveRun, AdoptionScope, AgentTurn, ImplementableIssue, RunSource};
+use crate::orchestrator::{ActiveRun, AgentTurn, ImplementableIssue, RunSource};
 use crate::run::{run_transition, RunEvent, RunId, RunState};
 use crate::store::now_rfc3339;
 use crate::thread::ThreadDetail;
@@ -63,11 +63,8 @@ impl AppState {
             .map_err(err)?;
         self.projects
             .bind_entity(adopted.run_id.clone(), adopted.project_id.clone());
-        let (was_dismissed, first_observed_at) = self.take_row_dismissal(
-            &adopted.project_id,
-            Some(&adopted.checkout.branch),
-            adopted.scope == AdoptionScope::PrimaryCheckout,
-        );
+        let (was_dismissed, first_observed_at) =
+            self.take_row_dismissal(&adopted.project_id, &adopted.checkout.branch);
         if was_dismissed || first_observed_at.is_some() {
             self.board.attention_mut().transfer_adopted_row(
                 &adopted.run_id,
@@ -206,13 +203,14 @@ impl AppState {
         let requested_choice = model_choice_from(params, self.default_harness)?;
         let (run_id, checkout) = match self.run_owning_worktree_id(&project_id, worktree_id) {
             Some(run_id) => {
-                // The primary checkout is the repository, not a worktree to
-                // hand an Issue: committing stage docs there lands them on the
-                // branch the human is standing on.
-                if self.owns_primary_checkout(&run_id, &self.runs[&run_id]) {
+                // The repository is not a worktree to hand an Issue: committing
+                // stage docs there lands them on the branch the human is
+                // standing on. Nothing mints such a run any more; a store
+                // written before workspaces can still hold one.
+                if self.stands_in_the_repository(&run_id, &self.runs[&run_id]) {
                     return Err(
-                        "cannot implement into the primary checkout — it is the repository, not a \
-                         worktree to hand over"
+                        "cannot implement into the project's repository — it is what workspaces \
+                         are cut from, not a worktree to hand over"
                             .to_string(),
                     );
                 }
@@ -239,7 +237,7 @@ impl AppState {
             None => (
                 format!("run-{}", uuid::Uuid::new_v4()),
                 ImplementationCheckout::Unowned {
-                    target: AdoptionTarget::Card {
+                    target: AdoptionTarget {
                         worktree_id: worktree_id.to_string(),
                         excluded: self.bound_worktree_paths(),
                     },
@@ -524,9 +522,11 @@ impl AppState {
         // must leave the run exactly as it found it.
         run_transition(&active.run.state, RunEvent::Abandon)
             .map_err(|illegal| illegal.to_string())?;
-        // Abandoning removes the run's worktree — which for a primary run is
-        // the repository. That run ends by letting go of the checkout instead.
-        let keeps_checkout = self.owns_primary_checkout(&run_id, active);
+        // Abandoning removes the run's worktree. A run standing in the
+        // project's own repository ends by letting go of the checkout instead:
+        // the repository is what workspaces are cut from, and removing it would
+        // take the project with it.
+        let keeps_checkout = self.stands_in_the_repository(&run_id, active);
         let title = active.run.goal.clone();
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let stages = self.stage_publication_query(&run_id, active);
@@ -776,49 +776,44 @@ impl AppState {
         self.invalidate_run_stat(run_id);
     }
 
-    /// Mint a plan-less run around an existing checkout (`plan_id` None): one of
-    /// the project's external worktrees (`worktree_id`), or its primary
-    /// checkout (`primary: true`) — the repo root as a super-worktree.
+    /// Mint a plan-less run around one of the project's external worktrees
+    /// (`worktree_id`).
     ///
-    /// The primary checkout has exactly one owner per project, enforced here.
-    /// External adoption can rely on a client-side latch because a worktree
-    /// card is adopted from one place; the repo root is reachable from every
-    /// reload and every second browser, and they must all converge on the run
-    /// that already owns it.
+    /// The project's own repository is not adoptable: it is what workspaces are
+    /// cut from, and work happens in a workspace. A card is adoptable from more
+    /// than one surface, so the one-owner rule is enforced here rather than by
+    /// a client-side latch.
     pub(crate) fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let model_choice = model_choice_from(params, self.default_harness)?;
         let base = self.base_for(&project_id)?;
-        let adopting_primary = params
+        if params
             .get("primary")
             .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let target = if adopting_primary {
-            if let Some(run_id) = self.primary_run_of(&project_id) {
-                return Ok(self.owning_run_view(&run_id, params));
-            }
-            AdoptionTarget::Primary {
-                repo_path: self.repo_path_for(&project_id)?,
-            }
-        } else {
-            let worktree_id = require_str(params, "worktree_id")?;
-            if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
-                return Ok(self.owning_run_view(&run_id, params));
-            }
-            AdoptionTarget::Card {
-                worktree_id,
-                excluded: self.bound_worktree_paths(),
-            }
+            .unwrap_or(false)
+        {
+            return Err(
+                "run.adopt: the project's own checkout is not a place to work — create a \
+                        workspace and work there"
+                    .to_string(),
+            );
+        }
+        let worktree_id = require_str(params, "worktree_id")?;
+        if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
+            return Ok(self.owning_run_view(&run_id, params));
+        }
+        let target = AdoptionTarget {
+            worktree_id,
+            excluded: self.bound_worktree_paths(),
         };
         let checkout_id = target.checkout_id();
-        // The repo root is reachable from every reload and every second
-        // browser, and a card is adoptable from more than one surface. An asker
-        // who arrives while the checkout is being taken over is told so, and
-        // is handed no run id: the run that will carry it is not in the map
-        // until the adoption's epilogue lands, and an adoption that fails never
-        // mints it at all. The asker asks again — the same thing it does when
-        // its own adopt outlived its timer — and by then the owner is real and
-        // `primary_run_of` / `run_owning_worktree_id` above answer with it.
+        // A card is adoptable from more than one surface. An asker who arrives
+        // while the checkout is being taken over is told so, and is handed no
+        // run id: the run that will carry it is not in the map until the
+        // adoption's epilogue lands, and an adoption that fails never mints it
+        // at all. The asker asks again — the same thing it does when its own
+        // adopt outlived its timer — and by then the owner is real and
+        // `run_owning_worktree_id` above answers with it.
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         let row = target.reserve(
             run_id.clone(),

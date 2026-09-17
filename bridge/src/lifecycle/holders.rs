@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::branch::BranchSource;
 use crate::orchestrator::Orchestrator;
 use crate::worktree::{ExternalWorktree, Worktree};
 use serde_json::{json, Value};
@@ -20,7 +19,7 @@ pub struct ProjectCheckouts {
 
 impl ProjectCheckouts {
     pub fn holders(&self) -> Result<BranchOwnershipIndex, String> {
-        let primary = crate::worktree::primary_checkout_holder(&self.primary_repo_path)
+        let primary = crate::worktree::repository_branch_holder(&self.primary_repo_path)
             .map_err(|error| error.to_string())?;
         let external = self
             .project
@@ -72,20 +71,57 @@ pub struct BranchOwnershipIndex {
     primary: Option<(String, String)>,
 }
 
+/// What has a branch checked out. The order of the variants is the precedence
+/// two holders of one branch are resolved by: a run speaks for a branch it
+/// owns, the project's own repository before a checkout Build never cut.
+///
+/// Not [`crate::branch::BranchSource`]: that says what a FEED row's facts were
+/// read off, and the project's repository is no longer a place work happens. It
+/// still holds branches, and a branch it holds cannot be checked out again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BranchHolderKind {
+    Run,
+    ProjectRepository,
+    ExternalWorktree,
+}
+
+impl BranchHolderKind {
+    /// What this kind of holder is called on the wire, so a client picks the
+    /// verb a held branch offers by reading a name rather than by re-deciding
+    /// which of several holders outranks the others.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BranchHolderKind::Run => "run",
+            BranchHolderKind::ProjectRepository => "project_repository",
+            BranchHolderKind::ExternalWorktree => "external_worktree",
+        }
+    }
+
+    /// What this kind of holder is called, for a user being told which one has
+    /// the branch they asked for.
+    pub fn holder_noun(self) -> &'static str {
+        match self {
+            BranchHolderKind::Run => "run",
+            BranchHolderKind::ProjectRepository => "the project's repository",
+            BranchHolderKind::ExternalWorktree => "worktree",
+        }
+    }
+}
+
 /// Exactly one holder, selected by the wire protocol's precedence.
 pub struct BranchHolder {
-    holder: Option<(BranchSource, String)>,
+    holder: Option<(BranchHolderKind, String)>,
 }
 
 impl BranchHolder {
     pub fn of(ownership: &BranchOwnershipIndex, branch: &str) -> Self {
         let holders = [
             (
-                BranchSource::Run,
+                BranchHolderKind::Run,
                 ownership.run_branches.get(branch).cloned(),
             ),
             (
-                BranchSource::PrimaryCheckout,
+                BranchHolderKind::ProjectRepository,
                 ownership
                     .primary
                     .as_ref()
@@ -93,7 +129,7 @@ impl BranchHolder {
                     .map(|(id, _)| id.clone()),
             ),
             (
-                BranchSource::ExternalWorktree,
+                BranchHolderKind::ExternalWorktree,
                 ownership
                     .external
                     .iter()
@@ -109,7 +145,7 @@ impl BranchHolder {
         }
     }
 
-    pub fn held_by(&self, source: BranchSource) -> Option<&str> {
+    pub fn held_by(&self, source: BranchHolderKind) -> Option<&str> {
         self.holder
             .as_ref()
             .filter(|(holder, _)| *holder == source)

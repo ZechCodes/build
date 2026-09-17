@@ -711,11 +711,10 @@ impl AppState {
     /// line is drawn at the end of every owned conversation: the row stays out
     /// of the list until a user or agent sends another message.
     ///
-    /// A row with no entity — a project's primary checkout, a branch checked
-    /// out somewhere Build never cut — is named by what it IS:
-    /// `{ project_id, branch }`, or `{ project_id, primary: true }` for the
-    /// checkout that is the repository. With no conversation, unrelated git
-    /// changes cannot revive it; adoption gives it a conversation and identity.
+    /// A row with no entity — a branch checked out somewhere Build never cut —
+    /// is named by what it IS: `{ project_id, branch }`. With no conversation,
+    /// unrelated git changes cannot revive it; adoption gives it a conversation
+    /// and identity.
     ///
     /// There is no un-dismiss verb because there is nothing to undo: the next
     /// thing the work says brings the row back by itself, which is the whole
@@ -732,7 +731,6 @@ impl AppState {
             return Ok(json!({
                 "project_id": row.project_id,
                 "branch": row.branch,
-                "primary": row.primary,
                 "dismissed": true,
             }));
         }
@@ -770,7 +768,7 @@ impl AppState {
         self.persist_attention();
     }
 
-    /// The entity-less row `{ project_id, branch | primary }` names.
+    /// The entity-less row `{ project_id, branch }` names.
     ///
     /// A branch is resolved against the feed's own sources, so a name that is
     /// not a row anyone can clear is refused rather than written as a
@@ -784,29 +782,18 @@ impl AppState {
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| {
-                "entity.dismiss: name a row — an entity_id, or a project_id with a branch or \
-                 primary: true"
+                "entity.dismiss: name a row — an entity_id, or a project_id with a branch"
                     .to_string()
             })?;
         if !self.projects.iter().any(|p| p.id == project_id) {
             return Err(format!("entity.dismiss: unknown project {project_id}"));
-        }
-        if params
-            .get("primary")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return self.primary_row(&project_id);
         }
         let branch = params
             .get("branch")
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| {
-                format!(
-                    "entity.dismiss: {project_id} is a project, not a row — name a branch, or \
-                     primary: true for its checkout"
-                )
+                format!("entity.dismiss: {project_id} is a project, not a row — name a branch")
             })?;
         if let Some(run_id) = self.unarchived_run_on_branch(&project_id, &branch) {
             return Err(format!(
@@ -814,55 +801,16 @@ impl AppState {
                  is drawn in its conversation"
             ));
         }
-        let refusal = match self.find_checkout(
+        let checkout = self.find_checkout(
             &project_id,
             &format!("entity.dismiss: {project_id} has no row for {branch}"),
             |checkout| checkout.branch.as_deref() == Some(branch.as_str()),
-        ) {
-            Ok(checkout) => {
-                return Ok(EntitylessRow {
-                    key: crate::attention::branch_row_key(&project_id, &branch),
-                    head: Some(checkout.head_sha),
-                    project_id,
-                    branch: Some(branch),
-                    primary: false,
-                })
-            }
-            Err(refusal) => refusal,
-        };
-        // The one row left that a branch name can mean: the project's own
-        // checkout, named the way it appears on the feed rather than by the
-        // `primary` flag beside it.
-        let primary = self.primary_row(&project_id)?;
-        if primary.branch.as_deref() == Some(branch.as_str()) {
-            return Ok(primary);
-        }
-        Err(refusal)
-    }
-
-    /// A project's primary-checkout row, read off the same summary the feed
-    /// builds that row from — the row and its dismissal have to agree about
-    /// which commit the checkout is on.
-    ///
-    /// Refused until that summary has landed: a dismissal written against no
-    /// head is one the walk's own first result revokes, so the client is told
-    /// to ask again rather than answered with a click that did nothing.
-    pub(in crate::app) fn primary_row(
-        &mut self,
-        project_id: &str,
-    ) -> Result<EntitylessRow, String> {
-        let summary = self.primary_summary(project_id).ok_or_else(|| {
-            format!(
-                "entity.dismiss: the primary checkout of {project_id} has not been read yet, and \
-                 the walk now running settles it"
-            )
-        })?;
+        )?;
         Ok(EntitylessRow {
-            key: crate::attention::primary_row_key(project_id),
-            head: summary["head_sha"].as_str().map(str::to_string),
-            project_id: project_id.to_string(),
-            branch: summary["branch"].as_str().map(str::to_string),
-            primary: true,
+            key: crate::attention::branch_row_key(&project_id, &branch),
+            head: Some(checkout.head_sha),
+            project_id,
+            branch: Some(branch),
         })
     }
 
@@ -893,7 +841,6 @@ impl AppState {
                 head: Some(checkout.head_sha),
                 project_id,
                 branch: checkout.branch,
-                primary: false,
             });
         }
         None
@@ -927,14 +874,9 @@ impl AppState {
     pub(in crate::app) fn take_row_dismissal(
         &mut self,
         project_id: &str,
-        branch: Option<&str>,
-        primary: bool,
+        branch: &str,
     ) -> (bool, Option<String>) {
-        let keys: Vec<String> = branch
-            .map(|branch| crate::attention::branch_row_key(project_id, branch))
-            .into_iter()
-            .chain(primary.then(|| crate::attention::primary_row_key(project_id)))
-            .collect();
+        let keys = vec![crate::attention::branch_row_key(project_id, branch)];
         let removed = self.board.attention_mut().take_row_attentions(&keys);
         let dismissed = removed
             .iter()

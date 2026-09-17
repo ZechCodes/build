@@ -10,7 +10,6 @@
         "state": "review",
         "project_id": "proj-1",
         "project": "build",
-        "primary": false,
         "muted": false,
         "dismissed": false,
         "unread": false,
@@ -43,7 +42,6 @@
         "state": "routing",
         "project_id": "",
         "project": "",
-        "primary": false,
         "muted": false,
         "dismissed": false,
         "unread": false,
@@ -88,7 +86,6 @@
         "project_id": "proj-1",
         "project": "build",
         "worktree_path": "/home/ada/.build/worktrees/build/fix-flaky-login",
-        "primary": false,
         "muted": false,
         "dismissed": false,
         "unread": false,
@@ -178,26 +175,9 @@
         "branch": "fix-flaky-login-2",
         "state": "creating",
         "checkout_id": "wt-4c1f0a2b3c4d",
-        "primary": false,
         "implements": "plan-6f1c",
         "isolation": "worktree",
         "pending_seconds": 3
-      }
-    ],
-    "primary_changes": [
-      {
-        "project_id": "proj-1",
-        "branch": "main",
-        "upstream": "origin/main",
-        "comparison_ref": "origin/main",
-        "ahead": 0,
-        "behind": 2,
-        "head_sha": "1f0a9b8c7d6e5f4031a2b3c4d5e6f708192a3b4c",
-        "head_committed_at": "2026-09-13T07:41:19Z",
-        "files_changed": 1,
-        "insertions": 6,
-        "deletions": 0,
-        "run_id": null
       }
     ],
     "scanning": false,

@@ -32,7 +32,7 @@ fn superseded_claim_stays_held_until_that_compute_settles() {
 #[test]
 fn release_clears_both_claim_sets_after_supersession() {
     let mut cache = DiffCache::default();
-    let key = DiffCacheKey::PrimarySummary("project-1".to_string());
+    let key = DiffCacheKey::RunStat("run-1".to_string());
     let claim = cache.claim_refresh(key.clone()).unwrap();
     cache.supersede(&key);
 
@@ -126,7 +126,7 @@ fn scan_failure_keeps_readable_data_and_notifies_after_each_success() {
 fn late_project_publication_does_not_recreate_a_removed_slot() {
     let mut cache = DiffCache::default();
     cache.register_project("project-1".to_string());
-    let key = DiffCacheKey::PrimarySummary("project-1".to_string());
+    let key = DiffCacheKey::ExternalScan("project-1".to_string());
     let claim = cache.claim_refresh(key.clone()).unwrap();
     cache.remove_project("project-1");
     assert!(cache.refresh_is_running(&key));
@@ -134,14 +134,14 @@ fn late_project_publication_does_not_recreate_a_removed_slot() {
     assert!(cache
         .publish_refresh(
             claim,
-            Some(DiffCacheEntry::PrimarySummary {
+            Some(DiffCacheEntry::ExternalScan {
                 project_id: "project-1".to_string(),
-                summary: json!({"files_changed": 3}),
+                worktrees: Vec::new(),
             }),
             Instant::now(),
         )
         .is_empty());
-    assert!(cache.primary_summary("project-1").is_none());
+    assert!(cache.external_scan("project-1").settled_at.is_none());
     assert!(cache.claim_refresh(key).is_some());
 }
 

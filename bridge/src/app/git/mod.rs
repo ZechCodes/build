@@ -19,8 +19,7 @@ pub(in crate::app) struct GitScope {
     /// enclosing id because different directories can contain identical Git
     /// state and identical relative paths.
     cache_namespace: Option<String>,
-    /// Set for project scope: the project whose primary checkout this is,
-    /// so mutations can invalidate its cached `primary_changes` summary.
+    /// Set for project scope: the project whose repository this is.
     pub(in crate::app) project_id: Option<String>,
     pub(in crate::app) run: Option<GitScopeRun>,
     pub(in crate::app) worktree: Option<GitScopeWorktree>,
@@ -40,7 +39,7 @@ pub(in crate::app) struct GitScopeWorktree {
 }
 
 /// The checkout a branch operation acts on, and which cached summary describes
-/// it: a project's primary checkout, or one of that project's worktrees.
+/// it: a project's repository, or one of that project's worktrees.
 pub(in crate::app) struct BranchScope {
     pub(in crate::app) project_id: String,
     pub(in crate::app) repo_path: std::path::PathBuf,
@@ -423,15 +422,14 @@ impl AppState {
     }
 
     /// A branch switch swaps the whole tree, so whichever summary described
-    /// the scoped checkout is stale.
+    /// the scoped checkout is stale. The project's own checkout has none: the
+    /// board lists workspaces, and nothing on it is read off the repository.
     pub(in crate::app) fn invalidate_branch_scope_caches(&mut self, scope: &BranchScope) {
         if !self.projects.iter().any(|p| p.id == scope.project_id) {
             return;
         }
         if scope.external_worktree {
             self.rescan_external_worktrees(&scope.project_id);
-        } else {
-            self.invalidate_primary_summary(&scope.project_id);
         }
     }
 
@@ -562,8 +560,7 @@ impl AppState {
     }
 
     /// Drop the cached board summaries a scoped git mutation just invalidated —
-    /// the task's diffstat + updated-at for task scope, the project's primary
-    /// uncommitted-changes summary for project scope, the external-worktree
+    /// the task's diffstat + updated-at for task scope, the external-worktree
     /// scan for worktree scope — so the next `task.list` / project poll
     /// recomputes instead of serving a stale summary for up to its TTL.
     pub(in crate::app) fn invalidate_git_scope_caches(&mut self, scope: &GitScope) {
@@ -574,17 +571,14 @@ impl AppState {
                 .attention_mut()
                 .record_updated(&run_id, now_rfc3339());
         }
-        if let Some(project_id) = scope.project_id.clone() {
-            self.invalidate_primary_summary(&project_id);
-        }
         if let Some(worktree) = &scope.worktree {
             let project_id = worktree.project_id.clone();
             self.rescan_external_worktrees(&project_id);
         }
     }
 
-    /// Resolve the checkout a branch operation acts on: the project's primary
-    /// checkout, or one of its external worktrees when the caller names one. A
+    /// Resolve the checkout a branch operation acts on: the project's
+    /// repository, or one of its external worktrees when the caller names one. A
     /// run worktree's branch is owned by the run lifecycle, so a `run_id` (or
     /// its legacy `task_id` spelling) is refused outright.
     pub(in crate::app) fn resolve_branch_scope(

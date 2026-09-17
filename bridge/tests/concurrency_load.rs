@@ -91,12 +91,18 @@ async fn the_daemon_answers_reads_and_writes_while_three_ptys_flood() {
         .as_str()
         .expect("the repo is registered as a project")
         .to_string();
+    // The id the checkout's path hashes to. Computed here rather than read
+    // off the board: this test counts the board reads it makes, and adoption
+    // resolves the id against a scan of its own anyway.
+    let worktree_id = build_bridge::worktree::external_worktree_id(
+        &build_bridge::worktree::canonical_root(&dir.path().join("loose")),
+    );
     let run_id = client.ok(
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
     )["run_id"]
         .as_str()
-        .expect("adopting the primary checkout mints a run")
+        .expect("adopting a checkout mints a run")
         .to_string();
     let flooding: Vec<String> = (0..FLOODING_SHELLS)
         .map(|_| {
@@ -361,5 +367,14 @@ fn init_repo(parent: &Path) -> PathBuf {
     drop(readme);
     git(&["add", "."]);
     git(&["commit", "-m", "initial"]);
+    // A checkout the human already had, for the run this load test drives.
+    // Work happens in a checkout beside the repository, never in it.
+    git(&[
+        "worktree",
+        "add",
+        "-b",
+        "loose",
+        parent.join("loose").to_str().expect("a utf-8 path"),
+    ]);
     repo
 }

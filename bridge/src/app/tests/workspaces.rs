@@ -687,16 +687,13 @@ fn legacy_run_finish_routes_a_workspace_conversation_owner_to_its_workspace() {
 }
 
 #[test]
-fn legacy_primary_adoption_still_has_its_run_id_workspace_route() {
+fn a_legacy_repo_root_run_still_has_its_run_id_workspace_route() {
     let (tmp, repo) = init_repo();
     let mut state = qa_state(&repo, tmp.path());
-    let project_id = state.project_at(0).id.clone();
-    let adopted = state.handle(req(
-        "run.adopt",
-        json!({"project_id": project_id, "primary": true}),
-    ));
-    assert_eq!(adopted["ok"], true, "{adopted:?}");
-    let run_id = adopted["result"]["run_id"].as_str().unwrap();
+    let run_id = adopted_run(&mut state, &repo, tmp.path(), "was-a-worktree");
+    // What a store written before workspaces holds: a run whose checkout is
+    // the project's own repository.
+    state.runs.get_mut(&run_id).unwrap().worktree.path = AppState::canonical_root(&repo);
 
     let detail = state.handle(req("workspace.get", json!({"workspace_id": run_id})));
     assert_eq!(detail["ok"], true, "{detail:?}");
@@ -1092,7 +1089,7 @@ fn legacy_git_root_and_external_checkout_are_adopted_without_moving_them() {
     let primary = workspaces
         .iter()
         .find(|workspace| workspace["root"] == canonical.display().to_string())
-        .unwrap_or_else(|| panic!("the primary checkout is adopted: {listed:?}"));
+        .unwrap_or_else(|| panic!("the project root is adopted: {listed:?}"));
     assert_eq!(
         primary["directories"][0]["path"],
         canonical.display().to_string()
@@ -1650,7 +1647,7 @@ fn workspace_delete_refuses_an_adopted_checkout() {
         .unwrap()
         .iter()
         .find(|workspace| workspace["root"] == canonical.display().to_string())
-        .unwrap_or_else(|| panic!("the primary checkout is adopted: {listed:?}"))
+        .unwrap_or_else(|| panic!("the project root is adopted: {listed:?}"))
         .clone();
 
     let refused = state.handle(req(

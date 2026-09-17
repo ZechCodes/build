@@ -142,7 +142,6 @@ fn a_capture_being_routed_is_a_feed_row() {
     assert_eq!(row["agents"].as_array().unwrap().len(), 0);
     assert_eq!(row["can_finish"], false);
     assert_eq!(row["muted"], false);
-    assert_eq!(row["primary"], false);
     assert_eq!(row["resume_at"], row["created_at"]);
     assert_eq!(row["routing"], Value::Null);
     assert_eq!(row["question"], Value::Null);

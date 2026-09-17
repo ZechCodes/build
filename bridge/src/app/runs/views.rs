@@ -136,7 +136,6 @@ impl AppState {
             .find(|p| p.id == project_id)
             .map(|p| p.name.clone())
             .unwrap_or_default();
-        let primary = self.owns_primary_checkout(run_id, active);
         let unread = self.unread_for(run_id, self.conversation_thread_for_run(active));
         // A branch with no agents has no conversation yet, and an empty one is
         // what says so: the client paints the new-agent view under it.
@@ -189,15 +188,9 @@ impl AppState {
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
-            // Adopted around the repo root, not a worktree beside it: the rail
-            // renders it as the project's "main" row, never as one more
-            // worktree, and its finish/merge controls do not apply.
-            "primary": primary,
             "recovery": active.recovery,
-            // `run.finish` refuses the primary checkout, so it is never offered.
-            "can_finish": !primary
-                && (active.run.state == RunState::Merged
-                    || (active.run.state == RunState::Review && active.worktree.path.exists())),
+            "can_finish": active.run.state == RunState::Merged
+                || (active.run.state == RunState::Review && active.worktree.path.exists()),
             "created_at": self.board.attention().clock(run_id).created_at,
             "updated_at": self.board.attention().clock(run_id).updated_at,
             "state_changed_at": self.board.attention().clock(run_id).state_changed_at,

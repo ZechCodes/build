@@ -512,7 +512,7 @@ fn branch_dispatch_cleanup_never_destroys_a_checkout_it_only_found() {
 /// act on. The dispatch answers with the checkout that holds the branch,
 /// as `worktree.create {branch}` does — one resolution for both.
 #[test]
-fn branch_dispatch_names_the_primary_checkout_holding_its_branch() {
+fn branch_dispatch_names_the_repository_holding_its_branch() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
@@ -528,7 +528,7 @@ fn branch_dispatch_names_the_primary_checkout_holding_its_branch() {
 
     assert_eq!(refused["ok"], false, "{refused:?}");
     let message = refused["error"].as_str().unwrap();
-    assert!(message.contains("primary checkout"), "{message}");
+    assert!(message.contains("the project's repository"), "{message}");
     assert!(state.runs.is_empty(), "nothing was created");
     assert!(state.external_worktrees(&project_id).worktrees.is_empty());
 }

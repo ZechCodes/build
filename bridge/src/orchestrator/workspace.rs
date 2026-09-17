@@ -13,16 +13,6 @@ use crate::templates::{Templates, DEFAULT_PLAN_PATH};
 use crate::worktree::{derive_adoption_goal, ExternalWorktree, Worktree, WorktreeManager};
 use std::path::{Path, PathBuf};
 
-/// Which checkout a run is being adopted around. The primary checkout is a
-/// worktree like any other to everything downstream of adoption; the two
-/// differ only in the gates that apply at the moment of minting and at the
-/// lifecycle verbs that would remove a worktree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdoptionScope {
-    ExternalWorktree,
-    PrimaryCheckout,
-}
-
 /// A checkout that passed every refusal adoption makes. Construction IS the
 /// validation, so nothing downstream can refuse a checkout it has already
 /// written a checkpoint commit into.
@@ -46,17 +36,15 @@ impl AdoptableCheckout {
     pub fn judge(
         checkout: &ExternalWorktree,
         base_branch: &str,
-        scope: AdoptionScope,
     ) -> Result<AdoptableCheckout, OrchestratorError> {
         let Some(branch) = checkout.branch.clone() else {
             return Err(OrchestratorError::Gate(
                 "cannot adopt a detached-HEAD worktree — check out a branch first".to_string(),
             ));
         };
-        // A worktree sitting on the base branch is a mistake to adopt; the
-        // primary checkout sitting on it is the normal case (it is the base
-        // checkout), which is why the scopes are told apart here at all.
-        if scope == AdoptionScope::ExternalWorktree && branch == base_branch {
+        // A worktree sitting on the base branch is a mistake to adopt: the
+        // base branch is what workspaces are cut from, not a place to work.
+        if branch == base_branch {
             return Err(OrchestratorError::Gate(format!(
                 "cannot adopt a worktree with the base branch {base_branch:?} checked out"
             )));

@@ -485,8 +485,6 @@ pub struct RunRow {
     pub project_id: String,
     pub project: String,
     pub worktree_path: String,
-    /// A run standing on the project's own checkout rather than a worktree.
-    pub primary: bool,
     pub muted: bool,
     pub dismissed: bool,
     pub unread: bool,
@@ -504,7 +502,6 @@ pub struct FeedItemRow {
     pub state: Option<String>,
     pub project_id: String,
     pub project: String,
-    pub primary: bool,
     pub muted: bool,
     pub dismissed: bool,
     pub unread: bool,
@@ -545,7 +542,6 @@ pub struct PendingRow {
     pub branch: Option<String>,
     pub state: String,
     pub checkout_id: Option<String>,
-    pub primary: bool,
     /// The issue this checkout is being cut for, where there is one.
     pub implements: Option<String>,
     /// How the checkout being made is isolated; `null` where the verb makes
@@ -554,25 +550,6 @@ pub struct PendingRow {
     /// How long this row has stood. Older than a scan interval reads as stuck
     /// rather than as work in flight.
     pub pending_seconds: u64,
-}
-
-/// One project's primary checkout as the last walk left it: what is sitting
-/// in it, and where its branch stands against the remote.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PrimaryChangesRow {
-    pub project_id: String,
-    pub branch: String,
-    pub upstream: Option<String>,
-    pub comparison_ref: Option<String>,
-    pub ahead: Option<u64>,
-    pub behind: Option<u64>,
-    pub head_sha: Option<String>,
-    pub head_committed_at: Option<String>,
-    pub files_changed: u64,
-    pub insertions: u64,
-    pub deletions: u64,
-    /// The run that owns this checkout, where one has adopted it.
-    pub run_id: Option<String>,
 }
 
 /// The feed, and every ride-along a client would otherwise ask for one call
@@ -584,7 +561,6 @@ pub struct BoardListResult {
     pub runs: Vec<RunRow>,
     pub external_worktrees: Vec<ExternalWorktreeRow>,
     pub pending: Vec<PendingRow>,
-    pub primary_changes: Vec<PrimaryChangesRow>,
     /// The rail has not finished looking: an empty list under this flag is a
     /// board still working, not a project with no checkouts.
     pub scanning: bool,

@@ -41,9 +41,9 @@ API version is one no later SPA can ever identify.
 
 1. **No file or git change source.** `diff::watch` (`bridge/src/diff.rs`,
    `DiffWatcher`, built on `notify`) has one caller: its own unit test. Git
-   stat, external scan, and primary summary are recomputed on read behind
+   stat, external scan, and workspace summary are recomputed on read behind
    10 s TTLs (`app/board/cache.rs`, `TASK_STAT_TTL`, `EXTERNAL_SCAN_INTERVAL`,
-   `PRIMARY_SUMMARY_TTL`), stale-while-revalidate. A file an agent writes
+   `WORKSPACE_SUMMARY_TTL`), stale-while-revalidate. A file an agent writes
    reaches the wire only when a client read happens to trigger a refresh
    whose stat differs (`publish_diff_refresh` → `note_entity_settled`). With
    nobody reading, nothing is pushed. `fs.write` is the one immediate path.

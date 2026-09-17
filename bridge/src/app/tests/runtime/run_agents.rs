@@ -540,10 +540,16 @@ async fn agent_start_with_a_provider_switches_and_persists_the_choice() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
     let project_id = state.lock().unwrap().project_at(0).id.clone();
+    add_external_worktree(&repo, dir.path(), "picked-provider", "picked-provider");
+    let worktree_id = external_id(
+        &mut state.lock().unwrap(),
+        &project_id,
+        Some("picked-provider"),
+    );
     let adopted = call(
         &handler,
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
     );
     let run_id = run_id_of(&adopted);
 

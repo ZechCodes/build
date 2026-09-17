@@ -2,13 +2,13 @@
 //!
 //! A branch work item is identified by `(project_id, branch_name)`. What the
 //! bridge stores underneath — a run, an adopted worktree, an external worktree
-//! Build never cut, the primary checkout — is an implementation detail, and
-//! more than one of them can describe the same branch at once. This module owns
-//! the two rules that turn those sources into one feed:
+//! Build never cut — is an implementation detail, and more than one of them can
+//! describe the same branch at once. This module owns the two rules that turn
+//! those sources into one feed:
 //!
 //! 1. **Folding.** Rows that share a key are the same work item seen twice; the
-//!    source that knows the most about it wins (a run over the primary
-//!    checkout, the primary checkout over a bare external worktree).
+//!    source that knows the most about it wins (a run over a bare external
+//!    worktree).
 //! 2. **Dedup.** An issue whose implementation is still in flight speaks as
 //!    that branch row alone — the branch row carries the `issue_id` and the
 //!    issue's own row is suppressed.
@@ -42,12 +42,10 @@ impl WorkItemKind {
 
 /// What a branch row's facts were read off. The order of the variants is the
 /// order they win in: a run knows the branch's lifecycle, conversation and
-/// agents; the primary checkout knows it is the repository; a bare external
-/// worktree knows only what git can see.
+/// agents; a bare external worktree knows only what git can see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BranchSource {
     Run,
-    PrimaryCheckout,
     ExternalWorktree,
 }
 
@@ -58,7 +56,6 @@ impl BranchSource {
     pub fn as_str(self) -> &'static str {
         match self {
             BranchSource::Run => "run",
-            BranchSource::PrimaryCheckout => "primary_checkout",
             BranchSource::ExternalWorktree => "external_worktree",
         }
     }
@@ -68,7 +65,6 @@ impl BranchSource {
     pub fn holder_noun(self) -> &'static str {
         match self {
             BranchSource::Run => "run",
-            BranchSource::PrimaryCheckout => "the primary checkout",
             BranchSource::ExternalWorktree => "worktree",
         }
     }
@@ -198,8 +194,8 @@ pub struct BranchSync {
 /// A warning is not a refusal. Done deletes a branch and archives an issue on
 /// the user's say-so; the bridge's job is to make what is about to be lost
 /// legible BEFORE the destructive act, and then to do as it is told. Refusals
-/// stay errors — an unknown branch, the primary checkout, a git command that
-/// failed — because there is nothing the user can confirm their way past.
+/// stay errors — an unknown branch, a git command that failed — because there
+/// is nothing the user can confirm their way past.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinishWarning {
     /// Stable machine name, so a client can order or style them.
@@ -389,13 +385,17 @@ mod tests {
             .collect()
     }
 
-    /// A run knows the branch's lifecycle; the primary-checkout summary and the
-    /// external scan only know what git sees. One branch, one row, and it is
-    /// the run's.
+    /// A run knows the branch's lifecycle; the external scan only knows what
+    /// git sees. One branch, one row, and it is the run's.
     #[test]
     fn a_run_wins_the_branch_it_shares_with_a_checkout_scan() {
         let folded = fold_work_items(vec![
-            branch_candidate("p1", "main", BranchSource::PrimaryCheckout, "primary"),
+            branch_candidate(
+                "p1",
+                "main",
+                BranchSource::ExternalWorktree,
+                "external-main",
+            ),
             branch_candidate("p1", "main", BranchSource::Run, "run"),
             branch_candidate("p1", "feature", BranchSource::ExternalWorktree, "external"),
             branch_candidate("p1", "feature", BranchSource::Run, "run-feature"),
@@ -403,9 +403,8 @@ mod tests {
         assert_eq!(labels(&folded), vec!["run", "run-feature"]);
     }
 
-    /// The primary checkout beats a bare external worktree, and every distinct
-    /// key keeps its own row — including two projects on the same branch name
-    /// and a detached checkout with no name to fold on.
+    /// Every distinct key keeps its own row — including two projects on the
+    /// same branch name and a detached checkout with no name to fold on.
     #[test]
     fn distinct_keys_each_keep_a_row() {
         let detached = WorkItemCandidate {
@@ -420,13 +419,18 @@ mod tests {
         };
         let folded = fold_work_items(vec![
             branch_candidate("p1", "main", BranchSource::ExternalWorktree, "external"),
-            branch_candidate("p1", "main", BranchSource::PrimaryCheckout, "primary"),
-            branch_candidate("p2", "main", BranchSource::PrimaryCheckout, "other-project"),
+            branch_candidate("p1", "main", BranchSource::Run, "run"),
+            branch_candidate(
+                "p2",
+                "main",
+                BranchSource::ExternalWorktree,
+                "other-project",
+            ),
             detached,
         ]);
         assert_eq!(
             labels(&folded),
-            vec!["primary", "other-project", "detached"],
+            vec!["run", "other-project", "detached"],
             "the loser never reorders the winner"
         );
     }
@@ -570,11 +574,15 @@ mod tests {
     #[test]
     fn a_row_that_could_not_name_its_project_says_the_id_instead_of_nothing() {
         let mut unnamed =
-            branch_candidate("proj-1", "main", BranchSource::PrimaryCheckout, "primary");
+            branch_candidate("proj-1", "main", BranchSource::ExternalWorktree, "primary");
         unnamed.row["project"] = json!("");
         unnamed.row["project_id"] = json!("proj-1");
-        let mut named =
-            branch_candidate("proj-2", "main", BranchSource::PrimaryCheckout, "primary-2");
+        let mut named = branch_candidate(
+            "proj-2",
+            "main",
+            BranchSource::ExternalWorktree,
+            "primary-2",
+        );
         named.row["project"] = json!("Build");
         named.row["project_id"] = json!("proj-2");
         let rows = fold_work_items(vec![unnamed, named]);

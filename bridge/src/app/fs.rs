@@ -270,9 +270,9 @@ impl AppState {
                 self.rescan_external_worktrees(project_id);
                 self.note_entity_changed(worktree_id);
             }
-            FileScope::Legacy(TermScope::Primary { project_id }) => {
-                self.invalidate_primary_summary(project_id)
-            }
+            // The project's own checkout carries no board summary of its
+            // own: the board lists workspaces.
+            FileScope::Legacy(TermScope::Primary { .. }) => {}
         }
         self.note_board_changed();
     }

@@ -79,7 +79,6 @@
     "auto_advance": false,
     "current_stage_id": "stage-2",
     "adopted": false,
-    "primary": false,
     "can_finish": true,
     "created_at": "2026-09-12T09:00:00Z",
     "updated_at": "2026-09-13T10:04:11Z",

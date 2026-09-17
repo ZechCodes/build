@@ -200,7 +200,7 @@ impl AppState {
             .map_err(|error| error.to_string())?;
         let title = active.plan.goal.clone();
         let agent_id = active.agents.sole().id.clone();
-        let checkout = self.primary_checkout_of(issue_id)?;
+        let checkout = self.project_repository_of(issue_id)?;
         if self.agent_is_on_its_way(&checkout, &agent_id) {
             return Ok(None);
         }

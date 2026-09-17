@@ -432,26 +432,6 @@ pub(in crate::app::tests) fn commit_in(checkout: &std::path::Path, message: &str
     git_in(checkout, &["commit", "-m", message]);
 }
 
-/// The primary checkout's row is entity-less — a different dismissal path
-/// than an issue's or a run's — and it must survive a restart too.
-#[test]
-fn a_primary_row_dismissal_survives_a_restart() {
-    let (dir, repo) = init_repo();
-    {
-        let mut state = qa_state(&repo, dir.path());
-        let project_id = state.project_at(0).id.clone();
-        let cleared = state.handle(req(
-            "entity.dismiss",
-            json!({ "project_id": project_id, "primary": true }),
-        ));
-        assert_eq!(cleared["ok"], true, "{cleared:?}");
-    }
-
-    let mut reloaded = qa_state(&repo, dir.path());
-    let row = branch_row(&mut reloaded, "main");
-    assert_eq!(row["dismissed"], true, "{row:?}");
-}
-
 /// Adopting a bare worktree is what brings its row onto the feed at all —
 /// releasing it hands the worktree back to the human, and the row goes
 /// with it, the same as it never having been adopted.
@@ -495,35 +475,46 @@ fn adopting_a_bare_worktree_brings_its_row_and_releasing_it_takes_it_away() {
     );
 }
 
-/// The primary checkout is the project's own row: it has no entity, no
-/// conversation and nothing to file away, so commits cannot revive it.
+/// A checkout Build never cut has no entity, no conversation and nothing to
+/// file away, so commits cannot revive the row once it is cleared. It is
+/// reachable by name (`branch.get`) rather than on the inbox, which lists
+/// work started in Build.
 #[test]
-fn clearing_the_primary_row_holds_across_project_commits() {
+fn clearing_a_bare_checkouts_row_holds_across_its_own_commits() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
+    let loose = add_external_worktree(&repo, dir.path(), "loose", "loose");
+    state.scan_external_worktrees_now(&project_id).unwrap();
 
-    let row = branch_row(&mut state, "main");
-    assert_eq!(row["primary"], true, "{row:?}");
-    assert_eq!(row["dismissed"], false, "{row:?}");
+    assert_eq!(
+        bare_row(&mut state, &project_id, "loose")["dismissed"],
+        false
+    );
 
     let cleared = state.handle(req(
         "entity.dismiss",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id.clone(), "branch": "loose" }),
     ));
     assert_eq!(cleared["ok"], true, "{cleared:?}");
-    assert_eq!(cleared["result"]["primary"], true, "{cleared:?}");
+    assert_eq!(cleared["result"]["branch"], "loose", "{cleared:?}");
     assert_eq!(cleared["result"]["dismissed"], true, "{cleared:?}");
-    let row = branch_row(&mut state, "main");
-    assert_eq!(row["dismissed"], true, "{row:?}");
+    assert_eq!(
+        bare_row(&mut state, &project_id, "loose")["dismissed"],
+        true
+    );
 
-    commit_in(&repo, "landed");
-    let row = branch_row(&mut state, "main");
-    assert_eq!(row["dismissed"], true, "{row:?}");
+    commit_in(&loose, "landed");
+    state.board.diff_mut().clear_external_scan(&project_id);
+    assert_eq!(
+        bare_row(&mut state, &project_id, "loose")["dismissed"],
+        true,
+        "a checkout with no conversation cannot speak its row back"
+    );
 }
 
-/// Clearing one row clears one row. Two projects on the same branch name
-/// are two rows, and the branch row and the primary row are two more.
+/// Clearing one row clears one row. Two projects on the same branch name are
+/// two rows.
 #[test]
 fn a_row_dismissal_names_exactly_one_row() {
     let (dir, repo) = init_repo();
@@ -535,18 +526,53 @@ fn a_row_dismissal_names_exactly_one_row() {
     ));
     assert_eq!(added["ok"], true, "{added:?}");
     let project_id = state.project_at(0).id.clone();
+    let other_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    add_external_worktree(&repo, dir.path(), "loose", "loose");
+    add_external_worktree(&other, dir.path(), "other-loose", "loose");
+    for id in [&project_id, &other_id] {
+        state.scan_external_worktrees_now(id).unwrap();
+    }
 
     state.handle(req(
         "entity.dismiss",
-        json!({ "project_id": project_id.clone(), "primary": true }),
+        json!({ "project_id": project_id.clone(), "branch": "loose" }),
     ));
-    let rows = work_item_rows(&mut state);
-    let cleared: Vec<&Value> = rows
-        .iter()
-        .filter(|row| row["dismissed"] == json!(true))
-        .collect();
-    assert_eq!(cleared.len(), 1, "{rows:?}");
-    assert_eq!(cleared[0]["project_id"], project_id, "{rows:?}");
+
+    assert_eq!(
+        bare_row(&mut state, &project_id, "loose")["dismissed"],
+        true
+    );
+    assert_eq!(
+        bare_row(&mut state, &other_id, "loose")["dismissed"],
+        false,
+        "the neighbour's row shares a branch name and nothing else"
+    );
+}
+
+/// A row dismissal survives a restart: the record is the only place it
+/// lives, and the row it names has no conversation to rebuild it from.
+#[test]
+fn a_bare_checkouts_row_dismissal_survives_a_restart() {
+    let (dir, repo) = init_repo();
+    add_external_worktree(&repo, dir.path(), "loose", "loose");
+    let project_id = {
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.project_at(0).id.clone();
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        let cleared = state.handle(req(
+            "entity.dismiss",
+            json!({ "project_id": project_id.clone(), "branch": "loose" }),
+        ));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        project_id
+    };
+
+    let mut reloaded = qa_state(&repo, dir.path());
+    reloaded.scan_external_worktrees_now(&project_id).unwrap();
+    assert_eq!(
+        bare_row(&mut reloaded, &project_id, "loose")["dismissed"],
+        true
+    );
 }
 
 #[test]
@@ -554,23 +580,47 @@ fn a_row_dismissal_refuses_what_it_cannot_clear() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
+    add_external_worktree(&repo, dir.path(), "loose", "loose");
+    state.scan_external_worktrees_now(&project_id).unwrap();
 
     let unknown = state.handle(req(
         "entity.dismiss",
-        json!({ "project_id": "proj-nowhere", "primary": true }),
+        json!({ "project_id": "proj-nowhere", "branch": "loose" }),
     ));
     assert_eq!(unknown["ok"], false, "{unknown:?}");
 
-    // A project named with neither a branch nor the primary checkout names
-    // no row: the project itself is where work lives, not a row.
-    let unsaid = state.handle(req("entity.dismiss", json!({ "project_id": project_id })));
+    // A project named with no branch names no row: the project itself is
+    // where work is cut from, not a row.
+    let unsaid = state.handle(req(
+        "entity.dismiss",
+        json!({ "project_id": project_id.clone() }),
+    ));
     assert_eq!(unsaid["ok"], false, "{unsaid:?}");
 
-    let row = branch_row(&mut state, "main");
+    // Nor does a branch no checkout of this project is on.
+    let nowhere = state.handle(req(
+        "entity.dismiss",
+        json!({ "project_id": project_id.clone(), "branch": "never-checked-out" }),
+    ));
+    assert_eq!(nowhere["ok"], false, "{nowhere:?}");
+
     assert_eq!(
-        row["dismissed"], false,
-        "a refused call changes nothing: {row:?}"
+        bare_row(&mut state, &project_id, "loose")["dismissed"],
+        false,
+        "a refused call changes nothing"
     );
+}
+
+/// The row of a checkout Build never cut, read the one way a client can
+/// reach it: by name. The inbox lists work started in Build, so it is not
+/// there.
+fn bare_row(state: &mut AppState, project_id: &str, branch: &str) -> Value {
+    let got = state.handle(req(
+        "branch.get",
+        json!({ "project_id": project_id, "branch": branch }),
+    ));
+    assert_eq!(got["ok"], true, "{got:?}");
+    got["result"].clone()
 }
 
 /// A planned run and its Issue share one conversation. One piece of news on

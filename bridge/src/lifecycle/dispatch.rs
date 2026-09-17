@@ -1,11 +1,11 @@
 use crate::isolation::{Isolation, ResolvedIsolation};
-use crate::lifecycle::holders::{BranchHolder, ProjectCheckouts};
+use crate::lifecycle::holders::{BranchHolder, BranchHolderKind, ProjectCheckouts};
 use crate::lifecycle::{
     adopt, DispatchReached, DispatchedCheckout, JoinedCheckout, Performed, WorktreeChange,
     WorktreeMutation,
 };
 use crate::models::ModelChoice;
-use crate::orchestrator::{AdoptionScope, Orchestrator};
+use crate::orchestrator::Orchestrator;
 use crate::worktree::{ExternalWorktree, NamedBranchCheckout};
 
 /// Tests only: where to fail a `branch.dispatch`, so the cleanup that has to
@@ -150,7 +150,7 @@ impl WorktreeMutation for DispatchCheckout {
         if let Some(branch) = self.target.adopted_branch() {
             let ownership = self.checkouts.holders()?;
             let holder = BranchHolder::of(&ownership, branch);
-            if let Some(run_id) = holder.held_by(crate::branch::BranchSource::Run) {
+            if let Some(run_id) = holder.held_by(BranchHolderKind::Run) {
                 return Ok(Performed {
                     change: WorktreeChange::nothing(),
                     output: DispatchReached::Joined(JoinedCheckout {
@@ -170,12 +170,12 @@ impl WorktreeMutation for DispatchCheckout {
                 });
             }
             if holder
-                .held_by(crate::branch::BranchSource::PrimaryCheckout)
+                .held_by(BranchHolderKind::ProjectRepository)
                 .is_some()
             {
                 return Err(holder
                     .refusal(branch)
-                    .expect("the primary holds this branch"));
+                    .expect("the repository holds this branch"));
             }
             if let Some(found) = ownership
                 .external
@@ -230,7 +230,6 @@ impl DispatchCheckout {
             &self.project_id,
             checkout,
             &self.base_branch,
-            AdoptionScope::ExternalWorktree,
             &self.run_id,
             self.model_choice.clone(),
         )?;

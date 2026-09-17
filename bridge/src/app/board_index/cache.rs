@@ -11,7 +11,6 @@ use crate::worktree::ExternalWorktree;
 pub(in crate::app) enum DiffCacheKey {
     RunStat(String),
     ExternalScan(String),
-    PrimarySummary(String),
     WorkspaceSummary(String, Vec<std::path::PathBuf>),
 }
 
@@ -26,10 +25,6 @@ pub(in crate::app) enum DiffCacheEntry {
     },
     ExternalScanUnreadable {
         project_id: String,
-    },
-    PrimarySummary {
-        project_id: String,
-        summary: Value,
     },
     WorkspaceSummary {
         workspace_id: String,
@@ -47,7 +42,6 @@ pub(in crate::app) struct ExternalScanCache {
 struct ProjectCache {
     external_scan: Option<ExternalScanCache>,
     external_scan_failed_at: Option<Instant>,
-    primary_summary: Option<(Instant, Value)>,
 }
 
 pub(in crate::app) struct CachedValue<'a> {
@@ -150,17 +144,6 @@ impl DiffCache {
     #[cfg(test)]
     pub(in crate::app) fn run_files_changed_at(&self, run_id: &str) -> Option<&str> {
         self.run_files_changed_at.get(run_id).map(String::as_str)
-    }
-
-    pub(in crate::app) fn primary_summary(&self, project_id: &str) -> Option<CachedValue<'_>> {
-        self.project_cache
-            .get(project_id)?
-            .primary_summary
-            .as_ref()
-            .map(|(computed_at, value)| CachedValue {
-                computed_at: *computed_at,
-                value,
-            })
     }
 
     pub(in crate::app) fn workspace_summary(
@@ -335,14 +318,6 @@ impl DiffCache {
     }
 
     #[cfg(test)]
-    pub(in crate::app) fn clear_primary_summary(&mut self, project_id: &str) {
-        self.project_cache
-            .get_mut(project_id)
-            .expect("registered project cache")
-            .primary_summary = None;
-    }
-
-    #[cfg(test)]
     pub(in crate::app) fn age_external_scan(&mut self, project_id: &str, age: std::time::Duration) {
         self.project_cache
             .get_mut(project_id)
@@ -367,10 +342,6 @@ impl DiffCache {
             DiffCacheEntry::ExternalScanUnreadable { project_id } => {
                 self.store_scan_failure(&project_id, now)
             }
-            DiffCacheEntry::PrimarySummary {
-                project_id,
-                summary,
-            } => self.store_primary_summary(&project_id, summary, now),
             DiffCacheEntry::WorkspaceSummary {
                 workspace_id,
                 repositories,
@@ -448,27 +419,6 @@ impl DiffCache {
         }
     }
 
-    fn store_primary_summary(
-        &mut self,
-        project_id: &str,
-        summary: Value,
-        now: Instant,
-    ) -> Vec<CacheEffect> {
-        let Some(project) = self.project_cache.get_mut(project_id) else {
-            return Vec::new();
-        };
-        let changed = project
-            .primary_summary
-            .as_ref()
-            .is_none_or(|(_, previous)| previous != &summary);
-        project.primary_summary = Some((now, summary));
-        if changed {
-            vec![CacheEffect::BoardChanged]
-        } else {
-            Vec::new()
-        }
-    }
-
     pub(in crate::app) fn invalidate_run_stat(&mut self, run_id: &str) {
         self.run_stat_cache.remove(run_id);
         self.supersede(&DiffCacheKey::RunStat(run_id.to_string()));
@@ -476,13 +426,6 @@ impl DiffCache {
 
     pub(in crate::app) fn remove_run_files_changed_at(&mut self, run_id: &str) {
         self.run_files_changed_at.remove(run_id);
-    }
-
-    pub(in crate::app) fn invalidate_primary_summary(&mut self, project_id: &str) {
-        if let Some(project) = self.project_cache.get_mut(project_id) {
-            project.primary_summary = None;
-        }
-        self.supersede(&DiffCacheKey::PrimarySummary(project_id.to_string()));
     }
 
     /// Exact-path upsert: remove only the first equal path, push, then apply the

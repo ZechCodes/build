@@ -25,6 +25,12 @@ Legacy projects whose project root is a Git checkout remain supported as a
 single-source project. Their source is represented by `.` at the existing root;
 Build does not move that checkout to another directory.
 
+A project's own checkout is a source, never a place to work. Build does not adopt
+it as a workspace-like checkout, shows no row for it, and refuses `run.adopt` of
+it — naming workspaces as the way to work. It is still read: files, diffs, branch
+listings and terminals resolve to it. No verb that removes a run's checkout may
+remove it, whatever a record written before this says.
+
 ## Materializing a workspace
 
 Build materializes each source independently beneath the workspace root.

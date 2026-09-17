@@ -408,14 +408,14 @@ impl AppState {
         }
         let bound = self.runs.get(&run_id).ok_or("unknown run_id")?;
         let adopted = bound.adopted;
-        // A merge lands the run's branch on the base branch through the primary
-        // checkout. For a primary run that target IS the checkout being merged
-        // — a no-op when it sits on the base branch, and a merge into the wrong
-        // tree when it does not.
-        if is_merge_action && self.owns_primary_checkout(&run_id, bound) {
+        // A merge lands the run's branch on the base branch through the
+        // project's repository. For a run standing in that repository the
+        // target IS the checkout being merged — a no-op when it sits on the
+        // base branch, and a merge into the wrong tree when it does not.
+        if is_merge_action && self.stands_in_the_repository(&run_id, bound) {
             return Err(
-                "run.git_action: the primary checkout cannot be merged — its branch is what a \
-                 merge would target"
+                "run.git_action: a run standing in the project's repository cannot be merged — \
+                 its branch is what a merge would target"
                     .to_string(),
             );
         }
@@ -640,7 +640,7 @@ impl AppState {
 
         let (path, rationale) = self.triaged_hunk_context(&run_id, &hunk_id)?;
         let pattern = crate::review_rules::pattern_for_path(&path);
-        let checkout = self.primary_checkout_of(&run_id)?;
+        let checkout = self.project_repository_of(&run_id)?;
         let now = now_rfc3339();
 
         let mut active = self.take_run(&run_id)?;

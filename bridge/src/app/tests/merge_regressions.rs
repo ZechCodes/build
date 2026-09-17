@@ -100,17 +100,16 @@ fn merged_branch_dispatch_revalidates_the_holder_snapshot_before_apply() {
 }
 
 #[test]
-fn merged_branch_holder_dispatch_joins_the_run_before_the_primary_or_refuses_off_lock() {
+fn merged_branch_holder_dispatch_joins_the_run_before_the_repository_or_refuses_off_lock() {
     for fails in [false, true] {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
         let project_id = app.project_at(0).id.clone();
-        let adopted = app.handle(req(
-            "run.adopt",
-            json!({ "project_id": project_id, "primary": true }),
-        ));
-        assert_eq!(adopted["ok"], true, "{adopted}");
-        let run_id = adopted["result"]["run_id"].as_str().unwrap().to_string();
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "feature-holder");
+        // A run standing in the repository, on the branch the repository is
+        // also on: two holders of one branch, which is what a store written
+        // before workspaces has.
+        app.runs.get_mut(&run_id).unwrap().worktree.path = AppState::canonical_root(&repo);
         if fails {
             app.dispatch_fault = Some(BranchDispatchStep::Post);
         }
@@ -131,7 +130,7 @@ fn merged_branch_holder_dispatch_joins_the_run_before_the_primary_or_refuses_off
         if !fails {
             assert_eq!(
                 reply["result"]["run_id"], run_id,
-                "the run outranks the primary holder"
+                "the run outranks the repository holder"
             );
         }
         assert_eq!(state.lock().unwrap().runs.len(), 1);

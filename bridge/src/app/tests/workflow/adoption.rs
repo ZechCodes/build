@@ -103,10 +103,12 @@ async fn adding_the_first_agent_on_a_named_harness_moves_the_branch_onto_it() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
     let project_id = state.lock().unwrap().project_at(0).id.clone();
+    add_external_worktree(&repo, dir.path(), "first-agent", "first-agent");
+    let worktree_id = external_id(&mut state.lock().unwrap(), &project_id, Some("first-agent"));
     let adopted = call(
         &handler,
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
     );
     let run_id = run_id_of(&adopted);
 
@@ -149,10 +151,16 @@ async fn a_start_respawns_the_named_agents_harness_on_a_mixed_branch() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
     let project_id = state.lock().unwrap().project_at(0).id.clone();
+    add_external_worktree(&repo, dir.path(), "mixed-branch", "mixed-branch");
+    let worktree_id = external_id(
+        &mut state.lock().unwrap(),
+        &project_id,
+        Some("mixed-branch"),
+    );
     let adopted = call(
         &handler,
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
     );
     let run_id = run_id_of(&adopted);
     call(&handler, "agent.add", json!({ "entity_id": run_id }));
@@ -387,10 +395,12 @@ fn run_adopt_external_worktree_is_idempotent() {
 /// Adoption is a whole-repository scan, a checkpoint commit and a scaffold
 /// — the git this whole split exists to keep off the app mutex.
 #[test]
-fn run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free() {
+fn run_adopt_reads_git_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     let project_id = app.project_at(0).id.clone();
+    add_external_worktree(&repo, dir.path(), "feature-slow", "feature-slow");
+    let worktree_id = external_id(&mut app, &project_id, Some("feature-slow"));
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -399,7 +409,7 @@ fn run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free() {
         &state,
         "s-adopt",
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
     );
     gate_handle.wait_for_arrival();
     assert!(
@@ -416,45 +426,60 @@ fn run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free() {
         .recv_timeout(Duration::from_secs(30))
         .expect("the adoption answers once its git is done");
     assert_eq!(adopted["ok"], true, "{adopted:?}");
-    assert_eq!(adopted["result"]["primary"], true, "{adopted:?}");
     assert_eq!(adopted["result"]["state"], "review", "{adopted:?}");
 }
 
-/// The project's primary card is the one card the board lists under no id
-/// of its own — `worktree_id`, `run_id` and `issue_id` are all null on it.
-/// A row that stood only on those ids would be painted as a SECOND row
-/// beside the card it is running on, for the whole of the adoption, while
-/// that card kept offering verbs the row refuses.
-#[test]
-fn a_primary_adoption_names_the_primary_card_it_is_running_on() {
+/// The Agent tab on an adopted checkout: `run.adopt` mints no agent, so
+/// `agent.start` is what creates one. It runs in the checkout, keyed there
+/// like every other checkout's agent, and a second start addresses it
+/// rather than opening another.
+#[tokio::test]
+async fn agent_start_opens_an_adopted_checkouts_agent() {
     let (dir, repo) = init_repo();
-    let mut app = qa_state(&repo, dir.path());
-    let project_id = app.project_at(0).id.clone();
-    let (gate, gate_handle) = OffLockGate::new();
-    app.off_lock_gate = Some(gate);
-    let state = app.shared();
-
-    let adopted = frame_on_a_thread(
-        &state,
-        "s-adopt",
+    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let root = add_external_worktree(&repo, dir.path(), "agent-here", "agent-here");
+    let worktree_id = external_id(&mut state.lock().unwrap(), &project_id, Some("agent-here"));
+    let adopted = call(
+        &handler,
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
     );
-    gate_handle.wait_for_arrival();
-
-    let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the board answers while the primary is being adopted");
-    let rows = pending_on_the_board(&board);
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0]["primary"], true, "{rows:?}");
-    assert_eq!(rows[0]["project_id"], json!(project_id), "{rows:?}");
-
-    gate_handle.release();
-    let adopted = adopted
-        .recv_timeout(Duration::from_secs(30))
-        .expect("the adoption answers once its git is done");
     assert_eq!(adopted["ok"], true, "{adopted:?}");
+    let run_id = run_id_of(&adopted);
+
+    // Adoption minted no agent, so the start is what creates one — on the
+    // account's default harness, since nobody named another.
+    let started = call(&handler, "agent.start", json!({ "id": run_id }));
+    assert_eq!(started["ok"], true, "{started:?}");
+    assert_eq!(
+        started["result"]["term_id"],
+        agent_tab_id(started["result"]["agent_id"].as_str().unwrap()),
+        "the reply reserves the tab id the agent's own identity mints: {started:?}"
+    );
+    wait_for_deliveries(&state).await;
+    let root = AppState::canonical_root(&root);
+    {
+        let s = state.lock().unwrap();
+        let roster = s.entity_agents(&run_id).expect("the adopted run");
+        assert_eq!(roster.len(), 1, "the start created exactly one agent");
+        assert_eq!(
+            roster.primary().unwrap().choice.provider,
+            AgentProvider::ClaudeAdk,
+            "on the account's default harness"
+        );
+        assert!(
+            s.session_registry
+                .contains(&primary_agent_key(&s, &root, &run_id)),
+            "the checkout's agent is keyed on the checkout root"
+        );
+    }
+    let again = call(&handler, "agent.start", json!({ "id": run_id }));
+    assert_eq!(again["ok"], true, "{again:?}");
+    assert_eq!(
+        again["result"]["term_id"], started["result"]["term_id"],
+        "a second start addresses the agent the first one opened: {again:?}"
+    );
 }
 
 /// The reply is built after the git, by the epilogue, so it carries what
@@ -488,16 +513,18 @@ fn run_adopt_answers_from_its_epilogue_with_the_runs_own_view() {
     );
 }
 
-/// The repo root is reachable from every reload and every second browser.
-/// While one adoption's git runs the checkout has no run yet, so the second
-/// asker is told the adoption is running and handed no id — not the id of
-/// a run no verb would accept, and not a refusal, since it has nothing to
+/// A card is adoptable from every reload and every second browser. While
+/// one adoption's git runs the checkout has no run yet, so the second asker
+/// is told the adoption is running and handed no id — not the id of a run
+/// no verb would accept, and not a refusal, since it has nothing to
 /// correct. Its next ask converges on the one owner the first minted.
 #[test]
 fn two_adopts_of_one_checkout_converge_on_one_run() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     let project_id = app.project_at(0).id.clone();
+    add_external_worktree(&repo, dir.path(), "feature-contended", "feature-contended");
+    let worktree_id = external_id(&mut app, &project_id, Some("feature-contended"));
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -506,14 +533,14 @@ fn two_adopts_of_one_checkout_converge_on_one_run() {
         &state,
         "s-one",
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
     );
     gate_handle.wait_for_arrival();
     let second = frame_on_a_thread(
         &state,
         "s-two",
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id.clone() }),
     )
     .recv_timeout(Duration::from_secs(10))
     .expect("a second browser is answered while the first adoption runs");
@@ -537,7 +564,7 @@ fn two_adopts_of_one_checkout_converge_on_one_run() {
         &state,
         "s-two",
         "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
     )
     .recv_timeout(Duration::from_secs(30))
     .expect("the retry is answered");
@@ -558,7 +585,7 @@ fn two_adopts_of_one_checkout_converge_on_one_run() {
     assert_eq!(
         state.lock().unwrap().runs.len(),
         1,
-        "the primary checkout has one owner"
+        "the checkout has one owner"
     );
 }
 

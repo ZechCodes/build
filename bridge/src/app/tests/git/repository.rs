@@ -374,7 +374,7 @@ fn git_branches_flags_a_branch_checked_out_in_an_unadopted_worktree() {
     );
     let main = branches.iter().find(|b| b["name"] == "main").unwrap();
     assert_eq!(
-        main["holder"]["kind"], "primary_checkout",
+        main["holder"]["kind"], "project_repository",
         "the checked-out-here branch is the repository's own: {main:?}"
     );
 }
@@ -566,26 +566,23 @@ fn git_branches_names_the_run_that_owns_a_branch() {
         "{adopted:?}"
     );
     let main = branches.iter().find(|b| b["name"] == "main").unwrap();
-    assert_eq!(main["holder"]["kind"], "primary_checkout", "{main:?}");
+    assert_eq!(main["holder"]["kind"], "project_repository", "{main:?}");
 }
 
 /// The repository's own checkout is deliberately absent from the external
 /// scan, so without asking after it the branch it holds would look free to
-/// check out a second time — which git refuses. The row names it, with the
-/// worktree id `run.adopt` adopts the primary by.
+/// check out a second time — which git refuses. The row names it, by the
+/// checkout id its path hashes to.
 #[test]
-fn git_branches_names_the_primary_checkout_holding_a_branch() {
+fn git_branches_names_the_repository_holding_a_branch() {
     let (dir, repo) = init_repo();
     git_in(&repo, &["branch", "feature-idle"]);
     let mut state = git_gui_state(&dir, &repo);
     let project_id = state.project_at(0).id.clone();
-    let primary_id = state
-        .project_at(0)
-        .orch
-        .worktrees()
-        .describe_primary("main")
+    let primary_id = crate::worktree::repository_branch_holder(&repo)
         .unwrap()
-        .id;
+        .expect("the repository is on a branch")
+        .0;
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -593,7 +590,7 @@ fn git_branches_names_the_primary_checkout_holding_a_branch() {
     let main = branches.iter().find(|b| b["name"] == "main").unwrap();
     assert_eq!(
         main["holder"],
-        json!({ "kind": "primary_checkout", "id": primary_id }),
+        json!({ "kind": "project_repository", "id": primary_id }),
         "{main:?}"
     );
     let idle = branches
@@ -603,21 +600,19 @@ fn git_branches_names_the_primary_checkout_holding_a_branch() {
     assert!(idle["holder"].is_null(), "{idle:?}");
 }
 
-/// A run adopted over the primary checkout is two holders of one branch,
-/// and only one of them can be pressed: the run knows the branch's
-/// lifecycle, so the row names the run and says nothing about the checkout
-/// underneath it.
+/// A run standing on the branch the repository is also on is two holders of
+/// one branch, and only one of them can be pressed: the run knows the
+/// branch's lifecycle, so the row names the run and says nothing about the
+/// checkout underneath it.
 #[test]
-fn git_branches_lets_the_run_win_the_primary_checkout_it_adopted() {
+fn git_branches_lets_a_run_win_the_branch_the_repository_is_also_on() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
     let project_id = state.project_at(0).id.clone();
-    let adopted = state.handle(req(
-        "run.adopt",
-        json!({ "project_id": project_id, "primary": true }),
-    ));
-    assert_eq!(adopted["ok"], true, "{adopted:?}");
-    let run_id = run_id_of(&adopted);
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-owned");
+    // What a store written before workspaces holds: a run standing in the
+    // repository, on the branch the repository itself has checked out.
+    state.runs.get_mut(&run_id).unwrap().worktree.path = AppState::canonical_root(&repo);
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -626,16 +621,15 @@ fn git_branches_lets_the_run_win_the_primary_checkout_it_adopted() {
     assert_eq!(
         main["holder"],
         json!({ "kind": "run", "id": run_id }),
-        "the run that adopted the primary speaks for its branch: {main:?}"
+        "the run speaks for the branch it is on: {main:?}"
     );
 }
 
-/// A repository whose HEAD is detached has no branch in its primary
-/// checkout to hold anything. That costs the rows a primary-checkout
-/// holder and nothing else — the branches are still listed, and still
-/// offerable.
+/// A repository whose HEAD is detached has no branch in its own checkout to
+/// hold anything. That costs the rows a repository holder and nothing else —
+/// the branches are still listed, and still offerable.
 #[test]
-fn git_branches_lists_every_branch_when_the_primary_holds_none() {
+fn git_branches_lists_every_branch_when_the_repository_holds_none() {
     let (dir, repo) = init_repo();
     git_in(&repo, &["branch", "feature-idle"]);
     git_in(&repo, &["checkout", "--detach"]);
@@ -652,8 +646,8 @@ fn git_branches_lists_every_branch_when_the_primary_holds_none() {
     assert!(
         branches
             .iter()
-            .all(|b| b["holder"]["kind"] != json!("primary_checkout")),
-        "a detached primary holds no branch: {branches:?}"
+            .all(|b| b["holder"]["kind"] != json!("project_repository")),
+        "a detached repository holds no branch: {branches:?}"
     );
 }
 

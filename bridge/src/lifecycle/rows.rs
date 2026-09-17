@@ -47,10 +47,6 @@ pub struct PendingRow {
     pub branch: Option<String>,
     pub state: PendingState,
     pub checkout_id: Option<String>,
-    /// Whether the card this row stands on is the project's own checkout. That
-    /// card is the one the board lists under no id of its own, so `checkout_id`
-    /// alone names nothing a browser can match it to.
-    pub primary: bool,
     pub implements: Option<String>,
     /// How the checkout this verb is making will be isolated, resolved before
     /// the row was reserved. A verb that makes no checkout of its own — a
@@ -93,7 +89,6 @@ impl PendingRow {
             branch: None,
             state,
             checkout_id: None,
-            primary: false,
             implements: None,
             isolation: None,
             since: Instant::now(),
@@ -127,17 +122,6 @@ impl PendingRow {
         PendingRow {
             checkout_id: Some(checkout_id),
             ..self
-        }
-    }
-
-    /// The card this verb acts on is the project's OWN checkout. The board
-    /// lists that card with a null `worktree_id`, `run_id` and `issue_id`, so
-    /// the checkout id this row also carries matches nothing on it: what names
-    /// it is the project, plus being the primary.
-    pub fn on_primary_checkout(self, checkout_id: String) -> PendingRow {
-        PendingRow {
-            primary: true,
-            ..self.on_checkout(checkout_id)
         }
     }
 

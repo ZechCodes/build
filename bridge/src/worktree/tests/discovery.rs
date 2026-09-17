@@ -4,8 +4,7 @@ use crate::git_fixture::{git_in, init_repo};
 use crate::isolation::probe::rift_or_skip;
 use crate::isolation::Isolation;
 use crate::worktree::{
-    describe_checkout, external_worktree_id, primary_checkout_holder, unix_now, ExternalWorktree,
-    WorktreeManager,
+    describe_checkout, external_worktree_id, repository_branch_holder, unix_now, ExternalWorktree,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -24,50 +23,36 @@ fn external_worktree_id_is_stable_and_prefixed() {
     assert!(id_a1.starts_with("wt-"));
     assert_eq!(id_a1.len(), 15);
 }
+/// The listing stamps a row with two facts about the project's repository —
+/// the checkout id it hashes to and the branch it holds — and pays for
+/// nothing else: no status walk, no diffstat, no subprocess.
+#[test]
+fn repository_branch_holder_names_the_branch_by_the_checkouts_own_id() {
+    let (_dir, repo) = init_repo();
+
+    let holder = repository_branch_holder(&repo).unwrap();
+
+    let id = external_worktree_id(&std::fs::canonicalize(&repo).unwrap());
+    assert_eq!(holder, Some((id, "main".to_string())));
+}
+#[test]
+fn repository_branch_holder_is_none_when_head_is_detached() {
+    let (_dir, repo) = init_repo();
+    git_in(&repo, &["checkout", "--detach"]);
+
+    assert_eq!(repository_branch_holder(&repo).unwrap(), None);
+}
 /// `Ok(None)` is reserved for a repository that really has no working
 /// tree. A path git cannot read as a repository at all is broken, and
 /// saying so is what keeps a caller from reading "nothing holds this
 /// branch" off a repository that answered nothing.
 #[test]
-fn describe_primary_errors_on_a_directory_that_is_not_a_repository() {
+fn repository_branch_holder_errors_on_a_directory_that_is_not_a_repository() {
     let dir = tempfile::tempdir().unwrap();
     let not_a_repo = dir.path().join("plain");
     std::fs::create_dir(&not_a_repo).unwrap();
 
-    let found =
-        WorktreeManager::new(&not_a_repo, dir.path().join("worktrees")).describe_primary("main");
-
-    assert!(
-        found.is_err(),
-        "a directory git cannot read is broken, not checkout-less: {found:?}"
-    );
-}
-/// The listing stamps a row with two facts about the primary checkout —
-/// the id `run.adopt` adopts it by and the branch it holds — and pays for
-/// nothing else: no status walk, no diffstat, no subprocess.
-#[test]
-fn primary_checkout_holder_names_the_branch_by_the_id_adoption_uses() {
-    let (_dir, repo) = init_repo();
-
-    let holder = primary_checkout_holder(&repo).unwrap();
-
-    let described = manager(&_dir, &repo).describe_primary("main").unwrap();
-    assert_eq!(holder, Some((described.id, "main".to_string())));
-}
-#[test]
-fn primary_checkout_holder_is_none_when_head_is_detached() {
-    let (_dir, repo) = init_repo();
-    git_in(&repo, &["checkout", "--detach"]);
-
-    assert_eq!(primary_checkout_holder(&repo).unwrap(), None);
-}
-#[test]
-fn primary_checkout_holder_errors_on_a_directory_that_is_not_a_repository() {
-    let dir = tempfile::tempdir().unwrap();
-    let not_a_repo = dir.path().join("plain");
-    std::fs::create_dir(&not_a_repo).unwrap();
-
-    assert!(primary_checkout_holder(&not_a_repo).is_err());
+    assert!(repository_branch_holder(&not_a_repo).is_err());
 }
 #[test]
 fn discovery_lists_a_user_worktree_and_skips_the_primary() {

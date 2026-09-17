@@ -430,8 +430,8 @@ impl AppState {
         Ok(self.project_for(project_id)?.base_branch.clone())
     }
 
-    /// A project's primary checkout — the repo root, the same directory
-    /// `TermScope::Primary` resolves to.
+    /// A project's repository root — the directory the project's sources are
+    /// read from, and the same one `TermScope::Primary` resolves to.
     pub(in crate::app) fn repo_path_for(
         &self,
         project_id: &str,
@@ -439,33 +439,24 @@ impl AppState {
         Ok(self.project_for(project_id)?.repo_path.clone())
     }
 
-    /// Whether a run was adopted around its project's primary checkout rather
-    /// than a worktree beside it.
+    /// Whether a run stands in its project's repository rather than in a
+    /// checkout cut beside it.
     ///
-    /// Derived from the two paths the run record already carries (its worktree
-    /// and its project), so it survives a daemon restart with no new stored
-    /// field and can never disagree with where the run actually works. Takes
-    /// the run by reference because the callers that matter most — `run_view`
-    /// and the lifecycle guards — hold it outside the map.
-    pub(in crate::app) fn owns_primary_checkout(&self, run_id: &str, active: &ActiveRun) -> bool {
+    /// Nothing mints such a run any more — work happens in workspaces — but a
+    /// store written before that holds runs adopted on the repo root, and the
+    /// verbs that remove a run's directory must never remove the repository.
+    /// Compared by canonical path, off the two paths the run record already
+    /// carries, so the guard holds for a run this daemon never minted and can
+    /// never disagree with where the run actually works.
+    pub(in crate::app) fn stands_in_the_repository(
+        &self,
+        run_id: &str,
+        active: &ActiveRun,
+    ) -> bool {
         let repo_path = self.project_path_for(run_id);
         !repo_path.is_empty()
             && Self::canonical_root(std::path::Path::new(&repo_path))
                 == Self::canonical_root(&active.worktree.path)
-    }
-
-    /// The live run that owns a project's primary checkout, if one has been
-    /// adopted. A terminal run has let go of it, so the checkout is adoptable
-    /// again.
-    pub(in crate::app) fn primary_run_of(&self, project_id: &str) -> Option<String> {
-        self.runs
-            .iter()
-            .find(|(run_id, active)| {
-                !active.run.state.is_terminal()
-                    && self.projects.project_id_of(run_id) == Some(project_id)
-                    && self.owns_primary_checkout(run_id, active)
-            })
-            .map(|(run_id, _)| run_id.clone())
     }
 
     /// The project an entity (plan or run) belongs to.

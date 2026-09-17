@@ -62,15 +62,18 @@ pub fn sort_checkouts(checkouts: &mut [ExternalWorktree]) {
     });
 }
 
-/// The two facts a branch listing stamps a row with about the primary
-/// checkout at `repo_path`: the worktree id `run.adopt` adopts it by (the same
-/// id [`WorktreeManager::describe_primary`] mints) and the branch it holds. Read straight
-/// off the repository — no status walk, no diffstat, no subprocess — because a
-/// listing is the drain's to answer, not a description to render. `None` when
-/// the checkout holds no branch: a detached or unborn HEAD, or a bare
-/// repository with no working tree. A path git cannot read as a repository is
-/// broken rather than branch-less, and says so through the error.
-pub fn primary_checkout_holder(
+/// The two facts a branch listing stamps a row with about the project's own
+/// repository at `repo_path`: the checkout id it hashes to, and the branch it
+/// holds. Read straight off the repository — no status walk, no diffstat, no
+/// subprocess — because a listing is the drain's to answer, not a description
+/// to render. `None` when the checkout holds no branch: a detached or unborn
+/// HEAD, or a bare repository with no working tree. A path git cannot read as a
+/// repository is broken rather than branch-less, and says so through the error.
+///
+/// The branch it holds cannot be checked out a second time, which is the whole
+/// reason a listing asks: a workspace is cut from the base ref, never from a
+/// branch the repository is standing on.
+pub fn repository_branch_holder(
     repo_path: &Path,
 ) -> Result<Option<(String, String)>, WorktreeError> {
     let canonical_path = std::fs::canonicalize(repo_path)?;
@@ -205,19 +208,5 @@ impl WorktreeManager {
                 .then_with(|| a.path.cmp(&b.path))
         });
         Ok(found)
-    }
-    /// The project's own checkout described in the shape adoption takes for any
-    /// other, so one adoption path serves both. It is nobody's isolated copy —
-    /// it is the repository — so it carries the default isolation.
-    pub fn describe_primary(&self, base_branch: &str) -> Result<ExternalWorktree, WorktreeError> {
-        let primary = std::fs::canonicalize(&self.repo_path)?;
-        let isolation = Isolation::of(&primary).unwrap_or_default();
-        summarize_checkout(&primary, isolation, base_branch, unix_now()).ok_or_else(|| {
-            WorktreeError::Refused(format!(
-                "the primary checkout at {} cannot be described — a bare or detached repository \
-                 has no branch to adopt",
-                primary.display()
-            ))
-        })
     }
 }

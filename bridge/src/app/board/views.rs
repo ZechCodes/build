@@ -1,6 +1,4 @@
-use crate::app::{
-    run_state_str, DigestScope, ExternalWorktreeRows, PRIMARY_SUMMARY_TTL, WORKSPACE_SUMMARY_TTL,
-};
+use crate::app::{run_state_str, DigestScope, ExternalWorktreeRows, WORKSPACE_SUMMARY_TTL};
 use crate::run::RunState;
 use crate::store::now_rfc3339;
 use crate::thread::ThreadDetail;
@@ -10,8 +8,8 @@ use serde_json::{json, Value};
 
 use super::super::AppState;
 
-/// One inbox row that no entity stands behind: a project's primary checkout, or
-/// a branch checked out somewhere Build never cut.
+/// One inbox row that no entity stands behind: a branch checked out somewhere
+/// Build never cut.
 ///
 /// It has no entity id, so it is identified by what it is, and no conversation,
 /// so the line a dismissal draws is the commit it is sitting on.
@@ -24,8 +22,6 @@ pub(in crate::app) struct EntitylessRow {
     pub(in crate::app) project_id: String,
     /// The branch the row shows, or `None` for a detached checkout.
     pub(in crate::app) branch: Option<String>,
-    /// Whether this is the project's own checkout — the repository itself.
-    pub(in crate::app) primary: bool,
 }
 
 /// The +/− block every work-item row carries, in one shape whatever source it
@@ -111,28 +107,6 @@ impl WorkItemStat {
             uncommitted_files: entry["dirty_files"].as_u64().unwrap_or(0),
             uncommitted_insertions: entry["uncommitted"]["insertions"].as_u64().unwrap_or(0),
             uncommitted_deletions: entry["uncommitted"]["deletions"].as_u64().unwrap_or(0),
-            ahead: entry["ahead"].as_u64(),
-            behind: entry["behind"].as_u64(),
-            upstream: entry["upstream"].as_str().map(str::to_string),
-            comparison_ref: entry["comparison_ref"].as_str().map(str::to_string),
-            head_committed_at: entry["head_committed_at"].as_str().map(str::to_string),
-        }
-    }
-
-    /// Read off one entry of the primary-changes summary, whose counts are the
-    /// working tree against HEAD — uncommitted work, and all a checkout with no
-    /// base to compare against can honestly report.
-    pub(in crate::app) fn from_primary_entry(entry: &Value) -> Self {
-        let files_changed = entry["files_changed"].as_u64().unwrap_or(0);
-        let insertions = entry["insertions"].as_u64().unwrap_or(0);
-        let deletions = entry["deletions"].as_u64().unwrap_or(0);
-        Self {
-            files_changed,
-            insertions,
-            deletions,
-            uncommitted_files: files_changed,
-            uncommitted_insertions: insertions,
-            uncommitted_deletions: deletions,
             ahead: entry["ahead"].as_u64(),
             behind: entry["behind"].as_u64(),
             upstream: entry["upstream"].as_str().map(str::to_string),
@@ -302,60 +276,6 @@ impl AppState {
         rows
     }
 
-    /// Every project's primary-checkout changes summary, held per project for
-    /// [`PRIMARY_SUMMARY_TTL`] (spec §5.3) and then served stale while it
-    /// refreshes — the `task.list` ride-along for the sidebar "main" row and the
-    /// project page's MAIN bucket. A per-project failure (unborn HEAD, fs error)
-    /// logs and contributes nothing, same posture as `external_worktrees_json`.
-    pub(in crate::app) fn primary_changes_json(&mut self) -> Vec<Value> {
-        // Who owns each primary checkout, so the main row can route to its run
-        // after a reload. Resolved up front: the loop below holds a &mut borrow
-        // of the summary cache.
-        let owners: HashMap<String, String> = self
-            .projects
-            .iter()
-            .filter_map(|project| {
-                self.primary_run_of(&project.id)
-                    .map(|run_id| (project.id.clone(), run_id))
-            })
-            .collect();
-        // Ownership changes on its own schedule, so it is stamped onto the
-        // outgoing entry rather than into the cached git summary.
-        let with_owner = |mut entry: Value, project_id: &str| {
-            entry["run_id"] = owners
-                .get(project_id)
-                .cloned()
-                .map_or(Value::Null, Value::String);
-            entry
-        };
-
-        let project_ids: Vec<String> = self
-            .projects
-            .iter()
-            .filter(|project| project.is_git)
-            .map(|project| project.id.clone())
-            .collect();
-        project_ids
-            .into_iter()
-            .filter_map(|project_id| {
-                let summary = self.primary_summary(&project_id)?;
-                Some(with_owner(summary, &project_id))
-            })
-            .collect()
-    }
-
-    /// One project's primary-checkout summary as the last walk left it, or
-    /// `None` until the first one lands. Claims the walk it needs; never takes
-    /// one itself.
-    pub(in crate::app) fn primary_summary(&mut self, project_id: &str) -> Option<Value> {
-        if let Some(refresh) = self.primary_summary_refresh(project_id) {
-            let computed_at = self.primary_summary_of(project_id).map(|(at, _)| at);
-            self.refresh_if_stale(computed_at, PRIMARY_SUMMARY_TTL, refresh);
-        }
-        self.primary_summary_of(project_id)
-            .map(|(_, summary)| summary.clone())
-    }
-
     /// Workspace-wide publication-aware summaries, served stale while every
     /// repository walk runs through the existing off-lock cache worker.
     fn workspace_summaries_json(&mut self) -> Vec<Value> {
@@ -412,8 +332,8 @@ impl AppState {
     // ---- Board + views --------------------------------------------------------
 
     /// The board: workspace branches and runs (each run carries a live
-    /// diffstat), plus the ride-along external-worktree and primary-changes
-    /// summaries. Legacy issues remain available through their direct read
+    /// diffstat), plus the ride-along external-worktree summaries. Legacy
+    /// issues remain available through their direct read
     /// APIs, but no longer participate in this active-work surface.
     ///
     /// `pub(crate)`, not `pub(in crate::app)`: `api::v1::board` serves
@@ -441,7 +361,6 @@ impl AppState {
                 .collect()
         };
         let checkouts = self.external_worktrees_json();
-        let primary_changes = self.primary_changes_json();
         let workspace_summaries = self.workspace_summaries_json();
         let projects = self
             .projects
@@ -457,21 +376,20 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         // The inbox is in-flight work the user started in Build, nothing else:
-        // a branch Build never cut or adopted (no run behind it, and it is not
-        // the project's own primary checkout) earns no row here, ever — not
-        // while an agent happens to be active in it, not on a fresh commit.
+        // a branch Build never cut or adopted — no run behind it — earns no row
+        // here, ever — not while an agent happens to be active in it, not on a
+        // fresh commit.
         // Adopting it (or sending it a first message, which adopts on the way)
         // is what brings it in; from there its row leaves the same way every
         // other row does — Done, deleted, or dismissed — never on its own.
         // `branch.get` still resolves it directly (deep-linking); this filter
         // is the feed list's alone.
         let items: Vec<Value> = self
-            .work_items(&checkouts.rows, &primary_changes)
+            .work_items(&checkouts.rows)
             .into_iter()
             .filter(|row| {
                 row["kind"] != crate::branch::WorkItemKind::Branch.as_str()
                     || !row["run_id"].is_null()
-                    || row["primary"] == json!(true)
             })
             .collect();
         json!({
@@ -491,17 +409,15 @@ impl AppState {
             // the scan that lands invalidates the board so the client asks
             // again.
             "scanning": checkouts.scanning,
-            "primary_changes": primary_changes,
             "workspace_summaries": workspace_summaries,
         })
     }
 
     /// The feed's work items: one row per branch or issue.
     ///
-    /// Branch rows fold the four ways a branch can be stored — a run, an
-    /// adopted worktree, a worktree Build never cut, the primary checkout —
-    /// into one shape keyed `(project_id, branch)`, and the primary checkout is
-    /// the `main` row. An issue whose implementation is still in flight is
+    /// Branch rows fold the three ways a branch can be stored — a run, an
+    /// adopted worktree, a worktree Build never cut — into one shape keyed
+    /// `(project_id, branch)`. An issue whose implementation is still in flight is
     /// spoken for by that implementation's branch row and emits none of its
     /// own. Both rules live in [`crate::branch`].
     ///
@@ -515,12 +431,8 @@ impl AppState {
     /// The scans are passed in rather than taken again: `board_list` already
     /// paid for them, and re-running them here would double every poll's git
     /// work.
-    pub(in crate::app) fn work_items(
-        &mut self,
-        external_worktrees: &[Value],
-        primary_changes: &[Value],
-    ) -> Vec<Value> {
-        self.observe_conversationless_rows(external_worktrees, primary_changes);
+    pub(in crate::app) fn work_items(&mut self, external_worktrees: &[Value]) -> Vec<Value> {
+        self.observe_conversationless_rows(external_worktrees);
         self.reconcile_crossed_dismissal_lines();
         let run_ids: Vec<String> = self
             .runs
@@ -539,11 +451,6 @@ impl AppState {
                 self.branch_candidate_from_run(run_id, stats.get(run_id).unwrap_or(&Value::Null))
             })
             .collect();
-        candidates.extend(
-            primary_changes
-                .iter()
-                .filter_map(|entry| self.branch_candidate_from_primary(entry)),
-        );
         candidates.extend(
             external_worktrees
                 .iter()
@@ -585,17 +492,8 @@ impl AppState {
         self.persist_attention();
     }
 
-    pub(in crate::app) fn observe_conversationless_rows(
-        &mut self,
-        external_worktrees: &[Value],
-        primary_changes: &[Value],
-    ) {
+    pub(in crate::app) fn observe_conversationless_rows(&mut self, external_worktrees: &[Value]) {
         let now = now_rfc3339();
-        let primary_keys = primary_changes.iter().filter_map(|entry| {
-            entry["project_id"]
-                .as_str()
-                .map(crate::attention::primary_row_key)
-        });
         let external_keys = external_worktrees.iter().filter_map(|entry| {
             let project_id = entry["project_id"].as_str()?;
             Some(match entry["branch"].as_str() {
@@ -604,7 +502,7 @@ impl AppState {
             })
         });
         let mut changed = false;
-        for key in primary_keys.chain(external_keys) {
+        for key in external_keys {
             changed |= self.board.attention_mut().observe_row(&key, &now);
         }
         if changed {
@@ -629,7 +527,6 @@ impl AppState {
         let working_since = working
             .then(|| self.working_since_for(run_id, thread))
             .flatten();
-        let primary = self.owns_primary_checkout(run_id, active);
         let title = if active.run.goal.trim().is_empty() {
             branch.clone()
         } else {
@@ -654,17 +551,11 @@ impl AppState {
             // Every row carries both, whatever it was read off.
             "anchor": self.anchor_of(run_id),
             "last_activity": self.last_activity_of(Some(run_id), thread),
-            // Done deletes the branch and its records. It is offered whenever
-            // there is something to delete: the primary checkout is the
-            // repository, so there is nothing to file away and everything to
-            // lose. What the deletion would cost is `finish.warnings`, which
-            // the client confirms through — never a refusal here.
-            "can_finish": !primary,
-            "finish": { "warnings": if primary {
-                json!([])
-            } else {
-                sync.finish_warnings_json(&active.worktree.branch())
-            } },
+            // Done deletes the branch and its records. What the deletion
+            // would cost is `finish.warnings`, which the client confirms
+            // through — never a refusal here.
+            "can_finish": true,
+            "finish": { "warnings": sync.finish_warnings_json(&active.worktree.branch()) },
             "muted": self.is_muted(run_id),
             // Cleared out of the inbox until the work speaks again. The client
             // hides the row on it; nothing here changes because of it.
@@ -673,7 +564,6 @@ impl AppState {
             "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
             "run_id": run_id,
             "issue_id": issue_id,
-            "primary": primary,
         });
         crate::branch::WorkItemCandidate {
             kind: crate::branch::WorkItemKind::Branch,
@@ -690,67 +580,6 @@ impl AppState {
             implementation_active: !active.run.state.is_terminal(),
             row,
         }
-    }
-
-    /// The branch row for a project's primary checkout — the `main` row.
-    /// `None` when the checkout has no branch to name it by.
-    pub(in crate::app) fn branch_candidate_from_primary(
-        &self,
-        entry: &Value,
-    ) -> Option<crate::branch::WorkItemCandidate> {
-        let project_id = entry["project_id"].as_str()?.to_string();
-        let branch = entry["branch"].as_str()?.to_string();
-        let project = self.project(&project_id)?;
-        let repo_path = project.repo_path.display().to_string();
-        let sync = WorkItemStat::from_primary_entry(entry);
-        let row = json!({
-            "kind": crate::branch::WorkItemKind::Branch.as_str(),
-            "project_id": project_id,
-            "project": project.name,
-            "branch": branch,
-            "title": branch,
-            "state": CHECKOUT_IDLE_STATE,
-            "unread": false,
-            "unread_count": 0,
-            "unread_reason": Value::Null,
-            "working": self.checkout_agent_working(&project.repo_path),
-            "working_time": Value::Null,
-            "agents": Vec::<Value>::new(),
-            "stat": sync.to_json(),
-            "resume_at": Value::Null,
-            // A checkout with no run behind it has no record to anchor: it
-            // dates itself by its own last commit, which is the only history it
-            // has. Same for its last activity, plus whatever its agent painted.
-            "anchor": sync.head_committed_at,
-            "last_activity": self.board
-                .attention()
-                .attention(&crate::attention::primary_row_key(&project_id))
-                .and_then(|attention| attention.first_observed_at.clone()),
-            // The repository is not a worktree to file away.
-            "can_finish": false,
-            "finish": { "warnings": [] },
-            "muted": false,
-            // Cleared out of the inbox until the project has something new to
-            // say. The repository holds no conversation to fall quiet, so the
-            // line is drawn at the commit the checkout was cleared on.
-            "dismissed": self.row_is_dismissed(
-                &crate::attention::primary_row_key(&project_id),
-                entry["head_sha"].as_str(),
-            ),
-            "worktree_path": repo_path,
-            "worktree_id": Value::Null,
-            "run_id": Value::Null,
-            "issue_id": Value::Null,
-            "primary": true,
-        });
-        Some(crate::branch::WorkItemCandidate {
-            kind: crate::branch::WorkItemKind::Branch,
-            key: crate::branch::WorkItemKey::Branch { project_id, branch },
-            source: Some(crate::branch::BranchSource::PrimaryCheckout),
-            issue_id: None,
-            implementation_active: false,
-            row,
-        })
     }
 
     /// The branch row for a worktree Build never cut: everything git can see
@@ -788,8 +617,8 @@ impl AppState {
             "agents": Vec::<Value>::new(),
             "stat": sync.to_json(),
             "resume_at": entry["attention"]["resume_at"],
-            // See the primary row: a bare checkout is dated by its own commits,
-            // unless the user has acted on it here and given it an anchor.
+            // A bare checkout is dated by its own commits, unless the user has
+            // acted on it here and given it an anchor.
             "anchor": self
                 .board
                 .attention()
@@ -821,7 +650,6 @@ impl AppState {
             "worktree_id": worktree_id.clone(),
             "run_id": Value::Null,
             "issue_id": Value::Null,
-            "primary": false,
         });
         crate::branch::WorkItemCandidate {
             kind: crate::branch::WorkItemKind::Branch,
@@ -888,15 +716,6 @@ impl AppState {
             .filter_map(|agent| agent.working_since.as_deref())
             .min()
             .map(str::to_string)
-    }
-
-    /// Whether a Build-owned agent is painting in this checkout right now. The
-    /// tab registry is the only place an agent can be, and its key is the
-    /// checkout root, so a checkout reports its own agent whatever entity (or
-    /// none) currently owns it.
-    pub(in crate::app) fn checkout_agent_working(&self, root: &std::path::Path) -> bool {
-        let root = Self::canonical_root(root);
-        self.session_registry.agent_is_working_at(&root)
     }
 
     pub(in crate::app) fn entity_agents_working(&self, entity_id: &str) -> bool {

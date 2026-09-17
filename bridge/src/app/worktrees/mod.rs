@@ -76,15 +76,11 @@ impl AppState {
             return Err(format!("unknown project_id: {project_id}"));
         }
         let checkouts = self.external_worktrees_json();
-        let primary_changes = self.primary_changes_json();
-        let found = self
-            .work_items(&checkouts.rows, &primary_changes)
-            .into_iter()
-            .find(|row| {
-                row["kind"] == crate::branch::WorkItemKind::Branch.as_str()
-                    && row["project_id"] == json!(project_id)
-                    && row["branch"] == json!(branch)
-            });
+        let found = self.work_items(&checkouts.rows).into_iter().find(|row| {
+            row["kind"] == crate::branch::WorkItemKind::Branch.as_str()
+                && row["project_id"] == json!(project_id)
+                && row["branch"] == json!(branch)
+        });
         let Some(mut row) = found else {
             // This project's own scan, not the rail's board-wide flag: what a
             // neighbour has or has not been scanned for says nothing about the
@@ -190,10 +186,10 @@ impl AppState {
         ))
     }
 
-    /// The primary checkout of the project an entity belongs to — where a
+    /// The repository of the project an entity belongs to — where a
     /// project-wide artifact like the review rules lives, rather than in
     /// whichever worktree happened to notice it.
-    pub(in crate::app) fn primary_checkout_of(
+    pub(in crate::app) fn project_repository_of(
         &self,
         entity_id: &str,
     ) -> Result<std::path::PathBuf, String> {

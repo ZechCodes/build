@@ -22,9 +22,6 @@ pub(in crate::app) const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(
 /// poll recomputes it (same reasoning as the external-worktree scan interval).
 pub(in crate::app) const TASK_STAT_TTL: Duration = Duration::from_secs(10);
 
-/// How long the primary-checkout `task.list.primary_changes` summary is served
-/// from cache before the next poll recomputes it (spec §5.3).
-pub(in crate::app) const PRIMARY_SUMMARY_TTL: Duration = Duration::from_secs(10);
 pub(in crate::app) const WORKSPACE_SUMMARY_TTL: Duration = Duration::from_secs(10);
 
 /// A claimed diff-cache refresh on its way to the blocking pool: the git work
@@ -61,9 +58,6 @@ impl DiffCacheRefresh {
         match self {
             Self::RunStat { run_id, .. } => DiffCacheKey::RunStat(run_id.clone()),
             Self::ExternalScan { project_id, .. } => DiffCacheKey::ExternalScan(project_id.clone()),
-            Self::PrimarySummary { project_id, .. } => {
-                DiffCacheKey::PrimarySummary(project_id.clone())
-            }
             Self::WorkspaceSummary {
                 workspace_id,
                 repositories,
@@ -106,16 +100,6 @@ impl DiffCacheRefresh {
                     })
                 }
             },
-            Self::PrimarySummary {
-                project_id,
-                repo_path,
-                base_branch,
-            } => primary_changes_summary(project_id, repo_path, base_branch).map(|summary| {
-                DiffCacheEntry::PrimarySummary {
-                    project_id: project_id.clone(),
-                    summary,
-                }
-            }),
             Self::WorkspaceSummary {
                 workspace_id,
                 repositories,
@@ -184,11 +168,6 @@ pub(in crate::app) enum DiffCacheRefresh {
         worktrees: WorktreeManager,
         base_branch: String,
         excluded: std::collections::HashSet<std::path::PathBuf>,
-    },
-    PrimarySummary {
-        project_id: String,
-        repo_path: std::path::PathBuf,
-        base_branch: String,
     },
     WorkspaceSummary {
         workspace_id: String,
@@ -267,94 +246,11 @@ pub(in crate::app) fn run_diffstat(worktree: &std::path::Path, base_branch: &str
         .unwrap_or(Value::Null)
 }
 
-/// One project's primary-checkout changes summary, minus the run ownership
-/// stamped on at serve time. `None` on a failure (unborn HEAD, fs error): it
-/// logs and the cache keeps what it had.
-pub(in crate::app) fn primary_changes_summary(
-    project_id: &str,
-    repo_path: &std::path::Path,
-    base_branch: &str,
-) -> Option<Value> {
-    type SyncCounts = (Option<String>, Option<String>, Option<u64>, Option<u64>);
-    fn head_sync_counts(repo: &git2::Repository, base_branch: &str) -> SyncCounts {
-        const NONE: SyncCounts = (None, None, None, None);
-        let head = match repo.head() {
-            Ok(head) if head.is_branch() => head,
-            _ => return NONE,
-        };
-        let Some(branch) = head.shorthand() else {
-            return NONE;
-        };
-        let Ok(commit) = head.peel_to_commit() else {
-            return NONE;
-        };
-        let comparison =
-            crate::worktree::branch_comparison(repo, &commit, Some(branch), base_branch);
-        (
-            comparison.upstream,
-            comparison.reference,
-            comparison.ahead,
-            comparison.behind,
-        )
-    }
-
-    let repo = git2::Repository::open(repo_path);
-    let branch = repo
-        .as_ref()
-        .ok()
-        .and_then(|r| r.head().ok())
-        .and_then(|h| h.shorthand().map(str::to_string))
-        .unwrap_or_else(|| "HEAD".to_string());
-    // What this checkout's history looks like right now. A bare checkout has no
-    // conversation and no lifecycle, so its own commits are all the inbox has —
-    // to date it by (`head_committed_at`), and to tell whether it has said
-    // anything since the human cleared its row (`head_sha`). Both are computed
-    // HERE, inside the cached walk, never on the poll path.
-    let head_commit = repo
-        .as_ref()
-        .ok()
-        .and_then(|repo| repo.head().ok())
-        .and_then(|head| head.peel_to_commit().ok());
-    let head_sha = head_commit.as_ref().map(|commit| commit.id().to_string());
-    let head_committed_at = head_commit
-        .as_ref()
-        .and_then(|commit| crate::worktree::rfc3339_from_unix(commit.time().seconds()));
-    let (upstream, comparison_ref, ahead, behind) = repo
-        .as_ref()
-        .ok()
-        .map(|repo| head_sync_counts(repo, base_branch))
-        .unwrap_or((None, None, None, None));
-    match crate::diff::stat_against_head(repo_path) {
-        Ok(stat) => Some(json!({
-            "project_id": project_id,
-            "branch": branch,
-            "upstream": upstream,
-            "comparison_ref": comparison_ref,
-            "ahead": ahead,
-            "behind": behind,
-            "head_sha": head_sha,
-            "head_committed_at": head_committed_at,
-            "files_changed": stat.files_changed,
-            "insertions": stat.insertions,
-            "deletions": stat.deletions,
-        })),
-        Err(e) => {
-            eprintln!("primary_changes {project_id}: {e}");
-            None
-        }
-    }
-}
-
 impl AppState {
     /// Drop a run's cached diffstat — the mutation that calls this just changed
     /// the tree it described. Any refresh in flight is superseded with it.
     pub(in crate::app) fn invalidate_run_stat(&mut self, run_id: &str) {
         self.board.diff_mut().invalidate_run_stat(run_id);
-    }
-
-    /// Drop a project's cached primary-checkout summary, same reasoning.
-    pub(in crate::app) fn invalidate_primary_summary(&mut self, project_id: &str) {
-        self.board.diff_mut().invalidate_primary_summary(project_id);
     }
 
     /// The runs of a project that have not finished, with the id each is
@@ -452,17 +348,6 @@ impl AppState {
         )
     }
 
-    /// The last walk of a project's primary checkout, if one has ever landed.
-    pub(in crate::app) fn primary_summary_of(
-        &self,
-        project_id: &str,
-    ) -> Option<(std::time::Instant, &Value)> {
-        self.board
-            .diff()
-            .primary_summary(project_id)
-            .map(|cached| (cached.computed_at, cached.value))
-    }
-
     pub(in crate::app) fn workspace_summary_of(
         &self,
         workspace_id: &str,
@@ -532,19 +417,6 @@ impl AppState {
             worktrees: project.orch.worktrees().clone(),
             base_branch: project.base_branch.clone(),
             excluded: self.bound_worktree_paths(),
-        })
-    }
-
-    /// The refresh that recomputes one project's primary-checkout summary.
-    pub(in crate::app) fn primary_summary_refresh(
-        &self,
-        project_id: &str,
-    ) -> Option<DiffCacheRefresh> {
-        let project = self.project(project_id)?;
-        Some(DiffCacheRefresh::PrimarySummary {
-            project_id: project.id.clone(),
-            repo_path: project.repo_path.clone(),
-            base_branch: project.base_branch.clone(),
         })
     }
 

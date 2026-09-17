@@ -302,7 +302,6 @@ impl AppState {
             "worktree_id": Value::Null,
             "run_id": Value::Null,
             "issue_id": issue_id,
-            "primary": false,
             "routing": routing,
             "question": capture.question,
             "progress": capture.progress,

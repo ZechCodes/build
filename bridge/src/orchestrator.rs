@@ -12,9 +12,9 @@ pub(crate) use workspace::{
     CHECKOUT_REAP_WAIT, HARNESS_READY_GRACE, PROMPT_WRITE_EXIT_GRACE,
 };
 pub use workspace::{
-    gate_plan_message, gate_plan_stage_notes, mcp_config_path, AdoptableCheckout, AdoptionScope,
-    Agent, Orchestrator, ResumeIdProbe, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
-    WarmBuilder, CATCH_UP_MESSAGES, NEW_THREAD_MESSAGES_PROMPT,
+    gate_plan_message, gate_plan_stage_notes, mcp_config_path, AdoptableCheckout, Agent,
+    Orchestrator, ResumeIdProbe, SessionLocatorFactory, SpawnOptions, TranscriptProbe, WarmBuilder,
+    CATCH_UP_MESSAGES, NEW_THREAD_MESSAGES_PROMPT,
 };
 
 #[cfg(test)]

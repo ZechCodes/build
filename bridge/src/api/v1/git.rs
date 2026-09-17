@@ -111,7 +111,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 
 /// The checkout a `git.*` or `fs.*` verb acts on, named the only way a client
 /// may name one: by id. The repo path always comes from server state.
-/// `project_id` alone is the project's primary checkout, `run_id` is a run's
+/// `project_id` alone is the project's repository, `run_id` is a run's
 /// worktree, `project_id` + `worktree_id` is one of the project's external
 /// worktrees, and `workspace_id` + `source_id` is one directory of a
 /// multi-source workspace.
@@ -490,7 +490,7 @@ pub struct GitCommitResult {
 /// The checkout holding a branch, when one does.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BranchHolder {
-    /// `run`, `primary_checkout`, or `external_worktree`.
+    /// `run`, `project_repository`, or `external_worktree`.
     pub kind: String,
     pub id: String,
 }

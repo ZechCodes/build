@@ -10,8 +10,7 @@ use crate::isolation::Isolation;
 use crate::mcp::{DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::orchestrator::{
     gate_plan_message, gate_plan_stage_notes, mcp_config_path, ActivePlan, ActiveRun,
-    AdoptableCheckout, AdoptionScope, AgentTurn, ImplementableIssue, Orchestrator,
-    OrchestratorError, RunSource,
+    AdoptableCheckout, AgentTurn, ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
 };
 use crate::plan::{
     plan_transition, PlanEvent, PlanId, PlanState, StageDocState, StageManifestEntry,
@@ -1156,8 +1155,7 @@ async fn adopt_run_lands_in_review_as_a_plan_less_run() {
     let external = user_worktree(&dir, &repo, "wt-user", "user/thing");
     std::fs::write(external.path.join("notes.txt"), "pre-Build work\n").unwrap();
 
-    let adoptable =
-        AdoptableCheckout::judge(&external, "main", AdoptionScope::ExternalWorktree).unwrap();
+    let adoptable = AdoptableCheckout::judge(&external, "main").unwrap();
     orch.prepare_adoption(&adoptable, "main", "run-ad").unwrap();
     let run = orch
         .adopt_run(RunId::new("run-ad"), &adoptable, "main", Default::default())

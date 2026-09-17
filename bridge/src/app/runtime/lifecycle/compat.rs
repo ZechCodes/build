@@ -10,9 +10,7 @@ use crate::lifecycle::{
     JoinedCheckout, OpenedRepository, RemoteChanged,
 };
 use crate::models::ModelChoice;
-use crate::orchestrator::{
-    ActiveRun, AdoptableCheckout, AdoptionScope, PlanWorkspace, PreparedImplementation,
-};
+use crate::orchestrator::{ActiveRun, AdoptableCheckout, PlanWorkspace, PreparedImplementation};
 use crate::thread::ThreadDetail;
 use crate::worktree::Worktree;
 use serde_json::Value;
@@ -106,7 +104,6 @@ pub struct RunAdopted {
     pub run_id: String,
     pub base_branch: String,
     pub checkout: AdoptableCheckout,
-    pub scope: AdoptionScope,
     pub model_choice: ModelChoice,
 }
 impl RunAdopted {
@@ -116,7 +113,6 @@ impl RunAdopted {
             run_id: self.run_id,
             base_branch: self.base_branch,
             checkout: self.checkout,
-            scope: self.scope,
             model_choice: self.model_choice,
         }
     }
@@ -126,7 +122,6 @@ impl RunAdopted {
             run_id: self.run_id.clone(),
             base_branch: self.base_branch.clone(),
             checkout: self.checkout.clone(),
-            scope: self.scope,
             model_choice: self.model_choice.clone(),
         }
     }

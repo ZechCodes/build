@@ -110,7 +110,6 @@ impl ImplementationCheckout {
                     project_id,
                     &checkout,
                     &base_branch,
-                    target.scope(),
                     run_id,
                     model_choice.clone(),
                 )?;

@@ -9,7 +9,6 @@ pub(in crate::app::tests) fn work_item_rows(state: &mut AppState) -> Vec<Value> 
     state.board.diff_mut().clear_run_stats();
     let project_ids = state.projects.ids().map(str::to_string).collect::<Vec<_>>();
     for project_id in project_ids {
-        state.board.diff_mut().clear_primary_summary(&project_id);
         state.board.diff_mut().clear_external_scan(&project_id);
     }
     state.handle(req("board.list", json!({})))["result"]["items"]
@@ -46,15 +45,15 @@ fn hours_ago(hours: i64) -> String {
         .expect("UTC formats as RFC 3339")
 }
 
-/// A run and the primary checkout are two ways of storing the same kind of
-/// thing. The feed shows one row shape for both, keyed by branch, and the
-/// primary checkout is the `main` row. A worktree Build never cut or
-/// adopted is a THIRD source `work_items` still folds in (`branch.get`
-/// deep-links to it), but `board_list`'s feed leaves it out — it is not
-/// work the user started in Build.
+/// The feed shows one row shape per branch, keyed by branch. A worktree
+/// Build never cut or adopted is a second source `work_items` still folds
+/// in (`branch.get` deep-links to it), but `board_list`'s feed leaves it
+/// out — it is not work the user started in Build. The project's own
+/// checkout is not a source at all: work happens in workspaces, so `main`
+/// earns no row.
 #[test]
-#[allow(clippy::cognitive_complexity)] // ratchet: the_feed_folds_runs_worktrees_and_the_primary_checkout_into_branch_rows is at 25, threshold 15 — bring it under, then remove
-fn the_feed_folds_runs_worktrees_and_the_primary_checkout_into_branch_rows() {
+#[allow(clippy::cognitive_complexity)] // ratchet: the_feed_folds_runs_and_worktrees_into_branch_rows is at 25, threshold 15 — bring it under, then remove
+fn the_feed_folds_runs_and_worktrees_into_branch_rows() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-adopted");
@@ -120,13 +119,11 @@ fn the_feed_folds_runs_worktrees_and_the_primary_checkout_into_branch_rows() {
         "not on the feed"
     );
 
-    let main = branch_row(&mut state, "main");
-    assert_eq!(main["kind"], "branch", "{main:?}");
-    assert!(main["run_id"].is_null(), "{main:?}");
-    assert_eq!(
-        main["worktree_path"],
-        std::fs::canonicalize(&repo).unwrap().display().to_string(),
-        "the main row is the primary checkout: {main:?}"
+    assert!(
+        work_item_rows(&mut state)
+            .iter()
+            .all(|row| row["branch"] != json!("main")),
+        "the project's own checkout is not work: it is what workspaces are cut from"
     );
 
     // One row per branch: an adopted worktree is not also an external one.
@@ -278,9 +275,7 @@ fn a_moving_diffstat_is_what_dates_a_branch_between_commits() {
 }
 
 /// Done on a branch deletes it, and the row says beforehand what deleting
-/// it would cost — never that it cannot be done. The primary checkout is
-/// the one exception: it is the repository, not a worktree to file away,
-/// so there is nothing there to finish.
+/// it would cost — never that it cannot be done.
 #[test]
 fn a_branch_always_offers_done_and_says_what_it_would_cost() {
     let (dir, repo, _origin) = init_repo_with_origin();
@@ -330,13 +325,6 @@ fn a_branch_always_offers_done_and_says_what_it_would_cost() {
         ahead["finish"]["warnings"][0]["ref"], "origin/feature-done",
         "{ahead:?}"
     );
-
-    let main = branch_row(&mut state, "main");
-    assert_eq!(
-        main["can_finish"], false,
-        "the primary checkout is the repository: {main:?}"
-    );
-    assert!(warning_codes(&main).is_empty(), "{main:?}");
 }
 
 /// `#/project/<id>/branch/<name>` resolves through one verb, to the run

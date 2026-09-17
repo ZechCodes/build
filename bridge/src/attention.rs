@@ -59,25 +59,18 @@ pub fn branch_row_key(project_id: &str, branch: &str) -> String {
     format!("{ROW_KEY_PREFIX}{project_id}:branch:{branch}")
 }
 
-/// The attention key for a project's primary-checkout row.
-///
-/// The project IS the row, so it is keyed on nothing narrower: the checkout
-/// moving to another branch is the project doing something new, not a
-/// different row appearing.
-pub fn primary_row_key(project_id: &str) -> String {
-    format!("{ROW_KEY_PREFIX}{project_id}:primary")
-}
-
 /// What a row key names, read back off the key — which is all the pruner has
 /// to decide whether the row it belongs to can still exist.
+///
+/// A key of any other shape reads as `None` and is pruned. A store written
+/// before workspaces holds `row:<project_id>:primary` keys for the checkout
+/// the project itself stood on; that row is gone, so the key names nothing and
+/// the first save after a load drops it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKey<'a> {
     Branch {
         project_id: &'a str,
         branch: &'a str,
-    },
-    Primary {
-        project_id: &'a str,
     },
 }
 
@@ -93,14 +86,13 @@ impl<'a> RowKey<'a> {
             Some(("branch", branch)) if !branch.is_empty() => {
                 Some(RowKey::Branch { project_id, branch })
             }
-            None if rest == "primary" => Some(RowKey::Primary { project_id }),
             _ => None,
         }
     }
 
     pub fn project_id(&self) -> &'a str {
         match self {
-            RowKey::Branch { project_id, .. } | RowKey::Primary { project_id } => project_id,
+            RowKey::Branch { project_id, .. } => project_id,
         }
     }
 }
@@ -1077,23 +1069,21 @@ mod tests {
             })
         );
         assert_eq!(
-            RowKey::parse(&primary_row_key("proj-2")),
-            Some(RowKey::Primary {
-                project_id: "proj-2"
-            })
-        );
-        assert_ne!(
-            branch_row_key("proj-1", "main"),
-            primary_row_key("proj-1"),
-            "a branch called main is not the primary checkout row"
-        );
-        assert_eq!(
             RowKey::parse(&branch_row_key("proj-1", "main"))
                 .expect("a branch key")
                 .project_id(),
             "proj-1"
         );
-        for entity_id in ["run-1", "plan-1", "wt-abc123", "proj-1", "row:proj-1"] {
+        for entity_id in [
+            "run-1",
+            "plan-1",
+            "wt-abc123",
+            "proj-1",
+            "row:proj-1",
+            // The retired primary-checkout row. A store written before
+            // workspaces holds it; it names nothing now.
+            "row:proj-1:primary",
+        ] {
             assert_eq!(RowKey::parse(entity_id), None, "{entity_id}");
         }
     }

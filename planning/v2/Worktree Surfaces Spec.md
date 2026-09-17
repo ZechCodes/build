@@ -30,6 +30,25 @@ flow. Agent messages and status events may carry bridge-validated typed referenc
 to worktree files, plan stages, and runs; the SPA renders references as scoped
 navigation controls, never arbitrary links.
 
+## Primary-checkout retirement amendment (September 17, 2026)
+
+This amendment supersedes the primary-checkout "main" surface below. A project's
+own checkout is what workspaces are cut from, never a place to work: users create
+a workspace and Finish upstreams it. The bridge no longer adopts the repo root as
+a super-worktree, and everything that surface needed is gone with it —
+`run.adopt {primary: true}` is refused in words that name workspaces, the
+`primary` field has left every feed, run and pending row on the wire, and
+`task.list`/`board.list` no longer carry a `primary_changes` summary or its
+`PRIMARY_SUMMARY_TTL` cache.
+
+The project's repository is still read: project-scoped `fs.*`, `project.diff`,
+`git.branches` and terminals resolve to it exactly as before, and the branch
+listing still names it as a holder — under the wire kind `project_repository`,
+where it once said `primary_checkout`. A store written before this holds runs
+adopted on the repo root and `row:<project_id>:primary` attention keys; both load,
+the stale key is ignored and pruned, and no discard verb may remove a checkout
+whose canonical path is the project's repository.
+
 ---
 
 ## 0. Global decisions (read first)

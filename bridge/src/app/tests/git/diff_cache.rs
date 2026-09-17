@@ -722,10 +722,9 @@ async fn a_missed_checkout_says_whether_a_scan_has_ever_landed() {
             .expect("its checkouts are scanned");
         id
     };
-    // The primary walk lands; the checkout scan is held open, so every read
-    // below is answered by a project nothing has scanned.
+    // The checkout scan is held open, so every read below is answered by a
+    // project nothing has scanned.
     let gate = gate_scan_computes(&state);
-    landed_primary_summary(&state, &project_id).await;
 
     let refusals: Vec<String> = {
         let mut app = state.lock().unwrap();
@@ -761,56 +760,6 @@ async fn a_missed_checkout_says_whether_a_scan_has_ever_landed() {
 
     gate.wait_for_arrival();
     gate.release();
-}
-
-/// A dismissal is written against the head its row is on. Until the primary
-/// walk has landed there is no head, and a dismissal written at none is one
-/// the walk's own first result revokes — so the verb is refused rather than
-/// answered with a silent no-op.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dismissing_the_primary_row_before_its_walk_lands_is_refused() {
-    let (dir, repo) = init_repo();
-    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().project_at(0).id.clone();
-    let gate = gate_diff_computes(&state, |key| matches!(key, DiffCacheKey::PrimarySummary(_)));
-
-    let refused = call(
-        &handler,
-        "entity.dismiss",
-        json!({ "project_id": project_id, "primary": true }),
-    );
-    assert_eq!(refused["ok"], false, "{refused:?}");
-    assert!(
-        refused["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("now running"),
-        "{refused:?}"
-    );
-    assert!(
-        !state
-            .lock()
-            .unwrap()
-            .has_attention(&crate::attention::primary_row_key(&project_id)),
-        "a dismissal was written against a head nothing had read yet"
-    );
-
-    gate.wait_for_arrival();
-    gate.release();
-}
-
-/// Poll until the primary-checkout walk this project claimed has landed.
-async fn landed_primary_summary(state: &Arc<Mutex<AppState>>, project_id: &str) {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if state.lock().unwrap().primary_summary(project_id).is_some() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("the primary summary the first read claimed lands")
 }
 
 /// A project whose scan has never landed has nothing to amend. The create

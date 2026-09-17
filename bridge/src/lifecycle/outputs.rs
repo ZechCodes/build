@@ -1,7 +1,5 @@
 use crate::isolation::Isolation;
-use crate::orchestrator::{
-    AdoptableCheckout, AdoptionScope, PlanWorkspace, PreparedImplementation,
-};
+use crate::orchestrator::{AdoptableCheckout, PlanWorkspace, PreparedImplementation};
 use crate::worktree::Worktree;
 use std::path::PathBuf;
 
@@ -23,7 +21,6 @@ pub struct AdoptionPrepared {
     pub run_id: String,
     pub base_branch: String,
     pub checkout: AdoptableCheckout,
-    pub scope: AdoptionScope,
     pub model_choice: crate::models::ModelChoice,
 }
 pub struct AdoptedImplementation {

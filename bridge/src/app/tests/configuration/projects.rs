@@ -184,11 +184,6 @@ fn plain_folder_persists_and_remains_browsable_after_reload() {
         .find(|candidate| candidate["project_id"] == project["project_id"])
         .unwrap();
     assert_eq!(board_project["is_git"], false);
-    assert!(board["result"]["primary_changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|summary| summary["project_id"] != project["project_id"]));
     assert!(!plain.join(".git").exists());
 }
 

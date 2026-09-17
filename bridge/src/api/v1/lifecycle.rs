@@ -588,9 +588,6 @@ pub struct EntityDismissParams {
     pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// The project's own checkout — the repository itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub primary: Option<bool>,
 }
 
 /// The reviewer disagreeing with how one hunk was classified.
@@ -857,7 +854,6 @@ pub struct RowDismissed {
     /// Absent on a detached checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    pub primary: bool,
     pub dismissed: bool,
 }
 
@@ -1353,12 +1349,12 @@ pub struct RunMessageParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RunAdoptParams {
     pub project_id: String,
-    /// The external checkout to adopt. Required unless `primary` is set.
+    /// The external checkout to adopt. Required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
-    /// Adopt the project's primary checkout — the repo root as a
-    /// super-worktree. One run owns it per project, and a second call
-    /// converges on that run rather than minting another.
+    /// Retired: the project's own checkout is what workspaces are cut from,
+    /// never a place to work. Carried so a client that still sends it is
+    /// refused in words rather than told a param is missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary: Option<bool>,
     #[serde(flatten)]
@@ -1531,9 +1527,6 @@ pub struct RunView {
     pub current_stage_id: Option<String>,
     /// Minted around a checkout the human already had.
     pub adopted: bool,
-    /// The repository root itself, adopted as a super-worktree: never
-    /// finished, merged or pruned.
-    pub primary: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<crate::run::RecoveryAttempt>,
     /// Whether `run.finish` would be accepted, so the control is never
@@ -1641,8 +1634,6 @@ pub struct BranchWorkItem {
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue_id: Option<String>,
-    /// The repository root itself.
-    pub primary: bool,
     /// The run behind the branch; absent for a bare checkout, which has no
     /// agent to name.
     #[serde(default, skip_serializing_if = "Option::is_none")]

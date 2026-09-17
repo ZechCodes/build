@@ -171,16 +171,6 @@ impl SessionRegistry {
         self.tabs.get(key).is_some_and(Tab::session_is_live)
     }
 
-    pub(in crate::app) fn agent_is_working_at(&self, root: &Path) -> bool {
-        self.tabs.iter().any(|(key, tab)| {
-            key.root == root
-                && key.is_agent()
-                && matches!(tab.role, TabRole::Agent { .. })
-                && tab.live
-                && matches!(tab.session.status(), AgentStatus::Working)
-        })
-    }
-
     pub(in crate::app) fn agent_working_roots(&self) -> Vec<(std::path::PathBuf, bool)> {
         self.tabs
             .iter()

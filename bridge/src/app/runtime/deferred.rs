@@ -207,7 +207,7 @@ pub(in crate::app) enum ReadSubject {
     /// `project.list` — immutable row inputs captured at request time, with
     /// repository and volume metadata read while the app mutex is released.
     ProjectList { projects: Vec<ProjectListRow> },
-    /// `project.diff` — a primary checkout's uncommitted work.
+    /// `project.diff` — the project repository's uncommitted work.
     Project {
         project_id: String,
         repo_path: std::path::PathBuf,
@@ -729,9 +729,6 @@ impl AppState {
                     "branch": row.branch,
                     "state": row.state.as_str(),
                     "checkout_id": row.checkout_id,
-                    // The project's own checkout is listed under no id of its
-                    // own, so a row standing on it is matched by this instead.
-                    "primary": row.primary,
                     "implements": row.implements,
                     // How the checkout being made is isolated, said the way a
                     // settled card says it. A verb that makes none says

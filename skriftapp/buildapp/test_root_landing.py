@@ -32,6 +32,8 @@ STYLESHEET_NAME = "landing.css"
 ENTRY_MODULE_NAME = "main.js"
 FONT_NAME = "fonts/JetBrainsMono-latin.woff2"
 BRAND_MARK_NAME = "brand-mark.svg"
+FAVICON_SVG_NAME = "favicon.svg"
+FAVICON_PNG_NAME = "favicon.png"
 SCREENSHOT_NAMES = (
     "assets/build-ide-screenshot-1240.png",
     "assets/build-ide-screenshot-1744.png",
@@ -44,6 +46,8 @@ ASSET_MEDIA_TYPES = (
     (ENTRY_MODULE_NAME, "text/javascript"),
     (FONT_NAME, "font/woff2"),
     (BRAND_MARK_NAME, "image/svg+xml"),
+    (FAVICON_SVG_NAME, "image/svg+xml"),
+    (FAVICON_PNG_NAME, "image/png"),
     *((screenshot_name, "image/png") for screenshot_name in SCREENSHOT_NAMES),
 )
 RETIRED_SCRIPT_NAME = "landing.js"

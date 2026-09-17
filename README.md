@@ -19,6 +19,13 @@ Task intake is **goal-form + batched plan/diff comments** — there is deliberat
 See [`planning/v2/`](planning/v2/) for the full scope, UI design brief, and roadmap, and
 [`HANDOFF.md`](HANDOFF.md) for the current state and how to run everything.
 
+## Brand assets
+
+Official SVG and PNG artwork lives in [`assets/brand/`](assets/brand/README.md),
+including the transparent mark and black-on-mint, mint-on-black, and black-on-white
+variants. That directory also documents how to regenerate the website, SPA, and
+desktop icons from the shared artwork.
+
 ## Architecture
 
 ```

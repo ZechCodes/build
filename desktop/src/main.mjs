@@ -22,7 +22,7 @@ import {
 const development = !app.isPackaged;
 const icon = app.isPackaged
   ? join(process.resourcesPath, "icon.png")
-  : fileURLToPath(new URL("../../spa/public/icon-512.png", import.meta.url));
+  : fileURLToPath(new URL("../assets/icon.png", import.meta.url));
 
 let mainWindow = null;
 let accessToken = null;

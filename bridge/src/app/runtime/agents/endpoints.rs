@@ -478,10 +478,11 @@ impl AppState {
             return Ok(primary.id.clone());
         }
         let choice = self.entity_model_choice(entity_id)?;
+        let owner = self.agent_owner(entity_id);
         let mut active = self.take_run(entity_id)?;
         let agent_id = active
             .agents
-            .ensure_primary(entity_id, choice, &now_rfc3339())
+            .ensure_primary(owner, choice, &now_rfc3339())
             .id
             .clone();
         self.finish_run_mutation(entity_id.to_string(), active)?;
@@ -872,6 +873,7 @@ impl AppState {
         }
         let before_agents = self.runs[&entity_id].agents.clone();
         let before_entity_choice = self.runs[&entity_id].model_choice.clone();
+        let owner = self.agent_owner(&entity_id);
         let mut active = self.take_run(&entity_id)?;
         if active.agents.is_empty() {
             active.model_choice = choice.clone();
@@ -879,13 +881,10 @@ impl AppState {
         let (added, created) = match creation_id.as_deref() {
             Some(creation_id) => active
                 .agents
-                .add_idempotent(&entity_id, choice, &now_rfc3339(), creation_id)
+                .add_idempotent(owner, choice, &now_rfc3339(), creation_id)
                 .expect("the creation id and any prior use were validated before taking the run"),
             None => (
-                active
-                    .agents
-                    .add(&entity_id, choice, &now_rfc3339())
-                    .clone(),
+                active.agents.add(owner, choice, &now_rfc3339()).clone(),
                 true,
             ),
         };

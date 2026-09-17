@@ -7,6 +7,7 @@
 //! and an agent talking about it has no business standing in it.
 
 use super::safe_mount_name;
+use crate::agent::AgentOwner;
 use crate::app::{model_choice_from, require_str, sha256_hex, AppState};
 use crate::orchestrator::ActiveRun;
 use serde_json::{json, Value};
@@ -83,6 +84,38 @@ impl AppState {
             return Err(error);
         }
         Ok(conversation(&project_id, &run_id))
+    }
+
+    /// Which kind of agent an owner mints, read off the owner itself: a
+    /// project's conversation owner mints project agents and everything else
+    /// mints coding ones. Whoever asked for the agent never decides.
+    pub(in crate::app) fn agent_owner<'a>(&self, owner_id: &'a str) -> AgentOwner<'a> {
+        if self.is_project_conversation_owner(owner_id) {
+            AgentOwner::project(owner_id)
+        } else {
+            AgentOwner::from(owner_id)
+        }
+    }
+
+    /// Whether `run_id` is the conversation owner of a project: the run bound
+    /// to a project that stands in that project's scratch directory. Derived
+    /// from the record rather than stored, so it still answers for an owner a
+    /// restart restored.
+    pub(in crate::app) fn is_project_conversation_owner(&self, run_id: &str) -> bool {
+        let Some(active) = self.runs.get(run_id) else {
+            return false;
+        };
+        let Some(project) = self
+            .projects
+            .project_id_of(run_id)
+            .and_then(|project_id| self.projects.get(project_id))
+        else {
+            return false;
+        };
+        crate::app::workspaces::same_path(
+            &active.worktree.path,
+            &scratch_dir(&self.state_root, &project.repo_path),
+        )
     }
 
     /// The live run that owns this project's scratch root. Read by path rather

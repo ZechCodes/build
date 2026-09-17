@@ -156,3 +156,66 @@ fn project_conversation_refuses_a_project_this_bridge_does_not_know() {
         .contains("unknown project_id: proj-9"));
     assert!(state.runs.is_empty());
 }
+
+/// The owner decides which kind of agent is minted, so a project agent wears
+/// the prefix that says so — and the same verbs on a workspace owner keep
+/// minting coding agents.
+#[test]
+fn a_project_owners_agents_are_project_agents_and_a_workspaces_are_not() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let owner = ensure(&mut state, &project_id)["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let added = state.handle(req("agent.add", json!({ "entity_id": owner })));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap();
+    assert!(
+        crate::agent::is_project_agent(agent_id),
+        "{added:?} is on the project surface"
+    );
+
+    // The path that MUST be heard mints the same kind: a message to a project
+    // conversation nobody is on is still the project's agent.
+    let (_other_home, other_repo) = init_repo();
+    let other = added_project(&mut state, &std::fs::canonicalize(&other_repo).unwrap());
+    let other_owner = ensure(&mut state, &other)["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let posted = state.handle(req(
+        "thread.post",
+        json!({ "entity_id": other_owner, "body": "what is in here?" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    let minted = state
+        .entity_agents(&other_owner)
+        .unwrap()
+        .primary()
+        .unwrap();
+    assert!(crate::agent::is_project_agent(&minted.id), "{}", minted.id);
+
+    // A workspace of the same project is an ordinary checkout, and its agents
+    // are ordinary coding agents.
+    let workspace = state.handle(req(
+        "workspace.create",
+        json!({ "project_id": project_id, "name": "work", "isolation": "worktree" }),
+    ));
+    assert_eq!(workspace["ok"], true, "{workspace:?}");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": workspace["result"]["workspace_id"] }),
+    ));
+    let workspace_owner = ensured["result"]["run_id"].as_str().unwrap();
+    let workspace_agent = state.handle(req("agent.add", json!({ "entity_id": workspace_owner })));
+    let workspace_agent = workspace_agent["result"]["agent"]["id"].as_str().unwrap();
+    assert!(
+        workspace_agent.starts_with(crate::agent::AGENT_ID_PREFIX),
+        "{workspace_agent}"
+    );
+}

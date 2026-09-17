@@ -28,6 +28,81 @@ pub const AGENT_ID_PREFIX: &str = "agent-";
 /// choice once, then advances the marker so later entity edits cannot move it.
 pub const CURRENT_SETTINGS_VERSION: u8 = 1;
 
+/// What every project agent's id starts with. Load-bearing exactly as the
+/// router's prefix is: the MCP control plane reads the surface off the id
+/// alone, so a project agent is handed the project tools without anything
+/// having to remember to say which surface it is on.
+pub const PROJECT_AGENT_ID_PREFIX: &str = "project-";
+
+/// Whether an id names the agent of a project's conversation owner rather than
+/// an agent that works a checkout.
+pub fn is_project_agent(agent_id: &str) -> bool {
+    agent_id.starts_with(PROJECT_AGENT_ID_PREFIX)
+}
+
+/// Which kind of agent an owner's roster mints.
+///
+/// The kind is a property of the OWNER, not of the verb that happened to reach
+/// it: a project's conversation owner holds no checkout and so its agents get
+/// the project surface, whoever asked for them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgentKind {
+    /// An agent of a branch, an issue or a workspace. It works a checkout.
+    #[default]
+    Coding,
+    /// An agent of a project's conversation owner. It holds no checkout and
+    /// reaches Build through the project surface.
+    Project,
+}
+
+impl AgentKind {
+    /// A fresh id of this kind. The prefix IS the kind, read back by
+    /// [`crate::mcp::McpSurface::for_owner`].
+    pub fn new_id(self) -> String {
+        match self {
+            AgentKind::Coding => new_agent_id(),
+            AgentKind::Project => new_project_agent_id(),
+        }
+    }
+}
+
+/// Who a roster is minting for: the owner's id, and the kind of agent that
+/// owner has.
+///
+/// A bare `&str` owner converts to the coding kind, which is what every branch,
+/// issue and workspace is; the project case has to be named, and is named where
+/// the owner is recognized rather than where the agent is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentOwner<'a> {
+    pub id: &'a str,
+    pub kind: AgentKind,
+}
+
+impl<'a> AgentOwner<'a> {
+    /// The conversation owner of a project.
+    pub fn project(id: &'a str) -> AgentOwner<'a> {
+        AgentOwner {
+            id,
+            kind: AgentKind::Project,
+        }
+    }
+}
+
+impl<'a> From<&'a str> for AgentOwner<'a> {
+    fn from(id: &'a str) -> AgentOwner<'a> {
+        AgentOwner {
+            id,
+            kind: AgentKind::Coding,
+        }
+    }
+}
+
+impl<'a> From<&'a String> for AgentOwner<'a> {
+    fn from(id: &'a String) -> AgentOwner<'a> {
+        AgentOwner::from(id.as_str())
+    }
+}
+
 /// Crockford base32 — ULID's alphabet: no I, L, O or U, so an id read aloud or
 /// typed by hand cannot become a different id.
 const CROCKFORD: [u8; 32] = *b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -313,9 +388,14 @@ impl AgentRoster {
     /// The one door for every path that MUST be heard — a post, a start, a
     /// dispatched turn, a report coming back. `choice` is the entity's own, so
     /// the agent Build mints runs what the entity was set up to run.
-    pub fn ensure_primary(&mut self, owner_id: &str, choice: ModelChoice, now: &str) -> &mut Agent {
+    pub fn ensure_primary<'a>(
+        &mut self,
+        owner: impl Into<AgentOwner<'a>>,
+        choice: ModelChoice,
+        now: &str,
+    ) -> &mut Agent {
         if self.agents.is_empty() {
-            self.add(owner_id, choice, now);
+            self.add(owner, choice, now);
         }
         self.primary_mut().expect("just ensured")
     }
@@ -387,7 +467,13 @@ impl AgentRoster {
     /// Add an agent to the entity, with its own empty conversation. The ordinal
     /// continues past the highest one ever handed out here, so a rail label is
     /// never reused.
-    pub fn add(&mut self, owner_id: &str, choice: ModelChoice, now: &str) -> &Agent {
+    pub fn add<'a>(
+        &mut self,
+        owner: impl Into<AgentOwner<'a>>,
+        choice: ModelChoice,
+        now: &str,
+    ) -> &Agent {
+        let owner = owner.into();
         let ordinal = self
             .agents
             .iter()
@@ -395,17 +481,22 @@ impl AgentRoster {
             .max()
             .unwrap_or(0)
             + 1;
-        self.agents
-            .push(Agent::new(new_agent_id(), owner_id, choice, ordinal, now));
+        self.agents.push(Agent::new(
+            owner.kind.new_id(),
+            owner.id,
+            choice,
+            ordinal,
+            now,
+        ));
         self.agents.last().expect("just pushed")
     }
 
     /// Add once for a client-supplied creation operation. Retrying the exact
     /// operation returns the same durable agent; reusing its id for different
     /// settings is refused instead of ambiguously creating or mutating one.
-    pub fn add_idempotent(
+    pub fn add_idempotent<'a>(
         &mut self,
-        owner_id: &str,
+        owner: impl Into<AgentOwner<'a>>,
         choice: ModelChoice,
         now: &str,
         creation_id: &str,
@@ -426,7 +517,7 @@ impl AgentRoster {
             }
             return Ok((existing.clone(), false));
         }
-        let added_id = self.add(owner_id, choice.clone(), now).id.clone();
+        let added_id = self.add(owner, choice.clone(), now).id.clone();
         let added = self.by_id_mut(&added_id).expect("the agent was just added");
         added.creation_id = Some(creation_id.to_string());
         added.creation_choice = Some(choice);
@@ -468,19 +559,35 @@ const NO_AGENT_YET: &str = "no agent here yet — send a message to create one";
 /// A fresh, time-ordered agent id. Two agents minted in the same millisecond
 /// still differ (80 bits of randomness), and ids minted later sort later.
 pub fn new_agent_id() -> String {
-    let now_ms = std::time::SystemTime::now()
+    mint_agent_id(now_ms(), uuid::Uuid::new_v4().as_u128())
+}
+
+/// A fresh project-agent id: the same time-ordered body under the prefix that
+/// names the project surface.
+pub fn new_project_agent_id() -> String {
+    format!(
+        "{PROJECT_AGENT_ID_PREFIX}{}",
+        ulid_body(now_ms(), uuid::Uuid::new_v4().as_u128())
+    )
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_millis())
-        .unwrap_or(0);
-    mint_agent_id(now_ms, uuid::Uuid::new_v4().as_u128())
+        .unwrap_or(0)
 }
 
 /// The ULID rule, factored out so time and randomness can be supplied by a
 /// test: 48 bits of milliseconds, then 80 bits of randomness.
 pub fn mint_agent_id(now_ms: u128, randomness: u128) -> String {
+    format!("{AGENT_ID_PREFIX}{}", ulid_body(now_ms, randomness))
+}
+
+fn ulid_body(now_ms: u128, randomness: u128) -> String {
     let time = (now_ms & ((1u128 << 48) - 1)) << 80;
     let random = randomness & ((1u128 << 80) - 1);
-    format!("{AGENT_ID_PREFIX}{}", crockford_base32(time | random))
+    crockford_base32(time | random)
 }
 
 /// The first agent of `owner_id`, derived rather than minted.
@@ -845,6 +952,32 @@ mod roster_tests {
         );
         assert_eq!(roster.len(), 2);
         assert_ne!(second, minted.id);
+    }
+
+    /// The prefix says which MCP surface a session gets, so it is the OWNER
+    /// that decides it: a project's conversation owner mints project agents,
+    /// and everything else mints coding ones.
+    #[test]
+    fn a_project_owner_mints_project_agents_and_every_other_owner_coding_ones() {
+        let mut project = AgentRoster::empty();
+        let first = project
+            .ensure_primary(AgentOwner::project("run-project"), codex(), NOW)
+            .id
+            .clone();
+        let second = project
+            .add(AgentOwner::project("run-project"), codex(), NOW)
+            .id
+            .clone();
+        for id in [&first, &second] {
+            assert!(is_project_agent(id), "{id}");
+            assert!(!crate::router::is_router_agent(id), "{id}");
+        }
+        assert_ne!(first, second);
+
+        let mut branch = AgentRoster::empty();
+        let coding = branch.add("run-1", codex(), NOW).id.clone();
+        assert!(coding.starts_with(AGENT_ID_PREFIX), "{coding}");
+        assert!(!is_project_agent(&coding), "{coding}");
     }
 
     /// A minted agent is minted, first or not: only the pre-agent migration

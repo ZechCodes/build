@@ -193,13 +193,18 @@ impl AppState {
             // The dispatch's git runs through the drain, so the row this answers
             // with is read once the branch is real — in the apply phase, which
             // is where the route is written down.
+            // The human chose this destination themselves, so the instruction
+            // it carries is theirs and names no sender.
             "branch" => self.route_to_branch(
-                &capture_id,
+                crate::app::RoutedCapture {
+                    capture_id: capture_id.clone(),
+                    rationale,
+                    answer: capture_after_routing,
+                    from_agent: None,
+                },
                 &project_id,
                 branch,
                 &text,
-                rationale,
-                capture_after_routing,
             ),
             other => Err(format!(
                 "capture.reroute: {other:?} is not a destination — branch is the supported work"

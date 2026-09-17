@@ -11,6 +11,27 @@ use crate::orchestrator::ActiveRun;
 use crate::store::now_rfc3339;
 use serde_json::{json, Value};
 
+/// The words one dispatch hands over, and who is handing them over.
+///
+/// A dispatch a router decided carries the router's identity onto the message
+/// it lands as, so the agent reading it — and the human watching — can tell an
+/// instruction passed between agents from the user speaking. A dispatch the
+/// human made carries nothing: the words are their own.
+pub(in crate::app) struct DispatchInstruction {
+    pub(in crate::app) words: String,
+    pub(in crate::app) from_agent: Option<crate::thread::AgentIdentity>,
+}
+
+impl DispatchInstruction {
+    /// The instruction as the route that asked for it leaves it.
+    pub(in crate::app) fn routed(words: String, routed: Option<&RoutedCapture>) -> Self {
+        Self {
+            words,
+            from_agent: routed.and_then(|routed| routed.from_agent.clone()),
+        }
+    }
+}
+
 /// The agent one dispatch put on a branch, and the branch it is working.
 pub(in crate::app) struct DispatchedAgent {
     pub(in crate::app) branch: String,
@@ -141,13 +162,15 @@ impl AppState {
         let project_id = adopted.project_id.clone();
         let run_id = adopted.run_id.clone();
         let choice = adopted.model_choice.clone();
+        let instruction = DispatchInstruction::routed(instruction, routed.as_ref());
+        let human_dispatched = instruction.from_agent.is_none();
         let route =
             self.record_dispatch_route(routed, &project_id, &run_id, &adopted.checkout.branch)?;
         let mut active = self.open_adoption(&adopted)?;
         let agent = self.dispatch_to_run(
             &run_id,
             &mut active,
-            &instruction,
+            instruction,
             choice,
             &adopted.checkout.branch,
             adopted.checkout.path.clone(),
@@ -158,7 +181,12 @@ impl AppState {
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
         self.finish_run_mutation(run_id.clone(), active)?;
-        self.touch_attention(&run_id);
+        // Only the human's own dispatch is the human acting on this run. One
+        // agent handing work to another is the work happening, and the work
+        // happening must not tell the inbox they have been here.
+        if human_dispatched {
+            self.touch_attention(&run_id);
+        }
         Ok(RouteRecorded::answer(
             route,
             agent.json(&project_id, &run_id),
@@ -182,13 +210,19 @@ impl AppState {
             branch,
             root,
         } = joined;
+        let instruction = DispatchInstruction::routed(instruction, routed.as_ref());
+        let human_dispatched = instruction.from_agent.is_none();
         let route = self.record_dispatch_route(routed, &project_id, &run_id, &branch)?;
         let mut active = self.take_run(&run_id)?;
-        let agent = self.dispatch_to_run(&run_id, &mut active, &instruction, choice, &branch, root);
+        let agent = self.dispatch_to_run(&run_id, &mut active, instruction, choice, &branch, root);
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
         self.finish_run_mutation(run_id.to_string(), active)?;
-        self.touch_attention(&run_id);
+        // The human acting, or an agent handing work over: see
+        // `open_dispatched_run`.
+        if human_dispatched {
+            self.touch_attention(&run_id);
+        }
         Ok(RouteRecorded::answer(
             route,
             agent.json(&project_id, &run_id),
@@ -196,7 +230,8 @@ impl AppState {
     }
 
     /// Add the agent a dispatch speaks through to a run that has a checkout,
-    /// and hand it the words. The half every dispatch shares — the branch Build
+    /// and hand it the words — as the human's, or as the words of the agent
+    /// that decided to send them. The half every dispatch shares — the branch Build
     /// already ran, and the one it has just taken ownership of.
     ///
     /// The run is mutated where its owner is holding it, and handed back
@@ -206,7 +241,7 @@ impl AppState {
         &mut self,
         run_id: &str,
         active: &mut ActiveRun,
-        instruction: &str,
+        instruction: DispatchInstruction,
         choice: ModelChoice,
         branch: &str,
         root: std::path::PathBuf,
@@ -224,7 +259,12 @@ impl AppState {
         let model_choice = agent.choice.clone();
         let choice_revision = agent.choice_revision;
         let conversation_id = agent.conversation_id().to_string();
-        agent.thread.post_user(instruction, None, &now);
+        match instruction.from_agent {
+            Some(sender) => agent
+                .thread
+                .post_user_from_agent(instruction.words, sender, &now),
+            None => agent.thread.post_user(instruction.words, None, &now),
+        };
         // Told the same way `agent.start` tells an agent what is waiting for
         // it: the instruction is already durable on the thread, so a warm
         // harness gets the read-your-messages nudge `thread.post` writes, and a

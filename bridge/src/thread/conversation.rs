@@ -263,7 +263,7 @@ impl Thread {
     ) -> String {
         let id = self.post_user(body, None, now);
         if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
-            message.from_agent = Some(from_agent);
+            message.from_agent = Some(Box::new(from_agent));
         }
         id
     }

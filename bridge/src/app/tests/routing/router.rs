@@ -1007,3 +1007,92 @@ fn the_router_reads_across_every_project_and_writes_to_none_of_them() {
     );
     assert!(unknown.is_err(), "{unknown:?}");
 }
+
+// ==== attribution: whose words the dispatched agent is holding ============
+
+/// The instruction a dispatch left on its agent's thread, and the agent that
+/// sent it — `None` when the words are the human's own.
+fn dispatched_from(state: &AppState, run_id: &str, agent_id: &str) -> Option<String> {
+    let agent = state.runs[run_id]
+        .agents
+        .by_id(agent_id)
+        .unwrap_or_else(|| panic!("{agent_id} is on {run_id}'s roster"));
+    match agent.thread.items.first().expect("the instruction") {
+        crate::thread::ThreadItem::Message(message) => {
+            assert_eq!(message.role, crate::thread::MessageRole::User);
+            message.from_agent.as_ref().map(|from| from.id.clone())
+        }
+        other => panic!("the first item is the instruction, not {other:?}"),
+    }
+}
+
+/// When the human last acted on a run, as the inbox records it.
+fn last_interaction(state: &AppState, run_id: &str) -> Option<String> {
+    state
+        .board
+        .attention()
+        .attention(run_id)
+        .and_then(|attention| attention.last_interaction_at.clone())
+}
+
+/// The router hands work over, and the agent it hands it to is told who is
+/// speaking: the message is on the user's side of the conversation because
+/// that is the side an instruction arrives on, and it names the router.
+#[test]
+fn a_router_dispatch_says_which_agent_sent_the_instruction() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    let (capture_id, router_id) = captured(&mut state, "finish the toast on the login branch");
+
+    let dispatched = state
+        .router_action(
+            &capture_id,
+            BridgeAction::DispatchBranch {
+                project_id,
+                branch: None,
+                instruction: "finish the toast".to_string(),
+                rationale: None,
+            },
+        )
+        .unwrap();
+
+    let run_id = dispatched["run_id"].as_str().unwrap().to_string();
+    let agent_id = dispatched["agent_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        dispatched_from(&state, &run_id, &agent_id),
+        Some(router_id),
+        "the words came from the router, not from the user"
+    );
+    assert_eq!(
+        last_interaction(&state, &run_id),
+        None,
+        "one agent telling another is the work happening, not the human acting"
+    );
+}
+
+/// The same dispatch from the browser is the human's own: nothing claims to
+/// have sent it for them, and the inbox records that they acted.
+#[test]
+fn a_dispatch_the_human_made_carries_no_sender() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+
+    let dispatched = state.handle(req(
+        "branch.dispatch",
+        json!({ "project_id": project_id, "instruction": "finish the toast" }),
+    ));
+    assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+
+    let run_id = dispatched["result"]["run_id"].as_str().unwrap().to_string();
+    let agent_id = dispatched["result"]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(dispatched_from(&state, &run_id, &agent_id), None);
+    assert!(
+        last_interaction(&state, &run_id).is_some(),
+        "the human dispatched this one themselves"
+    );
+}

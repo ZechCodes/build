@@ -406,8 +406,12 @@ pub struct ThreadMessage {
     /// sender here. Absent on everything the human said, and on every record
     /// written before agents could speak to each other — so a client that has
     /// never heard of the field reads those messages exactly as it always has.
+    ///
+    /// Boxed for the reason [`completion_report`](Self::completion_report) is:
+    /// almost every message on almost every conversation is the human's, and
+    /// the identity of the rare sender must not cost the rest of them a word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_agent: Option<AgentIdentity>,
+    pub from_agent: Option<Box<AgentIdentity>>,
     /// Client mutation whose durable delivery owns this reviewer message.
     /// Managed messages are read through that exact operation and never by
     /// the legacy catch-all unread mailbox.

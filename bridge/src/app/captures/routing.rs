@@ -20,6 +20,10 @@ pub struct RoutedCapture {
     /// told what it did. Nothing here can refuse: every refusal a dispatch can
     /// make came before the write that made its run real.
     pub answer: fn(&crate::capture::Capture, Value) -> Value,
+    /// The agent that decided this destination, when an agent decided it. The
+    /// instruction it dispatches is that agent's words, and the message it
+    /// lands as says so. A reroute is the human's own, and carries nothing.
+    pub from_agent: Option<crate::thread::AgentIdentity>,
 }
 
 /// A capture's route, written down ahead of the run it names being durable,
@@ -221,12 +225,15 @@ impl AppState {
                 instruction,
                 rationale,
             } => self.route_to_branch(
-                capture_id,
+                RoutedCapture {
+                    capture_id: capture_id.to_string(),
+                    rationale,
+                    answer: the_dispatch_itself,
+                    from_agent: self.router_sender(capture_id),
+                },
                 &project_id,
                 branch.as_deref(),
                 &instruction,
-                rationale,
-                the_dispatch_itself,
             ),
             BridgeAction::AskUser { question, options } => {
                 self.router_ask_user(capture_id, &question, &options)
@@ -320,12 +327,10 @@ impl AppState {
     /// is the worst possible owner of a half-built branch.
     pub(in crate::app) fn route_to_branch(
         &mut self,
-        capture_id: &str,
+        routed: RoutedCapture,
         project_id: &str,
         branch: Option<&str>,
         instruction: &str,
-        rationale: Option<String>,
-        answer: fn(&crate::capture::Capture, Value) -> Value,
     ) -> Result<Value, String> {
         self.dispatch_branch(
             &json!({
@@ -333,12 +338,22 @@ impl AppState {
                 "branch": branch,
                 "instruction": instruction,
             }),
-            Some(RoutedCapture {
-                capture_id: capture_id.to_string(),
-                rationale,
-                answer,
-            }),
+            Some(routed),
         )
+    }
+
+    /// The router deciding one capture, as a sender to put on the words it
+    /// dispatches. `None` once the session is gone, which is what a reroute
+    /// the user made finds: they abandoned the router before they chose.
+    pub(in crate::app) fn router_sender(
+        &self,
+        capture_id: &str,
+    ) -> Option<crate::thread::AgentIdentity> {
+        self.router_sessions
+            .get(capture_id)
+            .map(|session| crate::thread::AgentIdentity {
+                id: session.agent_id().to_string(),
+            })
     }
 
     /// The router asks the one question that would let it decide. The capture

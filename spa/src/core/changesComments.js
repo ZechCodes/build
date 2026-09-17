@@ -190,6 +190,17 @@ export function createCommentLayer({
         selecting: Boolean(selectionInside(host)),
       }),
 
+    /** Whether repainting would interrupt an interaction that still points at
+     *  the current DOM. Anchored comments already live in this controller and
+     *  are safe to redraw; an open popover, draft note, or live selection is
+     *  not. */
+    repaintBusy: () =>
+      commentLayerBusy({
+        popOpen: hasCommentPop(),
+        generalText: readNote(),
+        selecting: Boolean(selectionInside(host)),
+      }),
+
     /** Re-wire the tray's control after a repaint. */
     refreshActions: renderActions,
 

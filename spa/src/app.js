@@ -128,8 +128,9 @@ function applyRoute(route) {
   App.routeLeaveGuard = null;
   const hash = standOn(route);
   if (location.hash !== hash) {
+    // Replace keeps reloads and shared URLs useful without accumulating history.
     acceptedHash = hash;
-    location.hash = hash; // hashchange re-enters render()
+    location.replace(hash); // hashchange re-enters render after this view settles
   } else {
     acceptedHash = null;
     render();
@@ -179,6 +180,7 @@ function readRoute() {
 
 export function initRouter() {
   App.route = readRoute();
+  document.addEventListener("click", followRouteLink);
   window.addEventListener("hashchange", async () => {
     const requestedHash = location.hash;
     if (acceptedHash === requestedHash) {
@@ -198,6 +200,23 @@ export function initRouter() {
     App.route = readRoute();
     if (!App.gated) render();
   });
+}
+
+function followRouteLink(event) {
+  if (event.defaultPrevented || event.button !== 0) return;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  const link = event.target.closest?.("a[href]");
+  const hash = routeLinkHash(link);
+  if (!hash) return;
+  event.preventDefault();
+  void go(routeFromHash(hash));
+}
+
+function routeLinkHash(link) {
+  if (!link || link.hasAttribute("download") || (link.target && link.target !== "_self")) return;
+  const url = new URL(link.href, location.href);
+  if (url.origin !== location.origin || url.pathname !== location.pathname || url.search !== location.search) return;
+  return url.hash.startsWith("#/") ? url.hash : null;
 }
 
 // Every route is one of six surfaces: the inbox (the landing route), a branch,

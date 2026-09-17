@@ -173,6 +173,59 @@ describe("the Changes pane's stack", () => {
     }
     pane.dispose();
   });
+
+  it("reorders Uncommitted by edited time without losing review state or the reader's place", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const timedStatus = (times) => {
+      const value = status();
+      value.files = value.files.map((file) => ({ ...file, edited_at: times[file.path] }));
+      value.status_key = `times:${JSON.stringify(times)}`;
+      return value;
+    };
+    const served = { status: timedStatus({ "src/a.js": 30, "src/b.js": 20 }) };
+    const { container, pane } = await mount(served, { run_id: "run-1" });
+    const scroller = container.querySelector(".cdetail-host");
+    const held = fileOf(container, "src/b.js");
+
+    held.querySelector(".fhead").click();
+    held.querySelector(".fselect-box").click();
+    held.querySelector(".fcmt").click();
+    await vi.advanceTimersByTimeAsync(0);
+    document.querySelector(".cp-input").value = "Keep this anchored";
+    document.querySelector(".cp-save").click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(held.classList.contains("collapsed")).toBe(true);
+    expect(held.querySelector(".fselect-box").checked).toBe(true);
+    expect(container.querySelector(".pcomment").textContent).toContain("Keep this anchored");
+
+    const original = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      if (this === scroller) return { top: 0, bottom: 300, height: 300 };
+      if (!this.classList?.contains("file")) return { top: 0, bottom: 0, height: 0 };
+      const position = [...this.parentElement.children].filter((element) => element.classList.contains("file")).indexOf(this);
+      const top = position * 400 - scroller.scrollTop;
+      return { top, bottom: top + 400, height: 400 };
+    };
+    try {
+      scroller.scrollTop = 400;
+      served.status = timedStatus({ "src/a.js": 30, "src/b.js": 40 });
+      await vi.advanceTimersByTimeAsync(2000);
+      await settle();
+
+      expect([...container.querySelectorAll(".file")].map((file) => file.dataset.key)).toEqual([
+        "EDIT:src/b.js",
+        "EDIT:src/a.js",
+      ]);
+      expect(fileOf(container, "src/b.js")).toBe(held);
+      expect(held.classList.contains("collapsed")).toBe(true);
+      expect(held.querySelector(".fselect-box").checked).toBe(true);
+      expect(container.querySelector(".pcomment").textContent).toContain("Keep this anchored");
+      expect(scroller.scrollTop).toBe(0);
+    } finally {
+      Element.prototype.getBoundingClientRect = original;
+    }
+    pane.dispose();
+  });
 });
 
 describe("the review plug's stack", () => {
@@ -217,6 +270,26 @@ describe("the review plug's stack", () => {
     await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
     expect(host.textContent).toContain("the agent moved on");
     expect(fileOf(host, "src/b.js")).toBe(held);
+    plug.unmount();
+  });
+
+  it("reorders by edit time while preserving file nodes and fold state", async () => {
+    vi.useFakeTimers();
+    let edited = { "src/a.js": 20, "src/b.js": 10 };
+    const { host, plug } = mountPlug({ fetchDiff: async () => ({ patch: TWO_FILES, file_edited_at: edited }) });
+    await vi.advanceTimersByTimeAsync(0);
+    const held = fileOf(host, "src/b.js");
+    held.querySelector(".fhead").click();
+    expect(held.classList.contains("collapsed")).toBe(true);
+
+    edited = { "src/a.js": 20, "src/b.js": 30 };
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    expect([...host.querySelectorAll(".file")].map((file) => file.dataset.key)).toEqual([
+      "EDIT:src/b.js",
+      "EDIT:src/a.js",
+    ]);
+    expect(fileOf(host, "src/b.js")).toBe(held);
+    expect(held.classList.contains("collapsed")).toBe(true);
     plug.unmount();
   });
 });

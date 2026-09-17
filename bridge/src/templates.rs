@@ -1,14 +1,14 @@
 //! Prompt templates *are* the orchestration logic, so they're data, not code.
 //!
 //! The bridge ships defaults; a project overrides any of them by dropping files
-//! in `.build/templates/`. The `done`-tool instructions live in the templates
+//! in `.build/templates/`. The terminal-message instructions live in the templates
 //! (harness-agnostic, user-overridable, zero special cases). Variables: `{goal}`,
 //! `{plan_path}`, `{docs_dir}`, `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`,
 //! `{stage_path}`, `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`,
 //! `{findings}`, `{prior_notes}`, `{capture_text}`, `{user_answer}`.
 
 /// Where the plan file lives by convention (the agent reports the real path back
-/// via `done`, so this is a default, not a hardcode). Legacy single-plan / Quick
+/// via its completion message, so this is a default, not a hardcode). Legacy single-plan / Quick
 /// tasks only — multi-stage plans use `STAGES_MANIFEST_PATH`.
 pub const DEFAULT_PLAN_PATH: &str = ".build/plan.md";
 
@@ -52,10 +52,10 @@ conversation must be able to execute any single stage document from scratch
 given only the previous stages' commits. Plan only — do not implement anything.
 Write nothing outside the docs directory.
 
-When the plan is ready, call the `done` tool with phase=\"plan\", status=\"completed\",
+When the plan is ready, call `post_thread_message` with phase=\"plan\", status=\"Complete\",
 outputs.plan_path=\".build/plan/stages.json\", outputs.stages set to the exact
-contents of the manifest, and set summary to one concise sentence stating what
-was planned. Reserve status=\"blocked\" for an unexpected environment or
+contents of the manifest, and set body to the report the user should see.
+Reserve status=\"Blocked\" for an unexpected environment or
 implementation problem that makes planning impossible (a broken checkout,
 missing tooling) — never for waiting on answers — and use one concise sentence
 to say what is broken.";
@@ -71,16 +71,15 @@ As you complete each logically-grouped piece of this work, commit it with git
 as a small, atomic commit whose message clearly and specifically describes that
 change. Prefer several focused commits over one large one. Never stage or commit
 anything under `.build/` — Build manages that directory. Ensure every code
-change is committed before you call `done`.
+change is committed before you send status=\"Complete\".
 
-When the work is complete, call the `done` tool with phase=\"build\",
-status=\"completed\", and set summary to one concise sentence stating what was
+When the work is complete, call `post_thread_message` with phase=\"build\",
+status=\"Complete\", and set body to the report the user should see about what was
 completed. If a question arises that only the reviewer can answer, post it with
-`post_thread_message` and keep building what is unambiguous — waiting on the
-reviewer is a conversation, never a blocker. Call `done` with status=\"blocked\"
+`post_thread_message` with status=\"Waiting\" and keep building what is unambiguous.
+Send status=\"Blocked\"
 only for an unexpected environment or implementation problem you cannot work
-around (broken tooling, a missing dependency), or status=\"failed\" when the
-approach did not work, and use one concise sentence to say what is needed to
+around (broken tooling, a missing dependency), and use one concise sentence to say what is needed to
 proceed.";
 
 const BUILD_STAGE: &str = "\
@@ -99,16 +98,15 @@ As you complete each logically-grouped piece of this work, commit it with git
 as a small, atomic commit whose message clearly and specifically describes that
 change. Prefer several focused commits over one large one. Never stage or commit
 anything under `.build/` — Build manages that directory. Ensure every code
-change is committed before you call `done`.
+change is committed before you send status=\"Complete\".
 
-When this stage's work is complete, call the `done` tool with phase=\"build\",
-status=\"completed\", and set summary to one concise sentence stating what was
+When this stage's work is complete, call `post_thread_message` with phase=\"build\",
+status=\"Complete\", and set body to the report the user should see about what was
 completed. If a question arises that only the reviewer can answer, post it with
-`post_thread_message` and keep building what is unambiguous — waiting on the
-reviewer is a conversation, never a blocker. Call `done` with status=\"blocked\"
+`post_thread_message` with status=\"Waiting\" and keep building what is unambiguous.
+Send status=\"Blocked\"
 only for an unexpected environment or implementation problem you cannot work
-around (broken tooling, a missing dependency), or status=\"failed\" when the
-approach did not work, and use one concise sentence to say what is needed to
+around (broken tooling, a missing dependency), and use one concise sentence to say what is needed to
 proceed.";
 
 const REVISE: &str = "\
@@ -121,8 +119,8 @@ directory for this issue:
 
 Revise the plan to address every note. Keep writing only inside that docs
 directory — the primary checkout you are running in stays untouched. When done,
-call the `done` tool with phase=\"plan\", status=\"completed\", outputs.plan_path=\"{plan_path}\",
-and one concise sentence in summary stating what was revised.";
+call `post_thread_message` with phase=\"plan\", status=\"Complete\", outputs.plan_path=\"{plan_path}\",
+and a concise report in body stating what was revised.";
 
 const REVISE_STAGE: &str = "\
 The reviewer left comments on the plan document for stage \"{stage_title}\" at
@@ -136,10 +134,10 @@ Revise that stage document to address every comment. You may also update this
 stage's \"title\" and \"summary\" fields in `.build/plan/stages.json`, but do not
 add, remove, reorder, or re-id stages, and do not touch other stages' documents.
 Keep writing only inside that docs directory — the primary checkout you are
-running in stays untouched. When done, call the `done` tool with
-phase=\"revise\", status=\"completed\", outputs.comment_resolutions set to one
+running in stays untouched. When done, call `post_thread_message` with
+phase=\"revise\", status=\"Complete\", outputs.comment_resolutions set to one
 {\"comment_id\", \"response\"} entry per [c-N] comment above saying how you addressed
-it, and one concise sentence in summary stating what was revised.";
+it, and a concise report in body stating what was revised.";
 
 const FIX_STAGE: &str = "\
 An automated validation pass reviewed stage \"{stage_title}\" (plan document at
@@ -159,23 +157,22 @@ As you complete each logically-grouped piece of this work, commit it with git
 as a small, atomic commit whose message clearly and specifically describes that
 change. Prefer several focused commits over one large one. Never stage or commit
 anything under `.build/` — Build manages that directory. Ensure every code
-change is committed before you call `done`.
+change is committed before you send status=\"Complete\".
 
-When done, call the `done` tool with
-phase=\"build\", status=\"completed\", and one concise sentence in summary stating
+When done, call `post_thread_message` with
+phase=\"build\", status=\"Complete\", and a concise report in body stating
 what was fixed. If a question arises that only the reviewer can answer, post it
-with `post_thread_message` and keep going on what is unambiguous. Call `done`
-with status=\"blocked\" only for an unexpected environment or implementation
-problem you cannot work around, or status=\"failed\" when the approach did not
-work, and use one concise sentence to say what is needed to proceed.";
+with `post_thread_message` and status=\"Waiting\", then keep going on what is unambiguous.
+Send status=\"Blocked\" only for an unexpected environment or implementation
+problem you cannot work around, and say what is needed to proceed.";
 
 const REVIEW_CHANGES: &str = "\
 The reviewer requested changes on your diff:
 
 {comments}
 
-Address every comment in this worktree. When done, call the `done` tool with
-phase=\"revise\", status=\"completed\", and one concise sentence in summary stating
+Address every comment in this worktree. When done, call `post_thread_message` with
+phase=\"revise\", status=\"Complete\", and a concise report in body stating
 what was changed.";
 
 const VALIDATE: &str = "\
@@ -190,16 +187,16 @@ stage — judge readiness for merge review instead).
 
 Decide whether the stage's changes faithfully and completely implement its plan
 document and leave the codebase ready for the next stage. When you have decided,
-call the `done` tool with phase=\"validate\", status=\"completed\", and
+call `post_thread_message` with phase=\"validate\", status=\"Complete\", and
 outputs.validation = {\"passed\": true|false, \"findings\": \"...\", \"notes_for_next_stage\": \"...\"}.
 `findings` is a short markdown report: a one-line verdict, then `-` bullets of
 what was verified and any divergences. `notes_for_next_stage` is markdown the
 next stage's builder should know (surprises, renamed symbols, follow-ups) — use
-\"\" if there is nothing. Use one concise sentence in the summary argument to state
+\"\" if there is nothing. Use body to state
 the verdict. If a question would change your verdict, post it with
 `post_thread_message` and judge on the evidence in front of you. If an
 unexpected environment or implementation problem prevents the review itself,
-call `done` with status=\"blocked\" or status=\"failed\" and use one concise
+send status=\"Blocked\" and use one concise
 sentence to say why.";
 
 const TRIAGE: &str = "\
@@ -246,13 +243,13 @@ accumulated judgment, not a rule you have to obey: a hunk in a repeatedly
 collapsed pattern that genuinely touches security is still \"critical\", and the
 rationale is where you say why this one is different.
 
-When every hunk is classified, call the `done` tool with phase=\"triage\",
-status=\"completed\", and outputs.triage = {\"based_on\": \"{revision_sha}\",
+When every hunk is classified, call `post_thread_message` with phase=\"triage\",
+status=\"Complete\", and outputs.triage = {\"based_on\": \"{revision_sha}\",
 \"hunks\": [{\"hunk_id\", \"level\", \"rationale\", \"group\"}]} — `based_on` echoed
 back exactly as given, one entry per hunk id listed above, and no id you made
-up. Use one concise sentence in summary to say what carries the risk in this
+up. Use one concise sentence in body to say what carries the risk in this
 change. If an unexpected environment or implementation problem prevents the
-pass, call `done` with status=\"blocked\" or status=\"failed\" and use one concise
+pass, send status=\"Blocked\" and use one concise
 sentence to say what is broken.";
 
 const ROUTER: &str = "\
@@ -273,7 +270,7 @@ You have no checkout and you change no code; the agent you hand this to does.
 
 Your tools: `list_projects` (every project on this device), `list_work` (the
 branches in flight), `read_conversation` (read one of them; read-only),
-`dispatch_branch`, `ask_user`, and `done`. There are no others —
+`dispatch_branch`, `ask_user`, and `post_thread_message`. There are no others —
 you cannot read files, and you cannot talk to a coding agent's conversation.
 
 The decision rule, in order:
@@ -292,21 +289,21 @@ The decision rule, in order:
    naming that destination, and the user can type instead of any of them.
 
 Call exactly one of `dispatch_branch` or `ask_user`, then call
-`done` with phase=\"route\", status=\"completed\" and one concise sentence saying
-where the capture went and why. If nothing lets you decide, call `done` with
-status=\"failed\" and one concise sentence saying what stopped you — the capture
+`post_thread_message` with phase=\"route\", status=\"Complete\" and one concise sentence in body saying
+where the capture went and why. If nothing lets you decide, send status=\"Blocked\"
+and one concise sentence saying what stopped you — the capture
 goes back to the user with a retry.";
 
-/// What every code-changing phase adds about its `done` call. Appended rather
+/// What every code-changing phase adds about its completion message. Appended rather
 /// than written into each template so the four asks cannot drift apart, and so
 /// a project overriding one template still overrides only that one.
 ///
-/// The summary IS the report. There used to be a structured
+/// The terminal message body IS the report. There used to be a structured
 /// `completion_report` beside a one-sentence summary; the reviewer got a
 /// sentence and a card of lists, and the account that actually explained the
 /// work sat in the activity log. Now the one field carries the whole account.
 const DONE_SUMMARY_ASK: &str = "\
-When you call `done` with status=\"completed\", `summary` is the whole report:
+When you call `post_thread_message` with status=\"Complete\", `body` is the whole report:
 it is what the reviewer reads, and they will not open the activity log to fill
 it in. Lead with the outcome in one sentence, then in markdown: what changed
 and where (the files that carry it and why), how you verified it and what you
@@ -318,7 +315,7 @@ fn phase_template(base: &str) -> String {
     base.to_string()
 }
 
-/// A template whose phase ends in changed code, so its `done` summary is the
+/// A template whose phase ends in changed code, so its terminal message body is the
 /// full report of it.
 fn reporting_template(base: &str) -> String {
     format!("{base}\n\n{DONE_SUMMARY_ASK}")
@@ -374,11 +371,11 @@ A message from the reviewer:
 
 {comments}
 
-Honor the message, then carry the task to completion and report via the `done`
-tool exactly as your original instructions described (same phase, honest
+Honor the message, then carry the task to completion and report via `post_thread_message`
+exactly as your original instructions described (same phase, honest
 status). If the message asks something only the reviewer can resolve, post your
 question with `post_thread_message` and keep going on what is unambiguous;
-reserve status=\"blocked\" for an unexpected environment or implementation
+reserve status=\"Blocked\" for an unexpected environment or implementation
 problem you cannot work around.";
 
 /// The substitution variables a template can reference.
@@ -410,7 +407,7 @@ pub struct Vars<'a> {
     pub user_answer: &'a str,
     /// The `triage` template's hunk list: one line per hunk, `id  path  header`.
     pub diff_summary: &'a str,
-    /// What the builder's `done` said, seeding triage: the summary is the
+    /// What the builder's completion message said, seeding triage: the body is the
     /// whole report, so the pass reads the same account the reviewer does.
     pub agent_report: &'a str,
     /// What the reviewed diff is taken against — the run's `base_sha`, or its
@@ -493,24 +490,32 @@ mod tests {
     }
 
     #[test]
-    fn defaults_instruct_the_done_tool_and_plan_scope() {
+    fn defaults_instruct_terminal_messages_and_plan_scope() {
         let t = Templates::default();
-        assert!(t.plan.contains("`done`"));
+        assert!(t.plan.contains("`post_thread_message`"));
+        assert!(t.plan.contains("status=\"Complete\""));
         assert!(t.plan.contains("stages.json"));
         assert!(t.plan.contains(".build/"));
         assert!(t.build.contains("phase=\"build\""));
         assert!(t.review_changes.contains("phase=\"revise\""));
+        for template in [&t.plan, &t.build, &t.review_changes] {
+            assert!(!template.contains("`done`"), "retired tool in {template}");
+            assert!(
+                !template.contains("read_unread_messages"),
+                "retired tool in {template}"
+            );
+        }
     }
 
-    /// The summary is the report, so every code-changing phase is told what a
+    /// The terminal body is the report, so every code-changing phase is told what a
     /// whole one holds — and nothing asks for the structured report that used
     /// to ride beside it.
     #[test]
-    fn every_code_changing_template_asks_for_the_full_report_in_the_done_summary() {
+    fn every_code_changing_template_asks_for_the_full_report_in_the_terminal_body() {
         let t = Templates::default();
         for template in [&t.build, &t.build_stage, &t.fix_stage, &t.review_changes] {
             assert!(
-                template.contains("`summary` is the whole report"),
+                template.contains("`body` is the whole report"),
                 "{template}"
             );
             for asked in ["what changed", "verified", "reverse-engineer", "left out"] {
@@ -566,7 +571,7 @@ mod tests {
             t.plan
         );
         assert!(
-            t.plan.contains("status=\"blocked\""),
+            t.plan.contains("status=\"Blocked\""),
             "the escape hatch for a genuinely broken environment remains: {}",
             t.plan
         );
@@ -575,7 +580,7 @@ mod tests {
     #[test]
     fn blocked_means_environment_or_implementation_everywhere() {
         // Waiting on the reviewer is a conversation, not a blocker: every
-        // template that teaches `done(blocked)` must scope it to unexpected
+        // template that teaches terminal `Blocked` must scope it to unexpected
         // environment/implementation problems, never to open questions.
         let t = Templates::default();
         for (name, template) in [
@@ -588,7 +593,7 @@ mod tests {
             ("message", &t.message),
         ] {
             assert!(
-                template.contains("status=\"blocked\""),
+                template.contains("status=\"Blocked\""),
                 "{name} lost its escape hatch: {template}"
             );
             assert!(
@@ -613,7 +618,7 @@ mod tests {
         // The agent authors the atomic, self-messaged commits; Build's sweep is
         // only a no-op-on-clean safety net. Every build-phase template must ask
         // for atomic commits, forbid touching `.build/`, and require everything
-        // committed before `done`.
+        // committed before the Complete message.
         let t = Templates::default();
         for tmpl in [&t.build, &t.build_stage, &t.fix_stage] {
             assert!(
@@ -625,8 +630,8 @@ mod tests {
                 "template must forbid committing under `.build/`: {tmpl}"
             );
             assert!(
-                tmpl.contains("before you call `done`"),
-                "template must require committing before done: {tmpl}"
+                tmpl.contains("before you send status=\"Complete\""),
+                "template must require committing before Complete: {tmpl}"
             );
         }
     }
@@ -662,7 +667,7 @@ mod tests {
     /// rationale that is read INSTEAD of the hunk, and a `done` shaped so the
     /// bridge can check it against the diff it was taken on.
     #[test]
-    fn triage_template_teaches_the_levels_the_groups_and_the_typed_done() {
+    fn triage_template_teaches_the_levels_groups_and_typed_completion_message() {
         let t = Templates::default();
         for placeholder in [
             "{agent_report}",
@@ -769,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn done_summaries_ask_for_one_concise_outcome() {
+    fn terminal_reports_use_body_and_never_the_retired_summary_field() {
         let t = Templates::default();
         for tmpl in [
             &t.plan,
@@ -782,13 +787,15 @@ mod tests {
             &t.validate,
             &t.triage,
         ] {
-            let lower = tmpl.to_lowercase();
-            assert!(lower.contains("one concise sentence"), "{tmpl}");
-            assert!(!lower.contains("summary with a few"), "{tmpl}");
             assert!(
-                !lower.contains("one-paragraph"),
-                "no 'one-paragraph' guidance: {tmpl}"
+                tmpl.contains("body"),
+                "terminal report must use body: {tmpl}"
             );
+            assert!(
+                !tmpl.contains("`summary`"),
+                "retired report field in {tmpl}"
+            );
+            assert!(!tmpl.contains("`done`"), "retired tool in {tmpl}");
         }
     }
 
@@ -897,7 +904,7 @@ mod tests {
         }
     }
 
-    /// A router has no checkout and no coding tools, and its `done` reports the
+    /// A router has no checkout and no coding tools, and its terminal message reports the
     /// one phase it has.
     #[test]
     fn the_router_template_names_its_whole_tool_inventory_and_its_scratch() {
@@ -908,11 +915,11 @@ mod tests {
             "read_conversation",
             "dispatch_branch",
             "ask_user",
-            "done",
+            "post_thread_message",
         ] {
             assert!(router.contains(tool), "{tool} missing from {router}");
         }
-        for coding_tool in ["read_unread_messages", "post_thread_message"] {
+        for coding_tool in ["read_unread_messages", "done"] {
             assert!(
                 !router.contains(coding_tool),
                 "{coding_tool} is not on the router's surface: {router}"
@@ -921,7 +928,7 @@ mod tests {
         assert!(!router.contains("create_issue"), "{router}");
         assert!(router.contains("You are not in a repository"), "{router}");
         assert!(router.contains("phase=\"route\""), "{router}");
-        assert!(router.contains("status=\"failed\""), "{router}");
+        assert!(router.contains("status=\"Blocked\""), "{router}");
     }
 
     #[test]

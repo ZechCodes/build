@@ -412,14 +412,14 @@ pub(in crate::app) fn agent_open_request(
     root: std::path::PathBuf,
     model_choice: &ModelChoice,
     resume_session_id: Option<String>,
-    _locator: Option<Box<dyn crate::harness::SessionLocator>>,
+    locator: Option<Box<dyn crate::harness::SessionLocator>>,
 ) -> SessionOpenRequest {
-    let identity = match &prepared.spec.known_session_id {
-        Some(known) => Some(SessionIdentitySource::Known(known.clone())),
-        None => resume_session_id
-            .as_ref()
-            .map(|verified| SessionIdentitySource::Known(verified.clone())),
-    };
+    let known = prepared
+        .spec
+        .known_session_id
+        .clone()
+        .or_else(|| resume_session_id.clone());
+    let identity = known.clone().map(SessionIdentitySource::Known);
     SessionOpenRequest {
         spec: prepared.spec,
         root,
@@ -428,6 +428,7 @@ pub(in crate::app) fn agent_open_request(
             size: prepared.pty_size,
             turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
             identity,
+            activity_locator: locator.map(|locator| (locator, known)),
         },
         resume_session_id,
     }

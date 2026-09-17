@@ -3328,6 +3328,7 @@ fn replay_observed_fixture(fixture: &str) -> FixtureReplay {
     let activities = reports
         .iter()
         .filter_map(|report| match &report.activity {
+            AgentActivity::Compaction { .. } => None,
             AgentActivity::Reasoning { .. } => Some(FixtureActivity::Reasoning),
             AgentActivity::Narration { .. } => Some(FixtureActivity::Narration),
             AgentActivity::ToolUse { call_id, .. } => {
@@ -3528,23 +3529,29 @@ fn context_compaction_and_review_mode_transitions_stay_visible() {
             .collect::<Vec<_>>()
     };
 
+    let compactions = |reports: Vec<crate::harness::ActivityReport>| {
+        reports
+            .into_iter()
+            .map(|report| match report.activity {
+                AgentActivity::Compaction { completed } => completed,
+                other => panic!("expected compaction, got {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+
     let compaction = json!({"id":"compaction-1","type":"contextCompaction"});
-    let compaction_started = summaries(
+    let compaction_started = compactions(
         translator
             .translate("item/started", &item_envelope(compaction.clone()))
             .unwrap(),
     );
-    let compaction_completed = summaries(
+    let compaction_completed = compactions(
         translator
             .translate("item/completed", &item_envelope(compaction))
             .unwrap(),
     );
-    assert_eq!(compaction_started.len(), 1);
-    assert!(compaction_started[0].contains("Context compaction"));
-    assert!(compaction_started[0].contains("started"));
-    assert_eq!(compaction_completed.len(), 1);
-    assert!(compaction_completed[0].contains("Context compaction"));
-    assert!(compaction_completed[0].contains("completed"));
+    assert_eq!(compaction_started, [false]);
+    assert_eq!(compaction_completed, [true]);
 
     let mut transitions = Vec::new();
     for (item, expected) in [
@@ -3570,11 +3577,7 @@ fn context_compaction_and_review_mode_transitions_stay_visible() {
         transitions.extend(completed);
     }
 
-    for summary in compaction_started
-        .into_iter()
-        .chain(compaction_completed)
-        .chain(transitions)
-    {
+    for summary in transitions {
         assert!(summary.chars().count() <= crate::harness::adk::TOOL_SUMMARY_LIMIT);
     }
 }
@@ -3704,7 +3707,15 @@ fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
         .iter()
         .find(|argument| argument.starts_with("mcp_servers.build.enabled_tools="))
         .expect("the Build MCP server enables only named tools");
-    assert!(enabled_tools.contains("done"), "{enabled_tools}");
+    assert!(
+        enabled_tools.contains("post_thread_message"),
+        "{enabled_tools}"
+    );
+    assert!(!enabled_tools.contains("done"), "{enabled_tools}");
+    assert!(
+        !enabled_tools.contains("read_unread_messages"),
+        "{enabled_tools}"
+    );
     assert!(
         !enabled_tools.contains("create_issue"),
         "{enabled_tools}: a coding owner gets no router tools"

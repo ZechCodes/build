@@ -549,6 +549,9 @@ main#root.surface { max-width:none;
 .comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--pop-warn); }
 /* diff */
 .diffbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
+.diffsort { display:flex; align-items:center; gap:6px; margin-left:auto; color:var(--dim); font:11.5px var(--sans); }
+.diffsort-select { color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:6px;
+  padding:4px 24px 4px 7px; font:inherit; }
 /* The code table scrolls horizontally inside .dscroll while the .file border
    clips the corners. overflow:clip preserves the outer vertical scroller as
    the sticky header's scroll container. */

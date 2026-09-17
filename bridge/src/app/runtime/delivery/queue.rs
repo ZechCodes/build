@@ -142,9 +142,18 @@ impl DeliveryQueue {
         turn.model_choice = delivery.model_choice.clone();
         turn.choice_revision = delivery.choice_revision;
         turn.interrupt = delivery.interrupt;
-        let exact_cold = payload.delivery_prompt(&receipt.operation_id, true);
-        let exact_warm = payload.delivery_prompt(&receipt.operation_id, false);
+        let exact_cold =
+            payload.delivery_prompt(&receipt.operation_id, true, delivery.model_choice.provider);
+        let exact_warm =
+            payload.delivery_prompt(&receipt.operation_id, false, delivery.model_choice.provider);
         if let Some(say) = turn.say.as_mut() {
+            if payload.requires_unadorned_delivery(delivery.model_choice.provider) {
+                say.cold = exact_cold;
+                say.warm = exact_warm;
+                turn.wants_catch_up = false;
+                turn.survives_refusal = true;
+                return Ok(());
+            }
             // The queued lifecycle turn's warm half is its protocol-free work
             // instruction. Rebuild the cold half from that source so this
             // operation gets exactly one protocol block. The payload itself is

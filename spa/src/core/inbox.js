@@ -88,12 +88,16 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     clean: workspace.status === "ready" && workspace.work_summary?.clean === true,
     facts: workspaceFacts(workspace),
     route: workspaceRoute(workspace),
-    anchorMs: ms(firstText(workspace.created_at, workspace.updated_at)),
+    // The conversation owns the inbox anchor whenever there is one: this is
+    // the same user-pickup ordering used by ordinary work rows. The workspace
+    // creation date is only the fallback for one that has never spoken.
+    anchorMs: ms(firstText(activity.anchor, workspace.created_at, workspace.updated_at)),
     lastActivityMs: ms(workspace.updated_at),
   };
 }
 
-/** Every device's workspaces as rows. A workspace belongs to one machine, so it
+/** Every device's workspaces as rows, ordered together by the inbox anchor. A
+ * workspace belongs to one machine, so it
  *  is named — and its project and its conversation are looked up — by the
  *  account-wide names the feed stamped (core/deviceKey.js): two machines each
  *  hold a `proj-1`, and a run id on one says nothing about the other. */
@@ -105,7 +109,7 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
     const owner = workspace.entity_id || workspace.run_id || workspace.id;
     const conversation = conversations.get(JSON.stringify([workspace.projectKey, owner])) || workspaceRun(workspace, items);
     return toWorkspaceEntry(workspace, projectNames, conversation);
-  });
+  }).sort(byAnchor);
 }
 
 /** How long a row can say nothing before it belongs to Recent rather than to
@@ -360,6 +364,7 @@ export function captureStatusText(entry) {
     return `→ ${entry.routedTo.project} as ${entry.routedTo.kind}`;
   }
   if (entry.question) return "Waiting for your answer";
+  if (entry.progress) return entry.progress;
   return CAPTURE_STATUS[entry.captureState] || "";
 }
 
@@ -393,6 +398,7 @@ function toCaptureEntry(item) {
     working: !!item.working,
     reason: question || (item.unread_reason === "routing_failed" ? "Routing failed" : ""),
     question,
+    progress: item.progress || "",
     routedTo: routing ? { project: item.project || item.project_id, kind: routing.kind } : null,
     unreadCount: item.unread_count || 0,
     muted: false,

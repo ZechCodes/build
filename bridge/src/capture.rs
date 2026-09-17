@@ -252,6 +252,10 @@ pub struct Capture {
     pub routing: Option<CaptureRouting>,
     #[serde(default)]
     pub question: Option<CaptureQuestion>,
+    /// The latest non-blocking router progress line. Unlike `question`, this
+    /// never asks for an answer or changes the routing state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<String>,
     /// Where this capture sits in the inbox: the moment it was said. Every
     /// entity carries one, and this is the oldest of them all — the issue or
     /// branch the capture becomes inherits it, so what the user said and the
@@ -288,6 +292,7 @@ impl Capture {
             state: CaptureState::Unrouted,
             routing: None,
             question: None,
+            progress: None,
             rerouted_from: Vec::new(),
         }
     }
@@ -339,6 +344,7 @@ impl Capture {
         let mut recovered = self.clone();
         if recovered.state == CaptureState::Routing {
             recovered.state = CaptureState::Unrouted;
+            recovered.progress = None;
         }
         // A capture taken before anchors existed is anchored where it was said,
         // durably, so the work it becomes can inherit it.
@@ -354,6 +360,7 @@ impl Capture {
     pub fn routing_started(&self) -> Capture {
         Capture {
             state: CaptureState::Routing,
+            progress: None,
             ..self.clone()
         }
     }
@@ -372,6 +379,7 @@ impl Capture {
         Capture {
             state: CaptureState::Routed,
             routing: Some(routing),
+            progress: None,
             rerouted_from,
             ..self.clone()
         }
@@ -387,6 +395,14 @@ impl Capture {
         Capture {
             state: CaptureState::Unrouted,
             question: Some(question),
+            progress: None,
+            ..self.clone()
+        }
+    }
+
+    pub fn working(&self, message: impl Into<String>) -> Capture {
+        Capture {
+            progress: Some(message.into()),
             ..self.clone()
         }
     }
@@ -441,6 +457,7 @@ impl Capture {
         }
         Capture {
             state: CaptureState::Failed,
+            progress: None,
             ..self.clone()
         }
     }

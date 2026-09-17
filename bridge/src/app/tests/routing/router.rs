@@ -45,6 +45,39 @@ pub(in crate::app::tests) fn capture_record(state: &mut AppState, capture_id: &s
     fetched["result"].clone()
 }
 
+#[test]
+fn router_working_message_is_visible_without_asking_or_blocking_dispatch() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    let (capture_id, _) = captured(&mut state, "route this while I watch");
+
+    state
+        .router_action(
+            &capture_id,
+            BridgeAction::RouterMessage {
+                body: "Checking active branches".into(),
+                waiting: false,
+            },
+        )
+        .unwrap();
+    let progressing = capture_record(&mut state, &capture_id);
+    assert_eq!(progressing["state"], "routing");
+    assert_eq!(progressing["progress"], "Checking active branches");
+    assert!(progressing["question"].is_null());
+
+    let dispatched = state.router_action(
+        &capture_id,
+        BridgeAction::DispatchBranch {
+            project_id,
+            branch: None,
+            instruction: "route this while I watch".into(),
+            rationale: None,
+        },
+    );
+    assert!(dispatched.is_ok(), "progress must not require an answer");
+}
+
 /// A capture arriving puts a router on it: its own session, its own scratch
 /// directory outside every repository, and a turn carrying the decision
 /// rule — spawned reactively, off the record that was already written.

@@ -25,9 +25,11 @@ export const projectNameOf = (project) => project.name || project.id;
  *  inbox normalized it to. Read here so the rest of this module never asks. */
 const bareProjectIdOf = (row) => row.project_id || row.projectId || "";
 
-/** The blocks' identity and names: every device's projects in the order they
- *  arrived, plus one for any project a row names that its device has not
- *  listed — the row is still work, and it is still somewhere. Work rows and
+/** The blocks' identity and names: every device's projects, plus one for any
+ *  project a row names that its device has not listed — the row is still work,
+ *  and it is still somewhere. The final blocks are ordered by name after every
+ *  device is merged, so a machine's arrival order never partitions the rail.
+ *  Work rows and
  *  workspace rows are named the same way, because they name the same projects.
  *
  *  Keyed by the account-wide project key, never the bare id: both machines call
@@ -70,7 +72,10 @@ function workspaceBlockFor(project, grouped, tag, activeWorkspaceKey) {
 export function workspaceProjectBlocks(entries = [], projects = [], activeWorkspaceKey = null, devices = []) {
   const named = projectsNamed(projects, entries);
   const tags = deviceTags([...named.values()], devices);
-  const blocks = [...named.values()].map((project) =>
+  const blocks = [...named.values()].sort((left, right) =>
+    projectNameOf(left).localeCompare(projectNameOf(right), undefined, { sensitivity: "base" })
+      || left.projectKey.localeCompare(right.projectKey),
+  ).map((project) =>
     workspaceBlockFor(
       project,
       entries.filter((entry) => entry.projectKey === project.projectKey),

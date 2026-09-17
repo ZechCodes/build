@@ -81,6 +81,10 @@ impl Harness for CodexAppServerHarness {
         CodexHarness.model_args(choice)
     }
 
+    fn requires_unadorned_command(&self, prompt: &str) -> bool {
+        CodexHarness.requires_unadorned_command(prompt)
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,

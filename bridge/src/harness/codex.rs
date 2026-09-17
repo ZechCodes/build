@@ -104,6 +104,17 @@ impl Harness for CodexHarness {
         args
     }
 
+    fn requires_unadorned_command(&self, prompt: &str) -> bool {
+        prompt.split_whitespace().next() == Some("/clear")
+    }
+
+    fn starts_compaction(&self, prompt: &str) -> bool {
+        prompt
+            .lines()
+            .next()
+            .is_some_and(|line| line.trim() == "/compact")
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,
@@ -298,6 +309,59 @@ impl SessionLocator for CodexSessionLocator {
         }
         named.clone()
     }
+
+    fn activity(
+        &self,
+        known_session_id: Option<&str>,
+        terminal_alive: crate::harness::transcript_activity::TerminalAlive,
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::harness::ActivityReport>> {
+        let sessions_root = self.sessions_root.clone();
+        let from = self.from.clone();
+        let before = self.before.clone();
+        let cwd = self.cwd.clone();
+        let known = known_session_id.map(str::to_string);
+        Some(crate::harness::transcript_activity::follow(
+            move || {
+                resolve_activity_rollout(&sessions_root, &from, &before, &cwd, known.as_deref())
+            },
+            known_session_id.is_some(),
+            terminal_alive,
+            |value| (value["type"].as_str() == Some("compacted")).then_some(true),
+        ))
+    }
+}
+
+fn resolve_activity_rollout(
+    sessions_root: &Path,
+    from: &str,
+    before: &HashSet<PathBuf>,
+    cwd: &Path,
+    known: Option<&str>,
+) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    visit_rollouts(
+        sessions_root,
+        if known.is_some() { "" } else { from },
+        &mut |path, _| {
+            let id = rollout_header(path).and_then(|header| {
+                (rollout_cwd(&header).as_deref() == Some(cwd))
+                    .then(|| rollout_id(&header).or_else(|| uuid_in_rollout_name(path)))
+                    .flatten()
+            });
+            let matches = known.map_or_else(
+                || id.is_some() && !before.contains(path),
+                |wanted| id.as_deref() == Some(wanted),
+            );
+            if matches {
+                candidates.push(path.to_path_buf());
+            }
+            (known.is_some() && candidates.is_empty()) || (known.is_none() && candidates.len() < 2)
+        },
+    );
+    match candidates.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
 }
 
 /// Call `visit` for every rollout at or after the dated directory `from`, with
@@ -409,13 +473,9 @@ fn uuid_in_rollout_name(path: &Path) -> Option<String> {
 /// the one source for it.
 fn mcp_tool_names(owner_id: &str) -> Vec<&'static str> {
     match crate::mcp::McpSurface::for_owner(owner_id) {
-        crate::mcp::McpSurface::Coding => vec![
-            "read_unread_messages",
-            "post_thread_message",
-            "done",
-            "search_conversation",
-            "set_topic",
-        ],
+        crate::mcp::McpSurface::Coding => {
+            vec!["post_thread_message", "search_conversation", "set_topic"]
+        }
         crate::mcp::McpSurface::Router => vec![
             "list_projects",
             "list_work",
@@ -423,7 +483,7 @@ fn mcp_tool_names(owner_id: &str) -> Vec<&'static str> {
             "create_issue",
             "dispatch_branch",
             "ask_user",
-            "done",
+            "post_thread_message",
         ],
     }
 }
@@ -531,6 +591,41 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn activity_rollouts_are_checkout_scoped_and_ambiguity_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let mine = root.path().join("mine");
+        let theirs = root.path().join("theirs");
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::create_dir_all(&theirs).unwrap();
+        let sessions = root.path().join("sessions");
+        let dated = sessions.join("2026/09/17");
+        write_rollout(&dated, "rollout-a.jsonl", &theirs, "theirs");
+        assert!(resolve_activity_rollout(&sessions, "", &HashSet::new(), &mine, None).is_none());
+        write_rollout(&dated, "rollout-b.jsonl", &mine, "mine-1");
+        assert!(resolve_activity_rollout(&sessions, "", &HashSet::new(), &mine, None).is_some());
+        write_rollout(&dated, "rollout-c.jsonl", &mine, "mine-2");
+        assert!(resolve_activity_rollout(&sessions, "", &HashSet::new(), &mine, None).is_none());
+    }
+
+    #[test]
+    fn an_exact_resumed_rollout_is_found_before_the_fresh_session_cutoff() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let sessions = root.path().join("sessions");
+        let old = sessions.join("2026/08/01");
+        write_rollout(&old, "rollout-old.jsonl", &cwd, "resume-me");
+        let found = resolve_activity_rollout(
+            &sessions,
+            "2026/09/17",
+            &HashSet::new(),
+            &cwd,
+            Some("resume-me"),
+        );
+        assert_eq!(found, Some(old.join("rollout-old.jsonl")));
     }
 
     /// Codex's rollouts are GLOBAL — every checkout's conversations land in one
@@ -662,6 +757,15 @@ mod tests {
             !CodexHarness.holds_conversation(home.path(), &cwd, id),
             "a conversation that is gone is not resumed by name"
         );
+    }
+
+    #[test]
+    fn only_the_exact_codex_compact_command_starts_compaction() {
+        assert!(CodexHarness.starts_compaction("/compact"));
+        assert!(CodexHarness
+            .starts_compaction("/compact\n\nBuild conversation protocol:\nUse the message tool."));
+        assert!(!CodexHarness.starts_compaction("/compact focus"));
+        assert!(!CodexHarness.starts_compaction("please /compact"));
     }
 
     /// The trait method and the free function have to agree about where codex

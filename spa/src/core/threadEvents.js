@@ -53,6 +53,7 @@ export const EVENT_META = {
   // rather than the harness, because the row says what a task is doing and the
   // provider's name in front of it would carry nothing.
   task_update: { label: "Background task", icon: "⧉", activity: true },
+  compaction: { label: "Compaction", icon: "↯" },
 };
 
 export const STATUS_LINE_EVENTS = new Set(["session_started", "run_started"]);
@@ -77,4 +78,3 @@ export function isStartupEvent(item) {
   if (!item || item.type === "message") return false;
   return STATUS_LINE_EVENTS.has((item.data || {}).event);
 }
-

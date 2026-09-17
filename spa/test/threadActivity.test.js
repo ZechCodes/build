@@ -37,6 +37,20 @@ const activity = () => threadHtml({ items: ACTIVITY_ITEMS });
 const openActivity = () => openThreadHtml({ items: ACTIVITY_ITEMS });
 
 describe("activity in the timeline", () => {
+  it("shows a compaction as one lifecycle line whose persisted state changes", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "compaction", summary: "Compacting", created_at: "2026-08-23T12:00:00Z" } }],
+    });
+    expect(document.querySelector(".thread-event strong").textContent).toBe("Compacting");
+    expect(document.querySelector(".thread-event-detail")).toBe(null);
+
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "compaction", summary: "Compacted", created_at: "2026-08-23T12:00:00Z" } }],
+    });
+    expect(document.querySelectorAll(".thread-event")).toHaveLength(1);
+    expect(document.querySelector(".thread-event strong").textContent).toBe("Compacted");
+  });
+
   // A row is its content. The kind is not spent on the line — the icon carries
   // it, and carries it as an `aria-label` so a reader who cannot see the icon
   // still hears which kind the row is.

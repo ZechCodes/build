@@ -807,12 +807,14 @@ pub enum ThreadEventKind {
     /// agent, and a task that outlives the turn that started it would otherwise
     /// be work nothing in the timeline says exists.
     TaskUpdate,
+    /// The provider is compacting its context. Completion updates this row.
+    Compaction,
 }
 
 impl ThreadEventKind {
     /// Every variant, so the wire-token and class rules can be checked over the
     /// whole enum instead of a sample of it.
-    pub const ALL: [ThreadEventKind; 37] = [
+    pub const ALL: [ThreadEventKind; 38] = [
         ThreadEventKind::SessionStarted,
         ThreadEventKind::SessionEnded,
         ThreadEventKind::RunStarted,
@@ -850,6 +852,7 @@ impl ThreadEventKind {
         ThreadEventKind::ToolResult,
         ThreadEventKind::Narration,
         ThreadEventKind::TaskUpdate,
+        ThreadEventKind::Compaction,
     ];
 
     /// Whether this event is the agent working rather than something said or
@@ -919,6 +922,7 @@ impl ThreadEventKind {
             | ThreadEventKind::ToolResult
             | ThreadEventKind::Narration
             | ThreadEventKind::TaskUpdate
+            | ThreadEventKind::Compaction
             | ThreadEventKind::Pushed => EventClass::Status,
         }
     }
@@ -964,6 +968,7 @@ impl ThreadEventKind {
             ThreadEventKind::ToolResult => "tool_result",
             ThreadEventKind::Narration => "narration",
             ThreadEventKind::TaskUpdate => "task_update",
+            ThreadEventKind::Compaction => "compaction",
         }
     }
 }

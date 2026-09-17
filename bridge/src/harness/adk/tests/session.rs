@@ -904,6 +904,7 @@ fn real_adk_session_steers_mid_turn() {
         std::thread::spawn(move || {
             while let Ok(event) = activity.blocking_recv() {
                 let line = match &event.activity {
+                    AgentActivity::Compaction { completed } => format!("compaction: {completed}"),
                     AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                     AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                     AgentActivity::ToolResult {
@@ -1057,6 +1058,7 @@ fn real_adk_session_interrupts_mid_tool() {
         std::thread::spawn(move || {
             while let Ok(event) = activity.blocking_recv() {
                 let line = match &event.activity {
+                    AgentActivity::Compaction { completed } => format!("compaction: {completed}"),
                     AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                     AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                     AgentActivity::ToolResult {

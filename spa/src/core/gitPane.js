@@ -58,6 +58,7 @@ import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
 import { createReviewPlug } from "./changesReview.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
+import { loadDiffSort, saveDiffSort } from "./diffSort.js";
 
 export const GIT_PANE_POLL_MS = 1600;
 
@@ -508,6 +509,7 @@ export function mountGitPane(
   // OPEN changeset's files as the stack draws them, which is what a stamp is of.
   let reviewStamps = new Map();
   let renderedViews = [];
+  let sortOrder = loadDiffSort();
   let uncommittedSource = null;
   let uncommittedSourceViews = [];
   let wholePatchIdentity = null;
@@ -664,6 +666,7 @@ export function mountGitPane(
       summary: () => changesSelectionSummary(railParts),
     });
     container.onclick = handleClick;
+    container.onchange = handleChange;
     container.onkeydown = (event) => {
       if ((event.key === "Enter" || event.key === " ") && event.target.closest(".gitmore")) {
         event.preventDefault();
@@ -801,15 +804,17 @@ export function mountGitPane(
       review: patch === null ? null : triageOverlay(patch),
     });
     if (selected === "uncommitted") {
+      sortOrder = loadDiffSort();
       renderedViews = hasUncommittedChanges(lastStatus) ? uncommittedViews() : [];
       // The file's own destructive verb lives behind the header ⋯ — the stage
       // checkboxes it replaced are gone with the staged set.
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
       paintChangeset(detailHost, {
-        bar: uncommittedHeaderHtml(lastStatus),
+        bar: uncommittedHeaderHtml(lastStatus, { sortOrder }),
         views: renderedViews,
         stackOptions: {
           ...stackFor(renderedViews, uncommittedWholePatch()),
+          sortOrder,
           fileMenu,
           bodyOf: fileDiffs.bodyOf,
           empty: "No uncommitted changes.",
@@ -1526,6 +1531,14 @@ export function mountGitPane(
     if (event.target.closest(".gitmore")) showMore();
   };
 
+  function handleChange(event) {
+    const select = event.target.closest?.(".diffsort-select");
+    if (!select || reviewMounted) return;
+    sortOrder = select.value;
+    saveDiffSort(sortOrder);
+    renderAndFetch();
+  }
+
   /** A permanent scope rejection replaces the pane body (there is nothing to
    *  retry: the task/project this scope named no longer resolves). */
   const renderScopeError = (message) => {
@@ -1548,7 +1561,7 @@ export function mountGitPane(
     Boolean(pendingConfirm) ||
     fileMenuPath !== null ||
     Boolean(container.querySelector(".splitmenu:not([hidden])")) ||
-    Boolean(commentLayer && commentLayer.busy());
+    Boolean(commentLayer && commentLayer.repaintBusy());
 
   /** Whether the pane must keep its hands off the DOM right now — asked by every
    *  paint the pane does on its own initiative, not just the poll's. */
@@ -1715,6 +1728,7 @@ export function mountGitPane(
       if (commentLayer) commentLayer.dispose();
       if (overrides) overrides.dispose();
       container.onclick = null;
+      container.onchange = null;
     },
   };
 }

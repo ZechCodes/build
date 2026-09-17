@@ -77,8 +77,16 @@ impl PendingAgentTurn {
             choice_revision: delivery.choice_revision,
             interrupt: delivery.interrupt,
             say: Some(TurnText {
-                cold: payload.delivery_prompt(&receipt.operation_id, true),
-                warm: payload.delivery_prompt(&receipt.operation_id, false),
+                cold: payload.delivery_prompt(
+                    &receipt.operation_id,
+                    true,
+                    delivery.model_choice.provider,
+                ),
+                warm: payload.delivery_prompt(
+                    &receipt.operation_id,
+                    false,
+                    delivery.model_choice.provider,
+                ),
             }),
             phase: "revive",
             wants_catch_up: false,

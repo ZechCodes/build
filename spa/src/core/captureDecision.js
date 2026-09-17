@@ -53,7 +53,7 @@ export function captureDecisionModel(capture, { projects = [] } = {}) {
     state,
     routed: state === "routed",
     routedTo,
-    statusText: awaitingAnswer ? "Waiting for your answer" : captureStatusText({ captureState: state, routedTo }),
+    statusText: awaitingAnswer ? "Waiting for your answer" : (trimmed(record.progress) || captureStatusText({ captureState: state, routedTo })),
     spinning: !awaitingAnswer && (state === "unrouted" || state === "routing"),
     question: question ? String(question.text ?? "") : "",
     answer: question && question.answer ? String(question.answer) : "",

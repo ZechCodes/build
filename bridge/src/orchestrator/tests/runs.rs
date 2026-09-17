@@ -685,7 +685,7 @@ fn conversation_prompt_instructs_clarifying_reply_for_ambiguous_comments() {
     let prompt = conversation_prompt("do the work");
     assert!(prompt.contains("Build conversation protocol"), "{prompt}");
     assert!(
-        prompt.contains("either a question or a directive"),
+        prompt.contains("either a question or an ambiguous directive"),
         "ambiguous reviewer messages must trigger a clarifying reply: {prompt}"
     );
     assert!(

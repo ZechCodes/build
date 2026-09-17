@@ -305,6 +305,7 @@ impl AppState {
             "primary": false,
             "routing": routing,
             "question": capture.question,
+            "progress": capture.progress,
         });
         crate::branch::WorkItemCandidate {
             kind: crate::branch::WorkItemKind::Capture,

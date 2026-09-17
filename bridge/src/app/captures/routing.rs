@@ -230,6 +230,18 @@ impl AppState {
             BridgeAction::AskUser { question, options } => {
                 self.router_ask_user(capture_id, &question, &options)
             }
+            BridgeAction::RouterMessage { body, waiting } => {
+                if waiting {
+                    return self.router_ask_user(capture_id, &body, &[]);
+                }
+                let capture = self
+                    .captures
+                    .get(capture_id)
+                    .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+                let working = capture.working(body.trim());
+                self.save_capture(working)?;
+                Ok(json!({ "capture_id": capture_id, "working": true }))
+            }
             coding_tool => Err(format!(
                 "{} is a coding agent's tool; this session routes captures",
                 coding_tool.tool_name()

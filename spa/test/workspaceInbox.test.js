@@ -20,6 +20,26 @@ const entriesOf = (workspaces, items = []) => {
 };
 
 describe("workspace inbox rows", () => {
+  it("sorts every device's workspaces together by the existing anchor order", () => {
+    const workspaces = [
+      { id: "new", project_id: "project-1", created_at: "2026-08-03T00:00:00Z" },
+      { id: "old", project_id: "project-1", created_at: "2026-08-01T00:00:00Z" },
+      { id: "middle", project_id: "project-1", created_at: "2026-08-02T00:00:00Z" },
+    ];
+    expect(entriesOf(workspaces).map((row) => row.workspaceId)).toEqual(["old", "middle", "new"]);
+  });
+
+  it("uses a conversation's pickup anchor ahead of the workspace creation date", () => {
+    const rows = entriesOf([
+      { id: "run-1", project_id: "project-1", created_at: "2026-08-01T00:00:00Z" },
+      { id: "run-2", project_id: "project-1", created_at: "2026-08-02T00:00:00Z" },
+    ], [
+      { kind: "branch", project_id: "project-1", run_id: "run-1", anchor: "2026-08-03T00:00:00Z" },
+      { kind: "branch", project_id: "project-1", run_id: "run-2", anchor: "2026-08-02T00:00:00Z" },
+    ]);
+    expect(rows.map((row) => row.workspaceId)).toEqual(["run-2", "run-1"]);
+  });
+
   it.each(["", "  ", "Bridge wire interface / 🦊"])("keeps the chosen workspace display name %j", (name) => {
     const [entry] = entriesOf([{ id: "workspace-1", project_id: "project-1", name, root: "/normalized/path" }]);
     expect(entry.name).toBe(name);

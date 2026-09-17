@@ -107,4 +107,26 @@ describe("route leave guards", () => {
     expect(location.hash).toContain("build%2Fedit/files");
     expect(App.viewingContext.clear).not.toHaveBeenCalled();
   });
+
+  it("follows in-app links without adding history and still honors leave guards", async () => {
+    App.gated = true;
+    App.viewingContext = { clear: vi.fn() };
+    initRouter();
+    const entries = history.length;
+    const link = document.createElement("a");
+    link.href = "#/account";
+    document.body.append(link);
+    App.routeLeaveGuard = vi.fn(async () => false);
+    link.click();
+    await settleHashChange();
+    expect(App.route.name).toBe("branch");
+    expect(history.length).toBe(entries);
+
+    App.routeLeaveGuard = null;
+    link.click();
+    expect(App.route.name).toBe("account");
+    expect(location.hash).toBe("#/account/settings");
+    expect(history.length).toBe(entries);
+    link.remove();
+  });
 });

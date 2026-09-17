@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -370,13 +370,46 @@ fn extension_uses_real_mcp_stdio_token_and_canonical_tool_errors() {
     let extension = extension_copy(&temp);
     let socket = temp.path().join("mcp.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
     let received = std::thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(stream)
-            .read_line(&mut line)
-            .unwrap();
-        serde_json::from_str::<Value>(&line).unwrap()
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut frames = Vec::new();
+        while frames.len() < 2 {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(accepted) => break accepted,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "real MCP child did not send both the message action and report"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("real MCP socket accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let frame = serde_json::from_str::<Value>(&line).unwrap();
+            if frame.get("request").is_some() {
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({
+                        "ok": true,
+                        "result": { "message_id": "message-real-mcp" }
+                    })
+                )
+                .unwrap();
+            }
+            frames.push(frame);
+        }
+        frames
     });
     let output = Command::new("node")
         .arg(fixture("pi-extension-driver.mjs"))
@@ -391,17 +424,28 @@ fn extension_uses_real_mcp_stdio_token_and_canonical_tool_errors() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let extension_output: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(extension_output["invalidError"]
-        .as_str()
-        .unwrap()
-        .contains("invalid done arguments"));
+    assert_eq!(extension_output["retiredDoneRegistered"], false);
     assert_eq!(extension_output["invalidPostError"], "body is required");
     assert_eq!(
         extension_output["valid"]["content"][0]["text"],
-        "waiting for deterministic input"
+        r#"{"message_id":"message-real-mcp"}"#
     );
     let forwarded = received.join().unwrap();
-    assert_eq!(forwarded["task_id"], "agent-real-mcp");
-    assert_eq!(forwarded["session_token"], "rotated-real-token");
-    assert_eq!(forwarded["report"]["status"], "blocked");
+    let request = &forwarded[0];
+    assert_eq!(request["task_id"], "agent-real-mcp");
+    assert_eq!(request["session_token"], "rotated-real-token");
+    assert_eq!(request["request"]["action"], "post_thread_message");
+    assert_eq!(request["request"]["still_working"], false);
+    assert_eq!(
+        request["request"]["body"],
+        "waiting for deterministic input"
+    );
+    let report = &forwarded[1];
+    assert_eq!(report["task_id"], "agent-real-mcp");
+    assert_eq!(report["session_token"], "rotated-real-token");
+    assert_eq!(report["report"]["status"], "blocked");
+    assert_eq!(
+        report["report"]["outputs"]["message_id"],
+        "message-real-mcp"
+    );
 }

@@ -488,10 +488,11 @@ fn emit_item(
                 .into_iter()
                 .collect()
         }
-        ItemReportKind::ContextCompaction => vec![ActivityReport::bounded_task_update(&format!(
-            "Context compaction {}",
-            lifecycle_word(lifecycle)
-        ))],
+        ItemReportKind::ContextCompaction => {
+            vec![ActivityReport::own_work(AgentActivity::Compaction {
+                completed: lifecycle == ItemLifecycle::Completed,
+            })]
+        }
         ItemReportKind::EnteredReviewMode if lifecycle == ItemLifecycle::Completed => {
             vec![ActivityReport::bounded_task_update("Entered review mode")]
         }

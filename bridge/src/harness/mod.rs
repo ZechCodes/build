@@ -38,6 +38,7 @@ pub mod shell_tail;
 #[cfg(test)]
 pub(crate) mod stream_fixtures;
 pub mod surfaces;
+pub(crate) mod transcript_activity;
 
 pub use session::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, FrozenTurnChoice, HarnessError,
@@ -149,6 +150,18 @@ pub trait Harness: Send + Sync {
     /// another.
     fn model_args(&self, choice: &ModelChoice) -> Vec<String>;
 
+    /// Whether `prompt` is a provider command that must be delivered without
+    /// Build's native-delivery envelope or conversation instructions.
+    fn requires_unadorned_command(&self, _prompt: &str) -> bool {
+        false
+    }
+
+    /// Whether an exact terminal command starts a compaction cycle whose
+    /// completion will later appear in the provider transcript.
+    fn starts_compaction(&self, _prompt: &str) -> bool {
+        false
+    }
+
     /// The command that opens an interactive session for `options`.
     ///
     /// The prompt is never part of this: every turn travels through the session
@@ -244,6 +257,15 @@ pub trait SessionLocator: Send + Sync {
     /// `None` until then; cached once found, so a locator never changes its
     /// answer and the steady-state cost is a field read.
     fn session_id(&self) -> Option<String>;
+    fn activity(
+        &self,
+        _known_session_id: Option<&str>,
+        _terminal_alive: std::sync::Weak<
+            std::sync::Mutex<Option<tokio::sync::broadcast::Sender<Vec<u8>>>>,
+        >,
+    ) -> Option<tokio::sync::broadcast::Receiver<ActivityReport>> {
+        None
+    }
 }
 
 pub enum SessionIdentitySource {
@@ -276,6 +298,7 @@ pub struct TerminalOpenOptions {
     pub size: PtySize,
     pub turn_ready_grace: Option<Duration>,
     pub identity: Option<SessionIdentitySource>,
+    pub activity_locator: Option<(Box<dyn SessionLocator>, Option<String>)>,
 }
 
 /// Everything a provider needs to construct one live session.
@@ -326,10 +349,13 @@ pub(crate) fn open_terminal_session(
     root: PathBuf,
     options: TerminalOpenOptions,
 ) -> Result<OpenedSession, HarnessError> {
-    let session =
-        PtySession::spawn(spec, Some(root), options.size)?.with_session_identity(options.identity);
+    let session = PtySession::spawn(spec, Some(root), options.size)?
+        .with_session_identity(options.identity)
+        .with_activity_locator(options.activity_locator);
     let output = match session.terminal() {
-        Some(terminal) => SessionOutput::painting(terminal.subscribe()),
+        Some(terminal) => {
+            SessionOutput::painting_with_activity(terminal.subscribe(), session.activity())
+        }
         None => SessionOutput::silent(),
     };
     if let Some(grace) = options.turn_ready_grace {
@@ -597,6 +623,7 @@ mod tests {
                 size: one_pty(),
                 turn_ready_grace: Some(Duration::from_secs(5)),
                 identity: None,
+                activity_locator: None,
             },
         )
         .expect("the session opens");
@@ -625,6 +652,7 @@ mod tests {
                 size: one_pty(),
                 turn_ready_grace: None,
                 identity: None,
+                activity_locator: None,
             },
         )
         .expect("the session opens");
@@ -659,6 +687,7 @@ mod tests {
                 identity: Some(SessionIdentitySource::Located(Box::new(Says(
                     "sess-located",
                 )))),
+                activity_locator: None,
             },
         )
         .expect("the session opens");
@@ -672,6 +701,7 @@ mod tests {
                 size: one_pty(),
                 turn_ready_grace: None,
                 identity: None,
+                activity_locator: None,
             },
         )
         .expect("the session opens");
@@ -689,6 +719,7 @@ mod tests {
                 size: one_pty(),
                 turn_ready_grace: None,
                 identity: Some(SessionIdentitySource::Known("agent-pi".to_string())),
+                activity_locator: None,
             },
         )
         .expect("the session opens");
@@ -717,6 +748,7 @@ mod tests {
                 size: one_pty(),
                 turn_ready_grace: None,
                 identity: None,
+                activity_locator: None,
             },
             resume_session_id: None,
         }

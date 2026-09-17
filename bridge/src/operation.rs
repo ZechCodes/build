@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::models::ModelChoice;
+use crate::models::{AgentProvider, ModelChoice};
 use crate::thread::ThreadMessage;
 
 pub const THREAD_POST_METHOD: &str = "thread.post";
@@ -62,27 +62,37 @@ pub struct OperationPayload {
 }
 
 impl OperationPayload {
-    pub fn delivery_prompt(&self, operation_id: &str, cold: bool) -> String {
+    pub fn delivery_prompt(
+        &self,
+        operation_id: &str,
+        cold: bool,
+        provider: AgentProvider,
+    ) -> String {
         self.render_delivery_prompt(
             format!(
                 "Process only reviewer operation `{operation_id}` (conversation sequences {} through {}).",
                 self.start_sequence, self.end_sequence
             ),
             cold,
+            provider,
         )
     }
 
-    pub fn legacy_delivery_prompt(&self, cold: bool) -> String {
+    pub fn legacy_delivery_prompt(&self, cold: bool, provider: AgentProvider) -> String {
         self.render_delivery_prompt(
             format!(
                 "Process only the newly delivered reviewer messages (conversation sequences {} through {}).",
                 self.start_sequence, self.end_sequence
             ),
             cold,
+            provider,
         )
     }
 
-    fn render_delivery_prompt(&self, scope: String, cold: bool) -> String {
+    fn render_delivery_prompt(&self, scope: String, cold: bool, provider: AgentProvider) -> String {
+        if let Some(command) = self.unadorned_command(provider) {
+            return command.to_string();
+        }
         let messages = serde_json::to_string_pretty(&self.messages)
             .expect("operation messages always serialize");
         let context = if cold && !self.prior_context.is_empty() {
@@ -93,12 +103,39 @@ impl OperationPayload {
         } else {
             String::new()
         };
-        let prompt = format!("{scope}{context}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        // Keep the reviewer's words first. Provider slash commands are parsed
+        // only when the slash is the first token; putting Build's delivery
+        // envelope ahead of it turns commands such as `/goal ...` into prose.
+        let user_prompt = self
+            .messages
+            .first()
+            .map(|message| message.body.trim())
+            .filter(|body| !body.is_empty())
+            .unwrap_or("Review the exact accepted messages below.");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
             prompt
         }
+    }
+
+    /// Commands that must reach the provider's command parser byte-for-byte.
+    /// Claude owns `/compact`; both provider families own `/clear`. A payload
+    /// containing anything else is a reviewer turn and keeps its delivery
+    /// envelope, after the user's leading prompt.
+    fn unadorned_command(&self, provider: AgentProvider) -> Option<&str> {
+        let [message] = self.messages.as_slice() else {
+            return None;
+        };
+        let body = message.body.trim();
+        crate::harness::harness_for(provider)
+            .requires_unadorned_command(body)
+            .then_some(body)
+    }
+
+    pub(crate) fn requires_unadorned_delivery(&self, provider: AgentProvider) -> bool {
+        self.unadorned_command(provider).is_some()
     }
 }
 
@@ -226,14 +263,14 @@ mod tests {
     #[test]
     fn operation_delivery_is_native_and_cold_reestablishes_protocol() {
         let payload = payload();
-        let warm = payload.delivery_prompt("post-1", false);
+        let warm = payload.delivery_prompt("post-1", false, AgentProvider::Claude);
         assert!(warm.contains("reviewer operation `post-1`"), "{warm}");
         assert!(warm.contains("inspect the screenshot"), "{warm}");
         assert!(warm.contains(".build/attachments/failure.png"), "{warm}");
         assert!(!warm.contains("read_unread_messages"), "{warm}");
         assert!(!warm.contains("Build conversation protocol"), "{warm}");
 
-        let cold = payload.delivery_prompt("post-1", true);
+        let cold = payload.delivery_prompt("post-1", true, AgentProvider::Claude);
         assert!(
             cold.contains("Conversation context before this operation"),
             "{cold}"
@@ -244,7 +281,7 @@ mod tests {
 
     #[test]
     fn legacy_delivery_has_exact_scope_without_inventing_an_operation() {
-        let warm = payload().legacy_delivery_prompt(false);
+        let warm = payload().legacy_delivery_prompt(false, AgentProvider::Claude);
         assert!(
             warm.contains("conversation sequences 7 through 7"),
             "{warm}"
@@ -252,6 +289,66 @@ mod tests {
         assert!(warm.contains(NATIVE_REVIEWER_MESSAGES_HEADING), "{warm}");
         assert!(!warm.contains("operation `"), "{warm}");
         assert!(!warm.contains("read_unread_messages"), "{warm}");
+    }
+
+    #[test]
+    fn reviewer_text_precedes_the_injected_delivery_envelope() {
+        let prompt = payload().delivery_prompt("post-1", true, AgentProvider::Codex);
+        assert!(
+            prompt.starts_with("inspect the screenshot\n\nProcess only reviewer operation"),
+            "{prompt}"
+        );
+        let messages = prompt.find(NATIVE_REVIEWER_MESSAGES_HEADING).unwrap();
+        let protocol = prompt.find("Build conversation protocol:").unwrap();
+        assert!(
+            messages < protocol,
+            "the protocol is injected after the user prompt: {prompt}"
+        );
+    }
+
+    #[test]
+    fn provider_commands_that_require_a_bare_turn_skip_injection() {
+        let command = |body: &str| OperationPayload {
+            messages: vec![ThreadMessage {
+                body: body.into(),
+                attachments: Vec::new(),
+                viewing_context: None,
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+
+        for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+            assert_eq!(
+                command("/clear").delivery_prompt("op", true, provider),
+                "/clear"
+            );
+            assert_eq!(
+                command("/compact focus on API changes").delivery_prompt("op", true, provider),
+                "/compact focus on API changes"
+            );
+        }
+        for provider in [AgentProvider::Codex, AgentProvider::CodexAppServer] {
+            assert_eq!(
+                command("/clear").delivery_prompt("op", true, provider),
+                "/clear"
+            );
+            assert!(command("/compact")
+                .delivery_prompt("op", true, provider)
+                .contains("Build conversation protocol:"));
+        }
+        assert!(command("/goal ship it")
+            .delivery_prompt("op", true, AgentProvider::Codex)
+            .starts_with("/goal ship it\n\nProcess only reviewer operation"));
+
+        let mut contextual = command("/clear");
+        contextual.messages[0].viewing_context = Some(Box::new(
+            serde_json::from_value(serde_json::json!({ "version": 1, "items": [] })).unwrap(),
+        ));
+        assert_eq!(
+            contextual.delivery_prompt("op", true, AgentProvider::Claude),
+            "/clear"
+        );
     }
 
     #[test]

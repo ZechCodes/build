@@ -303,6 +303,7 @@ pub(in crate::app) fn activity_event_kind(
     use crate::harness::AgentActivity;
     use crate::thread::ThreadEventKind;
     match activity {
+        AgentActivity::Compaction { .. } => ThreadEventKind::Compaction,
         AgentActivity::Reasoning { .. } => ThreadEventKind::Reasoning,
         AgentActivity::ToolUse { .. } => ThreadEventKind::ToolUse,
         AgentActivity::ToolResult { .. } => ThreadEventKind::ToolResult,

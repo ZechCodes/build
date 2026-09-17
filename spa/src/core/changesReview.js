@@ -30,6 +30,7 @@ import { createReviewMarks } from "./reviewMarks.js";
 import { watchEditedTimes } from "./editedTime.js";
 import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
+import { diffSortHtml, loadDiffSort, saveDiffSort } from "./diffSort.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -39,13 +40,16 @@ const fileEditedAtOf = (payload) => payload.file_edited_at || {};
  *  filter narrows what is drawn, never what is counted), whatever the surface
  *  says about its own state, and — once there is a baseline to compare against —
  *  the offer to see only what moved since the last comments went out. */
-export function reviewBarHtml(files, { statusHtml = "", offerChangedOnly = false, changedOnly = false } = {}) {
+export function reviewBarHtml(
+  files,
+  { statusHtml = "", offerChangedOnly = false, changedOnly = false, sortOrder = "latest" } = {},
+) {
   const insertions = files.reduce((total, file) => total + file.add, 0);
   const deletions = files.reduce((total, file) => total + file.del, 0);
   const filter = offerChangedOnly
     ? `<label class="changedonly"><input type="checkbox" class="changedonly-box"${changedOnly ? " checked" : ""}/> Only changes since my review</label>`
     : "";
-  return `<div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${insertions}</span> <span style="color:var(--red)">−${deletions}</span></span>${statusHtml}${filter}</div>`;
+  return `<div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${insertions}</span> <span style="color:var(--red)">−${deletions}</span></span>${statusHtml}${filter}${diffSortHtml(sortOrder)}</div>`;
 }
 
 /** What the stack says when the filter has hidden everything, or there is
@@ -147,6 +151,7 @@ export function createReviewPlug({
   // at mount where it has one, so a mark made on this changeset is the same
   // mark on the stacks beside it.
   let marks = createReviewMarks();
+  let sortOrder = loadDiffSort();
 
   /** The rendered files as the views a stamp is taken of: a whole patch's file
    *  wears a hash of its own rows as its content key. */
@@ -267,6 +272,7 @@ export function createReviewPlug({
       ...viewport.renderOptions(),
       noiseExpanded,
       empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
+      sortOrder,
       review:
         !triageEnabled || triageReport === undefined
           ? null
@@ -283,6 +289,7 @@ export function createReviewPlug({
         statusHtml: statusHtml(),
         offerChangedOnly: reviewStamps.size > 0,
         changedOnly: changedOnlyFilter,
+        sortOrder,
       }),
       entries,
       tray: trayMounted ? commentLayer.trayHtml() : "",
@@ -361,6 +368,12 @@ export function createReviewPlug({
       if (target.classList.contains("changedonly-box")) {
         changedOnlyFilter = target.checked;
         diffKey = null;
+        render();
+        return;
+      }
+      if (target.classList.contains("diffsort-select")) {
+        sortOrder = target.value;
+        saveDiffSort(sortOrder);
         render();
         return;
       }
@@ -459,7 +472,7 @@ export function createReviewPlug({
     ].join("\x01");
     // Freeze while the reviewer is mid-comment or the surface has an action in
     // flight, and skip the rebuild when nothing moved (fold state survives too).
-    const busy = actionsFrozen() || Boolean(commentLayer && commentLayer.busy());
+    const busy = actionsFrozen() || Boolean(commentLayer && commentLayer.repaintBusy());
     if (host.querySelector(".diffbar") && busy) {
       refreshHeld = true;
       paintActions();
@@ -520,7 +533,7 @@ export function createReviewPlug({
    *  repainting. Keep that news pending and consume it as soon as the owning
    *  surface says the interaction ended; the next safety tick is only backup. */
   const resumeHeldRefresh = () => {
-    if (!refreshHeld || !host || actionsFrozen() || Boolean(commentLayer && commentLayer.busy())) return;
+    if (!refreshHeld || !host || actionsFrozen() || Boolean(commentLayer && commentLayer.repaintBusy())) return;
     refreshHeld = false;
     paint();
   };
@@ -568,6 +581,7 @@ export function createReviewPlug({
       onCommentsChanged = onComments;
       onMarksChanged = onMarks;
       if (reviewMarks) marks = reviewMarks;
+      sortOrder = loadDiffSort();
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       refreshHeld = false;

@@ -1141,10 +1141,12 @@ function foldActivityRuns(rows, digests, view) {
 function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
   if (meta.activity) return activityHtml(event, meta, agentLabel, foldedChildrenHtml);
-  const label = eventLabel(meta, agentLabel);
+  const label = event.event === "compaction" && event.summary
+    ? event.summary
+    : eventLabel(meta, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
-    : event.event !== "done" && event.summary ? renderMarkdown(event.summary) : "";
+    : event.event !== "done" && event.event !== "compaction" && event.summary ? renderMarkdown(event.summary) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
     <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${linksHtml(event.links)}</div>

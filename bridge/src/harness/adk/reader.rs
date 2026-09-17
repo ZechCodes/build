@@ -90,6 +90,16 @@ impl ProtocolReader {
         };
         match subtype {
             "init" => self.read_init(event),
+            "hook_started" if event["hook_event"].as_str() == Some("PreCompact") => {
+                self.send_report(ActivityReport::own_work(AgentActivity::Compaction {
+                    completed: false,
+                }));
+            }
+            "compact_boundary" => {
+                self.send_report(ActivityReport::own_work(AgentActivity::Compaction {
+                    completed: true,
+                }));
+            }
             "background_tasks_changed" => self.read_task_roster(event),
             "task_started" => self.read_task_started(event),
             "task_updated" => self.read_task_updated(event),

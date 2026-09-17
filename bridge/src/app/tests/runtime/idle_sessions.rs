@@ -240,6 +240,7 @@ pub(in crate::app::tests) fn test_agent_session_request(
             size,
             turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
             identity: None,
+            activity_locator: None,
         },
         resume_session_id: None,
     }
@@ -1129,7 +1130,7 @@ fn a_second_message_queues_a_follow_up_while_the_first_is_mid_delivery() {
         .legacy_delivery_payload("run-nudged", &agent_id)
         .expect("legacy messages can be snapshotted")
         .expect("the later message is pending native delivery");
-    let prompt = payload.legacy_delivery_prompt(false);
+    let prompt = payload.legacy_delivery_prompt(false, AgentProvider::Claude);
     assert!(
         prompt.contains("and this") && !prompt.contains("read_unread_messages"),
         "the follow-up carries the later message natively: {}",

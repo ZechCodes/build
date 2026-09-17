@@ -16,6 +16,7 @@ import "../styles/surfaces.css";
 import { esc, humanAge } from "./text.js";
 import { lineRangeSuffix } from "./anchors.js";
 import { uncommittedTotals, hasUncommittedChanges } from "./changesModel.js";
+import { diffSortHtml } from "./diffSort.js";
 
 const TRUNCATED_NOTICE = '<div class="ftrunc">diff truncated at 1 MiB — the counts above are exact</div>';
 
@@ -88,14 +89,14 @@ export function changesRailEntries({ status, log, selected, review = null, nowSe
  *  Nothing about a capped diff: `git.status` ships shape and no patch, so the
  *  1 MiB cap falls on one file's body and the file draws its own line for it
  *  (core/fileEntries.js). */
-export function uncommittedHeaderHtml(status) {
+export function uncommittedHeaderHtml(status, { sortOrder = "latest" } = {}) {
   const totals = uncommittedTotals(status);
   const fileCount = totals.files;
   return `<div class="csheader"><span class="cstitle">Uncommitted changes</span>${statSummary({
     files_changed: fileCount,
     insertions: totals.insertions,
     deletions: totals.deletions,
-  })}</div>
+  })}${diffSortHtml(sortOrder)}</div>
     ${status && status.files_truncated ? `<div class="ftrunc">file list truncated — ${fileCount} shown; a commit here commits the listed files</div>` : ""}`;
 }
 

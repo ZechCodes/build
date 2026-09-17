@@ -1,6 +1,22 @@
 // Exact test bodies moved from the former inline test module.
 use super::*;
 
+#[tokio::test]
+async fn precompact_hook_and_boundary_report_one_compaction_lifecycle() {
+    let (mut reader, mut activity) = reader_and_what_it_reports();
+    reader.read_line(r#"{"type":"system","subtype":"hook_started","hook_event":"PreCompact"}"#);
+    assert_eq!(
+        next_activity(&mut activity).await,
+        AgentActivity::Compaction { completed: false }
+    );
+
+    reader.read_line(r#"{"type":"system","subtype":"compact_boundary"}"#);
+    assert_eq!(
+        next_activity(&mut activity).await,
+        AgentActivity::Compaction { completed: true }
+    );
+}
+
 #[test]
 fn the_workflow_fixture_mints_the_rows_it_always_minted() {
     let rows = reports_minted_by(WORKFLOW_FIXTURE);

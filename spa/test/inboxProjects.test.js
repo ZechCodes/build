@@ -41,12 +41,12 @@ describe("workspace project blocks", () => {
       null,
       [{ id: "dev-1", name: "Laptop" }],
     );
-    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p1", "dev-1/p2", "dev-1/p9"]);
-    expect(blocks.map((block) => keys(block.entries))).toEqual([["workspace:dev-1/one"], [], ["workspace:dev-1/two"]]);
-    expect(blocks.map((block) => block.unreadCount)).toEqual([2, 0, 3]);
+    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p2", "dev-1/p1", "dev-1/p9"]);
+    expect(blocks.map((block) => keys(block.entries))).toEqual([[], ["workspace:dev-1/one"], ["workspace:dev-1/two"]]);
+    expect(blocks.map((block) => block.unreadCount)).toEqual([0, 2, 3]);
     expect(keys(unsorted)).toEqual(["workspace:dev-1/loose"]);
-    expect(projectHeadHtml(blocks[0], {})).toContain('data-project-create="dev-1/p1"');
-    expect(projectHeadHtml(blocks[0], {})).toContain("New workspace in Same");
+    expect(projectHeadHtml(blocks[1], {})).toContain('data-project-create="dev-1/p1"');
+    expect(projectHeadHtml(blocks[1], {})).toContain("New workspace in Same");
   });
 
   it("uses the active workspace as its project's heading destination", () => {

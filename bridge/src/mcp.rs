@@ -390,6 +390,13 @@ pub enum BridgeAction {
     ListWorkspaceAgents {
         workspace_id: String,
     },
+    /// Cut a workspace in this agent's project. Project only. There is no
+    /// project field: which project it is cut in comes from the owner binding,
+    /// so the agent cannot ask for one in a project it is not the agent of.
+    CreateWorkspace {
+        name: String,
+        isolation: Option<String>,
+    },
 }
 
 /// The choices an `ask_user` call offered beside its question. Absent reads as
@@ -430,6 +437,7 @@ impl BridgeAction {
             BridgeAction::RouterMessage { .. } => "post_thread_message",
             BridgeAction::ListWorkspaces => "list_workspaces",
             BridgeAction::ListWorkspaceAgents { .. } => "list_workspace_agents",
+            BridgeAction::CreateWorkspace { .. } => "create_workspace",
         }
     }
 
@@ -455,9 +463,9 @@ impl BridgeAction {
             | BridgeAction::DispatchBranch { .. }
             | BridgeAction::AskUser { .. }
             | BridgeAction::RouterMessage { .. } => &[McpSurface::Router],
-            BridgeAction::ListWorkspaces | BridgeAction::ListWorkspaceAgents { .. } => {
-                &[McpSurface::Project]
-            }
+            BridgeAction::ListWorkspaces
+            | BridgeAction::ListWorkspaceAgents { .. }
+            | BridgeAction::CreateWorkspace { .. } => &[McpSurface::Project],
         }
     }
 
@@ -707,8 +715,13 @@ impl DoneServer {
     }
 
     /// The project agent's tools. Read this project's workspaces and the agents
-    /// on them, and talk. Everything that CHANGES a workspace is somewhere else
-    /// on purpose: this agent holds no checkout.
+    /// on them, change what the project is made of, and talk. Every one of them
+    /// is about the agent's OWN project: none takes a project, and the binding
+    /// the agent was minted with is the only thing that says which it is.
+    ///
+    /// What is deliberately missing: nothing here deletes a workspace or adds a
+    /// directory to one. Both are how a project loses work, and they stay with
+    /// the human.
     fn project_tools() -> Value {
         json!([{
             "name": "list_workspaces",
@@ -723,6 +736,17 @@ impl DoneServer {
                     "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." }
                 },
                 "required": ["workspace_id"]
+            }
+        }, {
+            "name": "create_workspace",
+            "description": "Cut a new workspace in your project: its own checkout of every source, on a branch of its own. It is cut in your project — there is nothing to name — and nobody is working in it until you add an agent.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "What the workspace is for, in the user's words. It names the branch too." },
+                    "isolation": { "type": "string", "enum": ["worktree", "rift"], "description": "How the checkout is made. Omit for the project's own setting." }
+                },
+                "required": ["name"]
             }
         }, {
             "name": "post_thread_message",
@@ -920,13 +944,27 @@ impl DoneServer {
         }
     }
 
-    /// The project surface's `tools/call`: two read-only reads of the project
-    /// the agent belongs to, and the conversation tools every agent has.
+    /// The project surface's `tools/call`: reads and writes of the project the
+    /// agent belongs to, and the conversation tools every agent has.
+    ///
+    /// No arm reads a project out of the arguments. A call that carries one
+    /// anyway is parsed as though it had not: the scope is the owner binding
+    /// the daemon holds, and there is nothing here for an argument to widen.
     fn handle_project_tools_call(id: Value, name: &str, params: Option<&Value>) -> Handled {
         match name {
             "list_workspaces" => acted(id, BridgeAction::ListWorkspaces),
             "list_workspace_agents" => match required_argument(params, "workspace_id") {
                 Ok(workspace_id) => acted(id, BridgeAction::ListWorkspaceAgents { workspace_id }),
+                Err(message) => refused(id, message),
+            },
+            "create_workspace" => match required_argument(params, "name") {
+                Ok(name) => acted(
+                    id,
+                    BridgeAction::CreateWorkspace {
+                        name,
+                        isolation: optional_argument(params, "isolation"),
+                    },
+                ),
                 Err(message) => refused(id, message),
             },
             "search_conversation" => search_action(id, params),
@@ -1362,6 +1400,18 @@ fn refused(id: Value, message: impl Into<String>) -> Handled {
         reply: Some(tool_error(id, message.into())),
         ..Handled::default()
     }
+}
+
+/// One optional string argument, trimmed. Blank reads as absent, because a
+/// harness filling a schema in reaches for "" long before it omits a key.
+fn optional_argument(params: Option<&Value>, field: &str) -> Option<String> {
+    params
+        .and_then(|p| p.get("arguments"))
+        .and_then(|arguments| arguments.get(field))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// One required string argument, trimmed, or why the call cannot be made.
@@ -2368,6 +2418,7 @@ mod tests {
             vec![
                 "list_workspaces",
                 "list_workspace_agents",
+                "create_workspace",
                 "post_thread_message",
                 "search_conversation",
                 "set_topic",
@@ -2381,16 +2432,18 @@ mod tests {
         DoneServer::for_owner("project-01H")
     }
 
-    /// The project surface is read-only about the project and ordinary about
-    /// its conversation: two reads scoped to the project the agent belongs to,
-    /// and the conversation tools every agent with a conversation has.
+    /// One project tool call, as a harness writes it.
+    fn project_call(name: &str, arguments: &str) -> Handled {
+        project().handle_message(&format!(
+            r#"{{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+        ))
+    }
+
+    /// What the surface reads of the project, and the conversation tools every
+    /// agent with a conversation has.
     #[test]
-    fn every_project_tool_emits_its_typed_action() {
-        let call = |name: &str, arguments: &str| {
-            project().handle_message(&format!(
-                r#"{{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
-            ))
-        };
+    fn every_project_read_emits_its_typed_action() {
+        let call = project_call;
 
         assert!(matches!(
             call("list_workspaces", "{}").action,
@@ -2408,14 +2461,51 @@ mod tests {
             call("search_conversation", r#"{"query":"workspace"}"#).action,
             Some(BridgeAction::SearchConversation { .. })
         ));
+    }
 
-        let missing = call("list_workspace_agents", "{}");
-        assert_eq!(
-            parse(&missing.reply.unwrap())["result"]["isError"],
-            true,
-            "a workspace read with no workspace named is a tool error"
-        );
-        assert!(missing.action.is_none());
+    /// What the surface changes about the project. No write names a project: a
+    /// project id in the arguments is not a field of any of these actions, so
+    /// it cannot travel past the parser and the owner binding is the only thing
+    /// that says which project the write lands in.
+    #[test]
+    fn every_project_write_emits_its_typed_action() {
+        let call = project_call;
+
+        assert!(matches!(
+            call("create_workspace", r#"{"name":"read the router","isolation":"rift"}"#).action,
+            Some(BridgeAction::CreateWorkspace { ref name, ref isolation })
+                if name == "read the router" && isolation.as_deref() == Some("rift")
+        ));
+        assert!(matches!(
+            call("create_workspace", r#"{"name":"one","project_id":"proj-9"}"#).action,
+            Some(BridgeAction::CreateWorkspace { ref name, isolation: None }) if name == "one"
+        ));
+    }
+
+    /// A call the parser cannot act on is a tool error and no action, so the
+    /// daemon is never asked to guess what the agent meant.
+    #[test]
+    fn a_project_tool_missing_an_argument_is_refused_before_the_daemon_sees_it() {
+        for (tool, arguments, why) in [
+            (
+                "list_workspace_agents",
+                "{}",
+                "a workspace read with no workspace named is a tool error",
+            ),
+            (
+                "create_workspace",
+                r#"{"project_id":"proj-9"}"#,
+                "a workspace with no name is a tool error, project id or not",
+            ),
+        ] {
+            let missing = project_call(tool, arguments);
+            assert_eq!(
+                parse(&missing.reply.unwrap())["result"]["isError"],
+                true,
+                "{why}"
+            );
+            assert!(missing.action.is_none(), "{why}");
+        }
     }
 
     /// The project agent has no phases — it builds nothing — so its message
@@ -2424,7 +2514,14 @@ mod tests {
     fn a_project_message_carries_a_status_and_never_a_phase() {
         let h = project().handle_message(r#"{"jsonrpc":"2.0","id":71,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
-        let schema = &v["result"]["tools"][2]["inputSchema"];
+        let message = v["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "post_thread_message")
+            .expect("the project surface carries the message tool")
+            .clone();
+        let schema = &message["inputSchema"];
         assert!(schema["properties"]["phase"].is_null(), "{schema}");
         assert_eq!(
             schema["properties"]["status"]["enum"],

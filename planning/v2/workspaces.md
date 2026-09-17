@@ -150,20 +150,29 @@ project agent's id starts with `project-`, and the prefix is minted from the
 owner: an agent of a project's conversation owner is a project agent, whoever
 asked for it.
 
-The surface is read-only about the project and ordinary about its conversation:
+The surface reads and changes the project, and is ordinary about its
+conversation. Every tool is a thin wrapper over the verb the client calls — the
+same code path, the same refusals, the same record afterwards:
 
 - `list_workspaces` — every workspace of the project, through the same code path
   `workspace.list` answers, so the agent and the client see one list.
 - `list_workspace_agents {workspace_id}` — the agents on one workspace's
   conversation, through `agent.list` on that workspace's conversation owner.
+- `create_workspace {name, isolation?}` — through `workspace.create`, with the
+  project supplied by the binding.
 - `post_thread_message`, `search_conversation`, `set_topic` — what every agent
   with a conversation has.
 
-Which project is read comes from the owner's project binding and never from a
-tool argument, so the scope is fixed when the agent is created: a workspace in
-another project is refused by name. The gate is on the socket as well as in the
-tool list a session is shown, so a harness writing its own frames reaches no
-further than a harness that reads the list.
+Which project is read or written comes from the owner's project binding and
+never from a tool argument, so the scope is fixed when the agent is created: a
+workspace in another project is refused by name, and a call that carries a
+project id is parsed as though it had not. The gate is on the socket as well as
+in the tool list a session is shown, so a harness writing its own frames reaches
+no further than a harness that reads the list.
+
+Two things are deliberately missing: nothing here deletes a workspace, and
+nothing adds a directory to one. Both are how a project loses work, so they stay
+with the human.
 
 The agent runs in the project's durable scratch directory, holds no checkout,
 and receives the same delivery envelope, catch-up packet and topic handling as

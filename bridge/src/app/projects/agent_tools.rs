@@ -71,10 +71,11 @@ impl AppState {
         )
     }
 
-    /// The project a project agent reads. It is the one its owner is bound to —
-    /// the binding `project.ensure_conversation` wrote — so the scope of every
-    /// project tool is fixed when the agent is created.
-    fn project_agent_project(&self, owner_id: &str) -> Result<String, String> {
+    /// The project a project agent is the agent of. It is the one its owner is
+    /// bound to — the binding `project.ensure_conversation` wrote — so the
+    /// scope of every project tool, read or write, is fixed when the agent is
+    /// created.
+    pub(super) fn project_agent_project(&self, owner_id: &str) -> Result<String, String> {
         self.projects
             .project_id_of(owner_id)
             .map(str::to_string)

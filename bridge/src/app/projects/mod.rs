@@ -17,6 +17,7 @@ pub(in crate::app) struct ProjectSource {
 }
 
 mod agent_tools;
+mod agent_writes;
 mod conversation;
 mod deletion;
 mod lifecycle;

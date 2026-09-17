@@ -320,3 +320,50 @@ fn a_project_agents_message_lands_on_its_own_conversation() {
         "{conversation:?}"
     );
 }
+
+/// The write tools are scoped the way the reads are: `create_workspace` cuts
+/// into the owner's project, and the call carries no project for it to cut
+/// into anywhere else.
+#[test]
+fn a_project_agent_cuts_a_workspace_in_the_project_it_belongs_to() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let (_other_home, other_repo) = init_repo();
+    let other_repo = std::fs::canonicalize(&other_repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let mine = added_project(&mut state, &repo);
+    let theirs = added_project(&mut state, &other_repo);
+    let (owner, agent_id) = project_agent(&mut state, &mine);
+
+    let created = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::CreateWorkspace {
+                name: "read the router".to_string(),
+                isolation: None,
+            },
+        )
+        .expect("a project agent cuts a workspace in its own project");
+    let workspace_id = created["workspace_id"].as_str().unwrap().to_string();
+
+    let ours = state.handle(req("workspace.list", json!({ "project_id": mine })));
+    let names: Vec<&str> = ours["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"read the router"), "{ours:?}");
+
+    let elsewhere = state.handle(req("workspace.list", json!({ "project_id": theirs })));
+    let ids: Vec<&str> = elsewhere["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["workspace_id"].as_str().unwrap())
+        .collect();
+    assert!(!ids.contains(&workspace_id.as_str()), "{elsewhere:?}");
+}

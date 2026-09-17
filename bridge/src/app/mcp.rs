@@ -195,9 +195,14 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
         frame.get("request").cloned().unwrap_or(Value::Null),
     )
     .ok()?;
-    let result = timer
+    let (answered, deferred) = timer
         .lock(state)
-        .on_agent_mcp_action(entity_id, agent_id, action);
+        .agent_action_deferring(entity_id, agent_id, action);
+    let result = match deferred {
+        Some(deferred) => apply_off_the_socket(state, timer, deferred).await,
+        None => answered,
+    };
+    DeliveryRunner::drain(state, timer);
     Some(mcp_action_response(result))
 }
 
@@ -305,6 +310,45 @@ impl AppState {
         self.on_agent_mcp_action(entity_id, &agent_id, action)
     }
 
+    /// One agent's tool, without draining: the coding and project surfaces'
+    /// twin of [`AppState::router_deferring`]. A project agent's write tool can
+    /// hand back git the way a verb does — cutting a workspace is the same
+    /// `workspace.create` the browser calls — and the socket is the one place
+    /// that can run it with the guard released.
+    pub(in crate::app) fn agent_action_deferring(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        action: BridgeAction,
+    ) -> (Result<Value, String>, Option<DeferredJob>) {
+        let queued_before = self.delivery_queue.checkpoint();
+        let answered = self.on_agent_mcp_action(entity_id, agent_id, action);
+        if answered.is_err() {
+            self.drop_turns_queued_since(queued_before);
+        }
+        (answered, self.take_deferred())
+    }
+
+    /// One agent's tool, drained — for the tests that own the state directly
+    /// and have no mutex to release. Running it is what the MCP control socket
+    /// does with the guard released.
+    #[cfg(test)]
+    pub(in crate::app) fn agent_action(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        action: BridgeAction,
+    ) -> Result<Value, String> {
+        let (answered, deferred) = self.agent_action_deferring(entity_id, agent_id, action);
+        match deferred {
+            Some(deferred) => {
+                let done = deferred.run();
+                self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+            }
+            None => answered,
+        }
+    }
+
     /// The same, for a caller that knows WHICH agent is speaking — every real
     /// one, since the MCP control plane authenticates an agent.
     pub(in crate::app) fn on_agent_mcp_action(
@@ -333,6 +377,9 @@ impl AppState {
         }
         if let BridgeAction::ListWorkspaceAgents { workspace_id } = &action {
             return self.project_agent_workspace_agents(entity_id, workspace_id);
+        }
+        if let BridgeAction::CreateWorkspace { name, isolation } = &action {
+            return self.project_agent_create_workspace(entity_id, name, isolation.as_deref());
         }
         if let BridgeAction::ReadOperationMessages { operation_id } = &action {
             return self.read_operation_messages_for_agent(entity_id, agent_id, operation_id);

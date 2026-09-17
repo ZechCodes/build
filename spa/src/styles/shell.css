@@ -534,6 +534,30 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 /* The conversation is its own region: a band of page between it and the work,
    never a seam drawn on either. */
 #agent-rail { grid-column:3; margin-left:var(--region-gap, 10px); }
+/* ---- the agent rail runs the column's full height ----
+   Beside the work, not between its head and its foot. With the body laid out
+   as a box of its own the toolbar ran on above the rail and the console ran
+   on below it, and the panel sat inset between two bands that overhung it on
+   both ends. Above the phone width the body gives up its box (display:contents)
+   and hands its three columns to the view's grid, so the toolbar and the
+   console span the work's two columns only and the rail takes every row.
+   The first track is stated, never auto: the toolbar spans it, and an auto
+   track would grow to the toolbar's max-content — the same bug the view's
+   single definite track exists to prevent (see #view above). */
+@media (min-width: 761px) {
+  #view { grid-template-columns:0 minmax(0, 1fr) auto; }
+  #view:has(#dir-rail:not(:empty)) { grid-template-columns:var(--dir-rail) minmax(0, 1fr) auto; }
+  #view-body { display:contents; }
+  #toolbar { grid-row:1; grid-column:1 / 3; }
+  /* The directory rail is placed by no rule of its own (it is one column of
+     the shell, stated once, at every width): with every other item placed,
+     the first free cell in the grid is row 2, column 1, and that is its cell. */
+  #shell main#root { grid-row:2; }
+  #agent-rail { grid-row:1 / 4; }
+  #console-region { grid-row:3; grid-column:1 / 3; }
+  /* Nothing above the panel any more, so nothing to clear. */
+  .rail-panel { top:0; }
+}
 #shell main#root:not(.surface) { overflow-y:auto; }
 
 /* The machine this surface is about went while it was open (core/deviceNotice.js

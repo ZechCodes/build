@@ -140,6 +140,39 @@ talking about it must not change it. The directory sits under Build's own state
 directory, keyed by the project's canonical path, and is never wiped: a `proj-N`
 id is not durable across boots, and the conversation is.
 
+## The project agent
+
+A project's agents reach Build through a surface of their own. It is the same
+one MCP server every session gets — one `mcpServers.build` entry, one
+`build-bridge mcp --task <id>` process — and the id the session was opened with
+decides which tools are on it, the way a `router-` id decides the router's. A
+project agent's id starts with `project-`, and the prefix is minted from the
+owner: an agent of a project's conversation owner is a project agent, whoever
+asked for it.
+
+The surface is read-only about the project and ordinary about its conversation:
+
+- `list_workspaces` — every workspace of the project, through the same code path
+  `workspace.list` answers, so the agent and the client see one list.
+- `list_workspace_agents {workspace_id}` — the agents on one workspace's
+  conversation, through `agent.list` on that workspace's conversation owner.
+- `post_thread_message`, `search_conversation`, `set_topic` — what every agent
+  with a conversation has.
+
+Which project is read comes from the owner's project binding and never from a
+tool argument, so the scope is fixed when the agent is created: a workspace in
+another project is refused by name. The gate is on the socket as well as in the
+tool list a session is shown, so a harness writing its own frames reaches no
+further than a harness that reads the list.
+
+The agent runs in the project's durable scratch directory, holds no checkout,
+and receives the same delivery envelope, catch-up packet and topic handling as
+any other agent. What it does not receive is the coding prompt: that one is
+about phases, a plan and a diff, and this agent has none of them. It is told
+which project it is the agent of, why the project's own files are not its to
+change, and what its five tools are. Its messages carry a status and no phase,
+so a terminal message ends the turn and reports no lifecycle outcome.
+
 ## Boundaries
 
 Workspaces provide source materialization, source-scoped file and Git views,

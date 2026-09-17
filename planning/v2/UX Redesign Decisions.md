@@ -175,6 +175,13 @@ final for this build unless the reviewer overrides them in the thread.
   these tools): `list_projects`, `list_work`, `read_conversation`,
   `create_issue` (inert), `dispatch_branch`, `ask_user`. Write scope is
   creating issues and dispatching branch work; nothing else.
+  - 2026-09-17: `create_issue` is gone. Router issue destinations were retired
+    with Issues, so the surface is the reads plus `dispatch_branch`, `ask_user`
+    and `post_thread_message`, and the allow-list a harness is given says so.
+- **Project MCP surface** (2026-09-17; same server, resolved from a `project-`
+  agent id as the router's is from `router-`): `list_workspaces`,
+  `list_workspace_agents`, plus the conversation tools. Read-only, scoped to the
+  project its owner is bound to. See `workspaces.md`, "The project agent".
 - **Inert issues**: `issue.create` gains `dispatch: false` (router default) —
   a record in the store, no worktree, no agent, until the user opens it and
   sends a message or triggers implement.

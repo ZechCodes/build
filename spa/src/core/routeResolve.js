@@ -2,13 +2,13 @@
 //
 // Two kinds of URL end up here. The old ones addressed runs, worktrees and
 // plans by id; the new ones address a branch by (project, branch name) and an
-// issue by (project, issue id), so the ids that survived need a lookup. A URL
-// that addressed a project's own checkout is not among them: a project is a
-// template, so that URL opens the project's inbox and never gets this far.
+// issue by (project, issue id), so the ids that survived need a lookup.
 //
 // And any work URL that names no device needs a lookup too: every device mints
 // a `proj-1`, so a bare project id names a project only once something says
-// which machine it is on.
+// which machine it is on. The project's own page is one of those — it names a
+// project and nothing else, so it is the case with nothing but the device left
+// to find.
 //
 // The feed carries every half — its items[] rows, its projects and its
 // workspaces all know the device that answered — so this is a lookup plus a
@@ -77,14 +77,11 @@ const byId = (field) => (ref, feed) => feed.items.filter((row) => row[field] ===
 const REFERENCE_KINDS = Object.freeze({
   run: { rows: byId("run_id"), route: branchRouteFor },
   worktree: { rows: byId("worktree_id"), route: branchRouteFor },
-  // There is no `primary` kind: a URL that named a project's own checkout has
-  // nothing to look up any more. The base checkout is the template workspaces
-  // are cut from, never a surface, so those URLs land on the project's inbox
-  // without asking any device (core/router.js projectSurface).
   issue: { rows: byId("issue_id"), route: issueRouteFor },
-  // A plain folder has no work row at all, so the projects answer for it, and a
-  // workspace link that named no device is answered by the workspaces: each is
-  // only asked which device it is on, and the URL already said the rest.
+  // A plain folder has no work row at all, and neither has a project nobody has
+  // cut a workspace in yet, so the projects answer for both; a workspace link
+  // that named no device is answered by the workspaces. Each is only asked which
+  // device it is on, and the URL already said the rest.
   project: {
     rows: (ref, feed) => [
       ...feed.items.filter((row) => row.project_id === ref.projectId),
@@ -119,6 +116,8 @@ const onItsDevice = (route, row) => (route && row.deviceId ? { ...route, deviceI
  * land on the inbox).
  *
  * @param ref {kind: 'run'|'worktree'|'issue'|'project', id?, projectId?, deviceId?, route?, tab?, stage?}
+ *            — a `project` ref carries the route it meant, which may be the
+ *              project's own page
  * @param feed {items, projects, workspaces} — the merge, every device's rows at once
  * @param policy {homeDeviceId, deviceOrder} — which device wins a collision
  */

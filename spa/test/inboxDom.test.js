@@ -544,10 +544,10 @@ describe("an account with more than one device", () => {
   // which hands the reader whichever one happens to hold the same numbered
   // project. Creation already knows the machine it asked, so the route says it.
   //
-  // And it opens the RAIL standing in the new project, never that project's own
-  // checkout: a project is the template its workspaces are cut from, and the
-  // block is where the first one is made.
-  it("opens a new project's block on the machine it was made on, not its checkout", () => {
+  // And it opens the new project's own PAGE, never that project's checkout: a
+  // project is the template its workspaces are cut from, and the page is where
+  // the first one is made.
+  it("opens a new project's page on the machine it was made on, not its checkout", () => {
     App.selectedDeviceId = "dev-1";
     App.deviceFilter = "dev-1";
     twoDevices();
@@ -557,7 +557,7 @@ describe("an account with more than one device", () => {
     expect(options.defaultDeviceId).toBe("dev-1");
     done({ project_id: "project-1", base_branch: "main" }, { id: "dev-2", name: "laptop" });
 
-    expect(navigate).toHaveBeenCalledWith({ name: "inbox", deviceId: "dev-2", projectId: "project-1" });
+    expect(navigate).toHaveBeenCalledWith({ name: "project", deviceId: "dev-2", projectId: "project-1" });
   });
 
   it("defaults project creation to the sidebar device instead of the remembered home device", () => {

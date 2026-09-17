@@ -1,6 +1,8 @@
 // Hash routes for the three-panel shell. There are two work items and two
 // global surfaces, and that is the whole vocabulary:
 //   #/inbox                                     — the landing surface
+//   #/project/<projectId>                       — the project: its workspaces
+//   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
 //   #/project/<projectId>/issue/<issueId>[/stage/<stageId>]
 //   #/capture/<captureId>                       — what to do with a capture
@@ -15,9 +17,9 @@
 // on it (core/consoleModel.js), which is where that tab now lives.
 //
 // Some legacy URLs name an entity by an id whose branch this module cannot
-// know (a run id, a worktree id, an issue with no project in the URL, a
-// project's primary checkout). Those parse to a `resolve` route: the app looks
-// the id up in the feed (core/routeResolve.js) and rewrites the hash.
+// know (a run id, a worktree id, an issue with no project in the URL). Those
+// parse to a `resolve` route: the app looks the id up in the feed
+// (core/routeResolve.js) and rewrites the hash.
 //
 // Pure mapping both ways; the app shell owns the hashchange listener.
 
@@ -50,22 +52,26 @@ const termOf = (segment) => (isTermTab(segment) ? { term: segment } : null);
 
 const inbox = () => ({ name: "inbox" });
 
+/** The inbox, standing in one project: the rail with that project's block
+ *  marked. It has a URL of its own (`#/project/<id>/inbox`) so the landing is
+ *  stable — the hash the app rewrites to parses back to the same route rather
+ *  than losing the project on the way. */
+const inboxIn = (projectId) => (projectId ? { name: "inbox", projectId } : inbox());
+
 /**
- * The inbox, standing in one project.
+ * The project's own page: its workspaces in the main pane, its agent in the rail.
  *
  * A project is a template — the base checkout is what workspaces are cut FROM,
- * and it is not a place to work — so no URL opens it any more. Every URL that
- * used to (`#/project/<id>`, `#/main/<id>`, and the retired tabs that hung off
- * both) lands here instead: the rail, with that project's block marked. It has a
- * URL of its own so the landing is stable — the hash the app rewrites to parses
- * back to the same route rather than losing the project on the way.
+ * and it is not a place to work — so this page is about the project and never
+ * about that checkout. Every URL that used to open the checkout
+ * (`#/project/<id>` and the retired tabs that hung off it) lands here.
  */
-const inboxIn = (projectId) => (projectId ? { name: "inbox", projectId } : inbox());
+const projectPage = (projectId) => (projectId ? { name: "project", projectId } : inbox());
 
 /** `<workspaceId>[/directory/<sourceId>][/<tab>]`. The directory is optional,
  *  so the tab is whichever segment follows whatever came before it. */
 function workspaceRoute(projectId, parts) {
-  if (!parts[0]) return inboxIn(projectId);
+  if (!parts[0]) return projectPage(projectId);
   const [sourceId, tabSegment] = parts[1] === "directory" ? [parts[2], parts[3]] : [undefined, parts[1]];
   return {
     name: "workspace",
@@ -99,7 +105,7 @@ function issueRoute(projectId, id, tailSegments) {
  *  name survives both encoded (one segment) and hand-typed (several), and a
  *  lone segment is always the branch — a branch may be named `changes`. */
 function branchRoute(projectId, tailSegments) {
-  if (!tailSegments.length) return inboxIn(projectId);
+  if (!tailSegments.length) return projectPage(projectId);
   const last = tailSegments[tailSegments.length - 1];
   const trailingTab = tailSegments.length > 1 && isTabSegment(last);
   if (trailingTab) {
@@ -116,19 +122,19 @@ function branchRoute(projectId, tailSegments) {
 }
 
 /**
- * A URL that names a project and nothing inside it: the primary checkout's old
- * surface and every tab that hung off it.
+ * A URL that names a project and nothing inside it, plus every tab that used to
+ * hang off its base checkout.
  *
- * None of them opens any more — the base checkout is not a place to work — so
- * they all land on the inbox standing in that project. The one exception is the
- * retired right-cluster tabs, which named a project-wide pane rather than the
- * checkout: Archive still has a surface of its own to go to, and the two that
- * named the inbox are already going there.
+ * The checkout has no surface of its own any more, so they all land on the
+ * project's page. The exception is the retired right-cluster tabs, which named
+ * a project-wide pane rather than the checkout: Archive has a surface of its own
+ * to go to, and the two that named the inbox go to the rail standing here.
  */
 function projectSurface(projectId, tabSegment) {
   if (!projectId) return inbox();
   const cluster = clusterRoute(tabSegment);
-  return cluster && cluster.name !== "inbox" ? cluster : inboxIn(projectId);
+  if (cluster) return cluster.name === "inbox" ? inboxIn(projectId) : cluster;
+  return projectPage(projectId);
 }
 
 /** A legacy entity URL whose branch this module cannot know. `kind` says what
@@ -211,7 +217,29 @@ function surfaceFromHashPath(hash) {
   return stampDevice(surfaceFromSegments(rest), deviceId);
 }
 
-// eslint-disable-next-line complexity -- ratchet: surfaceFromSegments is at 28, cap 10 — reduce it, then drop this line
+/** The collections under a project that address a legacy id, and what the app
+ *  has to look that id up as. */
+const LEGACY_ID_COLLECTIONS = Object.freeze({ task: "run", worktree: "worktree" });
+
+/**
+ * Everything under `#/project/<id>`: the collections that name something inside
+ * the project, and the project's own page for everything that names nothing.
+ *
+ * `parts` is the tail after the project id. A collection with nothing named in
+ * it — `…/plan`, `…/task` — says the project and no more, so it lands where
+ * every other project-and-no-more URL lands.
+ */
+function insideProject(projectId, parts) {
+  const [collection, id, ...tail] = parts;
+  if (collection === "workspace") return workspaceRoute(projectId, [id, ...tail]);
+  if (collection === "branch") return branchRoute(projectId, id ? [id, ...tail] : []);
+  if (!id) return projectSurface(projectId, collection);
+  if (collection === "issue" || collection === "plan") return issueRoute(projectId, id, tail);
+  const kind = LEGACY_ID_COLLECTIONS[collection];
+  return kind ? resolveRoute(kind, { projectId, id, tabSegment: tail[0] }) : projectSurface(projectId, collection);
+}
+
+// eslint-disable-next-line complexity -- ratchet: surfaceFromSegments is at 19, cap 10 — reduce it, then drop this line
 function surfaceFromSegments(parts) {
   switch (parts[0]) {
     case "device":
@@ -236,31 +264,8 @@ function surfaceFromSegments(parts) {
     case "worktree":
       if (!parts[1] || !parts[2]) return inbox();
       return resolveRoute("worktree", { projectId: parts[1], id: parts[2], tabSegment: parts[3] });
-    case "main":
-      return projectSurface(parts[1], parts[2]);
-    case "project": {
-      if (!parts[1]) return inbox();
-      const projectId = parts[1];
-      if (parts[2] === "workspace") return workspaceRoute(projectId, parts.slice(3));
-      if (parts[2] === "branch") return branchRoute(projectId, parts.slice(3));
-      // A collection under a project with nothing named in it — `…/plan`,
-      // `…/task` — says the project and no more, so it lands where every other
-      // project-and-no-more URL lands.
-      if (parts[2] === "issue" || parts[2] === "plan") {
-        if (!parts[3]) return inboxIn(projectId);
-        return issueRoute(projectId, parts[3], parts.slice(4));
-      }
-      if (parts[2] === "task") {
-        if (!parts[3]) return inboxIn(projectId);
-        return resolveRoute("run", { projectId, id: parts[3], tabSegment: parts[4] });
-      }
-      if (parts[2] === "worktree") {
-        if (!parts[3]) return inboxIn(projectId);
-        return resolveRoute("worktree", { projectId, id: parts[3], tabSegment: parts[4] });
-      }
-      // Everything else under a project was the primary checkout's surface.
-      return projectSurface(projectId, parts[2]);
-    }
+    case "project":
+      return parts[1] ? insideProject(parts[1], parts.slice(2)) : inbox();
     default:
       // #/notifications, #/board and anything unknown: the inbox is the landing
       // surface, so it is also the fallback.
@@ -289,7 +294,7 @@ function projectPrefix(route) {
 
 // The surfaces that are about one machine's checkout, and so cannot be opened
 // until the route says which machine: every device mints a `proj-1`.
-const WORK_SURFACES = new Set(["branch", "issue", "workspace"]);
+const WORK_SURFACES = new Set(["branch", "issue", "project", "workspace"]);
 
 /// A work route that names no machine is a question, not a destination: park it
 /// on the resolve route that asks the feed which device holds that project, and
@@ -310,6 +315,8 @@ const HASH_WRITERS = Object.freeze({
   // link would land scoped and then immediately re-parse as the whole
   // account's inbox. The plain inbox writes nothing and takes the fallback.
   inbox: (route) => (route.projectId ? `${projectPrefix(route)}/inbox` : null),
+  // The project's own page is the project and nothing after it.
+  project: (route) => (route.projectId ? projectPrefix(route) : null),
   workspace: (route) => {
     if (!route.projectId || !route.workspaceId) return null;
     const tab = branchTab(route.tab);

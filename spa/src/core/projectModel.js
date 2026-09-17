@@ -1,13 +1,12 @@
 import { directoryTab } from "./workspaceModel.js";
 
-/** Where a project itself opens: the inbox, standing in that project.
+/** Where a project itself opens: its own page — the workspaces it holds, and
+ * the agent you talk to about it.
  *
- * A project is a template, never a place to work — its own checkout is the base
- * the workspaces are cut from, and opening it would put the reader in the one
- * tree nothing should be written in. So every link that used to name a project's
- * primary checkout lands here instead, and the surface it lands on is the rail
- * with that project's block marked (core/router.js writes it as
- * `#/project/<id>/inbox`).
+ * A project is a template, never a place to work: its own checkout is the base
+ * the workspaces are cut from, and no surface opens it. The page is about the
+ * project, and the work is in the workspaces on it (core/router.js writes it as
+ * `#/project/<id>`).
  *
  * The route names the machine the project is on, since every machine mints a
  * `proj-1` of its own. A project the feed has not stamped — the answer to a
@@ -16,7 +15,7 @@ import { directoryTab } from "./workspaceModel.js";
 export function projectRoute(project) {
   const projectId = project && (project.project_id || project.id);
   if (!projectId) return { name: "inbox" };
-  return { name: "inbox", ...(project.deviceId ? { deviceId: project.deviceId } : null), projectId };
+  return { name: "project", ...(project.deviceId ? { deviceId: project.deviceId } : null), projectId };
 }
 
 /** The first useful directory in a workspace, preferring a repository because

@@ -27,11 +27,14 @@ describe("resolveLegacyRoute", () => {
   });
 
   // A project's own checkout is not a surface any more — a project is the
-  // template workspaces are cut from — so there is no kind to look one up by,
-  // and a URL that named one never reaches this module (core/router.js).
+  // template workspaces are cut from — so there is no kind to look one up by.
+  // `#/project/<id>` opens the project's own page, which is a `project` ref
+  // like any other work URL that named no machine.
   it("has no primary-checkout kind to resolve", () => {
     expect(resolveLegacyRoute({ kind: "primary", projectId: "p1", tab: "files" }, { items })).toBeNull();
-    expect(routeFromHash("#/project/p1")).toEqual({ name: "inbox", projectId: "p1" });
+    expect(routeFromHash("#/project/p1")).toEqual({
+      name: "resolve", kind: "project", projectId: "p1", route: { name: "project", projectId: "p1" },
+    });
   });
 
   it("resolves an issue id to its issue, keeping the stage deep-link", () => {
@@ -193,6 +196,19 @@ describe("resolveLegacyRoute for a project with no device named", () => {
 
   it("answers null when no device carries that project at all", () => {
     expect(resolveLegacyRoute(ref, { items: [], projects: [] }, policy)).toBeNull();
+  });
+
+  // The project's own page names a project and nothing else, so the machine is
+  // the whole of what is missing — and a project nobody has cut a workspace in
+  // yet has no row anywhere but the project list. It still has to open.
+  it("resolves the project's own page off the projects alone", () => {
+    const page = { name: "project", projectId: "proj-1" };
+    const empty = { items: [], workspaces: [], projects: [{ project_id: "proj-1", deviceId: "dev-b" }] };
+    expect(resolveLegacyRoute({ ...ref, route: page }, empty, policy)).toEqual({ ...page, deviceId: "dev-b" });
+    expect(resolveLegacyRoute({ ...ref, route: page }, { items: [], projects: [] }, policy)).toBeNull();
+    // The end-to-end hop: the URL a reader pasted, and the page it opens.
+    const hash = routeFromHash("#/project/proj-1");
+    expect(resolveLegacyRoute(hash, empty, policy)).toEqual({ ...page, deviceId: "dev-b" });
   });
 
   // A workspace is a checkout on one machine, and a fresh one has no work rows

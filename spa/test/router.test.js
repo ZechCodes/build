@@ -188,6 +188,10 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     expect(routeFromHash("#/worktree")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/worktree/proj-1")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/main")).toEqual({ name: "inbox" });
+    // `#/main/<id>` was the base checkout under an older spelling. That checkout
+    // has no surface, and the spelling named no machine, so it is gone whole.
+    expect(routeFromHash("#/main/p")).toEqual({ name: "inbox" });
+    expect(routeFromHash("#/main/p/files")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/project")).toEqual({ name: "inbox" });
   });
 
@@ -216,17 +220,27 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     });
   });
 
-  // A project is a template: its own checkout is what workspaces are cut from,
-  // never a place to work. So no URL opens it — the ones that used to land on
-  // the rail standing in that project, and the rail is a surface of its own
-  // rather than a question to look up in the feed.
-  it("lands every base-project URL on the inbox standing in that project", () => {
-    for (const hash of ["#/project/p", "#/project/p/files", "#/project/p/changes", "#/project/p/bogus", "#/main/p", "#/main/p/files"]) {
-      expect([hash, routeFromHash(hash)]).toEqual([hash, { name: "inbox", projectId: "p" }]);
+  // A project has a page of its own: its workspaces in the main pane, its agent
+  // in the rail. Its base checkout has no surface — that is what workspaces are
+  // cut from — so every URL that used to open the checkout opens the page.
+  it("lands every base-project URL on the project's own page", () => {
+    for (const hash of ["#/project/p", "#/project/p/files", "#/project/p/changes", "#/project/p/bogus"]) {
+      expect([hash, workRoute(hash)]).toEqual([hash, { name: "project", projectId: "p" }]);
     }
-    // No `resolve` hop and no device asked: there is nothing about a project's
-    // own checkout left to resolve.
-    expect(routeFromHash("#/project/p").kind).toBeUndefined();
+    // A collection under a project with nothing named in it says the project and
+    // no more, so it lands there too.
+    for (const hash of ["#/project/p/workspace", "#/project/p/branch", "#/project/p/task", "#/project/p/worktree"]) {
+      expect([hash, workRoute(hash)]).toEqual([hash, { name: "project", projectId: "p" }]);
+    }
+    expect(routeFromHash("#/device/d1/project/p")).toEqual({ name: "project", deviceId: "d1", projectId: "p" });
+  });
+
+  // The project is one machine's, so a project URL with no device in it is the
+  // same question every other work URL asks: which machine holds this `proj-1`.
+  it("parks a device-less project URL on the resolve hop", () => {
+    expect(routeFromHash("#/project/p")).toEqual({
+      name: "resolve", kind: "project", projectId: "p", route: { name: "project", projectId: "p" },
+    });
   });
 
   it("parks a project-less issue URL on a resolve route, stage and all", () => {
@@ -253,12 +267,12 @@ describe("legacy routes canonicalize to the nearest new route", () => {
       expect([tab, routeFromHash(`#/task/r/${tab}`).tab]).toEqual([tab, "changes"]);
       expect([tab, routeFromHash(`#/worktree/p/w/${tab}`).tab]).toEqual([tab, "changes"]);
       expect([tab, workRoute(`#/project/p/branch/main/${tab}`).tab]).toEqual([tab, "changes"]);
-      // Under a BARE project these named the primary checkout's tabs, and the
-      // primary checkout has no surface any more: they land on the project's
-      // inbox, which has no tab at all.
-      expect([tab, routeFromHash(`#/project/p/${tab}`)]).toEqual([tab, { name: "inbox", projectId: "p" }]);
+      // Under a BARE project these named the base checkout's tabs, and that
+      // checkout has no surface any more: they land on the project's own page,
+      // which has no tab at all.
+      expect([tab, workRoute(`#/project/p/${tab}`)]).toEqual([tab, { name: "project", projectId: "p" }]);
     }
-    expect(routeFromHash("#/project/p/plan")).toEqual({ name: "inbox", projectId: "p" });
+    expect(workRoute("#/project/p/plan")).toEqual({ name: "project", projectId: "p" });
     // Files is the one entity tab that survived under its own name.
     for (const hash of ["#/task/r/files", "#/worktree/p/w/files", "#/project/p/branch/main/files"]) {
       expect([hash, workRoute(hash).tab]).toEqual([hash, "files"]);
@@ -277,7 +291,7 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     });
     // A terminal named on a base-project URL had nothing to open it on: the
     // project's checkout is not a surface, so there is no console to put it in.
-    expect(routeFromHash("#/main/p/term-2")).toEqual({ name: "inbox", projectId: "p" });
+    expect(workRoute("#/project/p/term-2")).toEqual({ name: "project", projectId: "p" });
     // Every other tab names no terminal.
     expect(routeFromHash("#/project/p/branch/main/diff").term).toBeUndefined();
     // A branch NAMED like a terminal tab is still a branch.
@@ -294,14 +308,12 @@ describe("legacy routes canonicalize to the nearest new route", () => {
       expect([base, routeFromHash(`${base}/issues`)]).toEqual([base, { name: "inbox" }]);
       expect([base, routeFromHash(`${base}/archive`)]).toEqual([base, { name: "account", page: "archive" }]);
     }
-    // On a bare project the inbox cluster keeps the project it was read on —
-    // which is where every other base-project URL lands too. Archive is still
-    // the account's one archive.
-    for (const base of ["#/project/p", "#/main/p"]) {
-      expect([base, routeFromHash(`${base}/inbox`)]).toEqual([base, { name: "inbox", projectId: "p" }]);
-      expect([base, routeFromHash(`${base}/issues`)]).toEqual([base, { name: "inbox", projectId: "p" }]);
-      expect([base, routeFromHash(`${base}/archive`)]).toEqual([base, { name: "account", page: "archive" }]);
-    }
+    // On a bare project the inbox cluster keeps the project it was read on: the
+    // rail standing there is a surface of its own, beside the project's page.
+    // Archive is still the account's one archive.
+    expect(routeFromHash("#/project/p/inbox")).toEqual({ name: "inbox", projectId: "p" });
+    expect(routeFromHash("#/project/p/issues")).toEqual({ name: "inbox", projectId: "p" });
+    expect(routeFromHash("#/project/p/archive")).toEqual({ name: "account", page: "archive" });
   });
 
   // The rail standing in a project needs a URL of its own: the app rewrites the
@@ -312,7 +324,7 @@ describe("legacy routes canonicalize to the nearest new route", () => {
       expect([hash, hashFromRoute(routeFromHash(hash))]).toEqual([hash, hash]);
     }
     expect(hashFromRoute({ name: "inbox" })).toBe("#/inbox");
-    expect(hashFromRoute(routeFromHash("#/project/p"))).toBe("#/project/p/inbox");
+    expect(hashFromRoute(workRoute("#/project/p"))).toBe("#/project/p");
   });
 });
 
@@ -333,6 +345,9 @@ describe("hashFromRoute", () => {
       { name: "workspace", projectId: "p", workspaceId: "ws", sourceId: "src", tab: "changes" },
       { name: "workspace", projectId: "a b", workspaceId: "w/s", sourceId: "source 1", tab: "files", file: "src/a b.js", line: 3 },
       { name: "workspace", projectId: "p", workspaceId: "ws", tab: "files" },
+      { name: "project", projectId: "p" },
+      { name: "project", deviceId: "d1", projectId: "p" },
+      { name: "project", projectId: "a b" },
     ]) {
       expect([route, workRoute(hashFromRoute(route))]).toEqual([route, route]);
     }
@@ -411,7 +426,8 @@ describe("device-bearing routes", () => {
   });
 
   it("stamps the device onto a legacy project URL that carries one", () => {
-    expect(routeFromHash("#/device/d1/project/p1")).toEqual({ name: "inbox", projectId: "p1", deviceId: "d1" });
+    expect(routeFromHash("#/device/d1/project/p1")).toEqual({ name: "project", projectId: "p1", deviceId: "d1" });
+    expect(routeFromHash("#/device/d1/project/p1/inbox")).toEqual({ name: "inbox", projectId: "p1", deviceId: "d1" });
     expect(routeFromHash("#/device/d1/project/p1/worktree/wt-1")).toEqual({
       name: "resolve", kind: "worktree", projectId: "p1", id: "wt-1", tab: "changes", deviceId: "d1",
     });

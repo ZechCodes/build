@@ -237,3 +237,43 @@ fn a_project_session_reaches_no_other_surfaces_tools() {
         .expect("a project agent names its conversation");
     assert_eq!(topic["topic"], "Cut a workspace", "{topic:?}");
 }
+
+/// A project agent is told what it is, not how to build: the cold prompt it is
+/// delivered with is the project's, and the coding protocol stays with the
+/// agents that have a checkout to apply it to.
+#[test]
+fn a_project_agents_cold_prompt_is_its_own_and_not_a_coding_agents() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let name = state.projects.get(&project_id).unwrap().name.clone();
+    let workspace_id = workspace(&mut state, &project_id, "one");
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+
+    let cold =
+        crate::orchestrator::conversation_prompt(crate::orchestrator::NEW_THREAD_MESSAGES_PROMPT);
+    let prompt = state.cold_prompt_with_catch_up(&owner, &agent_id, &cold);
+    assert!(
+        prompt.contains(&format!("agent for the project {name}")),
+        "{prompt}"
+    );
+    assert!(prompt.contains("list_workspaces"), "{prompt}");
+    assert!(
+        !prompt.contains("Build conversation protocol"),
+        "the coding protocol is about phases and a diff: {prompt}"
+    );
+
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": workspace_id }),
+    ));
+    let workspace_owner = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": workspace_owner })));
+    let coding_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    let coding = state.cold_prompt_with_catch_up(&workspace_owner, &coding_agent, &cold);
+    assert!(coding.contains("Build conversation protocol"), "{coding}");
+    assert!(!coding.contains("list_workspaces"), "{coding}");
+}

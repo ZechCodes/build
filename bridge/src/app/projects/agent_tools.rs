@@ -51,6 +51,26 @@ impl AppState {
         Ok(listed)
     }
 
+    /// What a project agent is told it is, on a cold start: the project it is
+    /// the agent of, the scratch directory it stands in, and the reads it has.
+    /// Never the coding protocol — that one is about phases, a plan and a diff,
+    /// and a project agent has none of them.
+    pub(in crate::app) fn project_agent_prompt(&self, owner_id: &str) -> String {
+        let name = self
+            .projects
+            .project_id_of(owner_id)
+            .and_then(|project_id| self.projects.get(project_id))
+            .map(|project| project.name.clone())
+            .unwrap_or_default();
+        crate::templates::render(
+            &crate::templates::Templates::default().project_agent,
+            &crate::templates::Vars {
+                project_name: &name,
+                ..crate::templates::Vars::default()
+            },
+        )
+    }
+
     /// The project a project agent reads. It is the one its owner is bound to —
     /// the binding `project.ensure_conversation` wrote — so the scope of every
     /// project tool is fixed when the agent is created.

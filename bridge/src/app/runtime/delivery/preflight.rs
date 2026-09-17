@@ -439,12 +439,26 @@ impl AppState {
         agent_id: &str,
         cold: &str,
     ) -> String {
+        let cold = self.surface_prompt(owner, agent_id, cold);
         let Ok(thread) = self.agent_conversation(owner, Some(agent_id)) else {
-            return cold.to_string();
+            return cold;
         };
         crate::orchestrator::append_durable_conversation(
-            cold.to_string(),
+            cold,
             &self.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES),
         )
+    }
+
+    /// The cold prompt the SURFACE gets. Every path that opens a conversation
+    /// builds the coding one, because that is what an agent with a checkout
+    /// needs; a project agent has none, so it is told what it is and what it
+    /// can read instead. The swap is here because this is the one place every
+    /// cold prompt passes through, and the only one that knows which agent the
+    /// turn is for.
+    fn surface_prompt(&self, owner: &str, agent_id: &str, cold: &str) -> String {
+        if crate::agent::is_project_agent(agent_id) {
+            return self.project_agent_prompt(owner);
+        }
+        cold.to_string()
     }
 }

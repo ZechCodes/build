@@ -294,6 +294,28 @@ where the capture went and why. If nothing lets you decide, send status=\"Blocke
 and one concise sentence saying what stopped you — the capture
 goes back to the user with a retry.";
 
+const PROJECT_AGENT: &str = "\
+You are the agent for the project {project_name}. You are about the project as a
+whole: the workspaces cut from it, what is happening in each one, and the agents
+working there.
+
+You are not in the project's checkout and you have no checkout of your own. This
+directory is scratch space Build hands you. The project's files are the template
+its workspaces are cut from, so changing them is nobody's job here; the work
+happens inside the workspaces, each with its own agents.
+
+Your tools: `list_workspaces` (every workspace in this project — the project is
+the one you are the agent for, so there is nothing to name), `list_workspace_agents`
+(who is working one of them), `search_conversation` (your own history),
+`set_topic` and `post_thread_message`. There are no others — you cannot reach
+another project, you cannot read or write a workspace agent's conversation, and
+you cannot change a file.
+
+Call `set_topic` first with what this conversation is about, in 2-4 words. The
+user sees only what you send with `post_thread_message`, and every call carries a
+status: `Working` while you keep reading, `Waiting` when you need the user,
+`Blocked` when you cannot proceed, and `Complete` when you have answered.";
+
 /// What every code-changing phase adds about its completion message. Appended rather
 /// than written into each template so the four asks cannot drift apart, and so
 /// a project overriding one template still overrides only that one.
@@ -339,6 +361,9 @@ pub struct Templates {
     /// The one template that belongs to no phase of a piece of work: routing
     /// decides which piece of work the capture is.
     pub router: String,
+    /// The other one: a project agent is about a project rather than about any
+    /// piece of work inside it.
+    pub project_agent: String,
 }
 
 impl Default for Templates {
@@ -355,6 +380,7 @@ impl Default for Templates {
             triage: phase_template(TRIAGE),
             message: phase_template(MESSAGE),
             router: phase_template(ROUTER),
+            project_agent: phase_template(PROJECT_AGENT),
         }
     }
 }
@@ -403,6 +429,9 @@ pub struct Vars<'a> {
     pub prior_notes: &'a str,
     /// What the user said, verbatim, for the `router` template.
     pub capture_text: &'a str,
+    /// The project a project agent is the agent of, for the `project_agent`
+    /// template.
+    pub project_name: &'a str,
     /// The user's answer to the router's clarifying question, or "".
     pub user_answer: &'a str,
     /// The `triage` template's hunk list: one line per hunk, `id  path  header`.
@@ -435,6 +464,7 @@ pub fn render(template: &str, vars: &Vars) -> String {
         .replace("{findings}", vars.findings)
         .replace("{prior_notes}", vars.prior_notes)
         .replace("{capture_text}", vars.capture_text)
+        .replace("{project_name}", vars.project_name)
         .replace("{user_answer}", vars.user_answer)
         .replace("{diff_summary}", vars.diff_summary)
         .replace("{agent_report}", vars.agent_report)
@@ -902,6 +932,47 @@ mod tests {
                 "the decision rule no longer says, verbatim: {rule}\n\nthe template says: {router}"
             );
         }
+    }
+
+    /// A project agent says what it is and what it can do. It has no checkout,
+    /// no phases and no work verbs, so the template must not imply any.
+    #[test]
+    fn the_project_template_names_what_the_agent_is_and_its_whole_tool_inventory() {
+        let project = collapse_whitespace(&render(
+            &Templates::default().project_agent,
+            &Vars {
+                project_name: "Build",
+                ..Vars::default()
+            },
+        ));
+        assert!(
+            project.contains("agent for the project Build"),
+            "the agent is told which project it is the agent of: {project}"
+        );
+        assert!(
+            project.contains("workspaces") && project.contains("agents"),
+            "{project}"
+        );
+        for tool in [
+            "list_workspaces",
+            "list_workspace_agents",
+            "post_thread_message",
+            "search_conversation",
+            "set_topic",
+        ] {
+            assert!(project.contains(tool), "{tool} missing from {project}");
+        }
+        for elsewhere in ["dispatch_branch", "list_projects", "read_unread_messages"] {
+            assert!(
+                !project.contains(elsewhere),
+                "{elsewhere} is not on the project surface: {project}"
+            );
+        }
+        assert!(
+            !project.contains("phase"),
+            "a project agent runs no phases: {project}"
+        );
+        assert!(project.contains("You are not in the project"), "{project}");
     }
 
     /// A router has no checkout and no coding tools, and its terminal message reports the

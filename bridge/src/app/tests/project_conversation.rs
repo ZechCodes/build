@@ -1,0 +1,158 @@
+//! `project.ensure_conversation`: the owner a project mints so it can be
+//! talked to like a workspace, and the bridge-owned scratch directory that
+//! owner's agents work in.
+
+use super::*;
+
+/// A context rooted in the test's own directory, so the project scratch this
+/// cuts lands under `tmp` and never in the developer's `~/.build`.
+fn context(state_root: &Path) -> HarnessContext {
+    HarnessContext::resolved(state_root.join("mcp.sock"), state_root.to_path_buf()).unwrap()
+}
+
+fn rooted(state_root: &Path) -> AppState {
+    AppState::new_unrooted_configured(
+        state_root.join("worktrees"),
+        "main",
+        true,
+        context(state_root),
+    )
+}
+
+fn ensure(state: &mut AppState, project_id: &str) -> Value {
+    state.handle(req(
+        "project.ensure_conversation",
+        json!({ "project_id": project_id }),
+    ))
+}
+
+fn added_project(state: &mut AppState, repo: &Path) -> String {
+    let project = state.handle(req("project.add", json!({ "path": repo })));
+    assert_eq!(project["ok"], true, "{project:?}");
+    project["result"]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn project_conversation_owns_a_bridge_scratch_root_and_is_idempotent() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+
+    let first = ensure(&mut state, &project_id);
+    let second = ensure(&mut state, &project_id);
+    assert_eq!(first["ok"], true, "{first:?}");
+    assert_eq!(second["result"], first["result"], "{second:?}");
+    let run_id = first["result"]["run_id"].as_str().unwrap();
+    assert_eq!(first["result"]["entity_id"], run_id, "{first:?}");
+    assert_eq!(first["result"]["project_id"], project_id, "{first:?}");
+    assert_eq!(state.runs.len(), 1);
+
+    // The owner works in Build's own directory, not in the project's checkout:
+    // the project IS the template workspaces are cut from, and an agent talking
+    // about it must not be standing in it.
+    let root = state.runs[run_id].worktree.path.clone();
+    assert!(root.is_dir(), "{}", root.display());
+    assert!(
+        root.starts_with(state_root.join("project-scratch")),
+        "{}",
+        root.display()
+    );
+    assert_ne!(root, repo);
+    assert!(!root.starts_with(&repo), "{}", root.display());
+
+    let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+    assert_eq!(added["ok"], true, "{added:?}");
+    assert_eq!(
+        state.entity_agent_root(run_id).unwrap(),
+        AppState::canonical_root(&root)
+    );
+}
+
+#[test]
+fn project_conversation_survives_a_restart_that_re_mints_the_project_id() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let config = state_root.join("config.json");
+    let store = state_root.join("store");
+    let worktrees = state_root.join("worktrees");
+    let boot = || {
+        AppState::new_unrooted_configured(&worktrees, "main", true, context(&state_root))
+            .with_config(&config)
+            .unwrap()
+            .with_task_store(&store)
+            .unwrap()
+    };
+
+    let (run_id, scratch) = {
+        let mut state = boot();
+        let project_id = added_project(&mut state, &repo);
+        assert_eq!(project_id, "proj-1");
+        let ensured = ensure(&mut state, &project_id);
+        assert_eq!(ensured["ok"], true, "{ensured:?}");
+        let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+        let scratch = state.runs[&run_id].worktree.path.clone();
+        (run_id, scratch)
+    };
+
+    // `proj-N` is not durable — a restore can hand the same repository another
+    // one. The owner is keyed by the project's canonical path, so it survives.
+    let mut stored: Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    stored["projects"][0]["id"] = json!("proj-7");
+    std::fs::write(&config, serde_json::to_string(&stored).unwrap()).unwrap();
+
+    let mut restarted = boot();
+    assert!(restarted.projects.get("proj-7").is_some(), "the id moved");
+    let ensured = ensure(&mut restarted, "proj-7");
+    assert_eq!(ensured["result"]["run_id"], run_id, "{ensured:?}");
+    assert_eq!(restarted.runs.len(), 1);
+    assert!(scratch.is_dir(), "a project's scratch is never wiped");
+}
+
+#[test]
+fn project_conversation_persistence_failure_leaves_no_owner_and_can_retry() {
+    let (_repo_home, repo) = init_repo();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root)
+        .with_task_store(state_root.join("store"))
+        .unwrap();
+    let project_id = added_project(&mut state, &repo);
+    state.store.as_ref().unwrap().fail_next_write();
+
+    let failed = ensure(&mut state, &project_id);
+    assert_eq!(failed["ok"], false, "{failed:?}");
+    assert!(failed["error"]
+        .as_str()
+        .unwrap()
+        .contains("injected store failure"));
+    assert!(state.runs.is_empty());
+
+    let retried = ensure(&mut state, &project_id);
+    assert_eq!(retried["ok"], true, "{retried:?}");
+    assert_eq!(state.runs.len(), 1);
+}
+
+#[test]
+fn project_conversation_refuses_a_project_this_bridge_does_not_know() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+
+    let refused = ensure(&mut state, "proj-9");
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error_code"], "not_found", "{refused:?}");
+    assert!(refused["error"]
+        .as_str()
+        .unwrap()
+        .contains("unknown project_id: proj-9"));
+    assert!(state.runs.is_empty());
+}

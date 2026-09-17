@@ -97,6 +97,19 @@ Finish never deletes the workspace checkout or any workspace files. Retention is
 part of the recovery contract: the user can return to the completed workspace,
 inspect it, and continue manual work from the files that were used to finish.
 
+## Project conversations
+
+A project is a conversation owner in its own right, the way a workspace is:
+`project.ensure_conversation` answers the owner a project already has, or mints
+one, and answers `{project_id, entity_id, run_id}` either way. A second call
+answers the first one's owner, and the owner survives a bridge restart.
+
+The owner's agents work in a durable scratch directory Build owns, never in the
+project's checkout — the project is the template workspaces are cut from, and
+talking about it must not change it. The directory sits under Build's own state
+directory, keyed by the project's canonical path, and is never wiped: a `proj-N`
+id is not durable across boots, and the conversation is.
+
 ## Boundaries
 
 Workspaces provide source materialization, source-scoped file and Git views,

@@ -789,7 +789,7 @@ impl AppState {
     }
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
+pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,

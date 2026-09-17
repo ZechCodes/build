@@ -17,6 +17,7 @@
 //! restated (and left to drift) in a second place. `issue.get` and `run.get`
 //! are where those shapes are stated whole.
 
+use super::lifecycle::RunAgentChoiceParams;
 use super::{answer, Answer, Handler, NoParams, WireParams};
 use crate::api::ApiError;
 use crate::app::AppState;
@@ -73,6 +74,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             project_set_isolation,
             ProjectSetIsolationParams,
             ProjectRow
+        ),
+        v1_method!(
+            "project.ensure_conversation",
+            project_ensure_conversation,
+            ProjectEnsureConversationParams,
+            ProjectConversation
         ),
         v1_method!(
             "capture.create",
@@ -132,6 +139,16 @@ pub struct ProjectDeleteResult {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectParams {
     pub project_id: String,
+}
+
+/// Give this project a conversation owner, and name what the agents on it run.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectEnsureConversationParams {
+    pub project_id: String,
+    /// The model the conversation is minted with. Only read the first time —
+    /// a project that already owns a conversation answers with it.
+    #[serde(flatten)]
+    pub choice: RunAgentChoiceParams,
 }
 
 /// One directory a multi-source project is opened over: a host path already
@@ -387,6 +404,17 @@ pub struct AgentModesPatch {
 pub struct IsolationAvailabilityView {
     pub rift: bool,
     pub reason: Option<String>,
+}
+
+/// The conversation owner a project has, or the one it just minted. The same
+/// shape `workspace.ensure_conversation` answers in, with the project named
+/// where the workspace was.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectConversation {
+    pub project_id: String,
+    pub entity_id: String,
+    /// The same id, under the name the run verbs take.
+    pub run_id: String,
 }
 
 /// A project as every project verb answers with it: what it is, and the whole
@@ -857,6 +885,13 @@ fn project_set_isolation(
     answer(app.project_set_isolation(&params.wire())).map_err(refine)
 }
 
+fn project_ensure_conversation(
+    app: &mut AppState,
+    params: ProjectEnsureConversationParams,
+) -> Result<Answer<ProjectConversation>, ApiError> {
+    answer(app.project_ensure_conversation(&params.wire())).map_err(refine)
+}
+
 fn capture_create(
     app: &mut AppState,
     params: CaptureCreateParams,
@@ -975,6 +1010,11 @@ mod tests {
     #[test]
     fn the_project_set_isolation_fixture_round_trips() {
         round_trips("project.set_isolation");
+    }
+
+    #[test]
+    fn the_project_ensure_conversation_fixture_round_trips() {
+        round_trips("project.ensure_conversation");
     }
 
     #[test]

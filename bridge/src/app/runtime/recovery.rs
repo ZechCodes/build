@@ -315,9 +315,9 @@ impl AppState {
             state_changed = true;
         }
 
-        // Project ids are re-minted each boot, so resolve by repo path. Retain
-        // the record's path unconditionally so a parked repo-missing plan keeps
-        // a real path to un-park to.
+        // A `proj-N` id is not durable across boots, so resolve by repo path.
+        // Retain the record's path unconditionally so a parked repo-missing
+        // plan keeps a real path to un-park to.
         self.projects
             .retain_entity_path(plan_id.clone(), record.project_path.clone());
         let repo_path = std::path::PathBuf::from(&record.project_path);

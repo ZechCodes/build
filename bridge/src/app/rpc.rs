@@ -37,6 +37,7 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("run.release", "run_id"),
     ("run.adopt", "worktree_id"),
     ("workspace.ensure_conversation", "workspace_id"),
+    ("project.ensure_conversation", "project_id"),
     ("thread.post", "entity_id"),
 ];
 

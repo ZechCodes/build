@@ -1,0 +1,20 @@
+{
+  "method": "project.ensure_conversation",
+  "since": "1.1.0",
+  "params": {
+    "project_id": "proj-1",
+    "provider": "claude_code",
+    "model": "opus",
+    "effort": "high"
+  },
+  "result": {
+    "project_id": "proj-1",
+    "entity_id": "run-5d90b1e7",
+    "run_id": "run-5d90b1e7"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

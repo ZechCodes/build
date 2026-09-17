@@ -34,8 +34,9 @@ pub struct PersistedPlan {
     pub id: String,
     pub goal: String,
     /// Canonical path of the project repo the plan belongs to. Stored as a
-    /// path (not the in-memory project id) because project ids are re-minted
-    /// on every boot.
+    /// path (not the in-memory project id) because a `proj-N` id is not
+    /// durable: a boot mints ids from the config that restored them, and the
+    /// same repository can come back wearing another one.
     pub project_path: String,
     pub base_branch: String,
     pub state: PlanState,
@@ -242,8 +243,9 @@ pub enum WorktreeFinishStatus {
 }
 
 /// Durable intent and eventual history for an external worktree finished
-/// through `worktree.finish`. Project ids are intentionally absent because they
-/// are re-minted at boot; the canonical project path is the stable identity.
+/// through `worktree.finish`. Project ids are intentionally absent because a
+/// `proj-N` id is not durable across boots; the canonical project path is the
+/// stable identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedArchivedWorktree {
     #[serde(default)]

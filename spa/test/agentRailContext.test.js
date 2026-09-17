@@ -52,17 +52,35 @@ describe("agent rail context adapters", () => {
     });
   });
 
-  it("creates conversation ownership only for a workspace context", async () => {
+  // A project is a conversation owner the way a workspace is: the page mints
+  // the owner before it mounts the rail, and the rail reads that owner's run.
+  it("reads a project's rail off the owner the page was handed", async () => {
+    const owner = { run_id: "run-9", agents: [{ id: "agent-1" }] };
+    const call = vi.fn(async () => owner);
+    const context = createAgentRailContext({
+      kind: "project", deviceId: "dev-2", projectId: "p1", entityId: "run-9",
+    });
+
+    expect(await context.detail(call, { agent_id: "agent-1", after_sequence: 3 })).toBe(owner);
+    expect(context.key).toBe("project:dev-2/p1");
+    expect(context.feedRoute()).toEqual({ name: "project", deviceId: "dev-2", projectId: "p1" });
+    expect(call).toHaveBeenCalledWith("run.get", { run_id: "run-9", agent_id: "agent-1", after_sequence: 3 });
+  });
+
+  it("creates conversation ownership only where there is an owner to mint", async () => {
     const call = vi.fn(async () => ({ entity_id: "run-1" }));
     const workspace = createAgentRailContext({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1" });
+    const project = createAgentRailContext({ kind: "project", projectId: "p1", entityId: "run-9" });
     const branch = createAgentRailContext({ kind: "branch", projectId: "p1", branch: "build/chat" });
     const issue = createAgentRailContext({ kind: "issue", projectId: "p1", issueId: "issue-1" });
 
     expect(await workspace.ensureConversation(call)).toEqual({ entity_id: "run-1" });
+    expect(await project.ensureConversation(call)).toEqual({ entity_id: "run-1" });
     expect(branch.ensureConversation(call)).toBeNull();
     expect(issue.ensureConversation(call)).toBeNull();
-    expect(call).toHaveBeenCalledOnce();
-    expect(call).toHaveBeenCalledWith("workspace.ensure_conversation", { workspace_id: "workspace-1" });
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call).toHaveBeenNthCalledWith(1, "workspace.ensure_conversation", { workspace_id: "workspace-1" });
+    expect(call).toHaveBeenNthCalledWith(2, "project.ensure_conversation", { project_id: "p1" });
   });
 
   it("recovers an adopted run by its exact workspace id on a metadata-only bridge", async () => {

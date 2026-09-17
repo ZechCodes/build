@@ -300,3 +300,20 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .workspace-referror { display:block; padding-top:5px; overflow-wrap:anywhere; font-size:11px; }
 .workspace-referror:empty { padding:0; }
 .workspace-gitpane { min-height:0; height:100%; overflow:hidden; }
+
+/* ---- work surfaces: a project -----------------------------------------------
+   The project's own page: the workspaces it holds, listed in the rail's row
+   shape (styles/shell.css .inbox-entry) so the same workspace reads the same
+   way on both. What this file adds is the page around them — the pane's own
+   inset, since a page is not a rail and pays its gutter itself. */
+.project-page { height:100%; overflow:auto; padding:var(--pane-gutter) 0; }
+.project-rows { padding:0 var(--pane-gutter); }
+/* A row on a page is a link, not a rail entry: it carries no menu, so the
+   right-hand gutter the rail keeps for one is the page's own inset. */
+.project-page .inbox-entry { cursor:pointer; }
+.project-page .inbox-entry:hover { background:var(--line2); }
+/* The empty state stands in the pane rather than filling it: what to do next is
+   a sentence, and a sentence centred in a column of air reads as an error. */
+.project-empty { padding:0 var(--pane-gutter); text-align:left; }
+.project-empty h2 { margin:0 0 6px; font-size:15px; }
+.project-empty p { margin:0; color:var(--dim); font-size:12.5px; max-width:46ch; }

@@ -5,6 +5,7 @@ import { routeFromHash, hashFromRoute, withDeviceOrResolve } from "./core/router
 import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
 import { renderWorkspace } from "./views/workspaceView.js";
+import { renderProject } from "./views/projectView.js";
 import { renderIssue } from "./views/issueView.js";
 import { isSettingsRoute, renderSettingsModal } from "./views/settingsModal.js";
 import { renderAccount } from "./views/account.js";
@@ -219,11 +220,12 @@ function routeLinkHash(link) {
   return url.hash.startsWith("#/") ? url.hash : null;
 }
 
-// Every route is one of six surfaces: the inbox (the landing route), a branch,
-// an issue, a capture's decision page, an account page, or the holding screen a
-// pre-redesign URL waits on.
+// Every route is one of these surfaces: the inbox (the landing route), a
+// project, a workspace, a branch, an issue, a capture's decision page, an
+// account page, or the holding screen a pre-redesign URL waits on.
 const VIEWS = {
   inbox: renderInbox,
+  project: renderProject,
   branch: renderBranch,
   workspace: renderWorkspace,
   issue: renderIssue,

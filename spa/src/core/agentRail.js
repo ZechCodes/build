@@ -21,7 +21,7 @@ import { App, go } from "../app.js";
 import { createPatternRenderer } from "./agentCanvas.js";
 import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
-import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
+import { createAdoptingCall } from "./adoption.js";
 import { agentDefaultsForWorkspace, agentDefaultsInWorkspace } from "./workspaceDefaults.js";
 import { workspaceKey } from "./deviceKey.js";
 import {
@@ -734,7 +734,8 @@ export function mountAgentRail(host, context) {
     return modelParams(models || [], choice.model || choice.requestedModel, choice.effort, choice.provider);
   };
 
-  /** The adopting caller for a checkout Build owns nothing in.
+  /** The adopting caller for a checkout Build owns nothing in — an external
+   *  worktree, which is the only kind there is to adopt.
    *
    *  A view whose other surfaces can adopt too owns the adopter and hands it
    *  down (`context.adopting`), so the rail and the Changes review claim the
@@ -744,9 +745,7 @@ export function mountAgentRail(host, context) {
   const adoptingCall = (call) => {
     if (context.adopting) return context.adopting() || null;
     if (!adopting && entity.adoptable && entity.projectId) {
-      adopting = entity.primary
-        ? createPrimaryAdoptingCall(call, entity.projectId)
-        : createAdoptingCall(call, entity.projectId, entity.worktreeId);
+      adopting = createAdoptingCall(call, entity.projectId, entity.worktreeId);
     }
     return adopting;
   };

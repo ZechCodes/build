@@ -122,6 +122,13 @@ const STANDING = {
     rowIs: (route) => (item) => item.kind === "issue" && item.issue_id === route.id,
     label: (route, row) => (row && row.title) || "Issue",
   },
+  project: {
+    // A project is the block the rows sit in rather than a row of its own, and
+    // the page is about the project and nothing inside it: the bar says its
+    // name through the project selector, and there is nothing to say after it.
+    rowIs: () => () => false,
+    label: () => "",
+  },
 };
 
 /** What the bar says when the route is no work item at all. */

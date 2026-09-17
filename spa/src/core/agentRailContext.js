@@ -1,3 +1,4 @@
+import { deviceKey } from "./deviceKey.js";
 import { workspaceRun } from "./workspaceModel.js";
 
 const unknownRun = (error) => /unknown run_id/i.test(error?.message || String(error));
@@ -86,6 +87,43 @@ class IssueRailContext {
   }
 }
 
+/** A project is a conversation owner the way a workspace is, with one
+ *  difference that is the whole point: its agents work in a scratch directory
+ *  Build owns, never in the project's checkout. The page mints the owner before
+ *  it mounts the rail (views/projectView.js), so the rail is handed the run to
+ *  read and reads it as a run. */
+class ProjectRailContext {
+  constructor({ deviceId = null, projectId, entityId = null }) {
+    this.kind = "project";
+    this.deviceId = deviceId;
+    this.projectId = projectId;
+    this.entityId = entityId;
+    // Every machine mints a `proj-1`, so the rail's own name carries the
+    // machine the project is on (core/deviceKey.js).
+    this.key = `project:${deviceKey(deviceId, projectId)}`;
+  }
+
+  detail(call, scope) {
+    return call("run.get", { run_id: this.entityId, ...scope });
+  }
+
+  ensureConversation(call) {
+    return call("project.ensure_conversation", { project_id: this.projectId });
+  }
+
+  olderPage(call, { entityId, agentId, beforeSequence }) {
+    return call("thread.page", {
+      entity_id: entityId,
+      ...(agentId ? { agent_id: agentId } : {}),
+      before_sequence: beforeSequence,
+    });
+  }
+
+  feedRoute() {
+    return { name: "project", deviceId: this.deviceId, projectId: this.projectId };
+  }
+}
+
 class WorkspaceRailContext {
   constructor({ deviceId = null, workspaceId, projectId }) {
     this.kind = "workspace";
@@ -125,7 +163,12 @@ class WorkspaceRailContext {
   }
 }
 
-const CONTEXTS = { branch: BranchRailContext, issue: IssueRailContext, workspace: WorkspaceRailContext };
+const CONTEXTS = {
+  branch: BranchRailContext,
+  issue: IssueRailContext,
+  project: ProjectRailContext,
+  workspace: WorkspaceRailContext,
+};
 
 export function createAgentRailContext(context) {
   const Context = CONTEXTS[context && context.kind];

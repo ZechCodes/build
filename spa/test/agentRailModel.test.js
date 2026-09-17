@@ -348,17 +348,47 @@ describe("what the rail is the rail of", () => {
 
   it("reads a checkout Build owns nothing in as one to adopt on the first message", () => {
     const entity = railEntity(
-      { kind: "branch", project_id: "p1", branch: "main", worktree_id: "wt-9", primary: true, agents: [] },
+      { kind: "branch", project_id: "p1", branch: "main", worktree_id: "wt-9", agents: [] },
       "branch",
     );
     expect(entity).toMatchObject({
       entityId: "wt-9",
       adoptable: true,
-      primary: true,
       worktreeId: "wt-9",
       canAdd: false,
     });
     expect(entity.thread).toBe(null);
+  });
+
+  // A project is a template: there is no checkout under it to adopt, and its
+  // one agent works in a scratch directory Build owns. So the rail is a
+  // conversation and nothing else — no adoption, no second agent, no
+  // directories for a path an agent writes to be resolved against.
+  it("reads a project: its conversation owner, and nothing to adopt", () => {
+    const entity = railEntity(
+      { project_id: "p1", entity_id: "run-7", run_id: "run-7", agents: [agent()], thread: { items: [] } },
+      "project",
+    );
+    expect(entity).toMatchObject({
+      entityId: "run-7",
+      kind: "project",
+      projectId: "p1",
+      branch: null,
+      worktreeId: null,
+      adoptable: false,
+      canAdd: false,
+      chatCapable: true,
+    });
+    expect(entity.directories).toEqual([]);
+    expect(entity.thread.items).toEqual([]);
+    expect(railEntity(null, "project")).toMatchObject({ entityId: null, kind: "project", agents: [], thread: null });
+  });
+
+  // One agent, so no `+`: adding another is a branch's and a workspace's verb.
+  it("offers no second agent on a project", () => {
+    const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "project" });
+    expect(bubbles.map((bubble) => bubble.type)).toEqual(["agent"]);
+    expect(canRemoveAgent({ agents: [agent()], agentId: "ag-1", kind: "project" })).toBe(false);
   });
 
   it("reads an issue: its own id, its one agent, its own conversation", () => {

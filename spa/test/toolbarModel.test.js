@@ -92,6 +92,13 @@ describe("what the toolbar says you are standing in", () => {
     );
   });
 
+  // The project's own page is about the project and nothing inside it, so the
+  // bar says the project's name through its own selector and nothing after it.
+  it("names the project on the project's own page", () => {
+    const identity = toolbarIdentity({ name: "project", deviceId: "dev-1", projectId: "p1" }, feed);
+    expect(identity).toMatchObject({ kind: "project", projectId: "p1", project: "relaydb", label: "", row: null });
+  });
+
   it("names nothing on a route that is not a work item", () => {
     expect(toolbarIdentity({ name: "inbox" }, feed)).toMatchObject({ kind: null, label: "" });
   });

@@ -350,67 +350,97 @@ export function railStatusShape(status) {
   return QUIET_SHAPE;
 }
 
-/**
- * What the rail is the rail OF, read off one detail payload.
- *
- * A branch row names its entity through the same helper the inbox uses
- * (core/entityId.js), and carries its run's conversation when Build owns one.
- * A branch with no run is a checkout nobody has claimed: the rail still shows a
- * conversation, and sending in it is what adopts the checkout.
- */
-// eslint-disable-next-line complexity -- ratchet: railEntity is at 19, cap 10 — reduce it, then drop this line
-export function railEntity(payload, kind = "branch") {
-  const row = payload || {};
-  if (kind === "issue") {
-    return {
-      entityId: row.issue_id || row.plan_id || null,
-      kind: "issue",
-      projectId: row.project_id || null,
-      branch: null,
-      worktreeId: null,
-      primary: false,
-      adoptable: false,
-      canAdd: false,
-      executionContext: row.execution_context || null,
-      agents: row.agents || [],
-      thread: row.thread || null,
-    };
-  }
-  const agents = row.agents || (row.run && row.run.agents) || [];
-  if (kind === "workspace") {
-    const entityId = row.entity_id || row.run_id || (row.run && row.run.id) || null;
-    return {
-      entityId,
-      kind: "workspace",
-      projectId: row.project_id || null,
-      branch: row.branch || (row.directories || []).find((directory) => directory.branch)?.branch || null,
-      worktreeId: null,
-      primary: false,
-      adoptable: false,
-      canAdd: !!entityId && agents.length > 0,
-      chatCapable: true,
-      executionContext: row.execution_context || null,
-      // The checkouts mounted into this workspace, kept because a path an agent
-      // writes names the directory it is in (core/threadLinks.js).
-      directories: row.directories || [],
-      agents,
-      thread: (row.run && row.run.thread) || row.thread || null,
-    };
-  }
+/** An issue: its own id, its one agent, its own conversation. */
+const issueEntity = (row) => ({
+  entityId: row.issue_id || row.plan_id || null,
+  kind: "issue",
+  projectId: row.project_id || null,
+  branch: null,
+  worktreeId: null,
+  adoptable: false,
+  canAdd: false,
+  executionContext: row.execution_context || null,
+  agents: row.agents || [],
+  thread: row.thread || null,
+});
+
+/** A project: the conversation owner `project.ensure_conversation` minted, and
+ *  nothing else. There is no checkout under a project to adopt — the project's
+ *  own is the template its workspaces are cut from, and the agent works in a
+ *  scratch directory Build owns — so the rail here is a conversation and no
+ *  more: nothing to adopt, one agent, and no directory a written path could be
+ *  resolved against. */
+const projectEntity = (row, agents) => ({
+  entityId: row.entity_id || row.run_id || null,
+  kind: "project",
+  projectId: row.project_id || null,
+  branch: null,
+  worktreeId: null,
+  adoptable: false,
+  canAdd: false,
+  chatCapable: true,
+  executionContext: row.execution_context || null,
+  directories: [],
+  agents,
+  thread: row.thread || null,
+});
+
+/** A workspace: the owner it minted, and the checkouts mounted into it — kept
+ *  because a path an agent writes names the directory it is in
+ *  (core/threadLinks.js). */
+const workspaceOwner = (row) => row.entity_id || row.run_id || (row.run && row.run.id) || null;
+/** The one branch a workspace's row says it is on: its own, else the first of
+ *  its sources that is on one. */
+const workspaceBranch = (row) => row.branch || (row.directories || []).find((directory) => directory.branch)?.branch || null;
+const workspaceThread = (row) => (row.run && row.run.thread) || row.thread || null;
+
+const workspaceEntity = (row, agents) => {
+  const entityId = workspaceOwner(row);
   return {
-    entityId: entityIdOf(payload ? { ...row, kind: "branch" } : null),
-    kind: "branch",
+    entityId,
+    kind: "workspace",
     projectId: row.project_id || null,
-    branch: row.branch || null,
-    worktreeId: row.worktree_id || null,
-    primary: !!row.primary,
-    // No run behind the branch means no owner for an agent to report `done` to:
-    // the first message adopts the checkout on its way to being sent.
-    adoptable: !row.run_id,
-    canAdd: !!row.run_id && agents.length > 0,
+    branch: workspaceBranch(row),
+    worktreeId: null,
+    adoptable: false,
+    canAdd: !!entityId && agents.length > 0,
     chatCapable: true,
     executionContext: row.execution_context || null,
+    directories: row.directories || [],
     agents,
-    thread: (row.run && row.run.thread) || null,
+    thread: workspaceThread(row),
   };
+};
+
+/** A branch: its entity through the same helper the inbox uses
+ *  (core/entityId.js), and its run's conversation when Build owns one. A branch
+ *  with no run is a checkout nobody has claimed: the rail still shows a
+ *  conversation, and sending in it is what adopts the checkout. */
+const branchEntity = (payload, row, agents) => ({
+  entityId: entityIdOf(payload ? { ...row, kind: "branch" } : null),
+  kind: "branch",
+  projectId: row.project_id || null,
+  branch: row.branch || null,
+  worktreeId: row.worktree_id || null,
+  // No run behind the branch means no owner for an agent to report `done` to:
+  // the first message adopts the checkout on its way to being sent.
+  adoptable: !row.run_id,
+  canAdd: !!row.run_id && agents.length > 0,
+  chatCapable: true,
+  executionContext: row.execution_context || null,
+  agents,
+  thread: (row.run && row.run.thread) || null,
+});
+
+/**
+ * What the rail is the rail OF, read off one detail payload — one reader per
+ * kind of work item, because each names its entity its own way.
+ */
+export function railEntity(payload, kind = "branch") {
+  const row = payload || {};
+  if (kind === "issue") return issueEntity(row);
+  const agents = row.agents || (row.run && row.run.agents) || [];
+  if (kind === "project") return projectEntity(row, agents);
+  if (kind === "workspace") return workspaceEntity(row, agents);
+  return branchEntity(payload, row, agents);
 }

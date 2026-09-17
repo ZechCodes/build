@@ -47,7 +47,10 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // `connect` — the device-key wait, the pin check, the re-attach test and the
 // backoff reconnect in one function each — left the tree with both of their
 // exemptions.
-const RATCHETED_FUNCTIONS = 58;
+// 57 since the rail reads one work item per kind: `railEntity` is a lookup
+// over four small readers — an issue, a project, a workspace, a branch — rather
+// than one function that walks all of them.
+const RATCHETED_FUNCTIONS = 57;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

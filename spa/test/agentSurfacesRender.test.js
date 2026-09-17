@@ -360,7 +360,7 @@ describe("surfacePillHtml", () => {
     expect(rendered(settledPill, null).getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("counts the running work in a cap at the pill's end, kept empty and out of the layout with none", () => {
+  it("shows running counts for activity and completed progress for tasks", () => {
     const busy = rendered(busyPill, null);
     expect([...busy.children].map((child) => child.className)).toEqual([
       "surface-pill-label",
@@ -369,8 +369,9 @@ describe("surfacePillHtml", () => {
     expect(busy.querySelector(".surface-pill-count").textContent).toBe("1");
 
     const settled = rendered(settledPill, null);
-    expect(settled.querySelector(".surface-pill-count").hidden).toBe(true);
-    expect(settled.textContent.trim()).toBe("Checklist");
+    expect(settled.querySelector(".surface-pill-count").hidden).toBe(false);
+    expect(settled.querySelector(".surface-pill-count").textContent).toBe("1/1");
+    expect(settled.textContent).toContain("Tasks");
   });
 
   it("hands the cap and the pill itself to the motion primitive", () => {

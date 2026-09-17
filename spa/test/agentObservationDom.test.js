@@ -11,30 +11,24 @@ const snapshot = (subject = "Test") => ({
   },
 });
 
-describe("the mounted goal and checklist observation", () => {
-  it("keeps the checklist open through same-session snapshot replacement", () => {
+describe("the mounted goal observation", () => {
+  it("updates the goal while leaving tasks to the activity viewer", () => {
     document.body.innerHTML = '<div id="host"></div>';
     const mounted = mountAgentObservation(document.querySelector("#host"));
     mounted.set(snapshot(), { generation: "one", working: true });
-    const fold = document.querySelector("details");
-    fold.open = true;
-
     mounted.set(snapshot("Verify"), { generation: "one", working: false });
-
-    expect(document.querySelector("details")).toBe(fold);
-    expect(fold.open).toBe(true);
-    expect(fold.textContent).toContain("Verify");
+    expect(document.querySelector("details")).toBe(null);
+    expect(document.querySelector("#host").textContent).not.toContain("Verify");
   });
 
-  it("resets disclosure state when the provider session generation changes", () => {
+  it("replaces the goal when the provider session generation changes", () => {
     document.body.innerHTML = '<div id="host"></div>';
     const mounted = mountAgentObservation(document.querySelector("#host"));
     mounted.set(snapshot(), { generation: "one" });
-    document.querySelector("details").open = true;
-
-    mounted.set(snapshot("New process"), { generation: "two" });
-
-    expect(document.querySelector("details").open).toBe(false);
+    const first = document.querySelector(".agent-observation-panel");
+    mounted.set({ ...snapshot("New process"), goal: { objective: "New goal", state: "active" } }, { generation: "two" });
+    expect(document.querySelector(".agent-observation-panel")).not.toBe(first);
+    expect(document.querySelector("#host").textContent).toContain("New goal");
   });
 
   it("stands up for a goal without execution surfaces and hides when nothing is displayable", () => {

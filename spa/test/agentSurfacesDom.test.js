@@ -97,6 +97,22 @@ describe("the surface pills", () => {
     surfaces.dispose();
   });
 
+  it("keeps completed task progress visible as the checklist changes", async () => {
+    const surfaces = mount();
+    const working = snapshot();
+    surfaces.set(working);
+    expect(pillCount(CHECKLIST_ENTRY_KIND)).toBe("0/1");
+
+    const completed = snapshot();
+    completed.checklist[0].state = "completed";
+    surfaces.set(completed);
+    await motionSettled();
+
+    expect(pillCount(CHECKLIST_ENTRY_KIND)).toBe("1/1");
+    expect(pill(CHECKLIST_ENTRY_KIND).querySelector(".surface-pill-count").hidden).toBe(false);
+    surfaces.dispose();
+  });
+
   it("dismisses the selected kind with Escape and returns focus to its footer control", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
@@ -350,7 +366,7 @@ describe("painting the viewer", () => {
     await pressPill(WORKFLOW_ENTRY_KIND);
 
     expect(pillCount(WORKFLOW_ENTRY_KIND)).toBe("2");
-    expect(pillCount(CHECKLIST_ENTRY_KIND)).toBe("1");
+    expect(pillCount(CHECKLIST_ENTRY_KIND)).toBe("0/1");
     const choices = [...document.querySelectorAll(".surface-workflow-choice")];
     expect(choices).toHaveLength(2);
     expect(choices[0].getAttribute("aria-pressed")).toBe("true");

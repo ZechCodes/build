@@ -16,7 +16,7 @@ const KIND_LABELS = {
   [WORKFLOW_ENTRY_KIND]: "Workflows",
   [AGENT_ENTRY_KIND]: "Agents",
   [SHELL_ENTRY_KIND]: "Shells",
-  [CHECKLIST_ENTRY_KIND]: "Checklist",
+  [CHECKLIST_ENTRY_KIND]: "Tasks",
 };
 
 const PENDING_STATE = "pending";
@@ -105,6 +105,12 @@ function runningEntryCount(surfaces, kind) {
   return entriesOfKind(surfaces, kind).filter((entry) => stateMarkIs(kind, entry, RUNNING_MARK)).length;
 }
 
+function checklistProgress(surfaces) {
+  const entries = entriesOfKind(surfaces, CHECKLIST_ENTRY_KIND);
+  const completed = entries.filter((entry) => entry?.state === "completed").length;
+  return `${completed}/${entries.length}`;
+}
+
 function graceExpiryFor(visibility, kind, nowMs) {
   const { lastRunningSeenAt, closedAt } = kindVisibility(visibility, kind);
   const ends = [lastRunningSeenAt, closedAt]
@@ -135,12 +141,12 @@ export function surfaceKindLabel(kind) {
 function kindsWithContent(surfaces) {
   return SURFACE_KINDS.filter(
     (kind) =>
-      entriesOfKind(surfaces, kind).length > 0 &&
-      !(kind === CHECKLIST_ENTRY_KIND && surfaces?.observations?.checklist),
+      entriesOfKind(surfaces, kind).length > 0,
   ).map((kind) => ({
     kind,
     label: surfaceKindLabel(kind),
     count: runningEntryCount(surfaces, kind),
+    ...(kind === CHECKLIST_ENTRY_KIND ? { progress: checklistProgress(surfaces) } : {}),
   }));
 }
 
@@ -149,10 +155,10 @@ export function surfacePills(surfaces, visibility = null, nowMs = 0) {
 }
 
 export function surfaceMenuOptions(surfaces) {
-  return kindsWithContent(surfaces).map(({ kind, label, count }) => ({
+  return kindsWithContent(surfaces).map(({ kind, label, count, progress }) => ({
     id: kind,
     label,
-    description: count ? `${count} running` : "",
+    description: progress ? `${progress} completed` : count ? `${count} running` : "",
   }));
 }
 

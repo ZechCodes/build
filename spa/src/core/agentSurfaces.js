@@ -3,6 +3,7 @@ import { EXPANDED_ATTRIBUTE, patchElement } from "./domPatch.js";
 import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { EXITING_ATTRIBUTE, patchList } from "./patchList.js";
 import { elapsedClock } from "./agentRailModel.js";
+import { checklistObservationModel } from "./agentObservationModel.js";
 import { ICON_HISTORY, ICON_X } from "./icons.js";
 import { openModal } from "./modal.js";
 import {
@@ -27,6 +28,7 @@ import {
 } from "./agentSurfacesModel.js";
 import {
   PRESSABLE_CLIP_SELECTOR,
+  CHECKLIST_CONTEXT_SELECTOR,
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
   PILL_COUNT_SELECTOR,
@@ -36,9 +38,10 @@ import {
   WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
+  checklistContextHtml,
+  checklistViewerHtml,
   completedFoldHeadHtml,
   completedFoldHtml,
-  kindViewerHtml,
   phaseSectionHtml,
   runningAndCompletedViewerHtml,
   shellRowHtml,
@@ -52,10 +55,10 @@ import {
 const ROW_CLOCK_TICK_MS = 1000;
 const SURFACE_CLEARANCE_PROPERTY = "--surface-popover-clearance";
 
+const nothingToRender = () => "";
+
 const PILL_MOTION = motionHooks({ axis: "width" });
 const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
-
-const nothingToRender = () => "";
 
 export function mountSurfaceClearance(viewerHost) {
   const scroller = viewerHost.closest(".rail-panel")?.querySelector("#rail-body");
@@ -78,17 +81,6 @@ export function mountSurfaceClearance(viewerHost) {
     scroller.style.removeProperty(SURFACE_CLEARANCE_PROPERTY);
   };
 }
-
-const oneListOfKind = (kind, renderRow) => ({
-  frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], nothingToRender),
-  lists: ({ surfaces, reading, rowOptions }) => [
-    {
-      selector: SURFACE_SELECTOR[kind],
-      rows: surfaceRows(kind, surfaces, reading),
-      render: (row) => renderRow(row, rowOptions),
-    },
-  ],
-});
 
 const runningAboveWhatFinished = (kind, renderRow) => ({
   frameHtmlWithEmptyLists: () => runningAndCompletedViewerHtml(kind, { running: [], completed: [] }, nothingToRender),
@@ -134,7 +126,16 @@ const VIEWER_PLANS = {
   },
   [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
   [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
-  [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
+  [CHECKLIST_ENTRY_KIND]: {
+    frameHtmlWithEmptyLists: () => checklistViewerHtml(),
+    headSelector: CHECKLIST_CONTEXT_SELECTOR,
+    headHtml: ({ surfaces }) => checklistContextHtml(checklistObservationModel(surfaces)),
+    lists: ({ surfaces, reading }) => [{
+      selector: SURFACE_SELECTOR.checklistRows,
+      rows: surfaceRows(CHECKLIST_ENTRY_KIND, surfaces, reading),
+      render: checklistItemHtml,
+    }],
+  },
 };
 
 function expandClippedText(event) {
@@ -464,7 +465,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
       render: (pill) => surfacePillHtml(pill, openKind()),
       ...PILL_MOTION,
     });
-    painted.forEach((element, index) => paintPillCount(element, pills[index].count));
+    painted.forEach((element, index) => paintPillCount(element, pills[index].progress ?? pills[index].count));
     notifyPillsChanged();
     motionSettled().then(notifyPillsChanged);
   };

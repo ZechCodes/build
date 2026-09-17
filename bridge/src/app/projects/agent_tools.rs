@@ -28,17 +28,7 @@ impl AppState {
         owner_id: &str,
         workspace_id: &str,
     ) -> Result<Value, String> {
-        let project_id = self.project_agent_project(owner_id)?;
-        let workspace = self
-            .workspaces
-            .get(workspace_id)
-            .cloned()
-            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
-        if workspace.project_id != project_id {
-            return Err(format!(
-                "workspace {workspace_id} is not in project {project_id}"
-            ));
-        }
+        let workspace = self.project_agent_workspace(owner_id, workspace_id)?;
         let Some(run_id) = self.workspace_conversation_owner(&workspace) else {
             return Ok(json!({
                 "workspace_id": workspace_id,

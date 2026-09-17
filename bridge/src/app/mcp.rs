@@ -381,6 +381,30 @@ impl AppState {
         if let BridgeAction::CreateWorkspace { name, isolation } = &action {
             return self.project_agent_create_workspace(entity_id, name, isolation.as_deref());
         }
+        if let BridgeAction::AddWorkspaceAgent {
+            workspace_id,
+            harness,
+            model,
+            effort,
+        } = &action
+        {
+            return self.project_agent_add_workspace_agent(
+                entity_id,
+                workspace_id,
+                crate::app::AgentChoiceArgs {
+                    harness: harness.as_deref(),
+                    model: model.as_deref(),
+                    effort: effort.as_deref(),
+                },
+            );
+        }
+        if let BridgeAction::RemoveWorkspaceAgent {
+            workspace_id,
+            agent_id: removed,
+        } = &action
+        {
+            return self.project_agent_remove_workspace_agent(entity_id, workspace_id, removed);
+        }
         if let BridgeAction::ReadOperationMessages { operation_id } = &action {
             return self.read_operation_messages_for_agent(entity_id, agent_id, operation_id);
         }

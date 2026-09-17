@@ -488,6 +488,8 @@ fn mcp_tool_names(owner_id: &str) -> Vec<&'static str> {
             "list_workspaces",
             "list_workspace_agents",
             "create_workspace",
+            "add_workspace_agent",
+            "remove_workspace_agent",
             "post_thread_message",
             "search_conversation",
             "set_topic",

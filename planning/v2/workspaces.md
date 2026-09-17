@@ -160,6 +160,10 @@ same code path, the same refusals, the same record afterwards:
   conversation, through `agent.list` on that workspace's conversation owner.
 - `create_workspace {name, isolation?}` — through `workspace.create`, with the
   project supplied by the binding.
+- `add_workspace_agent {workspace_id, harness?, model?, effort?}` — through
+  `agent.add` on the workspace's conversation owner, minting that owner with
+  `workspace.ensure_conversation` when the workspace has none yet.
+- `remove_workspace_agent {workspace_id, agent_id}` — through `agent.remove`.
 - `post_thread_message`, `search_conversation`, `set_topic` — what every agent
   with a conversation has.
 

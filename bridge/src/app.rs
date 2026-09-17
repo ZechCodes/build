@@ -165,7 +165,7 @@ pub(crate) use config::{announce_isolation_downgrade, expand_tilde};
 use config::{default_state_root, DEFAULT_HARNESS};
 #[cfg(test)]
 use config::{read_config, ConfigPersistStep};
-use projects::{default_projects_dir, Project, ProjectRegistry};
+use projects::{default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

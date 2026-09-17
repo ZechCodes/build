@@ -397,6 +397,21 @@ pub enum BridgeAction {
         name: String,
         isolation: Option<String>,
     },
+    /// Put an agent on one of this project's workspaces. Project only. The
+    /// workspace is checked against the owner binding, so the only workspaces
+    /// reachable are this project's.
+    AddWorkspaceAgent {
+        workspace_id: String,
+        /// The harness the agent runs on; the account's default when absent.
+        harness: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+    },
+    /// Take an agent off one of this project's workspaces. Project only.
+    RemoveWorkspaceAgent {
+        workspace_id: String,
+        agent_id: String,
+    },
 }
 
 /// The choices an `ask_user` call offered beside its question. Absent reads as
@@ -438,6 +453,8 @@ impl BridgeAction {
             BridgeAction::ListWorkspaces => "list_workspaces",
             BridgeAction::ListWorkspaceAgents { .. } => "list_workspace_agents",
             BridgeAction::CreateWorkspace { .. } => "create_workspace",
+            BridgeAction::AddWorkspaceAgent { .. } => "add_workspace_agent",
+            BridgeAction::RemoveWorkspaceAgent { .. } => "remove_workspace_agent",
         }
     }
 
@@ -465,7 +482,9 @@ impl BridgeAction {
             | BridgeAction::RouterMessage { .. } => &[McpSurface::Router],
             BridgeAction::ListWorkspaces
             | BridgeAction::ListWorkspaceAgents { .. }
-            | BridgeAction::CreateWorkspace { .. } => &[McpSurface::Project],
+            | BridgeAction::CreateWorkspace { .. }
+            | BridgeAction::AddWorkspaceAgent { .. }
+            | BridgeAction::RemoveWorkspaceAgent { .. } => &[McpSurface::Project],
         }
     }
 
@@ -749,6 +768,30 @@ impl DoneServer {
                 "required": ["name"]
             }
         }, {
+            "name": "add_workspace_agent",
+            "description": "Put a new agent on one of your workspaces, in its own conversation there. The workspace gets a conversation of its own if it has none yet. Nothing is said to the agent until you message it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                    "harness": { "type": "string", "description": "What the agent runs on. Omit for the user's default." },
+                    "model": { "type": "string", "description": "The model, for a harness that takes one. Omit for its default." },
+                    "effort": { "type": "string", "description": "The reasoning effort, for a model that takes one. Omit for its default." }
+                },
+                "required": ["workspace_id"]
+            }
+        }, {
+            "name": "remove_workspace_agent",
+            "description": "Take an agent off one of your workspaces. Its session ends and its conversation goes with it; the workspace and its files are untouched.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                    "agent_id": { "type": "string", "description": "From list_workspace_agents." }
+                },
+                "required": ["workspace_id", "agent_id"]
+            }
+        }, {
             "name": "post_thread_message",
             "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete when you have answered, Blocked when you cannot, Waiting when you need the user, or Working for a progress update while you keep reading.",
             "inputSchema": Self::project_message_input_schema()
@@ -967,6 +1010,32 @@ impl DoneServer {
                 ),
                 Err(message) => refused(id, message),
             },
+            "add_workspace_agent" => match required_argument(params, "workspace_id") {
+                Ok(workspace_id) => acted(
+                    id,
+                    BridgeAction::AddWorkspaceAgent {
+                        workspace_id,
+                        harness: optional_argument(params, "harness"),
+                        model: optional_argument(params, "model"),
+                        effort: optional_argument(params, "effort"),
+                    },
+                ),
+                Err(message) => refused(id, message),
+            },
+            "remove_workspace_agent" => {
+                match required_argument(params, "workspace_id").and_then(|workspace_id| {
+                    Ok((workspace_id, required_argument(params, "agent_id")?))
+                }) {
+                    Ok((workspace_id, agent_id)) => acted(
+                        id,
+                        BridgeAction::RemoveWorkspaceAgent {
+                            workspace_id,
+                            agent_id,
+                        },
+                    ),
+                    Err(message) => refused(id, message),
+                }
+            }
             "search_conversation" => search_action(id, params),
             "set_topic" => topic_action(id, params),
             "post_thread_message" => project_message(id, params),
@@ -2419,6 +2488,8 @@ mod tests {
                 "list_workspaces",
                 "list_workspace_agents",
                 "create_workspace",
+                "add_workspace_agent",
+                "remove_workspace_agent",
                 "post_thread_message",
                 "search_conversation",
                 "set_topic",
@@ -2480,6 +2551,16 @@ mod tests {
             call("create_workspace", r#"{"name":"one","project_id":"proj-9"}"#).action,
             Some(BridgeAction::CreateWorkspace { ref name, isolation: None }) if name == "one"
         ));
+        assert!(matches!(
+            call("add_workspace_agent", r#"{"workspace_id":"ws-1","harness":"codex","project_id":"proj-9"}"#).action,
+            Some(BridgeAction::AddWorkspaceAgent { ref workspace_id, ref harness, model: None, effort: None })
+                if workspace_id == "ws-1" && harness.as_deref() == Some("codex")
+        ));
+        assert!(matches!(
+            call("remove_workspace_agent", r#"{"workspace_id":"ws-1","agent_id":"agent-2"}"#).action,
+            Some(BridgeAction::RemoveWorkspaceAgent { ref workspace_id, ref agent_id })
+                if workspace_id == "ws-1" && agent_id == "agent-2"
+        ));
     }
 
     /// A call the parser cannot act on is a tool error and no action, so the
@@ -2496,6 +2577,16 @@ mod tests {
                 "create_workspace",
                 r#"{"project_id":"proj-9"}"#,
                 "a workspace with no name is a tool error, project id or not",
+            ),
+            (
+                "add_workspace_agent",
+                r#"{"harness":"codex"}"#,
+                "an agent added to no workspace is a tool error",
+            ),
+            (
+                "remove_workspace_agent",
+                r#"{"workspace_id":"ws-1"}"#,
+                "removing nobody in particular is a tool error",
             ),
         ] {
             let missing = project_call(tool, arguments);

@@ -367,3 +367,124 @@ fn a_project_agent_cuts_a_workspace_in_the_project_it_belongs_to() {
         .collect();
     assert!(!ids.contains(&workspace_id.as_str()), "{elsewhere:?}");
 }
+
+/// Putting an agent on a workspace and taking it off again, through the verbs
+/// the rail's own cog calls. The workspace's conversation owner is minted on
+/// the way in, because a workspace nobody has talked to has none and there is
+/// otherwise nowhere for the agent to live.
+#[test]
+fn a_project_agent_puts_an_agent_on_a_workspace_and_takes_it_off() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let workspace_id = workspace(&mut state, &project_id, "one");
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+
+    let added = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::AddWorkspaceAgent {
+                workspace_id: workspace_id.clone(),
+                harness: None,
+                model: None,
+                effort: None,
+            },
+        )
+        .expect("a project agent puts an agent on its workspace");
+    assert_eq!(added["workspace_id"], workspace_id);
+    let entity_id = added["entity_id"].as_str().unwrap().to_string();
+    let worker = added["agent"]["id"].as_str().unwrap().to_string();
+
+    let listed = state
+        .on_agent_mcp_action(
+            &owner,
+            &agent_id,
+            BridgeAction::ListWorkspaceAgents {
+                workspace_id: workspace_id.clone(),
+            },
+        )
+        .expect("the agent it just added is on the workspace");
+    assert_eq!(listed["entity_id"], entity_id);
+    assert_eq!(listed["agents"][0]["id"], worker, "{listed:?}");
+
+    let removed = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::RemoveWorkspaceAgent {
+                workspace_id: workspace_id.clone(),
+                agent_id: worker.clone(),
+            },
+        )
+        .expect("a project agent takes an agent back off");
+    assert_eq!(removed["workspace_id"], workspace_id);
+    assert_eq!(removed["agent_id"], worker);
+    assert_eq!(removed["agents"], json!([]), "{removed:?}");
+}
+
+/// The write tools are scoped the way the reads are: a workspace of another
+/// project is refused by name before anything is created or removed.
+#[test]
+fn a_project_agent_writes_no_workspace_outside_its_project() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let (_other_home, other_repo) = init_repo();
+    let other_repo = std::fs::canonicalize(&other_repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let mine = added_project(&mut state, &repo);
+    let theirs = added_project(&mut state, &other_repo);
+    let elsewhere = workspace(&mut state, &theirs, "theirs");
+    let (their_owner, their_agent) = project_agent(&mut state, &theirs);
+    let their_worker = state
+        .agent_action(
+            &their_owner,
+            &their_agent,
+            BridgeAction::AddWorkspaceAgent {
+                workspace_id: elsewhere.clone(),
+                harness: None,
+                model: None,
+                effort: None,
+            },
+        )
+        .expect("the workspace's own project agent puts an agent on it");
+    let their_worker = their_worker["agent"]["id"].as_str().unwrap().to_string();
+
+    let (owner, agent_id) = project_agent(&mut state, &mine);
+    for action in [
+        BridgeAction::AddWorkspaceAgent {
+            workspace_id: elsewhere.clone(),
+            harness: None,
+            model: None,
+            effort: None,
+        },
+        BridgeAction::RemoveWorkspaceAgent {
+            workspace_id: elsewhere.clone(),
+            agent_id: their_worker.clone(),
+        },
+    ] {
+        let tool = action.tool_name();
+        let refused = state.agent_action(&owner, &agent_id, action).unwrap_err();
+        assert!(
+            refused.contains(&elsewhere) && refused.contains(&mine),
+            "{tool}: {refused}"
+        );
+    }
+
+    // Nothing was touched over there.
+    let still_there = state
+        .on_agent_mcp_action(
+            &their_owner,
+            &their_agent,
+            BridgeAction::ListWorkspaceAgents {
+                workspace_id: elsewhere,
+            },
+        )
+        .expect("the other project reads its own workspace");
+    assert_eq!(still_there["agents"][0]["id"], their_worker);
+}

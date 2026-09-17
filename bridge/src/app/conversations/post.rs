@@ -47,7 +47,7 @@ impl AppState {
     /// simply waits for the next session's catch-up. Refused only where no
     /// conversation remains to post to: a terminal or unknown entity.
     pub(crate) fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
-        self.post_to_thread(params, None)
+        self.post_to_thread(params, PostOrigin::default())
     }
 
     /// `thread.post`, asked for by an agent rather than by the human.
@@ -60,14 +60,23 @@ impl AppState {
         params: &Value,
         requester: OperationRequester,
     ) -> Result<Value, String> {
-        self.post_to_thread(params, Some(requester))
+        self.post_to_thread(params, PostOrigin::asked_by(requester))
     }
 
-    fn post_to_thread(
+    /// `thread.post`, carrying one agent's answer into another's conversation.
+    ///
+    /// The same write again, wearing the agent that wrote the answer — and
+    /// owing nobody one back, which is what keeps two agents from answering
+    /// each other forever.
+    pub(in crate::app) fn thread_post_forwarded(
         &mut self,
         params: &Value,
-        requested_by: Option<OperationRequester>,
+        sender: crate::thread::AgentIdentity,
     ) -> Result<Value, String> {
+        self.post_to_thread(params, PostOrigin::forwarded(sender))
+    }
+
+    fn post_to_thread(&mut self, params: &Value, origin: PostOrigin) -> Result<Value, String> {
         let normalized_params = normalize_post_viewing_contexts(params)?;
         let params = &normalized_params;
         let entity_id = require_str(params, "entity_id")?;
@@ -79,7 +88,7 @@ impl AppState {
         }
         let origin = PostOrigin {
             operation_id: optional_operation_id(params)?,
-            requested_by,
+            ..origin
         };
         let addressed = named_agent_id(params)?;
         if self.entity_agents(&entity_id)?.is_empty() {

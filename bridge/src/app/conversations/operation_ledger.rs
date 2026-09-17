@@ -56,6 +56,28 @@ impl OperationLedger {
         self.receipts.get(operation_id)
     }
 
+    /// The no-Store twin of `Store::take_operation_requesters`: every answer
+    /// this conversation owes an agent, oldest first, cleared as it is read so
+    /// one terminal message settles it once.
+    pub(in crate::app) fn take_requesters(
+        &mut self,
+        conversation_id: &str,
+    ) -> Vec<crate::operation::OperationRequester> {
+        let mut owed: Vec<(u64, crate::operation::OperationRequester)> = self
+            .receipts
+            .values_mut()
+            .filter(|receipt| receipt.conversation_id == conversation_id)
+            .filter_map(|receipt| {
+                receipt
+                    .requested_by
+                    .take()
+                    .map(|requester| (receipt.posted_sequence, requester))
+            })
+            .collect();
+        owed.sort_by_key(|(sequence, _)| *sequence);
+        owed.into_iter().map(|(_, requester)| requester).collect()
+    }
+
     /// No-Store compare-and-set decision. Never use this as a second gate after
     /// an authoritative Store transition has succeeded.
     pub(in crate::app) fn cached_has_status(

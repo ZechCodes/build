@@ -187,6 +187,10 @@ final for this build unless the reviewer overrides them in the thread.
     each a thin wrapper over the verb the client calls, each scoped by the same
     owner binding rather than by an argument. Deleting a workspace and adding a
     directory to one are deferred by policy: both are how a project loses work.
+  - 2026-09-17: a workspace agent's terminal message is forwarded back into the
+    conversation of the agent that asked for it, wearing the sender and the
+    status. Working and Waiting are not, so the reader is not spammed mid-turn,
+    and a forwarded answer owes no answer of its own — the loop guard.
 - **Inert issues**: `issue.create` gains `dispatch: false` (router default) —
   a record in the store, no worktree, no agent, until the user opens it and
   sends a message or triggers implement.

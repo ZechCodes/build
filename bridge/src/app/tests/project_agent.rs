@@ -636,3 +636,242 @@ fn a_project_agent_messages_no_agent_outside_its_project() {
         "{refused}"
     );
 }
+
+// ==== the answer coming back ==============================================
+
+/// A project agent, an agent it staffed a workspace with, and the message it
+/// handed over — what every forwarding test starts from.
+struct HandedOver {
+    owner: String,
+    agent_id: String,
+    entity_id: String,
+    worker: String,
+}
+
+fn handed_over(state: &mut AppState, project_id: &str, body: &str) -> HandedOver {
+    let workspace_id = workspace(state, project_id, "one");
+    let (owner, agent_id) = project_agent(state, project_id);
+    let added = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::AddWorkspaceAgent {
+                workspace_id: workspace_id.clone(),
+                harness: None,
+                model: None,
+                effort: None,
+            },
+        )
+        .expect("a project agent staffs its workspace");
+    let entity_id = added["entity_id"].as_str().unwrap().to_string();
+    let worker = added["agent"]["id"].as_str().unwrap().to_string();
+    state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::MessageWorkspaceAgent {
+                workspace_id,
+                agent_id: None,
+                body: body.to_string(),
+            },
+        )
+        .expect("a project agent hands work over");
+    HandedOver {
+        owner,
+        agent_id,
+        entity_id,
+        worker,
+    }
+}
+
+/// One conversation's items, as the client pages them.
+fn items(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> {
+    let page = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": entity_id, "agent_id": agent_id }),
+    ));
+    page["result"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a page of items: {page:?}"))
+        .clone()
+}
+
+/// What one agent said into another agent's conversation.
+fn forwarded(state: &mut AppState, entity_id: &str, agent_id: &str, sender: &str) -> Vec<Value> {
+    items(state, entity_id, agent_id)
+        .into_iter()
+        .filter(|item| item["data"]["from_agent"]["id"] == json!(sender))
+        .collect()
+}
+
+/// When the inbox last recorded the human saying something to an entity.
+fn last_user_message(state: &AppState, entity_id: &str) -> Option<String> {
+    state
+        .board
+        .attention()
+        .attention(entity_id)
+        .and_then(|attention| attention.last_user_message_at.clone())
+}
+
+/// A terminal report, the one the MCP server makes from a Complete or Blocked
+/// `post_thread_message`.
+fn terminal(status: DoneStatus, summary: &str) -> DoneReport {
+    DoneReport {
+        phase: DonePhase::Build,
+        status,
+        summary: summary.to_string(),
+        outputs: DoneOutputs::default(),
+    }
+}
+
+/// The workspace agent finishes the turn the project agent started, and its
+/// terminal message is handed back: the project agent's own conversation, on
+/// the user's side of it, wearing the agent that wrote it and saying how the
+/// turn ended. The project agent needs no tool for this and never learns it
+/// was summoned by a machine.
+#[test]
+fn a_workspace_agents_answer_reaches_the_project_agent_that_asked() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let handed = handed_over(&mut state, &project_id, "read the router");
+    let quiet = last_user_message(&state, &handed.owner);
+
+    state.on_agent_done(
+        &handed.entity_id,
+        terminal(DoneStatus::Completed, "the router reads top to bottom"),
+    );
+
+    let answers = forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
+    assert_eq!(answers.len(), 1, "one answer, forwarded once: {answers:?}");
+    let answer = &answers[0];
+    assert_eq!(answer["data"]["role"], "user", "{answer:?}");
+    let body = answer["data"]["body"].as_str().unwrap();
+    assert!(body.starts_with("Complete."), "{body}");
+    assert!(body.contains("the router reads top to bottom"), "{body}");
+
+    // Delivered the way `agent.deliver` delivers one: a turn for the project
+    // agent, carrying the answer itself rather than a fetch instruction.
+    let turn = state
+        .delivery_queue
+        .queued()
+        .find(|turn| turn.owner == handed.owner && turn.agent_id == handed.agent_id)
+        .unwrap_or_else(|| panic!("the project agent has a turn waiting"));
+    let say = turn.say.as_ref().expect("the turn says something");
+    assert!(
+        say.warm.contains("the router reads top to bottom"),
+        "{say:?}"
+    );
+    assert!(
+        say.warm
+            .contains(&format!("came from agent `{}`", handed.worker)),
+        "{say:?}"
+    );
+
+    // The human was not here. One agent answering another is the work
+    // happening, and it must not move the inbox anchor under the reader.
+    assert_eq!(
+        last_user_message(&state, &handed.owner),
+        quiet,
+        "a forwarded answer is nobody's unread"
+    );
+    let posted = state.handle(req(
+        "thread.post",
+        json!({ "entity_id": handed.owner, "agent_id": handed.agent_id, "body": "thanks" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    assert_ne!(
+        last_user_message(&state, &handed.owner),
+        quiet,
+        "the human's own message does move it"
+    );
+}
+
+/// The loop guard. A forwarded answer is never itself forwarded, and the debt
+/// it settled is settled once: the agent that received it owes nobody, so its
+/// own terminal message goes nowhere, and a second report from the workspace
+/// agent answers a question nobody asked.
+#[test]
+fn an_answer_handed_back_is_not_handed_on() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let handed = handed_over(&mut state, &project_id, "read the router");
+
+    state.on_agent_done(&handed.entity_id, terminal(DoneStatus::Completed, "done"));
+    let before = items(&mut state, &handed.entity_id, &handed.worker).len();
+
+    // The project agent's turn ends the same way, and answers nobody: the
+    // message that started it arrived by forwarding and owes no reply.
+    state.forward_terminal_reply(
+        &handed.owner,
+        &handed.agent_id,
+        &terminal(DoneStatus::Completed, "I will tell the user"),
+    );
+    assert_eq!(
+        items(&mut state, &handed.entity_id, &handed.worker).len(),
+        before,
+        "nothing goes back the way it came"
+    );
+
+    // And the workspace agent's next turn is its own: one message, one answer.
+    state.on_agent_done(
+        &handed.entity_id,
+        terminal(DoneStatus::Completed, "and the rail too"),
+    );
+    assert_eq!(
+        forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker).len(),
+        1,
+        "the answer was owed once"
+    );
+}
+
+/// Only a terminal message is an answer. A progress note or a question keeps
+/// the turn open, so nothing is handed back and the project agent is not
+/// spammed mid-turn — the debt is still standing when the turn really ends.
+#[test]
+fn a_mid_turn_message_is_not_an_answer() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let handed = handed_over(&mut state, &project_id, "read the router");
+
+    for body in ["still reading", "which router did you mean?"] {
+        state
+            .agent_action(
+                &handed.entity_id,
+                &handed.worker,
+                BridgeAction::PostThreadMessage {
+                    still_working: body == "still reading",
+                    body: body.to_string(),
+                    anchor: None,
+                    links: Vec::new(),
+                    options: Vec::new(),
+                },
+            )
+            .expect("a workspace agent speaks mid-turn");
+    }
+    assert!(
+        forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker).is_empty(),
+        "Working and Waiting are not answers"
+    );
+
+    state.on_agent_done(
+        &handed.entity_id,
+        terminal(DoneStatus::Blocked, "the router is three files"),
+    );
+    let answers = forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    let body = answers[0]["data"]["body"].as_str().unwrap();
+    assert!(body.starts_with("Blocked."), "{body}");
+    assert!(body.contains("the router is three files"), "{body}");
+}

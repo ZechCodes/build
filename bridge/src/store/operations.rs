@@ -3,8 +3,8 @@ use super::{
     StoreError,
 };
 use crate::agent::Agent;
-use crate::operation::OperationReceipt;
 use crate::operation::OperationStatus;
+use crate::operation::{OperationReceipt, OperationRequester};
 use crate::thread::{MessageDeliveryStatus, ThreadItem};
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -62,6 +62,42 @@ impl Store {
     /// An immutable receipt by its client-generated id.
     pub fn operation(&self, operation_id: &str) -> Result<Option<OperationReceipt>, StoreError> {
         read_operation(&self.connection(), operation_id)
+    }
+    /// Take every answer this conversation owes an agent: the requester of each
+    /// operation an agent posted into it, oldest first, cleared as it is read.
+    ///
+    /// Clearing is what makes an answer travel once. A terminal message ends
+    /// the turn those posts started, so the debt is settled by reading it, and
+    /// the next turn — whoever starts it — owes nobody. The requester is
+    /// internal, on no wire shape and in no comparison, so a settled debt
+    /// leaves the receipt itself exactly as it was.
+    pub fn take_operation_requesters(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<OperationRequester>, StoreError> {
+        self.in_transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT requested_by FROM operations \
+                 WHERE conversation_id = ?1 AND requested_by IS NOT NULL \
+                 ORDER BY posted_sequence, operation_id",
+            )?;
+            let owed = statement
+                .query_map([conversation_id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            if owed.is_empty() {
+                return Ok(Vec::new());
+            }
+            tx.execute(
+                "UPDATE operations SET requested_by = NULL, updated_at = ?2 \
+                 WHERE conversation_id = ?1 AND requested_by IS NOT NULL",
+                rusqlite::params![conversation_id, now_rfc3339()],
+            )?;
+            Ok(owed
+                .iter()
+                .filter_map(|requester| serde_json::from_str(requester).ok())
+                .collect())
+        })
     }
     /// Mark one authorized operation's exact historical messages seen without
     /// loading the rest of the conversation. The agent skeleton and selected

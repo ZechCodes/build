@@ -2,6 +2,7 @@ use super::{named_agent_id, optional_nonempty_string, AppState};
 use serde_json::Value;
 
 mod attachments;
+mod forwarding;
 mod inputs;
 mod legacy_delivery;
 mod native_delivery;

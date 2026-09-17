@@ -284,7 +284,12 @@ impl AppState {
     }
 
     /// Route a report while retaining the authenticated actor long enough to
-    /// stop only that agent's execution clock.
+    /// stop only that agent's execution clock — and, when this turn was one
+    /// another agent asked for, to hand the terminal message back to it.
+    ///
+    /// The hand-off happens first because it is the reporting agent's own
+    /// words, said to whoever was waiting for them; what the report then does
+    /// to the branch is the daemon's business and may end the entity.
     pub(in crate::app) fn done_deferring_for_agent(
         &mut self,
         entity_id: &str,
@@ -292,6 +297,7 @@ impl AppState {
         report: DoneReport,
     ) -> Option<DeferredJob> {
         self.record_agent_working_since(entity_id, agent_id, None);
+        self.forward_terminal_reply(entity_id, agent_id, &report);
         self.done_deferring_for_resolved_agent(entity_id, Some(agent_id), report)
     }
 

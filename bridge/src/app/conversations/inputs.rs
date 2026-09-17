@@ -25,15 +25,23 @@ impl ReviewerMessage {
     }
 }
 
-/// What a post is recorded as beyond its words: the operation it is, and the
-/// agent that asked for it when an agent did.
+/// What a post is recorded as beyond its words: the operation it is, who wrote
+/// it, and where an answer to it is owed.
 ///
-/// One value rather than two arguments because the two travel together the
+/// One value rather than three arguments because they travel together the
 /// whole way down — the sender rides onto the message, and the requester onto
 /// the receipt that the answer is forwarded along.
+///
+/// Who wrote it and who is owed an answer are separate fields because they come
+/// apart exactly once, and that once is the loop guard: an answer being handed
+/// back wears the agent that wrote it and owes nobody, so it is never itself
+/// handed on.
 #[derive(Debug, Clone, Default)]
 pub(in crate::app) struct PostOrigin {
     pub operation_id: Option<String>,
+    /// The agent that wrote the words, when an agent did.
+    pub from_agent: Option<crate::thread::AgentIdentity>,
+    /// Where an answer to this post is owed, when an agent asked for one.
     pub requested_by: Option<crate::operation::OperationRequester>,
 }
 
@@ -43,15 +51,35 @@ impl PostOrigin {
     pub(in crate::app) fn human(operation_id: Option<String>) -> Self {
         PostOrigin {
             operation_id,
+            from_agent: None,
+            requested_by: None,
+        }
+    }
+
+    /// A post one agent asked another for. It wears the asker, and the receipt
+    /// remembers the conversation the answer comes back to.
+    pub(in crate::app) fn asked_by(requester: crate::operation::OperationRequester) -> Self {
+        PostOrigin {
+            operation_id: None,
+            from_agent: Some(requester.identity()),
+            requested_by: Some(requester),
+        }
+    }
+
+    /// An answer being handed back. It wears the agent that wrote it and
+    /// records no requester of its own — the loop guard, written here rather
+    /// than at the call site so there is one place to read it.
+    pub(in crate::app) fn forwarded(sender: crate::thread::AgentIdentity) -> Self {
+        PostOrigin {
+            operation_id: None,
+            from_agent: Some(sender),
             requested_by: None,
         }
     }
 
     /// The sender as a message wears it.
     pub(in crate::app) fn sender(&self) -> Option<crate::thread::AgentIdentity> {
-        self.requested_by
-            .as_ref()
-            .map(crate::operation::OperationRequester::identity)
+        self.from_agent.clone()
     }
 }
 

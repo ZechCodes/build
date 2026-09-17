@@ -55,6 +55,7 @@ const branchRow = (agentOver = {}) => ({
       state: "live",
       unread_count: 0,
       working: false,
+      surface_session_generation: "session-one",
       surfaces: surfaces(),
       ...agentOver,
     },
@@ -358,6 +359,48 @@ describe("the conversation header's menu", () => {
     await poll(branchRow({ surfaces: {} }));
 
     expect(menuCaret()).toBe(null);
+  });
+});
+
+describe("the agent's goal and observed checklist", () => {
+  const observed = () => ({
+    goal: { objective: "Ship the release", state: "active" },
+    checklist: [{ id: "one", subject: "Run verification", state: "in_progress" }],
+    observations: {
+      goal: { support: "supported", freshness: "current", coverage: "complete" },
+      checklist: { support: "supported", freshness: "current", coverage: "complete" },
+    },
+  });
+
+  it("paints a goal-only observation above the composer", async () => {
+    payload = branchRow({ surfaces: { goal: { objective: "Ship the release", state: "paused" }, observations: {} } });
+    await mount();
+
+    const observation = panel().querySelector(".agent-observation-host");
+    expect(observation.hidden).toBe(false);
+    expect(observation.textContent).toContain("Goal paused");
+    expect(observation.textContent).toContain("Ship the release");
+  });
+
+  it("keeps the observed checklist in its compact disclosure rather than adding a duplicate pill", async () => {
+    payload = branchRow({ surfaces: observed() });
+    await mount();
+
+    expect(panel().querySelector(".agent-observation-checklist")).toBeTruthy();
+    expect(panel().querySelector('[data-surface-kind="checklist"]')).toBe(null);
+  });
+
+  it("resets an open checklist when a replacement session arrives", async () => {
+    payload = branchRow({ surfaces: observed() });
+    await mount();
+    const first = panel().querySelector(".agent-observation-checklist");
+    first.open = true;
+
+    await poll(branchRow({ surface_session_generation: "session-two", surfaces: observed() }));
+
+    const replacement = panel().querySelector(".agent-observation-checklist");
+    expect(replacement).not.toBe(first);
+    expect(replacement.open).toBe(false);
   });
 });
 

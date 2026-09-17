@@ -105,7 +105,8 @@ const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
 
 const agent = (over = {}) => ({
   id: "ag-1", ordinal: 1, provider: "claude_adk", state: "live",
-  unread_count: 0, unread_reason: null, working: false, ...over,
+  unread_count: 0, unread_reason: null, working: false,
+  surface_session_generation: "surface-session-1", ...over,
 });
 
 const branchRow = (over = {}) => ({
@@ -2817,6 +2818,7 @@ describe("the agent's surfaces, carried by the status row", () => {
     const block = railHost().querySelector(".rail-composer");
     expect([...block.children].map((child) => child.id)).toEqual([
       "rail-surfaces-viewer",
+      "rail-observation",
       "rail-status",
       "rail-chat-recovery",
       "",
@@ -2863,6 +2865,7 @@ describe("the agent's surfaces, carried by the status row", () => {
 });
 
 describe("the agent's surfaces, seeded from the local cache", () => {
+  const generation = "surface-session-1";
   const feedItems = [{
     kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1",
     agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
@@ -2873,7 +2876,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   });
   const aChecklist = { checklist: [{ id: "t-1", subject: "wire the seed", state: "in_progress" }] };
   const surfacesAddress = (sub) => surfacesCacheAddress({ deviceId: "dev-1", entityId: "run-3", agentId: sub });
-  const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), surfacesRecord(surfaces));
+  const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), surfacesRecord(surfaces, generation));
   const saveSurfacesLongAgo = async (sub, surfaces) => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - SURFACE_PILL_GRACE_MS - 1);
     await saveSurfaces(sub, surfaces);
@@ -2921,21 +2924,23 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["checklist"]);
+    expect(pillKinds()).toEqual([]);
+    expect(railHost().querySelector(".agent-observation-checklist").textContent).toContain("wire the seed");
   });
 
   it("seeds the same snapshot whole while the grace still holds", async () => {
     await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["shells", "checklist"]);
+    expect(pillKinds()).toEqual(["shells"]);
+    expect(railHost().querySelector(".agent-observation-checklist").textContent).toContain("Last known");
   });
 
   it("offers the seeded kinds in the header menu before the first read answers", async () => {
     await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
     answerNothing();
     await mount();
-    expect(menuKinds()).toEqual(["shells", "checklist"]);
+    expect(menuKinds()).toEqual(["shells"]);
   });
 
   it("opens the remembered kind's viewer on the saved snapshot", async () => {
@@ -2975,7 +2980,8 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await mount();
     bubbles()[1].click();
     await flush();
-    expect(pillKinds()).toEqual(["checklist"]);
+    expect(pillKinds()).toEqual([]);
+    expect(railHost().querySelector(".agent-observation-checklist").textContent).toContain("wire the seed");
   });
 
   it("drops a seed whose agent was left while the read was in flight", async () => {
@@ -2985,6 +2991,29 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     bubbles()[1].click(); // ag-1's seed is still in flight
     await flush();
     expect(pillKinds()).toEqual([]);
+  });
+
+  it("drops a mounted cached observation when a replacement generation answers", async () => {
+    await saveSurfaces("ag-1", {
+      checklist: [{ id: "t-1", subject: "old process step", state: "in_progress" }],
+      observations: { checklist: { support: "supported", freshness: "current", coverage: "complete" } },
+    });
+    let answer;
+    bridge.call = vi.fn(async (method) => {
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise((resolve) => { answer = resolve; });
+      return {};
+    });
+    await mount();
+    expect(railHost().querySelector(".agent-observation-checklist").textContent).toContain("old process step");
+
+    answer(branchRow({
+      agents: [agent({ surface_session_generation: "surface-session-2", surfaces: null })],
+    }));
+    await flush();
+
+    expect(railHost().querySelector(".agent-observation-host").hidden).toBe(true);
+    expect(railHost().textContent).not.toContain("old process step");
   });
 
   it("replaces the seeded pills with the first live payload", async () => {
@@ -3020,11 +3049,11 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     expect(await savedDescription("ag-1")).toBe("cargo clippy");
   });
 
-  it("leaves the record alone for a payload carrying no surfaces at all", async () => {
+  it("clears the scoped record for a payload carrying no surfaces at all", async () => {
     await saveSurfaces("ag-1", shellsRunning("from the last visit"));
     payload = branchRow({ agents: [agent()] });
     await mount();
-    expect(await savedDescription("ag-1")).toBe("from the last visit");
+    expect((await savedSurfaces("ag-1")).value).toEqual({ surfaces: null, generation });
   });
 
   it("addresses the conversation and its surfaces alike, the kind apart", async () => {

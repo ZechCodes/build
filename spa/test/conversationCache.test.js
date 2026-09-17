@@ -4,7 +4,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-const identity = { deviceId: "dev-1", entityId: "run-3", agentId: "ag-1" };
+const identity = {
+  deviceId: "dev-1",
+  entityId: "run-3",
+  agentId: "ag-1",
+  surfaceSessionGeneration: "gen-1",
+};
 const threadAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
 const savedWindow = { items: [{ id: "m-1" }], deliveredSequence: 4 };
 const shells = (description) => ({ shells: [{ id: "sh-1", description, state: "running" }] });
@@ -60,7 +65,7 @@ beforeEach(async () => {
 });
 
 const saveSurfaces = (snapshot) =>
-  cache.writeCached(surfaces.surfacesCacheAddress(identity), surfaces.surfacesRecord(snapshot));
+  cache.writeCached(surfaces.surfacesCacheAddress(identity), surfaces.surfacesRecord(snapshot, "gen-1"));
 
 describe("seeding a conversation from what was saved", () => {
   it("reports both records to whoever is painting", async () => {
@@ -123,7 +128,7 @@ describe("seeding a conversation from what was saved", () => {
     await saveSurfaces(shells("cargo test"));
     const held = mountCache();
 
-    held.absorbSurfaces(shells("cargo clippy"));
+    held.absorbSurfaces(shells("cargo clippy"), "gen-1");
     await held.seed();
     expect(seededSurfaces).toBe(null);
   });
@@ -157,29 +162,73 @@ describe("writing a conversation back through", () => {
     const held = mountCache();
     const address = surfaces.surfacesCacheAddress(identity);
 
-    held.absorbSurfaces(shells("cargo test"));
+    held.absorbSurfaces(shells("cargo test"), "gen-1");
     await settle();
-    expect((await cache.readCached(address)).value).toEqual(surfaces.surfacesRecord(shells("cargo test")));
+    expect((await cache.readCached(address)).value).toEqual(surfaces.surfacesRecord(shells("cargo test"), "gen-1"));
 
     await cache.wipeCache();
-    held.absorbSurfaces(shells("cargo test"));
+    held.absorbSurfaces(shells("cargo test"), "gen-1");
     await settle();
     expect(await cache.readCached(address)).toBeUndefined();
 
-    held.absorbSurfaces(shells("cargo clippy"));
+    held.absorbSurfaces(shells("cargo clippy"), "gen-1");
     await settle();
     expect((await cache.readCached(address)).value.surfaces).toEqual(shells("cargo clippy"));
   });
 
-  it("writes nothing for an answer carrying no surfaces at all", async () => {
+  it("persists an answer carrying no surfaces as a whole-snapshot clear", async () => {
     await saveSurfaces(shells("from the last visit"));
     const held = mountCache();
 
-    held.absorbSurfaces(null);
+    held.absorbSurfaces(null, "gen-1");
     await settle();
-    expect((await cache.readCached(surfaces.surfacesCacheAddress(identity))).value.surfaces).toEqual(
-      shells("from the last visit"),
+    expect((await cache.readCached(surfaces.surfacesCacheAddress(identity))).value).toEqual(
+      surfaces.surfacesRecord(null, "gen-1"),
     );
+  });
+
+  it("does not seed a legacy or replaced process snapshot", async () => {
+    const address = surfaces.surfacesCacheAddress(identity);
+    await cache.writeCached(address, surfaces.surfacesRecord(shells("old"), "gen-old"));
+    const held = mountCache();
+    await held.seed();
+    expect(seededSurfaces).toBe(null);
+  });
+
+  it("drops a seed when the process generation changes during its async read", async () => {
+    await saveSurfaces(shells("old"));
+    const held = mountCache();
+    const seeding = held.seed();
+    standing = { ...identity, surfaceSessionGeneration: "gen-2" };
+    await seeding;
+    expect(seededSurfaces).toBe(null);
+  });
+
+  it("drops a write when the agent or generation changes during its async guard read", async () => {
+    const held = mountCache();
+    held.absorbSurfaces(shells("old"), "gen-1");
+    standing = { ...identity, surfaceSessionGeneration: "gen-2" };
+    await settle();
+    expect(await cache.readCached(surfaces.surfacesCacheAddress(identity))).toBeUndefined();
+  });
+
+  it("lets only the newest same-generation snapshot survive overlapping writes", async () => {
+    const held = mountCache();
+    held.absorbSurfaces(shells("older"), "gen-1");
+    held.absorbSurfaces(shells("newest"), "gen-1");
+    await settle();
+    expect((await cache.readCached(surfaces.surfacesCacheAddress(identity))).value).toEqual(
+      surfaces.surfacesRecord(shells("newest"), "gen-1"),
+    );
+  });
+
+  it("drops a seed when the entity changes without changing the agent id", async () => {
+    await saveSurfaces(shells("old entity"));
+    const held = mountCache();
+    const seeding = held.seed();
+    standing = { ...identity, entityId: "run-4" };
+    await seeding;
+    expect(seededSurfaces).toBe(null);
   });
 });
 

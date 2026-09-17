@@ -1,0 +1,35 @@
+.agent-observation-host { padding:0 0 8px; }
+.agent-observation-host[hidden] { display:none; }
+.agent-observation-panel { border-radius:9px; background:var(--panel2); color:var(--ink2); overflow:hidden; }
+.agent-observation-goal { padding:9px 11px; }
+.agent-observation-heading, .agent-observation-checklist summary { display:flex; align-items:center; gap:8px; }
+.agent-observation-heading strong, .agent-observation-checklist strong { color:var(--ink); font-size:11.5px; font-weight:650; }
+.agent-observation-objective, .agent-observation-step { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-observation-objective { margin-top:2px; font-size:12.5px; color:var(--ink); }
+.agent-observation-notes { display:flex; gap:5px; flex-wrap:wrap; color:var(--dim); font-size:10.5px; }
+.agent-observation-heading .agent-observation-notes { margin-left:auto; }
+.agent-observation-note + .agent-observation-note::before { content:"·"; margin-right:5px; }
+.agent-observation-checklist { border-top:1px solid var(--line); }
+.agent-observation-checklist:only-child { border-top:0; }
+.agent-observation-checklist summary { padding:8px 11px; cursor:pointer; list-style:none; min-width:0; }
+.agent-observation-checklist summary::-webkit-details-marker { display:none; }
+.agent-observation-checklist summary::before { content:"▸"; flex:none; color:var(--dim); }
+.agent-observation-checklist[open] summary::before { content:"▾"; }
+.agent-observation-checklist-copy { display:flex; align-items:baseline; gap:7px; min-width:0; flex:1; }
+.agent-observation-step { font-size:11.5px; }
+.agent-observation-checklist-meta { display:flex; align-items:center; justify-content:flex-end; gap:7px;
+  flex:0 1 auto; min-width:0; color:var(--dim); font:10.5px var(--mono); }
+.agent-observation-progress { white-space:nowrap; }
+.agent-observation-checklist-meta .agent-observation-notes { justify-content:flex-end; }
+.agent-observation-items { max-height:min(34vh, 280px); overflow-y:auto; overscroll-behavior:contain;
+  padding:0 8px 8px 25px; }
+.agent-observation-items .surface-row { padding:5px 3px; }
+.agent-observation-panel .is-stale { color:var(--dim); }
+.agent-observation-panel .is-stale .agent-observation-objective { color:var(--ink2); }
+.agent-observation-unknown { color:var(--dim); font:10.5px var(--mono); }
+@media (max-width:760px) {
+  .agent-observation-checklist summary { align-items:flex-start; flex-wrap:wrap; }
+  .agent-observation-checklist-meta { width:100%; padding-left:18px; justify-content:flex-start; flex-wrap:wrap; }
+  .agent-observation-checklist-meta .agent-observation-notes { justify-content:flex-start; }
+  .agent-observation-items { max-height:min(30vh, 240px); }
+}

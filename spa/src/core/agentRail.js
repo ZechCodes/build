@@ -100,7 +100,9 @@ import { wireExpansionReveal } from "./revealExpanded.js";
 import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
+import { mountAgentObservation } from "./agentObservation.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
+import { surfaceSessionGeneration } from "./surfacesCache.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
@@ -137,6 +139,7 @@ const RAIL_STATUS_LEAD_ID = "rail-status-lead";
 const RAIL_STATUS_PILLS_ID = "rail-status-pills";
 const RAIL_STATUS_GIT_ID = "rail-status-git";
 const RAIL_VIEWER_ID = "rail-surfaces-viewer";
+const RAIL_OBSERVATION_ID = "rail-observation";
 const WORKING_WORD_SELECTOR = ".rail-status-working-word";
 const STATUS_TEXT_SELECTOR = ".rail-status-text";
 const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
@@ -449,6 +452,9 @@ const railStatusRowHtml = () =>
 
 const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_VIEWER_ID}" hidden></div>`;
 
+const railObservationHostHtml = () =>
+  `<div class="agent-observation-host" id="${RAIL_OBSERVATION_ID}" hidden></div>`;
+
 function surfaceMenuHtml(options) {
   return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE, icon: true }) : "";
 }
@@ -555,13 +561,18 @@ export function mountAgentRail(host, context) {
 
   const cacheIdentity = () => {
     if (disposed) return null;
-    return addressedCacheIdentity({
+    const addressed = addressedCacheIdentity({
       cacheScope,
       context,
       feedRow,
       selectedId,
       controller: controllerForAgent(agentOf(selectedId)),
     });
+    if (!addressed) return null;
+    return {
+      ...addressed,
+      surfaceSessionGeneration: surfaceSessionGeneration(agentOf(selectedId)?.surface_session_generation),
+    };
   };
 
   let conversationCache = null;
@@ -576,7 +587,11 @@ export function mountAgentRail(host, context) {
     },
     onSurfacesSeeded: (seen) => {
       if (disposed) return;
-      seededSurfaces = { surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()), at: seen.at };
+      seededSurfaces = {
+        surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()),
+        generation: seen.generation,
+        at: seen.at,
+      };
       syncSurfaces();
       paintSurfaceMenu();
     },
@@ -596,7 +611,7 @@ export function mountAgentRail(host, context) {
   const absorbSurfaces = () => {
     seededSurfaces = null;
     const agent = agentInFocus();
-    bindConversationCache().absorbSurfaces(agent ? agent.surfaces : null);
+    bindConversationCache().absorbSurfaces(agent?.surfaces ?? null, agent?.surface_session_generation);
   };
 
   const resetConversationCache = () => {
@@ -638,6 +653,7 @@ export function mountAgentRail(host, context) {
   let composerController = null;
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
+  let observationBlock = null;
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
@@ -1474,6 +1490,7 @@ export function mountAgentRail(host, context) {
   const composerRowHtml = () =>
     `<div class="rail-composer" id="rail-composer">
       ${railViewerHostHtml()}
+      ${railObservationHostHtml()}
       ${railStatusRowHtml()}
       <div class="chat-recovery" id="rail-chat-recovery"></div>
       ${composerHtml({
@@ -1690,9 +1707,10 @@ export function mountAgentRail(host, context) {
   const surfacesSeen = () => {
     const agent = agentInFocus();
     const live = agent && agent.surfaces;
-    if (live) return { surfaces: live, at: Date.now() };
-    if (agent && seededSurfaces) return seededSurfaces;
-    return { surfaces: null, at: Date.now() };
+    const generation = surfaceSessionGeneration(agent?.surface_session_generation);
+    if (live) return { surfaces: live, generation, at: Date.now() };
+    if (agent && seededSurfaces?.generation === generation) return seededSurfaces;
+    return { surfaces: null, generation, at: Date.now() };
   };
 
   const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesSeen().surfaces);
@@ -1700,7 +1718,9 @@ export function mountAgentRail(host, context) {
   const mountSurfaces = (panel) => {
     const pillHost = panel.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
     const viewerHost = panel.querySelector(`#${RAIL_VIEWER_ID}`);
-    if (!pillHost || !viewerHost) return;
+    const observationHost = panel.querySelector(`#${RAIL_OBSERVATION_ID}`);
+    if (!pillHost || !viewerHost || !observationHost) return;
+    observationBlock = mountAgentObservation(observationHost);
     surfacesBlock = mountAgentSurfaces({
       pillHost,
       viewerHost,
@@ -1712,15 +1732,21 @@ export function mountAgentRail(host, context) {
 
   const disposeSurfaces = () => {
     closeSurfaceOverlay();
+    observationBlock?.dispose();
+    observationBlock = null;
     if (!surfacesBlock) return;
     surfacesBlock.dispose();
     surfacesBlock = null;
   };
 
   const syncSurfaces = () => {
-    if (!surfacesBlock) return;
+    if (!surfacesBlock || !observationBlock) return;
     const seen = surfacesSeen();
     surfacesBlock.set(seen.surfaces, seen.at);
+    observationBlock.set(seen.surfaces, {
+      generation: seen.generation,
+      working: agentInFocus()?.working === true,
+    });
   };
 
   const paintSurfaceMenu = () => {

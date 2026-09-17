@@ -133,7 +133,11 @@ export function surfaceKindLabel(kind) {
 }
 
 function kindsWithContent(surfaces) {
-  return SURFACE_KINDS.filter((kind) => entriesOfKind(surfaces, kind).length > 0).map((kind) => ({
+  return SURFACE_KINDS.filter(
+    (kind) =>
+      entriesOfKind(surfaces, kind).length > 0 &&
+      !(kind === CHECKLIST_ENTRY_KIND && surfaces?.observations?.checklist),
+  ).map((kind) => ({
     kind,
     label: surfaceKindLabel(kind),
     count: runningEntryCount(surfaces, kind),

@@ -250,7 +250,11 @@ export function shellRowHtml(row) {
 }
 
 export function checklistItemHtml(row) {
+  const unknownState = !row.stateMark && row.state
+    ? `<span class="surface-row-stat agent-observation-unknown">${esc(row.state)}</span>`
+    : "";
   return surfaceRowHtml("surface-checklist-item", row, {
+    trailing: unknownState,
     body: noteHtml(row.description, row.subject),
   });
 }

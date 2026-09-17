@@ -14,6 +14,7 @@ fn receipt(id: &str, owner: &str, status: OperationStatus) -> OperationReceipt {
         execution_error: None,
         request_hash: "request-hash".into(),
         delivery: None,
+        requested_by: None,
     }
 }
 

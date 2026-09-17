@@ -35,6 +35,7 @@ pub(super) fn queued_operation(operation_id: &str, posted_sequence: u64) -> Oper
                 prior_context: String::new(),
             }),
         }),
+        requested_by: None,
     }
 }
 

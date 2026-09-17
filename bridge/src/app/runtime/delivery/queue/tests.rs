@@ -120,6 +120,7 @@ fn delivery_receipt(operation_id: &str) -> OperationReceipt {
                 prior_context: String::new(),
             }),
         }),
+        requested_by: None,
     }
 }
 

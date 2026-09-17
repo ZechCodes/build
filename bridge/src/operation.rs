@@ -168,6 +168,32 @@ impl OperationPayload {
     }
 }
 
+/// Who asked for an operation, when an agent did rather than the human.
+///
+/// The message itself already wears the sender — `from_agent` on the
+/// `ThreadMessage` says who wrote the words. This says where the ANSWER is
+/// owed: the agent's own conversation, which the identity on a message does not
+/// carry and which nothing else on the receipt names, because every other
+/// address on it is the recipient's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationRequester {
+    /// The agent that asked. Its id is what the message wears.
+    pub agent_id: String,
+    /// The conversation owner that agent belongs to.
+    pub entity_id: String,
+    /// The agent's own conversation, which an answer is posted back into.
+    pub conversation_id: String,
+}
+
+impl OperationRequester {
+    /// The sender as a message wears it.
+    pub fn identity(&self) -> crate::thread::AgentIdentity {
+        crate::thread::AgentIdentity {
+            id: self.agent_id.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationReceipt {
     pub operation_id: String,
@@ -185,6 +211,10 @@ pub struct OperationReceipt {
     pub execution_error: Option<String>,
     pub request_hash: String,
     pub delivery: Option<DeliveryIntent>,
+    /// The agent that asked for this operation, when one did. Absent is the
+    /// human, whose answer comes back to the screen they are looking at.
+    #[serde(default)]
+    pub requested_by: Option<OperationRequester>,
 }
 
 impl OperationReceipt {

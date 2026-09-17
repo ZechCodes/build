@@ -164,6 +164,9 @@ same code path, the same refusals, the same record afterwards:
   `agent.add` on the workspace's conversation owner, minting that owner with
   `workspace.ensure_conversation` when the workspace has none yet.
 - `remove_workspace_agent {workspace_id, agent_id}` — through `agent.remove`.
+- `message_workspace_agent {workspace_id, agent_id?, body}` — through
+  `thread.post` on that agent's conversation; naming no agent is the
+  workspace's primary one.
 - `post_thread_message`, `search_conversation`, `set_topic` — what every agent
   with a conversation has.
 
@@ -173,6 +176,15 @@ workspace in another project is refused by name, and a call that carries a
 project id is parsed as though it had not. The gate is on the socket as well as
 in the tool list a session is shown, so a harness writing its own frames reaches
 no further than a harness that reads the list.
+
+A message to a workspace agent goes in with the user's role — that is the side
+of the conversation an instruction arrives on whoever wrote it — and wears the
+project agent as its `from_agent`, so the agent reading it knows a machine sent
+it. The operation the post creates remembers the requester: which project agent
+asked, the owner it belongs to, and its own conversation, which is where the
+answer is owed. `note_user_message` is skipped for it, because one agent handing
+work to another is the work happening and must not move the inbox anchor under
+the reader.
 
 Two things are deliberately missing: nothing here deletes a workspace, and
 nothing adds a directory to one. Both are how a project loses work, so they stay

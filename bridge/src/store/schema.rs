@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS operations (
     status          TEXT NOT NULL,
     execution_error TEXT,
     delivery        TEXT,
+    -- The agent that asked for this operation, when one did. Null is the human.
+    requested_by    TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );

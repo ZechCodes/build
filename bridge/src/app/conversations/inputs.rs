@@ -10,6 +10,49 @@ pub(in crate::app) struct ReviewerMessage {
     pub body: String,
     pub anchor: Option<crate::thread::MessageAnchor>,
     pub viewing_context: Option<crate::thread::ViewingContext>,
+    /// The agent that wrote these words, when one did. Every parser leaves it
+    /// `None` — the human is what a post is until something says otherwise —
+    /// and only [`ReviewerMessage::sent_by`] fills it in.
+    pub from_agent: Option<crate::thread::AgentIdentity>,
+}
+
+impl ReviewerMessage {
+    /// Say whose words these are. The role stays the user's: that is the side
+    /// of the conversation an instruction arrives on whoever wrote it.
+    pub(in crate::app) fn sent_by(mut self, sender: Option<&crate::thread::AgentIdentity>) -> Self {
+        self.from_agent = sender.cloned();
+        self
+    }
+}
+
+/// What a post is recorded as beyond its words: the operation it is, and the
+/// agent that asked for it when an agent did.
+///
+/// One value rather than two arguments because the two travel together the
+/// whole way down — the sender rides onto the message, and the requester onto
+/// the receipt that the answer is forwarded along.
+#[derive(Debug, Clone, Default)]
+pub(in crate::app) struct PostOrigin {
+    pub operation_id: Option<String>,
+    pub requested_by: Option<crate::operation::OperationRequester>,
+}
+
+impl PostOrigin {
+    /// A post with an operation id and no sender: the human's, which is what
+    /// every post off the wire is.
+    pub(in crate::app) fn human(operation_id: Option<String>) -> Self {
+        PostOrigin {
+            operation_id,
+            requested_by: None,
+        }
+    }
+
+    /// The sender as a message wears it.
+    pub(in crate::app) fn sender(&self) -> Option<crate::thread::AgentIdentity> {
+        self.requested_by
+            .as_ref()
+            .map(crate::operation::OperationRequester::identity)
+    }
 }
 
 pub(in crate::app) const MAX_OPERATION_ID_BYTES: usize = 128;
@@ -213,6 +256,7 @@ pub(in crate::app) fn parse_thread_inputs(
                     body: body.to_string(),
                     anchor,
                     viewing_context,
+                    from_agent: None,
                 })
             })
             .collect();
@@ -230,6 +274,7 @@ pub(in crate::app) fn parse_thread_inputs(
         body: body.to_string(),
         anchor: None,
         viewing_context: parse_viewing_context(params.get("viewing_context"))?,
+        from_agent: None,
     }])
 }
 
@@ -318,6 +363,7 @@ pub(in crate::app) fn parse_thread_post_input(
             body: String::new(),
             anchor,
             viewing_context: parse_viewing_context(params.get("viewing_context"))?,
+            from_agent: None,
         }]);
     }
     parse_thread_inputs(
@@ -482,6 +528,7 @@ pub(in crate::app) fn append_user_thread_messages_with_attachments(
     let now = now_rfc3339();
     let last = messages.len().saturating_sub(1);
     for (index, message) in messages.into_iter().enumerate() {
+        let from_agent = message.from_agent;
         if index == last && !attachments.is_empty() {
             thread.post_user_with_context_and_attachments(
                 message.body,
@@ -497,6 +544,12 @@ pub(in crate::app) fn append_user_thread_messages_with_attachments(
                 message.viewing_context,
                 &now,
             );
+        }
+        // Set on the message just pushed, the way the attachments and the
+        // viewing context are: every other caller would have to pass `None`
+        // through the shared post arm otherwise.
+        if let Some(from_agent) = from_agent {
+            thread.wear_sender(from_agent);
         }
     }
     last_appended_sequence(thread)

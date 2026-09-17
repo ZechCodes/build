@@ -262,10 +262,18 @@ impl Thread {
         now: impl Into<String>,
     ) -> String {
         let id = self.post_user(body, None, now);
+        self.wear_sender(from_agent);
+        id
+    }
+
+    /// Say who wrote the message just posted — the last item on the thread by
+    /// construction, the way the attachments and the viewing context are set.
+    /// For the post paths that carry an anchor, a viewing context or files and
+    /// so cannot go through [`post_user_from_agent`](Self::post_user_from_agent).
+    pub fn wear_sender(&mut self, from_agent: AgentIdentity) {
         if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
             message.from_agent = Some(Box::new(from_agent));
         }
-        id
     }
 
     pub fn post_user_with_context(

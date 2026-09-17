@@ -509,7 +509,7 @@ impl Store {
 /// newest-first read into the order the conversation happened in.
 pub(super) const OPERATION_COLUMNS: &str = "operation_id, method, entity_id, agent_id, \
     conversation_id, choice_revision, request_hash, posted_sequence, status, \
-    delivery, execution_error, message_start_sequence";
+    delivery, execution_error, message_start_sequence, requested_by";
 
 pub(super) fn ensure_operation_receipt_columns(conn: &Connection) -> Result<(), StoreError> {
     let mut columns = conn.prepare("PRAGMA table_info(operations)")?;
@@ -526,6 +526,11 @@ pub(super) fn ensure_operation_receipt_columns(conn: &Connection) -> Result<(), 
             [],
         )?;
     }
+    // Every operation written before an agent could ask for one is the human's,
+    // which is what a null here reads as.
+    if !names.iter().any(|name| name == "requested_by") {
+        conn.execute("ALTER TABLE operations ADD COLUMN requested_by TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -538,12 +543,16 @@ pub(super) fn insert_operation(
         .delivery
         .as_ref()
         .map(|intent| serde_json::to_string(intent).expect("a delivery intent always serializes"));
+    let requested_by = receipt
+        .requested_by
+        .as_ref()
+        .map(|requester| serde_json::to_string(requester).expect("a requester always serializes"));
     tx.execute(
         "INSERT INTO operations \
          (operation_id, method, entity_id, agent_id, conversation_id, choice_revision, \
           request_hash, posted_sequence, message_start_sequence, status, execution_error, delivery, \
-          created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+          requested_by, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
         rusqlite::params![
             receipt.operation_id,
             receipt.method,
@@ -557,6 +566,7 @@ pub(super) fn insert_operation(
             receipt.status.as_str(),
             receipt.execution_error,
             delivery,
+            requested_by,
             now,
         ],
     )?;
@@ -689,6 +699,18 @@ pub(super) fn decode_operation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<
         status,
         execution_error: row.get(10)?,
         delivery,
+        requested_by: row
+            .get::<_, Option<String>>(12)?
+            .map(|raw| {
+                serde_json::from_str(&raw).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        12,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .transpose()?,
     })
 }
 

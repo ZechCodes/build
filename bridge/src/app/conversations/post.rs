@@ -1,7 +1,7 @@
 use super::inputs::{
     append_operation_reviewer_messages, normalize_post_viewing_contexts, optional_choice_revision,
     optional_operation_id, parse_option_choice, parse_thread_post_messages, parse_viewing_context,
-    required_operation_id, with_post_receipt, ReviewerMessage,
+    required_operation_id, with_post_receipt, PostOrigin, ReviewerMessage,
 };
 use super::read::thread_detail;
 use super::{AppState, ConversationAddress};
@@ -10,7 +10,8 @@ use crate::app::{
     PendingAgentTurn, PlanDraftingStarted, TurnText, NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::operation::{
-    thread_post_request_hash, DeliveryIntent, OperationReceipt, OperationStatus, THREAD_POST_METHOD,
+    thread_post_request_hash, DeliveryIntent, OperationReceipt, OperationRequester,
+    OperationStatus, THREAD_POST_METHOD,
 };
 use crate::plan::{PlanEvent, PlanState};
 use crate::run::{RunEvent, RunState};
@@ -46,6 +47,27 @@ impl AppState {
     /// simply waits for the next session's catch-up. Refused only where no
     /// conversation remains to post to: a terminal or unknown entity.
     pub(crate) fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
+        self.post_to_thread(params, None)
+    }
+
+    /// `thread.post`, asked for by an agent rather than by the human.
+    ///
+    /// The same write, with two things added: the message wears the sender, so
+    /// the agent reading it can tell a hand-off from the user speaking, and the
+    /// operation remembers the requester, so the answer knows where to go.
+    pub(in crate::app) fn thread_post_from_agent(
+        &mut self,
+        params: &Value,
+        requester: OperationRequester,
+    ) -> Result<Value, String> {
+        self.post_to_thread(params, Some(requester))
+    }
+
+    fn post_to_thread(
+        &mut self,
+        params: &Value,
+        requested_by: Option<OperationRequester>,
+    ) -> Result<Value, String> {
         let normalized_params = normalize_post_viewing_contexts(params)?;
         let params = &normalized_params;
         let entity_id = require_str(params, "entity_id")?;
@@ -55,7 +77,10 @@ impl AppState {
         if !self.plans.contains_key(&entity_id) && !self.runs.contains_key(&entity_id) {
             return Err("unknown conversation owner".to_string());
         }
-        let operation_id = optional_operation_id(params)?;
+        let origin = PostOrigin {
+            operation_id: optional_operation_id(params)?,
+            requested_by,
+        };
         let addressed = named_agent_id(params)?;
         if self.entity_agents(&entity_id)?.is_empty() {
             if addressed.is_some() || params.get("conversation_id").is_some() {
@@ -64,7 +89,9 @@ impl AppState {
             self.ensure_primary_agent(&entity_id)?;
         }
         let address = self.resolve_conversation_params(&entity_id, params)?;
-        if let Some(retry) = self.retry_thread_post(params, operation_id.as_deref(), &address)? {
+        if let Some(retry) =
+            self.retry_thread_post(params, origin.operation_id.as_deref(), &address)?
+        {
             return Ok(retry);
         }
         if let Some(expected) = optional_choice_revision(params)? {
@@ -85,10 +112,10 @@ impl AppState {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if self.plans.contains_key(&entity_id) {
-            return self.thread_post_plan(params, address, operation_id, choice, interrupt);
+            return self.thread_post_plan(params, address, origin.operation_id, choice, interrupt);
         }
         if self.runs.contains_key(&entity_id) {
-            return self.thread_post_run(params, address, operation_id, choice, interrupt);
+            return self.thread_post_run(params, address, origin, choice, interrupt);
         }
         Err("unknown conversation owner".to_string())
     }
@@ -147,6 +174,7 @@ impl AppState {
                     .option_reply_text(choice)?,
                 anchor: None,
                 viewing_context: parse_viewing_context(params.get("viewing_context"))?,
+                from_agent: None,
             }],
             None => parse_thread_post_messages(
                 params,
@@ -251,7 +279,7 @@ impl AppState {
         }
         let receipt = self.stage_post_acceptance(
             params,
-            operation_id,
+            PostOrigin::human(operation_id),
             &address,
             choice_revision,
             posted_sequence,
@@ -324,7 +352,7 @@ impl AppState {
         &mut self,
         params: &Value,
         address: ConversationAddress,
-        operation_id: Option<String>,
+        origin: PostOrigin,
         choice: Option<crate::thread::OptionChoice>,
         interrupt: bool,
     ) -> Result<Value, String> {
@@ -342,6 +370,7 @@ impl AppState {
                 body: self.conversation_at(&address)?.option_reply_text(choice)?,
                 anchor: None,
                 viewing_context: parse_viewing_context(params.get("viewing_context"))?,
+                from_agent: None,
             }],
             None => parse_thread_post_messages(
                 params,
@@ -349,6 +378,11 @@ impl AppState {
                 !attachments.is_empty(),
             )?,
         };
+        let sender = origin.sender();
+        let messages: Vec<ReviewerMessage> = messages
+            .into_iter()
+            .map(|message| message.sent_by(sender.as_ref()))
+            .collect();
         let resume = matches!(
             active.run.state,
             RunState::Blocked | RunState::Failed | RunState::IdleUnreported
@@ -366,20 +400,25 @@ impl AppState {
             interrupt,
             payload: None,
         };
-        let legacy_delivery = operation_id.is_none().then(|| delivery.clone());
+        let legacy_delivery = origin.operation_id.is_none().then(|| delivery.clone());
         let (posted_sequence, receipt) = self.append_addressed_post(
             params,
             &address,
             choice_revision,
-            operation_id,
+            origin,
             messages,
             attachments,
             choice.as_ref(),
             Some(delivery),
         )?;
-        self.note_user_message(&entity_id);
-        if address.conversation_entity_id != entity_id {
-            self.note_user_message(&address.conversation_entity_id);
+        // Only the human's own words are the human being here. One agent
+        // handing work to another must not move the inbox anchor under the
+        // reader — the same rule a dispatch an agent made follows.
+        if sender.is_none() {
+            self.note_user_message(&entity_id);
+            if address.conversation_entity_id != entity_id {
+                self.note_user_message(&address.conversation_entity_id);
+            }
         }
         if let Some(delivery) = receipt
             .as_ref()
@@ -412,7 +451,7 @@ impl AppState {
         params: &Value,
         address: &ConversationAddress,
         choice_revision: u64,
-        operation_id: Option<String>,
+        origin: PostOrigin,
         messages: Vec<ReviewerMessage>,
         attachments: Vec<crate::thread::MessageAttachment>,
         choice: Option<&crate::thread::OptionChoice>,
@@ -433,14 +472,14 @@ impl AppState {
                 messages,
                 attachments,
                 choice,
-                operation_id.as_deref(),
+                origin.operation_id.as_deref(),
             );
             if let Some(delivery) = delivery.as_mut() {
                 delivery.payload = payload;
             }
             let receipt = self.stage_post_acceptance(
                 params,
-                operation_id,
+                origin,
                 address,
                 choice_revision,
                 sequence,
@@ -473,14 +512,14 @@ impl AppState {
             messages,
             attachments,
             choice,
-            operation_id.as_deref(),
+            origin.operation_id.as_deref(),
         );
         if let Some(delivery) = delivery.as_mut() {
             delivery.payload = payload;
         }
         let receipt = self.stage_post_acceptance(
             params,
-            operation_id,
+            origin,
             address,
             choice_revision,
             sequence,
@@ -502,13 +541,13 @@ impl AppState {
     pub(in crate::app) fn stage_post_acceptance(
         &mut self,
         params: &Value,
-        operation_id: Option<String>,
+        origin: PostOrigin,
         address: &ConversationAddress,
         choice_revision: u64,
         posted_sequence: Option<u64>,
         delivery: Option<DeliveryIntent>,
     ) -> Result<Option<OperationReceipt>, String> {
-        let Some(operation_id) = operation_id else {
+        let Some(operation_id) = origin.operation_id else {
             return Ok(None);
         };
         let posted_sequence = posted_sequence.ok_or("thread.post did not append a message")?;
@@ -534,6 +573,7 @@ impl AppState {
                 &address.conversation_id,
             ),
             delivery,
+            requested_by: origin.requested_by,
         };
         self.operation_ledger
             .stage_acceptance(address.conversation_entity_id.clone(), receipt.clone());

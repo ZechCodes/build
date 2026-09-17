@@ -488,3 +488,151 @@ fn a_project_agent_writes_no_workspace_outside_its_project() {
         .expect("the other project reads its own workspace");
     assert_eq!(still_there["agents"][0]["id"], their_worker);
 }
+
+/// A message to a workspace agent goes in as the PROJECT agent's, not the
+/// user's: the role is the side it arrives on, and `from_agent` is who wrote
+/// it, so the agent reading it knows a machine sent it.
+///
+/// The operation the post creates remembers the project agent and the
+/// conversation it sent from, which is where an answer is owed.
+#[test]
+fn a_project_agent_messages_a_workspace_agent_as_itself() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let workspace_id = workspace(&mut state, &project_id, "one");
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+    let added = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::AddWorkspaceAgent {
+                workspace_id: workspace_id.clone(),
+                harness: None,
+                model: None,
+                effort: None,
+            },
+        )
+        .expect("a project agent staffs its workspace");
+    let entity_id = added["entity_id"].as_str().unwrap().to_string();
+    let worker = added["agent"]["id"].as_str().unwrap().to_string();
+
+    let delivered = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::MessageWorkspaceAgent {
+                workspace_id: workspace_id.clone(),
+                agent_id: None,
+                body: "start with the router, then the rail".to_string(),
+            },
+        )
+        .expect("a project agent speaks to an agent on its workspace");
+    assert_eq!(delivered["workspace_id"], workspace_id);
+    assert_eq!(delivered["entity_id"], entity_id);
+    assert_eq!(delivered["agent_id"], worker);
+    let operation_id = delivered["operation_id"].as_str().unwrap().to_string();
+
+    let page = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": entity_id, "agent_id": worker }),
+    ));
+    let sent = page["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["data"]["body"] == "start with the router, then the rail")
+        .unwrap_or_else(|| panic!("the message is on the workspace agent's thread: {page:?}"))
+        .clone();
+    assert_eq!(sent["data"]["role"], "user", "{sent:?}");
+    assert_eq!(sent["data"]["from_agent"]["id"], agent_id, "{sent:?}");
+
+    // The operation remembers who asked for it, and the conversation the answer
+    // is owed to — which is what a reply is forwarded along.
+    let receipt = state
+        .operation_receipt(&operation_id)
+        .expect("the operation is readable")
+        .expect("the post created an operation");
+    let requested_by = receipt
+        .requested_by
+        .expect("an agent asked for this operation");
+    assert_eq!(requested_by.agent_id, agent_id);
+    assert_eq!(requested_by.entity_id, owner);
+    assert_eq!(
+        requested_by.conversation_id,
+        state
+            .entity_agents(&owner)
+            .unwrap()
+            .resolve(Some(&agent_id))
+            .unwrap()
+            .conversation_id(),
+    );
+
+    // A message the human sends down the same path carries no sender at all.
+    let posted = state.handle(req(
+        "thread.post",
+        json!({ "entity_id": entity_id, "agent_id": worker, "body": "and check the tests" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    let page = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": entity_id, "agent_id": worker }),
+    ));
+    let human = page["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["data"]["body"] == "and check the tests")
+        .unwrap_or_else(|| panic!("the human's message is there too: {page:?}"))
+        .clone();
+    assert!(human["data"]["from_agent"].is_null(), "{human:?}");
+}
+
+/// The scope is the binding here too: an agent on another project's workspace
+/// is not this project agent's to talk to.
+#[test]
+fn a_project_agent_messages_no_agent_outside_its_project() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let (_other_home, other_repo) = init_repo();
+    let other_repo = std::fs::canonicalize(&other_repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let mine = added_project(&mut state, &repo);
+    let theirs = added_project(&mut state, &other_repo);
+    let elsewhere = workspace(&mut state, &theirs, "theirs");
+    let (their_owner, their_agent) = project_agent(&mut state, &theirs);
+    state
+        .agent_action(
+            &their_owner,
+            &their_agent,
+            BridgeAction::AddWorkspaceAgent {
+                workspace_id: elsewhere.clone(),
+                harness: None,
+                model: None,
+                effort: None,
+            },
+        )
+        .expect("the other project staffs its own workspace");
+
+    let (owner, agent_id) = project_agent(&mut state, &mine);
+    let refused = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::MessageWorkspaceAgent {
+                workspace_id: elsewhere.clone(),
+                agent_id: None,
+                body: "do my work instead".to_string(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        refused.contains(&elsewhere) && refused.contains(&mine),
+        "{refused}"
+    );
+}

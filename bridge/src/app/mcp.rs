@@ -405,6 +405,22 @@ impl AppState {
         {
             return self.project_agent_remove_workspace_agent(entity_id, workspace_id, removed);
         }
+        if let BridgeAction::MessageWorkspaceAgent {
+            workspace_id,
+            agent_id: addressed,
+            body,
+        } = &action
+        {
+            return self.project_agent_message_workspace_agent(
+                entity_id,
+                agent_id,
+                crate::app::WorkspaceAgentAddress {
+                    workspace_id,
+                    agent_id: addressed.as_deref(),
+                },
+                body,
+            );
+        }
         if let BridgeAction::ReadOperationMessages { operation_id } = &action {
             return self.read_operation_messages_for_agent(entity_id, agent_id, operation_id);
         }

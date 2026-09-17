@@ -27,6 +27,45 @@ fn thread_post_receipt_and_message_commit_together_and_retry_is_idempotent() {
     assert_eq!(store.thread_items(&record.agents[0].id).unwrap().len(), 1);
 }
 
+/// The agent that asked for an operation survives the write, because the reply
+/// is forwarded to the conversation this names and a restart must still know
+/// where that is.
+#[test]
+fn an_operation_an_agent_asked_for_remembers_which_agent_and_where_to_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let record = plan_record("issue-1");
+    let mut receipt = queued_operation("op-1", 1);
+    receipt.requested_by = Some(crate::operation::OperationRequester {
+        agent_id: "project-01H".to_string(),
+        entity_id: "run-project".to_string(),
+        conversation_id: "conversation-project".to_string(),
+    });
+
+    store
+        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .unwrap();
+    let read = store
+        .operation("op-1")
+        .unwrap()
+        .expect("the receipt is there");
+    assert_eq!(read.requested_by, receipt.requested_by);
+    assert_eq!(read.requested_by.unwrap().identity().id, "project-01H");
+
+    // The human's own operation names nobody, which is what every operation
+    // written before an agent could ask for one reads as.
+    let humans = queued_operation("op-2", 2);
+    store
+        .accept_thread_post("issue-1", &record.agents, &humans)
+        .unwrap();
+    assert!(store
+        .operation("op-2")
+        .unwrap()
+        .expect("the receipt is there")
+        .requested_by
+        .is_none());
+}
+
 #[test]
 fn operation_id_reuse_with_a_different_request_is_rejected() {
     let dir = tempfile::tempdir().unwrap();

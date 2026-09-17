@@ -555,8 +555,17 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   #shell main#root { grid-row:2; }
   #agent-rail { grid-row:1 / 4; }
   #console-region { grid-row:3; grid-column:1 / 3; }
-  /* Nothing above the panel any more, so nothing to clear. */
-  .rail-panel { top:0; }
+  /* Nothing above the panel any more, so nothing to clear. Stated on the
+     rail so it outranks the panel's own top below. */
+  #agent-rail .rail-panel { top:0; }
+  /* The full console is out of flow, and an absolutely positioned grid item
+     is boxed by its grid area — row 3, which is 0px tall once the console
+     leaves it. Its area goes back to auto, the whole view, and it stops at
+     the rail's edge rather than running under a panel that now stands the
+     full height beside it. */
+  #console-region[data-size="full"] { grid-row:auto; grid-column:auto; }
+  #view { --agent-rail-space:calc(var(--agent-panel) + var(--agent-strip)); }
+  #view:has(#agent-rail.rail-unpinned), #view:has(#agent-rail.rail-collapsed) { --agent-rail-space:var(--agent-strip); }
 }
 #shell main#root:not(.surface) { overflow-y:auto; }
 
@@ -676,7 +685,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 /* position:relative — the rail is the frame its own popover is laid in (below):
    the unpinned panel hangs off the strip's edge, and nothing else in the view
    column is the right thing to measure that from. */
-#agent-rail { --agent-panel:min(420px, calc(100vw - 120px));
+#view { --agent-panel:min(420px, calc(100vw - 120px)); } /* read by the rail, its panel, and the full console's edge */
+#agent-rail {
   display:flex; min-height:0; position:relative; background:transparent;
   width:calc(var(--agent-panel) + var(--agent-strip));
   transition:width 240ms cubic-bezier(.2,.8,.2,1); }
@@ -1186,6 +1196,13 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 #console-region[data-size="full"] { position:absolute; left:0; right:var(--agent-strip);
   top:var(--toolbar-h); bottom:0; height:auto; margin:0; z-index:34;
   box-shadow:0 -8px 24px var(--shadow-soft); }
+/* Beside a rail that stands the full height of the column, the overlay stops
+   at the rail's edge with the region's band of page between, rather than
+   running under the panel. Stated after the rule above on purpose: same
+   specificity, so only source order lets this edge win. */
+@media (min-width: 761px) {
+  #console-region[data-size="full"] { right:calc(var(--agent-rail-space) + var(--region-gap)); }
+}
 /* A phone runs the strip across the column's foot instead of down its edge, so
    the overlay stops on the strip's top rather than on its left. Same selector,
    so the media query buys no specificity: it holds because it is written after

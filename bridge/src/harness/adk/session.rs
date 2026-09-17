@@ -121,6 +121,7 @@ impl AdkSession {
                         Err(_) => break,
                     }
                 }
+                reader.end_stream();
                 reader.publish_status(AgentStatus::Ended { code: None });
                 // The child's account of itself is over: drop the sender so
                 // every subscriber sees `Closed` and the pump performs the

@@ -11,6 +11,7 @@ use tokio::sync::{broadcast, watch};
 use super::connection::{AppServerConnection, SharedConnection};
 use super::diagnostics::SessionDiagnostics;
 use super::limits::{AppServerLimits, StateLimits};
+use super::observation::{CodexSurfaces, GoalReadFence};
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
 use super::process::{
     AppServerProcess, ProcessOutcome, StderrOutcome, TerminalEventSink, TerminalSource,
@@ -22,7 +23,6 @@ use super::protocol::{
     ServerNotification, ThreadMetadataNotification,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
-use super::subagents::CodexSubagents;
 use super::translator::CodexActivityTranslator;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
 use crate::harness::{
@@ -31,6 +31,11 @@ use crate::harness::{
 };
 use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
+
+mod observations;
+#[cfg(test)]
+use observations::next_goal_retry;
+use observations::observed_at;
 
 const ACTIVITY_BACKLOG: usize = 1024;
 const STATUS_WHILE_TERMINAL_SOURCES_SETTLE: AgentStatus = AgentStatus::Working;
@@ -228,7 +233,7 @@ struct SessionCore {
     process: Arc<AppServerProcess>,
     state: Mutex<CodexSessionState>,
     translator: Mutex<CodexActivityTranslator>,
-    subagents: Mutex<CodexSubagents>,
+    surfaces: Mutex<CodexSurfaces>,
     surfaces_revision: SurfaceRevision,
     activity: Mutex<Option<broadcast::Sender<ActivityReport>>>,
     status: watch::Sender<SessionStatusSnapshot>,
@@ -279,7 +284,7 @@ impl CodexAppServerSession {
                 resume_id,
             )),
             translator: Mutex::new(CodexActivityTranslator::new(limits.translator())),
-            subagents: Mutex::new(CodexSubagents::default()),
+            surfaces: Mutex::new(CodexSurfaces::default()),
             surfaces_revision: SurfaceRevision::default(),
             activity: Mutex::new(Some(sender)),
             status,
@@ -402,7 +407,7 @@ impl SessionCore {
         Ok(())
     }
 
-    fn apply_effect(&self, effect: &SessionEffect) -> Result<bool, HarnessError> {
+    fn apply_effect(self: &Arc<Self>, effect: &SessionEffect) -> Result<bool, HarnessError> {
         match effect {
             SessionEffect::Request(operation) => {
                 let (thread_id, turn_id) = operation_ids(operation);
@@ -435,7 +440,16 @@ impl SessionCore {
                 .connection
                 .notify(ClientNotification::Initialized)
                 .map_err(|error| HarnessError::Session(error.to_string()))?,
-            SessionEffect::ThreadReady(_) => {}
+            SessionEffect::ThreadReady(thread_id) => {
+                let fence = self
+                    .surfaces
+                    .lock()
+                    .unwrap()
+                    .observation
+                    .open_thread(thread_id.clone(), observed_at());
+                self.surfaces_revision.bump();
+                self.request_goal(fence, 0);
+            }
             SessionEffect::CloseTurn(turn_id) => {
                 let reports = self
                     .translator
@@ -455,14 +469,32 @@ impl SessionCore {
     fn handle_connection(self: &Arc<Self>, event: ConnectionEvent) -> Result<(), HarnessError> {
         match event {
             ConnectionEvent::Response { operation, result } => {
+                if let PendingOperation::ReadGoal {
+                    thread_id,
+                    generation,
+                    revision,
+                    attempt,
+                } = operation
+                {
+                    return self.handle_goal_response(
+                        GoalReadFence {
+                            thread_id,
+                            generation,
+                            revision,
+                        },
+                        attempt,
+                        result,
+                    );
+                }
                 if let PendingOperation::ReadThread { thread_id } = operation {
                     if let Ok(OperationResult::ThreadRead(result)) = result {
                         if result.thread.id == thread_id {
                             if let Some(parent) = self.expected_parent_thread() {
                                 if self
-                                    .subagents
+                                    .surfaces
                                     .lock()
                                     .unwrap()
+                                    .subagents
                                     .apply_thread_read(&result, &parent)
                                 {
                                     self.surfaces_revision.bump();
@@ -470,9 +502,10 @@ impl SessionCore {
                             }
                         }
                     }
-                    self.subagents
+                    self.surfaces
                         .lock()
                         .unwrap()
+                        .subagents
                         .hydration_finished(&thread_id, false);
                     self.request_next_subagent_hydration();
                     return Ok(());
@@ -504,6 +537,12 @@ impl SessionCore {
         self: &Arc<Self>,
         inbound: InboundNotification,
     ) -> Result<(), HarnessError> {
+        if matches!(
+            inbound.method.as_str(),
+            "thread/goal/updated" | "thread/goal/cleared" | "turn/plan/updated"
+        ) {
+            return self.handle_observation_notification(inbound);
+        }
         let expected_parent = self.expected_parent_thread();
         if ParentThreadFilter::notification(
             &inbound.method,
@@ -534,9 +573,10 @@ impl SessionCore {
             return;
         };
         if self
-            .subagents
+            .surfaces
             .lock()
             .unwrap()
+            .subagents
             .apply_thread_metadata(&metadata, expected_parent)
         {
             self.surfaces_revision.bump();
@@ -583,6 +623,15 @@ impl SessionCore {
                 self.apply_state(SessionEvent::ThreadStarted(thread_id.clone()))
             }
             ServerNotification::TurnStarted { turn_id, .. } => {
+                if self
+                    .surfaces
+                    .lock()
+                    .unwrap()
+                    .observation
+                    .observe_turn(turn_id)
+                {
+                    self.surfaces_revision.bump();
+                }
                 self.log("turn_started", [("turn_id", json!(turn_id))]);
                 self.remember_protocol("turn_started");
                 self.apply_state(SessionEvent::TurnStarted(turn_id.clone()))
@@ -604,6 +653,15 @@ impl SessionCore {
                 self.apply_state(SessionEvent::ObservedCompletion(completion.clone()))
             }
             ServerNotification::Item(item) => {
+                if self
+                    .surfaces
+                    .lock()
+                    .unwrap()
+                    .observation
+                    .observe_turn(&item.turn_id)
+                {
+                    self.surfaces_revision.bump();
+                }
                 self.apply_state(SessionEvent::TurnStarted(item.turn_id.clone()))?;
                 self.observe_user_message(item);
                 self.translate(&notification)
@@ -645,10 +703,7 @@ impl SessionCore {
     }
 
     fn translate(&self, notification: &ServerNotification) -> Result<(), HarnessError> {
-        let changed = {
-            let mut subagents = self.subagents.lock().unwrap();
-            subagents.apply(notification)
-        };
+        let changed = { self.surfaces.lock().unwrap().subagents.apply(notification) };
         if changed {
             self.surfaces_revision.bump();
         }
@@ -664,7 +719,12 @@ impl SessionCore {
     }
 
     fn request_next_subagent_hydration(&self) {
-        let thread_id = self.subagents.lock().unwrap().hydration_candidate();
+        let thread_id = self
+            .surfaces
+            .lock()
+            .unwrap()
+            .subagents
+            .hydration_candidate();
         let Some(thread_id) = thread_id else { return };
         // This is descriptive enrichment. A refused read must not fail the
         // parent turn or hide the lifecycle data already observed.
@@ -675,9 +735,10 @@ impl SessionCore {
             })
             .is_err()
         {
-            self.subagents
+            self.surfaces
                 .lock()
                 .unwrap()
+                .subagents
                 .hydration_finished(&thread_id, true);
         }
     }
@@ -747,7 +808,16 @@ impl SessionCore {
         if let Some(next) = previous.transition(ended) {
             self.status.send_replace(next);
         }
-        if self.subagents.lock().unwrap().settle_running() {
+        if self.surfaces.lock().unwrap().subagents.settle_running() {
+            self.surfaces_revision.bump();
+        }
+        if self
+            .surfaces
+            .lock()
+            .unwrap()
+            .observation
+            .mark_terminal_stale()
+        {
             self.surfaces_revision.bump();
         }
         self.report_all(self.translator.lock().unwrap().close_all());
@@ -976,7 +1046,7 @@ impl AgentSession for CodexAppServerSession {
     }
 
     fn surfaces(&self) -> Option<AgentSurfaces> {
-        self.core.subagents.lock().unwrap().snapshot()
+        self.core.surfaces.lock().unwrap().snapshot()
     }
 
     fn surfaces_changed(&self) -> Option<watch::Receiver<u64>> {
@@ -1073,7 +1143,8 @@ fn operation_ids(operation: &PendingOperation) -> (Option<&str>, Option<&str>) {
             (Some(thread_id), Some(turn_id))
         }
         PendingOperation::ResumeThread { thread_id, .. } => (Some(thread_id), None),
-        PendingOperation::ReadThread { thread_id } => (Some(thread_id), None),
+        PendingOperation::ReadThread { thread_id }
+        | PendingOperation::ReadGoal { thread_id, .. } => (Some(thread_id), None),
         PendingOperation::Initialize | PendingOperation::StartThread { .. } => (None, None),
     }
 }
@@ -1105,6 +1176,7 @@ fn operation_event(operation: &PendingOperation) -> &'static str {
         PendingOperation::SteerTurn { .. } => "turn_steer_sent",
         PendingOperation::InterruptTurn { .. } => "turn_interrupt_sent",
         PendingOperation::ReadThread { .. } => "thread_read_sent",
+        PendingOperation::ReadGoal { .. } => "goal_read_sent",
     }
 }
 
@@ -1275,6 +1347,14 @@ mod tests {
     }
 
     #[test]
+    fn goal_recovery_attempts_are_bounded_per_episode() {
+        assert_eq!(next_goal_retry(0), Some(1));
+        assert_eq!(next_goal_retry(1), Some(2));
+        assert_eq!(next_goal_retry(2), None);
+        assert_eq!(next_goal_retry(u8::MAX), None);
+    }
+
+    #[test]
     fn native_receipts_wait_for_a_matching_user_message_echo() {
         let mut receipts = PendingTurnReceipts::default();
         receipts.register(&Turn::new("start input").with_operation_id("start-operation"));
@@ -1340,7 +1420,7 @@ mod tests {
     #[test]
     fn turn_start_response_does_not_publish_seen_without_the_user_message_item() {
         let root = tempfile::tempdir().unwrap();
-        let turn_response = json!({"id":3,"result":{"turn":{"id":TURN_ID}}});
+        let turn_response = json!({"id":4,"result":{"turn":{"id":TURN_ID}}});
         let script = opened_thread_script(
             root.path(),
             &format!("read turn; printf '%s\\n' '{}'; read hold", turn_response),
@@ -1559,10 +1639,10 @@ mod tests {
             }),
         });
         {
-            let mut subagents = session.core.subagents.lock().unwrap();
-            subagents.apply(&activity);
+            let mut surfaces = session.core.surfaces.lock().unwrap();
+            surfaces.subagents.apply(&activity);
             assert_eq!(
-                subagents.hydration_candidate().as_deref(),
+                surfaces.subagents.hydration_candidate().as_deref(),
                 Some(CHILD_THREAD_ID)
             );
         }
@@ -1645,7 +1725,7 @@ mod tests {
         }))
         .unwrap();
         let turn_response = serde_json::to_string(&json!({
-            "id":3,"result":{"turn":{"id":TURN_ID}}
+            "id":4,"result":{"turn":{"id":TURN_ID}}
         }))
         .unwrap();
         let traffic =
@@ -1656,10 +1736,22 @@ mod tests {
         wait_until("opened its parent thread", || {
             session.session_id().is_some()
         });
+        wait_until("completed its initial goal read", || {
+            session.surfaces().is_some_and(|surfaces| {
+                surfaces
+                    .observations
+                    .goal
+                    .as_ref()
+                    .and_then(crate::harness::surfaces::SurfaceObservation::freshness)
+                    == Some(crate::harness::surfaces::SurfaceFreshness::Current)
+            })
+        });
         session.send_turn(&Turn::new("delegate")).unwrap();
 
         wait_until("published its subagent surface", || {
-            session.surfaces().is_some()
+            session
+                .surfaces()
+                .is_some_and(|surfaces| surfaces.subagents.len() == 1)
         });
         assert!(*revision.borrow() > 0);
         let agents = session.surfaces().unwrap().subagents;
@@ -1722,8 +1814,9 @@ mod tests {
             )
         }))
         .unwrap();
+        let goal_response = serde_json::to_string(&json!({"id":3,"result":{"goal":null}})).unwrap();
         format!(
-            "read initialize; printf '%s\\n' '{initialize_response}'; read initialized; read thread; printf '%s\\n' '{thread_response}'; {thread_traffic}"
+            "read initialize; printf '%s\\n' '{initialize_response}'; read initialized; read thread; printf '%s\\n' '{thread_response}'; read goal; printf '%s\\n' '{goal_response}'; {thread_traffic}"
         )
     }
 
@@ -2045,7 +2138,7 @@ mod tests {
             root.path(),
             &format!(
                 "read turn; printf '%s\\n' '{}'; printf '%s\\n' '{}'",
-                json!({"id":3,"result":{"turn":{"id":TURN_ID}}}),
+                json!({"id":4,"result":{"turn":{"id":TURN_ID}}}),
                 json!({"method":"item/started","params":{"threadId":THREAD_ID,"turnId":TURN_ID,"item":{"id":"tool-1","type":"webSearch"}}}),
             ),
         );
@@ -2136,7 +2229,7 @@ mod tests {
             root.path(),
             &format!(
                 "read turn; printf '%s\\n' '{turn_response}'; read interrupt; printf '%s\\n' \"$interrupt\" > {staged_capture}; mv {staged_capture} {interrupt_capture}; read hold",
-                turn_response = json!({"id":3,"result":{"turn":{"id":TURN_ID}}}),
+                turn_response = json!({"id":4,"result":{"turn":{"id":TURN_ID}}}),
                 staged_capture = interrupt_capture.with_extension("part").display(),
                 interrupt_capture = interrupt_capture.display(),
             ),

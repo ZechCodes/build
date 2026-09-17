@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use tempfile::TempDir;
 
-use super::surfaces::{AgentSurfaces, SurfaceAgent, SurfacePhase, SurfaceTool, SurfaceWorkflow};
+use super::surfaces::{
+    AgentSurfaces, SurfaceAgent, SurfaceCoverage, SurfaceObservation, SurfaceObservations,
+    SurfacePhase, SurfaceTool, SurfaceWorkflow,
+};
 
 pub(crate) const WORKFLOW_FIXTURE: &str = "workflow.jsonl";
 pub(crate) const SUBAGENT_FIXTURE: &str = "subagent.jsonl";
@@ -82,6 +85,15 @@ const WORKFLOW_LAST_TOOL_SUMMARY: &str =
 
 pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
     AgentSurfaces {
+        observations: SurfaceObservations {
+            workflows: Some(SurfaceObservation::current_unstamped(
+                SurfaceCoverage::Partial,
+            )),
+            subagents: Some(SurfaceObservation::current_unstamped(
+                SurfaceCoverage::Partial,
+            )),
+            ..SurfaceObservations::default()
+        },
         workflows: vec![SurfaceWorkflow {
             id: WORKFLOW_TASK_ID.to_string(),
             name: "readme-analysis".to_string(),

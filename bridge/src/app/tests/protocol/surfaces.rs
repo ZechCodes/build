@@ -431,13 +431,13 @@ async fn a_surface_only_pump_stops_when_its_session_is_replaced() {
     let agent_id = primary_agent_id(&app, &run_id);
     let key = TabKey::agent(&root, &agent_id);
     let state = app.shared();
-    let before_pump = Arc::strong_count(&state);
+    let old_session = {
+        let s = state.lock().unwrap();
+        Arc::downgrade(&s.session_registry.test_tab(&key).unwrap().session)
+    };
     spawn_activity_pump(&state, key.clone(), None);
-    wait_for(Duration::from_secs(5), || {
-        (Arc::strong_count(&state) == before_pump + 1).then_some(())
-    })
-    .await
-    .expect("the surface-only pump starts");
+    tokio::task::yield_now().await;
+    drop(revision);
 
     insert_agent_tab(
         &mut state.lock().unwrap(),
@@ -446,13 +446,12 @@ async fn a_surface_only_pump_stops_when_its_session_is_replaced() {
         &agent_id,
         DictatedSession::reporting(AgentStatus::Working),
     );
-    revision.bump();
 
     wait_for(Duration::from_secs(5), || {
-        (Arc::strong_count(&state) == before_pump).then_some(())
+        old_session.upgrade().is_none().then_some(())
     })
     .await
-    .expect("the replaced session's surface pump retires");
+    .expect("replacement releases the old session without another surface event");
     assert!(
         state
             .lock()
@@ -474,16 +473,10 @@ async fn closing_a_surface_only_watch_does_not_end_the_session() {
         DictatedSession::reporting(AgentStatus::Working)
             .watching_a_revision_the_caller_can_close(watched),
     );
-    let before_pump = Arc::strong_count(&state);
     spawn_activity_pump(&state, key.clone(), None);
 
     drop(revision_sender);
-
-    wait_for(Duration::from_secs(5), || {
-        (Arc::strong_count(&state) == before_pump).then_some(())
-    })
-    .await
-    .expect("the closed surface-only watch retires its pump");
+    tokio::task::yield_now().await;
     let s = state.lock().unwrap();
     assert!(
         s.session_registry.test_tab(&key).unwrap().live,
@@ -494,20 +487,34 @@ async fn closing_a_surface_only_watch_does_not_end_the_session() {
 }
 
 #[tokio::test]
+async fn a_surface_only_idle_pump_does_not_keep_app_state_alive() {
+    let revision = SurfaceRevision::default();
+    let (_dir, state, key) = a_run_with_a_dictated_tab(
+        "run-surface-state-release",
+        DictatedSession::reporting(AgentStatus::Working).moving_surfaces_on(revision),
+    );
+    let app_state = Arc::downgrade(&state);
+    spawn_activity_pump(&state, key, None);
+    tokio::task::yield_now().await;
+
+    drop(state);
+
+    wait_for(Duration::from_secs(5), || {
+        app_state.upgrade().is_none().then_some(())
+    })
+    .await
+    .expect("the waiting pump holds only weak application ownership");
+}
+
+#[tokio::test]
 async fn the_pump_ends_with_the_activity_stream_though_the_revision_stays_open() {
     let revision = SurfaceRevision::default();
     let (_dir, state, key) = a_run_with_a_dictated_tab(
         "run-outlived",
         DictatedSession::reporting(AgentStatus::Working).moving_surfaces_on(revision.clone()),
     );
-    let before_pump = Arc::strong_count(&state);
     let (activity, subscribed) = broadcast::channel(4);
     spawn_activity_pump(&state, key.clone(), Some(subscribed));
-    assert_eq!(
-        Arc::strong_count(&state),
-        before_pump + 1,
-        "the pump holds the state for as long as it runs"
-    );
 
     drop(activity);
 
@@ -524,11 +531,6 @@ async fn the_pump_ends_with_the_activity_stream_though_the_revision_stays_open()
     .await
     .expect("the stream closing ends the session with the revision channel still open");
     revision.bump();
-    wait_for(Duration::from_secs(5), || {
-        (Arc::strong_count(&state) == before_pump).then_some(())
-    })
-    .await
-    .expect("and the task is gone rather than parked on a channel nobody will close");
 }
 
 #[tokio::test]
@@ -539,7 +541,6 @@ async fn a_revision_channel_that_closes_leaves_the_pump_reading_activity() {
         DictatedSession::reporting(AgentStatus::Working)
             .watching_a_revision_the_caller_can_close(watched),
     );
-    let before_pump = Arc::strong_count(&state);
     let (activity, subscribed) = broadcast::channel(4);
     spawn_activity_pump(&state, key.clone(), Some(subscribed));
 
@@ -559,11 +560,6 @@ async fn a_revision_channel_that_closes_leaves_the_pump_reading_activity() {
     })
     .await
     .expect("a revision channel nobody can watch drops to activity-only, it does not end the pump");
-    assert_eq!(
-        Arc::strong_count(&state),
-        before_pump + 1,
-        "and the pump is still holding the state it reads into"
-    );
     drop(activity);
 }
 

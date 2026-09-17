@@ -82,6 +82,16 @@ impl ProtocolReader {
         publish_status(&self.status_updates, status);
     }
 
+    pub(super) fn end_stream(&self) {
+        let changed = self
+            .state
+            .lock()
+            .unwrap()
+            .surfaces
+            .mark_retained_checklist_stale();
+        self.bump_revision_when(changed);
+    }
+
     /// The lifecycle line, and the background-task lines that ride the same
     /// subtype. Anything else on `system` is not this session's business.
     fn read_system(&mut self, event: &Value) {

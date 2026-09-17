@@ -16,6 +16,7 @@ use crate::pty::HarnessSpec;
 mod connection;
 mod diagnostics;
 mod limits;
+mod observation;
 mod policy;
 mod process;
 mod protocol;

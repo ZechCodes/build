@@ -333,7 +333,8 @@ pub(in crate::app) fn spawn_activity_pump(
         // nothing to spawn the pump onto.
         return;
     }
-    let state = Arc::clone(state);
+    let state = Arc::downgrade(state);
+    let session = Arc::downgrade(&session);
     tokio::spawn(async move {
         if surfaces_changed.is_some()
             && !publish_surface_invalidation(&state, &key, &session, instance.as_ref())
@@ -362,6 +363,9 @@ pub(in crate::app) fn spawn_activity_pump(
                     let Some(instance) = instance.as_ref() else {
                         return;
                     };
+                    let (Some(state), Some(session)) = (state.upgrade(), session.upgrade()) else {
+                        return;
+                    };
                     let said = SelfReport::read(&session);
                     let mut s = state.lock().unwrap();
                     if !still_pumping_instance(&s, &key, &session, instance) {
@@ -382,6 +386,9 @@ pub(in crate::app) fn spawn_activity_pump(
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
                     let Some(instance) = instance.as_ref() else {
+                        return;
+                    };
+                    let (Some(state), Some(session)) = (state.upgrade(), session.upgrade()) else {
                         return;
                     };
                     let said = SelfReport::read(&session);
@@ -481,16 +488,19 @@ async fn next_pump_wake(
 }
 
 fn publish_surface_invalidation(
-    state: &Arc<Mutex<AppState>>,
+    state: &std::sync::Weak<Mutex<AppState>>,
     key: &TabKey,
-    session: &Arc<dyn AgentSession>,
+    session: &std::sync::Weak<dyn AgentSession>,
     instance: Option<&SessionInstance>,
 ) -> bool {
     let Some(instance) = instance else {
         return false;
     };
+    let (Some(state), Some(session)) = (state.upgrade(), session.upgrade()) else {
+        return false;
+    };
     let state = state.lock().unwrap();
-    if !still_pumping_instance(&state, key, session, instance) {
+    if !still_pumping_instance(&state, key, &session, instance) {
         return false;
     }
     state.note_entity_changed(&instance.entity_id);

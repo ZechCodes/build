@@ -38,6 +38,12 @@ pub enum PendingOperation {
     ReadThread {
         thread_id: String,
     },
+    ReadGoal {
+        thread_id: String,
+        generation: u64,
+        revision: u64,
+        attempt: u8,
+    },
 }
 
 impl PendingOperation {
@@ -50,6 +56,7 @@ impl PendingOperation {
             PendingOperation::SteerTurn { .. } => "turn/steer",
             PendingOperation::InterruptTurn { .. } => "turn/interrupt",
             PendingOperation::ReadThread { .. } => "thread/read",
+            PendingOperation::ReadGoal { .. } => "thread/goal/get",
         }
     }
 
@@ -151,6 +158,12 @@ impl PendingOperation {
                     include_turns: false,
                 },
             ),
+            PendingOperation::ReadGoal { thread_id, .. } => serialize_request(
+                writer,
+                id,
+                self.method(),
+                &ThreadGoalGetParams { thread_id },
+            ),
         }
     }
 
@@ -170,6 +183,7 @@ impl PendingOperation {
                 }
             }
             PendingOperation::ReadThread { .. } => decode(value).map(OperationResult::ThreadRead),
+            PendingOperation::ReadGoal { .. } => decode(value).map(OperationResult::GoalRead),
         }
         .map_err(|error| format!("{} response has the wrong body: {error}", self.method()))
     }
@@ -183,12 +197,47 @@ pub enum OperationResult {
     TurnSteered(TurnSteerResult),
     TurnInterrupted,
     ThreadRead(ThreadReadResult),
+    GoalRead(ThreadGoalGetResult),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ThreadGoalGetResult {
+    // Intentionally lacks `default`: the provider schema permits omission, but an
+    // omitted field supplies no evidence. Only an explicit null confirms no goal.
+    #[serde(deserialize_with = "deserialize_nullable_goal")]
+    pub goal: Option<ThreadGoal>,
+}
+
+fn deserialize_nullable_goal<'de, D>(deserializer: D) -> Result<Option<ThreadGoal>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<ThreadGoal>::deserialize(deserializer)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadGoal {
+    pub thread_id: String,
+    pub objective: String,
+    pub status: String,
+    pub token_budget: Option<u64>,
+    pub tokens_used: u64,
+    pub time_used_seconds: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadReadResult {
     pub thread: ThreadSummary,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadGoalGetParams<'a> {
+    thread_id: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

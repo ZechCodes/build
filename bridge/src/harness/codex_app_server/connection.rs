@@ -212,7 +212,12 @@ impl AppServerConnection {
         let body = match (result, error) {
             (Some(result), None) => match operation.decode_result(result) {
                 Ok(result) => Ok(result),
-                Err(message) if matches!(operation, PendingOperation::ReadThread { .. }) => {
+                Err(message)
+                    if matches!(
+                        operation,
+                        PendingOperation::ReadThread { .. } | PendingOperation::ReadGoal { .. }
+                    ) =>
+                {
                     Err(RpcError {
                         code: -32603,
                         message,
@@ -221,9 +226,17 @@ impl AppServerConnection {
                 }
                 Err(message) => return Err(ConnectionError::Protocol(message)),
             },
-            (None, Some(error)) => {
-                Err(RpcError::from_value(error).map_err(ConnectionError::Protocol)?)
-            }
+            (None, Some(error)) => match RpcError::from_value(error) {
+                Ok(error) => Err(error),
+                Err(message) if matches!(operation, PendingOperation::ReadGoal { .. }) => {
+                    Err(RpcError {
+                        code: -32603,
+                        message,
+                        data: None,
+                    })
+                }
+                Err(message) => return Err(ConnectionError::Protocol(message)),
+            },
             _ => unreachable!(),
         };
         Ok(ConnectionEvent::Response {

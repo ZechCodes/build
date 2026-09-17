@@ -18,11 +18,7 @@ fn a_spawned_agents_tool_call_never_writes_the_sessions_surfaces() {
 
     reader.read_line(&a_spawned_agents_todo_write_line());
 
-    assert!(
-        surfaces_of(&reader).is_none(),
-        "a spawned agent's todos are not the session's checklist: {:?}",
-        surfaces_of(&reader)
-    );
+    assert!(surfaces_of(&reader).unwrap().checklist.is_empty());
     assert_eq!(
         kinds_and_parents_of(&reports_already_sent(&mut heard)),
         vec![("tool_use", Some(SPAWNED_AGENT_CALL))],
@@ -43,7 +39,7 @@ fn a_spawned_agents_open_call_outlives_the_sessions_turn() {
     );
 }
 #[test]
-fn a_session_that_read_only_the_workflow_fixture_writes_the_workflows_key_alone() {
+fn a_session_that_read_only_the_workflow_fixture_writes_workflows_and_capability() {
     let surfaces = surfaces_of(&reader_over_every_line_of(WORKFLOW_FIXTURE))
         .expect("the workflow fixture leaves the session a snapshot");
 
@@ -55,10 +51,11 @@ fn a_session_that_read_only_the_workflow_fixture_writes_the_workflows_key_alone(
         .map(String::as_str)
         .collect();
 
-    assert_eq!(named, vec!["workflows"], "{written}");
+    assert_eq!(named, vec!["observations", "workflows"], "{written}");
+    assert_eq!(written["observations"]["goal"]["support"], "unsupported");
 }
 #[test]
-fn a_session_that_read_no_task_line_at_all_offers_no_surfaces() {
+fn a_session_that_read_no_task_line_still_reports_goal_unsupported() {
     let mut reader = reader_over_a_silent_session();
     for line in fixture_lines(WORKFLOW_FIXTURE) {
         let event: Value = serde_json::from_str(&line).expect("the fixture is protocol");
@@ -68,7 +65,8 @@ fn a_session_that_read_no_task_line_at_all_offers_no_surfaces() {
         }
     }
 
-    assert!(surfaces_of(&reader).is_none());
+    let written = surfaces_of(&reader).unwrap().wire_value(&|_| None);
+    assert_eq!(written["observations"]["goal"]["support"], "unsupported");
     assert_eq!(revision_counter_of(&reader), 0);
 }
 #[test]
@@ -111,12 +109,13 @@ fn a_live_session_answers_with_the_snapshot_its_reader_built() {
     session.end();
 }
 #[test]
-fn a_live_session_that_read_no_task_line_answers_with_no_surfaces() {
+fn a_live_session_that_read_no_task_line_answers_with_capability_metadata() {
     let session = open(&stream_json_harness(&[THINKING, NARRATION, RESULT]));
     session.send_turn(&Turn::new("say something")).unwrap();
     wait_for_status(&session, AgentStatus::Waiting);
 
-    assert!(session.surfaces().is_none());
+    let written = session.surfaces().unwrap().wire_value(&|_| None);
+    assert_eq!(written["observations"]["goal"]["support"], "unsupported");
     assert!(
         session.surfaces_changed().is_some(),
         "the channel is offered even before anything moves"

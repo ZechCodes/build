@@ -1,6 +1,7 @@
 # Goal and Task Observation Spec
 
-Status: proposal, 2026-09-17. Documentation only; not an implemented contract.
+Status: MVP implemented, 2026-09-17. Follow-up carrier and persistence work is
+explicitly excluded below.
 
 ## Outcome and scope
 
@@ -9,7 +10,7 @@ its current checklist, and its live execution tasks through one provider-neutral
 harness interface. Codex and Claude supply different evidence; the interface
 must preserve that difference without requiring provider checks in the SPA.
 
-This proposal extends [Agent Surfaces Spec](Agent%20Surfaces%20Spec.md) and
+This contract extends [Agent Surfaces Spec](Agent%20Surfaces%20Spec.md) and
 [Agent Surfaces Primitives](Agent%20Surfaces%20Primitives.md). It retains their
 snapshot, bounded-data, read-only, and content-free invalidation rules. The
 intentional addition is per-kind observation metadata: an omitted surface
@@ -209,6 +210,15 @@ handling. Do not equate every RPC error with lack of support. If a version
 requires an experimental capability, enable it only deliberately with fixtures;
 do not infer support solely from the CLI version or generated schema.
 
+For the initial implementation, keep one goal read in flight and allow up to
+three attempts per explicit-error recovery episode. A successful read rearms
+future recovery; never cap successful reads over the session's lifetime. Local
+goal-read timeouts are deferred: a silent server leaves the observation loading
+or stale until a response, notification, or transport failure provides evidence.
+This keeps optional reads bounded without retaining abandoned RPCs or spawning
+timer threads. A later timeout implementation must also safely retire requests
+and ignore late replies without changing execution state.
+
 Re-read after resume/reconnect and detected event loss. Process updates between
 turns, including autonomous continuations. Do not poll on every token or invent
 local usage accrual; the provider counters are authoritative.
@@ -361,17 +371,41 @@ without activity events, replacement-safe cache behavior, and the compact UI.
 PTY parity, durable restart, historical reconciliation, and richer Claude task
 corrections are follow-up gates, not MVP claims. Retain the original reducer
 invariants and race tests when each slice is implemented. Run targeted Rust and
-SPA tests for implemented slices; no test run is required for this planning
-document alone.
+SPA tests for implemented slices.
 
 Completion means callers can read goal and task state solely through
 `AgentSession` surfaces; neither orchestrator nor SPA parses provider events,
 infers goals from prose, or mistakes absent evidence for completed work.
 
+### Implementation review gates
+
+Backend work precedes frontend integration so concurrent UI work can finish.
+Each gate can send a slice back for refactoring; passing behavior tests alone
+does not satisfy the maintainability requirements.
+
+1. Architecture review approves ownership and the shared primitives before
+   provider integration. Reuse the snapshot, revision, and session-identity
+   contracts. Extract cohesive modules instead of extending large readers.
+2. Contract and reducer review checks that providers share bounds, observation
+   semantics, and checklist collection logic. Reject duplicated state handling,
+   invalid representable observation combinations, and unnecessary abstractions.
+3. Integration review checks observation-error isolation, confirmation races,
+   lifecycle ownership, and cache replacement. Tests must exercise those
+   boundaries, including failures, rather than repeat the implementation.
+4. Final QA runs the relevant Rust and SPA suites, formatting, Clippy, ESLint,
+   build, and security scans. New complexity suppressions are not accepted;
+   functions over the existing limits return for decomposition. Frontend review
+   also checks stale-state wording and disclosure-state preservation.
+
 ## Evidence and remaining verification
 
 - [Codex app-server goal API](https://learn.chatgpt.com/docs/app-server#manage-a-thread-goal)
   and local generated 0.154.0 schemas establish the goal methods and fields.
+- The matching [0.154.0 goal serializer](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/app-server/src/request_processors/thread_goal_processor.rs#L498-L506)
+  uses Unix epoch seconds for `createdAt` and `updatedAt`; convert with checked
+  arithmetic to the shared millisecond contract. The generated get-response
+  schema permits an omitted `goal`; Build deliberately treats that as unknown
+  evidence rather than confirmed absence.
 - [Claude Agent SDK TypeScript reference](https://code.claude.com/docs/en/agent-sdk/typescript)
   establishes task lifecycle, progress, and background roster events. Some fields
   are version-dependent; implementation must fixture the carrier we actually run.
@@ -380,6 +414,10 @@ infers goals from prose, or mistakes absent evidence for completed work.
   [shared checklist UI](https://github.com/pingdotgg/t3code/blob/d4d5d12e8ba086cfbf79ca3adeb4156b46ead665/apps/web/src/components/ChatView.tsx#L5847)
   consumes plan progress, including Claude TodoWrite translated into plan events.
   That is a checklist precedent, not evidence of an autonomous-goal indicator.
-- Before implementation, capture goal timestamp units, permission/experimental
-  errors on supported Codex versions, and Claude TaskList/Get/update result
-  shapes. Unsupported recovery stays explicit until those fixtures exist.
+- Codex goal fixtures are schema-derived and checked against the matching
+  upstream producer; they are not a captured live goal session. Scripted
+  transport tests cover unsupported and transient errors. Live permission-error
+  capture remains a verification follow-up; observation failures retain explicit
+  unsupported or stale state without failing execution.
+- Capture Claude TaskList/Get and richer update result shapes before those
+  deferred reducers are implemented.

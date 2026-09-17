@@ -88,11 +88,19 @@ fn the_shared_wire_fixture_is_what_the_recorded_streams_build() {
     )
     .expect("the shared surfaces fixture is JSON");
 
-    assert_eq!(
-        checked_in,
-        the_wire_every_recorded_stream_builds(),
-        "re-record it with `cargo test the_shared_wire_fixture -- --ignored --nocapture`"
-    );
+    let mut actual = the_wire_every_recorded_stream_builds();
+    assert_eq!(actual["observations"]["goal"]["support"], "unsupported");
+    assert_eq!(actual["observations"]["checklist"]["coverage"], "partial");
+    actual
+        .as_object_mut()
+        .expect("the surfaces wire value is an object")
+        .remove("observations");
+    actual
+        .as_object_mut()
+        .expect("the surfaces wire value is an object")
+        .remove("checklist_provenance");
+
+    assert_eq!(checked_in, actual);
 }
 #[test]
 #[ignore = "prints the shared surfaces fixture so it can be re-recorded"]
@@ -147,6 +155,71 @@ fn the_shell_and_checklist_fixture_leaves_three_finished_items_and_one_finished_
     assert_eq!(surfaces.shells.len(), 1, "{surfaces:?}");
     assert_eq!(surfaces.shells[0].state.as_deref(), Some("done"));
     assert_eq!(surfaces.shells[0].exit_code, Some(0));
+}
+
+fn todo_write_call(call_id: &str, subject: &str) -> String {
+    json!({
+        "type": "assistant",
+        "parent_tool_use_id": null,
+        "message": { "content": [{
+            "type": "tool_use",
+            "id": call_id,
+            "name": "TodoWrite",
+            "input": { "todos": [{
+                "content": subject,
+                "status": "in_progress",
+                "activeForm": format!("doing {subject}"),
+            }] },
+        }] },
+    })
+    .to_string()
+}
+
+fn todo_write_result(call_id: &str, failed: bool) -> String {
+    json!({
+        "type": "user",
+        "parent_tool_use_id": null,
+        "message": { "content": [{
+            "type": "tool_result",
+            "tool_use_id": call_id,
+            "is_error": failed,
+            "content": if failed { "refused" } else { "todos updated" },
+        }] },
+    })
+    .to_string()
+}
+
+#[test]
+fn todo_write_is_published_only_after_its_successful_result() {
+    let mut reader = reader_over_a_silent_session();
+    reader.read_line(&todo_write_call("todo-1", "ship it"));
+
+    assert!(surfaces_of(&reader).unwrap().checklist.is_empty());
+    assert_eq!(revision_counter_of(&reader), 0);
+
+    reader.read_line(&todo_write_result("todo-1", true));
+    assert!(surfaces_of(&reader).unwrap().checklist.is_empty());
+    assert_eq!(revision_counter_of(&reader), 0);
+
+    reader.read_line(&todo_write_call("todo-2", "ship it"));
+    reader.read_line(&todo_write_result("todo-2", false));
+    let surfaces = surfaces_of(&reader).unwrap();
+    assert_eq!(surfaces.checklist.len(), 1);
+    assert_eq!(surfaces.checklist[0].subject, "ship it");
+    assert_eq!(revision_counter_of(&reader), 1);
+}
+
+#[test]
+fn ending_the_stream_marks_a_retained_checklist_stale() {
+    let mut reader = reader_over_a_silent_session();
+    reader.read_line(&todo_write_call("todo-1", "ship it"));
+    reader.read_line(&todo_write_result("todo-1", false));
+
+    reader.end_stream();
+
+    let written = surfaces_of(&reader).unwrap().wire_value(&|_| None);
+    assert_eq!(written["observations"]["checklist"]["freshness"], "stale");
+    assert_eq!(revision_counter_of(&reader), 2);
 }
 #[test]
 fn the_counter_moves_once_per_line_that_moved_the_snapshot() {

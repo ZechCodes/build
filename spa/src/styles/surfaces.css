@@ -5,9 +5,8 @@
    tokens (--pane-gutter and friends) come from the same place: this surface
    sits in the shell's two-column primitive and states no width of its own. */
 
-/* The changeset header: what this set of changes is, and its counts. */
+/* The changeset header: this set of changes' summary. */
 .csheader { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin:0 0 14px; }
-.csheader .cstitle { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; }
 .csheader.commitheader { display:block; margin-bottom:16px; }
 /* A commit's identity line and body reuse the commit-detail type scale. */
 .csheader.commitheader .csub { font-weight:650; font-size:15px; }

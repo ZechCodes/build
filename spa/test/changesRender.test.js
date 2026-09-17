@@ -137,9 +137,10 @@ describe("commitRowHtml", () => {
 });
 
 describe("uncommittedHeaderHtml", () => {
-  it("names the changeset with its +/− counts", () => {
+  it("shows the changeset counts without repeating its rail label", () => {
     const html = uncommittedHeaderHtml(status());
-    expect(html).toContain("Uncommitted changes");
+    expect(html).not.toContain("Uncommitted changes");
+    expect(html).toContain("2 files");
     expect(html).toContain("+7");
     expect(html).toContain("−3");
   });

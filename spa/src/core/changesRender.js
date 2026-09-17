@@ -83,8 +83,8 @@ export function changesRailEntries({ status, log, selected, review = null, nowSe
   return entries;
 }
 
-/** The uncommitted changeset's header: what this is, its counts, and the notice
- *  the bridge cut its file list short with.
+/** The uncommitted changeset's header: its counts and the notice that the
+ *  bridge cut its file list short.
  *
  *  Nothing about a capped diff: `git.status` ships shape and no patch, so the
  *  1 MiB cap falls on one file's body and the file draws its own line for it
@@ -92,7 +92,7 @@ export function changesRailEntries({ status, log, selected, review = null, nowSe
 export function uncommittedHeaderHtml(status, { sortOrder = "latest" } = {}) {
   const totals = uncommittedTotals(status);
   const fileCount = totals.files;
-  return `<div class="csheader"><span class="cstitle">Uncommitted changes</span>${statSummary({
+  return `<div class="csheader">${statSummary({
     files_changed: fileCount,
     insertions: totals.insertions,
     deletions: totals.deletions,

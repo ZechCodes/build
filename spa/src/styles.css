@@ -1569,7 +1569,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-event { min-height:24px; padding:1px 0 1px 20px; }
 .thread-event-icon { left:0; top:2px; width:14px; height:14px; border:0;
   background:transparent; font-size:9px; }
-.thread-activity-group { margin-left:0; border-left:1px solid var(--line3); }
+.thread-activity-group { margin-left:0; }
 .thread-activity-group-head { min-height:28px; padding:3px 0 3px 18px; }
 .thread-activity-group-head::before { content:"›"; flex:none; color:var(--ink2);
   transform:rotate(0deg); transition:transform var(--motion-fast, 120ms) ease; }

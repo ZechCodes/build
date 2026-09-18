@@ -185,6 +185,21 @@ way a run standing in the project's own repository does, so the next
 `project.ensure_conversation` hands the new owner back everything the last one
 wrote.
 
+What a project agent starts on — its harness, model and reasoning effort — is
+asked once on the Local settings page, under the browser's agent defaults, and
+kept in that browser (`core/projectAgentDefaults.js`). It is one slot for every
+project, not one per project: it is a preference about a kind of agent, the way
+the account's own defaults are, and it lays over them field by field, so naming
+a model there does not restate the effort beside it. A project agent talks ABOUT
+a project rather than working in a checkout, which is why the harness for that
+job is asked for it alone.
+
+The page spends that choice twice: it sends it flattened
+(`provider`/`model`/`effort`) on `project.ensure_conversation`, which reads it
+only when it mints the owner, and the rail seeds a new project agent with it the
+way a workspace's rail seeds one from that workspace's own slot. Naming nothing
+sends nothing, and the bridge's own default harness stands.
+
 ## The project agent
 
 A project's agents reach Build through a surface of their own. It is the same

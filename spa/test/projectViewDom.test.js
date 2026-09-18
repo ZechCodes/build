@@ -69,6 +69,7 @@ let here;
 let elsewhere;
 
 beforeEach(() => {
+  localStorage.clear();
   document.body.innerHTML =
     '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   mountAgentRail.mockClear();
@@ -148,6 +149,21 @@ describe("the project surface", () => {
     expect(options.entityId).toBe("run-7");
     expect(options.projectId).toBe("proj-1");
     expect(options.deviceId).toBe("dev-1");
+  });
+
+  // An owner is minted once and kept, so what it is minted ON is this device's
+  // project-agent choice (core/projectAgentDefaults.js). Saying nothing leaves
+  // the bridge's own default harness standing.
+  it("mints the owner on the project agent's harness, model and effort", async () => {
+    localStorage.setItem("build.projectAgentDefaults", JSON.stringify({
+      provider: "codex", harnesses: { codex: { model: "gpt-5.6-sol", effort: "medium" } },
+    }));
+    await renderProject();
+    await flush();
+
+    expect(here).toHaveBeenCalledWith("project.ensure_conversation", {
+      project_id: "proj-1", provider: "codex", model: "gpt-5.6-sol", effort: "medium",
+    });
   });
 
   // The verb slot is where this page's two verbs live, and both say which

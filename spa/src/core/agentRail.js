@@ -23,6 +23,7 @@ import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall } from "./adoption.js";
 import { agentDefaultsForWorkspace, agentDefaultsInWorkspace } from "./workspaceDefaults.js";
+import { projectAgentDefaultsFor, projectAgentDefaultsIn } from "./projectAgentDefaults.js";
 import { workspaceKey } from "./deviceKey.js";
 import {
   AGENT_STARTING,
@@ -722,9 +723,24 @@ export function mountAgentRail(host, context) {
   const railWorkspaceKey = () =>
     railContext.kind === "workspace" ? workspaceKey(railContext.deviceId, railContext.workspaceId) : null;
 
+  /** Which stored preference a new agent on this rail leads with: the project
+   *  agent's own slot on a project's rail (core/projectAgentDefaults.js), the
+   *  workspace's inside a workspace, the account's anywhere else. A project
+   *  agent talks ABOUT a project rather than working in a checkout, so what it
+   *  starts on is asked for it alone. */
+  const onProjectRail = () => railContext.kind === "project";
+  const newAgentDefaults = (catalogOffered) =>
+    onProjectRail()
+      ? projectAgentDefaultsIn(catalogOffered)
+      : agentDefaultsInWorkspace(railWorkspaceKey(), catalogOffered);
+  const newAgentDefaultsFor = (providerId) =>
+    onProjectRail()
+      ? projectAgentDefaultsFor(providerId)
+      : agentDefaultsForWorkspace(railWorkspaceKey(), providerId);
+
   const seedNewAgentDefaults = () => {
     if (!catalog || provisionalController().choice().provider) return;
-    writeNewAgentChoice(clampStoredAgentChoice(catalog, agentDefaultsInWorkspace(railWorkspaceKey(), catalog)));
+    writeNewAgentChoice(clampStoredAgentChoice(catalog, newAgentDefaults(catalog)));
   };
 
   /** That choice as `agent.add` params: empties omitted, so the harness's own
@@ -1367,9 +1383,7 @@ export function mountAgentRail(host, context) {
       // A model belongs to its harness, so moving the highlight drops one
       // chosen under the harness beside it and brings the pressed harness's
       // own saved model and effort instead.
-      writeNewAgentChoice(
-        clampStoredAgentChoice(catalog, agentDefaultsForWorkspace(railWorkspaceKey(), card.dataset.provider)),
-      );
+      writeNewAgentChoice(clampStoredAgentChoice(catalog, newAgentDefaultsFor(card.dataset.provider)));
       paintChat();
       body.querySelector(".rail-harness-choice.chosen")?.focus();
     };

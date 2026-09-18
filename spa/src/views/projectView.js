@@ -22,6 +22,8 @@ import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { openCreateWork } from "../core/createWork.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { projectPageModel } from "../core/projectPageModel.js";
+import { projectAgentChoice } from "../core/projectAgentDefaults.js";
+import { modelParams } from "../core/modelPicker.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { notifyError } from "../core/notify.js";
 import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
@@ -115,10 +117,18 @@ function openWorkspace(state, workspaceKey) {
  * `workspace.ensure_conversation` is for a workspace: it answers the owner the
  * project already has, or mints one over a scratch directory Build owns. It is
  * the one call this page makes.
+ *
+ * An owner is minted once and kept, so it is minted on what this device says a
+ * project agent starts on (core/projectAgentDefaults.js). Saying nothing sends
+ * nothing, and the bridge's own default harness stands.
  */
 async function mountProjectRail(state) {
+  const choice = projectAgentChoice();
   try {
-    const answer = await state.context.rpc("project.ensure_conversation", { project_id: state.route.projectId });
+    const answer = await state.context.rpc("project.ensure_conversation", {
+      project_id: state.route.projectId,
+      ...modelParams([], choice.model, choice.effort, choice.provider),
+    });
     if (state.disposed) return;
     state.rail = mountAgentRail($("#agent-rail"), {
       kind: "project",

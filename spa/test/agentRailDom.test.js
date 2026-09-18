@@ -4302,3 +4302,86 @@ describe("a file reference in a conversation", () => {
     expect(chipHref()).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/files?path=src%2Fparser.js&line=8");
   });
 });
+
+// The project's rail: the agent you talk to ABOUT a project, whose conversation
+// stands in a scratch directory of its own. What a NEW one starts on is this
+// device's project-agent slot laid over the account's own defaults
+// (core/projectAgentDefaults.js) — the project agent is the one agent that
+// talks about a project instead of working in a checkout, and the harness for
+// that job is often not the one coding work leads with.
+describe("a new agent on a project's rail", () => {
+  const cards = () => [...railHost().querySelectorAll(".rail-newagent .rail-harness-choice")];
+  const card = (provider) => cards().find((entry) => entry.dataset.provider === provider);
+  const chosenCard = () => cards().find((entry) => entry.classList.contains("chosen"));
+
+  const mountProjectRail = async () => {
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "run.get") {
+        return { run_id: "run-project", project_id: "p1", agents: [], thread: { items: [], sessions: [] } };
+      }
+      if (method === "agent.add") {
+        return { entity_id: "run-project", agent: agent({ id: "ag-project", ordinal: 1, state: "idle" }) };
+      }
+      if (method === "thread.post") return { posted_sequence: 1 };
+      if (method === "agent.start") return { agent_id: "ag-project" };
+      return {};
+    });
+    await mount({ kind: "project", projectId: "p1", entityId: "run-project" });
+  };
+
+  const send = async (body) => {
+    panel().querySelector("#railinput").value = body;
+    panel().querySelector("#railsend").click();
+    await flush();
+  };
+
+  it("starts on the project agent's own harness, model and effort", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", harnesses: { claude: { model: "claude-opus-5", effort: "high" } },
+    }));
+    localStorage.setItem("build.projectAgentDefaults", JSON.stringify({
+      provider: "codex", harnesses: { codex: { model: "gpt-5.6-sol", effort: "medium" } },
+    }));
+    await mountProjectRail();
+
+    expect(chosenCard().dataset.provider).toBe("codex");
+    await send("what is in this project?");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      entity_id: "run-project", provider: "codex", model: "gpt-5.6-sol", effort: "medium",
+    });
+  });
+
+  it("falls back to the account's default while the slot names nothing", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", harnesses: { claude: { model: "claude-opus-5", effort: "high" } },
+    }));
+    await mountProjectRail();
+
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
+    await send("what is in this project?");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+  });
+
+  // Pressing a card is a change of harness, and a model belongs to its harness:
+  // the pressed one arrives with the project agent's own preference for it.
+  it("brings the slot's own model when another harness is pressed", async () => {
+    localStorage.setItem("build.projectAgentDefaults", JSON.stringify({
+      provider: "codex", harnesses: { claude: { model: "claude-haiku-4-5", effort: "" } },
+    }));
+    await mountProjectRail();
+    expect(chosenCard().dataset.provider).toBe("codex");
+
+    card("claude_adk").click();
+    await flush();
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
+
+    await send("what is in this project?");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-haiku-4-5",
+    });
+  });
+});

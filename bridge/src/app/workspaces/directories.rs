@@ -259,11 +259,13 @@ impl AppState {
 
     /// `workspace.remove_directory` — one directory leaves a workspace.
     ///
-    /// Everything standing IN that directory stops first; an agent or a
-    /// terminal whose cwd is elsewhere in the workspace is left working. The
-    /// one refusal is a directory that resolves outside the workspace root:
-    /// following a link out of the root would take work that was never the
-    /// workspace's.
+    /// Everything standing IN that directory stops first; a terminal whose cwd
+    /// is elsewhere in the workspace is left working. The refusals are the ones
+    /// removing a whole workspace applies, narrowed to one directory:
+    /// [`AppState::refuse_removing_a_directory_that_is_not_builds`], and an
+    /// agent working at the workspace root — its session is keyed at the root,
+    /// so it is working in every directory of the workspace at once and the
+    /// files being removed are the ones it is writing.
     pub(crate) fn workspace_remove_directory(&mut self, params: &Value) -> Result<Value, String> {
         let workspace = self.workspace_to_change(params)?;
         let directory_id = require_str(params, "directory_id")?;
@@ -274,11 +276,9 @@ impl AppState {
             .cloned()
             .ok_or_else(|| format!("unknown directory_id: {directory_id}"))?;
         let path = Self::canonical_root(&directory.path);
-        if !path.starts_with(Self::canonical_root(&workspace.root)) {
-            return Err(
-                "Cannot remove a workspace directory that resolves outside its workspace root"
-                    .to_string(),
-            );
+        self.refuse_removing_a_directory_that_is_not_builds(&workspace, &path)?;
+        if self.agent_working_at_root(&Self::canonical_root(&workspace.root)) {
+            return Err("Stop running agents before removing the directory".to_string());
         }
         let retirements = self.retire_everything_at(&path);
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
@@ -295,6 +295,55 @@ impl AppState {
             gate: None,
         })));
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
+    }
+
+    /// Everything that makes one directory not Build's to remove: the guards
+    /// [`AppState::refuse_removing_what_is_not_builds`] reads over a whole
+    /// root, narrowed to the one folder that is going.
+    ///
+    /// An adopted workspace is somebody else's working copy — Build found it,
+    /// it did not make it — and the workspace Build adopts for a legacy
+    /// project stands ON that project's repository, so its one directory is
+    /// the source itself. A directory that resolves outside the root, or that
+    /// holds a registered source repository, would take work with it that was
+    /// never the workspace's.
+    fn refuse_removing_a_directory_that_is_not_builds(
+        &self,
+        workspace: &Workspace,
+        path: &Path,
+    ) -> Result<(), String> {
+        if !workspace.managed {
+            return Err(
+                "workspace.remove_directory: adopted checkouts are not Build's to remove"
+                    .to_string(),
+            );
+        }
+        let root = Self::canonical_root(&workspace.root);
+        if !path.starts_with(&root) {
+            return Err(
+                "Cannot remove a workspace directory that resolves outside its workspace root"
+                    .to_string(),
+            );
+        }
+        if path == root {
+            return Err(
+                "Cannot remove a workspace directory that is the workspace root".to_string(),
+            );
+        }
+        if self
+            .projects
+            .iter()
+            .flat_map(|project| {
+                std::iter::once(&project.repo_path)
+                    .chain(project.sources.iter().map(|source| &source.path))
+            })
+            .any(|source| Self::canonical_root(source).starts_with(path))
+        {
+            return Err(
+                "Cannot remove a workspace directory containing a source repository".to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// The workspace a directory verb was pointed at, with the filesystem free
@@ -355,6 +404,7 @@ impl AppState {
             .filter(|path| !path.is_empty())
         {
             let path = crate::app::projects::canonical_source_path(&expand_tilde(path))?;
+            self.refuse_another_projects_source(&workspace.project_id, &path)?;
             let inferred = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -396,6 +446,34 @@ impl AppState {
                 base_branch: String::new(),
             },
         })
+    }
+
+    /// A directory named by path must not be another project's source. A
+    /// Git source becomes a checkout, which cuts a branch and writes a worktree
+    /// registration into the repository it was cut from: a workspace has no
+    /// claim to do that in a project it was not cut in. `project.add_source`
+    /// refuses the same shape in the same words, so both doors into the
+    /// capability agree.
+    fn refuse_another_projects_source(&self, project_id: &str, path: &Path) -> Result<(), String> {
+        let overlaps = self
+            .projects
+            .iter()
+            .filter(|project| project.id != project_id)
+            .flat_map(|project| {
+                std::iter::once(&project.repo_path)
+                    .chain(project.sources.iter().map(|source| &source.path))
+            })
+            .any(|source| {
+                let source = Self::canonical_root(source);
+                path.starts_with(&source) || source.starts_with(path)
+            });
+        if overlaps {
+            return Err(format!(
+                "source overlaps a registered project source: {}",
+                path.display()
+            ));
+        }
+        Ok(())
     }
 
     /// A folder name inside this workspace root that nothing is standing on.

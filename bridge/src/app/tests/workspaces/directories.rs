@@ -287,3 +287,146 @@ fn add_directory_clones_a_remote_into_the_workspace() {
         "what it was cloned from stays"
     );
 }
+
+/// The workspace Build adopts for a legacy single-source project stands ON the
+/// project's own repository: its one directory IS the source. Removing that
+/// directory would walk the user's repository away, so the verb refuses what
+/// Delete and Done refuse.
+#[test]
+fn remove_directory_refuses_an_adopted_workspace_standing_on_the_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "code");
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+
+    let refused = state.handle(req(
+        "workspace.remove_directory",
+        json!({"workspace_id": format!("legacy-{project_id}"), "directory_id": "source-1"}),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(
+        repo.join(".git").is_dir(),
+        "the project's own repository is still there"
+    );
+    assert!(repo.join("README.md").exists() || repo.is_dir());
+}
+
+/// A directory holding a registered project source is not Build's to remove,
+/// the way a workspace containing one is not Build's to delete.
+#[test]
+fn remove_directory_refuses_a_directory_holding_a_source_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "code");
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    let workspace = create_workspace(&mut state, &project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let checkout = PathBuf::from(workspace["directories"][0]["path"].as_str().unwrap());
+    // A second project opened over a folder inside the workspace's checkout:
+    // its source repository now stands under the directory being removed.
+    let nested = init_repo_named(&checkout, "vendor");
+    let second = state.handle(req("project.add", json!({"path": nested})));
+    assert_eq!(second["ok"], true, "{second:?}");
+
+    let refused = state.handle(req(
+        "workspace.remove_directory",
+        json!({"workspace_id": workspace_id, "directory_id": "source-1"}),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(nested.join(".git").is_dir(), "the source repository stays");
+    assert_eq!(directories(&mut state, &workspace_id).len(), 1);
+}
+
+/// An agent working at the workspace root is working in every directory of it:
+/// the session is keyed at the root, not at the folder. Removing a directory
+/// under a live turn would take the files it is writing, so the verb refuses
+/// the fact Delete and Done measure.
+#[test]
+fn remove_directory_refuses_while_an_agent_is_working_in_the_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "code");
+    let extra = init_repo_named(tmp.path(), "docs");
+    let mut state = app(tmp.path());
+    let project = state.handle(req(
+        "project.add",
+        json!({
+            "name": "mixed",
+            "sources": [{"name": "code", "path": repo}, {"name": "docs", "path": extra}],
+        }),
+    ));
+    let project_id = project["result"]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace = create_workspace(&mut state, &project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    let doomed = PathBuf::from(directory(&workspace, "source-2")["path"].as_str().unwrap());
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({"entity_id": run_id})));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    insert_agent_tab(
+        &mut state,
+        &root,
+        &run_id,
+        &agent_id,
+        DictatedSession::reporting(AgentStatus::Working),
+    );
+
+    let refused = state.handle(req(
+        "workspace.remove_directory",
+        json!({"workspace_id": workspace_id, "directory_id": "source-2"}),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("agent"),
+        "{refused:?}"
+    );
+    assert!(doomed.is_dir(), "a refused removal takes nothing");
+    assert_eq!(directories(&mut state, &workspace_id).len(), 2);
+}
+
+/// A workspace is cut in one project and has no claim on another's repository.
+/// Naming one by path would cut a branch and register a worktree in a
+/// repository this workspace was never cut from, which is the shape
+/// `project.add_source` already refuses.
+#[test]
+fn add_directory_refuses_a_path_that_is_another_projects_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mine = init_repo_named(tmp.path(), "mine");
+    let theirs = init_repo_named(tmp.path(), "theirs");
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": mine})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    let other = state.handle(req("project.add", json!({"path": theirs})));
+    assert_eq!(other["ok"], true, "{other:?}");
+    let workspace = create_workspace(&mut state, &project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+
+    let refused = state.handle(req(
+        "workspace.add_directory",
+        json!({"workspace_id": workspace_id, "path": theirs}),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("overlaps"),
+        "{refused:?}"
+    );
+    assert!(
+        !crate::git_process::run_git(&theirs, &["worktree", "list", "--porcelain"])
+            .unwrap()
+            .contains(workspace["root"].as_str().unwrap()),
+        "nothing was cut in the other project's repository"
+    );
+    assert_eq!(directories(&mut state, &workspace_id).len(), 1);
+}

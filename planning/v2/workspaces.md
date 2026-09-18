@@ -33,10 +33,19 @@ that is already there — a project source not in it yet, a path on the device, 
 a remote to clone — using the same per-source work creation does: a Git source
 becomes a checkout on a branch of the workspace's own cut from that source's
 base branch, anything else is copied. The directory is provisioning until it
-lands. `workspace.remove_directory` hands its checkout back to the repository it
-was cut from and takes the folder, closing the agents and terminals standing in
-that directory and leaving the ones whose cwd is elsewhere. It refuses only a
-directory that resolves outside the workspace root.
+lands. A path is refused when it is, contains, or is contained by another
+project's source: cutting a checkout there would put a branch and a worktree
+registration in a repository this workspace was never cut from, which is what
+`project.add_source` refuses in the same words.
+
+`workspace.remove_directory` hands its checkout back to the repository it was
+cut from and takes the folder, closing the agents and terminals standing in that
+directory and leaving the ones whose cwd is elsewhere. It applies what removing
+a whole workspace applies, narrowed to one folder: it refuses an adopted
+workspace, a directory that resolves outside the workspace root, a directory
+that is the root itself, one that holds a registered source repository, and a
+removal while an agent is working at the workspace root — that session is keyed
+at the root, so it is working in every directory of the workspace at once.
 
 Legacy projects whose project root is a Git checkout remain supported as a
 single-source project. Their source is represented by `.` at the existing root;

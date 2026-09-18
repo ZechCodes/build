@@ -61,6 +61,42 @@ fn discarding_a_run_standing_in_the_repository_never_removes_it() {
     }
 }
 
+/// A merge lands the run's branch on the base branch through the project's
+/// repository. For a run standing in that repository the target IS the
+/// checkout being merged, so both merge actions are refused before any git
+/// runs — and the repository is left exactly as it was found.
+#[test]
+fn run_git_action_refuses_to_merge_a_run_standing_in_the_repository() {
+    for action in ["merge", "merge_push"] {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "was-a-worktree");
+        let run = state.runs.get_mut(&run_id).unwrap();
+        run.worktree.path = AppState::canonical_root(&repo);
+
+        let refused = state.handle(req(
+            "run.git_action",
+            json!({ "run_id": run_id, "action": action }),
+        ));
+
+        assert_eq!(refused["ok"], false, "{action}: {refused:?}");
+        let error = refused["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("cannot be merged"),
+            "{action} names what it refuses: {refused:?}"
+        );
+        assert!(
+            repo.join("README.md").exists(),
+            "{action} touched the project's repository"
+        );
+        assert_eq!(
+            git_stdout(&repo, &["status", "--porcelain"]).unwrap_or_default(),
+            "",
+            "{action} left the repository's working tree dirty"
+        );
+    }
+}
+
 /// A run adopted on the repo root before workspaces is still a run: it is
 /// restored, it answers, and the surfaces that would have removed its
 /// checkout refuse to. Its retired `primary` flag has left the wire.

@@ -667,6 +667,7 @@ const FINISH_BLOCKER_HINTS = {
   unpushed: "Push to remote first",
   dirty: "Commit or discard changes first",
   agent_working: "Agent is working",
+  plain_directory: "Remove the folder that is not a repository first",
   unknown: "Still reading this workspace",
 };
 

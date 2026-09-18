@@ -230,17 +230,19 @@ describe("the workspace inbox", () => {
       workspace({ id: "workspace-3", can_finish: false, finish_blockers: ["dirty"] }),
       workspace({ id: "workspace-4", can_finish: false, finish_blockers: ["agent_working"] }),
       workspace({ id: "workspace-5", can_finish: false, finish_blockers: ["dirty", "unpushed"] }),
-      workspace({ id: "workspace-6", status: "provisioning", can_finish: false, finish_blockers: [] }),
+      workspace({ id: "workspace-6", can_finish: false, finish_blockers: ["plain_directory"] }),
+      workspace({ id: "workspace-7", status: "provisioning", can_finish: false, finish_blockers: [] }),
     ]);
     const done = () => rows().map((row) => row.querySelector("[data-workspace-done]"));
-    expect(done().map(Boolean)).toEqual([true, true, true, true, true, false]);
-    expect(done().map((button) => button && button.disabled)).toEqual([false, true, true, true, true, null]);
-    expect(done().slice(0, 5).map((button) => button.title)).toEqual([
+    expect(done().map(Boolean)).toEqual([true, true, true, true, true, true, false]);
+    expect(done().map((button) => button && button.disabled)).toEqual([false, true, true, true, true, true, null]);
+    expect(done().slice(0, 6).map((button) => button.title)).toEqual([
       "",
       "Push to remote first",
       "Commit or discard changes first",
       "Agent is working",
       "Commit or discard changes first · Push to remote first",
+      "Remove the folder that is not a repository first",
     ]);
     expect(done()[0].getAttribute("aria-label")).toBe("Finish workspace Checkout");
   });

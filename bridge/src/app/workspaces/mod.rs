@@ -440,7 +440,7 @@ impl AppState {
         if self.agent_working_at_root(&Self::canonical_root(&workspace.root)) {
             blockers.push(crate::workspace::FINISH_BLOCKER_AGENT_WORKING);
         }
-        blockers.extend(crate::workspace::workspace_git_blockers(workspace));
+        blockers.extend(crate::workspace::workspace_directory_blockers(workspace));
         blockers
     }
 

@@ -60,6 +60,9 @@ struct WorkspaceSummarySubject {
     ready: bool,
     /// The Git directories in it, which are the only ones Done measures.
     repositories: Vec<std::path::PathBuf>,
+    /// Whether it also holds an ordinary directory. Nothing publishes one, so
+    /// Done — which removes the workspace — is not offered over it.
+    plain_directories: bool,
 }
 
 /// The Git half of why Done is unavailable, read off the summary the feed
@@ -331,6 +334,10 @@ impl AppState {
                     .filter(|directory| directory.is_git)
                     .map(|directory| directory.path.clone())
                     .collect::<Vec<_>>(),
+                plain_directories: workspace
+                    .directories
+                    .iter()
+                    .any(|directory| !directory.is_git),
             })
             .collect::<Vec<_>>();
         self.sync_workspace_summaries(
@@ -346,6 +353,9 @@ impl AppState {
                 let mut blockers = Vec::new();
                 if self.agent_working_at_root(&subject.root) {
                     blockers.push(crate::workspace::FINISH_BLOCKER_AGENT_WORKING);
+                }
+                if subject.plain_directories {
+                    blockers.push(crate::workspace::FINISH_BLOCKER_PLAIN_DIRECTORY);
                 }
                 blockers.extend(git_finish_blockers(&summary, &subject.repositories));
                 json!({

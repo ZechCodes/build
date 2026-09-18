@@ -797,7 +797,7 @@ impl WorkspaceRegistry {
     /// eligibility the caller checked was checked under the app mutex, and
     /// this runs after it was let go.
     pub fn record_finished(&self, workspace: &mut Workspace) -> Result<WorkspaceFinish, String> {
-        let blockers = workspace_git_blockers(workspace);
+        let blockers = workspace_directory_blockers(workspace);
         if !blockers.is_empty() {
             return Err(finish_refusal(&blockers));
         }
@@ -964,6 +964,9 @@ pub const FINISH_BLOCKER_UNPUSHED: &str = "unpushed";
 /// Nothing has managed to read this workspace's Git state, so Done cannot say
 /// the work is safe anywhere else.
 pub const FINISH_BLOCKER_UNKNOWN: &str = "unknown";
+/// The workspace holds an ordinary directory. It has no published baseline, so
+/// nothing can say its files are anywhere else — and Done removes them.
+pub const FINISH_BLOCKER_PLAIN_DIRECTORY: &str = "plain_directory";
 
 /// What a Git directory's work summary says about Done, in the order a reader
 /// meets them. Empty means this directory has nothing left to lose: every
@@ -979,12 +982,18 @@ pub fn summary_finish_blockers(summary: &crate::gitgui::WorkSummary) -> Vec<&'st
     blockers
 }
 
-/// What stands between this workspace's Git directories and Done, measured
-/// now rather than read off the feed's cache. An ordinary directory has no
-/// published baseline to be clean against, so it is not what Done waits for;
-/// a workspace holding none at all has no Git work to lose.
-pub fn workspace_git_blockers(workspace: &Workspace) -> Vec<&'static str> {
+/// What stands between this workspace's directories and Done, measured now
+/// rather than read off the feed's cache.
+///
+/// An ordinary directory is a blocker in itself: no remote holds a copy of it
+/// and nothing measures whether it was edited, so Done — which removes the
+/// workspace — cannot say its files are anywhere else. A Git directory is
+/// measured, and a workspace holding no directory at all has nothing to lose.
+pub fn workspace_directory_blockers(workspace: &Workspace) -> Vec<&'static str> {
     let mut blockers = Vec::new();
+    if workspace.directories.iter().any(|d| !d.is_git) {
+        blockers.push(FINISH_BLOCKER_PLAIN_DIRECTORY);
+    }
     for directory in workspace.directories.iter().filter(|d| d.is_git) {
         let measured = crate::gitgui::work_summary(&directory.path)
             .map(|summary| summary_finish_blockers(&summary))
@@ -1006,7 +1015,8 @@ pub fn blocker_order(blocker: &str) -> usize {
         FINISH_BLOCKER_AGENT_WORKING => 0,
         FINISH_BLOCKER_DIRTY => 1,
         FINISH_BLOCKER_UNPUSHED => 2,
-        _ => 3,
+        FINISH_BLOCKER_PLAIN_DIRECTORY => 3,
+        _ => 4,
     }
 }
 
@@ -1016,6 +1026,7 @@ pub fn blocker_sentence(blocker: &str) -> &'static str {
         FINISH_BLOCKER_AGENT_WORKING => "an agent is working in it",
         FINISH_BLOCKER_DIRTY => "it has uncommitted changes",
         FINISH_BLOCKER_UNPUSHED => "it has commits no remote has",
+        FINISH_BLOCKER_PLAIN_DIRECTORY => "it holds a directory that is not a repository",
         _ => "its Git state could not be read",
     }
 }

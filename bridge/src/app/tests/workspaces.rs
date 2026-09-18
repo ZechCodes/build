@@ -1819,11 +1819,12 @@ fn a_workspace_row_offers_done_once_its_git_work_is_clean_and_pushed() {
     );
 }
 
-/// A workspace holding an ordinary directory beside a repository is judged by
-/// the repository alone, and one holding no repository at all is judged by its
-/// agents.
+/// Done removes the workspace, so an ordinary directory stands in its way: no
+/// remote holds a copy of those files, and nothing measures whether they were
+/// edited. The row says so, the verb refuses in the same words, and removing
+/// the directory is the way out.
 #[test]
-fn done_reads_the_git_directories_a_workspace_has_and_no_others() {
+fn done_waits_for_a_directory_no_repository_publishes() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");
     let plain = tmp.path().join("assets");
@@ -1833,13 +1834,26 @@ fn done_reads_the_git_directories_a_workspace_has_and_no_others() {
     let project_id = create_mixed_project(&mut state, &repo, &plain);
     let workspace = create_workspace(&mut state, &project_id, "mixed-done");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
     let assets = PathBuf::from(directory(&workspace, "source-2")["path"].as_str().unwrap());
-
-    // Editing the ordinary directory is not work Git can lose, so it is not
-    // what Done waits for.
     std::fs::write(assets.join("logo.svg"), "<svg viewBox=\"0 0 1 1\"/>\n").unwrap();
+
+    assert_eq!(
+        done_row(&mut state, &workspace_id),
+        (false, vec!["plain_directory".to_string()])
+    );
+    assert_done_refused(&mut state, &workspace_id, "is not a repository");
+    assert!(root.is_dir(), "a refused Done removes nothing");
+
+    let shrunk = state.handle(req(
+        "workspace.remove_directory",
+        json!({"workspace_id": workspace_id, "directory_id": "source-2"}),
+    ));
+    assert_eq!(shrunk["ok"], true, "{shrunk:?}");
     assert_eq!(done_row(&mut state, &workspace_id), (true, Vec::new()));
 
+    // A workspace that is nothing but ordinary directories is the same fact
+    // with nothing beside it.
     let plain_only = state.handle(req("project.add", json!({"path": plain})));
     let plain_project = plain_only["result"]["project_id"]
         .as_str()
@@ -1847,5 +1861,8 @@ fn done_reads_the_git_directories_a_workspace_has_and_no_others() {
         .to_string();
     let bare = create_workspace(&mut state, &plain_project, "no-repository");
     let bare_id = bare["workspace_id"].as_str().unwrap().to_string();
-    assert_eq!(done_row(&mut state, &bare_id), (true, Vec::new()));
+    assert_eq!(
+        done_row(&mut state, &bare_id),
+        (false, vec!["plain_directory".to_string()])
+    );
 }

@@ -123,15 +123,16 @@ selected directory tab, a branch, or a tag.
 
 Done is offered on a workspace only once its work is somewhere other than that
 workspace: every Git source clean, with no commit its push destination does not
-already have, and no agent turn in flight at the workspace root. A row says
-which of those is in the way — `dirty`, `unpushed`, `agent_working`, or
-`unknown` while nothing has managed to read the repositories — so the control
-can say it too.
+already have, no ordinary directory left in it, and no agent turn in flight at
+the workspace root. A row says which of those is in the way — `dirty`,
+`unpushed`, `plain_directory`, `agent_working`, or `unknown` while nothing has
+managed to read the repositories — so the control can say it too.
 
-An ordinary directory is not measured. Build has no published baseline to call
-its files unchanged against, so a workspace holding one is judged by the
-repositories beside it, and a workspace holding no repository at all is judged
-by its agents alone.
+An ordinary directory cannot be measured, which is why it blocks. Build has no
+published baseline to call its files unchanged against and no remote holds a
+copy of them, so Done — which removes the workspace — cannot say that work is
+anywhere else. `workspace.remove_directory` is the way out: take the folder off
+the workspace, and what is left is repositories Done can measure.
 
 Done removes the workspace. It closes every agent and terminal standing in it,
 hands each checkout back to the repository it was cut from, and walks the root

@@ -77,6 +77,7 @@ import { createConversationCache } from "./conversationCache.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { fileLinkRoute } from "./threadLinks.js";
+import { hashFromRoute } from "./router.js";
 import { entityIdOf } from "./entityId.js";
 import { replyOrNothing } from "./session.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
@@ -101,6 +102,7 @@ import {
   wireThreadOptions,
   wireThreadComposer,
   threadItemKey,
+  pressIsTheBrowsers,
   wireThreadLinks,
   wireThreadRevisionLinks,
 } from "./thread.js";
@@ -512,12 +514,32 @@ function railTuiButtonHtml(mode, hasTerminal) {
         aria-pressed="${showingTui}" title="${tuiTitle}">TUI</button>`;
 }
 
-export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null, pinned = true, removalWho = "" } = {}) {
+/** The project a conversation belongs to, as the way to its page.
+ *
+ *  It rides the head of a project's conversation opened from a work item,
+ *  because that is the one place the page behind the panel is about something
+ *  else and nothing else on screen says where this conversation lives. An
+ *  anchor, because a project page has a URL of its own: middle-click and
+ *  Cmd-click open it in a tab, exactly as they do on a reference in the
+ *  conversation below. */
+function railProjectChipHtml(chip) {
+  if (!chip) return "";
+  const label = `Go to ${chip.name}`;
+  return `<a class="rail-project-chip" href="${esc(hashFromRoute(chip.route))}"
+        title="${esc(label)}" aria-label="${esc(label)}">${esc(chip.name)}</a>`;
+}
+
+/** What the head is fingerprinted by where the chip is concerned: the project
+ *  it names, which the rail learns after the first paint. */
+const chipMark = (chip) => chip?.name || "";
+
+export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null, pinned = true, removalWho = "", projectChip } = {}) {
   return `<div class="rail-head">
     ${harnessIconHtml(provider)}
     ${railWhoHtml(who, heading)}
     ${railTuiButtonHtml(mode, hasTerminal)}
     ${railRemoveButtonHtml(removalWho || who, removable)}
+    ${railProjectChipHtml(projectChip)}
     ${pinButtonHtml({ subject: PANEL_SUBJECT, pinned })}
     ${surfaceMenuRegionHtml(surfaceOptions)}
   </div>`;
@@ -1156,6 +1178,20 @@ function mountRailOnContext(host, context, swap) {
     paint();
   };
 
+  /// The project's own page, on the machine this rail is mounted on.
+  const projectPageRoute = () => ({
+    name: "project",
+    deviceId: context.deviceId ?? null,
+    projectId: projectAgent.projectId,
+  });
+
+  /// The chip on the panel's head, or null where there is nothing for it to
+  /// say: the rail is standing on the project's conversation, and it got here
+  /// from a work item whose page is still behind the panel. On the project's
+  /// own page the chip would point at the page it is on, which is not a link.
+  const projectChip = () =>
+    (swap && onProjectAgentRail ? { name: projectName || projectAgent.projectId, route: projectPageRoute() } : null);
+
   /// The project's bubble, or null on a rail nobody asked for one on. Its
   /// agents are whichever side of the swap the project is on.
   const projectAgentEntry = () =>
@@ -1444,7 +1480,8 @@ function mountRailOnContext(host, context, swap) {
     // The id is what tells two starting agents on one harness apart: without it
     // a strip of two unnamed Claude Codes has one fingerprint, and switching
     // between them would leave the first one's head standing.
-    const wantedHead = JSON.stringify([agent ? agent.id : "", provider, removable, hasTerminal]);
+    const chip = projectChip();
+    const wantedHead = JSON.stringify([agent ? agent.id : "", provider, removable, hasTerminal, chipMark(chip)]);
     const wantedTitle = JSON.stringify([who, heading.text, heading.starting]);
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
@@ -1456,7 +1493,7 @@ function mountRailOnContext(host, context, swap) {
       disposeComposerClearance?.();
       disposeComposerClearance = null;
       closeSurfaceMenu?.();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned, removalWho })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned, removalWho, projectChip: chip })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
@@ -1495,6 +1532,7 @@ function mountRailOnContext(host, context, swap) {
         heading,
         pinned,
         removalWho,
+        projectChip: chip,
       });
       panel.dataset.head = wantedHead;
       panel.dataset.title = wantedTitle;
@@ -1527,6 +1565,14 @@ function mountRailOnContext(host, context, swap) {
     }
     const remove = panel.querySelector(".rail-remove");
     if (remove) remove.onclick = () => removeAgent(remove);
+    const chip = panel.querySelector(".rail-project-chip");
+    if (chip) chip.onclick = (event) => {
+      // The anchor's href is the reader's to open elsewhere; a plain press is
+      // the app's, and goes there without a page load.
+      if (pressIsTheBrowsers(event)) return;
+      event.preventDefault();
+      go(projectPageRoute());
+    };
     const pin = panel.querySelector(`.${PIN_CLASS}`);
     if (pin) pin.onclick = () => panelMotion.run({
       panel,

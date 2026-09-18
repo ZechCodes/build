@@ -888,6 +888,15 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   max-width:calc(100vw - 16px); }
 .rail-remove { flex:none; }
 .rail-remove:hover { background:var(--red-bg); color:var(--red); }
+/* The project a conversation belongs to, beside the head's own controls. A
+   pill rather than a heading — the head already says whose conversation this
+   is, and this says where it lives — and it gives up its room first, because
+   the topic beside it is the more useful of the two names. */
+.rail-project-chip { flex:0 1 auto; min-width:0; display:inline-flex; align-items:center; max-width:45%;
+  padding:2px 8px; border:1px solid var(--line); border-radius:999px; background:var(--panel);
+  color:var(--ink2); font-size:11px; line-height:18px; text-decoration:none;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rail-project-chip:hover { border-color:var(--accent); color:var(--accent); }
 /* flex:1 — the scroller takes what the pinned composer below leaves it.
    overflow-anchor:none — the conversation grows at the bottom, so a browser
    that adjusts scrollTop to keep whatever it anchored on still is correcting

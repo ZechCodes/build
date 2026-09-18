@@ -1808,7 +1808,7 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
 /// Whether a press is the browser's rather than the app's. A middle click, or
 /// a click held with a modifier, means "open this somewhere else" — another
 /// tab, another window — and a chip that is a real link already knows how.
-const pressIsTheBrowsers = (event) =>
+export const pressIsTheBrowsers = (event) =>
   event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
 
 /**

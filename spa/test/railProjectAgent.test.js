@@ -39,7 +39,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
   }),
 }));
 
-const { resetApplication } = await import("../src/app.js");
+const { App, resetApplication } = await import("../src/app.js");
 const { adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
@@ -318,5 +318,53 @@ describe("the strip across a swap", () => {
     expect(agentBubble("wa-1").classList.contains("working")).toBe(true);
     // …and the project's bubble, now the one beside, still says its own.
     expect(projectBubble().title).toBe("Project agent for build");
+  });
+});
+
+// A project conversation opened from a workspace is the project's, and the
+// panel is the only thing on screen that says so — the page behind it is still
+// the workspace's. The chip names the project and is the way to it.
+describe("the project conversation's chip", () => {
+  const chip = () => panel()?.querySelector(".rail-project-chip") || null;
+
+  it("names the project and goes to its page", async () => {
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+
+    expect(chip().textContent).toBe("build");
+    // A real link: the browser's own gestures open the project in a tab of its
+    // own, and the plain press is the app's.
+    expect(chip().getAttribute("href")).toBe("#/device/device-1/project/proj-1");
+
+    const press = new MouseEvent("click", { bubbles: true, cancelable: true });
+    chip().dispatchEvent(press);
+
+    // The plain press is the app's: it navigates without the page load the
+    // anchor's own default would have made.
+    expect(press.defaultPrevented).toBe(true);
+    expect(App.route).toEqual({ name: "project", deviceId: DEVICE_ID, projectId: PROJECT_ID });
+  });
+
+  it("stays off the workspace's own conversation, which the page already names", async () => {
+    await mountWorkspaceRail();
+
+    expect(chip()).toBeNull();
+  });
+
+  it("is left off the project's own page, where it would point at the page it is on", async () => {
+    owner = OWNER;
+    rail = mountAgentRail(host(), {
+      kind: "project",
+      deviceId: DEVICE_ID,
+      projectId: PROJECT_ID,
+      entityId: OWNER,
+      cacheScope: contextFor(DEVICE_ID).cacheScope,
+      chatRepository: contextFor(DEVICE_ID).chatRepository,
+    });
+    await flush();
+
+    expect(headWho()).toBe("Sort the workspaces");
+    expect(chip()).toBeNull();
   });
 });

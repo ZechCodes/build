@@ -2,7 +2,7 @@
 """Build original device assets and product renders for the Build landing page.
 
 Run with Blender 4.5 LTS:
-  blender --background --python Build/design/landing/build_device_assets.py
+  blender --background --python design/landing/build_device_assets.py
 
 The models use meters. Blender's (X, Z, -Y) axes export as glTF (+X, +Y, +Z),
 so every screen faces Blender -Y and runtime glTF +Z.
@@ -20,16 +20,17 @@ from pathlib import Path
 
 import bpy
 import numpy as np
+from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Matrix, Vector
 
 
-ROOT = Path(__file__).resolve().parents[3]
-SOURCE_DIR = ROOT / "Build" / "design" / "landing"
-LANDING_ASSETS = ROOT / "Build" / "skriftapp" / "buildapp" / "landing" / "assets"
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE_DIR = ROOT / "design" / "landing"
+LANDING_ASSETS = ROOT / "skriftapp" / "buildapp" / "landing" / "assets"
 OUTPUT_DIR = LANDING_ASSETS / "devices"
 SCREENS_DIR = LANDING_ASSETS / "screens"
 DEFAULT_LAPTOP_SCREEN = SCREENS_DIR / "ui01-desktop.webp"
-DEFAULT_TABLET_SCREEN = SCREENS_DIR / "ui04-desktop.webp"
+DEFAULT_TABLET_SCREEN = SCREENS_DIR / "ui04-tablet.webp"
 DEFAULT_PHONE_SCREEN = SCREENS_DIR / "ui02-mobile.webp"
 BLEND_PATH = SOURCE_DIR / "build-devices.blend"
 SCALE = 0.1  # authored dimensions below are decimeters; Blender/source/export are meters
@@ -40,7 +41,6 @@ GRAPHITE_EDGE = (0.19, 0.20, 0.215, 1.0)
 BLACK = (0.008, 0.010, 0.014, 1.0)
 KEY_COLOR = (0.065, 0.073, 0.085, 1.0)
 GLASS = (0.012, 0.018, 0.026, 1.0)
-ACCENT = (0.0, 1.0, 0.48, 1.0)
 
 
 def parse_args():
@@ -48,6 +48,7 @@ def parse_args():
     parser.add_argument("--laptop-screen", type=Path, default=DEFAULT_LAPTOP_SCREEN)
     parser.add_argument("--tablet-screen", type=Path, default=DEFAULT_TABLET_SCREEN)
     parser.add_argument("--phone-screen", type=Path, default=DEFAULT_PHONE_SCREEN)
+    parser.add_argument("--preview-dir", type=Path)
     blender_args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     return parser.parse_args(blender_args)
 
@@ -87,19 +88,37 @@ def screen_material(name: str, image_path: Path | None):
     if "Emission Color" in bsdf.inputs:
         bsdf.inputs["Emission Color"].default_value = (0.015, 0.025, 0.035, 1.0)
         bsdf.inputs["Emission Strength"].default_value = 0.55
+    coordinates = nodes.new("ShaderNodeTexCoord")
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.name = "screen_contain"
+    tex = nodes.new("ShaderNodeTexImage")
+    tex.name = "screen_texture"
+    tex.label = "Replaceable screen texture"
+    tex.extension = "CLIP"
+    tex.interpolation = "Linear"
+    links.new(coordinates.outputs["UV"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
+    links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    if "Emission Color" in bsdf.inputs:
+        links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
+        bsdf.inputs["Emission Strength"].default_value = 0.68
     if image_path and image_path.exists():
         image = bpy.data.images.load(str(image_path), check_existing=True)
-        tex = nodes.new("ShaderNodeTexImage")
-        tex.name = "screen_texture"
-        tex.label = "Replaceable screen texture"
         tex.image = image
         image.pack()
-        tex.interpolation = "Linear"
-        links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
-        if "Emission Color" in bsdf.inputs:
-            links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
-            bsdf.inputs["Emission Strength"].default_value = 0.68
     return mat
+
+
+def configure_screen_contain(mat, image):
+    if not image or not image.size[1] or "screen_aspect" not in mat:
+        return
+    screen_aspect = mat["screen_aspect"]
+    image_aspect = image.size[0] / image.size[1]
+    scale_x = max(1.0, screen_aspect / image_aspect)
+    scale_y = max(1.0, image_aspect / screen_aspect)
+    mapping = mat.node_tree.nodes["screen_contain"]
+    mapping.inputs["Scale"].default_value = (scale_x, scale_y, 1.0)
+    mapping.inputs["Location"].default_value = ((1 - scale_x) / 2, (1 - scale_y) / 2, 0.0)
 
 
 def set_screen_texture(mat, image_path: Path):
@@ -109,6 +128,7 @@ def set_screen_texture(mat, image_path: Path):
     image = bpy.data.images.load(str(image_path), check_existing=True)
     image.pack()
     mat.node_tree.nodes["screen_texture"].image = image
+    configure_screen_contain(mat, image)
 
 
 def rounded_box(name, location, dimensions, mat, radius=0.04, collection=None):
@@ -132,19 +152,88 @@ def rounded_box(name, location, dimensions, mat, radius=0.04, collection=None):
     return obj
 
 
-def plane_screen(name, location, width, height, mat, collection):
-    location = tuple(value * SCALE for value in location)
-    width *= SCALE
-    height *= SCALE
-    bpy.ops.mesh.primitive_plane_add(size=2.0, location=location, rotation=(math.radians(90), 0, 0))
-    obj = bpy.context.object
-    obj.name = name
-    obj.scale = (width / 2, height / 2, 1)
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+def rounded_outline(width, height, radius, segments=7):
+    radius = min(radius, width / 2, height / 2)
+    centers = (
+        (width / 2 - radius, -height / 2 + radius, -90),
+        (width / 2 - radius, height / 2 - radius, 0),
+        (-width / 2 + radius, height / 2 - radius, 90),
+        (-width / 2 + radius, -height / 2 + radius, 180),
+    )
+    points = []
+    for center_x, center_y, start_angle in centers:
+        for step in range(segments + 1):
+            angle = math.radians(start_angle + 90 * step / segments)
+            points.append((center_x + radius * math.cos(angle), center_y + radius * math.sin(angle)))
+    return points
+
+
+def rounded_prism(name, location, dimensions, radius, chamfer, mat, collection, plane="XY", segments=7):
+    width, height, depth = (value * SCALE for value in dimensions)
+    location = Vector(tuple(value * SCALE for value in location))
+    outline = rounded_outline(width, height, radius * SCALE, segments=segments)
+    half_depth = depth / 2
+    if plane == "XY":
+        front = [(x, y, half_depth) for x, y in outline]
+        back = [(x, y, -half_depth) for x, y in outline]
+    else:
+        front = [(x, -half_depth, y) for x, y in outline]
+        back = [(x, half_depth, y) for x, y in outline]
+    count = len(outline)
+    faces = [tuple(range(count)), tuple(range(2 * count - 1, count - 1, -1))]
+    faces.extend((index, (index + 1) % count, (index + 1) % count + count, index + count) for index in range(count))
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    mesh.from_pydata(front + back, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    collection.objects.link(obj)
+    obj.location = location
+    obj.data.materials.append(mat)
+    if chamfer:
+        bevel = obj.modifiers.new("micro_chamfer", "BEVEL")
+        bevel.width = chamfer * SCALE
+        bevel.segments = 3
+        bevel.harden_normals = True
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.modifier_apply(modifier=bevel.name)
+    return obj
+
+
+def rounded_screen(name, location, width, height, radius, mat, collection):
+    width_m, height_m = width * SCALE, height * SCALE
+    outline = rounded_outline(width_m, height_m, radius * SCALE, segments=10)
+    vertices = [(x, 0, z) for x, z in outline]
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    mesh.from_pydata(vertices, [], [tuple(range(len(vertices)))])
+    mesh.update()
+    uv_layer = mesh.uv_layers.new(name="UVMap")
+    for loop in mesh.loops:
+        x, _, z = mesh.vertices[loop.vertex_index].co
+        uv_layer.data[loop.index].uv = (x / width_m + 0.5, z / height_m + 0.5)
+    obj = bpy.data.objects.new(name, mesh)
+    collection.objects.link(obj)
+    obj.location = tuple(value * SCALE for value in location)
     obj.data.materials.append(mat)
     obj["screen_node"] = True
-    move_to_collection(obj, collection)
+    mat["screen_aspect"] = width / height
+    configure_screen_contain(mat, mat.node_tree.nodes["screen_texture"].image)
     return obj
+
+
+def join_meshes(objects, name):
+    objects = [obj for obj in objects if obj and obj.type == "MESH"]
+    if not objects:
+        return None
+    if len(objects) == 1:
+        objects[0].name = name
+        return objects[0]
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in objects:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = objects[0]
+    bpy.ops.object.join()
+    objects[0].name = name
+    return objects[0]
 
 
 def cylinder(name, location, radius, depth, mat, collection, rotation=(0, 0, 0), vertices=32):
@@ -177,50 +266,113 @@ def add_collection(name: str):
     return collection
 
 
+def add_key_row(collection, mat, row_index, y, width_weights, height=0.13):
+    gap = 0.018
+    row_width = 2.38
+    scale = (row_width - gap * (len(width_weights) - 1)) / sum(width_weights)
+    key_widths = [weight * scale for weight in width_weights]
+    cursor = -row_width / 2
+    keys = []
+    for column, key_width in enumerate(key_widths):
+        center_x = cursor + key_width / 2
+        keys.append(rounded_prism(
+            f"key_{row_index:02d}_{column:02d}",
+            (center_x, y, 0.116),
+            (key_width, height, 0.012),
+            0.012,
+            0,
+            mat,
+            collection,
+            segments=3,
+        ))
+        cursor += key_width + gap
+    return keys
+
+
+def build_keyboard(collection, mats):
+    black_parts = [rounded_prism(
+        "keyboard_recess", (0, -0.70, 0.1101), (2.48, 1.12, 0.002),
+        0.055, 0, mats["black"], collection,
+    )]
+    row_specs = (
+        (-0.22, [1] * 14, 0.105),
+        (-0.40, [1.25] + [1] * 12 + [1.25], 0.13),
+        (-0.59, [1.55] + [1] * 11 + [1.65], 0.13),
+        (-0.78, [1.85] + [1] * 10 + [1.85], 0.13),
+        (-0.97, [2.25] + [1] * 9 + [2.25], 0.13),
+        (-1.16, [1.25, 1, 1, 1.35, 5.8, 1.35, 1, 1, 1.25], 0.13),
+    )
+    keys = []
+    for row_index, (y, widths, height) in enumerate(row_specs):
+        keys.extend(add_key_row(collection, mats["key"], row_index, y, widths, height))
+    grilles = []
+    for side in (-1, 1):
+        for column_x in (1.325, 1.425):
+            for row in range(12):
+                hole = cylinder(
+                    f"speaker_{side}_{column_x}_{row}",
+                    (side * column_x, -0.24 - row * 0.078, 0.111),
+                    0.0065,
+                    0.003,
+                    mats["black"],
+                    collection,
+                    vertices=12,
+                )
+                hole["decorative"] = True
+                grilles.append(hole)
+    return join_meshes(black_parts, "laptop_insets"), join_meshes(keys, "keyboard_keys"), join_meshes(grilles, "speaker_grilles")
+
+
 def build_laptop(mats):
     c = add_collection("Laptop")
-    # Hinge pivot is the origin: stable for animation and runtime replacement.
-    rounded_box("laptop_lid", (0, 0.015, 1.145), (3.32, 0.095, 2.20), mats["graphite"], 0.075, c)
-    screen = plane_screen("laptop_screen", (0, -0.035, 1.17), 3.08, 1.925, mats["desktop_screen"], c)
+    hardware = [
+        rounded_prism("laptop_base", (0, -1.106, 0.055), (3.126, 2.212, 0.110), 0.095, 0.008, mats["graphite"], c),
+        rounded_prism("laptop_lid", (0, 0.010, 1.160), (3.126, 2.110, 0.040), 0.060, 0.006, mats["graphite"], c, plane="XZ"),
+        cylinder("hinge_left", (-1.03, -0.004, 0.096), 0.022, 0.42, mats["graphite"], c, rotation=(0, math.radians(90), 0), vertices=24),
+        cylinder("hinge_right", (1.03, -0.004, 0.096), 0.022, 0.42, mats["graphite"], c, rotation=(0, math.radians(90), 0), vertices=24),
+    ]
+    join_meshes(hardware, "laptop_hardware")
+    rounded_prism("laptop_front_glass", (0, -0.0106, 1.160), (3.086, 2.070, 0.001), 0.052, 0, mats["glass"], c, plane="XZ")
+    screen = rounded_screen("laptop_screen", (0, -0.0112, 1.160), 3.024, 1.964, 0.045, mats["desktop_screen"], c)
     screen["replaceable_texture"] = True
     screen["runtime_forward"] = "+Z"
-    rounded_box("laptop_base", (0, -1.00, 0.005), (3.42, 2.00, 0.13), mats["graphite"], 0.08, c)
-    rounded_box("keyboard_well", (0, -1.04, 0.081), (2.86, 1.08, 0.018), mats["black"], 0.035, c)
-    key_w, key_h = 0.168, 0.145
-    for row in range(5):
-        cols = 14 if row < 4 else 11
-        offset = -(cols - 1) * 0.202 / 2
-        for col in range(cols):
-            key = rounded_box(
-                f"key_{row:02d}_{col:02d}",
-                (offset + col * 0.202, -0.70 - row * 0.188, 0.103),
-                (key_w, key_h, 0.022), mats["key"], 0.018, c,
-            )
-            key["decorative"] = True
-    rounded_box("trackpad", (0, -1.625, 0.087), (1.17, 0.50, 0.012), mats["edge"], 0.04, c)
-    cylinder("hinge", (0, -0.035, 0.095), 0.072, 2.76, mats["edge"], c, rotation=(0, math.radians(90), 0))
-    # Tiny green power indicator supplies a controlled accent in close renders.
-    cylinder("status_light", (1.49, -1.75, 0.085), 0.018, 0.008, mats["accent"], c, rotation=(math.radians(90), 0, 0), vertices=20)
+    build_keyboard(c, mats)
+    rounded_prism("trackpad", (0, -1.695, 0.1105), (1.27, 0.70, 0.001), 0.055, 0, mats["trackpad"], c)
+    rounded_prism("camera_notch", (0, -0.0114, 2.132), (0.22, 0.060, 0.002), 0.015, 0, mats["black"], c, plane="XZ")
     return c
 
 
 def build_tablet(mats):
     c = add_collection("Tablet")
-    rounded_box("tablet_body", (0, 0, 0), (2.52, 0.105, 1.72), mats["graphite"], 0.16, c)
-    screen = plane_screen("tablet_screen", (0, -0.057, 0), 2.34, 1.4625, mats["tablet_screen"], c)
+    rounded_prism("tablet_body", (0, 0, 0), (2.816, 2.155, 0.051), 0.095, 0.0055, mats["graphite"], c, plane="XZ")
+    controls = [
+        rounded_box("tablet_power", (1.400, 0, 0.58), (0.016, 0.042, 0.22), mats["edge"], 0.006, c),
+        rounded_box("tablet_volume", (0.82, 0, 1.0695), (0.28, 0.042, 0.016), mats["edge"], 0.006, c),
+    ]
+    join_meshes(controls, "tablet_controls")
+    rounded_prism("tablet_front_glass", (0, -0.0261, 0), (2.776, 2.115, 0.001), 0.083, 0, mats["glass"], c, plane="XZ")
+    screen = rounded_screen("tablet_screen", (0, -0.0267, 0), 2.640, 1.980, 0.068, mats["tablet_screen"], c)
     screen["replaceable_texture"] = True
     screen["runtime_forward"] = "+Z"
-    cylinder("tablet_camera", (0, -0.061, 0.815), 0.018, 0.008, mats["black"], c, rotation=(math.radians(90), 0, 0), vertices=20)
+    cylinder("tablet_camera", (0, -0.0265, 1.035), 0.012, 0.003, mats["black"], c, rotation=(math.radians(90), 0, 0), vertices=20)
     return c
 
 
 def build_phone(mats):
     c = add_collection("Phone")
-    rounded_box("phone_body", (0, 0, 0), (0.84, 0.092, 1.74), mats["graphite"], 0.135, c)
-    screen = plane_screen("phone_screen", (0, -0.050, -0.005), 0.77, 1.64, mats["phone_screen"], c)
+    rounded_prism("phone_body", (0, 0, 0), (0.719, 1.500, 0.0875), 0.140, 0.0075, mats["graphite"], c, plane="XZ")
+    controls = [
+        rounded_box("phone_action", (-0.3535, 0, 0.36), (0.012, 0.070, 0.14), mats["edge"], 0.005, c),
+        rounded_box("phone_volume_up", (-0.3535, 0, 0.13), (0.012, 0.070, 0.18), mats["edge"], 0.005, c),
+        rounded_box("phone_volume_down", (-0.3535, 0, -0.10), (0.012, 0.070, 0.18), mats["edge"], 0.005, c),
+        rounded_box("phone_side", (0.3535, 0, 0.20), (0.012, 0.070, 0.30), mats["edge"], 0.005, c),
+    ]
+    join_meshes(controls, "phone_controls")
+    rounded_prism("phone_front_glass", (0, -0.0444, 0), (0.699, 1.480, 0.001), 0.130, 0, mats["glass"], c, plane="XZ")
+    screen = rounded_screen("phone_screen", (0, -0.0450, 0), 0.664, 1.4435, 0.115, mats["phone_screen"], c)
     screen["replaceable_texture"] = True
     screen["runtime_forward"] = "+Z"
-    rounded_box("phone_speaker", (0, -0.054, 0.812), (0.16, 0.008, 0.016), mats["black"], 0.008, c)
+    rounded_prism("phone_island", (0, -0.0452, 0.661), (0.200, 0.055, 0.002), 0.0275, 0, mats["black"], c, plane="XZ")
     return c
 
 
@@ -365,10 +517,31 @@ def add_floor(size=14, z=-0.075, black=True):
     return floor
 
 
+def fit_device_framing(camera, margin=0.05):
+    """Keep the complete hardware inside each responsive poster's safe frame."""
+    bpy.context.view_layer.update()
+    points = []
+    for name in ("Laptop", "Tablet", "Phone"):
+        collection = bpy.data.collections.get(name)
+        if not collection or collection.hide_render:
+            continue
+        for obj in collection_objects(collection):
+            if obj.type == "MESH":
+                points.extend(obj.matrix_world @ Vector(corner) for corner in obj.bound_box)
+    projected = [world_to_camera_view(bpy.context.scene, camera, point) for point in points]
+    extent = max((max(abs(point.x - 0.5), abs(point.y - 0.5)) * 2 for point in projected), default=0)
+    factor = max(1.0, extent / (1 - 2 * margin))
+    if camera.data.type == "ORTHO":
+        camera.data.ortho_scale *= factor
+    else:
+        camera.data.lens /= factor
+
+
 def render(path, width, height, camera_location, target, lens, transparent, floor=False, ortho_scale=None):
     clear_render_rig()
     setup_render(width, height, transparent)
-    add_camera("render_camera", camera_location, target, lens, ortho_scale=ortho_scale)
+    camera = add_camera("render_camera", camera_location, target, lens, ortho_scale=ortho_scale)
+    fit_device_framing(camera)
     add_area("render_key", (-4.2, -5.8, 5.4), 800, 4.8, (1.0, 0.98, 0.95), target)
     add_area("render_fill", (4.2, -4.4, 3.0), 500, 4.2, (0.82, 0.87, 0.94), target)
     add_area("render_rim", (3.8, 1.6, 4.6), 420, 3.8, (0.90, 0.93, 1.0), target)
@@ -452,8 +625,11 @@ def render_scene_posters(collections, mats, default_screens):
     for index, stem in enumerate(fixture_stems, start=1):
         desktop_fixture = SCREENS_DIR / f"{stem}-desktop.webp"
         mobile_fixture = SCREENS_DIR / f"{stem}-mobile.webp"
+        tablet_fixture = SCREENS_DIR / f"{stem}-tablet.webp"
+        if not tablet_fixture.exists():
+            tablet_fixture = desktop_fixture
         set_screen_texture(mats["desktop_screen"], desktop_fixture)
-        set_screen_texture(mats["tablet_screen"], desktop_fixture)
+        set_screen_texture(mats["tablet_screen"], tablet_fixture)
         set_screen_texture(mats["phone_screen"], mobile_fixture)
         desktop_path = OUTPUT_DIR / f"scene-{index:02d}-desktop.webp"
         mobile_path = OUTPUT_DIR / f"scene-{index:02d}-mobile.webp"
@@ -505,22 +681,88 @@ def render_scene_posters(collections, mats, default_screens):
     return render_paths
 
 
-def build_metadata(collections, render_paths, default_screens):
-    specs = {
+def render_previews(preview_dir, collections):
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    laptop, tablet, phone = collections["laptop"], collections["tablet"], collections["phone"]
+    for name, collection in collections.items():
+        export_glb(collection, preview_dir / f"{name}.glb")
+    export_glb(laptop, preview_dir / "laptop-low.glb", include_decorative=False)
+    set_collection_visibility(laptop)
+    render(preview_dir / "laptop-candidate.webp", 1200, 900, (0.88, -6.94, 1.54), (0.04, -1.0, 1.12), 58, True, ortho_scale=3.25)
+    set_collection_visibility(tablet)
+    render(preview_dir / "tablet-candidate.webp", 1000, 760, (2.45, -5.0, 1.92), (0, 0, 0), 67, True)
+    set_collection_visibility(phone)
+    render(preview_dir / "phone-candidate.webp", 640, 1040, (1.45, -3.95, 1.10), (0, 0, 0), 72, True)
+
+
+def device_specs():
+    return {
         "laptop": {
-            "dimensions_m": [0.342, 0.220, 0.200],
-            "screen_corners_m": [[-0.154, 0.02075, 0.0035], [0.154, 0.02075, 0.0035], [0.154, 0.21325, 0.0035], [-0.154, 0.21325, 0.0035]],
-            "hinge_pivot_m": [0, 0.0095, 0.0035],
+            "dimensions_m": [0.3126, 0.2215, 0.2222],
+            "body_size_m": [0.3126, 0.0110, 0.2212],
+            "body_corner_radius_m": 0.0095,
+            "lid_size_m": [0.3126, 0.2110, 0.0040],
+            "lid_corner_radius_m": 0.0060,
+            "screen_size_m": [0.3024, 0.1964],
+            "screen_center_m": [0, 0.1160, 0.00112],
+            "screen_corner_radius_m": 0.0045,
+            "screen_corners_m": [[-0.1512, 0.0178, 0.00112], [0.1512, 0.0178, 0.00112], [0.1512, 0.2142, 0.00112], [-0.1512, 0.2142, 0.00112]],
+            "hinge_pivot_m": [0, 0.0096, 0.0004],
         },
         "tablet": {
-            "dimensions_m": [0.252, 0.172, 0.0105],
-            "screen_corners_m": [[-0.117, -0.073125, 0.0057], [0.117, -0.073125, 0.0057], [0.117, 0.073125, 0.0057], [-0.117, 0.073125, 0.0057]],
+            "dimensions_m": [0.2816, 0.2155, 0.0051],
+            "body_size_m": [0.2816, 0.2155, 0.0051],
+            "body_corner_radius_m": 0.0095,
+            "screen_size_m": [0.2640, 0.1980],
+            "screen_center_m": [0, 0, 0.00267],
+            "screen_corner_radius_m": 0.0068,
+            "screen_corners_m": [[-0.1320, -0.0990, 0.00267], [0.1320, -0.0990, 0.00267], [0.1320, 0.0990, 0.00267], [-0.1320, 0.0990, 0.00267]],
         },
         "phone": {
-            "dimensions_m": [0.084, 0.174, 0.0092],
-            "screen_corners_m": [[-0.0385, -0.0825, 0.0050], [0.0385, -0.0825, 0.0050], [0.0385, 0.0815, 0.0050], [-0.0385, 0.0815, 0.0050]],
+            "dimensions_m": [0.0719, 0.1500, 0.00875],
+            "body_size_m": [0.0719, 0.1500, 0.00875],
+            "body_corner_radius_m": 0.0140,
+            "screen_size_m": [0.0664, 0.14435],
+            "screen_center_m": [0, 0, 0.00450],
+            "screen_corner_radius_m": 0.0115,
+            "screen_corners_m": [[-0.0332, -0.072175, 0.00450], [0.0332, -0.072175, 0.00450], [0.0332, 0.072175, 0.00450], [-0.0332, 0.072175, 0.00450]],
         },
     }
+
+
+def write_device_contract(specs):
+    contract = {
+        "version": 1,
+        "units": "meters",
+        "axes": {"up": "+Y", "forward": "+Z", "right": "+X"},
+        "origin": "device center; laptop origin is rear-center hinge projection on base underside",
+        "devices": {},
+    }
+    for name, spec in specs.items():
+        device = {
+            "bounds_size_m": spec["dimensions_m"],
+            "body_size_m": spec["body_size_m"],
+            "body_corner_radius_m": spec["body_corner_radius_m"],
+            "screen": {
+                "node": "screen",
+                "size_m": spec["screen_size_m"],
+                "center_m": spec["screen_center_m"],
+                "corners_m": spec["screen_corners_m"],
+                "corner_radius_m": spec["screen_corner_radius_m"],
+            },
+        }
+        for key in ("lid_size_m", "lid_corner_radius_m", "hinge_pivot_m"):
+            if key in spec:
+                device[key] = spec[key]
+        contract["devices"][name] = device
+    payload = json.dumps(contract, indent=2)
+    source = "const deepFreeze = value => {\n  Object.values(value).forEach(child => {\n    if (child && typeof child === 'object') deepFreeze(child);\n  });\n  return Object.freeze(value);\n};\n\n"
+    source += f"export const DEVICE_CONTRACT = deepFreeze({payload});\n"
+    (OUTPUT_DIR / "device-contract.js").write_text(source, encoding="utf-8")
+
+
+def build_metadata(collections, render_paths, default_screens):
+    specs = device_specs()
     devices = {}
     for name, collection in collections.items():
         glb = OUTPUT_DIR / f"{name}.glb"
@@ -541,10 +783,10 @@ def build_metadata(collections, render_paths, default_screens):
             })
         devices[name] = item
     metadata = {
-        "version": 1,
+        "version": 2,
         "units": "meters",
         "coordinate_system": {"up": "+Y", "forward": "+Z", "right": "+X"},
-        "origin": "device center; laptop origin is hinge pivot projected to ground",
+        "origin": "device center; laptop origin is rear-center hinge projection on base underside",
         "devices": devices,
         "renders": {path.stem: image_info(path) for path in render_paths},
         "source": {"blend": BLEND_PATH.name, "generator": Path(__file__).name, "blender": bpy.app.version_string},
@@ -564,6 +806,7 @@ def build_metadata(collections, render_paths, default_screens):
         },
     }
     (OUTPUT_DIR / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    write_device_contract(specs)
 
 
 def main():
@@ -580,8 +823,9 @@ def main():
         "graphite": material("Graphite", GRAPHITE, metallic=0.70, roughness=0.31),
         "edge": material("GraphiteEdge", GRAPHITE_EDGE, metallic=0.64, roughness=0.25),
         "black": material("BlackInset", BLACK, metallic=0.15, roughness=0.28),
+        "glass": material("FrontGlass", (0.0045, 0.0050, 0.0060, 1.0), metallic=0.08, roughness=0.16),
         "key": material("KeyGraphite", KEY_COLOR, metallic=0.12, roughness=0.39),
-        "accent": material("BuildGreen", ACCENT, metallic=0.05, roughness=0.22),
+        "trackpad": material("TrackpadGraphite", GRAPHITE, metallic=0.58, roughness=0.38),
         "desktop_screen": screen_material("ScreenDesktop", default_screens["laptop"]),
         "tablet_screen": screen_material("ScreenTablet", default_screens["tablet"]),
         "phone_screen": screen_material("ScreenPhone", default_screens["phone"]),
@@ -594,6 +838,11 @@ def main():
     tablet = build_tablet(mats)
     phone = build_phone(mats)
     collections = {"laptop": laptop, "tablet": tablet, "phone": phone}
+
+    if args.preview_dir:
+        render_previews(args.preview_dir.resolve(), collections)
+        print(f"Built device previews in {args.preview_dir.resolve()}")
+        return
 
     for name, collection in collections.items():
         export_glb(collection, OUTPUT_DIR / f"{name}.glb")

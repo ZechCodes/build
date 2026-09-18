@@ -1,6 +1,6 @@
 export {
   ACESFilmicToneMapping,
-  Box3,
+  CanvasTexture,
   Color,
   DirectionalLight,
   Group,
@@ -14,7 +14,6 @@ export {
   Scene,
   SRGBColorSpace,
   TextureLoader,
-  Vector3,
   WebGLRenderer,
 } from "three";
 export { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";

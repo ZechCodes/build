@@ -4,6 +4,8 @@ The public landing page now presents the six chapters from the production brief 
 
 Graphite surfaces use broad neutral studio lighting so the bodies, bezels, and keyboards separate from the dark background. The live renderer uses a locally generated reflection environment; the Blender posters carry matching fill and edge lighting.
 
+The revised hardware follows the proportion study in `../landing/device-references.md`: thin flat frames, rounded black glass, camera cutouts, and a recessed laptop keyboard. The official mint Build mark appears in the public shell, favicon, social card, and screen fixtures. The tablet uses dedicated 4:3 maps and meets a matching review surface across viewport profiles.
+
 ## Preview and reproduce
 
 From the repository root:
@@ -33,13 +35,13 @@ The final browser matrix is saved in `browser-results.json`. Still frames are `d
 
 - `../landing/build-devices.blend`: editable laptop, tablet, phone, lighting, cameras, and replaceable screens.
 - `../landing/build_device_assets.py`: reproducible GLBs, low-detail laptop, cutouts, social composition, and twelve responsive scene posters. Its README documents dimensions, axes, pivots, licensing, and overrides.
-- `../landing-captures/`: seeded Launch fixture, current product renderers, sixteen 2× PNG masters, screen-state manifest, and capture tooling. Screen textures are **reconstructed demonstration fixtures**, not footage from a live host or a claim of final product-design approval.
+- `../landing-captures/`: seeded Launch fixture, current product renderers, nineteen 2× PNG masters, screen-state manifest, and capture tooling. Screen textures are **reconstructed demonstration fixtures**, not footage from a live host or a claim of final product-design approval.
 - `../landing-runtime/`: pinned Three.js dependency, reproducible same-origin bundle, license, and transition tests.
 - `../../skriftapp/buildapp/landing/`: deployed HTML, styles, manifest, runtime, and web derivatives. Editable source, masters, and videos are not downloaded by the landing page.
 
 ## Verification
 
-- 556 backend tests; 39 landing JavaScript tests; five focused device-state tests.
+- 558 backend tests; 39 landing JavaScript tests; six focused device-state tests.
 - Python lint, JavaScript complexity cap of ten, syntax checks, and whitespace checks.
 - Chromium at 1440×900, 1920×1080, 768×1024, 1024×768, 390×844, 360×740, and 844×390; separate reduced-motion and JavaScript-disabled profiles.
 - GPU checks for handoff, forward/reverse checkpoints, tablet-to-review corner alignment, and the merged closing lineup.
@@ -48,10 +50,10 @@ The final browser matrix is saved in `browser-results.json`. Still frames are `d
 
 The recorded local desktop GPU run had a median frame interval of 16.7 ms and a 95th percentile of 16.8 ms in both desktop and phone-sized browser viewports. Draw-call counts stayed unchanged while idle. These measurements describe this machine, not physical-phone performance. Raw measurements are alongside the videos.
 
-Hero posters are about 80 KB desktop and 47 KB mobile. The three runtime GLBs total about 276 KB; all sixteen screen maps total about 361 KB. The vendored runtime is about 144 KB with gzip. `payload.json` distinguishes file measurements and calculated gzip sizes from actual production network measurements.
+Hero posters are about 82 KB desktop and 52 KB mobile. The three runtime GLBs total about 588 KB, including the visible laptop keyboard; all nineteen screen maps total about 468 KB. The vendored runtime is about 144 KB with gzip. `payload.json` distinguishes file measurements and calculated gzip sizes from actual production network measurements.
 
 ## Publication notes
 
-This is a local review build; no production deployment was performed. The public GitHub endpoint currently returns 404, so the activity section intentionally has no fabricated entries. `scripts/refresh-landing-activity.py` can populate the checked-in cache from publicly visible, labeled, merged PRs; failed refreshes preserve existing entries. The PR template documents the public summary/category fields.
+This package records local review checks. Production verification additionally requires matching the deployed app image to the pushed commit and checking the public routes and assets after rollout. The public GitHub endpoint returns 404, so the activity section intentionally has no fabricated entries. `scripts/refresh-landing-activity.py` can populate the checked-in cache from publicly visible, labeled, merged PRs; failed refreshes preserve existing entries. The PR template documents the public summary/category fields.
 
 Download preserves the existing alpha access gate and the actual macOS/Linux host build list. The page's free/open-source copy follows the supplied brief; public repository availability and the final UI/art review remain launch decisions. Performance on physical mobile devices still needs release validation.

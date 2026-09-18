@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  getContainedTextureLayout,
   getDeviceFramePoses,
   getDeviceScreenSource,
 } from "../../skriftapp/buildapp/landing/device-stage.js";
+import { DEVICE_CONTRACT } from "../../skriftapp/buildapp/landing/assets/devices/device-contract.js";
 
 const hidden = { x: 50, y: 50, w: 0, rotate: [0, 0, 0], opacity: 0 };
 const pose = (x, y, w, opacity = 1) => ({ x, y, w, rotate: [0, 0, 0], opacity });
@@ -39,7 +41,8 @@ test("adjacent scenes share the same boundary pose", () => {
 
 test("review aligns the tablet before fading its hardware", () => {
   const aligned = getDeviceFramePoses(scenes, frame(4, 0)).tablet;
-  assert.deepEqual(aligned, pose(50, 60, 82 * 0.252 / 0.234));
+  const tablet = DEVICE_CONTRACT.devices.tablet;
+  assert.deepEqual(aligned, pose(50, 60, 82 * tablet.bounds_size_m[0] / tablet.screen.size_m[0]));
   assert.equal(getDeviceFramePoses(scenes, frame(4, 0.1)).tablet.w, aligned.w);
   assert.equal(getDeviceFramePoses(scenes, frame(4, 0.2)).tablet.opacity, 0);
   assert.equal(getDeviceFramePoses(scenes, frame(4, 0.85)).tablet.opacity, 0);
@@ -51,12 +54,29 @@ test("review width uses the physical tablet screen inset", () => {
   const outgoing = getDeviceFramePoses(scenes, frame(3, 1), options).tablet;
   const incoming = getDeviceFramePoses(scenes, frame(4, 0), options).tablet;
   assert.deepEqual(incoming, outgoing);
-  assert.equal(incoming.w * 0.234 / 0.252, reviewWidth);
+  const tablet = DEVICE_CONTRACT.devices.tablet;
+  const projectedScreenWidth = incoming.w * tablet.screen.size_m[0] / tablet.bounds_size_m[0];
+  assert(Math.abs(projectedScreenWidth - reviewWidth) < 1e-9);
+});
+
+test("screen textures preserve aspect with neutral letterbox space", () => {
+  assert.deepEqual(
+    getContainedTextureLayout(1600, 1000, 4 / 3),
+    { width: 1600, height: 1200, x: 0, y: 100 },
+  );
+  assert.deepEqual(
+    getContainedTextureLayout(1200, 1600, 1),
+    { width: 1600, height: 1600, x: 200, y: 0 },
+  );
 });
 
 test("screen checkpoints resolve canonical maps", () => {
   assert.match(getDeviceScreenSource("phone", { sceneIndex: 2, checkpoint: "question" }), /ui03-question-mobile/);
   assert.match(getDeviceScreenSource("phone", { sceneIndex: 2, checkpoint: "answer" }), /ui03-answer-mobile/);
   assert.match(getDeviceScreenSource("phone", { sceneIndex: 2, checkpoint: "resumed" }), /ui03-resumed-mobile/);
+  assert.equal(getDeviceScreenSource("tablet", { sceneIndex: 3 }), "/landing/assets/screens/ui04-tablet.webp");
+  assert.equal(getDeviceScreenSource("tablet", { sceneIndex: 4, local: 0.5 }), "/landing/assets/screens/ui05-approval-tablet.webp");
+  assert.equal(getDeviceScreenSource("tablet", { sceneIndex: 4, local: 0.9 }), "/landing/assets/screens/ui05-merged-tablet.webp");
   assert.match(getDeviceScreenSource("laptop", { sceneIndex: 5 }), /ui05-merged-desktop/);
+  assert.equal(getDeviceScreenSource("tablet", { sceneIndex: 5 }), "/landing/assets/screens/ui05-merged-tablet.webp");
 });

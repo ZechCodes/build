@@ -9,6 +9,7 @@
   },
   "profiles": {
     "desktop": { "viewport": [1440, 900], "crop": [0, 0, 1440, 900], "textSafe": [22, 54, 1396, 802] },
+    "tablet": { "viewport": [1440, 1080], "crop": [0, 0, 1440, 1080], "textSafe": [22, 54, 1396, 982] },
     "mobile": { "viewport": [390, 844], "crop": [0, 0, 390, 844], "textSafe": [14, 50, 362, 744] }
   },
   "states": [

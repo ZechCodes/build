@@ -1,3 +1,5 @@
+import { DEVICE_CONTRACT } from "./assets/devices/device-contract.js";
+
 const DEVICE_NAMES = ["laptop", "phone", "tablet"];
 const MODEL_URLS = Object.freeze({
   laptop: "/landing/assets/devices/laptop-low.glb",
@@ -5,16 +7,40 @@ const MODEL_URLS = Object.freeze({
   tablet: "/landing/assets/devices/tablet.glb",
 });
 const SCREEN_DIRECTORY = "/landing/assets/screens";
-const SCREEN_ASPECTS = Object.freeze({
-  laptop: 0.308 / 0.1925,
-  tablet: 0.234 / 0.14625,
-  phone: 0.077 / 0.164,
-});
-const IMAGE_ASPECTS = Object.freeze({ desktop: 1440 / 900, mobile: 390 / 844 });
 const EMPTY_POSE = Object.freeze({ x: 50, y: 58, w: 0, rotate: [0, 0, 0], opacity: 0 });
 const VISIBLE_OPACITY = 0.015;
 const ARRIVAL_END = 0.25;
 const DEPARTURE_START = 0.75;
+
+export function getContainedTextureLayout(imageWidth, imageHeight, screenAspect) {
+  const width = Math.max(1, Number(imageWidth) || 1);
+  const height = Math.max(1, Number(imageHeight) || 1);
+  const aspect = Math.max(0.01, Number(screenAspect) || width / height);
+  const canvasWidth = width / height > aspect ? width : Math.ceil(height * aspect);
+  const canvasHeight = width / height > aspect ? Math.ceil(width / aspect) : height;
+  return {
+    width: canvasWidth,
+    height: canvasHeight,
+    x: (canvasWidth - width) / 2,
+    y: (canvasHeight - height) / 2,
+  };
+}
+
+function deviceScreenAspect(deviceName) {
+  const [width, height] = DEVICE_CONTRACT.devices[deviceName].screen.size_m;
+  return width / height;
+}
+
+function deviceScreenToBoundsWidth(deviceName) {
+  const device = DEVICE_CONTRACT.devices[deviceName];
+  return device.bounds_size_m[0] / device.screen.size_m[0];
+}
+
+function deviceAnchor(deviceName) {
+  if (deviceName !== "laptop") return [0, 0, 0];
+  const device = DEVICE_CONTRACT.devices.laptop;
+  return [0, device.bounds_size_m[1] / 2, device.body_size_m[2] / 2];
+}
 
 function clamp(value, minimum = 0, maximum = 1) {
   return Math.min(maximum, Math.max(minimum, Number(value) || 0));
@@ -71,7 +97,7 @@ function initialPose(scenes, profile, deviceName) {
 function reviewAlignmentPose(scenes, profile, reviewWidth) {
   const review = copyPose(profilePoses(scenes[4], profile).review);
   if (Number.isFinite(reviewWidth)) review.w = reviewWidth;
-  review.w *= 0.252 / 0.234;
+  review.w *= deviceScreenToBoundsWidth("tablet");
   review.rotate = [0, 0, 0];
   review.opacity = 1;
   return review;
@@ -161,8 +187,8 @@ export function getDeviceScreenSource(deviceName, frame) {
   const states = {
     0: { laptop: "ui01-desktop" },
     1: { laptop: "ui02-desktop", phone: "ui02-mobile" },
-    3: { tablet: "ui04-desktop" },
-    5: { laptop: "ui05-merged-desktop", tablet: "ui05-merged-desktop", phone: "ui05-merged-mobile" },
+    3: { tablet: "ui04-tablet" },
+    5: { laptop: "ui05-merged-desktop", tablet: "ui05-merged-tablet", phone: "ui05-merged-mobile" },
   };
   const state = frame.sceneIndex === 2
     ? directionScreenState(deviceName, frame.checkpoint)
@@ -180,8 +206,8 @@ function directionScreenState(deviceName, checkpoint) {
 
 function reviewScreenState(deviceName, frame) {
   if (deviceName !== "tablet") return null;
-  if (frame.checkpoint === "merged" || frame.local >= 0.8) return "ui05-merged-desktop";
-  return frame.local < 0.2 ? "ui04-desktop" : "ui05-approval-desktop";
+  if (frame.checkpoint === "merged" || frame.local >= 0.8) return "ui05-merged-tablet";
+  return frame.local < 0.2 ? "ui04-tablet" : "ui05-approval-tablet";
 }
 
 function idle(callback) {
@@ -441,16 +467,14 @@ class DeviceStage {
   }
 
   prepareModel(name, source) {
-    const { Box3, Group, Mesh, MeshBasicMaterial } = this.three;
+    const { Group, Mesh, MeshBasicMaterial } = this.three;
     source.updateMatrixWorld(true);
-    const bounds = new Box3().setFromObject(source);
-    const size = bounds.getSize(new this.three.Vector3());
-    const center = bounds.getCenter(new this.three.Vector3());
-    source.position.set(-center.x, -center.y, -center.z);
+    const [anchorX, anchorY, anchorZ] = deviceAnchor(name);
+    source.position.set(-anchorX, -anchorY, -anchorZ);
     const screenMeshes = [];
     source.traverse((node) => {
       if (!(node instanceof Mesh)) return;
-      if (/screen|display/i.test(node.name)) {
+      if (node.name === DEVICE_CONTRACT.devices[name].screen.node) {
         node.material = new MeshBasicMaterial({ color: 0x0b100e, toneMapped: false });
         node.material.transparent = true;
         node.userData.deviceScreen = name;
@@ -467,6 +491,7 @@ class DeviceStage {
       node.castShadow = true;
       node.receiveShadow = true;
     });
+    if (!screenMeshes.length) throw new Error(`Missing ${name} screen mesh`);
     const root = new Group();
     root.name = `device-${name}`;
     root.add(source);
@@ -478,7 +503,7 @@ class DeviceStage {
       screenUrl: null,
       screenKey: null,
       desiredScreenUrl: null,
-      width: Math.max(size.x, 0.001),
+      width: DEVICE_CONTRACT.devices[name].bounds_size_m[0],
       ready: false,
     };
   }
@@ -530,25 +555,39 @@ class DeviceStage {
     const key = `${deviceName}:${url}`;
     if (this.textures.has(key)) return Promise.resolve(this.textures.get(key));
     if (this.texturePromises.has(key)) return this.texturePromises.get(key);
-    const promise = this.textureLoader.loadAsync(url).then((texture) => {
+    const promise = this.textureLoader.loadAsync(url).then((sourceTexture) => {
       if (this.destroyed || this.failed) {
-        texture.dispose();
+        sourceTexture.dispose();
         throw new Error("device stage no longer accepts textures");
       }
+      const texture = this.containScreenTexture(sourceTexture, deviceName);
       texture.colorSpace = this.three.SRGBColorSpace;
       texture.flipY = false;
-      const screenAspect = SCREEN_ASPECTS[deviceName];
-      const imageAspect = IMAGE_ASPECTS[deviceName === "phone" ? "mobile" : "desktop"];
-      const repeatX = screenAspect < imageAspect ? screenAspect / imageAspect : 1;
-      const repeatY = screenAspect > imageAspect ? imageAspect / screenAspect : 1;
-      texture.repeat.set(repeatX, repeatY);
-      texture.offset.set((1 - repeatX) / 2, (1 - repeatY) / 2);
       texture.needsUpdate = true;
       this.textures.set(key, texture);
       return texture;
     }).finally(() => this.texturePromises.delete(key));
     this.texturePromises.set(key, promise);
     return promise;
+  }
+
+  containScreenTexture(source, deviceName) {
+    const image = source.image;
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    const layout = getContainedTextureLayout(width, height, deviceScreenAspect(deviceName));
+    if (layout.width === width && layout.height === height) return source;
+    const canvas = this.page.createElement("canvas");
+    canvas.width = layout.width;
+    canvas.height = layout.height;
+    const context = canvas.getContext("2d");
+    if (!context) return source;
+    context.fillStyle = "#07110f";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, layout.x, layout.y, width, height);
+    const texture = new this.three.CanvasTexture(canvas);
+    source.dispose();
+    return texture;
   }
 
   releaseUnusedTextures() {

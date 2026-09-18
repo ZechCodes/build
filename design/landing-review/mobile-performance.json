@@ -7,18 +7,18 @@
     71,
     71
   ],
-  "frameSamples": 1382,
+  "frameSamples": 1385,
   "medianMs": 16.699999999999818,
   "p95Ms": 16.799999999999727,
   "over34ms": 9,
   "state": {
     "scene": "download",
     "sceneIndex": 5,
-    "local": 0.9944868532654787,
-    "progress": 0.999280893904193,
+    "local": 0.9999999999999994,
+    "progress": 1,
     "profile": "compact",
     "checkpoint": "settled",
-    "travel": 4.596692111959287,
+    "travel": 4.6,
     "enhanced": true,
     "staticReason": ""
   }

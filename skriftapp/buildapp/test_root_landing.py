@@ -71,6 +71,8 @@ MEDIA_TYPES = (
     ("cinematic.css", "text/css"),
     ("main.js", "text/javascript"),
     ("brand-mark.svg", "image/svg+xml"),
+    ("favicon.svg", "image/svg+xml"),
+    ("favicon.png", "image/png"),
     ("assets/devices/laptop.webp", "image/webp"),
     ("assets/devices/laptop.glb", "model/gltf-binary"),
     ("assets/devices/metadata.json", "application/json"),

@@ -72,13 +72,14 @@ button, input { font: inherit; }
 .brand {
   display: flex;
   align-items: center;
+  gap: 8px;
   padding: 0 18px;
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -.04em;
   border-right: 1px solid var(--line);
 }
-.brand::after { content: "_"; color: var(--accent); }
+.brand img { width: 14px; height: 17px; object-fit: contain; display: block; }
 .crumbs { display: flex; align-items: center; gap: 8px; padding: 0 20px; color: var(--dim); font-size: 12px; }
 .crumbs strong { color: var(--ink); font-weight: 500; }
 .crumb-sep { color: var(--line3); }

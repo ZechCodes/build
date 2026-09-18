@@ -49,7 +49,7 @@ def render_docs_body() -> str:
         for harness in load_content()["harnesses"]
     )
     return f"""<main class="public-doc content-container">
-  <a class="doc-back" href="/">Back to Build</a>
+  <a class="doc-back" href="/" aria-label="Build home"><img src="/landing/brand-mark.svg" alt="">build</a>
   <h1>Build documentation</h1>
   <section id="setup" aria-labelledby="setup-title">
     <h2 id="setup-title">Set up a host</h2>
@@ -72,7 +72,7 @@ def render_docs_body() -> str:
 
 def render_privacy_body() -> str:
     return """<main class="public-doc content-container">
-  <a class="doc-back" href="/">Back to Build</a>
+  <a class="doc-back" href="/" aria-label="Build home"><img src="/landing/brand-mark.svg" alt="">build</a>
   <h1>Architecture and privacy</h1>
   <p>Build stores the account and device records needed to authenticate you, approve a host, and establish a connection. Device records include the host's registered identity and connection status.</p>
   <h2>Connection diagnostics</h2>

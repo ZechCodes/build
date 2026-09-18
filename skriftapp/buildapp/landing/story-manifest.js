@@ -46,8 +46,8 @@ export const STORY_SCENES = Object.freeze([
     copy: { title: "See the whole picture.", region: "left" },
     checkpoints: [{ at: 0, id: "workspace" }, { at: 0.3, id: "activity" }, { at: 0.75, id: "review-approach" }],
     poses: {
-      desktop: devices(hidden, pose(64, 62, 64, [-7, 5, 0])),
-      tablet: devices(hidden, pose(50, 64, 70, [-3, 3, 0])),
+      desktop: devices(hidden, pose(70, 60, 53, [-7, 5, 0])),
+      tablet: devices(hidden, pose(50, 65, 60, [-3, 3, 0])),
       compact: devices(hidden, pose(50, 70, 94)),
     },
   },

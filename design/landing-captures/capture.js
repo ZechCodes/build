@@ -85,7 +85,7 @@ function head(title, subtitle, time = "03:43", provider = null) {
 
 function shell(content, { active = "Launch", crumb = "Launch", timer = "03:43" } = {}) {
   return `<div class="app">
-    <header class="global-head"><div class="brand">build</div><div class="crumbs"><span>Build</span><span class="crumb-sep">/</span><strong>${crumb}</strong><div class="head-status"><span class="presence"></span><span>workshop online</span><span class="avatar">Z</span></div></div></header>
+    <header class="global-head"><div class="brand"><img src="./build-mark.svg" alt=""><span>build</span></div><div class="crumbs"><span>Build</span><span class="crumb-sep">/</span><strong>${crumb}</strong><div class="head-status"><span class="presence"></span><span>workshop online</span><span class="avatar">Z</span></div></div></header>
     ${sidebar(active, timer)}
     <main class="main">${content}</main>
     <footer class="statusbar"><span><span class="presence"></span>&nbsp; Connected to workshop</span><span>2 sub-agents</span><span>2 shells</span><span>${timer} · <span class="git-add">+128</span> <span class="git-del">−34</span></span></footer>

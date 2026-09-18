@@ -451,9 +451,18 @@ impl AppState {
     /// so the only thing this touches is the label a reader sees. Answers the
     /// same detail `workspace.get` does, so the caller that renamed repaints
     /// from one read rather than guessing what the record now says.
+    ///
+    /// It still waits for filesystem work in flight, as every other change to a
+    /// workspace does. The manifest is the one record: a job that was handed a
+    /// workspace before the rename writes that workspace back when it lands,
+    /// and the new name would be gone from memory and disk with no error
+    /// anywhere.
     pub(crate) fn workspace_rename(&mut self, params: &Value) -> Result<Value, String> {
         let workspace_id = require_str(params, "workspace_id")?;
         let name = require_str(params, "name")?;
+        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
+            return Err("another filesystem operation is still running".to_string());
+        }
         if self.workspaces.get(&workspace_id).is_none() {
             self.adopt_legacy_workspaces();
         }

@@ -430,3 +430,50 @@ fn add_directory_refuses_a_path_that_is_another_projects_source() {
     );
     assert_eq!(directories(&mut state, &workspace_id).len(), 1);
 }
+
+/// An add is decided under the app mutex and lands off it: the clone or the
+/// copy runs while the bridge is answering other calls, and the record it
+/// writes back was read before those calls. A rename landing in that window
+/// would be overwritten by the finishing add — silently, in memory and on
+/// disk — so the rename waits the way every other change to a workspace whose
+/// filesystem is moving waits.
+#[test]
+fn a_rename_waits_while_a_directory_is_being_added() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "code");
+    let assets = tmp.path().join("assets");
+    std::fs::create_dir(&assets).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    let workspace = create_workspace(&mut state, &project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let params = json!({"workspace_id": workspace_id, "path": assets});
+    let (dispatched, deferred) = state.dispatch_deferring("workspace.add_directory", &params);
+    assert_eq!(dispatched.unwrap(), Value::Null);
+    let deferred = deferred.expect("adding a directory defers its filesystem work");
+
+    let refused = state.handle(req(
+        "workspace.rename",
+        json!({"workspace_id": workspace_id, "name": "renamed"}),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    let settled = state
+        .apply_deferred("workspace.add_directory", &params, deferred.run())
+        .unwrap();
+    assert_eq!(settled["directories"].as_array().unwrap().len(), 2);
+
+    let renamed = state.handle(req(
+        "workspace.rename",
+        json!({"workspace_id": workspace_id, "name": "renamed"}),
+    ));
+    assert_eq!(renamed["ok"], true, "{renamed:?}");
+    state.workspaces.reload().unwrap();
+    assert_eq!(
+        state.workspaces.get(&workspace_id).unwrap().name,
+        "renamed",
+        "the rename is in the manifest the add left behind"
+    );
+    assert_eq!(directories(&mut state, &workspace_id).len(), 2);
+}

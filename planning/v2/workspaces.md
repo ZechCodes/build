@@ -371,7 +371,11 @@ any other agent. What it does not receive is the coding prompt: that one is
 about phases, a plan and a diff, and this agent has none of them. It is told
 which project it is the agent of, why the project's own files are not its to
 change, and what its tools are — including that a removal takes whatever is in
-what it removed and is not committed and pushed anywhere else. Its messages carry a status and no phase,
+what it removed and is not committed and pushed anywhere else, and that a reply
+to an agent is only ever a `message_agent` send, because an agent it handed work
+to tells it nothing by finishing that turn. The coding templates carry the same
+three sentences in `MESSAGE_AGENT_NOTE`, so the rule cannot drift between one
+surface and the other. Its messages carry a status and no phase,
 so a terminal message ends the turn and reports no lifecycle outcome.
 
 ## Boundaries

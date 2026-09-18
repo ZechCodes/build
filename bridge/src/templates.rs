@@ -330,9 +330,14 @@ workspace it is on, the second by its id — which is what a message from an age
 carries, so `message_agent` is how you answer one. Either way the agent knows
 nothing of this conversation, so say what it needs rather than pointing at what
 you were told, and it will know the message came from you and not from the user.
-When it finishes that turn its report arrives here as a message, saying whether
-it completed or is blocked — you do not have to go and look. You cannot message
-yourself, and no agent outside this project is reachable.
+You cannot message yourself, and no agent outside this project is reachable.
+
+A reply to an agent is only ever a `message_agent` send. `post_thread_message`
+reports to the user and reaches no agent, so an agent you handed work to tells
+you nothing by finishing its turn: what reaches you is the message it writes
+you, and if you need to know where it got to, ask it. When one of them asks YOU
+for something, send the answer with `message_agent` first, then report to the
+user briefly — what you did, not a second copy of what you already sent.
 
 Call `set_topic` first with what this conversation is about, in 2-4 words. The
 user sees only what you send with `post_thread_message`, and every call carries a
@@ -363,14 +368,24 @@ rather than pad it.";
 /// that one. Not on the router's template or the project agent's: the router has
 /// no conversation to be answered in, and the project agent's own prompt says
 /// this in its own words.
+///
+/// It has to say that a reply is a send, because nothing carries one for the
+/// agent. A report used to be forwarded to whoever asked for the turn, and an
+/// agent told that would answer by ending its turn and say the same thing twice
+/// when it answered properly too.
 const MESSAGE_AGENT_NOTE: &str = "\
 `message_agent` writes to another agent working this project: a question for
-whoever is on the piece you depend on, or work to hand over. Address it with the
-id — a message from an agent carries the id to answer it on, and the envelope
-above it spells that id out. Its report comes back to you as a message when it
-finishes that turn. Your own report still goes to the user through
-`post_thread_message`, which is the only thing the user sees; nothing you send
-with `message_agent` reaches them.";
+whoever is on the piece you depend on, work to hand over, or the answer to
+something one of them asked you. Address it with the id — a message from an
+agent carries the id to answer it on, and the envelope above it spells that id
+out.
+
+A reply to an agent is only ever a `message_agent` send. `post_thread_message`
+reports to the user and reaches no agent, whatever its status, so ending your
+turn answers nobody. When another agent asked you for something, send the answer
+with `message_agent` first, then report to the user briefly — what you did, not
+a second copy of what you already sent. Nothing you send with `message_agent`
+reaches the user, and `post_thread_message` is the only thing they see.";
 
 fn phase_template(base: &str) -> String {
     base.to_string()
@@ -1066,7 +1081,7 @@ mod tests {
     /// Every agent that works in a checkout is told it can write to the other
     /// agents on its project, what for, and that its own report still goes to
     /// the user. The router is told none of it: it has no conversation of its
-    /// own for an answer to come back to.
+    /// own to be answered in.
     #[test]
     fn every_coding_template_says_an_agent_can_write_to_another_agent() {
         let t = Templates::default();
@@ -1102,6 +1117,64 @@ mod tests {
         assert!(project.contains("`message_agent`"), "{project}");
         assert!(project.contains("`message_workspace_agent`"), "{project}");
         assert!(project.contains("cannot message yourself"), "{project}");
+    }
+
+    /// Every template that has `message_agent` says the same three things: a
+    /// reply to an agent is a send, ending a turn reports to the user and
+    /// reaches nobody, and an agent that was asked for something answers it and
+    /// then tells the user what it did rather than saying it twice.
+    #[test]
+    fn every_template_with_message_agent_says_a_reply_is_a_send() {
+        let t = Templates::default();
+        for (name, template) in templates_that_reach_another_agent(&t) {
+            let text = collapse_whitespace(template);
+            for sentence in [
+                "A reply to an agent is only ever a `message_agent` send.",
+                "`post_thread_message` reports to the user and reaches no agent",
+                "report to the user briefly",
+            ] {
+                assert!(text.contains(sentence), "{name} does not say it: {text}");
+            }
+        }
+    }
+
+    /// And none of them promises the answer travels on its own, because no
+    /// answer does: the bridge forwards nothing.
+    #[test]
+    fn no_template_promises_a_report_comes_back_on_its_own() {
+        let t = Templates::default();
+        for (name, template) in templates_that_reach_another_agent(&t) {
+            let text = collapse_whitespace(template);
+            for promise in [
+                "arrives here as a message",
+                "Its report comes back",
+                "its report comes back",
+                "comes back to you",
+                "you do not have to go and look",
+            ] {
+                assert!(
+                    !text.contains(promise),
+                    "{name} promises a report travels: {text}"
+                );
+            }
+        }
+    }
+
+    /// Every template whose agent can write to another agent — the coding
+    /// phases and the project agent, which is all of them but the router.
+    fn templates_that_reach_another_agent(t: &Templates) -> Vec<(&'static str, &String)> {
+        vec![
+            ("plan", &t.plan),
+            ("build", &t.build),
+            ("build_stage", &t.build_stage),
+            ("revise", &t.revise),
+            ("revise_stage", &t.revise_stage),
+            ("fix_stage", &t.fix_stage),
+            ("review_changes", &t.review_changes),
+            ("validate", &t.validate),
+            ("message", &t.message),
+            ("project_agent", &t.project_agent),
+        ]
     }
 
     #[test]

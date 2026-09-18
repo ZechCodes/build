@@ -1,34 +1,26 @@
 use super::Project;
 use crate::app::{AppState, DeferredRead, DeferredWork, ProjectListRow, ReadSubject};
-#[cfg(test)]
-use crate::worktree::git_remote_origin;
 use serde_json::{json, Value};
 
 impl AppState {
-    /// All registered projects, for the New-task picker and Settings.
+    /// All registered projects, for the New-task picker and Settings — rendered
+    /// here rather than deferred, which is what the synchronous tests read.
     #[cfg(test)]
     pub(in crate::app) fn project_list(&self) -> Value {
         let projects: Vec<Value> = self
-            .projects
+            .project_list_rows()
             .iter()
-            .map(|project| {
-                let remote = project
-                    .is_git
-                    .then(|| git_remote_origin(&project.repo_path))
-                    .flatten();
-                self.project_json(project, remote)
-            })
+            .map(ProjectListRow::render)
             .collect();
         json!({ "projects": projects })
     }
 
-    /// Capture project identity and settings under the app mutex, then leave
-    /// repository and volume probes to the deferred-read drain. The answer is
-    /// a coherent snapshot: registration changes while the probes run affect
-    /// the next list request, not this one.
-    pub(crate) fn defer_project_list(&mut self) -> Value {
-        let projects = self
-            .projects
+    /// One project per registered project, as the list answers for it: identity
+    /// and settings read under the app mutex, and the conversation owner it has
+    /// right now — `None` for a project nobody has talked to yet, because a
+    /// read may never mint one.
+    fn project_list_rows(&self) -> Vec<ProjectListRow> {
+        self.projects
             .iter()
             .map(|project| ProjectListRow {
                 project_id: project.id.clone(),
@@ -40,8 +32,17 @@ impl AppState {
                 sources: project.sources.clone(),
                 isolation: project.isolation,
                 isolation_default: self.isolation,
+                conversation: self.project_conversation_run(&project.id),
             })
-            .collect();
+            .collect()
+    }
+
+    /// Capture project identity and settings under the app mutex, then leave
+    /// repository and volume probes to the deferred-read drain. The answer is
+    /// a coherent snapshot: registration changes while the probes run affect
+    /// the next list request, not this one.
+    pub(crate) fn defer_project_list(&mut self) -> Value {
+        let projects = self.project_list_rows();
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject: ReadSubject::ProjectList { projects },
             issue_id: None,

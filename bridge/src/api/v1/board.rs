@@ -476,9 +476,23 @@ pub struct ProjectRow {
     pub isolation_available: IsolationAvailabilityView,
 }
 
+/// A project as `project.list` answers for it: the row above, and the
+/// conversation owner the project has right now — `null` on a project nobody
+/// has talked to yet. Only the list carries it, and only because a surface
+/// that shows a project's agent must be able to learn there is none without
+/// `project.ensure_conversation` minting one to answer.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ListedProjectRow {
+    #[serde(flatten)]
+    pub project: ProjectRow,
+    pub entity_id: Option<String>,
+    /// The same id, under the name the run verbs take.
+    pub run_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectListResult {
-    pub projects: Vec<ProjectRow>,
+    pub projects: Vec<ListedProjectRow>,
 }
 
 /// The board's own thinner project row: enough to name and group by, without

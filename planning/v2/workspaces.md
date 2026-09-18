@@ -188,6 +188,12 @@ A project is a conversation owner in its own right, the way a workspace is:
 one, and answers `{project_id, entity_id, run_id}` either way. A second call
 answers the first one's owner, and the owner survives a bridge restart.
 
+`project.list` carries that owner too — `entity_id` and `run_id`, both `null` on
+a project nobody has talked to yet — read from the same lookup
+`project.ensure_conversation` makes before it mints. It is the only read of the
+owner there is, and it exists because a surface that shows a project's agent has
+to be able to learn the project has none without minting one to find out.
+
 The owner's agents work in a durable scratch directory Build owns, never in the
 project's checkout — the project is the template workspaces are cut from, and
 talking about it must not change it. The directory sits under Build's own state

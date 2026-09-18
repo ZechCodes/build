@@ -17,7 +17,9 @@
         "isolation_available": {
           "rift": false,
           "reason": "rift is not installed on this device"
-        }
+        },
+        "entity_id": "run-5d90b1e7",
+        "run_id": "run-5d90b1e7"
       }
     ]
   },

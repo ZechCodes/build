@@ -256,3 +256,43 @@ fn abandoning_a_project_conversation_owner_keeps_its_scratch() {
     assert_ne!(next, run_id, "the abandoned owner is gone: {again:?}");
     assert_eq!(state.runs[next].worktree.path, scratch);
 }
+
+/// Nothing may read a project's conversation owner by minting one: a rail that
+/// wants to show the project's agent beside a workspace's asks the list, and
+/// the list answers `null` for a project nobody has talked to yet. Minting on a
+/// read would give every workspace page a scratch directory and a run the
+/// reader never asked for.
+#[test]
+fn project_list_names_the_conversation_owner_and_mints_none_to_find_it() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+
+    let untouched = state.handle(req("project.list", json!({})));
+    assert_eq!(untouched["ok"], true, "{untouched:?}");
+    let row = &untouched["result"]["projects"][0];
+    assert_eq!(row["project_id"], project_id, "{row:?}");
+    assert_eq!(row["entity_id"], Value::Null, "{row:?}");
+    assert_eq!(row["run_id"], Value::Null, "{row:?}");
+    assert!(state.runs.is_empty(), "the list minted an owner");
+
+    let owner = ensure(&mut state, &project_id)["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let listed = state.handle(req("project.list", json!({})));
+    let row = &listed["result"]["projects"][0];
+    assert_eq!(row["entity_id"], owner, "{row:?}");
+    assert_eq!(row["run_id"], owner, "{row:?}");
+    assert_eq!(state.runs.len(), 1, "the list minted a second owner");
+
+    // Abandoned, the project is untouched again — the owner the list names is
+    // the live one, the same one `project.ensure_conversation` would answer.
+    let abandoned = state.handle(req("run.abandon", json!({ "run_id": owner })));
+    assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+    let listed = state.handle(req("project.list", json!({})));
+    assert_eq!(listed["result"]["projects"][0]["entity_id"], Value::Null);
+}

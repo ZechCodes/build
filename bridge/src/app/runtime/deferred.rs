@@ -379,6 +379,10 @@ pub(in crate::app) struct ProjectListRow {
     pub(in crate::app) sources: Vec<crate::app::projects::ProjectSource>,
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) isolation_default: Isolation,
+    /// The conversation owner this project has, or `None` for one nobody has
+    /// talked to yet. Read under the lock with the rest of the row: a list is a
+    /// read, and a read never mints an owner.
+    pub(in crate::app) conversation: Option<String>,
 }
 
 impl ProjectListRow {
@@ -410,6 +414,8 @@ impl ProjectListRow {
             "isolation_default": self.isolation_default,
             "isolation_effective": effective,
             "isolation_available": available,
+            "entity_id": self.conversation,
+            "run_id": self.conversation,
         })
     }
 }

@@ -122,7 +122,11 @@ impl AppState {
     /// than by a stored id, so a boot that re-minted `proj-N` still finds the
     /// owner the last boot left — and only a live run wins, so a terminal one
     /// never keeps a project from starting over.
-    fn project_conversation_owner(&self, project_id: &str, scratch: &Path) -> Option<String> {
+    pub(in crate::app) fn project_conversation_owner(
+        &self,
+        project_id: &str,
+        scratch: &Path,
+    ) -> Option<String> {
         self.runs
             .iter()
             .find(|(run_id, active)| {
@@ -131,6 +135,16 @@ impl AppState {
                     && crate::app::workspaces::same_path(&active.worktree.path, scratch)
             })
             .map(|(run_id, _)| run_id.clone())
+    }
+
+    /// The conversation owner this project has right now, or `None` for a
+    /// project nobody has talked to yet — the lookup above, asked by project id
+    /// alone. `project.list` carries the answer so a rail can show a project's
+    /// agent without minting one to find out there is none.
+    pub(in crate::app) fn project_conversation_run(&self, project_id: &str) -> Option<String> {
+        let project = self.projects.get(project_id)?;
+        let scratch = scratch_dir(&self.state_root, &project.repo_path);
+        self.project_conversation_owner(project_id, &scratch)
     }
 }
 

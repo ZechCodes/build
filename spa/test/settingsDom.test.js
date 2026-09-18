@@ -87,6 +87,7 @@ beforeEach(async () => {
   App.selectedDeviceId = null;
   App.viewDispose?.();
   App.viewDispose = null;
+  localStorage.clear();
   document.body.innerHTML = bodyHtml;
   ({ renderSettings } = await import("../src/views/settings.js"));
   ({ adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } = await import("../src/core/deviceContexts.js"));
@@ -221,6 +222,35 @@ describe("Settings → Creation device", () => {
 
     expect($("#creationdev").textContent).toContain("No devices yet");
     expect($("#creationdev").disabled).toBe(true);
+  });
+});
+
+// Two defaults panels, one page: what every new agent starts on, and what the
+// one agent that talks ABOUT a project starts on. Both are this device's, and
+// both are saved the moment they are picked.
+describe("Settings → agent defaults", () => {
+  const pick = (selector, value) => {
+    const select = $(selector);
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  it("offers the project agent its own harness, model and effort, stored apart", async () => {
+    adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
+    await renderSettings();
+    await flush();
+
+    expect([...document.querySelectorAll("[data-harness-defaults]")].map((panel) => panel.dataset.harnessDefaults))
+      .toEqual(["def", "proj"]);
+    expect($("[data-harness-defaults=proj] h3").textContent).toBe("🧭 Project agent");
+    expect($("[data-harness-defaults=proj] .dim").textContent).toMatch(/harness, model, and reasoning effort/);
+
+    const second = [...$("#projprovider").options][1].value;
+    pick("#projprovider", second);
+
+    expect(JSON.parse(localStorage.getItem("build.projectAgentDefaults")).provider).toBe(second);
+    // The project agent's choice is not every agent's choice.
+    expect(localStorage.getItem("build.agentDefaults")).toBe(null);
   });
 });
 

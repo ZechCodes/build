@@ -613,10 +613,11 @@ const projectAgentContext = (context, known, payload) => ({
 });
 
 /** The work item's own context again, with the agent whose bubble asked for it
- *  open. */
-const workItemContext = (context, known, openAgentId) => ({
+ *  open — or, where the `+` asked, the chooser up and no conversation open. */
+const workItemContext = (context, known, { openAgentId = null, addingAgent = false } = {}) => ({
   ...context,
   openAgentId,
+  addingAgent,
   projectAgent: { ...context.projectAgent, ...known },
 });
 
@@ -684,13 +685,13 @@ export function mountAgentRail(host, context) {
     },
     toProject: (entityId) => {
       known = { ...known, entityId };
-      stand(projectSide(), workItemContext(context, known, null), { panelOpen: true });
+      stand(projectSide(), workItemContext(context, known), { panelOpen: true });
     },
-    toWorkItem: (openAgentId) => {
-      stand(workItemContext(context, known, openAgentId), projectSide(), { panelOpen: true });
+    toWorkItem: (openAgentId, { adding = false } = {}) => {
+      stand(workItemContext(context, known, { openAgentId, addingAgent: adding }), projectSide(), { panelOpen: true });
     },
   };
-  stand(workItemContext(context, known, null), projectSide());
+  stand(workItemContext(context, known), projectSide());
   return {
     dispose() {
       live?.dispose();
@@ -788,7 +789,7 @@ function mountRailOnContext(host, context, swap) {
   // Choosing the next agent's harness, with the chooser in the panel. Entered
   // by the strip's `+`, left by the send that creates the agent or by opening
   // any existing bubble.
-  let addingAgent = false;
+  let addingAgent = context.addingAgent === true;
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
   let olderItemsAwaitingPaint = false;
@@ -1248,6 +1249,11 @@ function mountRailOnContext(host, context, swap) {
   const projectChip = () =>
     (swap && onProjectAgentRail ? { name: projectName || projectAgent.projectId, route: projectPageRoute() } : null);
 
+  /// The work item under the rule — the workspace or the branch this rail is
+  /// the rail of, on whichever side of the swap it sits. It answers for its own
+  /// half of the strip: its agents, and whether another can be added to it.
+  const belowTheLine = () => (onProjectAgentRail ? alongsideEntity : entity);
+
   /// The project's bubble, or null on a rail nobody asked for one on. Its
   /// agents are whichever side of the swap the project is on.
   const projectAgentEntry = () =>
@@ -1357,12 +1363,14 @@ function mountRailOnContext(host, context, swap) {
       host.innerHTML = `<div class="rail-strip"></div>`;
     }
     const strip = host.querySelector(".rail-strip");
+    const below = belowTheLine();
     paintStrip(strip, railBubbles({
       // Below the line are the work item's agents, whichever side of the swap
       // this rail is standing on.
       agents: onProjectAgentRail ? alongsideEntity.agents : visibleAgents(),
-      selectedId, kind: entity.kind, chatCapable: entity.chatCapable !== false,
+      selectedId, kind: below.kind, chatCapable: below.chatCapable !== false,
       addingAgent,
+      canAdd: onProjectAgentRail ? below.canAdd : null,
       projectAgent: projectAgentEntry(),
     }));
     let panel = host.querySelector("#rail-panel");
@@ -2630,6 +2638,10 @@ function mountRailOnContext(host, context, swap) {
     if (onProjectAgentRail && (type === "agent" || type === "ghost")) {
       return () => swap.toWorkItem(agentId || null);
     }
+    // The `+` below the line adds an agent to the WORK ITEM, so pressing it
+    // from the project's conversation stands the rail back there first and
+    // opens the chooser — the same place pressing it below lands.
+    if (onProjectAgentRail && type === "add") return () => swap.toWorkItem(null, { adding: true });
     return null;
   };
 
@@ -2669,13 +2681,13 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const pressBubble = (type, agentId) => {
-    if (type === "add") {
-      pressAddBubble();
-      return;
-    }
     const swapping = swapForPress(type, agentId);
     if (swapping) {
       swapping();
+      return;
+    }
+    if (type === "add") {
+      pressAddBubble();
       return;
     }
     if (type === "agent" && agentId && (agentId !== selectedId || addingAgent)) {

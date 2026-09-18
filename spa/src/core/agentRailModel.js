@@ -161,6 +161,12 @@ export function bubbleTip(agent) {
 const supportsMultipleAgents = (kind) => kind === "branch" || kind === "workspace";
 const addAgentTitle = (kind) => `Add another agent to this ${kind === "workspace" ? "workspace" : "branch"}`;
 
+/** Whether the strip offers another agent here. The work item answers it when
+ *  it has been read — `canAdd` off its own payload — and the kind answers for a
+ *  caller holding no payload: an issue carries exactly one agent session, so it
+ *  never offers. */
+const offersAnotherAgent = (kind, canAdd) => (canAdd === null ? supportsMultipleAgents(kind) : !!canAdd);
+
 /** The line under the project's agent: everything below it belongs to the work
  *  item the page is standing on. Keyed like any other entry — the same shape
  *  core/thread.js rules its unread line with — so the reconciler draws it once
@@ -225,23 +231,33 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
  * project's initial — it belongs to the project, not to this work item, and the
  * strip has to say so at a glance.
  *
+ * The half below the line answers for its own `+`: `agents`, `kind` and
+ * `canAdd` are the WORK ITEM's, whichever conversation the rail is standing on.
+ * A workspace read while the panel is on the project's conversation can still
+ * take another agent, and the control that adds one belongs to it.
+ *
  * A work item Build owns no agent in yet gets a single GHOST bubble instead:
  * the conversation exists before the agent does, and the first message is what
  * brings the agent into being — so the ghost wears the face that first agent
  * will. Nothing can be added beside an agent that is not there yet, so the `+`
  * waits for it.
  */
-export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false, projectAgent = null } = {}) {
-  const own = ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent });
-  if (!projectAgent) return own;
-  // The panel holds one conversation: while it is the project's, nothing below
-  // the line is the open one.
+export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false, canAdd = null, projectAgent = null } = {}) {
+  const own = ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd });
+  return projectAgent ? underTheProject(own, projectAgent) : own;
+}
+
+/** The work item's half of the strip, with the project's above it: the
+ *  project's bubble, the line, and the work item's own below. The panel holds
+ *  one conversation, so while it is the project's nothing below the line is the
+ *  open one. */
+function underTheProject(own, projectAgent) {
   const beside = projectAgent.active ? own.map((bubble) => ({ ...bubble, active: false })) : own;
   return [projectAgentBubble(projectAgent), RAIL_SEPARATOR_ENTRY, ...beside];
 }
 
 /** The bubbles of the work item the rail is standing on, and nothing else. */
-function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent }) {
+function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd }) {
   if (!agents.length) {
     return [
       {
@@ -270,7 +286,7 @@ function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent }) {
   }));
   // Issues carry exactly one agent session: implementing one hands the work to
   // a new agent on a branch, which is a different work item entirely.
-  if (supportsMultipleAgents(kind)) {
+  if (offersAnotherAgent(kind, canAdd)) {
     bubbles.push({
       type: "add",
       id: "",

@@ -95,6 +95,7 @@ const flush = async () => {
 const host = () => document.querySelector("#agent-rail");
 const strip = () => [...host().querySelectorAll(".rail-strip > *")];
 const projectBubble = () => host().querySelector('[data-bubble="project"]');
+const addBubble = () => host().querySelector('[data-bubble="add"]');
 const agentBubble = (id) => host().querySelector(`[data-bubble="agent"][data-agent="${id}"]`);
 /** Whose conversation the panel's head says is open. */
 const headWho = () => host().querySelector(".rail-who")?.title || "";
@@ -228,6 +229,45 @@ describe("pressing the project's agent", () => {
     // The owner was minted by the first press and carried across both swaps.
     expect(callsTo("project.ensure_conversation")).toHaveLength(1);
     expect(projectBubble().title).toBe("Project agent for build");
+  });
+});
+
+// The + below the line adds an agent to the WORKSPACE, and the workspace is
+// still under the rule while the panel is on the project's conversation: "when
+// I'm in a workspace and open the project agent conversation, the + to create
+// an agent in the workspace goes away." The half below the line answers for
+// itself, whichever side the rail is standing on.
+describe("the + while the project's conversation is open", () => {
+  it("stays below the line", async () => {
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+
+    expect(strip().map((element) => element.dataset.bubble || element.className)).toEqual([
+      "project",
+      "rail-sep",
+      "agent",
+      "add",
+    ]);
+    expect(addBubble().title).toBe("Add another agent to this workspace");
+  });
+
+  it("swaps back to the workspace and starts the new agent there", async () => {
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+
+    addBubble().click();
+    await flush();
+
+    // Exactly where pressing the + on the workspace's own conversation lands:
+    // the rail back on the workspace, the chooser in the panel, and nothing
+    // created until something is sent.
+    expect(projectBubble().classList.contains("active")).toBe(false);
+    expect(addBubble().classList.contains("active")).toBe(true);
+    expect(panel().querySelector(".rail-newagent")).toBeTruthy();
+    expect(panelIsOpen()).toBe(true);
+    expect(callsTo("agent.add")).toHaveLength(0);
   });
 });
 

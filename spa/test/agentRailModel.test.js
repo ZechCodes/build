@@ -282,6 +282,31 @@ describe("the project's agent on a workspace's strip", () => {
     ]);
   });
 
+  // The half below the line is the work item's, and so is its `+`: the panel
+  // being on the project's conversation does not take the workspace's own way
+  // of adding an agent off the strip.
+  it("keeps the + below the line while the project's conversation is open", () => {
+    const bubbles = railBubbles({
+      agents: [agent()],
+      selectedId: "ag-1",
+      kind: "workspace",
+      canAdd: true,
+      projectAgent: projectAgent({ entityId: "run-p", active: true }),
+    });
+    expect(bubbles.map((bubble) => bubble.type)).toEqual(["project", "separator", "agent", "add"]);
+    expect(bubbles[3].title).toBe("Add another agent to this workspace");
+  });
+
+  it("leaves it off where the work item below says nothing can be added to it", () => {
+    const bubbles = railBubbles({
+      agents: [agent()],
+      kind: "workspace",
+      canAdd: false,
+      projectAgent: projectAgent({ entityId: "run-p", active: true }),
+    });
+    expect(bubbles.map((bubble) => bubble.type)).toEqual(["project", "separator", "agent"]);
+  });
+
   it("leaves a rail that was not asked for one exactly as it was", () => {
     const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "workspace" });
     expect(bubbles.map((bubble) => bubble.type)).toEqual(["agent", "add"]);

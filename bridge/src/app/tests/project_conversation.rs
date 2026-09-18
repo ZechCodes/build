@@ -296,3 +296,140 @@ fn project_list_names_the_conversation_owner_and_mints_none_to_find_it() {
     let listed = state.handle(req("project.list", json!({})));
     assert_eq!(listed["result"]["projects"][0]["entity_id"], Value::Null);
 }
+
+/// What a project's agent starts on is the device's answer, not the client's.
+///
+/// Every mint on a project's conversation owner reads the same setting: the one
+/// `project.ensure_conversation` makes, and the one a message to a project
+/// nobody is on forces. The setting is read AT the mint, so moving it moves
+/// what the next agent starts on without touching the one already there.
+#[test]
+fn every_mint_on_a_project_owner_spends_the_device_project_agent_choice() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+
+    let set = state.handle(req(
+        "settings.set",
+        json!({ "project_agent": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "high"
+        } }),
+    ));
+    assert_eq!(set["ok"], true, "{set:?}");
+
+    let owner = ensure(&mut state, &project_id)["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": owner })));
+    assert_eq!(added["ok"], true, "{added:?}");
+    assert_eq!(added["result"]["agent"]["provider"], "codex", "{added:?}");
+    assert_eq!(
+        added["result"]["agent"]["model"], "gpt-5.6-sol",
+        "{added:?}"
+    );
+    assert_eq!(added["result"]["agent"]["effort"], "high", "{added:?}");
+
+    // Moved after the owner was minted, the setting is what the NEXT agent
+    // starts on — including the one a post to an empty roster mints.
+    let moved = state.handle(req(
+        "settings.set",
+        json!({ "project_agent": { "provider": "claude_adk", "model": null, "effort": null } }),
+    ));
+    assert_eq!(moved["ok"], true, "{moved:?}");
+    let (_other_home, other_repo) = init_repo();
+    let other = added_project(&mut state, &std::fs::canonicalize(&other_repo).unwrap());
+    let other_owner = ensure(&mut state, &other)["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let posted = state.handle(req(
+        "thread.post",
+        json!({ "entity_id": other_owner, "body": "what is in here?" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    let minted = state
+        .entity_agents(&other_owner)
+        .unwrap()
+        .primary()
+        .unwrap()
+        .choice
+        .clone();
+    assert_eq!(minted.provider, crate::models::AgentProvider::ClaudeAdk);
+    assert_eq!(minted.model, None);
+
+    // A workspace of the same project is not a project conversation, so its
+    // agents keep starting on the device's ordinary default harness.
+    let workspace = state.handle(req(
+        "workspace.create",
+        json!({ "project_id": project_id, "name": "work", "isolation": "worktree" }),
+    ));
+    assert_eq!(workspace["ok"], true, "{workspace:?}");
+    let workspace_owner = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": workspace["result"]["workspace_id"] }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let coding = state.handle(req("agent.add", json!({ "entity_id": workspace_owner })));
+    assert_eq!(coding["result"]["agent"]["provider"], "claude_adk");
+    assert_eq!(coding["result"]["agent"]["model"], "", "{coding:?}");
+}
+
+/// The client's own words still win where it says any: the flattened
+/// provider/model/effort of `project.ensure_conversation` is the API it always
+/// had, and an explicit one is what the owner is minted on.
+#[test]
+fn an_explicit_choice_on_ensure_conversation_beats_the_device_setting() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let set = state.handle(req(
+        "settings.set",
+        json!({ "project_agent": { "provider": "codex", "model": "gpt-5.6-sol" } }),
+    ));
+    assert_eq!(set["ok"], true, "{set:?}");
+
+    let ensured = state.handle(req(
+        "project.ensure_conversation",
+        json!({ "project_id": project_id, "provider": "claude_adk" }),
+    ));
+    assert_eq!(ensured["ok"], true, "{ensured:?}");
+    let owner = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        state.runs[&owner].model_choice.provider,
+        crate::models::AgentProvider::ClaudeAdk
+    );
+}
+
+/// A device that has chosen nothing for its project agents leaves the default
+/// harness standing — the one answer this bridge always had.
+#[test]
+fn an_unchosen_project_agent_leaves_the_default_harness_standing() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let set = state.handle(req("settings.set", json!({ "default_harness": "codex" })));
+    assert_eq!(set["ok"], true, "{set:?}");
+
+    let owner = ensure(&mut state, &project_id)["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    assert_eq!(
+        state.runs[&owner].model_choice.provider,
+        crate::models::AgentProvider::Codex
+    );
+    assert_eq!(state.runs[&owner].model_choice.model, None);
+}

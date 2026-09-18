@@ -8,7 +8,8 @@
 
 use super::safe_mount_name;
 use crate::agent::AgentOwner;
-use crate::app::{model_choice_from, require_str, sha256_hex, AppState};
+use crate::app::{has_agent_choice, model_choice_from, require_str, sha256_hex, AppState};
+use crate::models::{AgentProvider, ModelChoice};
 use crate::orchestrator::ActiveRun;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -62,7 +63,7 @@ impl AppState {
             return Ok(conversation(&project_id, &run_id));
         }
 
-        let model_choice = model_choice_from(params, self.default_harness)?;
+        let model_choice = self.asked_project_agent_choice(params)?;
         std::fs::create_dir_all(&scratch).map_err(|error| {
             format!(
                 "could not cut project scratch at {}: {error}",
@@ -84,6 +85,46 @@ impl AppState {
             return Err(error);
         }
         Ok(conversation(&project_id, &run_id))
+    }
+
+    /// What this device says a project agent starts on, as a selection to
+    /// spend: the setting, with the default harness standing where it names no
+    /// harness of its own.
+    pub(in crate::app) fn project_agent_choice(&self) -> ModelChoice {
+        self.project_agent.resolved(self.default_harness)
+    }
+
+    /// The harness a project agent falls back to when the caller names none.
+    fn project_agent_harness(&self) -> AgentProvider {
+        self.project_agent.provider.unwrap_or(self.default_harness)
+    }
+
+    /// What `project.ensure_conversation` mints on: the device's answer, and
+    /// the client's where it gives one.
+    ///
+    /// The flattened `provider`/`model`/`effort` are the API this verb has
+    /// always had and they still win — a caller that names a harness gets it.
+    /// Saying nothing is no longer "the default harness": it is this device's
+    /// project-agent choice, which is where the question belongs now.
+    fn asked_project_agent_choice(&self, params: &Value) -> Result<ModelChoice, String> {
+        if has_agent_choice(params) {
+            return model_choice_from(params, self.project_agent_harness());
+        }
+        Ok(self.project_agent_choice())
+    }
+
+    /// The choice a NEW agent on `entity_id` is minted on.
+    ///
+    /// A project's conversation is the device's to configure — its agent talks
+    /// about the project rather than working in a checkout — so a mint there
+    /// reads the device's setting, and moving the setting moves what the next
+    /// project agent opens on. Every other entity keeps the choice persisted on
+    /// it: that one was made for the work in it.
+    pub(in crate::app) fn mint_model_choice(&self, entity_id: &str) -> Result<ModelChoice, String> {
+        if self.is_project_conversation_owner(entity_id) {
+            return Ok(self.project_agent_choice());
+        }
+        self.entity_model_choice(entity_id)
     }
 
     /// Which kind of agent an owner mints, read off the owner itself: a

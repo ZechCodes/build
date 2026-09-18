@@ -204,20 +204,26 @@ way a run standing in the project's own repository does, so the next
 `project.ensure_conversation` hands the new owner back everything the last one
 wrote.
 
-What a project agent starts on — its harness, model and reasoning effort — is
-asked once on the Local settings page, under the browser's agent defaults, and
-kept in that browser (`core/projectAgentDefaults.js`). It is one slot for every
-project, not one per project: it is a preference about a kind of agent, the way
-the account's own defaults are, and it lays over them field by field, so naming
-a model there does not restate the effort beside it. A project agent talks ABOUT
-a project rather than working in a checkout, which is why the harness for that
-job is asked for it alone.
+What a project agent starts on — its harness, model and reasoning effort — is a
+DEVICE setting, held by the bridge beside `default_harness` and carried on
+`settings.get` / `settings.set` as `project_agent: { provider?, model?, effort? }`
+(wire spec, step 2.7). It is one choice for every project, not one per project:
+it is a preference about a kind of agent. A project agent talks ABOUT a project
+rather than working in a checkout, which is why the harness for that job is
+asked for it alone — and it is asked of the machine that will run the agent,
+which already knows the answer, rather than of each browser at first use.
 
-The page spends that choice twice: it sends it flattened
-(`provider`/`model`/`effort`) on `project.ensure_conversation`, which reads it
-only when it mints the owner, and the rail seeds a new project agent with it the
-way a workspace's rail seeds one from that workspace's own slot. Naming nothing
-sends nothing, and the bridge's own default harness stands.
+Every absent word names a default that already stands: no provider is the
+device's default harness, no model or effort is that harness's own. So a device
+that has chosen nothing changes nothing.
+
+Every mint of an agent on a project's conversation owner spends that setting:
+the one `project.ensure_conversation` makes, the one a message to a project
+nobody is on forces, and an `agent.add` that names no choice. It is read AT the
+mint, so moving the setting moves what the next project agent opens on and
+leaves the one already running alone. The flattened `provider`/`model`/`effort`
+of `project.ensure_conversation` are the API that verb has always had and still
+win where a client sends them; the SPA sends none.
 
 The project's agent is reachable from every workspace in the project — that is
 what makes it the project's rather than a workspace's — so every workspace's

@@ -474,10 +474,26 @@ impl AppState {
         &mut self,
         entity_id: &str,
     ) -> Result<String, String> {
+        self.ensure_primary_agent_on(entity_id, None)
+    }
+
+    /// The same door, for the caller that has already taken a choice off the
+    /// request it is serving: a provider card pressed on an empty branch names
+    /// what the agent about to be created runs, and that answer is newer than
+    /// anything persisted. Every other caller passes `None` and the mint reads
+    /// [`AppState::mint_model_choice`].
+    fn ensure_primary_agent_on(
+        &mut self,
+        entity_id: &str,
+        asked: Option<ModelChoice>,
+    ) -> Result<String, String> {
         if let Some(primary) = self.entity_agents(entity_id)?.primary() {
             return Ok(primary.id.clone());
         }
-        let choice = self.entity_model_choice(entity_id)?;
+        let choice = match asked {
+            Some(asked) => asked,
+            None => self.mint_model_choice(entity_id)?,
+        };
         let owner = self.agent_owner(entity_id);
         let mut active = self.take_run(entity_id)?;
         let agent_id = active
@@ -526,12 +542,15 @@ impl AppState {
         // A provider card on an empty branch seeds the one agent it is about to
         // create. Once an agent exists, settings are written only on that exact
         // agent and its provider is its durable harness identity.
-        if roster_is_empty && has_agent_choice(params) {
-            let chosen = model_choice_from(params, self.default_harness)?;
-            self.set_entity_model_choice(&entity_id, chosen)?;
-        }
+        let asked = if roster_is_empty && has_agent_choice(params) {
+            let chosen = model_choice_from(params, self.mint_model_choice(&entity_id)?.provider)?;
+            self.set_entity_model_choice(&entity_id, chosen.clone())?;
+            Some(chosen)
+        } else {
+            None
+        };
         let agent_id = match named.as_deref() {
-            None if roster_is_empty => self.ensure_primary_agent(&entity_id)?,
+            None if roster_is_empty => self.ensure_primary_agent_on(&entity_id, asked)?,
             named => self.resolve_agent(&entity_id, named)?.id,
         };
         if let Some(expected) = expected_conversation {
@@ -848,7 +867,7 @@ impl AppState {
         let choice = if has_agent_choice(params) {
             model_choice_from(params, self.default_harness)?
         } else {
-            retried_choice.unwrap_or(self.entity_model_choice(&entity_id)?)
+            retried_choice.unwrap_or(self.mint_model_choice(&entity_id)?)
         };
         if let Some(existing) = existing_creation {
             if existing.creation_choice.as_ref() != Some(&choice) {

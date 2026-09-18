@@ -1,6 +1,6 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
-import { hashFromRoute } from "./router.js";
+import { conversationRoute, hashFromRoute } from "./router.js";
 import { RENDERED_FOLD_ATTRIBUTE, patchElement, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { followConversation, paintKeepingPlace } from "./paintKeepingPlace.js";
@@ -608,6 +608,7 @@ export function createThreadState({ ownerId = "" } = {}) {
   const pendingAttachmentLoads = new Map();
   const pendingChoices = new Map();
   const sendingChoices = new Set();
+  const openSentMessages = new Set();
   let live = true;
 
   return Object.freeze({
@@ -638,6 +639,12 @@ export function createThreadState({ ownerId = "" } = {}) {
       pending.then(settled, settled);
       return pending;
     },
+    sentIsOpen: (key) => openSentMessages.has(key),
+    openSentMessage(key, open) {
+      if (!live) return;
+      if (open) openSentMessages.add(key);
+      else openSentMessages.delete(key);
+    },
     choice: (key) => pendingChoices.get(key) || new Set(),
     choose(key, optionIds) {
       if (live) pendingChoices.set(key, new Set(optionIds));
@@ -662,6 +669,7 @@ export function createThreadState({ ownerId = "" } = {}) {
       pendingAttachmentLoads.clear();
       pendingChoices.clear();
       sendingChoices.clear();
+      openSentMessages.clear();
     },
   });
 }
@@ -811,8 +819,11 @@ function deliveryStatusHtml(message) {
 
 
 function messageFooterHtml(message) {
-  const user = message.role === "user";
-  const status = user
+  // The delivery report is about a send the reader made: a message that arrived
+  // from another agent is on the user's role and was nobody's send but the
+  // sender's, so it wears the time and nothing else.
+  const said = message.role === "user" && !message.from_agent;
+  const status = said
     ? deliveryStatusHtml(message)
     : "";
   const time = timeHtml(message.created_at);
@@ -836,22 +847,65 @@ function agentChipLabel(id) {
   return short ? short.toUpperCase() : "Agent";
 }
 
-/// Who a bubble belongs to.
-///
-/// The human's initial, the agent's — or, for a message one agent sent into
-/// another agent's conversation, the sender's own chip. Such a message keeps
-/// the user's side of the thread, because that is the side anything addressed
-/// to the agent arrives on; only the mark changes, because the user did not
-/// write it. The chip is read aloud, unlike the two initials it replaces,
-/// because it is the only place the sender is said at all.
-function avatarHtml(message, user) {
-  const sender = message.from_agent && message.from_agent.id;
-  if (!sender) return `<span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>`;
-  return `<span class="thread-avatar from-agent" role="img" aria-label="Sent by agent ${esc(sender)}" title="Sent by agent ${esc(sender)}">${esc(agentChipLabel(sender))}</span>`;
+/// Who a bubble belongs to: the human's initial, or the agent's. A message
+/// that arrived from another agent wears neither — it is drawn as a bubble of
+/// its own, under the conversation it was said in.
+function avatarHtml(user) {
+  return `<span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>`;
 }
 
-function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
-  const user = message.role === "user";
+/// What a conversation nobody has named is called, so the second half of a
+/// reference is always something a reader can aim at.
+const UNTITLED_CONVERSATION = "Untitled conversation";
+
+const topicLabel = (reference) => String(reference.topic || "").trim() || UNTITLED_CONVERSATION;
+
+/// Where the other end of an agent-to-agent message lives: the page its owner
+/// is, and the conversation itself.
+///
+/// The owner names half of the route and the reader's own page names the rest —
+/// a workspace belongs to the project whose page the rail is standing on, and
+/// every route is written against the machine holding the conversation. A
+/// record written before senders carried an owner names no page at all, and
+/// none is invented for it.
+function conversationLinks(reference, place) {
+  const owner = reference.owner;
+  if (!owner || !owner.id) return null;
+  const workspace = owner.kind === "workspace";
+  const projectId = workspace ? place.projectId : owner.id;
+  if (!projectId) return null;
+  const page = {
+    kind: owner.kind,
+    projectId,
+    deviceId: place.deviceId ?? null,
+    workspaceId: workspace ? owner.id : null,
+  };
+  return {
+    name: owner.name || owner.id,
+    ownerHref: hashFromRoute(conversationRoute(page)),
+    topicHref: hashFromRoute(conversationRoute({ ...page, agentId: reference.id })),
+  };
+}
+
+/// The sender of a message from before owners rode the wire: four characters of
+/// the id, with the whole of it said aloud. It is all such a record holds —
+/// there is no page to point at — so it points nowhere.
+const senderChipHtml = (id, prefix) =>
+  `<span class="${prefix}-chip" role="img" aria-label="Sent by agent ${esc(id)}" title="Sent by agent ${esc(id)}">${esc(agentChipLabel(id))}</span>`;
+
+/// A conversation elsewhere, named as two links: the workspace or project it
+/// belongs to, and the conversation on it. One writer, so a message that
+/// arrived and a message that was sent say where they point the same way.
+function conversationLinksHtml(reference, place, prefix) {
+  const links = conversationLinks(reference, place);
+  if (!links) return senderChipHtml(reference.id, prefix);
+  return `<a class="${prefix}-owner" href="${esc(links.ownerHref)}">${esc(links.name)}</a><span class="${prefix}-sep" aria-hidden="true"> › </span><a class="${prefix}-topic" href="${esc(links.topicHref)}">${esc(topicLabel(reference))}</a>`;
+}
+
+/// Everything inside a message's card. Shared by the reader's own bubble and by
+/// the bubble another agent's words arrive in: the two differ in where they sit
+/// and what colour they are, and in nothing a message holds.
+function messageCardHtml(message, agentLabel, { live, offer, threadState }) {
   // `done` is message metadata, not a presentation type: on a thread written
   // before outcomes were message statuses it flags the send that followed the
   // timeline's done event, and such a message renders like every other one.
@@ -859,12 +913,7 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   // The body IS the report: the agent's `done` summary, in markdown, which is
   // why no card of lists sits under it any more.
   // renderMarkdown escapes all input before adding its fixed safe tag set.
-  // The sequence rides the row: it is how the timeline says which message a
-  // row stands for, and how the panel reports what the reader's viewport has
-  // reached (`readThroughSequence`).
-  return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
-    ${avatarHtml(message, user)}
-    <div class="thread-comment-card">
+  return `
       ${outcomeMarkerHtml(message.outcome, agentLabel)}
       ${resolvedRevisionHtml(message)}
       ${anchorLabel(message.anchor)}
@@ -872,9 +921,75 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
-      ${optionsHtml(message, liveOptions, offer, threadState)}
+      ${optionsHtml(message, live, offer, threadState)}
       ${messageFooterHtml(message)}
+    `;
+}
+
+/// A message another agent sent into this conversation.
+///
+/// It is somebody else speaking, so it takes the side of the thread everything
+/// said to this agent takes — the left — and a colour of its own: the reader's
+/// own bubble is the reader's voice, and these are not their words. Above it
+/// stands the only thing that makes it readable at all, which is where it came
+/// from: the workspace or project, and the conversation it was said in.
+function arrivedMessageHtml(message, agentLabel, context) {
+  return `<article class="thread-message thread-comment from-agent"${sequenceAttribute(message)}>
+    <div class="thread-from">${conversationLinksHtml(message.from_agent, context.place, "thread-from")}</div>
+    <div class="thread-comment-card">${messageCardHtml(message, agentLabel, context)}</div>
+  </article>`;
+}
+
+/// How a sent message is remembered while the reader has it open. The id, which
+/// is stable across every repaint; the sequence for a conversation rendered
+/// without one.
+const sentKey = (message) => String(message.id || message.sequence || "");
+
+/// The second line of a sent message, which is the press that opens it: the
+/// first line of what was sent, or — once it is open — the way to shut it
+/// again.
+const sentPressHtml = (key, bodyId, open, preview) =>
+  `<button type="button" class="thread-sent-preview" data-sent-message="${esc(key)}" aria-controls="${bodyId}" aria-expanded="${open ? "true" : "false"}"><span class="thread-sent-first">${esc(preview)}</span><span class="thread-sent-shut">Hide</span></button>`;
+
+/// A message this agent sent to another agent.
+///
+/// It counts as a message — it breaks the activity around it in two, the way
+/// anything said does — but almost none of it is for this reader, who wrote
+/// neither the words nor the send. So it is two lines: where it went, and how
+/// it opened. The whole of it is one press away.
+///
+/// Open, the second line is the press that shuts it again rather than the first
+/// line a second time: the body underneath already starts with those words.
+function sentMessageHtml(message, { place, threadState }) {
+  const key = sentKey(message);
+  const bodyId = `thread-sent-${esc(key)}`;
+  const open = threadState.sentIsOpen(key);
+  const body = String(message.body || "");
+  // renderMarkdown escapes all input before adding its fixed safe tag set.
+  return `<article class="thread-message thread-sent"${sequenceAttribute(message)}>
+    <div class="thread-sent-head">
+      <span class="thread-sent-label">Sent a message to ${conversationLinksHtml(message.sent_to, place, "thread-sent")}</span>
+      ${timeHtml(message.created_at)}
     </div>
+    ${sentPressHtml(key, bodyId, open, firstLine(body).trim())}
+    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body)}</div>
+  </article>`;
+}
+
+/// One message, drawn as whichever of the three things it is: what this agent
+/// sent elsewhere, what another agent sent here, or the plain bubble everything
+/// else has always been.
+///
+/// The sequence rides the row: it is how the timeline says which message a row
+/// stands for, and how the panel reports what the reader's viewport has reached
+/// (`readThroughSequence`).
+function messageHtml(message, agentLabel, context) {
+  if (message.sent_to) return sentMessageHtml(message, context);
+  if (message.from_agent) return arrivedMessageHtml(message, agentLabel, context);
+  const user = message.role === "user";
+  return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
+    ${avatarHtml(user)}
+    <div class="thread-comment-card">${messageCardHtml(message, agentLabel, context)}</div>
   </article>`;
 }
 
@@ -1126,7 +1241,7 @@ function runChildrenHtml(run, view) {
   if (!fetched || !fetched.length) return run.map((row) => row.html).join("");
   const fetchedThrough = fetched.reduce((newest, item) => Math.max(newest, item.data?.sequence || 0), 0);
   const live = run.filter((row) => Number(row.key) > fetchedThrough);
-  return [...timelineRowsOf(fetched, view.agentLabel, view.threadId, view.threadState), ...live]
+  return [...timelineRowsOf(fetched, view.agentLabel, view.threadId, view), ...live]
     .map((row) => row.html)
     .join("");
 }
@@ -1297,16 +1412,17 @@ function activityRow(item, index, agentLabel, folding) {
 ///
 /// `spoken` is whether this is the last thing said, which is the whole of
 /// whether its offer can still be answered.
-function messageRow(item, index, agentLabel, { threadId, spoken, threadState }) {
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place }) {
   const message = item.data || {};
   // Old bridges persisted the noisy structured handoff as a chat message.
   if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
   // A choice is drawn on the chips that offered it, so the message it sent
   // would be the same words a second time.
   if (message.answers_options_of) return [];
-  const key = offerKey(threadId, message.id);
-  const live = spoken && !threadState.isSending(key);
-  return [{ key: rowKey(message, index), item, html: messageHtml(message, agentLabel, live, key, threadState) }];
+  const offer = offerKey(threadId, message.id);
+  const live = spoken && !threadState.isSending(offer);
+  const context = { live, offer, threadState, place };
+  return [{ key: rowKey(message, index), item, html: messageHtml(message, agentLabel, context) }];
 }
 
 /// Every top-level row a set of items draws, in order.
@@ -1316,7 +1432,7 @@ function messageRow(item, index, agentLabel, { threadId, spoken, threadState }) 
 /// message are drawn on other rows instead. Used for the conversation itself
 /// and for the children of an open run, so a fetched run's rows are the rows
 /// the window would have drawn for the same items.
-function timelineRowsOf(sourceItems, agentLabel, threadId, threadState) {
+function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place }) {
   const items = sourceItems.filter((item) => !isStartupEvent(item));
   const folding = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !folding.foldedItems.has(item));
@@ -1326,7 +1442,7 @@ function timelineRowsOf(sourceItems, agentLabel, threadId, threadState) {
   const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
   return topLevelItems.flatMap((item, index) =>
     item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState })
+      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place })
       : [activityRow(item, index, agentLabel, folding)],
   );
 }
@@ -1354,16 +1470,17 @@ export function timelineEntries(
   agentLabel,
   threadId,
   digests,
-  { openRuns, runItemsOf, threadState = createThreadState(), unreadFrom } = {},
+  { openRuns, runItemsOf, threadState = createThreadState(), unreadFrom, place = NOWHERE_IN_PARTICULAR } = {},
 ) {
-  const rows = timelineRowsOf(sourceItems, agentLabel, threadId, threadState);
   const view = {
     agentLabel,
     threadId,
     threadState,
+    place,
     openRuns: openRuns || NO_RUNS_OPEN,
     runItemsOf: runItemsOf || noRunItems,
   };
+  const rows = timelineRowsOf(sourceItems, agentLabel, threadId, view);
   const entries = foldActivityRuns(rows, digests, view);
   return { entries: withUnreadLine(entries, unreadFrom), itemCount: rows.length };
 }
@@ -1398,6 +1515,12 @@ function withUnreadLine(entries, unreadFrom) {
 }
 
 const NO_RUNS_OPEN = new Set();
+
+/// The page a conversation is drawn on, for a caller that names none: a link
+/// out to another agent's conversation needs the reader's own project and
+/// machine to write a workspace route from, and a render given neither points
+/// at whatever the sender alone can name.
+const NOWHERE_IN_PARTICULAR = Object.freeze({ deviceId: null, projectId: null });
 const noRunItems = () => undefined;
 
 // The plan composer's historical ids/copy, kept as the `composer: true`
@@ -1740,6 +1863,34 @@ export function wireThreadOptions(root, submit, threadState = createThreadState(
           if (threadState.finishSending(key, false)) shut(false);
         },
       );
+    };
+  });
+}
+
+/// Wire the sent-message lines: one press opens the whole of what was sent.
+///
+/// The line is a button, so the press is the browser's own — a pointer, a tap,
+/// Enter, Space. The keys are taken on the way down and the browser's own
+/// activation cancelled, so one press is one toggle however it arrived.
+///
+/// What is open is remembered outside the markup, so the next repaint of the
+/// conversation draws it open rather than shutting it under the reader.
+export function wireThreadSentMessages(root, threadState = createThreadState()) {
+  if (!root) return;
+  root.querySelectorAll(".thread-sent-preview").forEach((line) => {
+    const item = line.closest(".thread-sent");
+    const body = item && item.querySelector(".thread-body");
+    const show = (open) => {
+      line.setAttribute("aria-expanded", open ? "true" : "false");
+      if (body) body.hidden = !open;
+      threadState.openSentMessage(line.dataset.sentMessage, open);
+    };
+    const shut = () => line.getAttribute("aria-expanded") !== "true";
+    line.onclick = () => show(shut());
+    line.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      show(shut());
     };
   });
 }

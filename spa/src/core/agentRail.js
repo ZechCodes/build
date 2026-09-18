@@ -105,6 +105,7 @@ import {
   pressIsTheBrowsers,
   wireThreadLinks,
   wireThreadRevisionLinks,
+  wireThreadSentMessages,
 } from "./thread.js";
 import { createActivityRuns } from "./activityRuns.js";
 import { isAtBottom } from "./paintKeepingPlace.js";
@@ -1874,6 +1875,15 @@ function mountRailOnContext(host, context, swap) {
 
   const threadItems = (thread) => (thread && thread.items) || [];
 
+  /** Where this rail is standing, for the links a message from another agent
+   *  carries: the machine the conversation is held on, and the project whose
+   *  page it is on — a workspace route is written from both, and the sender
+   *  names only the workspace. */
+  const conversationPlace = () => ({
+    deviceId: context.deviceId ?? null,
+    projectId: entity.projectId || context.projectId,
+  });
+
   const chatFingerprintOf = (thread, agentLabel) => {
     const openRuns = conversationRuns().openKeys();
     const threadState = controllerInFocus().threadState;
@@ -1912,6 +1922,7 @@ function mountRailOnContext(host, context, swap) {
       runItemsOf: fetchedRunItems,
       threadState: controllerInFocus().threadState,
       unreadFrom,
+      place: conversationPlace(),
     });
     // No composer in here: the box is pinned below this scroller, so what the
     // poll repaints is the timeline and only the timeline.
@@ -2120,6 +2131,7 @@ function mountRailOnContext(host, context, swap) {
       chatRepository.currentCall()("thread.revision", { entity_id: controller.identity.entityId, revision_id: revisionId }),
     );
     wireThreadLinks(body, openLink, routeForLink);
+    wireThreadSentMessages(body, controller.threadState);
     wireThreadOptions(body, (choice) => choose(choice).catch((error) => {
       notifyError("Choice failed", error.message);
       throw error;

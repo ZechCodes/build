@@ -92,23 +92,3 @@ fn authoritative_transition_succeeds_without_a_cached_receipt() {
 
 // Boot recovery remains adapter code: queued receipts become delivery turns in
 // input order, but none are inserted into OperationLedger.receipts.
-
-/// Without a store the mirror answers the same question, and answers it once.
-#[test]
-fn the_cache_hands_back_the_answer_a_conversation_owes_once() {
-    let mut ledger = OperationLedger::default();
-    let mut asked = receipt("operation", "owner", OperationStatus::Queued);
-    let requester = crate::operation::OperationRequester {
-        agent_id: "project-01H".into(),
-        entity_id: "run-project".into(),
-        conversation_id: "conversation-project".into(),
-    };
-    asked.requested_by = Some(requester.clone());
-    ledger.stage_acceptance("owner".into(), asked);
-    ledger.remember_in_memory_acceptance("owner");
-
-    assert!(ledger.take_requesters("elsewhere").is_empty());
-    assert_eq!(ledger.take_requesters("conversation"), vec![requester]);
-    assert!(ledger.take_requesters("conversation").is_empty());
-    assert!(ledger.cached("operation").is_some(), "the receipt stays");
-}

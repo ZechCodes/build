@@ -4,7 +4,7 @@
 //! owners bound to the same project as its own owner, and nothing else — not
 //! another project's agents, not an id that names nobody, and not itself.
 
-use super::project_agent::{added_project, forwarded, items, project_agent, rooted, workspace};
+use super::project_agent::{added_project, items, project_agent, rooted, sent_by, workspace};
 use super::*;
 use crate::mcp::{BridgeAction, McpSurface};
 
@@ -33,8 +33,11 @@ fn message_agent(agent_id: &str, body: &str) -> BridgeAction {
 /// Every agent can reach every other agent in its project, whichever surface it
 /// is on. The message arrives as the sender's — the user's role, because that
 /// is the side an instruction arrives on whoever wrote it, wearing the sender —
-/// and the operation remembers the sender, so the reply comes back the way a
-/// project agent's does.
+/// and the operation remembers the sender as who asked for it.
+///
+/// The answer is a send of its own. The target's terminal report is the user's
+/// to read and reaches nobody; what reaches the sender is the `message_agent`
+/// the target writes back.
 #[test]
 fn one_coding_agent_messages_another_in_the_same_project() {
     let (_home, repo) = init_repo();
@@ -74,7 +77,8 @@ fn one_coding_agent_messages_another_in_the_same_project() {
         "{inbound:?}"
     );
 
-    // Recorded as a requester, so the target's terminal report comes back.
+    // Recorded as who asked for it: history on the receipt, not an address the
+    // bridge answers on the target's behalf.
     let requested_by = state
         .operation_receipt(&operation_id)
         .expect("the operation is readable")
@@ -84,12 +88,22 @@ fn one_coding_agent_messages_another_in_the_same_project() {
     assert_eq!(requested_by.agent_id, sender);
     assert_eq!(requested_by.entity_id, sender_owner);
 
+    // Finishing the turn reports to the user and reaches no agent.
     state.on_agent_done(
         &target_owner,
         super::project_agent::terminal(crate::mcp::DoneStatus::Completed, "rebased"),
     );
-    let answers = forwarded(&mut state, &sender_owner, &sender, &target);
-    assert_eq!(answers.len(), 1, "the report comes back: {answers:?}");
+    assert!(
+        sent_by(&mut state, &sender_owner, &sender, &target).is_empty(),
+        "a report is not a reply"
+    );
+
+    // The reply is the target's own send, and it wears the target.
+    state
+        .agent_action(&target_owner, &target, message_agent(&sender, "rebased"))
+        .expect("the target answers the agent that asked");
+    let answers = sent_by(&mut state, &sender_owner, &sender, &target);
+    assert_eq!(answers.len(), 1, "the answer is sent: {answers:?}");
     assert_eq!(
         answers[0]["data"]["from_agent"]["owner"],
         json!({ "kind": "workspace", "id": two, "name": "two" }),

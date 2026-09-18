@@ -3,7 +3,6 @@ use serde_json::Value;
 
 mod agent_to_agent;
 mod attachments;
-mod forwarding;
 mod inputs;
 mod legacy_delivery;
 mod native_delivery;

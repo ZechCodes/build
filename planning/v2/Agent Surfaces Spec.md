@@ -361,9 +361,9 @@ the sender's owner. Three refusals, each naming what it refused:
 The send is the one path every agent-originated message takes: the user's role,
 because that is the side an instruction arrives on whoever wrote it; the sender
 worn as `from_agent`, stamped with where it spoke from; an operation recording
-the sender as its requester, so the target's terminal message comes back as a
-reply. One behaviour for every agent, so what a project agent does today is what
-a coding agent does now.
+the sender as its requester, which is the durable history of who asked and not
+an address anything answers on. One behaviour for every agent, so what a project
+agent does today is what a coding agent does now.
 
 `message_workspace_agent {workspace_id, agent_id?, body}` stays, on the project
 surface only, as a thin alias: it resolves the workspace to a conversation and
@@ -372,5 +372,26 @@ because a project agent's natural handle on an agent is the workspace it read
 out of `list_workspaces`, not an id it has not been handed yet.
 
 A send is fire-and-forget for the human: it creates no answer debt and calls
-nobody. What comes back is the target's own terminal report, forwarded once, and
-a forwarded report records no requester of its own so it is never forwarded on.
+nobody. Nothing comes back on its own either — see the revision below.
+
+## Revision 2026-09-18b: a reply is always an explicit send
+
+The bridge forwarded a target agent's Complete or Blocked report into the
+conversation of the agent that asked for the turn. It no longer does. The
+product owner watched a project agent read the same summary twice — once as the
+target's own `message_agent` reply, once as the forwarded report — and the
+forwarding is what goes.
+
+So: `post_thread_message` reports to the user and reaches no agent, whatever its
+status and whoever started the turn. An agent that was asked for something by
+another agent answers with `message_agent`, to the id the delivery envelope
+spells out, and then reports to the user briefly without repeating what it sent.
+Every reply between agents is a send somebody made on purpose.
+
+What stays: the operation still records its requester — `requested_by` on the
+receipt, a column on `operations` — because it says who asked and that is worth
+keeping, and because dropping a column costs a migration to buy nothing. What
+goes is every reader of it that forwarded: the terminal-reply hand-off, the
+forwarded post origin, and the take-the-answers-owed reads on both the store and
+its process-local mirror. The schema version is unchanged; a receipt written
+before this simply keeps a requester nobody reads.

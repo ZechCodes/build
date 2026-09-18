@@ -550,8 +550,8 @@ fn a_project_agent_messages_a_workspace_agent_as_itself() {
     assert_eq!(sent["data"]["role"], "user", "{sent:?}");
     assert_eq!(sent["data"]["from_agent"]["id"], agent_id, "{sent:?}");
 
-    // The operation remembers who asked for it, and the conversation the answer
-    // is owed to — which is what a reply is forwarded along.
+    // The operation remembers who asked for it, and the conversation it asked
+    // from — who wanted this, kept as history rather than as an address.
     let receipt = state
         .operation_receipt(&operation_id)
         .expect("the operation is readable")
@@ -637,10 +637,10 @@ fn a_project_agent_messages_no_agent_outside_its_project() {
     );
 }
 
-// ==== the answer coming back ==============================================
+// ==== the answer does not come back on its own ============================
 
 /// A project agent, an agent it staffed a workspace with, and the message it
-/// handed over — what every forwarding test starts from.
+/// handed over — what every hand-off test starts from.
 struct HandedOver {
     owner: String,
     agent_id: String,
@@ -699,7 +699,7 @@ pub(super) fn items(state: &mut AppState, entity_id: &str, agent_id: &str) -> Ve
 }
 
 /// What one agent said into another agent's conversation.
-pub(super) fn forwarded(
+pub(super) fn sent_by(
     state: &mut AppState,
     entity_id: &str,
     agent_id: &str,
@@ -731,13 +731,72 @@ pub(super) fn terminal(status: DoneStatus, summary: &str) -> DoneReport {
     }
 }
 
-/// The workspace agent finishes the turn the project agent started, and its
-/// terminal message is handed back: the project agent's own conversation, on
-/// the user's side of it, wearing the agent that wrote it and saying how the
-/// turn ended. The project agent needs no tool for this and never learns it
-/// was summoned by a machine.
+/// A terminal message reports to the user, and reaches no agent. The workspace
+/// agent ends the turn the project agent started, and the project agent's
+/// conversation stays exactly as it was: nothing posted, nothing delivered.
+///
+/// A reply between agents is an explicit send, so it is the workspace agent's
+/// own `message_agent` that carries its answer — and that one does arrive.
 #[test]
-fn a_workspace_agents_answer_reaches_the_project_agent_that_asked() {
+fn a_workspace_agents_report_reaches_no_agent_on_its_own() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let handed = handed_over(&mut state, &project_id, "read the router");
+    let before = items(&mut state, &handed.owner, &handed.agent_id).len();
+
+    state.on_agent_done(
+        &handed.entity_id,
+        terminal(DoneStatus::Completed, "the router reads top to bottom"),
+    );
+
+    assert!(
+        sent_by(&mut state, &handed.owner, &handed.agent_id, &handed.worker).is_empty(),
+        "a report is for the user, not for the agent that asked"
+    );
+    assert_eq!(
+        items(&mut state, &handed.owner, &handed.agent_id).len(),
+        before,
+        "nothing at all landed in the project agent's conversation"
+    );
+    assert!(
+        !state
+            .delivery_queue
+            .queued()
+            .any(|turn| turn.owner == handed.owner && turn.agent_id == handed.agent_id),
+        "and the project agent was not woken for it"
+    );
+
+    // Its answer travels the one way an answer travels: the workspace agent
+    // says it, to the id the envelope handed it.
+    state
+        .agent_action(
+            &handed.entity_id,
+            &handed.worker,
+            BridgeAction::MessageAgent {
+                agent_id: handed.agent_id.clone(),
+                body: "the router reads top to bottom".to_string(),
+            },
+        )
+        .expect("a workspace agent answers the agent that asked");
+    let answers = sent_by(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0]["data"]["role"], "user", "{:?}", answers[0]);
+    assert_eq!(
+        answers[0]["data"]["body"], "the router reads top to bottom",
+        "{:?}",
+        answers[0]
+    );
+}
+
+/// The inbox belongs to the human. A project agent handing work over is the
+/// work happening, so it does not cross the line the human drew on a row, and
+/// a report the workspace agent makes reaches no row but its own.
+#[test]
+fn a_hand_off_brings_back_no_cleared_row() {
     let (_home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -746,70 +805,6 @@ fn a_workspace_agents_answer_reaches_the_project_agent_that_asked() {
     let project_id = added_project(&mut state, &repo);
     let handed = handed_over(&mut state, &project_id, "read the router");
     let quiet = last_user_message(&state, &handed.owner);
-
-    state.on_agent_done(
-        &handed.entity_id,
-        terminal(DoneStatus::Completed, "the router reads top to bottom"),
-    );
-
-    let answers = forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
-    assert_eq!(answers.len(), 1, "one answer, forwarded once: {answers:?}");
-    let answer = &answers[0];
-    assert_eq!(answer["data"]["role"], "user", "{answer:?}");
-    let body = answer["data"]["body"].as_str().unwrap();
-    assert!(body.starts_with("Complete."), "{body}");
-    assert!(body.contains("the router reads top to bottom"), "{body}");
-
-    // Delivered the way `agent.deliver` delivers one: a turn for the project
-    // agent, carrying the answer itself rather than a fetch instruction.
-    let turn = state
-        .delivery_queue
-        .queued()
-        .find(|turn| turn.owner == handed.owner && turn.agent_id == handed.agent_id)
-        .unwrap_or_else(|| panic!("the project agent has a turn waiting"));
-    let say = turn.say.as_ref().expect("the turn says something");
-    assert!(
-        say.warm.contains("the router reads top to bottom"),
-        "{say:?}"
-    );
-    assert!(
-        say.warm
-            .contains(&format!("came from agent `{}`", handed.worker)),
-        "{say:?}"
-    );
-
-    // The human was not here. One agent answering another is the work
-    // happening, and it must not move the inbox anchor under the reader.
-    assert_eq!(
-        last_user_message(&state, &handed.owner),
-        quiet,
-        "a forwarded answer is nobody's unread"
-    );
-    let posted = state.handle(req(
-        "thread.post",
-        json!({ "entity_id": handed.owner, "agent_id": handed.agent_id, "body": "thanks" }),
-    ));
-    assert_eq!(posted["ok"], true, "{posted:?}");
-    assert_ne!(
-        last_user_message(&state, &handed.owner),
-        quiet,
-        "the human's own message does move it"
-    );
-}
-
-/// The inbox belongs to the human. A project agent handing work over and the
-/// answer travelling back are both the work happening, so neither crosses the
-/// line the human drew on a row. What the agent says in its OWN conversation
-/// still does: that one is the row speaking.
-#[test]
-fn neither_direction_of_a_hand_off_brings_back_a_cleared_row() {
-    let (_home, repo) = init_repo();
-    let repo = std::fs::canonicalize(&repo).unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
-    let mut state = rooted(&state_root);
-    let project_id = added_project(&mut state, &repo);
-    let handed = handed_over(&mut state, &project_id, "read the router");
     for entity_id in [&handed.entity_id, &handed.owner] {
         let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": entity_id })));
         assert_eq!(cleared["ok"], true, "{cleared:?}");
@@ -835,10 +830,14 @@ fn neither_direction_of_a_hand_off_brings_back_a_cleared_row() {
         state.is_dismissed(&handed.entity_id),
         "a message a machine sent is not the row speaking"
     );
+    assert_eq!(
+        last_user_message(&state, &handed.owner),
+        quiet,
+        "and it is nobody's unread"
+    );
 
-    // Back: the workspace agent ends its turn. Its own conversation calls the
-    // human — it stopped and said so — and the copy forwarded to the project
-    // agent does not.
+    // The workspace agent ends its turn. Its own conversation calls the human —
+    // it stopped and said so — and the project agent's row hears nothing.
     state.on_agent_done(
         &handed.entity_id,
         terminal(DoneStatus::Completed, "the router reads top to bottom"),
@@ -850,7 +849,7 @@ fn neither_direction_of_a_hand_off_brings_back_a_cleared_row() {
     );
     assert!(
         state.is_dismissed(&handed.owner),
-        "but the answer forwarded to the agent that asked for it is not"
+        "but it said nothing to the agent that asked"
     );
 
     // And the human's own words still cross the line that was kept.
@@ -864,55 +863,18 @@ fn neither_direction_of_a_hand_off_brings_back_a_cleared_row() {
         !state.is_dismissed(&handed.owner),
         "the dismissal was kept, not discarded, so the human can cross it"
     );
-}
-
-/// The loop guard. A forwarded answer is never itself forwarded, and the debt
-/// it settled is settled once: the agent that received it owes nobody, so its
-/// own terminal message goes nowhere, and a second report from the workspace
-/// agent answers a question nobody asked.
-#[test]
-fn an_answer_handed_back_is_not_handed_on() {
-    let (_home, repo) = init_repo();
-    let repo = std::fs::canonicalize(&repo).unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
-    let mut state = rooted(&state_root);
-    let project_id = added_project(&mut state, &repo);
-    let handed = handed_over(&mut state, &project_id, "read the router");
-
-    state.on_agent_done(&handed.entity_id, terminal(DoneStatus::Completed, "done"));
-    let before = items(&mut state, &handed.entity_id, &handed.worker).len();
-
-    // The project agent's turn ends the same way, and answers nobody: the
-    // message that started it arrived by forwarding and owes no reply.
-    state.forward_terminal_reply(
-        &handed.owner,
-        &handed.agent_id,
-        &terminal(DoneStatus::Completed, "I will tell the user"),
-    );
-    assert_eq!(
-        items(&mut state, &handed.entity_id, &handed.worker).len(),
-        before,
-        "nothing goes back the way it came"
-    );
-
-    // And the workspace agent's next turn is its own: one message, one answer.
-    state.on_agent_done(
-        &handed.entity_id,
-        terminal(DoneStatus::Completed, "and the rail too"),
-    );
-    assert_eq!(
-        forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker).len(),
-        1,
-        "the answer was owed once"
+    assert_ne!(
+        last_user_message(&state, &handed.owner),
+        quiet,
+        "the human's own message does move it"
     );
 }
 
-/// Only a terminal message is an answer. A progress note or a question keeps
-/// the turn open, so nothing is handed back and the project agent is not
-/// spammed mid-turn — the debt is still standing when the turn really ends.
+/// A mid-turn message reaches no agent either, for the same reason a terminal
+/// one does not: what an agent says with `post_thread_message` is the user's
+/// to read, whatever its status.
 #[test]
-fn a_mid_turn_message_is_not_an_answer() {
+fn a_mid_turn_message_reaches_no_agent_either() {
     let (_home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -936,20 +898,14 @@ fn a_mid_turn_message_is_not_an_answer() {
             )
             .expect("a workspace agent speaks mid-turn");
     }
-    assert!(
-        forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker).is_empty(),
-        "Working and Waiting are not answers"
-    );
-
     state.on_agent_done(
         &handed.entity_id,
         terminal(DoneStatus::Blocked, "the router is three files"),
     );
-    let answers = forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
-    assert_eq!(answers.len(), 1, "{answers:?}");
-    let body = answers[0]["data"]["body"].as_str().unwrap();
-    assert!(body.starts_with("Blocked."), "{body}");
-    assert!(body.contains("the router is three files"), "{body}");
+    assert!(
+        sent_by(&mut state, &handed.owner, &handed.agent_id, &handed.worker).is_empty(),
+        "Working, Waiting and Blocked are all the user's to read"
+    );
 }
 
 /// The project agent manages the project's folders and its workspaces'
@@ -1199,7 +1155,7 @@ fn project_name(state: &mut AppState, project_id: &str) -> String {
 /// A message from an agent says where it was sent from: the workspace or the
 /// project its conversation belongs to, and what that conversation is about.
 /// Both ends of a hand-off are stamped — the instruction going out and the
-/// report coming back — so a client can draw and link either one without a
+/// answer sent back — so a client can draw and link either one without a
 /// second read.
 #[test]
 fn a_message_from_an_agent_names_the_conversation_it_came_from() {
@@ -1257,12 +1213,18 @@ fn a_message_from_an_agent_names_the_conversation_it_came_from() {
         "{inbound:?}"
     );
 
-    state.on_agent_done(
-        &handed.entity_id,
-        terminal(DoneStatus::Completed, "the router reads top to bottom"),
-    );
+    state
+        .agent_action(
+            &handed.entity_id,
+            &handed.worker,
+            BridgeAction::MessageAgent {
+                agent_id: handed.agent_id.clone(),
+                body: "the router reads top to bottom".to_string(),
+            },
+        )
+        .expect("a workspace agent answers the agent that asked");
 
-    let answers = forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
+    let answers = sent_by(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
     assert_eq!(answers.len(), 1, "{answers:?}");
     assert_eq!(
         answers[0]["data"]["from_agent"],

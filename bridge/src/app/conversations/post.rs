@@ -54,7 +54,7 @@ impl AppState {
     ///
     /// The same write, with two things added: the message wears the sender, so
     /// the agent reading it can tell a hand-off from the user speaking, and the
-    /// operation remembers the requester, so the answer knows where to go.
+    /// operation remembers who asked for it.
     pub(in crate::app) fn thread_post_from_agent(
         &mut self,
         params: &Value,
@@ -62,19 +62,6 @@ impl AppState {
     ) -> Result<Value, String> {
         let sender = self.agent_identity(&requester.entity_id, &requester.agent_id);
         self.post_to_thread(params, PostOrigin::asked_by(requester, sender))
-    }
-
-    /// `thread.post`, carrying one agent's answer into another's conversation.
-    ///
-    /// The same write again, wearing the agent that wrote the answer — and
-    /// owing nobody one back, which is what keeps two agents from answering
-    /// each other forever.
-    pub(in crate::app) fn thread_post_forwarded(
-        &mut self,
-        params: &Value,
-        sender: crate::thread::AgentIdentity,
-    ) -> Result<Value, String> {
-        self.post_to_thread(params, PostOrigin::forwarded(sender))
     }
 
     fn post_to_thread(&mut self, params: &Value, origin: PostOrigin) -> Result<Value, String> {

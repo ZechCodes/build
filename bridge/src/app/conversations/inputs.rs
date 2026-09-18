@@ -26,22 +26,17 @@ impl ReviewerMessage {
 }
 
 /// What a post is recorded as beyond its words: the operation it is, who wrote
-/// it, and where an answer to it is owed.
+/// it, and who asked for it.
 ///
 /// One value rather than three arguments because they travel together the
 /// whole way down — the sender rides onto the message, and the requester onto
-/// the receipt that the answer is forwarded along.
-///
-/// Who wrote it and who is owed an answer are separate fields because they come
-/// apart exactly once, and that once is the loop guard: an answer being handed
-/// back wears the agent that wrote it and owes nobody, so it is never itself
-/// handed on.
+/// the receipt, where it stays as the history of who wanted this.
 #[derive(Debug, Clone, Default)]
 pub(in crate::app) struct PostOrigin {
     pub operation_id: Option<String>,
     /// The agent that wrote the words, when an agent did.
     pub from_agent: Option<crate::thread::AgentIdentity>,
-    /// Where an answer to this post is owed, when an agent asked for one.
+    /// The agent that asked for this post, when an agent did.
     pub requested_by: Option<crate::operation::OperationRequester>,
 }
 
@@ -58,8 +53,7 @@ impl PostOrigin {
 
     /// A post one agent asked another for. It wears the asker — stamped by the
     /// caller, which is the only place that knows where the asker was speaking
-    /// from — and the receipt remembers the conversation the answer comes back
-    /// to.
+    /// from — and the receipt remembers the conversation it was asked from.
     pub(in crate::app) fn asked_by(
         requester: crate::operation::OperationRequester,
         sender: crate::thread::AgentIdentity,
@@ -68,17 +62,6 @@ impl PostOrigin {
             operation_id: None,
             from_agent: Some(sender),
             requested_by: Some(requester),
-        }
-    }
-
-    /// An answer being handed back. It wears the agent that wrote it and
-    /// records no requester of its own — the loop guard, written here rather
-    /// than at the call site so there is one place to read it.
-    pub(in crate::app) fn forwarded(sender: crate::thread::AgentIdentity) -> Self {
-        PostOrigin {
-            operation_id: None,
-            from_agent: Some(sender),
-            requested_by: None,
         }
     }
 

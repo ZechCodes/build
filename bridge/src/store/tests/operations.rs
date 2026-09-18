@@ -27,9 +27,9 @@ fn thread_post_receipt_and_message_commit_together_and_retry_is_idempotent() {
     assert_eq!(store.thread_items(&record.agents[0].id).unwrap().len(), 1);
 }
 
-/// The agent that asked for an operation survives the write, because the reply
-/// is forwarded to the conversation this names and a restart must still know
-/// where that is.
+/// The agent that asked for an operation survives the write. Nothing reads it
+/// to route a reply — a reply between agents is a send of its own — but it is
+/// the durable record of who wanted this, and history outlives the turn.
 #[test]
 fn an_operation_an_agent_asked_for_remembers_which_agent_and_where_to_answer() {
     let dir = tempfile::tempdir().unwrap();
@@ -479,53 +479,4 @@ fn a_backup_is_a_whole_store_and_never_silently_replaces_one() {
     // silently is one that can be lost twice.
     let refused = store.backup_to(&backup).expect_err("the second is refused");
     assert!(refused.to_string().contains("already exists"), "{refused}");
-}
-
-/// A reply is forwarded once. Reading the debts a conversation owes clears
-/// them, so the next terminal message that conversation produces answers
-/// nobody — the receipt itself stays exactly where it was.
-#[test]
-fn the_answer_a_conversation_owes_is_taken_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
-    let record = plan_record("issue-1");
-    let conversation_id = record.agents[0].id.clone();
-    let requester = crate::operation::OperationRequester {
-        agent_id: "project-01H".to_string(),
-        entity_id: "run-project".to_string(),
-        conversation_id: "conversation-project".to_string(),
-    };
-    let mut asked = queued_operation("op-1", 1);
-    asked.requested_by = Some(requester.clone());
-    let humans = queued_operation("op-2", 2);
-    store
-        .accept_thread_post("issue-1", &record.agents, &asked)
-        .unwrap();
-    store
-        .accept_thread_post("issue-1", &record.agents, &humans)
-        .unwrap();
-
-    let owed = store.take_operation_requesters(&conversation_id).unwrap();
-    assert_eq!(
-        owed,
-        vec![requester],
-        "the human's own operation owes nobody"
-    );
-    assert!(
-        store
-            .take_operation_requesters(&conversation_id)
-            .unwrap()
-            .is_empty(),
-        "a debt is paid once"
-    );
-    assert!(store
-        .operation("op-1")
-        .unwrap()
-        .expect("the receipt stays")
-        .requested_by
-        .is_none());
-    assert!(store
-        .take_operation_requesters("conversation-nobody")
-        .unwrap()
-        .is_empty());
 }

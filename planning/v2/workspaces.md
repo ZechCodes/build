@@ -329,9 +329,10 @@ A message to another agent goes in with the user's role — that is the side of
 the conversation an instruction arrives on whoever wrote it — and wears the
 sender as its `from_agent`, so the agent reading it knows a machine sent it. The
 operation the post creates remembers the requester: which agent asked, the owner
-it belongs to, and its own conversation, which is where the answer is owed. That
-is one behaviour for every agent-originated send, whichever surface spelled it
-and whichever tool: a coding agent's `message_agent` and a project agent's
+it belongs to, and its own conversation. Nothing reads that record to route an
+answer; it is kept as the durable history of who wanted this. That is one
+behaviour for every agent-originated send, whichever surface spelled it and
+whichever tool: a coding agent's `message_agent` and a project agent's
 `message_workspace_agent` are the same write.
 
 The delivery envelope names the reply handle outright — `These messages came
@@ -345,25 +346,24 @@ message no other agent signed. The store keeps that line as a column of its
 own, so it reads the same after a restart that loads a conversation as a tail
 of hand-offs.
 
-The answer comes back on its own. When the workspace agent ends that turn — a
-`post_thread_message` with status Complete or Blocked — its terminal message is
-posted into the project agent's conversation and delivered there the way any
-turn is: the user's role again, wearing the workspace agent as its `from_agent`,
-with the status on the first line and the agent's own words under it. The coding
-agent needs no tool for this and is never told it was summoned by a machine
-rather than by the user; the project agent reads the reply as a message, not as
-a tool result.
+The answer does not come back on its own. `post_thread_message` reports to the
+user, whoever started the turn and whatever its status: a Complete or Blocked
+that ends a turn an agent asked for reaches no agent, and neither does a Working
+or a Waiting in the middle of one. The bridge forwards nothing.
 
-Only a terminal message travels. Working and Waiting keep the turn open, so a
-progress note or a question does not interrupt the project agent mid-turn, and
-the answer it is waiting for is still owed. And a forwarded answer is never
-itself forwarded: it records no requester of its own, so the turn it starts owes
-nobody a reply and nothing can bounce between two agents. The requester is
-settled as it is read — one message handed over, one answer handed back — and a
-forwarded answer skips `note_user_message`, and crosses no dismissal line, for
-the same reason the message that asked for it does. What the workspace agent
-said in its OWN conversation is not a hand-off and still calls the human: it
-stopped and said so.
+A reply between agents is always an explicit `message_agent`. The workspace
+agent that was asked for something sends its answer back to the id the envelope
+handed it, and that send is the same write as the one that reached it — the
+user's role, wearing the sender, delivered as a message rather than as a tool
+result — and then it reports to the user without repeating what it sent. The
+product owner's reason: a bridge that forwards as well means the agent that
+asked reads the same summary twice, once as the reply and once as the report.
+
+Neither direction crosses the line the human drew on a row: a send skips
+`note_user_message` because one agent handing work to another is the work
+happening, and a report goes to the conversation it was made in. What the
+workspace agent said in its OWN conversation still calls the human: it stopped
+and said so.
 
 The agent runs in the project's durable scratch directory, holds no checkout,
 and receives the same delivery envelope, catch-up packet and topic handling as

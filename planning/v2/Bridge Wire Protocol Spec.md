@@ -507,6 +507,13 @@ has not named itself yet. Both are stamped by the bridge at POST time, from what
 it knew then: a workspace can be renamed and a topic changes with the work, and
 what the message says is what was true when it was sent.
 
+Every message carrying `from_agent` is one an agent sent on purpose — a router
+dispatch or a `message_agent`. The bridge writes none of its own: it used to
+forward a target agent's terminal report into the conversation of the agent that
+asked, and that hand-off is gone (agent surfaces spec, revision 2026-09-18b), so
+a reply between agents is always a send. Nothing on the wire changed with it;
+`requested_by` was always internal, on no wire shape.
+
 Both are omitted where the bridge cannot name them, and on every record written
 before they existed, so a client that reads only `id` is unaffected. They are
 what lets a client draw `{workspace|project} > {conversation}` over an inbound

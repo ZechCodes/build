@@ -196,6 +196,10 @@ final for this build unless the reviewer overrides them in the thread.
     conversation of the agent that asked for it, wearing the sender and the
     status. Working and Waiting are not, so the reader is not spammed mid-turn,
     and a forwarded answer owes no answer of its own — the loop guard.
+  - 2026-09-18: retired. Nothing is forwarded. `post_thread_message` reports to
+    the user and reaches no agent, and a reply between agents is always an
+    explicit `message_agent` — the agent that asked was reading the same summary
+    twice, once as the reply and once as the report.
 - **Inert issues**: `issue.create` gains `dispatch: false` (router default) —
   a record in the store, no worktree, no agent, until the user opens it and
   sends a message or triggers implement.

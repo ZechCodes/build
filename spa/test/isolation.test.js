@@ -433,12 +433,12 @@ describe("the device's settings page", () => {
     return {};
   };
 
-  it("puts the isolation panel directly under the fallback agent, on what the machine holds", async () => {
+  it("puts the isolation panel directly under the agent panels, on what the machine holds", async () => {
     await renderWith(settingsCall({ isolation: "rift", isolation_available: { rift: true, reason: null } }));
 
     const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
-    expect(at("Work isolation")).toBe(at("Fallback agent") + 1);
+    expect(at("Work isolation")).toBe(at("Project agent") + 1);
     expect(document.querySelector("#root [data-isolation=select]").value).toBe("rift");
     expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(false);
   }, SLOW_IMPORT_MS);

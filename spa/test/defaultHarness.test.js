@@ -309,8 +309,28 @@ describe("the device's settings page", () => {
     expect(at("Projects")).toBe(1);
     expect(at("Agent modes")).toBe(at("Projects folder") + 1);
     expect(at("Fallback agent")).toBe(at("Agent modes") + 1);
-    expect(at("Work isolation")).toBe(at("Fallback agent") + 1);
+    // The project agent is this machine's too, and it is the fallback's
+    // neighbour: both say what an agent nobody configured starts on.
+    expect(at("Project agent")).toBe(at("Fallback agent") + 1);
+    expect(at("Work isolation")).toBe(at("Project agent") + 1);
     expect(at("Diff triage")).toBe(at("Work isolation") + 1);
+  }, SLOW_IMPORT_MS);
+
+  it("asks this machine what its project agents start on", async () => {
+    await renderWith(async (method) => {
+      if (method === "project.list") return { projects: [] };
+      if (method === "settings.get") {
+        return {
+          projects_dir: "/p",
+          default_harness: "claude_adk",
+          project_agent: { provider: "codex" },
+        };
+      }
+      if (method === "models.list") return CATALOG;
+      return {};
+    });
+
+    expect(document.getElementById("projectagentharness").value).toBe("codex");
   }, SLOW_IMPORT_MS);
 });
 

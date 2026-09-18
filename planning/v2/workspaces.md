@@ -138,7 +138,11 @@ The owner's agents work in a durable scratch directory Build owns, never in the
 project's checkout — the project is the template workspaces are cut from, and
 talking about it must not change it. The directory sits under Build's own state
 directory, keyed by the project's canonical path, and is never wiped: a `proj-N`
-id is not durable across boots, and the conversation is.
+id is not durable across boots, and the conversation is. Abandoning the owner
+ends the conversation and lets go of the directory rather than removing it, the
+way a run standing in the project's own repository does, so the next
+`project.ensure_conversation` hands the new owner back everything the last one
+wrote.
 
 ## The project agent
 

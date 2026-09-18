@@ -219,3 +219,40 @@ fn a_project_owners_agents_are_project_agents_and_a_workspaces_are_not() {
         "{workspace_agent}"
     );
 }
+
+/// Abandoning the owner ends the conversation, never the directory it was
+/// held in. The scratch is the project's, not the run's — it outlives every
+/// session that works in it — so abandon lets go of the checkout the way it
+/// does for a run standing in the project's repository.
+#[test]
+fn abandoning_a_project_conversation_owner_keeps_its_scratch() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root)
+        .with_task_store(state_root.join("store"))
+        .unwrap();
+    let project_id = added_project(&mut state, &repo);
+    let ensured = ensure(&mut state, &project_id);
+    let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let scratch = state.runs[&run_id].worktree.path.clone();
+    // What the project agent left behind: the scaffold it works out of.
+    std::fs::write(scratch.join("NOTES.md"), "what the project agent wrote").unwrap();
+
+    let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+
+    assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+    assert!(scratch.is_dir(), "{}", scratch.display());
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("NOTES.md")).unwrap(),
+        "what the project agent wrote",
+        "abandon took the project's durable scratch with it"
+    );
+    // And the next conversation is handed the same directory back.
+    let again = ensure(&mut state, &project_id);
+    assert_eq!(again["ok"], true, "{again:?}");
+    let next = again["result"]["run_id"].as_str().unwrap();
+    assert_ne!(next, run_id, "the abandoned owner is gone: {again:?}");
+    assert_eq!(state.runs[next].worktree.path, scratch);
+}

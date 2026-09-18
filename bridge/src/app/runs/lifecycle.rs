@@ -522,11 +522,14 @@ impl AppState {
         // must leave the run exactly as it found it.
         run_transition(&active.run.state, RunEvent::Abandon)
             .map_err(|illegal| illegal.to_string())?;
-        // Abandoning removes the run's worktree. A run standing in the
-        // project's own repository ends by letting go of the checkout instead:
+        // Abandoning removes the run's worktree. Two runs end by letting go of
+        // the checkout instead: one standing in the project's own repository —
         // the repository is what workspaces are cut from, and removing it would
-        // take the project with it.
-        let keeps_checkout = self.stands_in_the_repository(&run_id, active);
+        // take the project with it — and a project's conversation owner, whose
+        // scratch directory is the project's and outlives every session held
+        // in it. Both are read off the record, so they answer after a restart.
+        let keeps_checkout = self.stands_in_the_repository(&run_id, active)
+            || self.is_project_conversation_owner(&run_id);
         let title = active.run.goal.clone();
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let stages = self.stage_publication_query(&run_id, active);

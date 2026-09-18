@@ -575,9 +575,14 @@ export function mountAgentRail(host, context) {
   // so a swap does not ask for either of them again.
   let known = { entityId: context.projectAgent.entityId || null, name: context.projectAgent.name || "" };
   let live = null;
-  const stand = (standing, alongside) => {
+  // Whether the panel is out belongs to the HOST, not to either conversation:
+  // the swap is a re-mount, and a re-mount that read the pin again would shut
+  // an unpinned card the reader had open. A press that crosses the line is a
+  // press on another conversation's bubble, so it leaves the panel exactly
+  // where pressing a bubble below the line leaves it — out.
+  const stand = (standing, alongside, { panelOpen = null } = {}) => {
     live?.dispose();
-    live = mountRailOnContext(host, { ...standing, alongside }, swap);
+    live = mountRailOnContext(host, { ...standing, alongside, panelOpen }, swap);
   };
   const swap = {
     learned: (facts) => {
@@ -585,13 +590,13 @@ export function mountAgentRail(host, context) {
     },
     toProject: (entityId) => {
       known = { ...known, entityId };
-      stand(projectAgentContext(context, known), workItemContext(context, known, null));
+      stand(projectAgentContext(context, known), workItemContext(context, known, null), { panelOpen: true });
     },
     toWorkItem: (openAgentId) => {
-      stand(workItemContext(context, known, openAgentId), projectAgentContext(context, known));
+      stand(workItemContext(context, known, openAgentId), projectAgentContext(context, known), { panelOpen: true });
     },
   };
-  swap.toWorkItem(null);
+  stand(workItemContext(context, known, null), projectAgentContext(context, known));
   return {
     dispose() {
       live?.dispose();
@@ -660,8 +665,11 @@ function mountRailOnContext(host, context, swap) {
   let pinned = readPinned();
   // An unpinned rail has no composer to focus at all — the human just cut this
   // branch and is about to type into it, so that intent outranks whatever they
-  // left the rail at on the last one.
-  let panelVisible = pinned || context.autofocusComposer === true;
+  // left the rail at on the last one. A mount the swap stood here — one of two
+  // conversations changing places in the same panel — is handed the panel it
+  // is taking over instead: the card was already out, and a re-mount is not a
+  // reason to put it away.
+  let panelVisible = context.panelOpen ?? (pinned || context.autofocusComposer === true);
   const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let poll = null;

@@ -98,6 +98,9 @@ const projectBubble = () => host().querySelector('[data-bubble="project"]');
 const agentBubble = (id) => host().querySelector(`[data-bubble="agent"][data-agent="${id}"]`);
 /** Whose conversation the panel's head says is open. */
 const headWho = () => host().querySelector(".rail-who")?.title || "";
+const panel = () => host().querySelector("#rail-panel");
+/** Whether the panel is on screen — which, unpinned, is the card being out. */
+const panelIsOpen = () => panel()?.getAttribute("aria-hidden") === "false";
 const callsTo = (method) => calls.filter((call) => call.method === method);
 
 let workspace;
@@ -225,5 +228,55 @@ describe("pressing the project's agent", () => {
     // The owner was minted by the first press and carried across both swaps.
     expect(callsTo("project.ensure_conversation")).toHaveLength(1);
     expect(projectBubble().title).toBe("Project agent for build");
+  });
+});
+
+// The panel unpinned is a card on the strip, and the swap between the two
+// conversations is a re-mount of the same host. Neither is the reader's
+// business: pressing a bubble across the line has to land exactly where
+// pressing one below it lands — the panel open, on the conversation pressed,
+// with the strip still saying what both sides are doing.
+describe("swapping with the panel unpinned", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+
+  beforeEach(() => atWidth(390));
+  afterEach(() => atWidth(1024));
+
+  it("keeps the open panel open, on the project's conversation", async () => {
+    await mountWorkspaceRail();
+    agentBubble("wa-1").click();
+    await flush();
+    expect(panelIsOpen()).toBe(true);
+
+    projectBubble().click();
+    await flush();
+
+    expect(panelIsOpen()).toBe(true);
+    expect(headWho()).toBe("Sort the workspaces");
+  });
+
+  it("keeps it open on the way back to the workspace's own", async () => {
+    await mountWorkspaceRail();
+    agentBubble("wa-1").click();
+    await flush();
+    projectBubble().click();
+    await flush();
+
+    agentBubble("wa-1").click();
+    await flush();
+
+    expect(panelIsOpen()).toBe(true);
+    expect(headWho()).toBe("Fix login redirect");
+  });
+
+  it("opens the panel a closed card was left at, the way any other bubble does", async () => {
+    await mountWorkspaceRail();
+    expect(panelIsOpen()).toBe(false);
+
+    projectBubble().click();
+    await flush();
+
+    expect(panelIsOpen()).toBe(true);
+    expect(headWho()).toBe("Sort the workspaces");
   });
 });

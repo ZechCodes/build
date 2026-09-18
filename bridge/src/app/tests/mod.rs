@@ -197,6 +197,7 @@ fn req(method: &str, params: Value) -> Frame {
 mod support;
 use support::*;
 
+mod agent_messages;
 mod api_facade;
 mod board;
 mod configuration;

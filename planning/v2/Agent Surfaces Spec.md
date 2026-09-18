@@ -335,3 +335,42 @@ rail never has. It becomes a vertical stack.
   with the entity like every other kind.
 - Nothing about visibility, grace, or the open-kind memory changes; they see
   a seeded snapshot exactly as they would a live one.
+
+## Revision 2026-09-18: `message_agent` on every surface with a conversation
+
+`message_agent {agent_id, body}` is on the coding surface and the project
+surface — every MCP surface an agent has a conversation on. The router does not
+have it: a router session decides one capture and has no conversation for an
+answer to come back to.
+
+The id is the whole address. A message from an agent carries `from_agent.id`,
+and the delivery envelope above it spells that id out — `These messages came
+from agent `<id>`, not from the user. Reply with message_agent to `<id>`.` — so
+answering is reading the line above the words.
+
+The scope is the project, read off the sender and never off an argument: the
+target agent must belong to a conversation owner bound to the same project as
+the sender's owner. Three refusals, each naming what it refused:
+
+- `unknown agent_id: <id>` — an id nobody answers to.
+- `message_agent: agent <id> is not in project <project_id>` — another project's
+  agent.
+- `message_agent: <id> is your own conversation — an agent cannot message
+  itself` — compared by conversation, not by id.
+
+The send is the one path every agent-originated message takes: the user's role,
+because that is the side an instruction arrives on whoever wrote it; the sender
+worn as `from_agent`, stamped with where it spoke from; an operation recording
+the sender as its requester, so the target's terminal message comes back as a
+reply. One behaviour for every agent, so what a project agent does today is what
+a coding agent does now.
+
+`message_workspace_agent {workspace_id, agent_id?, body}` stays, on the project
+surface only, as a thin alias: it resolves the workspace to a conversation and
+an agent on it, then goes down the same path. It is kept rather than retired
+because a project agent's natural handle on an agent is the workspace it read
+out of `list_workspaces`, not an id it has not been handed yet.
+
+A send is fire-and-forget for the human: it creates no answer debt and calls
+nobody. What comes back is the target's own terminal report, forwarded once, and
+a forwarded report records no requester of its own so it is never forwarded on.

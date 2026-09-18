@@ -6,11 +6,11 @@
 use super::*;
 use crate::mcp::BridgeAction;
 
-fn context(state_root: &Path) -> HarnessContext {
+pub(super) fn context(state_root: &Path) -> HarnessContext {
     HarnessContext::resolved(state_root.join("mcp.sock"), state_root.to_path_buf()).unwrap()
 }
 
-fn rooted(state_root: &Path) -> AppState {
+pub(super) fn rooted(state_root: &Path) -> AppState {
     AppState::new_unrooted_configured(
         state_root.join("worktrees"),
         "main",
@@ -19,7 +19,7 @@ fn rooted(state_root: &Path) -> AppState {
     )
 }
 
-fn added_project(state: &mut AppState, repo: &Path) -> String {
+pub(super) fn added_project(state: &mut AppState, repo: &Path) -> String {
     let project = state.handle(req("project.add", json!({ "path": repo })));
     assert_eq!(project["ok"], true, "{project:?}");
     project["result"]["project_id"]
@@ -29,7 +29,7 @@ fn added_project(state: &mut AppState, repo: &Path) -> String {
 }
 
 /// A project's conversation owner and the project agent on it.
-fn project_agent(state: &mut AppState, project_id: &str) -> (String, String) {
+pub(super) fn project_agent(state: &mut AppState, project_id: &str) -> (String, String) {
     let ensured = state.handle(req(
         "project.ensure_conversation",
         json!({ "project_id": project_id }),
@@ -42,7 +42,7 @@ fn project_agent(state: &mut AppState, project_id: &str) -> (String, String) {
     (owner, agent_id)
 }
 
-fn workspace(state: &mut AppState, project_id: &str, name: &str) -> String {
+pub(super) fn workspace(state: &mut AppState, project_id: &str, name: &str) -> String {
     let created = state.handle(req(
         "workspace.create",
         json!({ "project_id": project_id, "name": name, "isolation": "worktree" }),
@@ -687,7 +687,7 @@ fn handed_over(state: &mut AppState, project_id: &str, body: &str) -> HandedOver
 }
 
 /// One conversation's items, as the client pages them.
-fn items(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> {
+pub(super) fn items(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> {
     let page = state.handle(req(
         "thread.page",
         json!({ "entity_id": entity_id, "agent_id": agent_id }),
@@ -699,7 +699,12 @@ fn items(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> {
 }
 
 /// What one agent said into another agent's conversation.
-fn forwarded(state: &mut AppState, entity_id: &str, agent_id: &str, sender: &str) -> Vec<Value> {
+pub(super) fn forwarded(
+    state: &mut AppState,
+    entity_id: &str,
+    agent_id: &str,
+    sender: &str,
+) -> Vec<Value> {
     items(state, entity_id, agent_id)
         .into_iter()
         .filter(|item| item["data"]["from_agent"]["id"] == json!(sender))
@@ -717,7 +722,7 @@ fn last_user_message(state: &AppState, entity_id: &str) -> Option<String> {
 
 /// A terminal report, the one the MCP server makes from a Complete or Blocked
 /// `post_thread_message`.
-fn terminal(status: DoneStatus, summary: &str) -> DoneReport {
+pub(super) fn terminal(status: DoneStatus, summary: &str) -> DoneReport {
     DoneReport {
         phase: DonePhase::Build,
         status,

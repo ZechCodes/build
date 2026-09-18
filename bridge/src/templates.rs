@@ -309,6 +309,7 @@ the one you are the agent for, so there is nothing to name), `list_workspace_age
 (who is working one of them), `create_workspace` and `delete_workspace` (cut a
 new one, or take one away), `add_workspace_agent` and `remove_workspace_agent`
 (who works in one), `message_workspace_agent` (tell one of them what to do),
+`message_agent` (the same, addressed by an agent's id),
 `add_project_source` and `remove_project_source` (the folders every NEW
 workspace is cut from), `add_workspace_directory` and
 `remove_workspace_directory` (the folders inside one workspace that already
@@ -323,12 +324,15 @@ and \"here\" mean that one, and you do not have to ask which.
 Deleting a workspace or a directory takes whatever is in it that is not
 committed and pushed. Say what you are about to remove before you remove it.
 
-`message_workspace_agent` talks to an agent; `post_thread_message` talks to the
-user. A workspace agent knows nothing of this conversation, so say what it needs
-rather than pointing at what you were told, and it will know the message came
-from you and not from the user. When it finishes that turn its report arrives
-here as a message, saying whether it completed or is blocked — you do not have
-to go and look.
+`message_workspace_agent` and `message_agent` talk to an agent;
+`post_thread_message` talks to the user. The first addresses an agent by the
+workspace it is on, the second by its id — which is what a message from an agent
+carries, so `message_agent` is how you answer one. Either way the agent knows
+nothing of this conversation, so say what it needs rather than pointing at what
+you were told, and it will know the message came from you and not from the user.
+When it finishes that turn its report arrives here as a message, saying whether
+it completed or is blocked — you do not have to go and look. You cannot message
+yourself, and no agent outside this project is reachable.
 
 Call `set_topic` first with what this conversation is about, in 2-4 words. The
 user sees only what you send with `post_thread_message`, and every call carries a
@@ -352,14 +356,36 @@ could not, the decisions a reviewer would otherwise have to reverse-engineer,
 and what you deliberately left out or that remains at risk. Leave a heading out
 rather than pad it.";
 
+/// What every coding phase adds about reaching the other agents on the project.
+///
+/// Appended rather than written into each template so the sentence cannot drift
+/// between phases, and so a project overriding one template still overrides only
+/// that one. Not on the router's template or the project agent's: the router has
+/// no conversation to be answered in, and the project agent's own prompt says
+/// this in its own words.
+const MESSAGE_AGENT_NOTE: &str = "\
+`message_agent` writes to another agent working this project: a question for
+whoever is on the piece you depend on, or work to hand over. Address it with the
+id — a message from an agent carries the id to answer it on, and the envelope
+above it spells that id out. Its report comes back to you as a message when it
+finishes that turn. Your own report still goes to the user through
+`post_thread_message`, which is the only thing the user sees; nothing you send
+with `message_agent` reaches them.";
+
 fn phase_template(base: &str) -> String {
     base.to_string()
+}
+
+/// A template for an agent that works in a checkout and can reach the other
+/// agents on its project.
+fn coding_template(base: &str) -> String {
+    format!("{base}\n\n{MESSAGE_AGENT_NOTE}")
 }
 
 /// A template whose phase ends in changed code, so its terminal message body is the
 /// full report of it.
 fn reporting_template(base: &str) -> String {
-    format!("{base}\n\n{DONE_SUMMARY_ASK}")
+    format!("{}\n\n{DONE_SUMMARY_ASK}", coding_template(base))
 }
 
 /// The phase templates. Clone-and-edit to override per project.
@@ -388,16 +414,16 @@ pub struct Templates {
 impl Default for Templates {
     fn default() -> Self {
         Templates {
-            plan: phase_template(PLAN),
+            plan: coding_template(PLAN),
             build: reporting_template(BUILD),
             build_stage: reporting_template(BUILD_STAGE),
-            revise: phase_template(REVISE),
-            revise_stage: phase_template(REVISE_STAGE),
+            revise: coding_template(REVISE),
+            revise_stage: coding_template(REVISE_STAGE),
             fix_stage: reporting_template(FIX_STAGE),
             review_changes: reporting_template(REVIEW_CHANGES),
-            validate: phase_template(VALIDATE),
+            validate: coding_template(VALIDATE),
             triage: phase_template(TRIAGE),
-            message: phase_template(MESSAGE),
+            message: coding_template(MESSAGE),
             router: phase_template(ROUTER),
             project_agent: phase_template(PROJECT_AGENT),
         }
@@ -1035,6 +1061,47 @@ mod tests {
         assert!(out.contains("the bridge"));
         assert!(!out.contains("{capture_text}"));
         assert!(!out.contains("{user_answer}"));
+    }
+
+    /// Every agent that works in a checkout is told it can write to the other
+    /// agents on its project, what for, and that its own report still goes to
+    /// the user. The router is told none of it: it has no conversation of its
+    /// own for an answer to come back to.
+    #[test]
+    fn every_coding_template_says_an_agent_can_write_to_another_agent() {
+        let t = Templates::default();
+        for (name, template) in [
+            ("plan", &t.plan),
+            ("build", &t.build),
+            ("build_stage", &t.build_stage),
+            ("revise", &t.revise),
+            ("revise_stage", &t.revise_stage),
+            ("fix_stage", &t.fix_stage),
+            ("review_changes", &t.review_changes),
+            ("validate", &t.validate),
+            ("message", &t.message),
+        ] {
+            let text = collapse_whitespace(template);
+            assert!(text.contains("`message_agent`"), "{name}: {text}");
+            assert!(
+                text.contains("`post_thread_message`"),
+                "{name} still reports to the user: {text}"
+            );
+        }
+        assert!(
+            !collapse_whitespace(&t.router).contains("message_agent"),
+            "the router has no conversation to be answered in"
+        );
+    }
+
+    /// The project agent is told about both ways of addressing an agent, and
+    /// that neither reaches the user or itself.
+    #[test]
+    fn the_project_template_names_both_ways_of_reaching_an_agent() {
+        let project = collapse_whitespace(&Templates::default().project_agent);
+        assert!(project.contains("`message_agent`"), "{project}");
+        assert!(project.contains("`message_workspace_agent`"), "{project}");
+        assert!(project.contains("cannot message yourself"), "{project}");
     }
 
     #[test]

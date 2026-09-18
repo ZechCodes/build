@@ -123,12 +123,15 @@ impl OperationPayload {
     }
 
     /// One line naming the agent these words came from, when an agent sent
-    /// them rather than the human. Empty for everything the human said.
+    /// them rather than the human, and how to write back to it. Empty for
+    /// everything the human said.
     ///
     /// The payload carries `from_agent` on the message itself, but the message
     /// is JSON inside a prompt written in the user's voice, and the sentence
     /// around it is what an agent actually reads. So the envelope says it too:
-    /// this is work being handed over, and the person to answer is not here.
+    /// this is work being handed over, the person to answer is not here, and
+    /// the reply handle is the id spelled out rather than something to go and
+    /// look up.
     fn sender_note(&self) -> String {
         let mut senders: Vec<&str> = self
             .messages
@@ -144,9 +147,11 @@ impl OperationPayload {
             .iter()
             .map(|sender| format!("agent `{sender}`"))
             .collect();
+        let handles: Vec<String> = senders.iter().map(|sender| format!("`{sender}`")).collect();
         format!(
-            "\nThese messages came from {}, not from the user.\n",
-            named.join(" and ")
+            "\nThese messages came from {}, not from the user. Reply with message_agent to {}.\n",
+            named.join(" and "),
+            handles.join(" and ")
         )
     }
 
@@ -369,7 +374,10 @@ mod tests {
 
         let prompt = handed_over.legacy_delivery_prompt(false, AgentProvider::Claude);
         assert!(
-            prompt.contains("These messages came from agent `router-7`, not from the user."),
+            prompt.contains(
+                "These messages came from agent `router-7`, not from the user. \
+                 Reply with message_agent to `router-7`."
+            ),
             "{prompt}"
         );
         assert!(

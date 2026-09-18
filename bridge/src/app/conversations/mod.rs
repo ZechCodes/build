@@ -1,6 +1,7 @@
 use super::{named_agent_id, optional_nonempty_string, AppState};
 use serde_json::Value;
 
+mod agent_to_agent;
 mod attachments;
 mod forwarding;
 mod inputs;
@@ -11,6 +12,7 @@ mod post;
 mod read;
 mod senders;
 
+pub(in crate::app) use agent_to_agent::AgentSender;
 pub use attachments::ATTACHMENT_MAX_BYTES;
 pub(in crate::app) use attachments::{media_mime_hint, mime_hint};
 pub(in crate::app) use inputs::{

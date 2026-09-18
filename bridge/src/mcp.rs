@@ -412,8 +412,16 @@ pub enum BridgeAction {
         workspace_id: String,
         agent_id: String,
     },
+    /// Say something to another agent of this project, by its id. On every
+    /// surface that has a conversation, because every agent has to be able to
+    /// answer the ones that write to it.
+    MessageAgent {
+        agent_id: String,
+        body: String,
+    },
     /// Say something to an agent on one of this project's workspaces. Project
-    /// only. Naming no agent is that workspace's primary one.
+    /// only. Naming no agent is that workspace's primary one. A thin alias for
+    /// [`BridgeAction::MessageAgent`] addressed by workspace rather than by id.
     MessageWorkspaceAgent {
         workspace_id: String,
         agent_id: Option<String>,
@@ -491,6 +499,7 @@ impl BridgeAction {
             BridgeAction::CreateWorkspace { .. } => "create_workspace",
             BridgeAction::AddWorkspaceAgent { .. } => "add_workspace_agent",
             BridgeAction::RemoveWorkspaceAgent { .. } => "remove_workspace_agent",
+            BridgeAction::MessageAgent { .. } => "message_agent",
             BridgeAction::MessageWorkspaceAgent { .. } => "message_workspace_agent",
             BridgeAction::DeleteWorkspace { .. } => "delete_workspace",
             BridgeAction::AddProjectSource { .. } => "add_project_source",
@@ -514,7 +523,8 @@ impl BridgeAction {
             }
             BridgeAction::PostThreadMessage { .. }
             | BridgeAction::SearchConversation { .. }
-            | BridgeAction::SetTopic { .. } => &[McpSurface::Coding, McpSurface::Project],
+            | BridgeAction::SetTopic { .. }
+            | BridgeAction::MessageAgent { .. } => &[McpSurface::Coding, McpSurface::Project],
             BridgeAction::ListProjects
             | BridgeAction::ListWork
             | BridgeAction::ReadConversation { .. }
@@ -718,6 +728,10 @@ impl DoneServer {
             "description": "Send a message to the user. This tool is the only way the user can see your messages; terminal output and ordinary assistant responses are not visible to them. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome. Complete and Blocked must include the current phase and any required phase outputs.",
             "inputSchema": Self::message_input_schema()
         }, {
+            "name": "message_agent",
+            "description": MESSAGE_AGENT_DESCRIPTION,
+            "inputSchema": Self::message_agent_input_schema()
+        }, {
             "name": "search_conversation",
             "description": SEARCH_CONVERSATION_DESCRIPTION,
             "inputSchema": Self::search_conversation_input_schema()
@@ -726,6 +740,20 @@ impl DoneServer {
             "description": SET_TOPIC_DESCRIPTION,
             "inputSchema": Self::set_topic_input_schema()
         }])
+    }
+
+    /// Who to write to and what to say — the whole of `message_agent`. There
+    /// is no workspace and no project on it: the id is the address, and the
+    /// scope is read off the sender.
+    fn message_agent_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_id": { "type": "string", "description": "The agent to write to. A message from an agent carries the id to answer it on; list_workspace_agents answers the ids on a workspace. An agent outside your project, an id that names nobody, and your own id are refused." },
+                "body": { "type": "string", "description": "What to say, in full. The other agent has none of your conversation, so say what it needs rather than pointing at what you were told." }
+            },
+            "required": ["agent_id", "body"]
+        })
     }
 
     /// The conversation search schema, shared by every surface that has a
@@ -934,6 +962,10 @@ impl DoneServer {
             "name": "post_thread_message",
             "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete when you have answered, Blocked when you cannot, Waiting when you need the user, or Working for a progress update while you keep reading.",
             "inputSchema": Self::project_message_input_schema()
+        }, {
+            "name": "message_agent",
+            "description": MESSAGE_AGENT_DESCRIPTION,
+            "inputSchema": Self::message_agent_input_schema()
         }, {
             "name": "search_conversation",
             "description": SEARCH_CONVERSATION_DESCRIPTION,
@@ -1234,6 +1266,7 @@ impl DoneServer {
                     Err(message) => refused(id, message),
                 }
             }
+            "message_agent" => message_agent_action(id, params),
             "search_conversation" => search_action(id, params),
             "set_topic" => topic_action(id, params),
             "post_thread_message" => project_message(id, params),
@@ -1248,6 +1281,9 @@ impl DoneServer {
         }
         if name == "set_topic" {
             return topic_action(id, params);
+        }
+        if name == "message_agent" {
+            return message_agent_action(id, params);
         }
         if name == "post_thread_message" {
             let arguments = params
@@ -1705,6 +1741,16 @@ fn search_action(id: Value, params: Option<&Value>) -> Handled {
     }
 }
 
+/// `message_agent`, on every surface that has a conversation.
+fn message_agent_action(id: Value, params: Option<&Value>) -> Handled {
+    match required_argument(params, "agent_id")
+        .and_then(|agent_id| Ok((agent_id, required_argument(params, "body")?)))
+    {
+        Ok((agent_id, body)) => acted(id, BridgeAction::MessageAgent { agent_id, body }),
+        Err(message) => refused(id, message),
+    }
+}
+
 /// `set_topic`, on every surface that has a conversation.
 fn topic_action(id: Value, params: Option<&Value>) -> Handled {
     let topic = params
@@ -1762,6 +1808,8 @@ const SUMMARY_DESCRIPTION: &str = "The full report of this phase, in markdown, w
 /// it, so it carries the shape rule itself.
 /// The one tool a session with no memory of the work needs to know exists, so
 /// the description says what to do INSTEAD of scrolling: ask a question.
+const MESSAGE_AGENT_DESCRIPTION: &str = "Say something to another agent working this project: a question for whoever is on the piece you depend on, or work to hand over. It arrives knowing you sent it and not the user, and when that agent finishes the turn its report comes back to you as a message. You cannot message yourself, and no agent outside this project is reachable. This talks to an agent; post_thread_message talks to the user, and is still the only thing the user sees.";
+
 const SEARCH_CONVERSATION_DESCRIPTION: &str = "Search your Build conversation history — every past message and event, including the ones from sessions before yours. Use it whenever you need context you do not have: what was decided about a file, why a commit was made, what the reviewer already asked for. Search rather than replay: never scroll the terminal or re-read the whole conversation to find something. Filters combine, results are newest first, and each hit is an excerpt with its sequence number, not the full item.";
 
 const SET_TOPIC_DESCRIPTION: &str = "Name what this conversation is about, in 2-4 words: the objective you are setting out to achieve, not the steps. The conversation header shows it in place of the harness name, and says \"Starting\" until you call this. Call it first thing in a new conversation, and again if the objective changes.";
@@ -1840,10 +1888,11 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
         assert_eq!(tools[0]["name"], "post_thread_message");
-        assert_eq!(tools[1]["name"], "search_conversation");
-        assert_eq!(tools[2]["name"], "set_topic");
+        assert_eq!(tools[1]["name"], "message_agent");
+        assert_eq!(tools[2]["name"], "search_conversation");
+        assert_eq!(tools[3]["name"], "set_topic");
         assert!(tools[0]["inputSchema"]["properties"]["phase"].is_object());
         assert_eq!(
             tools[0]["inputSchema"]["properties"]["status"]["enum"],
@@ -2677,7 +2726,12 @@ mod tests {
         );
         assert_eq!(
             tool_names(&server()),
-            vec!["post_thread_message", "search_conversation", "set_topic",],
+            vec![
+                "post_thread_message",
+                "message_agent",
+                "search_conversation",
+                "set_topic",
+            ],
             "the coding surface is unchanged by the router's arrival"
         );
         assert_eq!(
@@ -2695,6 +2749,7 @@ mod tests {
                 "add_workspace_directory",
                 "remove_workspace_directory",
                 "post_thread_message",
+                "message_agent",
                 "search_conversation",
                 "set_topic",
             ]

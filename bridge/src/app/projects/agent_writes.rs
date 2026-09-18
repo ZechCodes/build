@@ -234,13 +234,15 @@ impl AppState {
     }
 
     /// `message_workspace_agent` — say something to an agent on one of this
-    /// project's workspaces, through `thread.post` on its conversation.
+    /// project's workspaces, addressed by the workspace rather than by the
+    /// agent's id.
     ///
-    /// It goes in with the user's role, because that is the side of the
-    /// conversation an instruction arrives on whoever wrote it, and wearing
-    /// this project agent as its sender, so the agent reading it knows a
-    /// machine sent it. The operation it creates remembers this agent and the
-    /// conversation it sent from — the answer is owed there, not to a screen.
+    /// A thin alias for `message_agent`: it resolves the workspace to a
+    /// conversation and an agent on it, then goes through the one send path
+    /// every agent-originated message goes through — the same role, the same
+    /// sender stamp, the same requester on the operation, the same refusals.
+    /// Naming no agent is the workspace's primary one, and a workspace nobody
+    /// has staffed gets one, the way every addressed verb reads it.
     pub(in crate::app) fn project_agent_message_workspace_agent(
         &mut self,
         owner_id: &str,
@@ -252,43 +254,21 @@ impl AppState {
         let entity_id = self
             .workspace_conversation_owner(&workspace)
             .ok_or_else(|| format!("workspace {} has no agents", target.workspace_id))?;
-        let requester = self.project_agent_requester(owner_id, sender_id)?;
-        let operation_id = format!("op-{}", uuid::Uuid::new_v4());
-        let mut params = json!({
-            "entity_id": entity_id,
-            "body": body,
-            "operation_id": operation_id,
-        });
-        if let Some(agent_id) = target.agent_id {
-            params["agent_id"] = json!(agent_id);
-        }
-        let posted = self.thread_post_from_agent(&params, requester)?;
-        Ok(json!({
-            "workspace_id": target.workspace_id,
-            "entity_id": posted["entity_id"].as_str().unwrap_or(&entity_id),
-            "agent_id": posted["agent_id"],
-            "operation_id": operation_id,
-            "posted_sequence": posted["posted_sequence"],
-        }))
-    }
-
-    /// This project agent as the thing an operation is owed an answer by: which
-    /// agent it is, the owner it belongs to, and its own conversation.
-    fn project_agent_requester(
-        &self,
-        owner_id: &str,
-        agent_id: &str,
-    ) -> Result<crate::operation::OperationRequester, String> {
-        let conversation_id = self
-            .entity_agents(owner_id)?
-            .resolve(Some(agent_id))?
-            .conversation_id()
-            .to_string();
-        Ok(crate::operation::OperationRequester {
-            agent_id: agent_id.to_string(),
-            entity_id: owner_id.to_string(),
-            conversation_id,
-        })
+        let target_agent_id = match target.agent_id {
+            Some(agent_id) => self
+                .entity_agents(&entity_id)?
+                .resolve(Some(agent_id))?
+                .id
+                .clone(),
+            None => self.ensure_primary_agent(&entity_id)?,
+        };
+        let sender = crate::app::AgentSender {
+            entity_id: owner_id,
+            agent_id: sender_id,
+        };
+        let mut sent = self.post_from_agent_to_agent(sender, &entity_id, &target_agent_id, body)?;
+        sent["workspace_id"] = json!(target.workspace_id);
+        Ok(sent)
     }
 
     /// One workspace of this agent's project, or why it is none of its

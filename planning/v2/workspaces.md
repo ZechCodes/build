@@ -296,7 +296,17 @@ same code path, the same refusals, the same record afterwards:
 - `remove_workspace_agent {workspace_id, agent_id}` — through `agent.remove`.
 - `message_workspace_agent {workspace_id, agent_id?, body}` — through
   `thread.post` on that agent's conversation; naming no agent is the
-  workspace's primary one.
+  workspace's primary one. A thin alias for `message_agent`, addressed by the
+  workspace rather than by the agent's id: it resolves the workspace to a
+  conversation and an agent on it and then goes down the one send path. Kept
+  rather than retired because a project agent's natural handle on an agent is
+  the workspace it read out of `list_workspaces`.
+- `message_agent {agent_id, body}` — the same send, addressed by id, and on the
+  coding surface too (agent surfaces spec, revision 2026-09-18). Every agent can
+  reach every other agent of its project, which is what makes an inbound message
+  answerable: the envelope names the id to reply on. An agent in another
+  project, an id that names nobody, and the sender's own conversation are each
+  refused by name.
 - `delete_workspace {workspace_id}` — through `workspace.delete`, refusals and
   all.
 - `add_project_source {path? | remote?, name?, base_branch?}` and
@@ -315,12 +325,19 @@ project id is parsed as though it had not. The gate is on the socket as well as
 in the tool list a session is shown, so a harness writing its own frames reaches
 no further than a harness that reads the list.
 
-A message to a workspace agent goes in with the user's role — that is the side
-of the conversation an instruction arrives on whoever wrote it — and wears the
-project agent as its `from_agent`, so the agent reading it knows a machine sent
-it. The operation the post creates remembers the requester: which project agent
-asked, the owner it belongs to, and its own conversation, which is where the
-answer is owed. `note_user_message` is skipped for it, because one agent handing
+A message to another agent goes in with the user's role — that is the side of
+the conversation an instruction arrives on whoever wrote it — and wears the
+sender as its `from_agent`, so the agent reading it knows a machine sent it. The
+operation the post creates remembers the requester: which agent asked, the owner
+it belongs to, and its own conversation, which is where the answer is owed. That
+is one behaviour for every agent-originated send, whichever surface spelled it
+and whichever tool: a coding agent's `message_agent` and a project agent's
+`message_workspace_agent` are the same write.
+
+The delivery envelope names the reply handle outright — `These messages came
+from agent \`<id>\`, not from the user. Reply with message_agent to \`<id>\`.` —
+because the id is the only address there is and an agent that has to go and look
+it up will not. `note_user_message` is skipped for it, because one agent handing
 work to another is the work happening and must not move the inbox anchor under
 the reader. For the same reason it crosses no dismissal line: a row the human
 cleared stays cleared until somebody speaks to THEM, so the line is the newest

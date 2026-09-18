@@ -473,6 +473,17 @@ impl AppState {
                 surface.as_str()
             ));
         }
+        if let BridgeAction::MessageAgent {
+            agent_id: target,
+            body,
+        } = &action
+        {
+            let sender = crate::app::AgentSender {
+                entity_id,
+                agent_id,
+            };
+            return self.agent_message_agent(sender, target, body);
+        }
         if let Some(answered) = self.project_surface_action(entity_id, agent_id, &action) {
             return answered;
         }

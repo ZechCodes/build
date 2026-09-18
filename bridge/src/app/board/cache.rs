@@ -187,6 +187,7 @@ fn workspace_work_summary(repositories: &[std::path::PathBuf]) -> Value {
         "behind": summary.behind,
         "additions": summary.additions,
         "deletions": summary.deletions,
+        "dirty": summary.dirty,
         "clean": summary.clean,
     })
 }
@@ -457,6 +458,19 @@ impl AppState {
     #[cfg(test)]
     pub(in crate::app) fn age_external_scan_for_test(&mut self, project_id: &str, age: Duration) {
         self.board.diff_mut().age_external_scan(project_id, age);
+    }
+
+    /// Age one workspace's cached summary so the next read walks its tree
+    /// again. A workspace nothing has summarized yet is already stale.
+    #[cfg(test)]
+    pub(in crate::app) fn age_workspace_summary_for_test(
+        &mut self,
+        workspace_id: &str,
+        age: Duration,
+    ) {
+        self.board
+            .diff_mut()
+            .age_workspace_summary(workspace_id, age);
     }
 
     /// Recompute this entry behind whatever the caller is about to answer with.

@@ -318,6 +318,17 @@ impl DiffCache {
     }
 
     #[cfg(test)]
+    pub(in crate::app) fn age_workspace_summary(
+        &mut self,
+        workspace_id: &str,
+        age: std::time::Duration,
+    ) {
+        if let Some((computed_at, _, _)) = self.workspace_summary_cache.get_mut(workspace_id) {
+            *computed_at -= age;
+        }
+    }
+
+    #[cfg(test)]
     pub(in crate::app) fn age_external_scan(&mut self, project_id: &str, age: std::time::Duration) {
         self.project_cache
             .get_mut(project_id)

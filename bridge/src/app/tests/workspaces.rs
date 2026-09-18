@@ -1666,3 +1666,117 @@ fn workspace_delete_refuses_an_adopted_checkout() {
     assert_eq!(also_refused["ok"], false, "{also_refused:?}");
     assert_eq!(also_refused["error_code"], "conflict", "{also_refused:?}");
 }
+
+/// `(can_finish, finish_blockers)` off the feed's row for this workspace. The
+/// cached summary is aged first, so each step of a test measures the tree it
+/// just changed rather than the one the previous poll walked.
+fn done_row(state: &mut AppState, workspace_id: &str) -> (bool, Vec<String>) {
+    state.age_workspace_summary_for_test(workspace_id, crate::app::WORKSPACE_SUMMARY_TTL * 2);
+    let board = state.handle(req("board.list", json!({})));
+    let row = board["result"]["workspace_summaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["workspace_id"] == json!(workspace_id))
+        .unwrap_or_else(|| panic!("the workspace is on the feed: {board:?}"))
+        .clone();
+    (
+        row["can_finish"]
+            .as_bool()
+            .unwrap_or_else(|| panic!("{row:?}")),
+        row["finish_blockers"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{row:?}"))
+            .iter()
+            .map(|blocker| blocker.as_str().unwrap().to_string())
+            .collect(),
+    )
+}
+
+/// Done only appears once the user has synced the repo with a remote, and the
+/// row says which of the three things is in the way until then.
+#[test]
+fn a_workspace_row_offers_done_once_its_git_work_is_clean_and_pushed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "repo");
+    let mut state = app(tmp.path());
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace = create_workspace(&mut state, &project_id, "done-row");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    let checkout = PathBuf::from(workspace["directories"][0]["path"].as_str().unwrap());
+
+    assert_eq!(done_row(&mut state, &workspace_id), (true, Vec::new()));
+
+    // An empty untracked file carries a +0/-0 stat, so only the status walk
+    // sees it.
+    std::fs::write(checkout.join("empty.bin"), []).unwrap();
+    assert_eq!(
+        done_row(&mut state, &workspace_id),
+        (false, vec!["dirty".to_string()])
+    );
+
+    git_in(&checkout, &["add", "empty.bin"]);
+    git_in(&checkout, &["commit", "-m", "local work"]);
+    assert_eq!(
+        done_row(&mut state, &workspace_id),
+        (false, vec!["unpushed".to_string()])
+    );
+
+    git_in(&checkout, &["push", "origin", "HEAD"]);
+    assert_eq!(done_row(&mut state, &workspace_id), (true, Vec::new()));
+
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({"entity_id": run_id})));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    insert_agent_tab(
+        &mut state,
+        &root,
+        &run_id,
+        &agent_id,
+        DictatedSession::reporting(AgentStatus::Working),
+    );
+    assert_eq!(
+        done_row(&mut state, &workspace_id),
+        (false, vec!["agent_working".to_string()])
+    );
+}
+
+/// A workspace holding an ordinary directory beside a repository is judged by
+/// the repository alone, and one holding no repository at all is judged by its
+/// agents.
+#[test]
+fn done_reads_the_git_directories_a_workspace_has_and_no_others() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "repo");
+    let plain = tmp.path().join("assets");
+    std::fs::create_dir(&plain).unwrap();
+    std::fs::write(plain.join("logo.svg"), "<svg/>\n").unwrap();
+    let mut state = app(tmp.path());
+    let project_id = create_mixed_project(&mut state, &repo, &plain);
+    let workspace = create_workspace(&mut state, &project_id, "mixed-done");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let assets = PathBuf::from(directory(&workspace, "source-2")["path"].as_str().unwrap());
+
+    // Editing the ordinary directory is not work Git can lose, so it is not
+    // what Done waits for.
+    std::fs::write(assets.join("logo.svg"), "<svg viewBox=\"0 0 1 1\"/>\n").unwrap();
+    assert_eq!(done_row(&mut state, &workspace_id), (true, Vec::new()));
+
+    let plain_only = state.handle(req("project.add", json!({"path": plain})));
+    let plain_project = plain_only["result"]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bare = create_workspace(&mut state, &plain_project, "no-repository");
+    let bare_id = bare["workspace_id"].as_str().unwrap().to_string();
+    assert_eq!(done_row(&mut state, &bare_id), (true, Vec::new()));
+}

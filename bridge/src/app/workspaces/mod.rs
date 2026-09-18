@@ -410,6 +410,19 @@ impl AppState {
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
 
+    /// Whether an agent is working in this workspace right now: a turn the
+    /// bridge is carrying for it, or a live session at that root still saying
+    /// it is working. The row and the verb read the same fact, so what Done
+    /// offers and what Done does cannot disagree.
+    pub(in crate::app) fn agent_working_at_root(&self, root: &Path) -> bool {
+        self.delivery_queue.has_in_flight_at_root(root)
+            || self
+                .session_registry
+                .agent_working_roots()
+                .into_iter()
+                .any(|(candidate, working)| working && Self::canonical_root(&candidate) == root)
+    }
+
     pub(crate) fn workspace_finish(&mut self, params: &Value) -> Result<Value, String> {
         if self.deferred_work.is_some() {
             return Err("another filesystem operation is still running".to_string());

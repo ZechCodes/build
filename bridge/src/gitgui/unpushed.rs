@@ -10,9 +10,13 @@ pub struct WorkSummary {
     pub behind: u64,
     pub additions: u64,
     pub deletions: u64,
+    /// The working tree holds something Git has not been told to keep: a
+    /// staged or unstaged edit, an untracked file, or an operation left half
+    /// done. Deliberately independent of line counts — an empty untracked file
+    /// or a binary edit carries a +0/-0 stat.
+    pub dirty: bool,
     /// No local commit, index, worktree, untracked file, or in-progress Git
-    /// operation remains. This is deliberately independent of line counts:
-    /// an empty untracked file or a binary edit can carry a +0/-0 stat.
+    /// operation remains: `pushes == 0 && !dirty`.
     pub clean: bool,
 }
 
@@ -213,9 +217,8 @@ pub fn work_summary(repo_path: &Path) -> Result<WorkSummary, String> {
     status_options
         .include_untracked(true)
         .recurse_untracked_dirs(true);
-    let clean = pushes == 0
-        && repo.state() == git2::RepositoryState::Clean
-        && repo
+    let dirty = repo.state() != git2::RepositoryState::Clean
+        || !repo
             .statuses(Some(&mut status_options))
             .map_err(|error| error.to_string())?
             .is_empty();
@@ -227,7 +230,8 @@ pub fn work_summary(repo_path: &Path) -> Result<WorkSummary, String> {
         behind,
         additions: stat.insertions as u64,
         deletions: stat.deletions as u64,
-        clean,
+        dirty,
+        clean: pushes == 0 && !dirty,
     })
 }
 
@@ -238,6 +242,7 @@ pub fn aggregate_work_summary(repo_paths: &[std::path::PathBuf]) -> Result<WorkS
             behind: 0,
             additions: 0,
             deletions: 0,
+            dirty: false,
             clean: true,
         },
         |total, path| {
@@ -259,6 +264,7 @@ pub fn aggregate_work_summary(repo_paths: &[std::path::PathBuf]) -> Result<WorkS
                     .deletions
                     .checked_add(summary.deletions)
                     .ok_or_else(|| "workspace deletion count exceeds u64".to_string())?,
+                dirty: total.dirty || summary.dirty,
                 clean: total.clean && summary.clean,
             })
         },

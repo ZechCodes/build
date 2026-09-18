@@ -95,6 +95,18 @@ selected directory tab, a branch, or a tag.
 
 ## Finish and retention
 
+Done is offered on a workspace only once its work is somewhere other than that
+workspace: every Git source clean, with no commit its push destination does not
+already have, and no agent turn in flight at the workspace root. A row says
+which of those is in the way — `dirty`, `unpushed`, `agent_working`, or
+`unknown` while nothing has managed to read the repositories — so the control
+can say it too.
+
+An ordinary directory is not measured. Build has no published baseline to call
+its files unchanged against, so a workspace holding one is judged by the
+repositories beside it, and a workspace holding no repository at all is judged
+by its agents alone.
+
 Finish checks every Git source before completion. Each Git source must be pushed
 to its configured remote; a source that cannot be pushed leaves Finish incomplete
 and reports the source and Git failure. Non-Git sources are retained as they are.

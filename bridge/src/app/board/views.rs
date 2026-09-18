@@ -50,6 +50,40 @@ pub(in crate::app) struct WorkItemStat {
     pub(in crate::app) head_committed_at: Option<String>,
 }
 
+/// What the feed needs about one workspace to summarize it, read off the
+/// registry before the loop that walks repositories borrows the cache.
+struct WorkspaceSummarySubject {
+    workspace_id: String,
+    root: std::path::PathBuf,
+    /// Provisioned and usable. A workspace that is anything else is not a
+    /// workspace Done is offered on.
+    ready: bool,
+    /// The Git directories in it, which are the only ones Done measures.
+    repositories: Vec<std::path::PathBuf>,
+}
+
+/// The Git half of why Done is unavailable, read off the summary the feed
+/// already carries rather than by walking the repositories again. A workspace
+/// holding no repository has no Git work to lose; one whose walk has not
+/// landed yet is unknown rather than ready.
+fn git_finish_blockers(summary: &Value, repositories: &[std::path::PathBuf]) -> Vec<&'static str> {
+    if repositories.is_empty() {
+        return Vec::new();
+    }
+    let (Some(pushes), Some(dirty)) = (summary["pushes"].as_u64(), summary["dirty"].as_bool())
+    else {
+        return vec![crate::workspace::FINISH_BLOCKER_UNKNOWN];
+    };
+    crate::workspace::summary_finish_blockers(&crate::gitgui::WorkSummary {
+        pushes,
+        behind: 0,
+        additions: 0,
+        deletions: 0,
+        dirty,
+        clean: pushes == 0 && !dirty,
+    })
+}
+
 /// The `state` a branch row reports when nothing is driving it: a checkout
 /// exists on that branch, and no run owns its lifecycle.
 pub(in crate::app) const CHECKOUT_IDLE_STATE: &str = "idle";
@@ -278,55 +312,68 @@ impl AppState {
 
     /// Workspace-wide publication-aware summaries, served stale while every
     /// repository walk runs through the existing off-lock cache worker.
+    ///
+    /// Each row also carries Done: whether it is offered, and what is standing
+    /// in the way while it is not. Done removes the workspace, so it appears
+    /// only once every Git directory has put its work somewhere else.
     fn workspace_summaries_json(&mut self) -> Vec<Value> {
         let workspaces = self
             .workspaces
             .list(None)
             .into_iter()
-            .map(|workspace| {
-                let all_git = !workspace.directories.is_empty()
-                    && workspace
-                        .directories
-                        .iter()
-                        .all(|directory| directory.is_git);
-                let repositories = workspace
+            .map(|workspace| WorkspaceSummarySubject {
+                workspace_id: workspace.id.clone(),
+                root: Self::canonical_root(&workspace.root),
+                ready: workspace.status == crate::workspace::WorkspaceStatus::Ready,
+                repositories: workspace
                     .directories
                     .iter()
                     .filter(|directory| directory.is_git)
                     .map(|directory| directory.path.clone())
-                    .collect::<Vec<_>>();
-                (workspace.id.clone(), repositories, all_git)
+                    .collect::<Vec<_>>(),
             })
             .collect::<Vec<_>>();
         self.sync_workspace_summaries(
             &workspaces
                 .iter()
-                .map(|(id, repositories, _)| (id.clone(), repositories.clone()))
+                .map(|subject| (subject.workspace_id.clone(), subject.repositories.clone()))
                 .collect::<Vec<_>>(),
         );
         workspaces
             .into_iter()
-            .map(|(workspace_id, repositories, all_git)| {
-                let computed_at = self
-                    .workspace_summary_of(&workspace_id, &repositories)
-                    .map(|(at, _)| at);
-                let refresh = self.workspace_summary_refresh(&workspace_id, repositories.clone());
-                self.refresh_if_stale(computed_at, WORKSPACE_SUMMARY_TTL, refresh);
-                let mut summary = self
-                    .workspace_summary_of(&workspace_id, &repositories)
-                    .map(|(_, summary)| summary.clone())
-                    .unwrap_or(Value::Null);
-                if !all_git {
-                    if let Some(summary) = summary.as_object_mut() {
-                        summary.insert("clean".into(), json!(false));
-                    }
+            .map(|subject| {
+                let summary = self.workspace_summary_json(&subject);
+                let mut blockers = Vec::new();
+                if self.agent_working_at_root(&subject.root) {
+                    blockers.push(crate::workspace::FINISH_BLOCKER_AGENT_WORKING);
                 }
+                blockers.extend(git_finish_blockers(&summary, &subject.repositories));
                 json!({
-                    "workspace_id": workspace_id,
+                    "workspace_id": subject.workspace_id,
                     "work_summary": summary,
+                    // A workspace still being built, or one that failed, says
+                    // what it is in its own status; Done is not on it either
+                    // way.
+                    "can_finish": subject.ready && blockers.is_empty(),
+                    "finish_blockers": blockers,
                 })
             })
             .collect()
+    }
+
+    /// One workspace's summary, refreshed behind the answer when the last walk
+    /// has aged out. `null` while nothing has landed, and for a workspace
+    /// holding no repository at all.
+    fn workspace_summary_json(&mut self, subject: &WorkspaceSummarySubject) -> Value {
+        let computed_at = self
+            .workspace_summary_of(&subject.workspace_id, &subject.repositories)
+            .map(|(at, _)| at);
+        let refresh =
+            self.workspace_summary_refresh(&subject.workspace_id, subject.repositories.clone());
+        self.refresh_if_stale(computed_at, WORKSPACE_SUMMARY_TTL, refresh);
+        self.workspace_summary_of(&subject.workspace_id, &subject.repositories)
+            .map(|(_, summary)| summary.clone())
+            .unwrap_or(Value::Null)
     }
 
     // ---- Board + views --------------------------------------------------------

@@ -840,6 +840,61 @@ fn finish_workspace(workspace: &mut Workspace) -> WorkspaceFinish {
     }
 }
 
+/// Why Done is not offered on a workspace. A row spells these as its
+/// `finish_blockers`, and the verb refuses in the same words, so what the
+/// button says and what the bridge does cannot drift.
+pub const FINISH_BLOCKER_AGENT_WORKING: &str = "agent_working";
+pub const FINISH_BLOCKER_DIRTY: &str = "dirty";
+pub const FINISH_BLOCKER_UNPUSHED: &str = "unpushed";
+/// Nothing has managed to read this workspace's Git state, so Done cannot say
+/// the work is safe anywhere else.
+pub const FINISH_BLOCKER_UNKNOWN: &str = "unknown";
+
+/// What a Git directory's work summary says about Done, in the order a reader
+/// meets them. Empty means this directory has nothing left to lose: every
+/// commit is in its push destination and the tree is clean.
+pub fn summary_finish_blockers(summary: &crate::gitgui::WorkSummary) -> Vec<&'static str> {
+    let mut blockers = Vec::new();
+    if summary.dirty {
+        blockers.push(FINISH_BLOCKER_DIRTY);
+    }
+    if summary.pushes > 0 {
+        blockers.push(FINISH_BLOCKER_UNPUSHED);
+    }
+    blockers
+}
+
+/// What stands between this workspace's Git directories and Done, measured
+/// now rather than read off the feed's cache. An ordinary directory has no
+/// published baseline to be clean against, so it is not what Done waits for;
+/// a workspace holding none at all has no Git work to lose.
+pub fn workspace_git_blockers(workspace: &Workspace) -> Vec<&'static str> {
+    let mut blockers = Vec::new();
+    for directory in workspace.directories.iter().filter(|d| d.is_git) {
+        let measured = crate::gitgui::work_summary(&directory.path)
+            .map(|summary| summary_finish_blockers(&summary))
+            .unwrap_or_else(|_| vec![FINISH_BLOCKER_UNKNOWN]);
+        for blocker in measured {
+            if !blockers.contains(&blocker) {
+                blockers.push(blocker);
+            }
+        }
+    }
+    blockers.sort_unstable_by_key(|blocker| blocker_order(blocker));
+    blockers
+}
+
+/// One order for the whole list, whoever assembled it: the live reason first,
+/// then what is on disk, then what is only local, then not knowing.
+pub fn blocker_order(blocker: &str) -> usize {
+    match blocker {
+        FINISH_BLOCKER_AGENT_WORKING => 0,
+        FINISH_BLOCKER_DIRTY => 1,
+        FINISH_BLOCKER_UNPUSHED => 2,
+        _ => 3,
+    }
+}
+
 /// A definitive local-only predicate for inbox Done. A non-Git directory is
 /// not called clean because Build has no durable baseline from which to prove
 /// that its ordinary files are unchanged.

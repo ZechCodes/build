@@ -188,12 +188,22 @@
           "pushes": 3,
           "behind": 2,
           "additions": 214,
-          "deletions": 61
-        }
+          "deletions": 61,
+          "dirty": true
+        },
+        "can_finish": false,
+        "finish_blockers": [
+          "dirty",
+          "unpushed"
+        ]
       },
       {
         "workspace_id": "ws-2",
-        "work_summary": null
+        "work_summary": null,
+        "can_finish": false,
+        "finish_blockers": [
+          "unknown"
+        ]
       }
     ]
   },

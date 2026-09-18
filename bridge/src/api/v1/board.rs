@@ -575,6 +575,13 @@ pub struct BoardListResult {
 pub struct WorkspaceSummaryRow {
     pub workspace_id: String,
     pub work_summary: Option<WorkSummaryView>,
+    /// Whether Done is offered on this workspace right now.
+    #[serde(default)]
+    pub can_finish: bool,
+    /// Why it is not, in the words the client says back: `unpushed`, `dirty`,
+    /// `agent_working`, `unknown`.
+    #[serde(default)]
+    pub finish_blockers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -585,6 +592,10 @@ pub struct WorkSummaryView {
     pub behind: u64,
     pub additions: u64,
     pub deletions: u64,
+    /// Something in a working tree is not committed anywhere: what `dirty`
+    /// blocks Done for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dirty: bool,
     /// True only after the complete Git status and unpublished-commit checks
     /// succeed for every repository in the workspace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

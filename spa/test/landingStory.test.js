@@ -122,6 +122,14 @@ describe("landing story browser behavior", () => {
     controller.destroy();
   });
 
+  it("never moves the page because of a text selection", () => {
+    const listeners = vi.spyOn(document, "addEventListener");
+    const controller = install();
+    expect(listeners.mock.calls.map(([name]) => name)).not.toContain("selectionchange");
+    controller.destroy();
+    listeners.mockRestore();
+  });
+
   it("switches to readable document flow when reduced motion changes", () => {
     const controller = install();
     expect(controller.getState().enhanced).toBe(true);

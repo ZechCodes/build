@@ -51,6 +51,15 @@ describe("mobile menu", () => {
     expect(toggleButton.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("locks page scroll while open and a tap outside the menu closes it", () => {
+    toggleButton.click();
+    expect(document.body.classList.contains("is-menu-open")).toBe(true);
+    document.body.click();
+    expect(menuElement.classList.contains(OPEN_MENU_CLASS)).toBe(false);
+    expect(toggleButton.getAttribute("aria-expanded")).toBe("false");
+    expect(document.body.classList.contains("is-menu-open")).toBe(false);
+  });
+
   it("crossing the mobile breakpoint closes the open menu so the desktop nav is not left solid", () => {
     expect(observedQuery).toBe(MOBILE_BREAKPOINT_QUERY);
     toggleButton.click();

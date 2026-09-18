@@ -18,7 +18,7 @@ from litestar.response import Response
 
 from buildapp import releases
 from buildapp.landing_page import LANDING_DIR, SHELL_NAME, read_landing_file
-from buildapp.landing_content import _render_activity, load_content
+from buildapp.landing_content import _render_activity, _render_activity_section, load_content
 from buildapp.root_controller import (
     LANDING_PAGE_NAME,
     RootController,
@@ -129,8 +129,9 @@ def test_download_section_publishes_the_installer_and_hands_off_to_alpha_pairing
     )
     assert "authenticated installer" not in html
     assert "installer is available after alpha access" not in html
-    for _key, label in releases.PLATFORMS:
+    for key, label in releases.PLATFORMS:
         assert label in html
+        assert f'href="{releases.latest_asset_url(releases.asset_name(key))}"' in html
 
 
 def test_mobile_is_described_as_a_client_instead_of_a_binary_target():
@@ -149,14 +150,15 @@ def test_practical_content_links_to_the_maintained_facts():
     assert "optional browser push subscription" in html
 
 
-def test_private_repository_renders_an_honest_activity_empty_state():
+def test_private_repository_leaves_the_activity_section_off_the_page():
     html = _landing_html()
     content = load_content()
     assert content["source"]["repository_public"] is False
     assert content["activity"]["entries"] == []
-    assert content["activity"]["reason"] in html
-    assert "View project history on GitHub" in html
-    assert "Public source checked" not in html
+    # An empty "built in the open" section says less than no section.
+    assert 'id="activity"' not in html
+    assert content["activity"]["reason"] not in html
+    assert "View project history on GitHub" not in html
     assert "Merged, not necessarily released" not in html
 
 
@@ -177,8 +179,13 @@ def test_a_small_verified_activity_cache_renders_without_becoming_a_page_depende
     assert "Improve connection recovery" in rendered
     assert "Merged, not necessarily released" in rendered
 
+    section = _render_activity_section(activity, CANONICAL_REPOSITORY_URL)
+    assert 'id="activity"' in section and "Built in the open." in section
+    assert "View project history on GitHub" in section
+
     activity["entries"][0].pop("source_url")
-    assert activity["reason"] in _render_activity(activity)
+    assert _render_activity(activity) == ""
+    assert _render_activity_section(activity, CANONICAL_REPOSITORY_URL) == ""
 
 
 def test_footer_has_the_five_required_exits():
@@ -294,6 +301,13 @@ def test_static_story_reads_as_a_document_on_phones():
     assert ".static-visualimg{" in compact and "mix-blend-mode:lighten" in compact
     assert "aspect-ratio:3/4" not in compact
     assert ".story-scene--download{display:block}" in compact
+
+
+def test_practical_details_stay_reachable_and_tappable():
+    css = read_landing_file("cinematic.css").replace(" ", "")
+    assert ".cinematic-pagesection[id]{scroll-margin-top:calc(var(--cinematic-nav)" in css
+    assert ".install-command{" in css and "white-space:nowrap;overflow-x:auto" in css
+    assert "body.is-menu-open{overflow:hidden}" in css
 
 
 def test_review_scene_shows_every_step_and_sizes_the_card_to_its_content():

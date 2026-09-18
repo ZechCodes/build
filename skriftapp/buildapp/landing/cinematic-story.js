@@ -287,13 +287,6 @@ export function installCinematicStory({ story, stage }) {
     if (sceneIndex >= 0) seek(sceneIndex);
   }
 
-  function onSelectionChange() {
-    if (!enhanced) return;
-    const selectionTarget = document.getSelection()?.anchorNode?.parentElement;
-    const sceneIndex = sceneIndexFromTarget(selectionTarget);
-    if (sceneIndex >= 0 && sceneIndex !== frame.sceneIndex) seek(sceneIndex);
-  }
-
   const api = {
     getState: () => ({ ...frame, enhanced }),
     subscribe,
@@ -309,7 +302,6 @@ export function installCinematicStory({ story, stage }) {
   document.addEventListener("visibilitychange", onVisibilityChange);
   document.addEventListener("focusin", onFocus);
   document.addEventListener("beforematch", onBeforeMatch);
-  document.addEventListener("selectionchange", onSelectionChange);
   reducedMotionQuery.addEventListener("change", onPreferenceChange);
   connection?.addEventListener?.("change", onPreferenceChange);
   setMode(profile, false);
@@ -326,7 +318,6 @@ export function installCinematicStory({ story, stage }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       document.removeEventListener("focusin", onFocus);
       document.removeEventListener("beforematch", onBeforeMatch);
-      document.removeEventListener("selectionchange", onSelectionChange);
       reducedMotionQuery.removeEventListener("change", onPreferenceChange);
       connection?.removeEventListener?.("change", onPreferenceChange);
       if (window.BuildLandingStory === api) delete window.BuildLandingStory;

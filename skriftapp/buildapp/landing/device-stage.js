@@ -376,7 +376,7 @@ class DeviceStage {
     this.scene = new Scene();
     const room = new RoomEnvironment();
     const environmentGenerator = new PMREMGenerator(this.renderer);
-    this.environmentTarget = environmentGenerator.fromScene(room, 0.05);
+    this.environmentTarget = environmentGenerator.fromScene(room, 0.04);
     this.scene.environment = this.environmentTarget.texture;
     this.scene.environmentIntensity = 0.46;
     room.dispose();

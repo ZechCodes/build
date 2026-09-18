@@ -17,6 +17,7 @@ from buildapp.landing_page import fill_slots, read_landing_file
 
 CONTENT_FILE_NAME = "content.json"
 PRACTICAL_FRAGMENT_NAME = "practical.html"
+ACTIVITY_FRAGMENT_NAME = "activity-section.html"
 DOCS_PATH = "/docs"
 PRIVACY_PATH = "/privacy"
 
@@ -33,7 +34,9 @@ def render_practical_content() -> str:
         {
             "install_command": escape(releases.install_command("https://getbuild.ing")),
             "platforms": _render_platforms(),
-            "activity": _render_activity(content["activity"]),
+            "activity_section": _render_activity_section(
+                content["activity"], source["repository_url"]
+            ),
             "repository_url": escape(source["repository_url"], quote=True),
         },
     )
@@ -100,10 +103,24 @@ def render_privacy_body() -> str:
 
 def _render_platforms() -> str:
     return "\n".join(
-        '          <li><span>{label}</span><span class="availability">Host installer</span></li>'.format(
-            label=escape(label)
+        '          <li><a href="{url}"><span>{label}</span>'
+        '<span class="availability">Download host build</span></a></li>'.format(
+            url=escape(releases.latest_asset_url(releases.asset_name(key)), quote=True),
+            label=escape(label),
         )
-        for _key, label in releases.PLATFORMS
+        for key, label in releases.PLATFORMS
+    )
+
+
+def _render_activity_section(activity: dict[str, Any], repository_url: str) -> str:
+    """The whole "built in the open" section, or nothing: an empty feed on a
+    landing page says less than no feed."""
+    rows = _render_activity(activity)
+    if not rows:
+        return ""
+    return fill_slots(
+        read_landing_file(ACTIVITY_FRAGMENT_NAME),
+        {"activity": rows, "repository_url": escape(repository_url, quote=True)},
     )
 
 
@@ -118,11 +135,7 @@ def _render_activity(activity: dict[str, Any]) -> str:
         )
     ][:5]
     if not entries:
-        return (
-            '<div class="activity-empty" role="status">'
-            f'<p>{escape(activity["reason"])}</p>'
-            "</div>"
-        )
+        return ""
     rows = "\n".join(_render_activity_entry(entry) for entry in entries)
     return f'<ol class="activity-list">{rows}</ol>'
 

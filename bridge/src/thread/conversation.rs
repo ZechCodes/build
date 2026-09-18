@@ -163,16 +163,14 @@ pub struct Thread {
 }
 
 pub(super) fn empty_agent() -> AgentIdentity {
-    AgentIdentity { id: String::new() }
+    AgentIdentity::new(String::new())
 }
 
 impl Thread {
     pub fn new(owner_id: &str) -> Self {
         Thread {
             id: format!("thread:{owner_id}"),
-            agent: AgentIdentity {
-                id: format!("agent:{owner_id}"),
-            },
+            agent: AgentIdentity::new(format!("agent:{owner_id}")),
             ..Thread::default()
         }
     }
@@ -182,9 +180,7 @@ impl Thread {
     pub fn for_agent(agent_id: &str) -> Self {
         Thread {
             id: format!("thread:{agent_id}"),
-            agent: AgentIdentity {
-                id: agent_id.to_string(),
-            },
+            agent: AgentIdentity::new(agent_id.to_string()),
             ..Thread::default()
         }
     }
@@ -195,9 +191,7 @@ impl Thread {
     /// already keyed to this agent comes out unchanged.
     pub fn rekey_to_agent(&mut self, agent_id: &str) {
         self.id = format!("thread:{agent_id}");
-        self.agent = AgentIdentity {
-            id: agent_id.to_string(),
-        };
+        self.agent = AgentIdentity::new(agent_id.to_string());
         self.normalize(agent_id);
     }
     /// Say which checkout this conversation is about, so a path named in a

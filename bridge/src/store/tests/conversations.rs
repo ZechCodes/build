@@ -176,9 +176,7 @@ fn the_own_message_line_survives_a_burial_under_hand_offs() {
     for n in 0..=RESIDENT_CONVERSATION_TAIL {
         thread.post_user_from_agent(
             format!("step {n}"),
-            crate::thread::AgentIdentity {
-                id: "project-1".to_string(),
-            },
+            crate::thread::AgentIdentity::new("project-1".to_string()),
             "2026-08-13T10:02:00Z",
         );
     }
@@ -1038,9 +1036,7 @@ fn a_v6_database_is_migrated_and_its_hand_offs_classified() {
         for n in 0..=RESIDENT_CONVERSATION_TAIL {
             thread.post_user_from_agent(
                 format!("step {n}"),
-                crate::thread::AgentIdentity {
-                    id: "project-1".to_string(),
-                },
+                crate::thread::AgentIdentity::new("project-1".to_string()),
                 NOW,
             );
         }

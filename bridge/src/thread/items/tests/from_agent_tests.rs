@@ -16,9 +16,7 @@ fn a_message_an_agent_sent_is_a_user_message_naming_its_sender() {
     let mut thread = Thread::new("run-dispatched");
     thread.post_user_from_agent(
         "finish the toast",
-        AgentIdentity {
-            id: "router-7".to_string(),
-        },
+        AgentIdentity::new("router-7".to_string()),
         NOW,
     );
 
@@ -42,9 +40,7 @@ fn the_humans_own_message_carries_no_sender() {
     thread.post_user("finish the toast", None, NOW);
     thread.post_user_from_agent(
         "and rebase it",
-        AgentIdentity {
-            id: "router-7".to_string(),
-        },
+        AgentIdentity::new("router-7".to_string()),
         NOW,
     );
 
@@ -61,9 +57,7 @@ fn a_message_an_agent_sent_never_needs_the_human() {
     let mut thread = Thread::new("run-dispatched");
     thread.post_user_from_agent(
         "finish the toast",
-        AgentIdentity {
-            id: "router-7".to_string(),
-        },
+        AgentIdentity::new("router-7".to_string()),
         NOW,
     );
 
@@ -85,4 +79,48 @@ fn a_record_written_before_senders_reads_back_anonymous() {
         panic!("a message round-trips as a message");
     };
     assert_eq!(message.from_agent, None);
+}
+
+/// A sender written before a message said where it came from reads back with
+/// its id and nothing else — no owner, no topic — and serializes the same way.
+#[test]
+fn a_sender_written_before_owners_reads_back_as_an_id_alone() {
+    let raw = json!({ "id": "project-7" });
+
+    let sender: AgentIdentity = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(sender, AgentIdentity::new("project-7"));
+    assert_eq!(sender.owner, None);
+    assert_eq!(sender.topic, None);
+    assert_eq!(serde_json::to_value(&sender).unwrap(), raw);
+}
+
+/// A stamped sender carries both halves of what a client draws over the
+/// message: the workspace or project the conversation belongs to, and what it
+/// is about. An unnamed conversation is stamped with an empty topic — it was
+/// read, and it has no name yet.
+#[test]
+fn a_stamped_sender_names_its_owner_and_its_topic() {
+    let sender = AgentIdentity {
+        id: "agent-3".to_string(),
+        owner: Some(AgentOwnerRef {
+            kind: AgentOwnerKind::Workspace,
+            id: "ws-1".to_string(),
+            name: "wire-facade".to_string(),
+        }),
+        topic: Some(String::new()),
+    };
+
+    let raw = serde_json::to_value(&sender).unwrap();
+    assert_eq!(
+        raw,
+        json!({
+            "id": "agent-3",
+            "owner": { "kind": "workspace", "id": "ws-1", "name": "wire-facade" },
+            "topic": "",
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentIdentity>(raw).unwrap(),
+        sender
+    );
 }

@@ -35,6 +35,26 @@
           "body": "the retry path still double-posts",
           "created_at": "2026-09-13T10:03:04Z"
         }
+      },
+      {
+        "type": "message",
+        "data": {
+          "id": "message-15",
+          "sequence": 39,
+          "updated_sequence": 0,
+          "role": "user",
+          "from_agent": {
+            "id": "project-01M2TW0H188SATZA3NGGPQA5YM",
+            "owner": {
+              "kind": "project",
+              "id": "proj-1",
+              "name": "build"
+            },
+            "topic": "Staffing the rail"
+          },
+          "body": "take the retry path next",
+          "created_at": "2026-09-13T10:04:10Z"
+        }
       }
     ],
     "activity_digests": [

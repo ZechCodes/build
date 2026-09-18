@@ -489,6 +489,31 @@ over. A message carrying `from_agent` never counts as the human
 interacting with the work: they did not send it, and the inbox must not
 say they did.
 
+`from_agent` widened, additively, to say where the sender was speaking from:
+
+```
+from_agent: {
+  id: string,
+  owner?: { kind: "workspace" | "project", id: string, name: string },
+  topic?: string
+}
+```
+
+`owner.id` is the workspace id when `kind` is `workspace` and the project id
+when it is `project`; `owner.name` is that workspace's or project's display
+name. `topic` is what the sending agent last called its own conversation
+(`set_topic`), and it may be the empty string — a conversation that was read and
+has not named itself yet. Both are stamped by the bridge at POST time, from what
+it knew then: a workspace can be renamed and a topic changes with the work, and
+what the message says is what was true when it was sent.
+
+Both are omitted where the bridge cannot name them, and on every record written
+before they existed, so a client that reads only `id` is unaffected. They are
+what lets a client draw `{workspace|project} > {conversation}` over an inbound
+agent message and link both halves without a second read. `AgentIdentity` is
+also the conversation's own `agent` on `thread.page`, which is never stamped and
+stays `{id}`.
+
 #### Step 2.7: `project_agent` on `settings.*`
 
 `settings.get` carries `project_agent: { provider?, model?, effort? }` — what

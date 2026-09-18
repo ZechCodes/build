@@ -1174,3 +1174,99 @@ fn a_projects_conversation_owner_is_never_one_of_its_own_workspaces() {
         );
     }
 }
+
+// ==== where a message came from ===========================================
+
+/// The name a project answers to, as its own list gives it.
+fn project_name(state: &mut AppState, project_id: &str) -> String {
+    let listed = state.handle(req("project.list", json!({})));
+    listed["result"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["project_id"] == json!(project_id))
+        .unwrap_or_else(|| panic!("the project is listed: {listed:?}"))["name"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// A message from an agent says where it was sent from: the workspace or the
+/// project its conversation belongs to, and what that conversation is about.
+/// Both ends of a hand-off are stamped — the instruction going out and the
+/// report coming back — so a client can draw and link either one without a
+/// second read.
+#[test]
+fn a_message_from_an_agent_names_the_conversation_it_came_from() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let name = project_name(&mut state, &project_id);
+    let handed = handed_over(&mut state, &project_id, "read the router");
+    state
+        .on_agent_mcp_action(
+            &handed.owner,
+            &handed.agent_id,
+            BridgeAction::SetTopic {
+                topic: "Staffing the rail".to_string(),
+            },
+        )
+        .expect("a project agent names its conversation");
+    state
+        .on_agent_mcp_action(
+            &handed.entity_id,
+            &handed.worker,
+            BridgeAction::SetTopic {
+                topic: "Reading the router".to_string(),
+            },
+        )
+        .expect("a workspace agent names its conversation");
+
+    // Sent after both topics are set, so the stamp is what was true at send.
+    state
+        .agent_action(
+            &handed.owner,
+            &handed.agent_id,
+            BridgeAction::MessageWorkspaceAgent {
+                workspace_id: handed.workspace_id.clone(),
+                agent_id: None,
+                body: "and then the rail".to_string(),
+            },
+        )
+        .expect("a project agent hands more work over");
+
+    let inbound = items(&mut state, &handed.entity_id, &handed.worker)
+        .into_iter()
+        .find(|item| item["data"]["body"] == json!("and then the rail"))
+        .expect("the instruction is on the workspace agent's thread");
+    assert_eq!(
+        inbound["data"]["from_agent"],
+        json!({
+            "id": handed.agent_id,
+            "owner": { "kind": "project", "id": project_id, "name": name },
+            "topic": "Staffing the rail",
+        }),
+        "{inbound:?}"
+    );
+
+    state.on_agent_done(
+        &handed.entity_id,
+        terminal(DoneStatus::Completed, "the router reads top to bottom"),
+    );
+
+    let answers = forwarded(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(
+        answers[0]["data"]["from_agent"],
+        json!({
+            "id": handed.worker,
+            "owner": { "kind": "workspace", "id": handed.workspace_id, "name": "one" },
+            "topic": "Reading the router",
+        }),
+        "{:?}",
+        answers[0]
+    );
+}

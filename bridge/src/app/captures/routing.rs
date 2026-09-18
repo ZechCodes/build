@@ -351,9 +351,7 @@ impl AppState {
     ) -> Option<crate::thread::AgentIdentity> {
         self.router_sessions
             .get(capture_id)
-            .map(|session| crate::thread::AgentIdentity {
-                id: session.agent_id().to_string(),
-            })
+            .map(|session| crate::thread::AgentIdentity::new(session.agent_id().to_string()))
     }
 
     /// The router asks the one question that would let it decide. The capture

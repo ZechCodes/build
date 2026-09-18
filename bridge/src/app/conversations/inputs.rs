@@ -56,12 +56,17 @@ impl PostOrigin {
         }
     }
 
-    /// A post one agent asked another for. It wears the asker, and the receipt
-    /// remembers the conversation the answer comes back to.
-    pub(in crate::app) fn asked_by(requester: crate::operation::OperationRequester) -> Self {
+    /// A post one agent asked another for. It wears the asker — stamped by the
+    /// caller, which is the only place that knows where the asker was speaking
+    /// from — and the receipt remembers the conversation the answer comes back
+    /// to.
+    pub(in crate::app) fn asked_by(
+        requester: crate::operation::OperationRequester,
+        sender: crate::thread::AgentIdentity,
+    ) -> Self {
         PostOrigin {
             operation_id: None,
-            from_agent: Some(requester.identity()),
+            from_agent: Some(sender),
             requested_by: Some(requester),
         }
     }

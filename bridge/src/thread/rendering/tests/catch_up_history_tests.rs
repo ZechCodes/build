@@ -175,9 +175,7 @@ fn the_packet_names_the_agent_that_sent_a_message() {
     let mut thread = Thread::new("run-dispatched");
     thread.post_user_from_agent(
         "finish the toast",
-        AgentIdentity {
-            id: "router-7".to_string(),
-        },
+        AgentIdentity::new("router-7".to_string()),
         "2026-09-17T09:00:00Z",
     );
     thread.post_user("and rebase it", None, "2026-09-17T09:01:00Z");

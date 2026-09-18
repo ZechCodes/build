@@ -89,9 +89,7 @@ fn the_own_message_line_skips_what_another_agent_signed() {
 
     thread.post_user_from_agent(
         "take the retry path",
-        AgentIdentity {
-            id: "project-1".to_string(),
-        },
+        AgentIdentity::new("project-1".to_string()),
         "2026-09-08T10:01:00Z",
     );
     assert_eq!(
@@ -105,9 +103,7 @@ fn the_own_message_line_skips_what_another_agent_signed() {
     );
 
     thread.post_user("actually, hold on", None, "2026-09-08T10:02:00Z");
-    thread.wear_sender(AgentIdentity {
-        id: "project-1".to_string(),
-    });
+    thread.wear_sender(AgentIdentity::new("project-1".to_string()));
     assert_eq!(thread.last_own_message_sequence(), asked, "signed after");
 
     thread.post_agent("on it", None, "2026-09-08T10:03:00Z");

@@ -206,9 +206,7 @@ pub struct OperationRequester {
 impl OperationRequester {
     /// The sender as a message wears it.
     pub fn identity(&self) -> crate::thread::AgentIdentity {
-        crate::thread::AgentIdentity {
-            id: self.agent_id.clone(),
-        }
+        crate::thread::AgentIdentity::new(self.agent_id.clone())
     }
 }
 
@@ -363,9 +361,7 @@ mod tests {
     fn words_another_agent_sent_say_whose_they_are() {
         let handed_over = OperationPayload {
             messages: vec![ThreadMessage {
-                from_agent: Some(Box::new(crate::thread::AgentIdentity {
-                    id: "router-7".into(),
-                })),
+                from_agent: Some(Box::new(crate::thread::AgentIdentity::new("router-7"))),
                 ..payload().messages[0].clone()
             }],
             ..payload()

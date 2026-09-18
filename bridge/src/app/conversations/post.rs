@@ -60,7 +60,8 @@ impl AppState {
         params: &Value,
         requester: OperationRequester,
     ) -> Result<Value, String> {
-        self.post_to_thread(params, PostOrigin::asked_by(requester))
+        let sender = self.agent_identity(&requester.entity_id, &requester.agent_id);
+        self.post_to_thread(params, PostOrigin::asked_by(requester, sender))
     }
 
     /// `thread.post`, carrying one agent's answer into another's conversation.

@@ -60,9 +60,7 @@ impl AppState {
             return;
         }
         let body = format!("{ending}.\n\n{}", report.summary);
-        let sender = crate::thread::AgentIdentity {
-            id: agent_id.to_string(),
-        };
+        let sender = self.agent_identity(entity_id, agent_id);
         // One answer per conversation waiting for one: several messages handed
         // over before the turn ended are all answered by the message that ends
         // it, and saying so twice would only repeat the same words.

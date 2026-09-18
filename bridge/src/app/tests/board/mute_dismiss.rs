@@ -417,9 +417,7 @@ fn an_agents_hand_off_never_brings_back_a_cleared_row() {
     push_to_issue_conversation(&mut state, &issue_id, |thread| {
         thread.post_user_from_agent(
             "take the retry path next",
-            crate::thread::AgentIdentity {
-                id: "project-1".to_string(),
-            },
+            crate::thread::AgentIdentity::new("project-1".to_string()),
             now_rfc3339(),
         );
     });
@@ -454,9 +452,7 @@ fn the_line_a_hand_off_does_not_cross_survives_a_restart() {
                 for index in 0..crate::store::RESIDENT_CONVERSATION_TAIL + 40 {
                     thread.post_user_from_agent(
                         format!("step {index}"),
-                        crate::thread::AgentIdentity {
-                            id: "project-1".to_string(),
-                        },
+                        crate::thread::AgentIdentity::new("project-1".to_string()),
                         now_rfc3339(),
                     );
                 }

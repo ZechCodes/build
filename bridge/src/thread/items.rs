@@ -13,9 +13,56 @@ pub enum ArtifactKind {
     Doc,
 }
 
+/// Which kind of conversation owner an agent belongs to, as a message names
+/// it. The two an agent can be reached at: a workspace's conversation, or a
+/// project's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentOwnerKind {
+    Workspace,
+    Project,
+}
+
+/// The workspace or project an agent's conversation belongs to, stamped onto a
+/// message so a client can draw "{workspace|project} > {conversation}" over it
+/// and link both halves without a second read.
+///
+/// `id` is the workspace id or the project id — whichever `kind` says — and
+/// `name` is its display name as it stood when the message was sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentOwnerRef {
+    pub kind: AgentOwnerKind,
+    pub id: String,
+    pub name: String,
+}
+
+/// An agent, as a message names it: the id anything addressed to it uses, and
+/// enough about where it lives to show and link the conversation it spoke from.
+///
+/// `owner` and `topic` are stamped when the bridge posts the message and are
+/// absent everywhere else — on the conversation's own `agent`, and on every
+/// record written before they existed — so a reader that has never heard of
+/// them sees the id it always saw. `topic` may be the empty string: a
+/// conversation that has not named itself yet was still stamped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentIdentity {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<AgentOwnerRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+impl AgentIdentity {
+    /// An agent named by its id alone — what every conversation's own `agent`
+    /// is, and what a sender is before the daemon stamps where it spoke from.
+    pub fn new(id: impl Into<String>) -> Self {
+        AgentIdentity {
+            id: id.into(),
+            owner: None,
+            topic: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

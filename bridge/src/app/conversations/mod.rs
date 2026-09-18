@@ -9,6 +9,7 @@ mod native_delivery;
 pub(in crate::app) mod operation_ledger;
 mod post;
 mod read;
+mod senders;
 
 pub use attachments::ATTACHMENT_MAX_BYTES;
 pub(in crate::app) use attachments::{media_mime_hint, mime_hint};

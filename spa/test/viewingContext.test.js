@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createViewingContext,
+  normalizeViewingContext,
   viewingContextChipsHtml,
 } from "../src/core/viewingContext.js";
 
@@ -110,6 +111,35 @@ describe("viewing context", () => {
     expect(snapshot.items[0]).toMatchObject({ text: "abcde", truncated: true });
     expect(viewingContextChipsHtml(snapshot)).toContain("Truncated");
     expect(viewingContextChipsHtml(snapshot)).toContain("abcde");
+  });
+
+  it("keeps the workspace a message was sent from, and refuses one naming nothing", () => {
+    expect(normalizeViewingContext([
+      { kind: "workspace", workspace_id: "ws-3f2a91c4", name: "wire-facade" },
+      { kind: "file", path: "src/app.js" },
+    ])).toEqual({ version: 1, items: [
+      { kind: "workspace", workspace_id: "ws-3f2a91c4", name: "wire-facade" },
+      { kind: "file", path: "src/app.js" },
+    ] });
+    expect(normalizeViewingContext([{ kind: "workspace", workspace_id: "ws-1", name: "" }])).toBeUndefined();
+    expect(normalizeViewingContext([{ kind: "workspace", workspace_id: "", name: "wire-facade" }])).toBeUndefined();
+  });
+
+  /// Standing somewhere is not an attachment: the reader did not put the
+  /// workspace in the tray and cannot take it out.
+  it("names the workspace on a chip with nothing to press", () => {
+    const host = document.createElement("div");
+    host.innerHTML = viewingContextChipsHtml(
+      { version: 1, items: [
+        { kind: "workspace", workspace_id: "ws-3f2a91c4", name: "wire-facade" },
+        { kind: "commit", sha: "a".repeat(40) },
+      ] },
+      { removable: true },
+    );
+    expect([...host.querySelectorAll(".viewing-context-label")].map((chip) => chip.textContent))
+      .toEqual(["from wire-facade", "Commit aaaaaaaaaaaa"]);
+    expect(host.querySelector("[data-context-kind=workspace] button")).toBeNull();
+    expect(host.querySelector("[data-context-kind=commit] button")).toBeTruthy();
   });
 
   it("never splits a UTF-16 surrogate pair while truncating UTF-8", () => {

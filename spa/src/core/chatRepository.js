@@ -1,6 +1,7 @@
 import { createThreadCache, createThreadState } from "./thread.js";
 import { createOptimisticStore } from "./optimistic.js";
 import { createChatChoiceController } from "./chatChoiceController.js";
+import { normalizeViewingContext } from "./viewingContext.js";
 
 const EMPTY_DRAFT = Object.freeze({ body: "", attachments: [] });
 export const CHAT_LOCAL_STATE_PREFIX = "build.chat.v1:";
@@ -13,6 +14,16 @@ const REQUIRED_OPERATION_RECEIPT_FIELDS = [
   "posted_sequence",
   "operation_status",
 ];
+
+/** The message with nothing said about where it was written — what goes to a
+ *  bridge that does not take context, and what a stamp alone leaves behind when
+ *  it turns out to name nothing. */
+const withoutViewingContext = (message) => {
+  if (!message.viewing_context) return message;
+  const rest = { ...message };
+  delete rest.viewing_context;
+  return rest;
+};
 
 const cloneAttachments = (attachments = []) => attachments.map((attachment) => ({ ...attachment }));
 const deepFreeze = (value) => {
@@ -632,11 +643,21 @@ export function createChatRepository({
       return threadPostOperations;
     },
 
+    /// What this message says about where it was written: the reader's position,
+    /// and whatever the surface sending it stamped on the message itself — the
+    /// workspace a project rail was standing in. The stamp leads, because it is
+    /// the standing place the rest was seen from.
+    ///
+    /// Nothing goes out to a bridge that does not offer `message_context`, a
+    /// stamp included: a client sends context where it is taken and nowhere
+    /// else.
     contextualize(message = {}) {
-      const context = viewingContext?.snapshot?.();
-      if (!context?.items?.length) return message;
-      if (!messageContext) return message;
-      return { ...message, viewing_context: context };
+      if (!messageContext) return withoutViewingContext(message);
+      const context = normalizeViewingContext([
+        ...(message.viewing_context?.items || []),
+        ...(viewingContext?.snapshot?.()?.items || []),
+      ]);
+      return context ? { ...message, viewing_context: context } : withoutViewingContext(message);
     },
 
     clearSentSelection(context) {

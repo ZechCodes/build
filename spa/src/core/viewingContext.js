@@ -3,7 +3,11 @@ import { esc } from "./text.js";
 
 const encoder = new TextEncoder();
 const DEFAULT_LIMITS = Object.freeze({ maxItems: 100, maxSelectionBytes: 32 * 1024, maxPathBytes: 4 * 1024 });
-const ITEM_KINDS = new Set(["file", "commit", "diff", "selection"]);
+const ITEM_KINDS = new Set(["file", "commit", "diff", "selection", "workspace"]);
+// What one word naming something may weigh, the bridge's own limit: a
+// workspace's id, a workspace's name. It reaches the agent as prose, not as a
+// document.
+const MAX_LABEL_BYTES = 512;
 
 const byteLength = (value) => encoder.encode(value).length;
 
@@ -25,6 +29,20 @@ function validPath(path, limit) {
   const value = typeof path === "string" ? path : "";
   return value && byteLength(value) <= limit ? value : null;
 }
+
+const validLabel = (value) => {
+  const text = typeof value === "string" ? value : "";
+  return text && byteLength(text) <= MAX_LABEL_BYTES ? text : null;
+};
+
+/** The workspace the user was standing in. Not a thing on screen: the rail
+ *  stamps it on what is sent from a workspace to the project's agent, which is
+ *  reachable from every workspace in the project. */
+const normalizeWorkspace = (item) => {
+  const workspaceId = validLabel(item.workspace_id);
+  const name = validLabel(item.name);
+  return workspaceId && name ? { kind: "workspace", workspace_id: workspaceId, name } : null;
+};
 
 const normalizeCommit = (item) => {
   const sha = String(item.sha || "");
@@ -61,6 +79,7 @@ const NORMALIZERS = {
   file: (item, limits) => normalizeFile(item, limits),
   diff: (item, limits) => normalizeFile(item, limits),
   selection: normalizeSelection,
+  workspace: (item) => normalizeWorkspace(item),
 };
 const normalizeItem = (item, limits, remaining) =>
   item && ITEM_KINDS.has(item.kind) ? NORMALIZERS[item.kind](item, limits, remaining) : null;
@@ -170,6 +189,9 @@ export function createViewingContext(options = {}) {
   };
   const api = {
     setEnabled(wanted) { enabled = Boolean(wanted); if (!enabled) api.clear(); },
+    // Whether the bridge on the other end takes context at all, for a surface
+    // that adds its own to what the reader collected here.
+    isEnabled: () => enabled,
     set(context) {
       const supplied = context?.version === 1 ? context.items || [] : context ? [context] : [];
       artifact = supplied.filter((item) => item.kind !== "selection");
@@ -221,6 +243,7 @@ export function createViewingContext(options = {}) {
 }
 
 const chipLabel = (item) => {
+  if (item.kind === "workspace") return `from ${item.name}`;
   if (item.kind === "commit") return `Commit ${item.sha.slice(0, 12)}`;
   if (item.kind === "selection") return `${item.path}${item.line_start ? `:${item.line_start}` : ""}`;
   if (item.kind === "diff") return `${item.mode === "all" ? "All changes" : "Uncommitted"}: ${item.path}`;
@@ -264,11 +287,16 @@ const fileGroupChip = ({ key, entries }, removable) => {
   </div>`;
 };
 
+/** Whether this chip offers to come off. Where the reader is standing is not
+ *  something they attached, so the workspace chip never does. */
+const chipIsRemovable = (item, removable) => removable && item.kind !== "workspace";
+
 export function viewingContextChipsHtml(context, { removable = false } = {}) {
   return contextGroups(context?.items || []).map((group) => {
     if (group.key) return fileGroupChip(group, removable);
     const { item, index } = group.entries[0];
     if (item.kind === "selection") return selectionChip(item, index, removable);
-    return `<span class="viewing-context-chip" data-context-kind="${esc(item.kind)}" data-context-index="${index}" title="${esc(chipLabel(item))}"><span class="viewing-context-label">${esc(chipLabel(item))}</span>${removable ? '<button type="button" aria-label="Remove context">×</button>' : ""}</span>`;
+    const closable = chipIsRemovable(item, removable);
+    return `<span class="viewing-context-chip" data-context-kind="${esc(item.kind)}" data-context-index="${index}" title="${esc(chipLabel(item))}"><span class="viewing-context-label">${esc(chipLabel(item))}</span>${closable ? '<button type="button" aria-label="Remove context">×</button>' : ""}</span>`;
   }).join("");
 }

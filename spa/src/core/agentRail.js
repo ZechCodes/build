@@ -250,6 +250,43 @@ function railChatDependencies(context) {
   };
 }
 
+/** The store the composer's tray paints from while this rail stands on the
+ *  project's conversation reached from a workspace: the workspace leads the
+ *  chips the reader collected, and cannot be taken off.
+ *
+ *  A wrapper rather than a write into the store: nothing else on screen is
+ *  standing in that workspace, and the store is the whole app's. The tray hands
+ *  back the indices it rendered, so the stamp's place comes off them on the way
+ *  down.
+ */
+function stampedViewingContext(store, stamp) {
+  if (!store || !stamp) return store;
+  const wrapped = {
+    ...store,
+    snapshot() {
+      const held = store.snapshot?.();
+      // Nothing is sent to a bridge that takes no context, so nothing is shown.
+      if (store.isEnabled?.() === false) return held;
+      return { version: 1, items: [stamp, ...(held?.items || [])] };
+    },
+    remove: (index) => store.remove?.(index - 1),
+    removeMany: (indices) => store.removeMany?.(indices.map((index) => index - 1)),
+    // The store announces its own snapshot; this tray paints from ours.
+    subscribe: (listener) => store.subscribe?.(() => listener(wrapped.snapshot())),
+  };
+  return wrapped;
+}
+
+/** Where this rail is standing, when that is a workspace it reached the
+ *  project's conversation from: what every message sent from here wears, and
+ *  the store the composer's tray paints it from. Null and the store itself for
+ *  every other rail. */
+const railStandingPlace = (context) => {
+  const fromWorkspace = context.fromWorkspace || null;
+  const store = context.viewingContext || App.viewingContext;
+  return { fromWorkspace, composerViewingContext: stampedViewingContext(store, fromWorkspace) };
+};
+
 function createRailChatOwnership(repository, key, entityOf) {
   let provisional = null;
   const addressFor = (entity, agent) => {
@@ -545,16 +582,31 @@ export function panelHeadHtml(who, mode, { provider = "", removable = false, has
   </div>`;
 }
 
+/** The workspace this rail got to the project's conversation from, as a message
+ *  wears it (core/viewingContext.js), or null when the work item below is not a
+ *  workspace: the id the rail was mounted with, and the name its own read
+ *  already answered — falling back to the id, which is what the strip shows
+ *  until a read lands.
+ *
+ *  The project's agent is reachable from every workspace in the project, so
+ *  "this workspace" is a question it cannot answer unless the message says. */
+const workspaceStamp = (context, payload) =>
+  context.kind === "workspace" && context.workspaceId
+    ? { kind: "workspace", workspace_id: context.workspaceId, name: payload?.name || context.workspaceId }
+    : null;
+
 /** The project's conversation as a context of its own: this device's caller,
  *  cache and conversations, pointed at the project above the work item. Its
  *  agent is not the work item's selected agent, so the shared selection handle
- *  is deliberately left behind. */
-const projectAgentContext = (context, known) => ({
+ *  is deliberately left behind — and what it carries instead is the workspace
+ *  it was reached from, which every message sent from here says. */
+const projectAgentContext = (context, known, payload) => ({
   ...context,
   kind: "project",
   projectId: context.projectAgent.projectId,
   entityId: known.entityId,
   workspaceId: null,
+  fromWorkspace: workspaceStamp(context, payload),
   selection: null,
   openAgentId: null,
   projectAgent: { ...context.projectAgent, ...known },
@@ -611,6 +663,9 @@ export function mountAgentRail(host, context) {
   // an unpinned card the reader had open. A press that crosses the line is a
   // press on another conversation's bubble, so it leaves the panel exactly
   // where pressing a bubble below the line leaves it — out.
+  // The project's side, built from the work item's last read: that is where the
+  // workspace's name is, and a message sent over there names it.
+  const projectSide = () => projectAgentContext(context, known, payloads.get(context.kind));
   const stand = (standing, alongside, { panelOpen = null } = {}) => {
     live?.dispose();
     live = mountRailOnContext(host, {
@@ -629,13 +684,13 @@ export function mountAgentRail(host, context) {
     },
     toProject: (entityId) => {
       known = { ...known, entityId };
-      stand(projectAgentContext(context, known), workItemContext(context, known, null), { panelOpen: true });
+      stand(projectSide(), workItemContext(context, known, null), { panelOpen: true });
     },
     toWorkItem: (openAgentId) => {
-      stand(workItemContext(context, known, openAgentId), projectAgentContext(context, known), { panelOpen: true });
+      stand(workItemContext(context, known, openAgentId), projectSide(), { panelOpen: true });
     },
   };
-  stand(workItemContext(context, known, null), projectAgentContext(context, known));
+  stand(workItemContext(context, known, null), projectSide());
   return {
     dispose() {
       live?.dispose();
@@ -683,6 +738,7 @@ function mountRailOnContext(host, context, swap) {
   const railContext = createAgentRailContext(context);
   const key = railContext.key;
   const { cacheScope, ownsRepository: ownsChatRepository, repository: chatRepository } = railChatDependencies(context);
+  const { fromWorkspace, composerViewingContext } = railStandingPlace(context);
   const {
     isPending,
     projectOptimistic,
@@ -2063,7 +2119,7 @@ function mountRailOnContext(host, context, swap) {
       readAttachments: binding.readAttachments,
       writeAttachments: binding.writeAttachments,
       submissionOwnsDraft: true,
-      viewingContext: context.viewingContext || App.viewingContext,
+      viewingContext: composerViewingContext,
       // Attaching lands the bytes before the message names them — which needs a
       // conversation to store them against, so it adopts exactly as sending
       // does: choosing a file for a message is the same intent, one keystroke
@@ -2533,12 +2589,20 @@ function mountRailOnContext(host, context, swap) {
     return undefined;
   };
 
+  /** Where the user was standing when they wrote this: the workspace this rail
+   *  reached the project's conversation from, ahead of whatever they attached
+   *  (core/chatRepository.js merges the two). Every other rail sends the
+   *  message as it is — a workspace's own agents are already in it, and the
+   *  project's own page stands in none. */
+  const stamped = (message) =>
+    fromWorkspace ? { ...message, viewing_context: { version: 1, items: [fromWorkspace] } } : message;
+
   /** A typed message. `interrupt` rides on the post rather than travelling as a
    *  verb of its own: Build never stops a turn without one to put in its place,
    *  and a second round trip is a window in which the agent starts a fresh turn
    *  or finishes. One send path, one flag. */
   const sendFrom = (controller, body, attachments, { interrupt = false } = {}) => {
-    const message = { body, attachments, ...(interrupt ? { interrupt: true } : {}) };
+    const message = stamped({ body, attachments, ...(interrupt ? { interrupt: true } : {}) });
     if (!controller.identity.agentId) {
       const submission = controller.captureProvisionalSubmission(message, newAgentChoice());
       return postProvisional(controller, submission);
@@ -2551,7 +2615,7 @@ function mountRailOnContext(host, context, swap) {
    *  what the agent hears out of the options it offered. */
   const choose = ({ messageId, optionIds }) => {
     const controller = controllerInFocus();
-    const message = { option_reply: { message_id: messageId, option_ids: optionIds } };
+    const message = stamped({ option_reply: { message_id: messageId, option_ids: optionIds } });
     return deliverSubmission(controller, controller.captureSubmission(message));
   };
 

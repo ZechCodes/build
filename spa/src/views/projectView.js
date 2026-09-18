@@ -22,8 +22,6 @@ import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { openCreateWork } from "../core/createWork.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { projectPageModel } from "../core/projectPageModel.js";
-import { projectAgentChoice } from "../core/projectAgentDefaults.js";
-import { modelParams } from "../core/modelPicker.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { notifyError } from "../core/notify.js";
 import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
@@ -118,16 +116,15 @@ function openWorkspace(state, workspaceKey) {
  * project already has, or mints one over a scratch directory Build owns. It is
  * the one call this page makes.
  *
- * An owner is minted once and kept, so it is minted on what this device says a
- * project agent starts on (core/projectAgentDefaults.js). Saying nothing sends
- * nothing, and the bridge's own default harness stands.
+ * The page names no harness, model or effort. What a project agent starts on is
+ * the DEVICE's setting, held by the bridge beside its default harness, and the
+ * mint reads it there — so a new browser is never asked for something the
+ * machine that runs the agent already holds.
  */
 async function mountProjectRail(state) {
-  const choice = projectAgentChoice();
   try {
     const answer = await state.context.rpc("project.ensure_conversation", {
       project_id: state.route.projectId,
-      ...modelParams([], choice.model, choice.effort, choice.provider),
     });
     if (state.disposed) return;
     state.rail = mountAgentRail($("#agent-rail"), {

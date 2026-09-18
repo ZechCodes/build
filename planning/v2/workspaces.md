@@ -225,6 +225,16 @@ leaves the one already running alone. The flattened `provider`/`model`/`effort`
 of `project.ensure_conversation` are the API that verb has always had and still
 win where a client sends them; the SPA sends none.
 
+The choice is made on the DEVICE settings page, in a Project agent panel beside
+the fallback agent (`core/projectAgentSetting.js`): three selects that narrow
+into each other — the harness, that harness's models, that model's reasoning
+levels — painted from `settings.get` and `models.list`, saved on every change,
+and repainted from the set's own answer. The rail standing on a project's
+conversation reads the same setting to seed a NEW project agent, falling back to
+the device's default harness where it names none; a model belongs to its
+harness, so pressing another harness card leads with that harness's own
+defaults. Nothing about a project agent is kept in a browser.
+
 The project's agent is reachable from every workspace in the project — that is
 what makes it the project's rather than a workspace's — so every workspace's
 rail carries it too: one bubble wearing the project's initial above a line, with

@@ -63,9 +63,9 @@ export function loadHarnessDefaults(storage = localStorage) {
  *  name a model without being made to restate the effort beside it — and a
  *  layer that names nothing reads exactly as the one underneath.
  *
- *  This is how a scope of its own — one workspace (core/workspaceDefaults.js),
- *  the project agent (core/projectAgentDefaults.js) — sits over the account's
- *  without competing with it. */
+ *  This is how a scope of its own — one workspace
+ *  (core/workspaceDefaults.js) — sits over the account's without competing
+ *  with it. */
 export function layerHarnessDefaults(under, over) {
   const harnesses = { ...under.harnesses };
   for (const [family, preference] of Object.entries(over.harnesses)) {

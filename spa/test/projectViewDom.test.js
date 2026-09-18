@@ -151,19 +151,20 @@ describe("the project surface", () => {
     expect(options.deviceId).toBe("dev-1");
   });
 
-  // An owner is minted once and kept, so what it is minted ON is this device's
-  // project-agent choice (core/projectAgentDefaults.js). Saying nothing leaves
-  // the bridge's own default harness standing.
-  it("mints the owner on the project agent's harness, model and effort", async () => {
-    localStorage.setItem("build.projectAgentDefaults", JSON.stringify({
+  // What a project agent starts on is the DEVICE's setting, so the page names
+  // none of it: the bridge mints the owner on its own answer. A browser slot
+  // laid over it would ask every new browser for something the machine that
+  // runs the agent already holds.
+  it("names no harness, model or effort — the device's setting decides", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
       provider: "codex", harnesses: { codex: { model: "gpt-5.6-sol", effort: "medium" } },
     }));
     await renderProject();
     await flush();
 
-    expect(here).toHaveBeenCalledWith("project.ensure_conversation", {
-      project_id: "proj-1", provider: "codex", model: "gpt-5.6-sol", effort: "medium",
-    });
+    const ensured = here.mock.calls.filter(([method]) => method === "project.ensure_conversation");
+    expect(ensured).toHaveLength(1);
+    expect(ensured[0][1]).toEqual({ project_id: "proj-1" });
   });
 
   // The verb slot is where this page's two verbs live, and both say which

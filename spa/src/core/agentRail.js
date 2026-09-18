@@ -30,7 +30,7 @@ import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall } from "./adoption.js";
 import { agentDefaultsForWorkspace, agentDefaultsInWorkspace } from "./workspaceDefaults.js";
-import { projectAgentChoice, projectAgentDefaultsFor, projectAgentDefaultsIn } from "./projectAgentDefaults.js";
+import { projectAgentChoiceOf } from "./projectAgentSetting.js";
 import { workspaceKey } from "./deviceKey.js";
 import {
   AGENT_STARTING,
@@ -767,6 +767,10 @@ function mountRailOnContext(host, context, swap) {
   let threadOwner = null;
   let adopting = null;
   let catalog = null; // models.list, once it lands: the harnesses and their models
+  // settings.get's `project_agent`, on a project's rail: what this machine says
+  // a new project agent starts on. Null off a project's rail and until the
+  // machine answers.
+  let projectAgentSetting = null;
   let creating = null;
   let ensuringConversation = null;
   const faces = new Map();
@@ -849,19 +853,23 @@ function mountRailOnContext(host, context, swap) {
   const railWorkspaceKey = () =>
     railContext.kind === "workspace" ? workspaceKey(railContext.deviceId, railContext.workspaceId) : null;
 
-  /** Which stored preference a new agent on this rail leads with: the project
-   *  agent's own slot on a project's rail (core/projectAgentDefaults.js), the
-   *  workspace's inside a workspace, the account's anywhere else. A project
-   *  agent talks ABOUT a project rather than working in a checkout, so what it
-   *  starts on is asked for it alone. */
+  /** Which preference a new agent on this rail leads with: on a project's rail
+   *  the DEVICE's project-agent setting (core/projectAgentSetting.js), inside a
+   *  workspace that workspace's own slot, the account's anywhere else. A
+   *  project agent talks ABOUT a project rather than working in a checkout, so
+   *  what it starts on is the machine's answer and not this browser's. */
   const onProjectRail = () => railContext.kind === "project";
+  const deviceProjectAgent = () => projectAgentSetting || NO_AGENT_CHOICE;
   const newAgentDefaults = (catalogOffered) =>
     onProjectRail()
-      ? projectAgentDefaultsIn(catalogOffered)
+      ? deviceProjectAgent()
       : agentDefaultsInWorkspace(railWorkspaceKey(), catalogOffered);
+  /** The same, for a harness the human has just pressed. A model belongs to its
+   *  harness, so the device's model travels only onto the harness the device
+   *  named; any other leads with that harness's own default. */
   const newAgentDefaultsFor = (providerId) =>
     onProjectRail()
-      ? projectAgentDefaultsFor(providerId)
+      ? { ...(deviceProjectAgent().provider === providerId ? deviceProjectAgent() : NO_AGENT_CHOICE), provider: providerId }
       : agentDefaultsForWorkspace(railWorkspaceKey(), providerId);
 
   const seedNewAgentDefaults = () => {
@@ -1073,6 +1081,20 @@ function mountRailOnContext(host, context, swap) {
     learnProjectFacts({ entityId: row.entity_id || row.run_id, name: row.name });
     paint();
     refreshAlongside();
+  };
+
+  /// What this machine says a new project agent starts on, asked once and only
+  /// where it is spent: the rail standing on a project's conversation. A rail
+  /// on a work item never mints a project agent, so it never asks.
+  ///
+  /// A refusal reads as no preference, which is what a machine that will not
+  /// answer offers — the catalog's own default harness then stands, exactly as
+  /// it does for a device that has chosen nothing.
+  const readProjectAgentSetting = async () => {
+    if (!onProjectRail()) return null;
+    const call = chatRepository.currentCall();
+    const settings = await call("settings.get", {}).catch(() => null);
+    return settings && projectAgentChoiceOf(settings);
   };
 
   /// One read of the conversation this rail is not standing on — the project's
@@ -2457,16 +2479,13 @@ function mountRailOnContext(host, context, swap) {
     return null;
   };
 
-  /// The owner `project.ensure_conversation` answers with, minted on what this
-  /// device says a project agent starts on (core/projectAgentDefaults.js) — the
-  /// same choice the project's own page spends. Naming nothing sends nothing,
-  /// and the bridge's own default harness stands.
+  /// The owner `project.ensure_conversation` answers with. The press names no
+  /// harness, model or effort: what a project agent starts on is the DEVICE's
+  /// setting, and the bridge mints the owner on it.
   const mintProjectConversation = async () => {
     const call = chatRepository.currentCall();
-    const choice = projectAgentChoice();
     const answer = await call("project.ensure_conversation", {
       project_id: projectAgent.projectId,
-      ...modelParams([], choice.model, choice.effort, choice.provider),
     });
     return answer?.entity_id || answer?.run_id;
   };
@@ -2694,9 +2713,10 @@ function mountRailOnContext(host, context, swap) {
   // that bridge's default, which is this answer's to give, so a paint that
   // lands before it holds the client's own first harness and moves when the
   // answer does.
-  deviceCatalog(context.deviceId).then((answer) => {
+  Promise.all([deviceCatalog(context.deviceId), readProjectAgentSetting()]).then(([offered, setting]) => {
     if (disposed) return;
-    catalog = answer;
+    catalog = offered;
+    projectAgentSetting = setting;
     seedNewAgentDefaults();
     paint();
   });

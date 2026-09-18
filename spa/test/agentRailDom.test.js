@@ -4343,20 +4343,21 @@ describe("a file reference in a conversation", () => {
 });
 
 // The project's rail: the agent you talk to ABOUT a project, whose conversation
-// stands in a scratch directory of its own. What a NEW one starts on is this
-// device's project-agent slot laid over the account's own defaults
-// (core/projectAgentDefaults.js) — the project agent is the one agent that
-// talks about a project instead of working in a checkout, and the harness for
-// that job is often not the one coding work leads with.
+// stands in a scratch directory of its own. What a NEW one starts on is the
+// DEVICE's project-agent setting (core/projectAgentSetting.js) — the project
+// agent is the one agent that talks about a project instead of working in a
+// checkout, and the harness for that job is often not the one coding work
+// leads with. The setting is persistent, so no browser is asked at first use.
 describe("a new agent on a project's rail", () => {
   const cards = () => [...railHost().querySelectorAll(".rail-newagent .rail-harness-choice")];
   const card = (provider) => cards().find((entry) => entry.dataset.provider === provider);
   const chosenCard = () => cards().find((entry) => entry.classList.contains("chosen"));
 
-  const mountProjectRail = async () => {
+  const mountProjectRail = async (settings = {}) => {
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
+      if (method === "settings.get") return { default_harness: "claude_adk", ...settings };
       if (method === "run.get") {
         return { run_id: "run-project", project_id: "p1", agents: [], thread: { items: [], sessions: [] } };
       }
@@ -4376,14 +4377,12 @@ describe("a new agent on a project's rail", () => {
     await flush();
   };
 
-  it("starts on the project agent's own harness, model and effort", async () => {
+  it("starts on the harness, model and effort the device chose for project agents", async () => {
+    // The browser's own defaults are about coding work and say nothing here.
     localStorage.setItem("build.agentDefaults", JSON.stringify({
       provider: "claude_adk", harnesses: { claude: { model: "claude-opus-5", effort: "high" } },
     }));
-    localStorage.setItem("build.projectAgentDefaults", JSON.stringify({
-      provider: "codex", harnesses: { codex: { model: "gpt-5.6-sol", effort: "medium" } },
-    }));
-    await mountProjectRail();
+    await mountProjectRail({ project_agent: { provider: "codex", model: "gpt-5.6-sol", effort: "medium" } });
 
     expect(chosenCard().dataset.provider).toBe("codex");
     await send("what is in this project?");
@@ -4392,31 +4391,32 @@ describe("a new agent on a project's rail", () => {
     });
   });
 
-  it("falls back to the account's default while the slot names nothing", async () => {
+  it("falls back to the device's own default harness while the setting names none", async () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({
-      provider: "claude_adk", harnesses: { claude: { model: "claude-opus-5", effort: "high" } },
+      provider: "codex", harnesses: { codex: { model: "gpt-5.6-sol", effort: "medium" } },
     }));
     await mountProjectRail();
 
     expect(chosenCard().dataset.provider).toBe("claude_adk");
     await send("what is in this project?");
-    expect(callsTo("agent.add")[0].params).toMatchObject({
-      provider: "claude_adk", model: "claude-opus-5", effort: "high",
-    });
+    const { params } = callsTo("agent.add")[0];
+    expect(params).toMatchObject({ entity_id: "run-project", provider: "claude_adk" });
+    // Nothing else is named: the harness's own model and effort stand.
+    expect(params.model).toBeUndefined();
+    expect(params.effort).toBeUndefined();
   });
 
   // Pressing a card is a change of harness, and a model belongs to its harness:
-  // the pressed one arrives with the project agent's own preference for it.
-  it("brings the slot's own model when another harness is pressed", async () => {
-    localStorage.setItem("build.projectAgentDefaults", JSON.stringify({
-      provider: "codex", harnesses: { claude: { model: "claude-haiku-4-5", effort: "" } },
-    }));
-    await mountProjectRail();
-    expect(chosenCard().dataset.provider).toBe("codex");
+  // the device's model comes along only on the harness the device chose.
+  it("carries the device's model only onto the harness the device named", async () => {
+    await mountProjectRail({ project_agent: { provider: "claude_adk", model: "claude-haiku-4-5" } });
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
 
+    card("codex").click();
+    await flush();
+    expect(chosenCard().dataset.provider).toBe("codex");
     card("claude_adk").click();
     await flush();
-    expect(chosenCard().dataset.provider).toBe("claude_adk");
 
     await send("what is in this project?");
     expect(callsTo("agent.add")[0].params).toMatchObject({

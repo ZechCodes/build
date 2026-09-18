@@ -20,15 +20,8 @@ import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { harnessDefaultsPanelHtml, mountHarnessDefaults } from "../core/harnessDefaults.js";
-import { projectAgentDefaultsStorage } from "../core/projectAgentDefaults.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
 import { onDeviceStateChanged } from "../core/deviceContexts.js";
-
-/** The project agent's own panel, under the one every other agent starts from.
- *  It is the same three choices, for the one agent that talks ABOUT a project
- *  instead of working in a checkout. */
-const PROJECT_AGENT_BLURB =
-  "The harness, model, and reasoning effort the project agent starts on, on this device. Every other agent starts from the panel above.";
 
 /** One paired machine: what it is called, the key it holds, whether it is
  *  reachable, the way to its own settings, and the way to unpair it. The link
@@ -132,7 +125,6 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
       </div>
     </div>
     ${harnessDefaultsPanelHtml()}
-    ${harnessDefaultsPanelHtml({ prefix: "proj", title: "🧭 Project agent", blurb: PROJECT_AGENT_BLURB })}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -164,16 +156,15 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   if (!isCurrent()) return;
   bindThemeControl($("#themepick"));
 
-  // The two agent defaults panels: a model and effort per harness, and the
-  // harness new work starts on, read from the creation device's own catalog and
-  // saved on every change. The second one is the project agent's, over a slot
-  // of its own that layers on the first (core/projectAgentDefaults.js).
+  // The agent defaults panel: a model and effort per harness, and the harness
+  // new work starts on, read from the creation device's own catalog and saved
+  // on every change. What a PROJECT agent starts on is not here — that one is
+  // the machine's, asked on its own page (core/projectAgentSetting.js).
   async function mountAgentDefaults() {
     if (!$("#defprovider")) return;
     const catalog = await deviceCatalog(null);
     if (!isCurrent()) return;
     mountHarnessDefaults(root, { catalog });
-    mountHarnessDefaults(root, { catalog, prefix: "proj", storage: projectAgentDefaultsStorage() });
   }
 
   // Notifications: a single toggle backed by the browser's push subscription.

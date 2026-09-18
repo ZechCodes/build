@@ -207,3 +207,34 @@ fn remove_directory_refuses_a_directory_the_workspace_does_not_have() {
     assert_eq!(refused["error_code"], "not_found", "{refused:?}");
     assert_eq!(directories(&mut state, &workspace_id).len(), 1);
 }
+
+/// A directory arriving or leaving changes what every open browser is showing,
+/// so both verbs stale the feed the way creating and deleting a workspace do.
+#[test]
+fn a_directory_change_tells_the_browsers_standing_in_the_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "code");
+    let assets = tmp.path().join("assets");
+    std::fs::create_dir(&assets).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    let workspace = create_workspace(&mut state, &project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+
+    state.changes().flush();
+    let grown = state.handle(req(
+        "workspace.add_directory",
+        json!({"workspace_id": workspace_id, "path": assets}),
+    ));
+    assert_eq!(grown["ok"], true, "{grown:?}");
+    assert!(state.changes().has_pending(), "the added directory is news");
+
+    state.changes().flush();
+    let shrunk = state.handle(req(
+        "workspace.remove_directory",
+        json!({"workspace_id": workspace_id, "directory_id": grown["result"]["directories"][1]["id"]}),
+    ));
+    assert_eq!(shrunk["ok"], true, "{shrunk:?}");
+    assert!(state.changes().has_pending(), "and so is the removed one");
+}

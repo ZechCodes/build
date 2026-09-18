@@ -71,6 +71,7 @@ HOST_ASSETS = (
 MEDIA_TYPES = (
     ("cinematic.css", "text/css"),
     ("main.js", "text/javascript"),
+    ("story-devices.js", "text/javascript"),
     ("brand-mark.svg", "image/svg+xml"),
     ("favicon.svg", "image/svg+xml"),
     ("favicon.png", "image/png"),

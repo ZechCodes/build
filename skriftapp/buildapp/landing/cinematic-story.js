@@ -12,8 +12,8 @@ const ACTIVE_CLASS = "is-active";
 const FRAME_EVENT = "build:storyframe";
 const READABLE_LOCAL = 0.42;
 
-function canEnhance(profile, reducedMotion, saveData, forcedStatic) {
-  return profile !== "static" && !reducedMotion && !saveData && !forcedStatic;
+function canEnhance(profile, reducedMotion, saveData) {
+  return profile !== "static" && !reducedMotion && !saveData;
 }
 
 function storyTop(story) {
@@ -125,8 +125,6 @@ export function installCinematicStory({ story, stage }) {
   let frame = frameAtTravel(0, "desktop");
   let profile = profileForViewport(window.innerWidth, window.innerHeight);
   let enhanced = false;
-  let forcedStatic = false;
-  let staticReason = "";
   let scheduled = false;
   let destroyed = false;
 
@@ -224,7 +222,7 @@ export function installCinematicStory({ story, stage }) {
     const previous = frame;
     const wasEnhanced = enhanced;
     const reader = readerPosition(story, stage);
-    const shouldEnhance = canEnhance(nextProfile, reducedMotionQuery.matches, currentSaveData(), forcedStatic);
+    const shouldEnhance = canEnhance(nextProfile, reducedMotionQuery.matches, currentSaveData());
     profile = nextProfile;
     enhanced = shouldEnhance;
     page?.classList.toggle(ENHANCED_CLASS, enhanced);
@@ -247,12 +245,6 @@ export function installCinematicStory({ story, stage }) {
     subscribers.add(subscriber);
     subscriber(frame);
     return () => subscribers.delete(subscriber);
-  }
-
-  function useStatic(reason = "runtime-fallback") {
-    forcedStatic = true;
-    staticReason = reason;
-    refresh({ preserve: true });
   }
 
   function onResize() {
@@ -289,11 +281,10 @@ export function installCinematicStory({ story, stage }) {
   }
 
   const api = {
-    getState: () => ({ ...frame, enhanced, staticReason }),
+    getState: () => ({ ...frame, enhanced }),
     subscribe,
     refresh,
     seek,
-    useStatic,
     manifest: STORY_SCENES,
   };
 

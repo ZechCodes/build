@@ -210,6 +210,22 @@ function reviewScreenState(deviceName, frame) {
   return frame.local < 0.2 ? "ui04-tablet" : "ui05-approval-tablet";
 }
 
+const WARMUP_FRAMES = 4;
+const SLOW_FRAME_MS = 34;
+const SLOW_FRAME_LIMIT = 4;
+const REDUCED_QUALITY = 0.65;
+
+// What a frame time means for the renderer: keep going, render at lower
+// resolution, or hand the devices back to their posters. A slow renderer is a
+// reason to stop drawing 3D, never a reason to take the story apart.
+export function frameBudgetAction({ renderCount, slowFrameCount, qualityScale }, duration) {
+  if (renderCount < WARMUP_FRAMES) return { action: "none", slowFrameCount, qualityScale };
+  const slow = duration > SLOW_FRAME_MS ? slowFrameCount + 1 : 0;
+  if (slow < SLOW_FRAME_LIMIT) return { action: "none", slowFrameCount: slow, qualityScale };
+  if (qualityScale > REDUCED_QUALITY) return { action: "reduce", slowFrameCount: 0, qualityScale: REDUCED_QUALITY };
+  return { action: "posters", slowFrameCount: slow, qualityScale };
+}
+
 function idle(callback) {
   if ("requestIdleCallback" in window) return requestIdleCallback(callback, { timeout: 1600 });
   return setTimeout(callback, 32);
@@ -716,16 +732,14 @@ class DeviceStage {
 
   measureFrame(duration) {
     this.lastFrameMs = duration;
-    if (this.renderCount < 4) return;
-    this.slowFrameCount = duration > 34 ? this.slowFrameCount + 1 : 0;
-    if (this.slowFrameCount < 4) return;
-    if (this.qualityScale > 0.7) {
-      this.qualityScale = 0.65;
-      this.slowFrameCount = 0;
+    const next = frameBudgetAction(this, duration);
+    this.slowFrameCount = next.slowFrameCount;
+    if (next.action === "reduce") {
+      this.qualityScale = next.qualityScale;
       this.resize();
-      return;
+    } else if (next.action === "posters") {
+      this.destroy();
     }
-    this.fail(new Error("WebGL rendering remained below the frame budget"));
   }
 
   restorePosters() {

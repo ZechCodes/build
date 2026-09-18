@@ -272,7 +272,11 @@ const mountWorkspaceConsole = (state) =>
  *  The project agent is reachable from every workspace in the project — that is
  *  what makes it the project's rather than a workspace's — so the rail carries
  *  it here as well as on the project's page, and pressing it shows the project's
- *  conversation in this same panel without leaving the workspace. */
+ *  conversation in this same panel without leaving the workspace.
+ *
+ *  The route may name the agent whose conversation to open (`?agent=…`,
+ *  core/router.js `conversationRoute`) — the workspace's own, or the project's
+ *  from across the line, which the rail stands itself on. */
 function mountWorkspaceAgentRail(workspace, state, sourceId) {
   const { route, context } = state;
   const projectId = workspace.project_id || route.projectId;
@@ -287,6 +291,7 @@ function mountWorkspaceAgentRail(workspace, state, sourceId) {
     cacheScope: context.cacheScope,
     chatRepository: context.chatRepository,
     selection: state.selection,
+    openAgentId: route.agent || null,
   });
 }
 

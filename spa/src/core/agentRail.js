@@ -600,7 +600,7 @@ const workspaceStamp = (context, payload) =>
  *  agent is not the work item's selected agent, so the shared selection handle
  *  is deliberately left behind — and what it carries instead is the workspace
  *  it was reached from, which every message sent from here says. */
-const projectAgentContext = (context, known, payload) => ({
+const projectAgentContext = (context, known, payload, openAgentId = null) => ({
   ...context,
   kind: "project",
   projectId: context.projectAgent.projectId,
@@ -608,7 +608,7 @@ const projectAgentContext = (context, known, payload) => ({
   workspaceId: null,
   fromWorkspace: workspaceStamp(context, payload),
   selection: null,
-  openAgentId: null,
+  openAgentId,
   projectAgent: { ...context.projectAgent, ...known },
 });
 
@@ -661,7 +661,7 @@ export function mountAgentRail(host, context) {
   let live = null;
   // The project's side, built from the work item's last read: that read is
   // where the workspace's name is, and a message sent over there names it.
-  const projectSide = () => projectAgentContext(context, known, payloads.get(context.kind));
+  const projectSide = (openAgentId = null) => projectAgentContext(context, known, payloads.get(context.kind), openAgentId);
   // Whether the panel is out belongs to the HOST, not to either conversation:
   // the swap is a re-mount, and a re-mount that read the pin again would shut
   // an unpinned card the reader had open. A press that crosses the line is a
@@ -683,15 +683,19 @@ export function mountAgentRail(host, context) {
     read: (kind, payload) => {
       payloads.set(kind, payload);
     },
-    toProject: (entityId) => {
+    toProject: (entityId, openAgentId = null) => {
       known = { ...known, entityId };
-      stand(projectSide(), workItemContext(context, known), { panelOpen: true });
+      stand(projectSide(openAgentId), workItemContext(context, known), { panelOpen: true });
     },
     toWorkItem: (openAgentId, { adding = false } = {}) => {
       stand(workItemContext(context, known, { openAgentId, addingAgent: adding }), projectSide(), { panelOpen: true });
     },
   };
-  stand(workItemContext(context, known), projectSide());
+  // The agent a URL named, where one did: the rail comes up on that
+  // conversation. It may be the project's — the project's agent is reachable
+  // from every workspace in the project — and the side that finds it in its own
+  // half of the strip is the side that stands the rail there.
+  stand(workItemContext(context, known, { openAgentId: context.openAgentId || null }), projectSide());
   return {
     dispose() {
       live?.dispose();
@@ -731,6 +735,18 @@ const openingAgentId = (context, railView, agents) => {
   return agents.length ? selectAgentId(agents, remembered) : remembered;
 };
 
+/** Whether the panel comes up on screen.
+ *
+ *  An unpinned rail has no composer to focus at all — the human just cut this
+ *  branch and is about to type into it, so that intent outranks whatever they
+ *  left the rail at on the last one, and a URL that names a conversation asks
+ *  for the same thing outright. A mount the swap stood here — one of two
+ *  conversations changing places in the same panel — is handed the panel it is
+ *  taking over instead: the card was already out, and a re-mount is not a
+ *  reason to put it away. */
+const panelStartsOut = (context, pinned) =>
+  context.panelOpen ?? (pinned || context.autofocusComposer === true || !!context.openAgentId);
+
 /** The rail standing on ONE of its contexts. `swap` is how it moves to the
  *  other, and is null for a rail that has only one. */
 function mountRailOnContext(host, context, swap) {
@@ -765,19 +781,15 @@ function mountRailOnContext(host, context, swap) {
   let projectOwner = knownOwner;
   let projectName = knownName;
   let mintingProjectAgent = false;
+  // The agent a URL named and this side has not accounted for yet.
+  let wantedAgentId = context.openAgentId || null;
   let alongside = context.alongside && createAgentRailContext(context.alongside);
   let alongsideEntity = railEntity(seedPayload(context.alongside), alongsideKind(context));
   // Docked beside the work, or a card on the strip. The pin is the reader's
   // remembered layout choice; visibility belongs to this visit and never
   // rewrites that choice.
   let pinned = readPinned();
-  // An unpinned rail has no composer to focus at all — the human just cut this
-  // branch and is about to type into it, so that intent outranks whatever they
-  // left the rail at on the last one. A mount the swap stood here — one of two
-  // conversations changing places in the same panel — is handed the panel it
-  // is taking over instead: the card was already out, and a re-mount is not a
-  // reason to put it away.
-  let panelVisible = context.panelOpen ?? (pinned || context.autofocusComposer === true);
+  let panelVisible = panelStartsOut(context, pinned);
   const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let poll = null;
@@ -1233,6 +1245,20 @@ function mountRailOnContext(host, context, swap) {
     alongsideEntity = railEntity(payload, alongside.kind);
     keepForSwap(alongside.kind, payload);
     paint();
+    standOnNamedConversation();
+  };
+
+  /// The conversation a URL named, when it turns out to be the one across the
+  /// line: the project's agent is reachable from every workspace in the
+  /// project, so a workspace page may be asked to open a conversation that is
+  /// not the workspace's own. Asked once, of the first read of the other side —
+  /// after that the rail is wherever the reader has put it.
+  const standOnNamedConversation = () => {
+    if (!wantedAgentId || onProjectAgentRail || !swap || !projectOwner) return;
+    const wanted = wantedAgentId;
+    wantedAgentId = null;
+    if (agentOf(wanted) || !alongsideEntity.agents.some((agent) => agent.id === wanted)) return;
+    swap.toProject(projectOwner, wanted);
   };
 
   /// The project's own page, on the machine this rail is mounted on.

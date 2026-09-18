@@ -168,6 +168,32 @@ describe("workspace surface", () => {
     expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
   });
 
+  // A link from a message to the conversation it came from names the agent on
+  // the route: the page mounts its rail standing on that conversation rather
+  // than on whichever one the reader was last left on.
+  it("opens the rail on the agent the route names", async () => {
+    App.route = {
+      name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo",
+      tab: "changes", agent: "ag-2",
+    };
+    device("dev-1", async () => workspace);
+
+    await renderWorkspace();
+    await flush();
+
+    expect(mountAgentRail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ openAgentId: "ag-2" }));
+  });
+
+  it("names no agent where the route names none", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+    device("dev-1", async () => workspace);
+
+    await renderWorkspace();
+    await flush();
+
+    expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe(null);
+  });
+
   it("keeps the two faces on the shell's rail, never inside the pane it switches", async () => {
     // The reviewer's phone: the tabs used to be painted into the commit/file
     // list, which on a narrow viewport is a drawer — so they sat at the bottom

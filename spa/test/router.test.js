@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { routeFromHash, hashFromRoute, withDeviceOrResolve } from "../src/core/router.js";
+import { conversationRoute, routeFromHash, hashFromRoute, withDeviceOrResolve } from "../src/core/router.js";
 
 // A work URL that names no device names no machine: every device mints a
 // `proj-1`, so `#/project/proj-1/branch/main` parks on a resolve route carrying
@@ -482,5 +482,72 @@ describe("a work URL with no device parks on a resolve route", () => {
   it("is written device-less, never with a device made up for it", () => {
     expect(hashFromRoute({ name: "branch", projectId: "p1", branch: "main", tab: "changes" })).toBe("#/project/p1/branch/main/changes");
     expect(hashFromRoute({ name: "issue", projectId: "p1", id: "i-1" })).toBe("#/project/p1/issue/i-1");
+  });
+});
+
+// A conversation has a URL: the page the agent belongs to, with the rail
+// standing on that agent. It is what a link from a message to "the
+// conversation it came from" is written from — the agent rides as a query,
+// where the Files tab's file already rides, because the path segments are the
+// surface and nothing else.
+describe("the conversation a URL names", () => {
+  it("round-trips a workspace and a project with and without an agent", () => {
+    for (const hash of [
+      "#/device/d1/project/p/workspace/ws/changes",
+      "#/device/d1/project/p/workspace/ws/changes?agent=ag-1",
+      "#/device/d1/project/p/workspace/ws/directory/src/files?path=lib%2Fa.js&line=8&agent=ag-1",
+      "#/device/d1/project/p",
+      "#/device/d1/project/p?agent=ag-1",
+    ]) {
+      expect([hash, hashFromRoute(routeFromHash(hash))]).toEqual([hash, hash]);
+    }
+  });
+
+  it("parses the agent onto the route the page mounts from", () => {
+    expect(routeFromHash("#/device/d1/project/p/workspace/ws/changes?agent=ag-1")).toEqual({
+      name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "changes", agent: "ag-1",
+    });
+    expect(routeFromHash("#/device/d1/project/p?agent=ag-1")).toEqual({
+      name: "project", deviceId: "d1", projectId: "p", agent: "ag-1",
+    });
+    // An id with a character a query has to escape survives both ways.
+    expect(routeFromHash("#/device/d1/project/p?agent=ag%202").agent).toBe("ag 2");
+    // A URL that names no agent says nothing about one.
+    expect(routeFromHash("#/device/d1/project/p").agent).toBeUndefined();
+    expect(routeFromHash("#/device/d1/project/p?agent=").agent).toBeUndefined();
+    // Only the two surfaces with a rail of their own carry one.
+    expect(routeFromHash("#/device/d1/project/p/branch/main/changes?agent=ag-1").agent).toBeUndefined();
+  });
+
+  // A device-less workspace URL is still a question for the feed, and the
+  // conversation it named has to survive the parking.
+  it("keeps the agent through the resolve a device-less URL parks on", () => {
+    expect(routeFromHash("#/project/p/workspace/ws/changes?agent=ag-1")).toEqual({
+      name: "resolve", kind: "project", projectId: "p",
+      route: { name: "workspace", projectId: "p", workspaceId: "ws", tab: "changes", agent: "ag-1" },
+    });
+  });
+
+  it("is what conversationRoute writes, for both kinds of page", () => {
+    const workspace = conversationRoute({
+      kind: "workspace", projectId: "p", deviceId: "d1", workspaceId: "ws", agentId: "ag-1",
+    });
+    expect(workspace).toEqual({
+      name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "changes", agent: "ag-1",
+    });
+    expect(hashFromRoute(workspace)).toBe("#/device/d1/project/p/workspace/ws/changes?agent=ag-1");
+
+    const project = conversationRoute({ kind: "project", projectId: "p", deviceId: "d1", agentId: "ag-1" });
+    expect(project).toEqual({ name: "project", deviceId: "d1", projectId: "p", agent: "ag-1" });
+    expect(hashFromRoute(project)).toBe("#/device/d1/project/p?agent=ag-1");
+  });
+
+  // A route is written with what it was given and nothing invented: no device,
+  // no agent, and the page still opens.
+  it("leaves out the device and the agent it was not given", () => {
+    expect(conversationRoute({ kind: "project", projectId: "p" })).toEqual({ name: "project", projectId: "p" });
+    expect(conversationRoute({ kind: "workspace", projectId: "p", workspaceId: "ws" })).toEqual({
+      name: "workspace", projectId: "p", workspaceId: "ws", tab: "changes",
+    });
   });
 });

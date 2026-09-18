@@ -179,6 +179,17 @@ function tabPlace(query) {
 // tree, and both carry the file as a query rather than a path segment.
 const FILE_TAB_SURFACES = new Set(["branch", "workspace"]);
 
+// The surfaces whose rail can be opened on a named conversation: the two pages
+// an agent belongs to. Which agent the rail stands on is not part of the
+// surface — the page is the same page — so it rides as a query beside the file.
+const AGENT_SURFACES = new Set(["workspace", "project"]);
+
+/// The agent a URL names, or null for one that names none.
+function railAgent(query) {
+  const agent = query ? new URLSearchParams(query).get("agent") : "";
+  return agent ? { agent } : null;
+}
+
 /// The route a hash names, and where in it the reader is standing.
 ///
 /// Split before parse: everything up to the `?` is the surface, everything
@@ -187,9 +198,11 @@ export function routeFromHash(hash) {
   const [path, query] = String(hash || "").split("?");
   const route = surfaceFromHashPath(path);
   const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
-  // The place is merged BEFORE the device question is asked: a device-less
-  // Files link parks on a resolve route that still knows which file it meant.
-  return withDeviceOrResolve(place ? { ...route, ...place } : route);
+  const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
+  // Both are merged BEFORE the device question is asked: a device-less Files
+  // link parks on a resolve route that still knows which file it meant, and a
+  // device-less conversation link one that still knows which agent.
+  return withDeviceOrResolve(place || agent ? { ...route, ...place, ...agent } : route);
 }
 
 /// The segments of a hash path, decoded, with the empties dropped.
@@ -275,14 +288,24 @@ function surfaceFromSegments(parts) {
 
 const encode = encodeURIComponent;
 
-/// The `?path=…&line=…` a Files route ends with, and nothing at all for every
-/// other tab: only Files stands in a file.
-function tabPlaceSuffix(route, tab) {
-  if (tab !== "files" || !route.file) return "";
-  const query = new URLSearchParams({ path: route.file });
-  if (Number.isFinite(route.line) && route.line > 0) query.set("line", String(route.line));
-  return `?${query}`;
+/// The query a hash ends with, out of the pairs its surface has to say and
+/// nothing for the ones it has not: where in a tab the reader is standing, and
+/// whose conversation the rail is open on. One `?`, so one writer puts both
+/// there.
+function hashQuery(pairs) {
+  const query = new URLSearchParams(pairs.filter(([, value]) => value));
+  return String(query) ? `?${query}` : "";
 }
+
+/// The `path` and `line` a Files route ends with, and nothing at all for every
+/// other tab: only Files stands in a file.
+const tabPlacePairs = (route, tab) =>
+  tab === "files" && route.file
+    ? [["path", route.file], ["line", Number.isFinite(route.line) && route.line > 0 ? String(route.line) : ""]]
+    : [];
+
+/// The conversation the rail is standing on, where the route names one.
+const railAgentPairs = (route) => [["agent", route.agent || ""]];
 
 /// Everything a work URL says before the branch or the issue: the machine the
 /// project is on, when the route names one, and the project itself. A route
@@ -316,17 +339,18 @@ const HASH_WRITERS = Object.freeze({
   // account's inbox. The plain inbox writes nothing and takes the fallback.
   inbox: (route) => (route.projectId ? `${projectPrefix(route)}/inbox` : null),
   // The project's own page is the project and nothing after it.
-  project: (route) => (route.projectId ? projectPrefix(route) : null),
+  project: (route) => (route.projectId ? `${projectPrefix(route)}${hashQuery(railAgentPairs(route))}` : null),
   workspace: (route) => {
     if (!route.projectId || !route.workspaceId) return null;
     const tab = branchTab(route.tab);
     const source = route.sourceId ? `/directory/${encode(route.sourceId)}` : "";
-    return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${tabPlaceSuffix(route, tab)}`;
+    const query = hashQuery([...tabPlacePairs(route, tab), ...railAgentPairs(route)]);
+    return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${query}`;
   },
   branch: (route) => {
     if (!route.projectId || !route.branch) return null;
     const tab = branchTab(route.tab);
-    return `${projectPrefix(route)}/branch/${encode(route.branch)}/${tab}${tabPlaceSuffix(route, tab)}`;
+    return `${projectPrefix(route)}/branch/${encode(route.branch)}/${tab}${hashQuery(tabPlacePairs(route, tab))}`;
   },
   issue: (route) => {
     if (!route.projectId || !route.id) return null;
@@ -337,6 +361,26 @@ const HASH_WRITERS = Object.freeze({
   capture: (route) => (route.id ? `#/capture/${encode(route.id)}` : null),
   account: (route) => `#/account/${ACCOUNT_PAGES.has(route.page) ? route.page : "settings"}`,
 });
+
+/**
+ * The route that opens one agent's conversation: the page the agent belongs to,
+ * with the rail standing on it.
+ *
+ * What a link from a message to "the conversation it came from" is written
+ * from, so it is a route rather than a hash — the app navigates with routes,
+ * and `hashFromRoute` is what turns one into a URL. Nothing is invented: a
+ * caller that names no device or no agent gets a route that names none either,
+ * which opens the same page the way every other link to it does.
+ */
+export function conversationRoute({ kind, projectId, deviceId = null, workspaceId = null, agentId = null } = {}) {
+  const page = {
+    projectId,
+    ...(deviceId ? { deviceId } : null),
+    ...(agentId ? { agent: agentId } : null),
+  };
+  if (kind !== "workspace") return { name: "project", ...page };
+  return { name: "workspace", ...page, workspaceId, tab: "changes" };
+}
 
 export function hashFromRoute(route) {
   const write = HASH_WRITERS[route.name];

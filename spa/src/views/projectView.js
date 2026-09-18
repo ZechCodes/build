@@ -120,6 +120,10 @@ function openWorkspace(state, workspaceKey) {
  * the DEVICE's setting, held by the bridge beside its default harness, and the
  * mint reads it there — so a new browser is never asked for something the
  * machine that runs the agent already holds.
+ *
+ * The route may name an agent (`?agent=…`, core/router.js `conversationRoute`):
+ * a link to the conversation a message came from lands here, and the rail comes
+ * up standing on it.
  */
 async function mountProjectRail(state) {
   try {
@@ -136,6 +140,7 @@ async function mountProjectRail(state) {
       cacheScope: state.context.cacheScope,
       chatRepository: state.context.chatRepository,
       selection: state.selection,
+      openAgentId: state.route.agent || null,
     });
   } catch (error) {
     if (!state.disposed) notifyError("No conversation for this project", error.message || String(error));

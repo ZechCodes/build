@@ -151,6 +151,23 @@ describe("the project surface", () => {
     expect(options.deviceId).toBe("dev-1");
   });
 
+  // A link from a message to the conversation it came from names the agent on
+  // the route: the page opens with the rail standing on that conversation.
+  it("opens the rail on the agent the route names", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", agent: "ag-2" };
+    await renderProject();
+    await flush();
+
+    expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe("ag-2");
+  });
+
+  it("names no agent where the route names none", async () => {
+    await renderProject();
+    await flush();
+
+    expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe(null);
+  });
+
   // What a project agent starts on is the DEVICE's setting, so the page names
   // none of it: the bridge mints the owner on its own answer. A browser slot
   // laid over it would ask every new browser for something the machine that

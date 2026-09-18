@@ -110,7 +110,7 @@ let owner;
 let calls;
 let rail;
 
-const mountWorkspaceRail = async () => {
+const mountWorkspaceRail = async (over = {}) => {
   rail = mountAgentRail(host(), {
     kind: "workspace",
     deviceId: DEVICE_ID,
@@ -119,6 +119,7 @@ const mountWorkspaceRail = async () => {
     projectAgent: { projectId: PROJECT_ID },
     cacheScope: contextFor(DEVICE_ID).cacheScope,
     chatRepository: contextFor(DEVICE_ID).chatRepository,
+    ...over,
   });
   await flush();
 };
@@ -358,6 +359,52 @@ describe("the strip across a swap", () => {
     expect(agentBubble("wa-1").classList.contains("working")).toBe(true);
     // …and the project's bubble, now the one beside, still says its own.
     expect(projectBubble().title).toBe("Project agent for build");
+  });
+});
+
+
+// A link from a message names the conversation it came from: the workspace's
+// page, or the project's, with one agent's conversation open in the rail. The
+// rail is handed that agent at mount and opens on it — and the project's agent
+// is reachable from the workspace, so an id belonging to the conversation
+// across the line stands the rail there.
+describe("a rail mounted on the agent a URL named", () => {
+  it("opens that agent's conversation among the workspace's own", async () => {
+    workspace = {
+      ...workspacePayload(),
+      agents: [agent("wa-1"), agent("wa-2", { ordinal: 2, topic: "Rename the theme" })],
+    };
+
+    await mountWorkspaceRail({ openAgentId: "wa-2" });
+
+    expect(headWho()).toBe("Rename the theme");
+    expect(agentBubble("wa-2").classList.contains("active")).toBe(true);
+    expect(panelIsOpen()).toBe(true);
+  });
+
+  it("stands on the project's conversation when the id is the project agent's", async () => {
+    owner = OWNER;
+
+    await mountWorkspaceRail({ openAgentId: "pa-1" });
+
+    expect(headWho()).toBe("Sort the workspaces");
+    expect(projectBubble().classList.contains("active")).toBe(true);
+    expect(panelIsOpen()).toBe(true);
+    // Nothing was minted to get there: the project already had its
+    // conversation, and the URL only said which one to open.
+    expect(callsTo("project.ensure_conversation")).toHaveLength(0);
+    // The workspace's own agents are still under the rule, + and all.
+    expect(agentBubble("wa-1")).toBeTruthy();
+    expect(addBubble()).toBeTruthy();
+  });
+
+  it("leaves the rail on the workspace when the id names no conversation it can reach", async () => {
+    owner = OWNER;
+
+    await mountWorkspaceRail({ openAgentId: "gone" });
+
+    expect(headWho()).toBe("Fix login redirect");
+    expect(projectBubble().classList.contains("active")).toBe(false);
   });
 });
 

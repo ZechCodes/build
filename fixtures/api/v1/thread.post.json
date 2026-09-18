@@ -13,7 +13,10 @@
     ],
     "viewing_context": {
       "version": 1,
-      "items": [{ "kind": "file", "path": "src/app/conversations/post.rs" }]
+      "items": [
+        { "kind": "workspace", "workspace_id": "ws-3f2a91c4", "name": "wire-facade" },
+        { "kind": "file", "path": "src/app/conversations/post.rs" }
+      ]
     },
     "interrupt": false,
     "thread_limit": 20

@@ -515,6 +515,9 @@ pub enum MessageDeliveryStatus {
 pub const MAX_VIEWING_CONTEXT_ITEMS: usize = 100;
 pub const MAX_VIEWING_CONTEXT_PATH_BYTES: usize = 4 * 1024;
 pub const MAX_VIEWING_CONTEXT_EXCERPT_BYTES: usize = 32 * 1024;
+/// How long a word naming something may be — a workspace's id, a workspace's
+/// name. It reaches the agent as one line of prose, not as a document.
+pub const MAX_VIEWING_CONTEXT_LABEL_BYTES: usize = 512;
 
 /// What the reviewer was looking at when they wrote. Deliberately WITHOUT
 /// `deny_unknown_fields`: this rides v1 request paths (`thread.post`,
@@ -555,6 +558,14 @@ pub enum ViewingContextItem {
     Diff {
         path: String,
         mode: DiffViewingMode,
+    },
+    /// The workspace the user was standing in when they wrote. Not a thing on
+    /// screen the way the others are: the project's conversation is reachable
+    /// from every workspace's rail, so a message sent from one carries which
+    /// one it came from, and "this workspace" has an answer.
+    Workspace {
+        workspace_id: String,
+        name: String,
     },
     Selection {
         path: String,
@@ -608,6 +619,9 @@ impl ViewingContext {
                         return Err("viewing_context commit sha must be a full 40 or 64 character object id".to_string());
                     }
                 }
+                ViewingContextItem::Workspace { workspace_id, name } => {
+                    validate_viewing_workspace(workspace_id, name)?
+                }
                 ViewingContextItem::Selection {
                     path,
                     text,
@@ -635,6 +649,19 @@ impl ViewingContext {
         }
         Ok(())
     }
+}
+
+/// A workspace item names one: both words are for the agent reading them, so
+/// neither may be empty, and neither is a path this bridge will open.
+fn validate_viewing_workspace(workspace_id: &str, name: &str) -> Result<(), String> {
+    if workspace_id.is_empty()
+        || name.is_empty()
+        || workspace_id.len() > MAX_VIEWING_CONTEXT_LABEL_BYTES
+        || name.len() > MAX_VIEWING_CONTEXT_LABEL_BYTES
+    {
+        return Err(format!("viewing_context workspace must carry an id and a name of at most {MAX_VIEWING_CONTEXT_LABEL_BYTES} bytes"));
+    }
+    Ok(())
 }
 
 fn validate_viewing_path(path: &str) -> Result<(), String> {

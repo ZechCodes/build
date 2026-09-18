@@ -247,6 +247,17 @@ panel, with the page still on the workspace; pressing a bubble below the line
 stands it back. The rail reads the conversation it is not standing on beside its
 own, so both halves of the strip carry their unread and their working.
 
+A message sent from there says where it was sent from. The rail leads the
+message's `viewing_context` with `{ kind: "workspace", workspace_id, name }`
+(wire spec, step 2.8) — the id it was mounted with and the name its own read
+already answered — ahead of whatever the reader attached, and the composer's
+tray shows it as a chip they cannot remove: standing somewhere is not an
+attachment. It is stamped by the rail that got here from a workspace and by
+nothing else, so the project's own page, which stands in no workspace, sends
+none, and a workspace's own agents, who are already in one, are told nothing.
+The project agent then reads one line in its delivery envelope naming the
+workspace, and knows what "this workspace" means.
+
 ## The project agent
 
 A project's agents reach Build through a surface of their own. It is the same

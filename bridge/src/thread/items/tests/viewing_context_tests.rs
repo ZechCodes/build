@@ -137,3 +137,49 @@ fn a_viewing_context_item_accepts_a_field_this_bridge_predates() {
         "the known fields survive the unknown ones"
     );
 }
+
+/// The rail carries the project's conversation into every workspace, so a
+/// message sent from one says which workspace it was sent from. Additive at
+/// version 1: an older SPA sends no such item and reads past one it is handed.
+#[test]
+fn viewing_context_carries_the_workspace_a_message_was_sent_from() {
+    let context: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "items": [
+            { "kind": "workspace", "workspace_id": "ws-3f2a91c4", "name": "wire-facade" },
+            { "kind": "file", "path": "src/lib.rs" }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(context.validate(), Ok(()));
+    assert_eq!(
+        context.items.first(),
+        Some(&ViewingContextItem::Workspace {
+            workspace_id: "ws-3f2a91c4".into(),
+            name: "wire-facade".into(),
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&context.items[0]).unwrap(),
+        serde_json::json!({ "kind": "workspace", "workspace_id": "ws-3f2a91c4", "name": "wire-facade" }),
+        "the item goes back out exactly as it came in"
+    );
+}
+
+#[test]
+fn viewing_context_rejects_a_workspace_item_naming_nothing() {
+    let nameless: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "items": [{ "kind": "workspace", "workspace_id": "ws-1", "name": "" }]
+    }))
+    .unwrap();
+    assert!(nameless.validate().unwrap_err().contains("workspace"));
+
+    let unaddressed: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "items": [{ "kind": "workspace", "workspace_id": "", "name": "wire-facade" }]
+    }))
+    .unwrap();
+    assert!(unaddressed.validate().unwrap_err().contains("workspace"));
+}

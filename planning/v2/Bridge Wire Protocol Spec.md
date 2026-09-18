@@ -508,6 +508,34 @@ boot; a value this bridge cannot read is logged and left absent.
 Additive, so a minor: a client that has never heard of `project_agent` sends
 none and reads past it, and the bridge answers exactly as it did.
 
+#### Step 2.8: `viewing_context` on a reviewer message
+
+A message the human sends may carry `viewing_context: { version: 1, items: [] }`
+— what they were looking at when they wrote it. It rides every reviewer send
+(`thread.post`, `run.message`, `plan.message`, `issue.send_notes`), is stored on
+the message, and reaches the harness on the native delivery payload. The bridge
+offers it on the greeting as `message_context: { version: 1 }`; a client that is
+not offered it sends none.
+
+Each item is tagged by `kind`:
+
+- `file { path }` — a file open on screen, scope-relative.
+- `diff { path, mode }` — a diff on screen, `mode` one of `uncommitted`, `all`.
+- `commit { sha }` — a commit on screen, as a full 40- or 64-character id.
+- `selection { path, text, line_start?, line_end?, side?, unsaved?, truncated? }`
+  — a passage they had selected.
+- `workspace { workspace_id, name }` — the workspace they were standing in. The
+  project's conversation is reachable from every workspace's rail, so a message
+  sent from one leads with this item, and the delivery envelope says in prose
+  which workspace the user was in.
+
+A path must be scope-relative and at most 4 KiB; excerpts total at most 32 KiB
+across a context; a context carries at most 100 items and at least one; a
+workspace's id and name are each at most 512 bytes and neither may be empty.
+Neither the context nor an item denies an unknown field — a newer SPA must be
+able to talk to an older bridge — so `version` stays 1 while kinds are added,
+and an item this bridge has never heard of is refused by kind alone.
+
 ## Verification
 
 - `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt

@@ -948,9 +948,17 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-composer { position:absolute; z-index:4; right:0; bottom:0; left:0; flex:none;
   max-height:calc(100% - var(--surface-head)); display:flex; flex-direction:column;
   padding:4px 14px 13px; background:transparent; }
-.rail-composer .thread-composer { flex:1 1 auto; min-height:0; margin-left:0; display:flex; flex-direction:column; overflow:hidden; }
+/* Neither this box nor the composer inside it hides its overflow. The model and
+   reasoning menus hang off the bottom row of a box three rows tall, so they
+   open upward and — a model name being wider than the button that states it —
+   reach left of the composer's edge on a phone. A hidden overflow cuts them
+   there, and lifting them to position:fixed (core/splitButton.js) does not save
+   them: a clip still follows a fixed box whose containing block sits inside the
+   clipper, which the composer's own glass makes it on iOS. The rows that could
+   overgrow — the text, the tray, the context — scroll themselves below. */
+.rail-composer .thread-composer { flex:1 1 auto; min-height:0; margin-left:0; display:flex; flex-direction:column; }
 .rail-composer .chat-recovery { flex:0 1 auto; min-height:0; max-height:80px; overflow-y:auto; }
-.rail-composer .composer { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow:hidden;
+.rail-composer .composer { flex:1 1 auto; min-height:0; display:flex; flex-direction:column;
   border:1px solid var(--line); border-radius:12px; background:transparent; }
 .rail-composer .composer::before { content:""; position:absolute; z-index:0; inset:0; border-radius:inherit;
   background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);

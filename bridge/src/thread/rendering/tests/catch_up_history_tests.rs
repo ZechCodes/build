@@ -29,6 +29,37 @@ fn catch_up_renders_viewing_context_once_beside_the_message() {
     assert!(prompt.contains("let old = true;"));
 }
 
+/// A cold agent reads the packet, not the wire: the workspace a message came
+/// from is written into its line, the way the sender of one is.
+#[test]
+fn catch_up_names_the_workspace_a_message_was_sent_from() {
+    let mut thread = Thread::for_agent("agent-a");
+    thread.post_user_with_context(
+        "what is running here?",
+        None,
+        Some(ViewingContext {
+            version: 1,
+            items: vec![ViewingContextItem::Workspace {
+                workspace_id: "ws-3f2a91c4".into(),
+                name: "wire-facade".into(),
+            }],
+        }),
+        NOW,
+    );
+    thread.post_user("and here?", None, NOW);
+
+    let prompt = thread.catch_up_markdown(10);
+    assert!(
+        prompt.contains("[from workspace \"wire-facade\" (ws-3f2a91c4)]"),
+        "{prompt}"
+    );
+    assert_eq!(
+        prompt.matches("from workspace").count(),
+        1,
+        "only the message that carried one says it: {prompt}"
+    );
+}
+
 /// A conversation stored whole, and the process that booted onto the last
 /// `tail` items of it — which is where an activity-heavy session leaves
 /// its replacement.

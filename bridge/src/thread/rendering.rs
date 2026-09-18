@@ -185,9 +185,10 @@ pub(super) fn catch_up_lines<'a>(
         .rev()
         .filter_map(|item| match item {
             ThreadItem::Message(message) => Some(format!(
-                "- {}{}{}: {}{}{}",
+                "- {}{}{}{}: {}{}{}",
                 message.role.as_str(),
                 sender_note(message.from_agent.as_deref()),
+                workspace_note(message.viewing_context.as_deref()),
                 match message.reported_outcome() {
                     Some(outcome) => format!(" [{}]", outcome.as_str()),
                     None => String::new(),
@@ -210,6 +211,17 @@ pub(super) fn catch_up_lines<'a>(
 /// the conversation they arrived on.
 pub(super) fn sender_note(from_agent: Option<&super::AgentIdentity>) -> String {
     from_agent.map_or_else(String::new, |sender| format!(" [from agent {}]", sender.id))
+}
+
+/// Where the user was standing when they wrote, when the message says. The
+/// packet is markdown, so it reaches a cold agent only if it is written into
+/// the line — the same reason the sender of a message is written into it.
+pub(super) fn workspace_note(context: Option<&super::ViewingContext>) -> String {
+    context
+        .and_then(super::ViewingContext::workspace)
+        .map_or_else(String::new, |(workspace_id, name)| {
+            format!(" [from workspace \"{name}\" ({workspace_id})]")
+        })
 }
 
 /// Render message context exactly once in markdown catch-up. On the wire it

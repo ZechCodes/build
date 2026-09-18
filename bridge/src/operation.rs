@@ -107,13 +107,14 @@ impl OperationPayload {
         // only when the slash is the first token; putting Build's delivery
         // envelope ahead of it turns commands such as `/goal ...` into prose.
         let sender = self.sender_note();
+        let workspace = self.workspace_note();
         let user_prompt = self
             .messages
             .first()
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -147,6 +148,23 @@ impl OperationPayload {
             "\nThese messages came from {}, not from the user.\n",
             named.join(" and ")
         )
+    }
+
+    /// One line naming the workspace the user was standing in, when the message
+    /// says which. Empty for everything sent from nowhere in particular.
+    ///
+    /// The workspace rides the message's viewing context, but that context is
+    /// JSON inside a prompt written in the user's voice — and the project's
+    /// agent is reachable from every workspace in the project, so "this
+    /// workspace" is a question the envelope has to answer in prose.
+    fn workspace_note(&self) -> String {
+        self.messages
+            .iter()
+            .filter_map(|message| message.viewing_context.as_deref())
+            .find_map(crate::thread::ViewingContext::workspace)
+            .map_or_else(String::new, |(workspace_id, name)| {
+                format!("\nThe user sent this from workspace \"{name}\" ({workspace_id}).\n")
+            })
     }
 
     /// Commands that must reach the provider's command parser byte-for-byte.
@@ -363,6 +381,38 @@ mod tests {
                 .legacy_delivery_prompt(false, AgentProvider::Claude)
                 .contains("came from agent"),
             "the user's own words claim no sender"
+        );
+    }
+
+    /// The workspace the user was standing in is named in the envelope, not
+    /// only in the payload's JSON: the project agent is reachable from every
+    /// workspace, and "this workspace" has to mean the one they were in.
+    #[test]
+    fn a_message_sent_from_a_workspace_names_it() {
+        let from_workspace = OperationPayload {
+            messages: vec![ThreadMessage {
+                viewing_context: Some(Box::new(crate::thread::ViewingContext {
+                    version: 1,
+                    items: vec![crate::thread::ViewingContextItem::Workspace {
+                        workspace_id: "ws-3f2a91c4".into(),
+                        name: "wire-facade".into(),
+                    }],
+                })),
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+
+        let prompt = from_workspace.legacy_delivery_prompt(false, AgentProvider::Claude);
+        assert!(
+            prompt.contains("The user sent this from workspace \"wire-facade\" (ws-3f2a91c4)."),
+            "{prompt}"
+        );
+        assert!(
+            !payload()
+                .legacy_delivery_prompt(false, AgentProvider::Claude)
+                .contains("from workspace"),
+            "a message sent from nowhere in particular claims no workspace"
         );
     }
 

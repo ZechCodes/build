@@ -584,6 +584,19 @@ pub enum ViewingContextItem {
 }
 
 impl ViewingContext {
+    /// The workspace this message was sent from, when it says: its name and its
+    /// id, for the line that tells the agent where the user was standing. The
+    /// rail leads the context with it and sends at most one, so the first is
+    /// the answer.
+    pub fn workspace(&self) -> Option<(&str, &str)> {
+        self.items.iter().find_map(|item| match item {
+            ViewingContextItem::Workspace { workspace_id, name } => {
+                Some((workspace_id.as_str(), name.as_str()))
+            }
+            _ => None,
+        })
+    }
+
     pub fn normalize(mut self) -> Result<Self, String> {
         for item in &mut self.items {
             if let ViewingContextItem::Commit { sha } = item {

@@ -255,8 +255,10 @@ tray shows it as a chip they cannot remove: standing somewhere is not an
 attachment. It is stamped by the rail that got here from a workspace and by
 nothing else, so the project's own page, which stands in no workspace, sends
 none, and a workspace's own agents, who are already in one, are told nothing.
-The project agent then reads one line in its delivery envelope naming the
-workspace, and knows what "this workspace" means.
+The project agent then reads one line in its delivery envelope — `The user sent
+this from workspace "<name>" (<workspace_id>).` — and the same fact on the
+message's own line in a cold catch-up packet, so it knows what "this workspace"
+means whether it was running or has just been started.
 
 ## The project agent
 

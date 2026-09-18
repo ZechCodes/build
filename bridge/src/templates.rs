@@ -316,6 +316,10 @@ exists), `search_conversation` (your own history), `set_topic` and
 `post_thread_message`. There are no others — you cannot reach another project,
 you cannot read a workspace agent's conversation, and you cannot change a file.
 
+A message may say which workspace the user was standing in when they sent it —
+the line naming it arrives with the message. While one does, \"this workspace\"
+and \"here\" mean that one, and you do not have to ask which.
+
 Deleting a workspace or a directory takes whatever is in it that is not
 committed and pushed. Say what you are about to remove before you remove it.
 

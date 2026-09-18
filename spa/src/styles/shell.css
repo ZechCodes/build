@@ -758,6 +758,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble.is-dropping > * { pointer-events:none; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
+.task-completion-toast { position:fixed; z-index:90; max-width:min(320px, calc(100vw - 20px)); max-height:30vh;
+  padding:8px 10px; border:1px solid var(--line2); border-radius:8px;
+  background:var(--panel2); color:var(--ink); box-shadow:0 8px 24px var(--shadow-soft);
+  font:500 12px/1.35 var(--sans); overflow:hidden; overflow-wrap:anywhere; pointer-events:none; }
 @keyframes rail-pulse { 0%,100% { opacity:.55; transform:scale(1); }
   50% { opacity:.15; transform:scale(1.08); } }
 

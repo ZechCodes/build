@@ -628,6 +628,8 @@ describe("checklistViewerHtml", () => {
     );
     expect(painted.querySelectorAll(".surface-checklist-item").length).toBe(4);
     expect(painted.querySelectorAll("[data-outcome]").length).toBe(4);
+    expect(painted.querySelector("[data-key='t3']").classList.contains("is-completed")).toBe(true);
+    expect(painted.querySelector("[data-key='t2']").classList.contains("is-completed")).toBe(false);
   });
 
   it("marks nothing for a state it does not recognise", () => {

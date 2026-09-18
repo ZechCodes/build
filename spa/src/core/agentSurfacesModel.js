@@ -271,7 +271,13 @@ export function surfaceRows(kind, surfaces, reading = {}) {
   const entries = entriesOfKind(surfaces, kind);
   if (kind === AGENT_ENTRY_KIND) return agentRows(entries, reading);
   const normalise = ROW_NORMALISERS[kind];
-  return normalise ? keyedRows(kind, kind, entries, normalise, reading) : [];
+  if (!normalise) return [];
+  const rows = keyedRows(kind, kind, entries, normalise, reading);
+  if (kind !== CHECKLIST_ENTRY_KIND) return rows;
+  return [
+    ...rows.filter((row) => row.state !== "completed"),
+    ...rows.filter((row) => row.state === "completed"),
+  ];
 }
 
 function rowHasFinished(row) {

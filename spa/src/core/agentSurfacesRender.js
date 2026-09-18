@@ -282,7 +282,8 @@ export function checklistItemHtml(row) {
   const unknownState = !row.stateMark && row.state
     ? `<span class="surface-row-stat agent-observation-unknown">${esc(row.state)}</span>`
     : "";
-  return surfaceRowHtml("surface-checklist-item", row, {
+  const completedClass = row.state === "completed" ? " is-completed" : "";
+  return surfaceRowHtml(`surface-checklist-item${completedClass}`, row, {
     trailing: unknownState,
     body: noteHtml(row.description, row.subject),
   });

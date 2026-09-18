@@ -103,6 +103,8 @@ import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { mountAgentObservation } from "./agentObservation.js";
+import { createTaskCompletionTracker } from "./taskCompletionModel.js";
+import { mountTaskCompletionToast } from "./taskCompletionToast.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
 import { surfaceSessionGeneration } from "./surfacesCache.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
@@ -511,6 +513,8 @@ export function panelHeadHtml(who, mode, { provider = "", removable = false, has
  */
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
+  const completionTracker = createTaskCompletionTracker();
+  const completionToast = mountTaskCompletionToast(host);
   const railContext = createAgentRailContext(context);
   const key = railContext.key;
   const { cacheScope, ownsRepository: ownsChatRepository, repository: chatRepository } = railChatDependencies(context);
@@ -848,6 +852,14 @@ export function mountAgentRail(host, context) {
 
   const readIsStale = (asked) => disposed || asked !== selectedId;
 
+  const showTaskCompletions = (agents) => {
+    completionTracker.forgetMissing(agents.map((agent) => agent.id));
+    for (const agent of agents) {
+      const completions = completionTracker.observe(agent);
+      if (completions.length) completionToast.show(agent.id, completions.map((task) => task.title));
+    }
+  };
+
   const refresh = async () => {
     const asked = selectedId;
     let payload;
@@ -886,6 +898,7 @@ export function mountAgentRail(host, context) {
     if (!isProvisionalKey(selectedId)) threadOwner = asked === null ? selectedId : asked;
     absorbSurfaces();
     paint();
+    showTaskCompletions(answered.agents);
   };
 
   // ---- painting -------------------------------------------------------------
@@ -2457,6 +2470,8 @@ export function mountAgentRail(host, context) {
       disposeTitleMotion();
       disposeTui();
       disposeSurfaces();
+      completionToast.dispose();
+      completionTracker.reset();
       disposeComposerClearance?.();
       disposeComposerClearance = null;
       closeSurfaceMenu?.();

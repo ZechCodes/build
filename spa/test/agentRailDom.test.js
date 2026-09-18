@@ -3231,6 +3231,38 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   });
 });
 
+describe("task completion notifications", () => {
+  const checklistAgent = (state, epoch) => agent({
+    surfaces: {
+      checklist: [{ id: "turn-1:0", subject: "Ship the release", state }],
+      observations: { checklist: { support: "supported", freshness: "current", coverage: "complete" } },
+      checklist_provenance: {
+        source: "turn_plan", provider_session_generation: 1, turn_id: "turn-1",
+        collection_epoch: epoch, carried_from_prior_turn: false,
+      },
+    },
+  });
+
+  it("announces a live transition once and removes the toast with the rail", async () => {
+    payload = branchRow({ agents: [checklistAgent("in_progress", 1)] });
+    await mount();
+    bubbles()[0].getBoundingClientRect = () => ({ left: 900, right: 932, top: 100, bottom: 132, width: 32, height: 32 });
+    expect(document.querySelector(".task-completion-toast")).toBe(null);
+
+    payload = branchRow({ agents: [checklistAgent("completed", 2)] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(document.querySelector(".task-completion-toast")?.textContent).toContain("Ship the release");
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(document.querySelectorAll(".task-completion-toast")).toHaveLength(1);
+    rail.dispose();
+    rail = null;
+    expect(document.querySelector(".task-completion-toast")).toBe(null);
+  });
+});
+
 // The bridge behind these is the machine's own, handed over mid-test: a
 // workspace whose checkout this bridge holds no run for answers differently,
 // it is not another machine.

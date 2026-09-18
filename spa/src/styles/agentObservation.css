@@ -31,6 +31,10 @@
 .surface-checklist-context[hidden] { display:none; }
 .surface-checklist-context .agent-observation-step { flex:1; }
 .surface-checklist-context .agent-observation-checklist-meta { margin-left:auto; }
+.surface-row.surface-checklist-item:hover { background:transparent; }
+.surface-checklist-item.is-completed,
+.surface-checklist-item.is-completed .surface-row-label,
+.surface-checklist-item.is-completed .surface-row-note { color:var(--dim); }
 @media (max-width:760px) {
   .agent-observation-checklist summary { align-items:flex-start; flex-wrap:wrap; }
   .agent-observation-checklist-meta { width:100%; padding-left:18px; justify-content:flex-start; flex-wrap:wrap; }

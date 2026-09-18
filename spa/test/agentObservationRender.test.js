@@ -50,4 +50,10 @@ describe("the compact goal rendering", () => {
     expect(css).toMatch(/\.agent-observation-items\s*\{[^}]*max-height:[^;}]+;[^}]*overflow-y:auto/);
     expect(css).toMatch(/@media\s*\(max-width:760px\)[\s\S]*\.agent-observation-checklist-meta\s*\{[^}]*flex-wrap:wrap/);
   });
+
+  it("keeps task rows still on hover and mutes completed task copy", () => {
+    const css = readFileSync(resolve("src/styles/agentObservation.css"), "utf8");
+    expect(css).toMatch(/\.surface-row\.surface-checklist-item:hover\s*\{[^}]*background:transparent/);
+    expect(css).toMatch(/\.surface-checklist-item\.is-completed[\s\S]*color:var\(--dim\)/);
+  });
 });

@@ -409,7 +409,21 @@ describe("surfaceRows", () => {
     });
     expect(shells[0]).toMatchObject({ key: "s1", description: "npm test", exitCode: 0, tail: ["ok"] });
     const checklist = surfaceRows("checklist", checklistSnapshot);
-    expect(checklist.map((row) => row.subject)).toEqual(["Read the spec", "Write the test", "Make it pass"]);
+    expect(checklist.map((row) => row.subject)).toEqual(["Write the test", "Make it pass", "Read the spec"]);
+  });
+
+  it("stably moves completed checklist items after unfinished and unknown states", () => {
+    const checklist = surfaceRows("checklist", {
+      checklist: [
+        { id: "done-1", state: "completed" },
+        { id: "active-1", state: "in_progress" },
+        { id: "done-2", state: "completed" },
+        { id: "unknown", state: "waiting_for_input" },
+        { id: "active-2", state: "pending" },
+      ],
+    });
+
+    expect(checklist.map((row) => row.key)).toEqual(["active-1", "unknown", "active-2", "done-1", "done-2"]);
   });
 
   it("gives nothing for a kind the snapshot does not carry and nothing for a kind it cannot render", () => {
@@ -418,7 +432,7 @@ describe("surfaceRows", () => {
   });
 
   it("marks each row's state through the one state table", () => {
-    expect(surfaceRows("checklist", checklistSnapshot)[1].stateMark).toEqual(
+    expect(surfaceRows("checklist", checklistSnapshot).find((row) => row.key === "t2").stateMark).toEqual(
       surfaceStateMark("checklist", "in_progress"),
     );
   });

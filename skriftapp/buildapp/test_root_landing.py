@@ -321,6 +321,13 @@ def test_story_details_follow_the_scroll_position_instead_of_flipping():
     assert ".demo--review{" in css and "opacity:clamp(0,calc(var(--scene-local,0)/" in css
 
 
+def test_nav_blur_is_reserved_for_pointer_devices():
+    css = read_landing_file("cinematic.css").replace(" ", "")
+    # backdrop-filter over a moving story is a per-frame cost on tablets.
+    assert "@media(hover:hover){.cinematic-nav{" in css and "backdrop-filter:blur(18px)}}" in css
+    assert css.count("backdrop-filter") == 1
+
+
 def test_review_scene_shows_every_step_and_sizes_the_card_to_its_content():
     css = read_landing_file("cinematic.css").replace(" ", "")
     assert "aspect-ratio:4/3" not in css

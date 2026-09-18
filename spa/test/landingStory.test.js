@@ -166,7 +166,38 @@ describe("landing story browser behavior", () => {
     Object.defineProperty(window, "innerHeight", { value: 860, configurable: true });
     window.dispatchEvent(new Event("resize"));
     expect(window.scrollY).toBeCloseTo(story.offsetHeight);
+    expect(window.scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ behavior: "instant" }));
     expect(controller.getState().scene).toBe("download");
+    controller.destroy();
+  });
+
+  it("never moves the page for a resize that leaves the pinned stage the same size", () => {
+    // Safari on iPad fires resize as its toolbar shrinks during a scroll; the
+    // stage is sized in svh, so nothing about the story changed.
+    const { controller } = installWithResponsiveGeometry();
+    window.scrollY = 1000;
+    window.dispatchEvent(new Event("scroll"));
+    window.scrollTo.mockClear();
+    window.dispatchEvent(new Event("resize"));
+    window.dispatchEvent(new Event("resize"));
+    expect(window.scrollTo).not.toHaveBeenCalled();
+    expect(window.scrollY).toBe(1000);
+    controller.destroy();
+  });
+
+  it("keeps the same frame, instantly, when the pinned stage really changes size", () => {
+    const { controller } = installWithResponsiveGeometry();
+    window.scrollY = 1000;
+    window.dispatchEvent(new Event("scroll"));
+    const before = controller.getState();
+    window.scrollTo.mockClear();
+    Object.defineProperty(window, "innerHeight", { value: 700, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+    expect(window.scrollTo).toHaveBeenCalledTimes(1);
+    expect(window.scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: "instant" }));
+    const after = controller.getState();
+    expect(after.scene).toBe(before.scene);
+    expect(after.local).toBeCloseTo(before.local, 2);
     controller.destroy();
   });
 });

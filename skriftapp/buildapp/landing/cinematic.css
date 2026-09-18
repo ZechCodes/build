@@ -33,7 +33,8 @@ body.cinematic-page>footer{display:none}
 body.is-menu-open{overflow:hidden}
 .cinematic-page a:focus-visible,.cinematic-page button:focus-visible,.cinematic-page summary:focus-visible{outline:2px solid var(--cinematic-mint);outline-offset:4px}
 
-.cinematic-nav{position:fixed;inset:0 0 auto;z-index:50;height:var(--cinematic-nav);border-bottom:1px solid transparent;background:rgba(5,7,6,.72);backdrop-filter:blur(18px);transition:border-color .2s,background .2s}
+.cinematic-nav{position:fixed;inset:0 0 auto;z-index:50;height:var(--cinematic-nav);border-bottom:1px solid transparent;background:rgba(5,7,6,.86);transition:border-color .2s,background .2s}
+@media (hover:hover){.cinematic-nav{background:rgba(5,7,6,.72);backdrop-filter:blur(18px)}}
 .cinematic-nav:has(.cinematic-nav__links.is-open)::before{content:"";position:fixed;inset:var(--cinematic-nav) 0 0;background:rgba(5,7,6,.7)}
 .cinematic-nav.is-solid,.cinematic-nav:has(.cinematic-nav__links.is-open){border-bottom-color:var(--cinematic-line-soft);background:rgba(5,7,6,.94)}
 .cinematic-nav__bar{max-width:var(--cinematic-max);height:100%;margin:auto;padding:0 var(--cinematic-gutter);display:flex;align-items:center;gap:36px}

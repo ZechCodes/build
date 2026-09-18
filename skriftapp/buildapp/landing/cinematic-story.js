@@ -83,7 +83,7 @@ function setSceneInteractive(scene, interactive) {
 // the top of the page; later scenes rely on their scroll margin.
 function revealScene(scenes, sceneIndex) {
   if (sceneIndex === 0) {
-    window.scrollTo({ top: 0, behavior: "auto" });
+    window.scrollTo({ top: 0, behavior: "instant" });
     return;
   }
   scenes[sceneIndex]?.scrollIntoView({ block: "start" });
@@ -204,10 +204,12 @@ export function installCinematicStory({ story, stage }) {
     return true;
   }
 
+  // Corrections the story makes to its own position are instant: an animated
+  // correction fights whatever scroll the reader is in the middle of.
   function preserveAfterStory(offsetFromEnd, defer = false) {
     const restore = () => window.scrollTo({
       top: storyTop(story) + story.offsetHeight + offsetFromEnd,
-      behavior: "auto",
+      behavior: "instant",
     });
     if (defer) requestAnimationFrame(restore);
     else restore();
@@ -226,12 +228,17 @@ export function installCinematicStory({ story, stage }) {
   }
 
   function useEnhancedStory(previous, reader, preserveFrame) {
+    const height = `${(storyTravel(profile) + 1) * stageHeight(stage)}px`;
+    // Safari fires resize as its toolbar collapses during a scroll. The stage
+    // is sized in svh, so the pinned geometry is unchanged and the page must
+    // not be moved out from under the reader's finger.
+    const geometryChanged = story.style.getPropertyValue("--story-height") !== height;
     story.style.setProperty("--story-travel", String(storyTravel(profile)));
-    story.style.setProperty("--story-height", `${(storyTravel(profile) + 1) * stageHeight(stage)}px`);
-    if (preserveFrame && reader.inPinnedStory) {
+    story.style.setProperty("--story-height", height);
+    if (preserveFrame && geometryChanged && reader.inPinnedStory) {
       const travel = travelAtFrame(previous.sceneIndex, previous.local, profile);
-      window.scrollTo({ top: storyTop(story) + travel * stageHeight(stage), behavior: "auto" });
-    } else if (preserveFrame && reader.afterPinnedStory) {
+      window.scrollTo({ top: storyTop(story) + travel * stageHeight(stage), behavior: "instant" });
+    } else if (preserveFrame && geometryChanged && reader.afterPinnedStory) {
       preserveAfterStory(reader.offsetFromEnd);
     }
     measureFrame();

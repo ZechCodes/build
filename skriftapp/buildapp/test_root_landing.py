@@ -284,6 +284,17 @@ def test_reduced_motion_keeps_the_story_readable():
     assert ".story-scene" in css
 
 
+def test_static_story_reads_as_a_document_on_phones():
+    css = read_landing_file("cinematic.css")
+    compact = css.replace(" ", "")
+    # Scene anchors land below the fixed nav, scene renders blend into the page
+    # instead of sitting in black boxes, and the closing scene stacks on phones.
+    assert ".story-scene{" in compact and "scroll-margin-top:var(--cinematic-nav)" in compact
+    assert ".static-visualimg{" in compact and "mix-blend-mode:lighten" in compact
+    assert "aspect-ratio:3/4" not in compact
+    assert ".story-scene--download{display:block}" in compact
+
+
 def test_deploy_smoke_checks_the_new_story_and_critical_assets():
     workflow = CI_WORKFLOW_PATH.read_text()
     for expected in (

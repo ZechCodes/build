@@ -16,7 +16,9 @@ describe("landing story progression", () => {
     expect(storyTravel("compact")).toBeCloseTo(4.6);
     expect(profileForViewport(1440, 900)).toBe("desktop");
     expect(profileForViewport(900, 900)).toBe("tablet");
-    expect(profileForViewport(390, 844)).toBe("compact");
+    expect(profileForViewport(768, 1024)).toBe("tablet");
+    expect(profileForViewport(767, 1000)).toBe("static");
+    expect(profileForViewport(390, 844)).toBe("static");
     expect(profileForViewport(844, 390)).toBe("static");
   });
 
@@ -107,6 +109,19 @@ describe("landing story browser behavior", () => {
     expect(controller.getState().enhanced).toBe(false);
     expect(document.querySelector("[data-story]").dataset.storyMode).toBe("static");
     expect(document.querySelector("#download-story a").getAttribute("tabindex")).toBeNull();
+    controller.destroy();
+  });
+
+  it("returns to the top of the page when document flow starts at the first scene", () => {
+    const controller = install();
+    window.scrollY = 300;
+    window.dispatchEvent(new Event("scroll"));
+    expect(controller.getState().scene).toBe("start");
+    motionMatches = true;
+    motionListener({ matches: true });
+    expect(controller.getState().enhanced).toBe(false);
+    expect(window.scrollY).toBe(0);
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
     controller.destroy();
   });
 

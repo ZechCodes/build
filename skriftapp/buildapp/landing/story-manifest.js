@@ -92,11 +92,12 @@ export function clamp(value, minimum = 0, maximum = 1) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+// Phones read the story as a document: a pinned stage narrower than a tablet
+// cannot hold a headline, a device and a demonstration card at once.
 export function profileForViewport(width, height) {
-  if (height < STORY_PROFILES.compact.minHeight) return "static";
+  if (height < STORY_PROFILES.tablet.minHeight || width < STORY_PROFILES.tablet.minWidth) return "static";
   if (width >= STORY_PROFILES.desktop.minWidth && height >= STORY_PROFILES.desktop.minHeight) return "desktop";
-  if (width >= STORY_PROFILES.tablet.minWidth) return "tablet";
-  return "compact";
+  return "tablet";
 }
 
 export function storyTravel(profile) {

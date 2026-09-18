@@ -67,6 +67,16 @@ function setSceneInteractive(scene, interactive) {
   });
 }
 
+// The first scene starts under the fixed nav, so the document version of it is
+// the top of the page; later scenes rely on their scroll margin.
+function revealScene(scenes, sceneIndex) {
+  if (sceneIndex === 0) {
+    window.scrollTo({ top: 0, behavior: "auto" });
+    return;
+  }
+  scenes[sceneIndex]?.scrollIntoView({ block: "start" });
+}
+
 function applyFrame({ frame, stage, scenes, progressElement, positionElement }) {
   stage.dataset.scene = frame.scene;
   stage.dataset.profile = frame.profile;
@@ -192,7 +202,7 @@ export function installCinematicStory({ story, stage }) {
     clearEnhancedState({ stage, scenes });
     publish({ ...previous, profile: "static" }, false);
     if (preserveFrame && wasEnhanced && reader.inPinnedStory) {
-      requestAnimationFrame(() => scenes[previous.sceneIndex]?.scrollIntoView({ block: "start" }));
+      requestAnimationFrame(() => revealScene(scenes, previous.sceneIndex));
     } else if (preserveFrame && reader.afterPinnedStory) {
       preserveAfterStory(reader.offsetFromEnd, true);
     }

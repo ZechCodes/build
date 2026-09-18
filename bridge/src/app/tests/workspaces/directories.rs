@@ -238,3 +238,52 @@ fn a_directory_change_tells_the_browsers_standing_in_the_workspace() {
     assert_eq!(shrunk["ok"], true, "{shrunk:?}");
     assert!(state.changes().has_pending(), "and so is the removed one");
 }
+
+/// A remote has nothing on this device to cut a worktree from, so it is cloned
+/// into the workspace and is its own repository from then on — and removing it
+/// is the folder, with nothing to unregister.
+#[test]
+fn add_directory_clones_a_remote_into_the_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "code");
+    let origin = tmp.path().join("tokens.git");
+    let tokens = init_repo_named(tmp.path(), "tokens");
+    crate::git_fixture::git_in(
+        tmp.path(),
+        &[
+            "clone",
+            "--bare",
+            tokens.to_str().unwrap(),
+            origin.to_str().unwrap(),
+        ],
+    );
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    let workspace = create_workspace(&mut state, &project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+
+    let grown = state.handle(req(
+        "workspace.add_directory",
+        json!({"workspace_id": workspace_id, "remote": origin, "name": "tokens"}),
+    ));
+
+    assert_eq!(grown["ok"], true, "{grown:?}");
+    let cloned = &grown["result"]["directories"][1];
+    assert_eq!(cloned["name"], "tokens");
+    assert_eq!(cloned["is_git"], true, "{grown:?}");
+    let path = PathBuf::from(cloned["path"].as_str().unwrap());
+    assert!(path.join(".git").is_dir(), "a clone, not a worktree");
+    assert_eq!(head_of(&path), head_of(&tokens));
+
+    let shrunk = state.handle(req(
+        "workspace.remove_directory",
+        json!({"workspace_id": workspace_id, "directory_id": cloned["id"]}),
+    ));
+    assert_eq!(shrunk["ok"], true, "{shrunk:?}");
+    assert!(!path.exists(), "the clone is gone");
+    assert!(
+        tokens.join(".git").is_dir(),
+        "what it was cloned from stays"
+    );
+}

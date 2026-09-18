@@ -1115,3 +1115,47 @@ fn remove_source_refuses_a_source_the_project_does_not_have() {
     assert_eq!(refused["ok"], false, "{refused:?}");
     assert_eq!(refused["error_code"], "not_found", "{refused:?}");
 }
+
+/// A remote source is cloned into the project's own sources folder, the way
+/// one named at creation is, and is a source like any other afterwards.
+#[test]
+fn add_source_clones_a_remote_into_the_projects_sources_folder() {
+    let directory = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(directory.path(), "code");
+    let tokens = init_repo_named(directory.path(), "tokens");
+    let origin = directory.path().join("tokens.git");
+    git_in(
+        directory.path(),
+        &[
+            "clone",
+            "--bare",
+            tokens.to_str().unwrap(),
+            origin.to_str().unwrap(),
+        ],
+    );
+    let mut state = AppState::new_unrooted(
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    state.set_projects_dir(directory.path().join("projects"));
+    let project_id = state.add_project(repo, "main".to_string());
+
+    let added = state.handle(req(
+        "project.add_source",
+        json!({"project_id": project_id, "remote": origin, "name": "tokens"}),
+    ));
+
+    assert_eq!(added["ok"], true, "{added:?}");
+    let source = &added["result"]["sources"][1];
+    assert_eq!(source["name"], "tokens");
+    assert_eq!(source["is_git"], true, "{added:?}");
+    assert_eq!(source["remote"], origin.display().to_string());
+    assert!(
+        std::path::Path::new(source["path"].as_str().unwrap())
+            .join(".git")
+            .is_dir(),
+        "{added:?}"
+    );
+}

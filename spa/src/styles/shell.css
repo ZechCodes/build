@@ -761,7 +761,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    initial instead of a face off the same five tilings, and a squared-off
    bubble, so the strip says whose it is before the tip is read. */
 .rail-bubble-project { border-radius:9px; font:700 13px/1 var(--sans); }
-.rail-bubble-project .rail-glyph { border-radius:9px; }
+/* The pulse follows the shape it rings. */
+.rail-bubble-project.working::after,
+.rail-bubble-project.starting::after { border-radius:12px; }
 /* The line under it: everything below belongs to the work item on screen. */
 .rail-sep { flex:none; width:16px; height:1px; background:var(--line2); }
 .task-completion-toast { position:fixed; z-index:90; max-width:min(320px, calc(100vw - 20px)); max-height:30vh;
@@ -793,6 +795,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-count { position:absolute; inset:0; display:grid; place-items:center;
   color:var(--amber); font:700 11px/1 var(--mono); letter-spacing:-.02em;
   pointer-events:none; }
+/* A bubble that speaks in a glyph rather than a pattern — the project's initial
+   — makes the same room: the count sits where the mark does, so the mark drops
+   back under it the way a pattern does. */
+.rail-bubble:has(> .rail-count:not([hidden])) .rail-bubble-label { opacity:.25; }
 /* Reduced motion drops the pulse ring. The patterns need nothing here — the
    painter reads the same preference and holds a single frame. */
 @media (prefers-reduced-motion: reduce) {

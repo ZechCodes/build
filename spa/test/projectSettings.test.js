@@ -261,3 +261,82 @@ describe("project deletion", () => {
     expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
   });
 });
+
+// The project's folders are what every new workspace is cut from, so the sheet
+// that shows them is where one is added and where one is taken off.
+describe("project sources", () => {
+  const SOURCED = {
+    ...PROJECT,
+    sources: [
+      { id: "source-1", name: "build", mount: "build", path: "/Users/z/Projects/build", is_git: true, base_branch: "main" },
+      { id: "source-2", name: "assets", mount: "assets", path: "/Users/z/Projects/assets", is_git: false },
+    ],
+  };
+  const caller = (answer = SOURCED) =>
+    vi.fn(async (method) => (method === "project.list" ? { projects: [answer] } : answer));
+
+  it("offers a remove beside every folder and repaints from what the bridge answers", async () => {
+    const shrunk = { ...SOURCED, sources: [SOURCED.sources[0]] };
+    const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [SOURCED] } : shrunk));
+    openProjectSettings("proj-1", { callRpc });
+    await flush();
+    expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(2);
+
+    document.querySelector('[data-remove-source="source-2"]').click();
+    await flush();
+
+    expect(callRpc).toHaveBeenCalledWith("project.remove_source", { project_id: "proj-1", source_id: "source-2" });
+    expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(1);
+  });
+
+  it("says in the sheet why a removal was refused", async () => {
+    const callRpc = vi.fn(async (method) => {
+      if (method === "project.list") return { projects: [SOURCED] };
+      throw new Error("a project must have at least one source");
+    });
+    openProjectSettings("proj-1", { callRpc });
+    await flush();
+    document.querySelector('[data-remove-source="source-2"]').click();
+    await flush();
+    expect(document.getElementById("pssrcerr").textContent).toContain("at least one source");
+    expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(2);
+  });
+
+  it("adds a Git remote as a folder, under the name it was given", async () => {
+    const callRpc = caller();
+    openProjectSettings("proj-1", { callRpc });
+    await flush();
+    document.getElementById("psaddremote").click();
+    document.getElementById("psremoteurl").value = "git@github.com:8ly/tokens.git";
+    document.getElementById("pssourcename").value = "tokens";
+    document.getElementById("pssourceadd").click();
+    await flush();
+
+    expect(callRpc).toHaveBeenCalledWith("project.add_source", {
+      project_id: "proj-1",
+      remote: "git@github.com:8ly/tokens.git",
+      name: "tokens",
+    });
+  });
+
+  it("adds a folder on the device through the browser it opens", async () => {
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "project.list") return { projects: [SOURCED] };
+      if (method === "settings.get") return { projects_dir: "/Users/z/Projects" };
+      if (method === "fs.list") {
+        return { path: "/Users/z/Projects", parent: "/Users/z", is_git: false, entries: [{ name: "docs", path: "/Users/z/Projects/docs", is_git: false, is_hidden: false }] };
+      }
+      return { ...SOURCED, sources: [...SOURCED.sources, { id: "source-3", name: "docs", mount: "docs", path: params.path, is_git: false }] };
+    });
+    openProjectSettings("proj-1", { callRpc });
+    await flush();
+
+    document.getElementById("psaddfolder").click();
+    await flush();
+    document.querySelector('#sheet .use[data-path="/Users/z/Projects/docs"]').click();
+    await flush();
+
+    expect(callRpc).toHaveBeenCalledWith("project.add_source", { project_id: "proj-1", path: "/Users/z/Projects/docs" });
+    expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(3);
+  });
+});

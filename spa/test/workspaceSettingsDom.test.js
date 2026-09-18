@@ -225,3 +225,99 @@ describe("the defaults a workspace layers over the account's", () => {
     });
   });
 });
+
+// The workspace's own folders: what it was cut with, plus whatever was added
+// to it since. The project's sources are the offer, not the contents.
+describe("workspace directories", () => {
+  const DETAIL = {
+    workspace_id: "ws-1",
+    project_id: "proj-1",
+    name: "payment-work",
+    directories: [
+      { id: "ws-1:source-1", source_id: "source-1", name: "bridge", path: "/w/ws-1/bridge", is_git: true, branch: "build/payment-work", status: "ready" },
+    ],
+  };
+  const PROJECT = {
+    project_id: "proj-1",
+    name: "build",
+    sources: [
+      { id: "source-1", name: "bridge", mount: "bridge", is_git: true },
+      { id: "source-2", name: "spa", mount: "spa", is_git: true },
+    ],
+  };
+  const caller = (answer = DETAIL) =>
+    vi.fn(async (method) => {
+      if (method === "workspace.get") return DETAIL;
+      if (method === "project.list") return { projects: [PROJECT] };
+      return answer;
+    });
+
+  it("lists the directories the workspace holds, each with a way to remove it", async () => {
+    const callRpc = caller();
+    open({ callRpc });
+    await flush();
+    expect(callRpc).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1" });
+    expect($("#sheet [data-remove-directory]").dataset.removeDirectory).toBe("ws-1:source-1");
+    expect($("#wsdirs").textContent).toContain("bridge");
+  });
+
+  it("removes one on the caller it was handed and repaints from the answer", async () => {
+    const callRpc = caller({ ...DETAIL, directories: [] });
+    open({ callRpc });
+    await flush();
+    $("[data-remove-directory]").click();
+    await flush();
+    expect(callRpc).toHaveBeenCalledWith("workspace.remove_directory", {
+      workspace_id: "ws-1",
+      directory_id: "ws-1:source-1",
+    });
+    expect($("#sheet [data-remove-directory]")).toBeNull();
+  });
+
+  it("offers the project's sources this workspace was not cut with, and adds the chosen one", async () => {
+    const grown = { ...DETAIL, directories: [...DETAIL.directories, { id: "ws-1:source-2", source_id: "source-2", name: "spa", path: "/w/ws-1/spa", is_git: true, status: "ready" }] };
+    const callRpc = caller(grown);
+    open({ callRpc });
+    await flush();
+    const offered = [...$("#wsdiradd").options].map((option) => option.value);
+    expect(offered).toContain("source-2");
+    expect(offered).not.toContain("source-1");
+
+    pick("#wsdiradd", "source-2");
+    $("#wsdiraddgo").click();
+    await flush();
+
+    expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", { workspace_id: "ws-1", source_id: "source-2" });
+    expect($("#sheet").textContent).toContain("spa");
+  });
+
+  it("adds a Git remote as a directory of its own", async () => {
+    const callRpc = caller();
+    open({ callRpc });
+    await flush();
+    pick("#wsdiradd", "remote");
+    $("#wsdirremote").value = "git@github.com:8ly/tokens.git";
+    $("#wsdirname").value = "tokens";
+    $("#wsdiraddgo").click();
+    await flush();
+    expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", {
+      workspace_id: "ws-1",
+      remote: "git@github.com:8ly/tokens.git",
+      name: "tokens",
+    });
+  });
+
+  it("says in the sheet why a directory change was refused", async () => {
+    const callRpc = vi.fn(async (method) => {
+      if (method === "workspace.get") return DETAIL;
+      if (method === "project.list") return { projects: [PROJECT] };
+      throw new Error("another filesystem operation is still running");
+    });
+    open({ callRpc });
+    await flush();
+    $("[data-remove-directory]").click();
+    await flush();
+    expect($("#wsdirerr").textContent).toContain("still running");
+    expect($("#sheet [data-remove-directory]")).not.toBeNull();
+  });
+});

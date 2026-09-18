@@ -42,6 +42,54 @@ const nameFieldHtml = (name) => `
     </div>
     <div class="adderr" id="wserr" role="alert"></div>`;
 
+/** The workspace's own folders, filled in once the machine answers. What it was
+ *  cut with plus whatever was added since — the project's sources are the
+ *  offer, not the contents. */
+const directoriesHtml = () => `
+    <section class="field" id="wsdirs" style="margin-top:16px">
+      <h4>Directories</h4>
+      <div class="sub">Loading…</div>
+    </section>`;
+
+const directoryRowHtml = (directory) => `<div class="row" style="align-items:baseline">
+      <div><div>${esc(directory.name || directory.source_id || "directory")}</div>
+        <div class="dim">${esc(directory.path || "")}${directory.branch ? ` · ${esc(directory.branch)}` : ""}${directory.status && directory.status !== "ready" ? ` · ${esc(directory.status)}` : ""}</div></div>
+      <button class="btn danger mini" type="button" style="margin-left:auto" data-remove-directory="${esc(directory.id)}">Remove</button>
+    </div>`;
+
+/** The offer: every project source this workspace was not cut with, and the two
+ *  ways to name a folder that is nobody's source. */
+const addDirectoryHtml = (offered) => `<div class="field">
+      <label for="wsdiradd">Add a directory</label>
+      <select id="wsdiradd">
+        <option value="">Choose what to add…</option>
+        ${offered.map((source) => `<option value="${esc(source.id)}">${esc(source.name || source.id)} (project folder)</option>`).join("")}
+        <option value="path">A folder on this device…</option>
+        <option value="remote">A Git remote…</option>
+      </select>
+      <div id="wsdirfields"></div>
+      <div class="row"><button class="btn primary" id="wsdiraddgo" type="button" style="margin-left:auto" disabled>Add directory</button></div>
+    </div>`;
+
+const directoryFieldsHtml = (kind) => {
+  if (kind === "path") {
+    return '<label for="wsdirpath">Folder</label><input id="wsdirpath" style="width:100%" placeholder="/home/you/code/docs" autocomplete="off"><label for="wsdirname">Name</label><input id="wsdirname" style="width:100%" autocomplete="off">';
+  }
+  if (kind === "remote") {
+    return '<label for="wsdirremote">Clone url</label><input id="wsdirremote" style="width:100%" placeholder="git@github.com:org/repo.git" autocomplete="off"><label for="wsdirname">Name</label><input id="wsdirname" style="width:100%" autocomplete="off">';
+  }
+  return "";
+};
+
+const directoriesBodyHtml = (detail, offered) => {
+  const directories = detail.directories || [];
+  return `<h4>Directories</h4>
+      <p class="sub">The folders this workspace holds. Removing one hands its checkout back to the repository it was cut from and takes the folder; anything in it that is nowhere else goes with it.</p>
+      ${directories.length ? directories.map(directoryRowHtml).join("") : '<div class="sub">This workspace holds no directories.</div>'}
+      ${addDirectoryHtml(offered)}
+      <div class="adderr" id="wsdirerr" role="alert"></div>`;
+};
+
 const dangerZoneHtml = () => `
     <section class="field" style="margin-top:24px;border-top:1px solid var(--line);padding-top:16px">
       <h4>Delete workspace</h4>
@@ -63,6 +111,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, storage = l
   sheet.innerHTML = settingsSheetHtml({
     title: "Workspace settings",
     bodyHtml: `${nameFieldHtml(workspace.name)}
+      ${directoriesHtml()}
       ${harnessDefaultsPanelHtml({ prefix: PREFIX, title: "🤖 Agent defaults here", blurb: DEFAULTS_BLURB })}
       ${dangerZoneHtml()}`,
   });
@@ -76,6 +125,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, storage = l
   $("#wscancel").onclick = close;
   wireName(workspace, { callRpc, close, onRenamed });
   $("#wsdelete").onclick = () => void deleteWorkspace(workspace, { callRpc, close, onDeleted, storage });
+  void mountDirectories(workspace, { callRpc, current });
   Promise.resolve(catalog)
     .then((offered) => {
       if (!current()) return;
@@ -86,6 +136,94 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, storage = l
       });
     })
     .catch(() => {});
+}
+
+
+/** Read what this workspace holds and what its project could give it, then
+ *  paint the panel. An answer that lands after the reader moved on writes
+ *  nothing: the sheet on screen is somebody else's now. */
+async function mountDirectories(workspace, { callRpc, current }) {
+  let offered = [];
+  const paint = (detail) => {
+    if (!current()) return;
+    const host = $("#wsdirs");
+    if (!host) return;
+    host.innerHTML = directoriesBodyHtml(detail, offered);
+    wireDirectories(workspace, { callRpc, paint });
+  };
+  let detail;
+  try {
+    detail = await callRpc("workspace.get", { workspace_id: workspace.id });
+    offered = await offeredSources(detail, callRpc);
+  } catch (thrown) {
+    if (!current()) return;
+    const host = $("#wsdirs");
+    if (host) host.innerHTML = `<h4>Directories</h4><div class="sub">${esc(thrown.message)}</div>`;
+    return;
+  }
+  paint(detail);
+}
+
+/** The project's sources this workspace has no directory for. A bridge that
+ *  cannot answer the project list offers none rather than failing the panel. */
+async function offeredSources(detail, callRpc) {
+  if (!detail.project_id) return [];
+  const listed = await callRpc("project.list").catch(() => ({}));
+  const project = (listed.projects || []).find((candidate) => candidate.project_id === detail.project_id);
+  const held = new Set((detail.directories || []).map((directory) => directory.source_id));
+  return (project?.sources || []).filter((source) => !held.has(source.id));
+}
+
+function wireDirectories(workspace, { callRpc, paint }) {
+  const write = async (method, params, button) => {
+    const error = $("#wsdirerr");
+    error.textContent = "";
+    button.disabled = true;
+    try {
+      paint(await callRpc(method, params));
+    } catch (thrown) {
+      button.disabled = false;
+      if (error.isConnected) error.textContent = thrown.message;
+      else notifyError("The workspace's directories were not changed", thrown.message);
+    }
+  };
+  document.querySelectorAll("#wsdirs [data-remove-directory]").forEach((button) => {
+    button.onclick = () =>
+      void write(
+        "workspace.remove_directory",
+        { workspace_id: workspace.id, directory_id: button.dataset.removeDirectory },
+        button,
+      );
+  });
+  const choice = $("#wsdiradd");
+  const go = $("#wsdiraddgo");
+  choice.onchange = () => {
+    $("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
+    go.disabled = !choice.value;
+  };
+  go.onclick = () => {
+    const params = addDirectoryParams(choice.value);
+    if (!params) {
+      $("#wsdirerr").textContent = choice.value === "remote" ? "A Git remote needs a clone url." : "Name the folder to add.";
+      return;
+    }
+    void write("workspace.add_directory", { workspace_id: workspace.id, ...params }, go);
+  };
+}
+
+/** What the chosen row asks for, or `null` when it is not filled in yet. */
+function addDirectoryParams(kind) {
+  const name = $("#wsdirname")?.value.trim();
+  const named = name ? { name } : {};
+  if (kind === "path") {
+    const path = $("#wsdirpath").value.trim();
+    return path ? { path, ...named } : null;
+  }
+  if (kind === "remote") {
+    const remote = $("#wsdirremote").value.trim();
+    return remote ? { remote, ...named } : null;
+  }
+  return kind ? { source_id: kind } : null;
 }
 
 /** Save is off until the name actually changed: a Save that does nothing is a

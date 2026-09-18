@@ -7,7 +7,7 @@ member" action — or it is an administrator, so the operator is never locked ou
 app they administer. A new way in is a new rule in the table, not a new branch.
 
 Every gate reads this module: ``desktop_auth.build_auth_guard`` (and so every route
-carrying it, device approval included), ``BuildController.index`` and ``/app/downloads``.
+carrying it, device approval included), ``BuildController.index``. Public downloads do not require membership.
 """
 
 from __future__ import annotations

@@ -1,0 +1,446 @@
+{
+  "version": 2,
+  "units": "meters",
+  "coordinate_system": {
+    "up": "+Y",
+    "forward": "+Z",
+    "right": "+X"
+  },
+  "origin": "device center; laptop origin is rear-center hinge projection on base underside",
+  "devices": {
+    "laptop": {
+      "dimensions_m": [
+        0.3126,
+        0.2215,
+        0.2222
+      ],
+      "body_size_m": [
+        0.3126,
+        0.011,
+        0.2212
+      ],
+      "body_corner_radius_m": 0.0095,
+      "lid_size_m": [
+        0.3126,
+        0.211,
+        0.004
+      ],
+      "lid_corner_radius_m": 0.006,
+      "screen_size_m": [
+        0.3024,
+        0.1964
+      ],
+      "screen_center_m": [
+        0,
+        0.116,
+        0.00112
+      ],
+      "screen_corner_radius_m": 0.0045,
+      "screen_corners_m": [
+        [
+          -0.1512,
+          0.0178,
+          0.00112
+        ],
+        [
+          0.1512,
+          0.0178,
+          0.00112
+        ],
+        [
+          0.1512,
+          0.2142,
+          0.00112
+        ],
+        [
+          -0.1512,
+          0.2142,
+          0.00112
+        ]
+      ],
+      "hinge_pivot_m": [
+        0,
+        0.0096,
+        0.0004
+      ],
+      "file": "laptop.glb",
+      "bytes": 952960,
+      "triangles": 18214,
+      "screen_node": "screen",
+      "screen_material": "ScreenDesktop",
+      "low_detail_file": "laptop-low.glb",
+      "low_detail_bytes": 333732,
+      "low_detail_triangles": 6886
+    },
+    "tablet": {
+      "dimensions_m": [
+        0.2816,
+        0.2155,
+        0.0051
+      ],
+      "body_size_m": [
+        0.2816,
+        0.2155,
+        0.0051
+      ],
+      "body_corner_radius_m": 0.0095,
+      "screen_size_m": [
+        0.264,
+        0.198
+      ],
+      "screen_center_m": [
+        0,
+        0,
+        0.00267
+      ],
+      "screen_corner_radius_m": 0.0068,
+      "screen_corners_m": [
+        [
+          -0.132,
+          -0.099,
+          0.00267
+        ],
+        [
+          0.132,
+          -0.099,
+          0.00267
+        ],
+        [
+          0.132,
+          0.099,
+          0.00267
+        ],
+        [
+          -0.132,
+          0.099,
+          0.00267
+        ]
+      ],
+      "file": "tablet.glb",
+      "bytes": 110544,
+      "triangles": 2246,
+      "screen_node": "screen",
+      "screen_material": "ScreenTablet"
+    },
+    "phone": {
+      "dimensions_m": [
+        0.0719,
+        0.15,
+        0.00875
+      ],
+      "body_size_m": [
+        0.0719,
+        0.15,
+        0.00875
+      ],
+      "body_corner_radius_m": 0.014,
+      "screen_size_m": [
+        0.0664,
+        0.14435
+      ],
+      "screen_center_m": [
+        0,
+        0,
+        0.0045
+      ],
+      "screen_corner_radius_m": 0.0115,
+      "screen_corners_m": [
+        [
+          -0.0332,
+          -0.072175,
+          0.0045
+        ],
+        [
+          0.0332,
+          -0.072175,
+          0.0045
+        ],
+        [
+          0.0332,
+          0.072175,
+          0.0045
+        ],
+        [
+          -0.0332,
+          0.072175,
+          0.0045
+        ]
+      ],
+      "file": "phone.glb",
+      "bytes": 143636,
+      "triangles": 3150,
+      "screen_node": "screen",
+      "screen_material": "ScreenPhone"
+    }
+  },
+  "renders": {
+    "hero-laptop": {
+      "file": "hero-laptop.webp",
+      "width": 1600,
+      "height": 1180,
+      "bytes": 81732,
+      "content_bounds_px_bottom_left": [
+        85,
+        93,
+        1392,
+        981
+      ]
+    },
+    "laptop": {
+      "file": "laptop.webp",
+      "width": 1200,
+      "height": 900,
+      "bytes": 43374,
+      "content_bounds_px_bottom_left": [
+        63,
+        77,
+        1045,
+        736
+      ]
+    },
+    "tablet": {
+      "file": "tablet.webp",
+      "width": 1000,
+      "height": 760,
+      "bytes": 30158,
+      "content_bounds_px_bottom_left": [
+        173,
+        43,
+        728,
+        650
+      ]
+    },
+    "phone": {
+      "file": "phone.webp",
+      "width": 640,
+      "height": 1040,
+      "bytes": 21858,
+      "content_bounds_px_bottom_left": [
+        144,
+        160,
+        359,
+        732
+      ]
+    },
+    "mobile-hero": {
+      "file": "mobile-hero.webp",
+      "width": 1200,
+      "height": 1350,
+      "bytes": 51864,
+      "content_bounds_px_bottom_left": [
+        99,
+        199,
+        977,
+        930
+      ]
+    },
+    "scene-01-desktop": {
+      "file": "scene-01-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 48382,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-01-mobile": {
+      "file": "scene-01-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 20966,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-02-desktop": {
+      "file": "scene-02-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 20944,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-02-mobile": {
+      "file": "scene-02-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 15954,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-03-desktop": {
+      "file": "scene-03-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 27046,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-03-mobile": {
+      "file": "scene-03-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 22896,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-04-desktop": {
+      "file": "scene-04-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 33848,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-04-mobile": {
+      "file": "scene-04-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 19226,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-05-desktop": {
+      "file": "scene-05-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 41140,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-05-mobile": {
+      "file": "scene-05-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 23280,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-06-desktop": {
+      "file": "scene-06-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 30830,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-06-mobile": {
+      "file": "scene-06-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 31314,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "desktop-poster": {
+      "file": "desktop-poster.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 30830,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "mobile-poster": {
+      "file": "mobile-poster.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 31314,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "social-preview": {
+      "file": "social-preview.webp",
+      "width": 1200,
+      "height": 630,
+      "bytes": 23708,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1200,
+        630
+      ]
+    }
+  },
+  "source": {
+    "blend": "build-devices.blend",
+    "generator": "build_device_assets.py",
+    "blender": "4.5.14 LTS"
+  },
+  "screen_fixtures": {
+    "laptop": {
+      "file": "screens/ui01-desktop.webp",
+      "sha256": "3689911c46b9b201949130d16642bcec2a7ba1479eba05b6196d227c3e5d6f4b",
+      "packed_in_blend": true
+    },
+    "tablet": {
+      "file": "screens/ui04-tablet.webp",
+      "sha256": "51a4a7dce0e28a452e9875fdede3be69d56efd90cc3009a5279c13d026be7a60",
+      "packed_in_blend": true
+    },
+    "phone": {
+      "file": "screens/ui02-mobile.webp",
+      "sha256": "61dab5eba7d9385ae268d6be82e0249fccc3101d80fefd8e408160e3f90192d2",
+      "packed_in_blend": true
+    }
+  },
+  "screen_provenance": "Reconstructed demonstration fixtures from current Build renderers; not a live-host capture.",
+  "licensing": {
+    "geometry": "Original geometry created for Build; no third-party geometry or materials.",
+    "screen_ui": "Reconstructed Build demonstration fixtures generated from current project renderers; retain project asset terms.",
+    "external_assets": "None."
+  }
+}

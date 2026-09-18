@@ -1,13 +1,4 @@
 // @vitest-environment jsdom
-// Mounting the downloads block into a host that already holds other content:
-// the placeholder is what ships in the html, the api's answer replaces it, and
-// a refusal degrades to one line without taking the rest of the screen with it.
-//
-// The one-liner the api paints carries a token that lives ten minutes, so Copy
-// is where the freshness rule lives: a line the human is copying a minute or
-// more after it was painted is re-minted first, and what lands on the clipboard
-// is what is on screen.
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { downloadsPlaceholderHtml, mountDownloads } from "../src/core/downloads.js";
 import { asset, downloadsPayload, mintedCommand } from "./downloadsFixture.js";
@@ -58,41 +49,20 @@ describe("mountDownloads", () => {
     expect(document.getElementById("downloadserr").textContent).toBe("");
   });
 
-  it("copies the line on screen while it is still fresh, without spending a mint", async () => {
+  it("copies the public bridge line even after the page has been open for hours", async () => {
     await mount();
-    clock += MINUTE;
+    clock += 180 * MINUTE;
     await copy();
     expect(mintInstallCommand).not.toHaveBeenCalled();
     expect(clipboard.writeText).toHaveBeenCalledWith(DOWNLOADS.install_command);
   });
 
-  it("re-mints a line older than a minute, repaints it, and copies the fresh one", async () => {
+  it("copies the desktop installer independently of the bridge", async () => {
     await mount();
-    clock += MINUTE + 1;
-    await copy();
-    expect(mintInstallCommand).toHaveBeenCalledTimes(1);
-    expect(document.getElementById("installcmd").textContent).toBe(mintedCommand());
-    expect(clipboard.writeText).toHaveBeenCalledWith(mintedCommand());
-  });
-
-  it("counts the age from the last mint, so a second Copy right after is free", async () => {
-    await mount();
-    clock += MINUTE + 1;
-    await copy();
-    await copy();
-    expect(mintInstallCommand).toHaveBeenCalledTimes(1);
-    expect(clipboard.writeText).toHaveBeenLastCalledWith(mintedCommand());
-  });
-
-  it("copies the line on screen when the re-mint refuses — the api is the one judge", async () => {
-    mintInstallCommand = vi.fn(async () => {
-      throw new Error("invite only");
-    });
-    await mount();
-    clock += MINUTE + 1;
-    await copy();
-    expect(document.getElementById("installcmd").textContent).toBe(DOWNLOADS.install_command);
-    expect(clipboard.writeText).toHaveBeenCalledWith(DOWNLOADS.install_command);
+    document.getElementById("desktopcopycmd").click();
+    await flush();
+    expect(clipboard.writeText).toHaveBeenCalledWith(DOWNLOADS.desktop_install_command);
+    expect(mintInstallCommand).not.toHaveBeenCalled();
   });
 
   it("says Copied for a moment, then goes back to Copy", async () => {

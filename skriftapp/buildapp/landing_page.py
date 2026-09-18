@@ -23,6 +23,11 @@ LINK_FRAGMENT_NAME = "panel-link.html"
 BUTTON_FRAGMENT_NAME = "panel-button.html"
 NO_DESCRIPTION = ""
 NO_SCRIPTS = ""
+DEFAULT_FOOTER = (
+    '<footer class="rule-top"><div class="content-container footer-bar">'
+    '<span>LOCAL-FIRST // E2E ENCRYPTED</span>'
+    '<span>© 2026 BUILD · GETBUILD.ING</span></div></footer>'
+)
 
 HOME_PATH = "/"
 HOME_LINK_LABEL = "home page"
@@ -67,7 +72,10 @@ class Link:
 HOME_LINK = Link(label=HOME_LINK_LABEL, href=HOME_PATH)
 
 
-def render_shell(*, title: str, description: str, body: str, scripts: str) -> str:
+def render_shell(
+    *, title: str, description: str, body: str, scripts: str,
+    head: str = "", footer: str | None = None, body_class: str = "",
+) -> str:
     return fill_slots(
         read_landing_file(SHELL_NAME),
         {
@@ -75,6 +83,9 @@ def render_shell(*, title: str, description: str, body: str, scripts: str) -> st
             "description": description,
             "body": body,
             "scripts": scripts,
+            "head": head,
+            "footer": DEFAULT_FOOTER if footer is None else footer,
+            "body_attributes": f' class="{escape(body_class, quote=True)}"' if body_class else "",
         },
     )
 

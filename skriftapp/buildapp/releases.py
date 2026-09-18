@@ -1,128 +1,96 @@
-"""Where the bridge comes from, and every string that says so.
-
-One repository holds the code, the workflow and the releases: ``ZechCodes/build-web``.
-One table says what is downloadable and which segment addresses it. The api serves
-every download from its own origin behind the alpha gate, so the URLs here are the
-api's, not GitHub's — the only public GitHub URLs left are the ones an asset source
-falls back to once the repository is public.
-
-The api knows no version numbers, because "latest" is the version. Templates, the SPA
-and install.sh carry no URLs of their own; they render or mirror what this module says.
-"""
+"""Public release locations shared by download metadata and website installers."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+import re
+from collections.abc import Mapping
 from pathlib import Path
 
-from buildapp.landing_page import fill_slots
-
-#: The one repository. Code, release workflow and release assets all live here.
-GITHUB_OWNER = "ZechCodes"
-GITHUB_REPO = "build-web"
-REPOSITORY = f"{GITHUB_OWNER}/{GITHUB_REPO}"
-
-#: (key, human label). Order is the order the SPA lists them in.
+DEFAULT_RELEASES_REPO = "ZechCodes/build-releases"
+RELEASES_REPO_ENV = "RELEASES_REPO"
 PLATFORMS: tuple[tuple[str, str], ...] = (
     ("macos-arm64", "macOS · Apple silicon"),
     ("macos-x86_64", "macOS · Intel"),
     ("linux-x86_64", "Linux · x86_64"),
     ("linux-aarch64", "Linux · arm64"),
 )
-
-ASSET_NAME_TEMPLATE = "build-bridge-{key}.tar.gz"
 CHECKSUMS_ASSET = "SHA256SUMS"
 SIGNATURE_ASSET = "SHA256SUMS.sigstore.json"
-
 DOWNLOADS_PATH = "/app/downloads"
 DOWNLOAD_TOKEN_PATH = f"{DOWNLOADS_PATH}/token"
-INSTALL_SCRIPT_PATH = "/install.sh"
-#: The query parameter a download token rides in, on /install.sh and every asset.
+# Retained for previously issued download tokens and their authentication helper.
 DOWNLOAD_TOKEN_PARAM = "t"
+INSTALL_SCRIPT_PATH = "/install.sh"
+DESKTOP_INSTALL_SCRIPT_PATH = "/install-desktop.sh"
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+INSTALL_SCRIPT_FILE = SCRIPTS_DIR / "install.sh"
+DESKTOP_INSTALL_SCRIPT_FILE = SCRIPTS_DIR / "install-desktop.sh"
 
-_RELEASES_LATEST = f"https://github.com/{REPOSITORY}/releases/latest"
 
-#: ``?`` is a glob character in sh, so the URL is double-quoted.
-INSTALL_COMMAND_TEMPLATE = 'curl -fsSL "{install_script_url}?t={token}" | sh'
-
-#: The script the api serves at /install.sh: the repo's own copy in a source tree,
-#: ``/scripts/install.sh`` in the image (Containerfile COPY).
-INSTALL_SCRIPT_FILE = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
-API_BASE_URL_SLOT = "api_base_url"
-DOWNLOAD_TOKEN_SLOT = "download_token"
+def releases_repo(environment: Mapping[str, str] | None = None) -> str:
+    environment = os.environ if environment is None else environment
+    repo = environment.get(RELEASES_REPO_ENV, DEFAULT_RELEASES_REPO).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", repo):
+        raise ValueError("RELEASES_REPO must be a GitHub owner/repository")
+    return repo
 
 
 def asset_name(key: str) -> str:
-    return ASSET_NAME_TEMPLATE.format(key=key)
+    return f"build-bridge-{key}.tar.gz"
 
 
-@dataclass(frozen=True)
-class Downloadable:
-    """One thing the download route will serve: the release asset it names, and
-    whether fetching it spends the caller's one-use token."""
-
-    name: str
-    spends_token: bool
-
-
-#: Every downloadable, keyed by the URL segment that addresses it. A platform key
-#: fetches that platform's tarball; the two support files are addressed by their asset
-#: name. Anything else is a 404. Only a tarball spends the token — install.sh fetches
-#: the checksums and the signature first and the tarball last.
-DOWNLOADABLE: dict[str, Downloadable] = {
-    **{key: Downloadable(asset_name(key), True) for key, _ in PLATFORMS},
-    CHECKSUMS_ASSET: Downloadable(CHECKSUMS_ASSET, False),
-    SIGNATURE_ASSET: Downloadable(SIGNATURE_ASSET, False),
+DOWNLOADABLE: dict[str, str] = {
+    **{key: asset_name(key) for key, _ in PLATFORMS},
+    CHECKSUMS_ASSET: CHECKSUMS_ASSET,
+    SIGNATURE_ASSET: SIGNATURE_ASSET,
 }
 
 
 def download_url(public_base_url: str, segment: str) -> str:
-    """Where a browser or install.sh fetches one downloadable from — this deployment,
-    never GitHub."""
     return f"{public_base_url.rstrip('/')}{DOWNLOADS_PATH}/{segment}"
 
 
-def latest_release_url() -> str:
-    return _RELEASES_LATEST
+def latest_release_url(repo: str | None = None) -> str:
+    return f"https://github.com/{repo or releases_repo()}/releases/latest"
 
 
-def latest_asset_url(name: str) -> str:
-    """The anonymous GitHub download URL. Only reachable while the repository is
-    public — the public asset source is the one caller."""
-    return f"{_RELEASES_LATEST}/download/{name}"
+def desktop_release_url() -> str:
+    return f"https://github.com/{releases_repo()}/releases"
 
 
-def install_script_url(public_base_url: str) -> str:
-    return f"{public_base_url.rstrip('/')}{INSTALL_SCRIPT_PATH}"
+def latest_asset_url(name: str, repo: str | None = None) -> str:
+    return f"{latest_release_url(repo)}/download/{name}"
 
 
-def install_command(public_base_url: str, token: str) -> str:
-    """The one-liner a human copies. Derived from this deployment's own origin, so a
-    dev stack shows its own host rather than production's, and carrying the token
-    because the install runs with no browser session."""
-    return INSTALL_COMMAND_TEMPLATE.format(
-        install_script_url=install_script_url(public_base_url), token=token
+def install_script_url(public_base_url: str, *, desktop: bool = False) -> str:
+    path = DESKTOP_INSTALL_SCRIPT_PATH if desktop else INSTALL_SCRIPT_PATH
+    return f"{public_base_url.rstrip('/')}{path}"
+
+
+def install_command(public_base_url: str, *, desktop: bool = False) -> str:
+    return f'curl -fsSL "{install_script_url(public_base_url, desktop=desktop)}" | sh'
+
+
+def render_install_script(script_text: str) -> str:
+    """Override only the checked-in default; retain the installer's runtime override.
+
+    Repository validation prevents configuration from injecting shell syntax.
+    """
+    return script_text.replace(
+        f'DEFAULT_REPO="{DEFAULT_RELEASES_REPO}"',
+        f'DEFAULT_REPO="{releases_repo()}"',
     )
 
 
-def render_install_script(script_text: str, public_base_url: str, token: str) -> str:
-    """The served install script: the file on disk with its two slots filled. Both are
-    always filled — an unfilled placeholder would reach a shell."""
-    return fill_slots(
-        script_text,
-        {API_BASE_URL_SLOT: public_base_url, DOWNLOAD_TOKEN_SLOT: token},
-    )
-
-
-def downloads_payload(
-    public_base_url: str, token: str, releases_url: str | None
-) -> dict:
-    """What ``GET /app/downloads`` answers. Every download URL is this api's own; the
-    releases link is whatever the asset source says it is, including nothing."""
+def downloads_payload(public_base_url: str, releases_url: str | None) -> dict:
     return {
-        "install_command": install_command(public_base_url, token),
+        "install_command": install_command(public_base_url),
         "install_script_url": install_script_url(public_base_url),
         "releases_url": releases_url,
+        "desktop_install_command": install_command(public_base_url, desktop=True),
+        "desktop_install_script_url": install_script_url(public_base_url, desktop=True),
+        "desktop_releases_url": desktop_release_url(),
         "checksums_url": download_url(public_base_url, CHECKSUMS_ASSET),
         "platforms": [
             {"key": key, "label": label, "url": download_url(public_base_url, key)}

@@ -79,6 +79,24 @@ def test_render_shell_with_empty_scripts_emits_no_script_element():
     assert "<script" not in _rendered_shell(scripts="")
 
 
+def test_marketing_shell_can_supply_its_own_style_and_footer_without_changing_panels():
+    html = _rendered_shell(
+        head='<link rel="stylesheet" href="/landing/cinematic.css">',
+        footer="", body_class="cinematic-page",
+    )
+    assert '<body class="cinematic-page">' in html
+    assert '/landing/cinematic.css' in html
+    assert FOOTER_ASSURANCE_COPY not in html
+    assert FOOTER_ASSURANCE_COPY in _rendered_shell()
+    assert '/landing/cinematic.css' not in _rendered_shell()
+
+
+def test_shell_escapes_optional_body_class():
+    html = _rendered_shell(body_class='page" onload="bad()')
+    assert 'class="page&quot; onload=&quot;bad()"' in html
+    assert '<body class="page" onload=' not in html
+
+
 def test_render_shell_links_the_stylesheet_and_preloads_the_font():
     html = _rendered_shell()
     assert STYLESHEET_LINK in html

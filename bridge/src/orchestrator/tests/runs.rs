@@ -693,6 +693,36 @@ fn conversation_prompt_instructs_clarifying_reply_for_ambiguous_comments() {
         "the reply must be a one-liner, not a silent code change: {prompt}"
     );
 }
+
+#[test]
+fn conversation_prompt_uses_available_native_progress_tools_for_long_running_work() {
+    let prompt = conversation_prompt("do the work");
+    assert!(
+        prompt.contains("long-running work with several meaningful steps"),
+        "multi-step work should be visible to the user: {prompt}"
+    );
+    assert!(
+        prompt.contains("native task, checklist, or plan tool available in this session"),
+        "each provider should use its own supported progress surface: {prompt}"
+    );
+    assert!(
+        prompt.contains("brief, one-step work"),
+        "quick work should not create needless checklists: {prompt}"
+    );
+    assert!(
+        prompt.contains("do not invent a tool that is absent from your tool list"),
+        "the prompt must not ask a provider to call an unsupported tool: {prompt}"
+    );
+    assert!(
+        prompt.contains("update it at each meaningful advance"),
+        "progress must stay current throughout the work: {prompt}"
+    );
+    assert!(
+        prompt.contains("every item complete only after it is complete"),
+        "completion must be accurately reported: {prompt}"
+    );
+}
+
 #[tokio::test]
 async fn resume_run_redispatches_single_stage_and_multi_stage_builds() {
     let (dir, repo) = init_repo();

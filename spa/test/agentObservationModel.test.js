@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { observationPanelModel } from "../src/core/agentObservationModel.js";
+import { checklistObservationModel, observationPanelModel } from "../src/core/agentObservationModel.js";
 
 const current = { support: "supported", freshness: "current", coverage: "complete" };
 
@@ -33,7 +33,7 @@ describe("the goal and checklist observation model", () => {
   });
 
   it("describes a complete checklist with its current step and exact progress", () => {
-    const model = observationPanelModel({
+    const model = checklistObservationModel({
       checklist: [
         { id: "1", subject: "Read", state: "completed" },
         { id: "2", subject: "Test", state: "in_progress" },
@@ -42,21 +42,21 @@ describe("the goal and checklist observation model", () => {
       observations: { checklist: { ...current } },
     });
 
-    expect(model.checklist).toMatchObject({ currentStep: "Test", progress: "1/3", stale: false, priorTurn: false });
+    expect(model).toMatchObject({ currentStep: "Test", progress: "1/3", stale: false, priorTurn: false });
   });
 
   it("never invents a total for partial evidence", () => {
-    const model = observationPanelModel({
+    const model = checklistObservationModel({
       checklist: [{ id: "1", subject: "Known", state: "completed" }],
       observations: { checklist: { ...current, coverage: "partial", omitted_count: 4 } },
     });
 
-    expect(model.checklist.progress).toBe("1 known completed · 4 omitted");
-    expect(model.checklist.progress).not.toContain("/");
+    expect(model.progress).toBe("1 known completed · 4 omitted");
+    expect(model.progress).not.toContain("/");
   });
 
   it("names no current step after every known item completed", () => {
-    const model = observationPanelModel({
+    const model = checklistObservationModel({
       checklist: [
         { id: "1", subject: "Read", state: "completed" },
         { id: "2", subject: "Test", state: "completed" },
@@ -64,26 +64,23 @@ describe("the goal and checklist observation model", () => {
       observations: { checklist: { ...current } },
     });
 
-    expect(model.checklist.currentStep).toBe("");
-    expect(model.checklist.progress).toBe("2/2");
+    expect(model.currentStep).toBe("");
+    expect(model.progress).toBe("2/2");
   });
 
   it("labels stale prior-turn context and never marks it live", () => {
-    const model = observationPanelModel({
+    const model = checklistObservationModel({
       checklist: [{ id: "1", subject: "Resume", state: "in_progress" }],
       checklist_provenance: { carried_from_prior_turn: true },
       observations: { checklist: { support: "supported", freshness: "stale", coverage: "complete" } },
     });
 
-    expect(model.checklist).toMatchObject({ stale: true, priorTurn: true, live: false });
-    expect(model.checklist.notes).toEqual(["Last known", "Prior turn"]);
+    expect(model).toMatchObject({ stale: true, priorTurn: true, live: false });
+    expect(model.notes).toEqual(["Last known", "Prior turn"]);
   });
 
   it("hides unsupported or known-empty observations without saying no goal", () => {
-    expect(observationPanelModel({ observations: { goal: { support: "unsupported" } } })).toEqual({
-      goal: null,
-      checklist: null,
-    });
-    expect(observationPanelModel({ checklist: [], observations: { checklist: current } }).checklist).toBe(null);
+    expect(observationPanelModel({ observations: { goal: { support: "unsupported" } } })).toEqual({ goal: null });
+    expect(checklistObservationModel({ checklist: [], observations: { checklist: current } })).toBe(null);
   });
 });

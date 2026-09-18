@@ -1,0 +1,82 @@
+[
+  {
+    "mode": "save-data",
+    "state": {
+      "scene": "start",
+      "sceneIndex": 0,
+      "local": 0,
+      "progress": 0,
+      "profile": "static",
+      "checkpoint": "request",
+      "travel": 0,
+      "enhanced": false,
+      "staticReason": ""
+    }
+  },
+  {
+    "mode": "failed-model",
+    "state": {
+      "scene": "start",
+      "sceneIndex": 0,
+      "local": 0,
+      "progress": 0,
+      "profile": "static",
+      "checkpoint": "request",
+      "travel": 0,
+      "enhanced": false,
+      "staticReason": "renderer-failure"
+    }
+  },
+  {
+    "mode": "context-loss",
+    "state": {
+      "scene": "start",
+      "sceneIndex": 0,
+      "local": 0,
+      "progress": 0,
+      "profile": "static",
+      "checkpoint": "request",
+      "travel": 0,
+      "enhanced": false,
+      "staticReason": "renderer-failure"
+    }
+  },
+  {
+    "mode": "keyboard-and-download",
+    "passed": true
+  },
+  {
+    "mode": "desktop-hero",
+    "violations": [],
+    "incomplete": [
+      "aria-prohibited-attr",
+      "color-contrast"
+    ]
+  },
+  {
+    "mode": "phone-hero",
+    "violations": [],
+    "incomplete": [
+      "aria-prohibited-attr",
+      "color-contrast"
+    ]
+  },
+  {
+    "mode": "download",
+    "violations": [],
+    "incomplete": [
+      "aria-prohibited-attr",
+      "color-contrast"
+    ]
+  },
+  {
+    "mode": "docs",
+    "violations": [],
+    "incomplete": []
+  },
+  {
+    "mode": "privacy",
+    "violations": [],
+    "incomplete": []
+  }
+]

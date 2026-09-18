@@ -27,9 +27,19 @@
 .agent-observation-panel .is-stale { color:var(--dim); }
 .agent-observation-panel .is-stale .agent-observation-objective { color:var(--ink2); }
 .agent-observation-unknown { color:var(--dim); font:10.5px var(--mono); }
+.surface-checklist-context { display:flex; align-items:center; gap:8px; padding:0 0 8px; color:var(--ink2); min-width:0; }
+.surface-checklist-context[hidden] { display:none; }
+.surface-checklist-context .agent-observation-step { flex:1; }
+.surface-checklist-context .agent-observation-checklist-meta { margin-left:auto; }
+.surface-row.surface-checklist-item:hover { background:transparent; }
+.surface-checklist-item.is-completed,
+.surface-checklist-item.is-completed .surface-row-label,
+.surface-checklist-item.is-completed .surface-row-note { color:var(--dim); }
 @media (max-width:760px) {
   .agent-observation-checklist summary { align-items:flex-start; flex-wrap:wrap; }
   .agent-observation-checklist-meta { width:100%; padding-left:18px; justify-content:flex-start; flex-wrap:wrap; }
   .agent-observation-checklist-meta .agent-observation-notes { justify-content:flex-start; }
   .agent-observation-items { max-height:min(30vh, 240px); }
+  .surface-checklist-context { align-items:flex-start; flex-wrap:wrap; }
+  .surface-checklist-context .agent-observation-checklist-meta { width:100%; margin-left:0; justify-content:flex-start; flex-wrap:wrap; }
 }

@@ -42,3 +42,8 @@ Runtime output paths are:
 - `desktop/assets/icon.png`, `icon.ico`, and `icon.icns`
 
 Generation was verified with CairoSVG 2.9.1 and Pillow 12.3.0.
+
+The landing page uses the transparent mark and black-on-mint favicon from these
+canonical assets. The screen-capture fixture keeps an identical transparent
+mark at `design/landing-captures/build-mark.svg`. No geometry or color changes
+were made for the landing page.

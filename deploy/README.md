@@ -215,10 +215,10 @@ without updating both. The release refuses to build when they disagree: the
 curl -fsSL https://getbuild.ing/install.sh | sh
 ```
 
-`GET /install.sh` on the app is a 302 to
-`https://github.com/<RELEASES_REPO>/releases/latest/download/install.sh`, so the
-one-liner works only once a release exists — before the first one it lands on a
-GitHub 404. The script maps `uname` to a platform key, downloads that tarball
+`GET /install.sh` serves the bridge script packaged in the website image, with
+the deployment's `RELEASES_REPO` as its default source. The endpoint and downloads
+are public and need no login or token. The script maps `uname` to a platform key,
+downloads the release tarball from the public releases repository
 with `SHA256SUMS` and the bundle, verifies the digest (always) and the signature
 (whenever `cosign` is on PATH), installs the binary, then runs `build-bridge
 pair` — which prints a code and blocks until the human approves that device in
@@ -253,6 +253,43 @@ BUILD_BRIDGE_SKIP_SERVICE=1 sh <(curl -fsSL https://getbuild.ing/install.sh)
 Then pair and install the service for real on one macOS and one Linux machine —
 the workflow cannot prove either, and a re-run of `publish` is safe (the release
 is created only if missing and every asset uploads with `--clobber`).
+
+## Releasing and installing the desktop app
+
+`.github/workflows/release-desktop.yml` runs on `desktop-vX.Y.Z` tags matching
+`desktop/package.json` and `desktop/package-lock.json`. It builds Linux x86_64
+and ARM64 AppImage/DEB packages and macOS Intel/Apple Silicon DMG/ZIP packages.
+Mac signing and notarization are required; use the same Apple secrets and
+`RELEASES_TOKEN` as the bridge workflow. Missing credentials fail the release.
+
+The public release also contains stable installer archive names:
+`build-desktop-macos-{arm64,x86_64}.zip` and
+`build-desktop-linux-{x86_64,aarch64}.tar.gz`, plus `SHA256SUMS` and
+`SHA256SUMS.sigstore.json`. The checksum signature pins
+`…/build-web/.github/workflows/release-desktop.yml@refs/tags/desktop-vX.Y.Z`.
+
+After publishing the versioned assets, the workflow updates `version.txt` in
+the `desktop-latest` channel release. Both desktop releases and the channel
+are marked `--latest=false` so bridge downloads continue to use GitHub's latest
+release. Installers read the desktop pointer once and pin the subsequent
+downloads to that version.
+
+```sh
+curl -fsSL https://getbuild.ing/install-desktop.sh | sh
+```
+
+The website serves this script from its image, with the same `RELEASES_REPO`
+default as all other download URLs. No `GITHUB_RELEASES_TOKEN` is needed by the
+website. Keep its `RELEASES_REPO` environment value aligned with the workflow
+variable. `BUILD_RELEASES_REPO` and `BUILD_DESKTOP_VERSION` override the source
+and version for an individual install.
+
+The installer uses user-owned locations, never requests sudo, and does not
+launch the app. On Linux, install the usual Electron desktop runtime libraries
+provided by your distribution (GTK, NSS, X11/Wayland, and audio libraries).
+Run the installer again to update. Publishing a release and deploying the
+website image are separate operations: both must complete before the new
+desktop one-liner works on the production site.
 
 ## Known-stale harnesses
 

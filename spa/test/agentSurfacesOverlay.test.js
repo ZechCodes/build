@@ -381,25 +381,44 @@ describe("the agent's goal and observed checklist", () => {
     expect(observation.textContent).toContain("Ship the release");
   });
 
-  it("keeps the observed checklist in its compact disclosure rather than adding a duplicate pill", async () => {
+  it("moves the observed checklist into a Tasks activity", async () => {
     payload = branchRow({ surfaces: observed() });
     await mount();
 
-    expect(panel().querySelector(".agent-observation-checklist")).toBeTruthy();
-    expect(panel().querySelector('[data-surface-kind="checklist"]')).toBe(null);
+    expect(panel().querySelector(".agent-observation-checklist")).toBe(null);
+    const tasks = panel().querySelector('[data-surface-kind="checklist"]');
+    expect(tasks.textContent).toContain("Tasks");
+    expect(tasks.textContent).toContain("0/1");
   });
 
-  it("resets an open checklist when a replacement session arrives", async () => {
+  it("shows task observation metadata inside the Tasks viewer", async () => {
     payload = branchRow({ surfaces: observed() });
     await mount();
-    const first = panel().querySelector(".agent-observation-checklist");
-    first.open = true;
+    panel().querySelector('[data-surface-kind="checklist"]').click();
+    expect(panel().querySelector(".surface-checklist-context").textContent).toContain("Run verification");
+    expect(panel().querySelector(".surface-checklist-context").textContent).toContain("0/1");
+  });
 
-    await poll(branchRow({ surface_session_generation: "session-two", surfaces: observed() }));
+  it("keeps partial, stale, and prior-turn task context in the viewer", async () => {
+    const surfaces = observed();
+    surfaces.checklist[0].state = "completed";
+    surfaces.checklist_provenance = { carried_from_prior_turn: true };
+    surfaces.observations.checklist = {
+      support: "supported",
+      freshness: "stale",
+      coverage: "partial",
+      omitted_count: 3,
+    };
+    payload = branchRow({ surfaces });
+    await mount();
 
-    const replacement = panel().querySelector(".agent-observation-checklist");
-    expect(replacement).not.toBe(first);
-    expect(replacement.open).toBe(false);
+    panel().querySelector('[data-surface-kind="checklist"]').click();
+    const context = panel().querySelector(".surface-checklist-context");
+    expect(context.textContent).toContain("1 known completed · 3 omitted");
+    expect(context.textContent).toContain("Last known");
+    expect(context.textContent).toContain("Prior turn");
+    expect(context.textContent).toContain("Partial");
+    expect(context.classList.contains("is-stale")).toBe(true);
   });
 });
 

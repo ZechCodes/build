@@ -1,0 +1,41 @@
+{
+  "source": {
+    "repository": "ZechCodes/build-web",
+    "repository_url": "https://github.com/ZechCodes/build-web",
+    "repository_public": false,
+    "checked_at": "2026-09-18T00:01:38Z",
+    "implementation_sources": [
+      "README.md",
+      "bridge/src/models.rs",
+      "bridge/src/harness/",
+      "skriftapp/buildapp/releases.py"
+    ]
+  },
+  "harnesses": [
+    {
+      "name": "Claude Code",
+      "status": "available",
+      "detail": "Headless and terminal modes"
+    },
+    {
+      "name": "Codex",
+      "status": "available",
+      "detail": "App-server and terminal modes"
+    },
+    {
+      "name": "Pi",
+      "status": "available",
+      "detail": "Terminal mode"
+    },
+    {
+      "name": "OpenCode",
+      "status": "planned",
+      "detail": "Not currently available"
+    }
+  ],
+  "activity": {
+    "state": "unavailable",
+    "reason": "Public development updates will appear here when available.",
+    "entries": []
+  }
+}

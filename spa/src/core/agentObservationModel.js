@@ -53,7 +53,7 @@ function checklistProgress(rows, observation) {
 const currentChecklistRow = (rows) =>
   rows.find((row) => row.state === "in_progress") || rows.find((row) => row.state !== "completed");
 
-function checklistModel(surfaces) {
+export function checklistObservationModel(surfaces) {
   const observation = observationOf(surfaces, "checklist");
   if (!observation || observation.support === "unsupported") return null;
   const rows = surfaceRows(CHECKLIST_ENTRY_KIND, surfaces);
@@ -73,6 +73,5 @@ function checklistModel(surfaces) {
 export function observationPanelModel(surfaces, { working = false } = {}) {
   return {
     goal: goalModel(surfaces, working),
-    checklist: checklistModel(surfaces),
   };
 }

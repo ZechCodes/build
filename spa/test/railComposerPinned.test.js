@@ -193,7 +193,7 @@ describe("the conversation panel's column", () => {
 });
 
 describe("the panel's stylesheet", () => {
-  const panelRule = () => shellCss.match(/\.rail-panel \{[^}]*\}/)[0];
+  const panelRule = () => shellCss.match(/^\.rail-panel \{[^}]*\}/m)[0];
   const headRule = () => shellCss.match(/\.rail-head \{[^}]*\}/)[0];
   const bodyRule = () => shellCss.match(/\.rail-body \{[^}]*\}/)[0];
   const composerRule = () => shellCss.match(/\.rail-composer \{[^}]*\}/)[0];

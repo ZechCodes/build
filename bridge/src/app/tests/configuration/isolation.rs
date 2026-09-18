@@ -633,7 +633,7 @@ fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
 /// rather than a linked worktree, every surface that reads its work still
 /// reads it, and Finish retains the checkout when no remote is configured.
 #[test]
-fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_retains_it() {
+fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_refuses_it() {
     let (dir, repo) = init_repo();
     if !crate::isolation::probe::rift_or_skip(dir.path()) {
         return;
@@ -685,15 +685,23 @@ fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_retains_it() {
         "the feed counts the clone's work: {row:?}"
     );
 
+    // Done removes what it finishes, so it is not offered until the work is
+    // somewhere else. No remote is configured here, so it never is.
     let finished = state.handle(req(
         "run.finish",
         json!({ "run_id": run_id, "action": "merge" }),
     ));
-    assert_eq!(finished["ok"], true, "{finished:?}");
-    assert_eq!(finished["result"]["complete"], false, "{finished:?}");
+    assert_eq!(finished["ok"], false, "{finished:?}");
+    assert!(
+        finished["error"]
+            .as_str()
+            .unwrap()
+            .contains("no remote has"),
+        "{finished:?}"
+    );
     assert!(
         checkout.join("result-first-half.txt").exists()
             && checkout.join("result-second-half.txt").exists(),
-        "Finish retains the clone and its work when no remote is configured"
+        "a refused Done retains the clone and its work"
     );
 }

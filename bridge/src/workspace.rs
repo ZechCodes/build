@@ -638,36 +638,19 @@ impl WorkspaceRegistry {
         Ok(workspace.clone())
     }
 
-    pub fn finish(&mut self, id: &str) -> Result<WorkspaceFinish, String> {
-        let workspace = self
-            .workspaces
-            .get_mut(id)
-            .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
-        let result = finish_workspace(workspace);
-        if workspace.managed {
-            persist(workspace)?;
+    /// Write down that this workspace was finished, and what each of its
+    /// repositories ended on.
+    ///
+    /// Done removes the workspace, so this record is all that is left of it:
+    /// it goes beside the registry rather than inside the root that is about
+    /// to be walked away. The Git work is measured once more first — the
+    /// eligibility the caller checked was checked under the app mutex, and
+    /// this runs after it was let go.
+    pub fn record_finished(&self, workspace: &mut Workspace) -> Result<WorkspaceFinish, String> {
+        let blockers = workspace_git_blockers(workspace);
+        if !blockers.is_empty() {
+            return Err(finish_refusal(&blockers));
         }
-        Ok(result)
-    }
-
-    pub fn finish_existing(&self, workspace: &mut Workspace) -> Result<WorkspaceFinish, String> {
-        let result = finish_workspace(workspace);
-        if workspace.managed {
-            persist(workspace)?;
-        } else if result.complete {
-            self.persist_legacy_finished(workspace)?;
-        }
-        Ok(result)
-    }
-
-    /// Archive a workspace whose repositories have no local work. This is the
-    /// inbox's local-only Done: it records the current heads and leaves every
-    /// checkout and remote untouched.
-    pub fn archive_clean_existing(
-        &self,
-        workspace: &mut Workspace,
-    ) -> Result<WorkspaceFinish, String> {
-        ensure_workspace_clean(workspace)?;
         let repositories = workspace
             .directories
             .iter_mut()
@@ -684,15 +667,26 @@ impl WorkspaceRegistry {
             .collect::<Result<Vec<_>, String>>()?;
         workspace.status = WorkspaceStatus::Finished;
         workspace.archived_at = Some(crate::store::now_rfc3339());
-        if workspace.managed {
-            persist(workspace)?;
-        } else {
-            self.persist_legacy_finished(workspace)?;
-        }
+        self.persist_finished_record(workspace)?;
         Ok(WorkspaceFinish {
             complete: true,
             repositories,
         })
+    }
+
+    /// Every workspace this registry has finished, read off the records kept
+    /// outside the roots themselves. The files are gone, so these are the
+    /// history of what was finished and where each source was left.
+    pub fn finished_records(&self) -> Vec<Workspace> {
+        let directory = self.root.join(".legacy");
+        let Ok(entries) = fs::read_dir(&directory) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<Workspace>(&bytes).ok())
+            .collect()
     }
 
     pub fn retry_sources(workspace: &Workspace) -> Vec<WorkspaceSource> {
@@ -776,19 +770,26 @@ impl WorkspaceRegistry {
         workspace
     }
 
-    fn persist_legacy_finished(&self, workspace: &Workspace) -> Result<(), String> {
+    /// The one record of a finished workspace that survives it: a copy of the
+    /// manifest under the registry root, where removing the workspace's own
+    /// directory cannot take it.
+    fn persist_finished_record(&self, workspace: &Workspace) -> Result<(), String> {
         let directory = self.root.join(".legacy");
         fs::create_dir_all(&directory).map_err(|error| {
             format!(
-                "create legacy workspace state {}: {error}",
+                "create finished workspace records {}: {error}",
                 directory.display()
             )
         })?;
         let path = directory.join(&workspace.id);
         let bytes = serde_json::to_vec(workspace)
-            .map_err(|error| format!("serialize legacy workspace {}: {error}", workspace.id))?;
-        atomic_write(&path, &bytes)
-            .map_err(|error| format!("write legacy workspace state {}: {error}", path.display()))
+            .map_err(|error| format!("serialize finished workspace {}: {error}", workspace.id))?;
+        atomic_write(&path, &bytes).map_err(|error| {
+            format!(
+                "write finished workspace record {}: {error}",
+                path.display()
+            )
+        })
     }
 
     /// Compatibility spelling for callers that only adopt Git roots.
@@ -801,42 +802,6 @@ impl WorkspaceRegistry {
         source_id: String,
     ) -> Workspace {
         self.adopt_root(project_id, id, name, path, source_id, true)
-    }
-}
-
-fn finish_workspace(workspace: &mut Workspace) -> WorkspaceFinish {
-    for directory in &mut workspace.directories {
-        if let Ok(repository) = git2::Repository::open_ext(
-            &directory.path,
-            git2::RepositoryOpenFlags::NO_SEARCH,
-            std::iter::empty::<&Path>(),
-        ) {
-            directory.is_git = true;
-            directory.branch = repository
-                .head()
-                .ok()
-                .and_then(|head| head.shorthand().map(str::to_string));
-        }
-    }
-    let repositories = workspace
-        .directories
-        .iter_mut()
-        .filter(|directory| directory.is_git)
-        .map(repository_finish)
-        .collect::<Vec<_>>();
-    let complete = workspace.status != WorkspaceStatus::Provisioning
-        && workspace
-            .directories
-            .iter()
-            .all(|directory| directory.status == DirectoryStatus::Ready && directory.path.is_dir())
-        && repositories.iter().all(|repository| repository.pushed);
-    if complete {
-        workspace.status = WorkspaceStatus::Finished;
-        workspace.archived_at = Some(crate::store::now_rfc3339());
-    }
-    WorkspaceFinish {
-        complete,
-        repositories,
     }
 }
 
@@ -895,40 +860,28 @@ pub fn blocker_order(blocker: &str) -> usize {
     }
 }
 
-/// A definitive local-only predicate for inbox Done. A non-Git directory is
-/// not called clean because Build has no durable baseline from which to prove
-/// that its ordinary files are unchanged.
-pub fn ensure_workspace_clean(workspace: &Workspace) -> Result<(), String> {
-    if workspace.status != WorkspaceStatus::Ready {
-        return Err("workspace.finish require_clean requires a ready workspace".to_string());
+/// How a blocker reads in a sentence, for the one refusal Done ever gives.
+pub fn blocker_sentence(blocker: &str) -> &'static str {
+    match blocker {
+        FINISH_BLOCKER_AGENT_WORKING => "an agent is working in it",
+        FINISH_BLOCKER_DIRTY => "it has uncommitted changes",
+        FINISH_BLOCKER_UNPUSHED => "it has commits no remote has",
+        _ => "its Git state could not be read",
     }
-    if workspace.directories.is_empty() {
-        return Err("workspace.finish cannot verify an empty workspace is clean".to_string());
-    }
-    for directory in &workspace.directories {
-        if directory.status != DirectoryStatus::Ready || !directory.path.is_dir() {
-            return Err("workspace.finish could not verify workspace cleanliness".to_string());
-        }
-        if !directory.is_git {
-            return Err(format!(
-                "workspace.finish cannot verify non-Git directory {} is clean",
-                directory.id
-            ));
-        }
-        let summary = crate::gitgui::work_summary(&directory.path).map_err(|error| {
-            format!(
-                "workspace.finish could not verify {}: {error}",
-                directory.id
-            )
-        })?;
-        if !summary.clean {
-            return Err(format!(
-                "workspace.finish require_clean refused dirty workspace directory {}",
-                directory.id
-            ));
-        }
-    }
-    Ok(())
+}
+
+/// Done's refusal, in the words the row's blockers are spelled in and a
+/// sentence saying each one. Done removes the workspace, so a refusal is the
+/// whole of what protects work that is nowhere else yet.
+pub fn finish_refusal(blockers: &[&str]) -> String {
+    format!(
+        "workspace.finish is not available yet: {}",
+        blockers
+            .iter()
+            .map(|blocker| blocker_sentence(blocker))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
 }
 
 fn validate_loaded_workspace(
@@ -993,84 +946,6 @@ fn validate_loaded_workspace(
         }
     }
     Ok(())
-}
-
-fn repository_finish(directory: &mut WorkspaceDirectory) -> RepositoryFinish {
-    let result = repository_is_pushed(&directory.path);
-    match result {
-        Ok(head) => {
-            directory.finished_head = Some(head);
-            RepositoryFinish {
-                directory_id: directory.id.clone(),
-                pushed: true,
-                reason: None,
-            }
-        }
-        Err(reason) => {
-            directory.finished_head = None;
-            RepositoryFinish {
-                directory_id: directory.id.clone(),
-                pushed: false,
-                reason: Some(reason),
-            }
-        }
-    }
-}
-
-fn repository_is_pushed(path: &Path) -> Result<String, String> {
-    let dirty = git_output(path, &["status", "--porcelain"])?;
-    if !dirty.is_empty() {
-        return Err("repository has uncommitted changes".to_string());
-    }
-    let head_before = git_output(path, &["rev-parse", "HEAD"])?;
-    let branch = git_output(path, &["branch", "--show-current"])?;
-    if branch.is_empty() {
-        return Err("repository is on a detached HEAD".to_string());
-    }
-    let push_remote_key = format!("branch.{branch}.pushRemote");
-    let upstream_remote_key = format!("branch.{branch}.remote");
-    let remote = git_output(path, &["config", "--get", &push_remote_key])
-        .or_else(|_| git_output(path, &["config", "--get", "remote.pushDefault"]))
-        .or_else(|_| git_output(path, &["config", "--get", &upstream_remote_key]))
-        .or_else(|_| {
-            git_output(path, &["remote", "get-url", "origin"]).map(|_| "origin".to_string())
-        })
-        .map_err(|_| "repository has no push destination".to_string())?;
-    // Finish always publishes the checked-out branch under its own name. An
-    // upstream may intentionally be `upstream/main` while pushRemote points at
-    // a fork; reusing branch.merge there would overwrite the fork's main.
-    let remote_branch = branch.clone();
-    let destination = format!("HEAD:refs/heads/{remote_branch}");
-    let push_error = git_output(path, &["push", &remote, &destination]).err();
-
-    // A normal push can be rejected because a destination is already ahead.
-    // Verify every configured push endpoint contains our commit; Git pushes to
-    // every pushurl, so checking only the first could report a partial push as
-    // complete.
-    let push_urls = git_output(path, &["remote", "get-url", "--push", "--all", &remote])?
-        .lines()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    for (index, push_url) in push_urls.iter().enumerate() {
-        let tracking = format!("refs/build-workspace-finish/{index}/{remote_branch}");
-        let fetch_refspec = format!("refs/heads/{remote_branch}:{tracking}");
-        git_output(path, &["fetch", push_url, &fetch_refspec])
-            .map_err(|fetch_error| push_error.clone().unwrap_or(fetch_error))?;
-        let contained =
-            crate::git_process::run_git(path, &["merge-base", "--is-ancestor", "HEAD", &tracking])
-                .is_ok();
-        if !contained {
-            return Err(push_error.clone().unwrap_or_else(|| {
-                format!("push destination {push_url} does not contain the current commit")
-            }));
-        }
-    }
-    let head_after = git_output(path, &["rev-parse", "HEAD"])?;
-    let dirty_after = git_output(path, &["status", "--porcelain"])?;
-    if head_after != head_before || !dirty_after.is_empty() {
-        return Err("repository changed while it was being finished; retry".to_string());
-    }
-    Ok(head_after)
 }
 
 fn git_output(path: &Path, args: &[&str]) -> Result<String, String> {

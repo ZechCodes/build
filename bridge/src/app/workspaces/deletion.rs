@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 /// What the drain removes, resolved before the mutex was released: the
 /// checkouts to unregister from their sources, and the root to walk away.
-struct DeleteWorkspaceFiles {
+pub(super) struct DeleteWorkspaceFiles {
     workspace_id: String,
     root: PathBuf,
     rift_root: PathBuf,
@@ -32,10 +32,26 @@ struct DeleteWorkspaceFiles {
     /// The runs whose checkout lived under this root — the conversation the
     /// workspace owned, and anything adopted below it.
     run_ids: Vec<String>,
+    /// Set when this removal is a Done: the workspace to write into the
+    /// registry's history before its files go, and the registry to write it
+    /// to. A plain delete is not history and records nothing.
+    finish: Option<(PathBuf, Workspace)>,
 }
 
 impl DeferredGitWork for DeleteWorkspaceFiles {
     fn run(&self, _: &Value) -> Result<Value, String> {
+        // Done writes down what it finished before it removes anything: a
+        // removal that fails halfway must not lose the record of where the
+        // work was left. It measures the Git work once more here, off the
+        // mutex, so nothing that landed since the click is deleted unseen.
+        let finished = match &self.finish {
+            Some((registry_root, workspace)) => {
+                let mut workspace = workspace.clone();
+                let registry = crate::workspace::WorkspaceRegistry::load(registry_root)?;
+                Some(registry.record_finished(&mut workspace)?)
+            }
+            None => None,
+        };
         for retirement in &self.retirements {
             if !retirement.wait(crate::orchestrator::CHECKOUT_REAP_WAIT) {
                 return Err("Workspace cleanup stopped because a process did not exit; workspace files were preserved. Retry the deletion".into());
@@ -67,7 +83,14 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
                 ))
             }
         }
-        Ok(json!({ "workspace_id": self.workspace_id, "deleted": true }))
+        match finished {
+            Some(finished) => Ok(json!({
+                "complete": finished.complete,
+                "repositories": finished.repositories,
+                "deleted": true,
+            })),
+            None => Ok(json!({ "workspace_id": self.workspace_id, "deleted": true })),
+        }
     }
 
     /// A partial removal is still a move: the in-memory index has to agree
@@ -96,6 +119,24 @@ impl AppState {
     /// does — the acknowledgement and the drain's real answer are one type, so
     /// a client reads the same value whichever half it sees.
     pub(crate) fn workspace_delete(&mut self, params: &Value) -> Result<Value, String> {
+        let workspace = self.workspace_to_remove(params)?;
+        self.refuse_removing_what_is_not_builds(&workspace)?;
+        if workspace.status == WorkspaceStatus::Provisioning {
+            return Err(
+                "Wait for workspace provisioning to finish before deleting the workspace"
+                    .to_string(),
+            );
+        }
+        if self.agent_working_at_root(&Self::canonical_root(&workspace.root)) {
+            return Err("Stop running agents before deleting the workspace".to_string());
+        }
+        self.remove_workspace(&workspace, params, None);
+        Ok(json!({ "workspace_id": workspace.id, "deleted": true }))
+    }
+
+    /// The workspace a removing verb was pointed at, with the filesystem free
+    /// to remove it. Both `workspace.delete` and Done start here.
+    pub(super) fn workspace_to_remove(&mut self, params: &Value) -> Result<Workspace, String> {
         let workspace_id = require_str(params, "workspace_id")?;
         if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
             return Err("another filesystem operation is still running".to_string());
@@ -103,54 +144,61 @@ impl AppState {
         if self.workspaces.get(&workspace_id).is_none() {
             self.adopt_legacy_workspaces();
         }
-        let workspace = self
-            .workspaces
+        self.workspaces
             .get(&workspace_id)
             .cloned()
-            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
-        self.refuse_undeletable_workspace(&workspace)?;
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))
+    }
+
+    /// Stop everything standing in this workspace and hand its removal to the
+    /// drain. `finish` carries the registry root when the removal is a Done,
+    /// which writes the record of what was finished on the way out.
+    pub(super) fn remove_workspace(
+        &mut self,
+        workspace: &Workspace,
+        params: &Value,
+        finish: Option<PathBuf>,
+    ) {
         let root = Self::canonical_root(&workspace.root);
         let run_ids = self.runs_under(&root);
         let retirements = self.retire_everything_at(&root);
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(DeleteWorkspaceFiles {
-                workspace_id: workspace_id.clone(),
+                workspace_id: workspace.id.clone(),
                 root: workspace.root.clone(),
                 rift_root: self.project_worktrees_root(&workspace.project_id),
                 retirements,
-                checkouts: checkouts_of(&workspace),
+                checkouts: checkouts_of(workspace),
                 run_ids,
+                finish: finish.map(|registry_root| (registry_root, workspace.clone())),
             }),
             params: params.clone(),
             invalidates: true,
             #[cfg(test)]
             gate: None,
         })));
-        Ok(json!({ "workspace_id": workspace_id, "deleted": true }))
     }
 
-    /// Everything that makes this workspace not Build's to remove. Read before
-    /// a single file is touched, so a refusal costs nothing.
-    fn refuse_undeletable_workspace(&self, workspace: &Workspace) -> Result<(), String> {
+    /// Everything that makes this workspace not Build's to remove, whether the
+    /// removal is a delete or a Done. Read before a single file is touched, so
+    /// a refusal costs nothing.
+    ///
+    /// An adopted checkout is somebody else's working copy: Build found it, it
+    /// did not make it, and it does not have the record of what it was cut
+    /// from to hand it back. The other two are the guards `project.delete`
+    /// applies, for the same reason — a root that contains somebody's source
+    /// repository, or a checkout that resolves out of the root through a link,
+    /// would take work with it that was never the workspace's.
+    pub(super) fn refuse_removing_what_is_not_builds(
+        &self,
+        workspace: &Workspace,
+    ) -> Result<(), String> {
         if !workspace.managed {
             return Err(
                 "workspace.delete: adopted checkouts are not Build's to remove".to_string(),
             );
         }
-        if workspace.status == WorkspaceStatus::Provisioning {
-            return Err(
-                "Wait for workspace provisioning to finish before deleting the workspace"
-                    .to_string(),
-            );
-        }
         let root = Self::canonical_root(&workspace.root);
-        if self.delivery_queue.has_in_flight_at_root(&root) {
-            return Err("Stop running agents before deleting the workspace".to_string());
-        }
-        // The same two guards `project.delete` applies, for the same reason: a
-        // root that contains somebody's source repository, or a checkout that
-        // resolves out of the root through a link, would take work with it that
-        // was never the workspace's.
         if self
             .projects
             .iter()

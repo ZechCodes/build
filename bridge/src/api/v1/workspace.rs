@@ -93,7 +93,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!(
             "workspace.finish",
             workspace_finish,
-            WorkspaceFinishParams,
+            WorkspaceIdParams,
             WorkspaceFinishResult
         ),
         v1_method!(
@@ -135,18 +135,6 @@ pub struct WorkspaceIdParams {
 pub struct WorkspaceRenameParams {
     pub workspace_id: String,
     pub name: String,
-}
-
-/// Finish alone has a strict local-only mode used by the inbox. Keeping this
-/// off `WorkspaceIdParams` prevents retry and other id-only verbs from
-/// silently accepting a parameter they do not implement.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WorkspaceFinishParams {
-    pub workspace_id: String,
-    /// Inbox Done asks for a local-only archive and requires the workspace to
-    /// be completely clean. Absent retains the legacy publish-on-finish flow.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub require_clean: Option<bool>,
 }
 
 /// The workspace, and the conversation slice its answer carries.
@@ -358,7 +346,7 @@ pub struct WorkspaceInitGitResult {
 const BUSY: [&str; 1] = ["another filesystem operation is still running"];
 
 /// The request was legible and the workspace's own state said no.
-const CONFLICT: [&str; 14] = [
+const CONFLICT: [&str; 12] = [
     // `workspace.ensure_conversation: workspace is finished`, and its
     // provisioning and failed spellings.
     "workspace is ",
@@ -366,9 +354,8 @@ const CONFLICT: [&str; 14] = [
     "workspace has no failed provisioning to retry",
     "adopted workspaces require no provisioning",
     "workspace must finish provisioning successfully",
-    "workspace.finish require_clean",
-    "workspace.finish cannot verify",
-    "workspace.finish could not verify",
+    // Done, refused because the work is still only here.
+    "workspace.finish is not available yet",
     "project has no sources",
     // Rename and delete: the workspace is not Build's to rewrite or remove,
     // or something standing in it has to stop first.
@@ -467,7 +454,7 @@ fn workspace_init_git(
 
 fn workspace_finish(
     app: &mut AppState,
-    params: WorkspaceFinishParams,
+    params: WorkspaceIdParams,
 ) -> Result<Answer<WorkspaceFinishResult>, ApiError> {
     answer(
         app.workspace_finish(&params.wire())

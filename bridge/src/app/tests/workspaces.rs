@@ -640,8 +640,10 @@ fn workspace_conversation_persistence_failure_leaves_no_owner_and_can_retry() {
     assert_eq!(state.runs.len(), 1);
 }
 
+/// Done removed the workspace, so the conversation verb has no workspace to
+/// answer for rather than a finished one to refuse.
 #[test]
-fn workspace_conversation_rejects_workspaces_that_are_not_ready() {
+fn a_workspace_done_removed_has_no_conversation_to_ensure() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");
     let mut state = app(tmp.path());
@@ -660,7 +662,10 @@ fn workspace_conversation_rejects_workspaces_that_are_not_ready() {
         json!({"workspace_id": workspace_id}),
     ));
     assert_eq!(refused["ok"], false, "{refused:?}");
-    assert!(refused["error"].as_str().unwrap().contains("finished"));
+    assert!(refused["error"]
+        .as_str()
+        .unwrap()
+        .contains("unknown workspace_id"));
     assert!(state.runs.is_empty());
 }
 
@@ -682,8 +687,9 @@ fn legacy_run_finish_routes_a_workspace_conversation_owner_to_its_workspace() {
     let finished = state.handle(req("run.finish", json!({"run_id": run_id})));
     assert_eq!(finished["ok"], true, "{finished:?}");
     assert_eq!(finished["result"]["complete"], true, "{finished:?}");
+    assert_eq!(finished["result"]["deleted"], true, "{finished:?}");
     let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
-    assert_eq!(detail["result"]["status"], "finished", "{detail:?}");
+    assert_eq!(detail["ok"], false, "{detail:?}");
 }
 
 #[test]
@@ -821,58 +827,104 @@ fn checkout_is_scoped_to_one_repository_and_refuses_to_overwrite_edits() {
     );
 }
 
+/// Done removes the workspace: the files, the record, and the conversation
+/// that stood in it. What is left is the record of what was finished, which
+/// the archive reads and a restart still finds.
 #[test]
-fn finish_checks_every_git_source_and_retains_the_workspace() {
+fn done_removes_the_workspace_and_keeps_the_record_of_what_it_finished() {
     let tmp = tempfile::tempdir().unwrap();
-    let (one, origin_one) = repo_with_origin(tmp.path(), "one");
-    let (two, origin_two) = repo_with_origin(tmp.path(), "two");
-    let mut state = app(tmp.path());
-    let project = state.handle(req(
-        "project.create",
-        json!({"name": "pair", "sources": [{"path": one}, {"path": two}]}),
-    ));
-    let workspace = create_workspace(
-        &mut state,
-        project["result"]["project_id"].as_str().unwrap(),
-        "done",
-    );
-    let workspace_id = workspace["workspace_id"].as_str().unwrap();
-    let root = PathBuf::from(workspace["root"].as_str().unwrap());
-    let finished = state.handle(req(
-        "workspace.finish",
-        json!({"workspace_id": workspace_id}),
-    ));
-    assert_eq!(finished["ok"], true, "{finished:?}");
-    assert_eq!(finished["result"]["complete"], true, "{finished:?}");
-    assert_eq!(
-        finished["result"]["repositories"].as_array().unwrap().len(),
-        2
-    );
-    assert!(root.is_dir(), "Finish retains the workspace directory");
-    for origin in [origin_one, origin_two] {
-        let branches = Command::new("git")
-            .args([
-                "--git-dir",
-                origin.to_str().unwrap(),
-                "for-each-ref",
-                "--format=%(refname)",
-                "refs/heads/",
-            ])
-            .output()
+    let (one, _) = repo_with_origin(tmp.path(), "one");
+    let (two, _) = repo_with_origin(tmp.path(), "two");
+    let worktrees = tmp.path().join("worktrees");
+    let config = tmp.path().join("config.json");
+    let (workspace_id, checkouts) = {
+        let mut state = AppState::new_unrooted(&worktrees, "main", true, "/tmp/test-mcp.sock")
+            .with_config(&config)
             .unwrap();
-        assert!(String::from_utf8_lossy(&branches.stdout).lines().count() >= 2);
+        let project = state.handle(req(
+            "project.create",
+            json!({"name": "pair", "sources": [{"path": one}, {"path": two}]}),
+        ));
+        let workspace = create_workspace(
+            &mut state,
+            project["result"]["project_id"].as_str().unwrap(),
+            "done",
+        );
+        let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+        let root = PathBuf::from(workspace["root"].as_str().unwrap());
+        let checkouts = workspace["directories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|directory| PathBuf::from(directory["path"].as_str().unwrap()))
+            .collect::<Vec<_>>();
+        let ensured = state.handle(req(
+            "workspace.ensure_conversation",
+            json!({"workspace_id": workspace_id}),
+        ));
+        let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+
+        let finished = state.handle(req(
+            "workspace.finish",
+            json!({"workspace_id": workspace_id}),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert_eq!(finished["result"]["complete"], true, "{finished:?}");
+        assert_eq!(finished["result"]["deleted"], true, "{finished:?}");
+        assert_eq!(
+            finished["result"]["repositories"].as_array().unwrap().len(),
+            2
+        );
+
+        assert!(!root.exists(), "Done removes the workspace directory");
+        assert!(
+            state.workspaces.get(&workspace_id).is_none(),
+            "Done drops the live record"
+        );
+        assert!(!state.runs.contains_key(&run_id), "and its conversation");
+        let gone = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+        assert_eq!(gone["ok"], false, "{gone:?}");
+        assert_archived_workspace_is_history(&mut state, &workspace_id);
+        (workspace_id, checkouts)
+    };
+
+    // Each source repository was handed its checkout back rather than left
+    // holding a record of a directory that is gone.
+    for checkout in &checkouts {
+        assert!(!checkout.exists(), "{}", checkout.display());
     }
-    let current = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
-    assert_eq!(current["result"]["status"], "finished", "{current:?}");
-    // A terminal writes directly to disk, without an fs.write invalidation.
-    let selected = Path::new(workspace["directories"][0]["path"].as_str().unwrap());
-    std::fs::write(selected.join("later.txt"), "new work\n").unwrap();
-    let reopened = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
-    assert_eq!(reopened["result"]["status"], "ready", "{reopened:?}");
+    let mut restarted = AppState::new_unrooted(&worktrees, "main", true, "/tmp/test-mcp.sock")
+        .with_config(&config)
+        .unwrap();
+    let listed = restarted.handle(req("workspace.list", json!({})));
+    assert!(
+        listed["result"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{listed:?}"
+    );
+    assert_archived_workspace_is_history(&mut restarted, &workspace_id);
 }
 
+/// A workspace Done removed is history: the archive names it and says when it
+/// was finished, and there is nothing behind the record to open.
+fn assert_archived_workspace_is_history(state: &mut AppState, workspace_id: &str) {
+    let archived = state.handle(req("archived.list", json!({})));
+    let record = archived["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["workspace_id"] == workspace_id)
+        .unwrap_or_else(|| panic!("a finished workspace is in the archive: {archived:?}"));
+    assert_eq!(record["kind"], "workspace");
+    assert!(record["finished_at"].as_str().is_some(), "{record:?}");
+}
+
+/// Done waits for every source, not just the first one, and says which of them
+/// is in the way. Once the work is pushed, the same call removes the workspace.
 #[test]
-fn incomplete_finish_reports_one_source_and_can_be_retried() {
+fn done_waits_until_every_source_has_put_its_work_somewhere_else() {
     let tmp = tempfile::tempdir().unwrap();
     let (one, _) = repo_with_origin(tmp.path(), "one");
     let (two, _) = repo_with_origin(tmp.path(), "two");
@@ -886,52 +938,114 @@ fn incomplete_finish_reports_one_source_and_can_be_retried() {
         project["result"]["project_id"].as_str().unwrap(),
         "retry",
     );
-    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
     let dirty = PathBuf::from(directory(&workspace, "source-2")["path"].as_str().unwrap());
     std::fs::write(dirty.join("README.md"), "unfinished\n").unwrap();
 
-    let first = state.handle(req(
+    let refused = state.handle(req(
         "workspace.finish",
         json!({"workspace_id": workspace_id}),
     ));
-    assert_eq!(first["ok"], true, "{first:?}");
-    assert_eq!(first["result"]["complete"], false, "{first:?}");
-    let failed = first["result"]["repositories"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|repo| repo["pushed"] == false)
-        .collect::<Vec<_>>();
-    assert_eq!(failed.len(), 1, "{first:?}");
-    assert!(dirty.is_dir());
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("uncommitted changes"),
+        "{refused:?}"
+    );
+    assert!(root.is_dir(), "a refused Done removes nothing");
 
     git_in(&dirty, &["add", "README.md"]);
     git_in(&dirty, &["commit", "-m", "finish work"]);
-    let retry = state.handle(req(
+    let still_refused = state.handle(req(
         "workspace.finish",
         json!({"workspace_id": workspace_id}),
     ));
-    assert_eq!(retry["ok"], true, "{retry:?}");
-    assert_eq!(retry["result"]["complete"], true, "{retry:?}");
+    assert_eq!(still_refused["ok"], false, "{still_refused:?}");
+    assert!(
+        still_refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("no remote has"),
+        "{still_refused:?}"
+    );
+
+    git_in(&dirty, &["push", "origin", "HEAD"]);
+    let finished = state.handle(req(
+        "workspace.finish",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    assert!(!root.exists(), "{finished:?}");
 }
 
+/// Done refused, in the words the caller is given.
+fn assert_done_refused(state: &mut AppState, workspace_id: &str, because: &str) {
+    let refused = state.handle(req(
+        "workspace.finish",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(
+        refused["error"].as_str().unwrap().contains(because),
+        "{refused:?}"
+    );
+}
+
+/// A second workspace, in its own project, with its own agent mid-turn. What
+/// Done must leave alone while it takes the workspace it was asked about.
+fn neighbor_workspace_working_in_it(
+    state: &mut AppState,
+    parent: &Path,
+    log: &SessionLog,
+) -> TabKey {
+    let (repo, _) = repo_with_origin(parent, "neighbor-repo");
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace = create_workspace(state, &project_id, "neighbor");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    let owner = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    let run_id = owner["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({"entity_id": run_id})));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    insert_agent_tab(
+        state,
+        &root,
+        &run_id,
+        &agent_id,
+        DictatedSession::reporting(AgentStatus::Working).recording_into(log),
+    )
+}
+
+/// Done refuses while an agent is working at the root, and once it is offered
+/// it closes every writer in that workspace — and only that workspace — before
+/// the files go.
 #[test]
-fn clean_only_finish_rejects_hidden_dirty_work_then_archives_and_stops_queued_agents() {
+fn done_refuses_while_an_agent_works_then_stops_every_agent_at_its_root() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");
     let mut state = app(tmp.path());
     let project = state.handle(req("project.add", json!({"path": repo})));
     let project_id = project["result"]["project_id"].as_str().unwrap();
     let workspace = create_workspace(&mut state, project_id, "inbox-done");
-    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
     let root = PathBuf::from(workspace["root"].as_str().unwrap());
     let ensured = state.handle(req(
         "workspace.ensure_conversation",
         json!({"workspace_id": workspace_id}),
     ));
-    let run_id = ensured["result"]["run_id"].as_str().unwrap();
+    let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
     let added = state.handle(req("agent.add", json!({"entity_id": run_id})));
-    let agent_id = added["result"]["agent"]["id"].as_str().unwrap();
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
     let posted = state.handle(req(
         "thread.post",
         json!({"entity_id": run_id, "agent_id": agent_id, "body": "keep working"}),
@@ -942,57 +1056,41 @@ fn clean_only_finish_rejects_hidden_dirty_work_then_archives_and_stops_queued_ag
     insert_agent_tab(
         &mut state,
         &root,
-        run_id,
-        agent_id,
+        &run_id,
+        &agent_id,
         DictatedSession::reporting(AgentStatus::Working).recording_into(&stopped),
     );
 
-    let (neighbor_repo, _) = repo_with_origin(tmp.path(), "neighbor-repo");
-    let neighbor_project = state.handle(req("project.add", json!({"path": neighbor_repo})));
-    let neighbor_project_id = neighbor_project["result"]["project_id"].as_str().unwrap();
-    let neighbor = create_workspace(&mut state, neighbor_project_id, "neighbor");
-    let neighbor_id = neighbor["workspace_id"].as_str().unwrap();
-    let neighbor_root = PathBuf::from(neighbor["root"].as_str().unwrap());
-    let neighbor_owner = state.handle(req(
-        "workspace.ensure_conversation",
-        json!({"workspace_id": neighbor_id}),
-    ));
-    let neighbor_run = neighbor_owner["result"]["run_id"].as_str().unwrap();
-    let neighbor_agent = state.handle(req("agent.add", json!({"entity_id": neighbor_run})));
-    let neighbor_agent = neighbor_agent["result"]["agent"]["id"].as_str().unwrap();
     let untouched = SessionLog::default();
-    let neighbor_key = insert_agent_tab(
-        &mut state,
-        &neighbor_root,
-        neighbor_run,
-        neighbor_agent,
-        DictatedSession::reporting(AgentStatus::Working).recording_into(&untouched),
-    );
+    let neighbor_key = neighbor_workspace_working_in_it(&mut state, tmp.path(), &untouched);
+
+    assert_done_refused(&mut state, &workspace_id, "an agent is working");
+    assert!(root.is_dir(), "a refused Done removes nothing");
+    assert_eq!(state.delivery_queue.queued_len(), 1);
 
     // This is +0/-0 and was the false-positive behind offering Done from the
-    // summary counts alone. Refusal happens before the agent queue is touched.
+    // summary counts alone. The refusal happens before a file is touched.
     let checkout = PathBuf::from(workspace["directories"][0]["path"].as_str().unwrap());
     std::fs::write(checkout.join("empty.bin"), []).unwrap();
-    let refused = state.handle(req(
-        "workspace.finish",
-        json!({"workspace_id": workspace_id, "require_clean": true}),
-    ));
-    assert_eq!(refused["ok"], false, "{refused:?}");
-    assert!(refused["error"].as_str().unwrap().contains("dirty"));
-    assert_eq!(state.delivery_queue.queued_len(), 1);
-    assert_eq!(
-        state.workspaces.get(workspace_id).unwrap().status,
-        crate::workspace::WorkspaceStatus::Ready
+    insert_agent_tab(
+        &mut state,
+        &root,
+        &run_id,
+        &agent_id,
+        DictatedSession::reporting(AgentStatus::Waiting).recording_into(&stopped),
     );
+    assert_done_refused(&mut state, &workspace_id, "uncommitted changes");
+    assert_eq!(state.delivery_queue.queued_len(), 1);
+    assert!(state.workspaces.get(&workspace_id).is_some());
 
     std::fs::remove_file(checkout.join("empty.bin")).unwrap();
     let finished = state.handle(req(
         "workspace.finish",
-        json!({"workspace_id": workspace_id, "require_clean": true}),
+        json!({"workspace_id": workspace_id}),
     ));
     assert_eq!(finished["ok"], true, "{finished:?}");
     assert_eq!(finished["result"]["complete"], true, "{finished:?}");
-    assert!(root.is_dir(), "archive preserves the workspace checkout");
+    assert!(!root.exists(), "Done removes the workspace checkout");
     assert!(state.delivery_queue.queued_is_empty());
     assert!(
         stopped.ended(),
@@ -1000,33 +1098,8 @@ fn clean_only_finish_rejects_hidden_dirty_work_then_archives_and_stops_queued_ag
     );
     assert!(!untouched.ended(), "Done is scoped to one workspace root");
     assert!(state.session_registry.contains(&neighbor_key));
-    assert_eq!(
-        state.workspaces.get(workspace_id).unwrap().status,
-        crate::workspace::WorkspaceStatus::Finished
-    );
-
-    assert_archived_workspace_stays_readable(&mut state, workspace_id, run_id);
-}
-
-/// What a workspace still answers after Done: it keeps the conversation and the
-/// agents it had, and the archive lists it with the time it was finished at.
-fn assert_archived_workspace_stays_readable(
-    state: &mut AppState,
-    workspace_id: &str,
-    run_id: &str,
-) {
-    let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
-    assert_eq!(detail["result"]["entity_id"], run_id);
-    assert_eq!(detail["result"]["agents"].as_array().unwrap().len(), 1);
-    let archived = state.handle(req("archived.list", json!({})));
-    let archived_workspace = archived["result"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["workspace_id"] == workspace_id)
-        .unwrap_or_else(|| panic!("finished workspace remains discoverable: {archived:?}"));
-    assert_eq!(archived_workspace["kind"], "workspace");
-    assert!(archived_workspace["finished_at"].as_str().is_some());
+    assert!(state.workspaces.get(&workspace_id).is_none());
+    assert_archived_workspace_is_history(&mut state, &workspace_id);
 }
 
 #[test]
@@ -1045,11 +1118,6 @@ fn persisted_workspaces_are_discovered_after_app_restart() {
             .unwrap()
             .to_string();
         let workspace = create_workspace(&mut state, &project_id, "durable");
-        let finished = state.handle(req(
-            "workspace.finish",
-            json!({"workspace_id": workspace["workspace_id"]}),
-        ));
-        assert_eq!(finished["result"]["complete"], true, "{finished:?}");
         (
             workspace["workspace_id"].as_str().unwrap().to_string(),
             project_id,
@@ -1061,7 +1129,7 @@ fn persisted_workspaces_are_discovered_after_app_restart() {
     let got = restarted.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
     assert_eq!(got["ok"], true, "{got:?}");
     assert_eq!(got["result"]["project_id"], project_id);
-    assert_eq!(got["result"]["status"], "finished");
+    assert_eq!(got["result"]["status"], "ready");
     assert!(
         !repo.join(crate::workspace::MANIFEST_FILE).exists(),
         "workspace state is never written into the source repository"

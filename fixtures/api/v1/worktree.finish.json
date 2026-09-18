@@ -15,10 +15,10 @@
       },
       {
         "directory_id": "wsdir-2",
-        "pushed": false,
-        "reason": "no upstream configured"
+        "pushed": true
       }
-    ]
+    ],
+    "deleted": true
   },
   "errors": [
     "not_found",

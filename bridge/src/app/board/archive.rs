@@ -148,12 +148,27 @@ impl AppState {
             items.push(row);
         }
 
-        for workspace in self
-            .workspaces
-            .list(None)
-            .into_iter()
-            .filter(|workspace| workspace.status == crate::workspace::WorkspaceStatus::Finished)
-        {
+        // Done removes the workspace, so what the archive lists is the record
+        // the registry kept of it — plus any live record still standing as
+        // finished, which is what an adopted checkout finished before this
+        // rule left behind.
+        let mut finished = self.workspaces.finished_records();
+        let recorded = finished
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        finished.extend(
+            self.workspaces
+                .list(None)
+                .into_iter()
+                .filter(|workspace| {
+                    workspace.status == crate::workspace::WorkspaceStatus::Finished
+                        && !recorded.contains(&workspace.id)
+                })
+                .cloned(),
+        );
+        finished.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+        for workspace in finished {
             let project = self.projects.get(&workspace.project_id);
             items.push(json!({
                 "kind": "workspace",

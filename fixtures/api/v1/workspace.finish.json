@@ -5,7 +5,7 @@
     "workspace_id": "ws-3f2a91c4"
   },
   "result": {
-    "complete": false,
+    "complete": true,
     "repositories": [
       {
         "directory_id": "ws-3f2a91c4:source-1",
@@ -13,10 +13,10 @@
       },
       {
         "directory_id": "ws-3f2a91c4:source-2",
-        "pushed": false,
-        "reason": "uncommitted changes"
+        "pushed": true
       }
-    ]
+    ],
+    "deleted": true
   },
   "errors": [
     "not_found",

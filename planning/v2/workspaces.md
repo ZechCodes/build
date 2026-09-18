@@ -3,8 +3,8 @@
 ## Purpose
 
 A workspace is a durable, local working copy of a project's sources. It is the
-place where agents, review surfaces, and user terminals operate. It outlives a
-Finish action so the user can inspect or recover its files afterwards.
+place where agents, review surfaces, and user terminals operate. It lasts until
+its work is somewhere else — see Finish and retention.
 
 Creating and working in a workspace does not open an Issue or an active planning
 flow. Those flows are outside the workspace lifecycle.
@@ -107,13 +107,25 @@ its files unchanged against, so a workspace holding one is judged by the
 repositories beside it, and a workspace holding no repository at all is judged
 by its agents alone.
 
-Finish checks every Git source before completion. Each Git source must be pushed
-to its configured remote; a source that cannot be pushed leaves Finish incomplete
-and reports the source and Git failure. Non-Git sources are retained as they are.
+Done removes the workspace. It closes every agent and terminal standing in it,
+hands each checkout back to the repository it was cut from, and walks the root
+away; the live record goes with the files, so `workspace.list` stops naming it
+and the conversation that stood in it ends. There is no second, gentler Finish:
+`workspace.finish` is this whether or not it is asked for a clean one, and the
+old spellings (`run.finish`, `branch.finish`, `worktree.finish`) resolve to the
+same workspace and the same rule.
 
-Finish never deletes the workspace checkout or any workspace files. Retention is
-part of the recovery contract: the user can return to the completed workspace,
-inspect it, and continue manual work from the files that were used to finish.
+Done never pushes. Publishing is the user's, which is what the eligibility above
+is measuring: by the time Done appears, every commit the workspace holds is
+already in the remote it pushes to. Recovery is pulling that remote.
+
+What survives is the record of what was finished: which workspace, when, and the
+commit each source ended on. It is kept beside the registry rather than inside
+the root, so removing the workspace cannot take it, and it is what the archive
+lists. There is nothing behind it to open.
+
+A checkout Build did not make is not Build's to remove, so Done refuses an
+adopted checkout the way Delete does.
 
 ## The project page
 

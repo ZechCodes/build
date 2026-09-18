@@ -86,8 +86,11 @@ fn external_worktree_json_sets_can_finish_for_an_idle_agent_tab() {
         .end();
 }
 
+/// Done removes the workspace it finishes, and an adopted checkout is not
+/// Build's to remove — so Done refuses it, the way Delete already does, and
+/// the checkout and the terminal standing in it are left alone.
 #[tokio::test]
-async fn workspace_finish_retains_its_checkout_and_terminal() {
+async fn workspace_finish_refuses_an_adopted_checkout_and_leaves_its_terminal() {
     let (dir, repo, _origin) = init_repo_with_origin();
     let mut app = qa_state(&repo, dir.path());
     app.term_shell = "/bin/bash".into();
@@ -119,8 +122,15 @@ async fn workspace_finish_retains_its_checkout_and_terminal() {
             json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
         ),
     );
-    assert_eq!(finished["ok"], true, "{finished:?}");
-    assert!(checkout.exists(), "Finish retains the checkout");
+    assert_eq!(finished["ok"], false, "{finished:?}");
+    assert!(
+        finished["error"]
+            .as_str()
+            .unwrap()
+            .contains("not Build's to remove"),
+        "{finished:?}"
+    );
+    assert!(checkout.exists(), "a refused Done retains the checkout");
     assert!(
         state.lock().unwrap().session_registry.contains(&term_key),
         "the workspace terminal remains registered"

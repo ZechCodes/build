@@ -8,7 +8,7 @@
 //! whether it gets one.
 
 use super::manager::bare_origin_of;
-use crate::git_fixture::init_repo;
+use crate::git_fixture::{git_in, init_repo};
 use crate::isolation::probe::rift_or_skip;
 use crate::isolation::Isolation;
 use crate::workspace::{Workspace, WorkspaceRegistry, WorkspaceSource, WorkspaceStatus};
@@ -84,9 +84,10 @@ fn git_worktree_entries(repo: &Path) -> Vec<String> {
 #[test]
 fn two_workspaces_of_one_project_materialize_and_finish() {
     let (dir, repo) = init_repo();
-    // Finishing a workspace verifies its push, so the project has a remote to
-    // be finished against.
+    // Done only records a workspace whose commits a remote already has, so
+    // the project has a remote and has fetched from it.
     bare_origin_of(&dir, &repo);
+    git_in(&repo, &["fetch", "origin"]);
     let registry_root = dir.path().join("workspaces");
     let rift_root = dir.path().join("checkouts");
     let sources = single_source(&repo);
@@ -126,7 +127,7 @@ fn two_workspaces_of_one_project_materialize_and_finish() {
 
     for workspace in [first, second] {
         let mut workspace = workspace;
-        let finished = registry.finish_existing(&mut workspace).unwrap();
+        let finished = registry.record_finished(&mut workspace).unwrap();
         assert!(
             finished.complete,
             "a provisioned workspace finishes: {finished:?}"
@@ -146,6 +147,7 @@ fn two_rift_workspaces_of_one_project_materialize_and_finish() {
         return;
     }
     bare_origin_of(&dir, &repo);
+    git_in(&repo, &["fetch", "origin"]);
     let registry_root = dir.path().join("workspaces");
     let rift_root = dir.path().join("checkouts");
     let sources = single_source(&repo);
@@ -193,7 +195,7 @@ fn two_rift_workspaces_of_one_project_materialize_and_finish() {
 
     for workspace in [first, second] {
         let mut workspace = workspace;
-        assert!(registry.finish_existing(&mut workspace).unwrap().complete);
+        assert!(registry.record_finished(&mut workspace).unwrap().complete);
     }
 }
 

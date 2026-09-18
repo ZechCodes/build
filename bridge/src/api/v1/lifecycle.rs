@@ -1656,12 +1656,17 @@ pub struct FinishedRepository {
 /// workspace behind the id they were given and run the same finish
 /// (`AppState::workspace_finish_legacy`), so all three answer this: whether
 /// the whole workspace came to rest, and what became of each repository in
-/// it. The old per-checkout archive record went with the per-checkout finish
-/// that produced it.
+/// it, and that it is gone. The old per-checkout archive record went with the
+/// per-checkout finish that produced it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceFinishResult {
     pub complete: bool,
     pub repositories: Vec<FinishedRepository>,
+    /// Always `true`: Done removes the workspace it finished. The record of
+    /// what was finished stays in the archive; the files and the live record
+    /// do not.
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 /// Somebody else's adoption of this checkout is already in flight. The asker
@@ -1745,7 +1750,12 @@ fn refine(error: ApiError) -> ApiError {
 const BUSY: [&str; 2] = ["wait for that to finish", "wait for that to complete"];
 
 /// The request was legible and the state said no.
-const CONFLICT: [&str; 8] = [
+const CONFLICT: [&str; 11] = [
+    // Done, refused because the work is still only in the workspace, or
+    // because the checkout is not Build's to remove.
+    "workspace.finish is not available yet",
+    "adopted checkouts are not Build's to remove",
+    "Cannot delete a workspace",
     "illegal run transition",
     "only terminal runs",
     "only adopted runs can be released",

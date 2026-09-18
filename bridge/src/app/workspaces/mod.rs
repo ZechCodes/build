@@ -188,42 +188,6 @@ impl WorkspaceCreateWork {
     }
 }
 
-struct WorkspaceFinishWork {
-    registry_root: PathBuf,
-    workspace: Workspace,
-    clean_only: bool,
-    retirements: Vec<crate::reaper::Retirement>,
-}
-
-impl DeferredGitWork for WorkspaceFinishWork {
-    fn run(&self, _params: &Value) -> Result<Value, String> {
-        let mut workspace = self.workspace.clone();
-        let registry = WorkspaceRegistry::load(&self.registry_root)?;
-        let result = if self.clean_only {
-            if self
-                .retirements
-                .iter()
-                .any(|retirement| !retirement.wait(crate::orchestrator::CHECKOUT_REAP_WAIT))
-            {
-                return Err(format!(
-                    "workspace.finish {}: an agent did not stop before the archive deadline",
-                    workspace.id
-                ));
-            }
-            registry.archive_clean_existing(&mut workspace)?
-        } else {
-            registry.finish_existing(&mut workspace)?
-        };
-        serde_json::to_value(result).map_err(|error| error.to_string())
-    }
-
-    fn invalidate(&self, app: &mut AppState) {
-        if let Err(error) = app.workspaces.reload() {
-            eprintln!("reload workspaces after finish: {error}");
-        }
-    }
-}
-
 impl AppState {
     /// Ensure this exact workspace root has an entity for conversations and
     /// agents. Unlike `run.adopt`, this never chooses a source checkout or
@@ -423,86 +387,47 @@ impl AppState {
                 .any(|(candidate, working)| working && Self::canonical_root(&candidate) == root)
     }
 
+    /// Done: the workspace's work is somewhere else, so the workspace goes.
+    ///
+    /// Eligibility is re-measured here under the app mutex rather than trusted
+    /// from the row the click came from, every agent and terminal standing in
+    /// the workspace is closed, and the removal itself is the one
+    /// `workspace.delete` uses — unregistering checkouts and walking a root
+    /// away are both unbounded, and neither may hold the mutex. The record of
+    /// what was finished is written on the way out; the live record and the
+    /// files do not come back. Recovery is pulling the remote.
     pub(crate) fn workspace_finish(&mut self, params: &Value) -> Result<Value, String> {
-        if self.deferred_work.is_some() {
-            return Err("another filesystem operation is still running".to_string());
-        }
-        let workspace_id = require_str(params, "workspace_id")?;
-        if self.workspaces.get(&workspace_id).is_none() {
-            self.adopt_legacy_workspaces();
-        }
-        if self.workspaces.get(&workspace_id).is_none() {
-            return Err(format!("unknown workspace_id: {workspace_id}"));
-        }
-        let status = &self
-            .workspaces
-            .get(&workspace_id)
-            .expect("checked above")
-            .status;
-        if !matches!(
-            status,
-            crate::workspace::WorkspaceStatus::Ready | crate::workspace::WorkspaceStatus::Finished
-        ) {
+        let workspace = self.workspace_to_remove(params)?;
+        if workspace.status != crate::workspace::WorkspaceStatus::Ready {
             return Err(
                 "workspace must finish provisioning successfully before it can be finished"
                     .to_string(),
             );
         }
-        if params
-            .get("require_clean")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            let workspace = self
-                .workspaces
-                .get(&workspace_id)
-                .expect("checked above")
-                .clone();
-            crate::workspace::ensure_workspace_clean(&workspace)?;
-            let root = Self::canonical_root(&workspace.root);
-            if self.delivery_queue.has_in_flight_at_root(&root) {
-                return Err(
-                    "workspace.finish require_clean refused while an agent turn is in flight"
-                        .to_string(),
-                );
-            }
-
-            // Once the first check says Done is eligible, close every writer
-            // and discard every queued turn at this exact root. Recheck after
-            // retirement so a final write cannot slip between eligibility and
-            // the durable archive record.
-            let retirements = self.retire_workspace_agents(&workspace.root);
-            self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-                call: Box::new(WorkspaceFinishWork {
-                    registry_root: self.workspaces.root().to_path_buf(),
-                    workspace,
-                    clean_only: true,
-                    retirements,
-                }),
-                params: params.clone(),
-                invalidates: true,
-                #[cfg(test)]
-                gate: None,
-            })));
-            return Ok(json!({ "workspace_id": workspace_id, "pending": true }));
+        self.refuse_removing_what_is_not_builds(&workspace)?;
+        let blockers = self.workspace_finish_blockers(&workspace);
+        if !blockers.is_empty() {
+            return Err(crate::workspace::finish_refusal(&blockers));
         }
-        self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-            call: Box::new(WorkspaceFinishWork {
-                registry_root: self.workspaces.root().to_path_buf(),
-                workspace: self
-                    .workspaces
-                    .get(&workspace_id)
-                    .expect("checked above")
-                    .clone(),
-                clean_only: false,
-                retirements: Vec::new(),
-            }),
-            params: params.clone(),
-            invalidates: true,
-            #[cfg(test)]
-            gate: None,
-        })));
-        Ok(json!({ "workspace_id": workspace_id, "pending": true }))
+        let registry_root = self.workspaces.root().to_path_buf();
+        self.remove_workspace(&workspace, params, Some(registry_root));
+        Ok(json!({ "workspace_id": workspace.id, "pending": true }))
+    }
+
+    /// What stands between this workspace and Done right now: an agent still
+    /// working at its root, and whatever its Git directories have not put
+    /// anywhere else. The same list the feed's row carries, measured again
+    /// rather than read out of the last poll's cache.
+    pub(in crate::app) fn workspace_finish_blockers(
+        &self,
+        workspace: &Workspace,
+    ) -> Vec<&'static str> {
+        let mut blockers = Vec::new();
+        if self.agent_working_at_root(&Self::canonical_root(&workspace.root)) {
+            blockers.push(crate::workspace::FINISH_BLOCKER_AGENT_WORKING);
+        }
+        blockers.extend(crate::workspace::workspace_git_blockers(workspace));
+        blockers
     }
 
     /// Rename a workspace's human-facing name.

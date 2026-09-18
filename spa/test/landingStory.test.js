@@ -12,8 +12,9 @@ import {
 
 describe("landing story progression", () => {
   it("uses the approved travel totals and responsive static cutoff", () => {
-    expect(storyTravel("desktop")).toBeCloseTo(6.4);
-    expect(storyTravel("compact")).toBeCloseTo(4.6);
+    expect(storyTravel("desktop")).toBeCloseTo(4.5);
+    expect(storyTravel("tablet")).toBeCloseTo(4.1);
+    expect(storyTravel("compact")).toBeCloseTo(3.25);
     expect(profileForViewport(1440, 900)).toBe("desktop");
     expect(profileForViewport(900, 900)).toBe("tablet");
     expect(profileForViewport(768, 1024)).toBe("tablet");
@@ -98,6 +99,26 @@ describe("landing story browser behavior", () => {
     controller.seek(0, 0.5);
     window.dispatchEvent(new Event("scroll"));
     expect(document.querySelector("#download-story a").getAttribute("tabindex")).toBe("-1");
+    controller.destroy();
+  });
+
+  it("fades one scene fully out before the next one fades in", () => {
+    const controller = install();
+    const opacity = (index) => Number(document.querySelectorAll("[data-story-scene]")[index].style.getPropertyValue("--scene-opacity"));
+    const entered = (index) => Number(document.querySelectorAll("[data-story-scene]")[index].style.getPropertyValue("--scene-enter"));
+    controller.seek(0, 0.85);
+    window.dispatchEvent(new Event("scroll"));
+    expect(opacity(0)).toBeCloseTo(0.5);
+    expect(opacity(1)).toBe(0);
+    controller.seek(0, 0.95);
+    window.dispatchEvent(new Event("scroll"));
+    expect(opacity(0)).toBe(0);
+    expect(opacity(1)).toBeCloseTo(0.5);
+    expect(entered(1)).toBeCloseTo(0.5);
+    controller.seek(1, 0.5);
+    window.dispatchEvent(new Event("scroll"));
+    expect(opacity(1)).toBe(1);
+    expect(entered(1)).toBe(1);
     controller.destroy();
   });
 

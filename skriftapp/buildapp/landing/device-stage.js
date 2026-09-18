@@ -9,8 +9,8 @@ const MODEL_URLS = Object.freeze({
 const SCREEN_DIRECTORY = "/landing/assets/screens";
 const EMPTY_POSE = Object.freeze({ x: 50, y: 58, w: 0, rotate: [0, 0, 0], opacity: 0 });
 const VISIBLE_OPACITY = 0.015;
-const ARRIVAL_END = 0.25;
-const DEPARTURE_START = 0.75;
+const ARRIVAL_END = 0.3;
+const DEPARTURE_START = 0.7;
 
 export function getContainedTextureLayout(imageWidth, imageHeight, screenAspect) {
   const width = Math.max(1, Number(imageWidth) || 1);
@@ -644,7 +644,9 @@ class DeviceStage {
       const materials = Array.isArray(node.material) ? node.material : [node.material];
       for (const material of materials) {
         material.opacity = opacity;
-        material.depthWrite = opacity > 0.85;
+        // Depth writes stay on while fading: without them the keyboard and
+        // hinge draw through the lid and the laptop reads as a grey silhouette.
+        material.depthWrite = true;
       }
     });
   }

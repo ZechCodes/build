@@ -296,6 +296,14 @@ def test_static_story_reads_as_a_document_on_phones():
     assert ".story-scene--download{display:block}" in compact
 
 
+def test_review_scene_shows_every_step_and_sizes_the_card_to_its_content():
+    css = read_landing_file("cinematic.css").replace(" ", "")
+    assert "aspect-ratio:4/3" not in css
+    # Steps are never removed from the card; the scroll position lights them up.
+    assert '[data-review-step]{display:none' not in css
+    assert '[data-review-step]{opacity:' in css
+
+
 def test_deploy_smoke_checks_the_new_story_and_critical_assets():
     workflow = CI_WORKFLOW_PATH.read_text()
     for expected in (

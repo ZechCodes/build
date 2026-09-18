@@ -9,7 +9,7 @@ const devices = (laptop = hidden, tablet = hidden, phone = hidden, review = hidd
 export const STORY_SCENES = Object.freeze([
   {
     id: "start",
-    travel: { desktop: 1, tablet: 1, compact: 0.7 },
+    travel: { desktop: 0.7, tablet: 0.7, compact: 0.5 },
     copy: { title: "Set the work in motion.", region: "left" },
     checkpoints: [{ at: 0, id: "request" }, { at: 0.42, id: "agents-started" }, { at: 0.85, id: "running" }],
     poses: {
@@ -20,40 +20,40 @@ export const STORY_SCENES = Object.freeze([
   },
   {
     id: "handoff",
-    travel: { desktop: 1.1, tablet: 1, compact: 0.7 },
+    travel: { desktop: 0.75, tablet: 0.7, compact: 0.5 },
     copy: { title: "Your day moves.", region: "left" },
     checkpoints: [{ at: 0, id: "laptop" }, { at: 0.25, id: "inbox" }, { at: 0.75, id: "handoff-ready" }],
     poses: {
-      desktop: devices(pose(28, 61, 34, [12, 3, 0], 0.58), hidden, pose(70, 55, 21, [-12, 2, -2])),
-      tablet: devices(pose(25, 67, 43, [5, 2, 0], 0.52), hidden, pose(68, 64, 22, [-4, 1, -1])),
+      desktop: devices(pose(30, 66, 32, [12, 3, 0], 0.58), hidden, pose(83, 56, 21, [-12, 2, -2])),
+      tablet: devices(pose(24, 70, 42, [5, 2, 0], 0.52), hidden, pose(77, 66, 24, [-4, 1, -1])),
       compact: devices(pose(20, 64, 50, [0, 0, 0], 0.42), hidden, pose(58, 68, 58, [-5, 0, 0])),
     },
   },
   {
     id: "direction",
-    travel: { desktop: 1, tablet: 0.9, compact: 0.8 },
+    travel: { desktop: 0.7, tablet: 0.65, compact: 0.55 },
     copy: { title: "A little direction. Back to work.", region: "left" },
     checkpoints: [{ at: 0, id: "question" }, { at: 0.42, id: "answer" }, { at: 0.68, id: "resumed" }],
     poses: {
-      desktop: devices(hidden, hidden, pose(69, 58, 28)),
-      tablet: devices(hidden, hidden, pose(50, 64, 24)),
+      desktop: devices(hidden, hidden, pose(84, 56, 22)),
+      tablet: devices(hidden, hidden, pose(75, 64, 26)),
       compact: devices(hidden, hidden, pose(50, 68, 64)),
     },
   },
   {
     id: "overview",
-    travel: { desktop: 1.1, tablet: 1, compact: 0.8 },
+    travel: { desktop: 0.75, tablet: 0.7, compact: 0.55 },
     copy: { title: "See the whole picture.", region: "left" },
     checkpoints: [{ at: 0, id: "workspace" }, { at: 0.3, id: "activity" }, { at: 0.75, id: "review-approach" }],
     poses: {
-      desktop: devices(hidden, pose(70, 60, 53, [-7, 5, 0])),
-      tablet: devices(hidden, pose(50, 65, 60, [-3, 3, 0])),
+      desktop: devices(hidden, pose(73, 57, 50, [-7, 5, 0])),
+      tablet: devices(hidden, pose(50, 78, 62, [-3, 3, 0])),
       compact: devices(hidden, pose(50, 70, 94)),
     },
   },
   {
     id: "review",
-    travel: { desktop: 1.4, tablet: 1.1, compact: 1 },
+    travel: { desktop: 1.1, tablet: 0.9, compact: 0.7 },
     copy: { title: "Keep the final say.", region: "top" },
     checkpoints: [
       { at: 0, id: "align" },
@@ -71,7 +71,7 @@ export const STORY_SCENES = Object.freeze([
   },
   {
     id: "download",
-    travel: { desktop: 0.8, tablet: 0.6, compact: 0.6 },
+    travel: { desktop: 0.5, tablet: 0.45, compact: 0.45 },
     copy: { title: "Any screen. Your call.", region: "center" },
     checkpoints: [{ at: 0, id: "arrive" }, { at: 0.35, id: "settled" }],
     poses: {

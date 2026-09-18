@@ -35,14 +35,26 @@ function readerPosition(story, stage) {
   };
 }
 
+const LEAVE_START = 0.8;
+const ENTER_START = 0.9;
+
+// The outgoing scene is fully gone before the incoming one starts, so two
+// headlines never share the stage.
 function opacityForScene(index, frame) {
   if (index === frame.sceneIndex) {
-    return frame.local > 0.8 && index < STORY_SCENES.length - 1
-      ? 1 - (frame.local - 0.8) / 0.2
-      : 1;
+    if (index === STORY_SCENES.length - 1 || frame.local <= LEAVE_START) return 1;
+    return Math.max(0, 1 - (frame.local - LEAVE_START) / (ENTER_START - LEAVE_START));
   }
-  if (index === frame.sceneIndex + 1 && frame.local > 0.8) return (frame.local - 0.8) / 0.2;
+  if (index === frame.sceneIndex + 1 && frame.local > ENTER_START) {
+    return (frame.local - ENTER_START) / (1 - ENTER_START);
+  }
   return 0;
+}
+
+// How far the next scene has settled in: its copy slides up as it fades in.
+function enterForScene(index, frame) {
+  if (index === frame.sceneIndex + 1) return clamp(opacityForScene(index, frame));
+  return 1;
 }
 
 function dispatchFrame(stage, frame) {
@@ -87,6 +99,7 @@ function applyFrame({ frame, stage, scenes, progressElement, positionElement }) 
   scenes.forEach((scene, index) => {
     const isActive = index === frame.sceneIndex;
     scene.style.setProperty("--scene-opacity", String(clamp(opacityForScene(index, frame))));
+    scene.style.setProperty("--scene-enter", String(enterForScene(index, frame)));
     scene.classList.toggle(ACTIVE_CLASS, isActive);
     setSceneInteractive(scene, isActive);
     scene.dataset.checkpoint = isActive ? frame.checkpoint : "";
@@ -108,6 +121,7 @@ function clearEnhancedState({ stage, scenes }) {
   stage.style.removeProperty("--scene-local");
   scenes.forEach((scene) => {
     scene.style.removeProperty("--scene-opacity");
+    scene.style.removeProperty("--scene-enter");
     scene.classList.remove(ACTIVE_CLASS);
     setSceneInteractive(scene, true);
     scene.dataset.checkpoint = "";

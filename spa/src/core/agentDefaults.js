@@ -58,6 +58,23 @@ export function loadHarnessDefaults(storage = localStorage) {
   return { provider, harnesses };
 }
 
+/** One set of harness defaults laid over another, field by field: an empty
+ *  model or effort is "no opinion" at either level, so the layer on top can
+ *  name a model without being made to restate the effort beside it — and a
+ *  layer that names nothing reads exactly as the one underneath.
+ *
+ *  This is how a scope of its own — one workspace (core/workspaceDefaults.js),
+ *  the project agent (core/projectAgentDefaults.js) — sits over the account's
+ *  without competing with it. */
+export function layerHarnessDefaults(under, over) {
+  const harnesses = { ...under.harnesses };
+  for (const [family, preference] of Object.entries(over.harnesses)) {
+    const beneath = harnesses[family] || { ...NO_PREFERENCE };
+    harnesses[family] = { model: preference.model || beneath.model, effort: preference.effort || beneath.effort };
+  }
+  return { provider: over.provider || under.provider, harnesses };
+}
+
 /** The model and effort stored for `providerId`'s harness, or no preference. */
 export function harnessDefaultsFor(defaults, providerId) {
   return defaults.harnesses[providerFamilyKey(providerId)] || { ...NO_PREFERENCE };

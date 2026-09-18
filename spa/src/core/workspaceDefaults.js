@@ -19,7 +19,13 @@
 // half of this feature is a storage adapter, not a second implementation.
 
 import { chosenProviderId } from "./agentChoice.js";
-import { agentDefaultsFor, agentDefaultsIn, harnessDefaultsFor, loadHarnessDefaults } from "./agentDefaults.js";
+import {
+  agentDefaultsFor,
+  agentDefaultsIn,
+  harnessDefaultsFor,
+  layerHarnessDefaults,
+  loadHarnessDefaults,
+} from "./agentDefaults.js";
 import { creatableCatalog } from "./providerCatalog.js";
 
 export const WORKSPACE_DEFAULTS_KEY = "build.workspaceDefaults";
@@ -80,13 +86,7 @@ export function forgetWorkspaceDefaults(workspaceKey, storage = localStorage) {
 export function layeredHarnessDefaults(workspaceKey, storage = localStorage) {
   const account = loadHarnessDefaults(storage);
   if (!workspaceKey) return account;
-  const workspace = loadHarnessDefaults(workspaceDefaultsStorage(workspaceKey, storage));
-  const harnesses = { ...account.harnesses };
-  for (const [family, preference] of Object.entries(workspace.harnesses)) {
-    const under = harnesses[family] || { model: "", effort: "" };
-    harnesses[family] = { model: preference.model || under.model, effort: preference.effort || under.effort };
-  }
-  return { provider: workspace.provider || account.provider, harnesses };
+  return layerHarnessDefaults(account, loadHarnessDefaults(workspaceDefaultsStorage(workspaceKey, storage)));
 }
 
 /** `agentDefaultsFor`, layered: the model and effort a start on `providerId`

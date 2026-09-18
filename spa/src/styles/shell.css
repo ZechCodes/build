@@ -757,6 +757,13 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble.is-dropping > * { pointer-events:none; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
+/* The project's agent is not one of this work item's: it wears the project's
+   initial instead of a face off the same five tilings, and a squared-off
+   bubble, so the strip says whose it is before the tip is read. */
+.rail-bubble-project { border-radius:9px; font:700 13px/1 var(--sans); }
+.rail-bubble-project .rail-glyph { border-radius:9px; }
+/* The line under it: everything below belongs to the work item on screen. */
+.rail-sep { flex:none; width:16px; height:1px; background:var(--line2); }
 .task-completion-toast { position:fixed; z-index:90; max-width:min(320px, calc(100vw - 20px)); max-height:30vh;
   padding:8px 10px; border:1px solid var(--line2); border-radius:8px;
   background:var(--panel2); color:var(--ink); box-shadow:0 8px 24px var(--shadow-soft);
@@ -1192,6 +1199,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     flex-direction:row; align-items:center; gap:10px; padding:0 10px;
     border:0; background:var(--panel); border-radius:10px;
     overflow-x:auto; overflow-y:hidden; }
+  /* The strip runs across the foot here, so the line under the project's agent
+     is a rule beside it rather than under it. */
+  .rail-sep { width:1px; height:16px; }
 
   /* And the panel is laid over the work rather than beside it, over the VIEW
      COLUMN (#view is the positioned ancestor), starting below the toolbar —

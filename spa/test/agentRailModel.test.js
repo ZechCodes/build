@@ -221,6 +221,73 @@ describe("the bubble strip", () => {
   });
 });
 
+// The project's agent is reachable from every workspace in the project — that
+// is what makes it the PROJECT's — so a workspace's strip carries it above a
+// line, with the workspace's own agents below.
+describe("the project's agent on a workspace's strip", () => {
+  const projectAgent = (over = {}) => ({ name: "build", entityId: null, agents: [], active: false, ...over });
+
+  it("stands above a separator, before the work item's own", () => {
+    const bubbles = railBubbles({
+      agents: [agent()],
+      selectedId: "ag-1",
+      kind: "workspace",
+      projectAgent: projectAgent(),
+    });
+    expect(bubbles.map((bubble) => bubble.type)).toEqual(["project", "separator", "agent", "add"]);
+  });
+
+  it("wears the project's initial rather than a face of its own", () => {
+    const [bubble] = railBubbles({ agents: [agent()], kind: "workspace", projectAgent: projectAgent() });
+    expect(bubble.label).toBe("B");
+    expect(bubble.pattern).toBe(null);
+  });
+
+  // It is there before the project has a conversation at all: an agent nobody
+  // has started is still the project's agent, and the bubble says how to start
+  // it rather than reading as an empty ghost.
+  it("says how to start a project nobody has talked to yet", () => {
+    const [bubble] = railBubbles({ agents: [agent()], kind: "workspace", projectAgent: projectAgent() });
+    expect(bubble.title).toBe("Project agent for build: send a message to start it");
+    expect(bubble.unread).toBe(0);
+    expect(bubble.working).toBe(false);
+  });
+
+  it("carries the unread and the working of the agents on that conversation", () => {
+    const [bubble] = railBubbles({
+      agents: [agent()],
+      kind: "workspace",
+      projectAgent: projectAgent({
+        entityId: "run-p",
+        agents: [agent({ id: "pa-1", unread_count: 2, working: true })],
+      }),
+    });
+    expect(bubble.unread).toBe(2);
+    expect(bubble.working).toBe(true);
+    expect(bubble.title).toBe("Project agent for build — 2 unread");
+  });
+
+  it("is the open conversation while the panel is on it, and nothing else is", () => {
+    const bubbles = railBubbles({
+      agents: [agent()],
+      selectedId: "ag-1",
+      kind: "workspace",
+      projectAgent: projectAgent({ entityId: "run-p", active: true }),
+    });
+    expect(bubbles.map((bubble) => [bubble.type, bubble.active])).toEqual([
+      ["project", true],
+      ["separator", false],
+      ["agent", false],
+      ["add", false],
+    ]);
+  });
+
+  it("leaves a rail that was not asked for one exactly as it was", () => {
+    const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "workspace" });
+    expect(bubbles.map((bubble) => bubble.type)).toEqual(["agent", "add"]);
+  });
+});
+
 // An agent is not a number. Each wears one of a handful of patterns instead —
 // animated while it is working, frozen where it stopped when it is not — so the
 // strip reads as a set of faces rather than a numbered list.

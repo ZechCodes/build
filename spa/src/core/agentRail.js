@@ -16,6 +16,13 @@
 // One work item, one rail: `mountAgentRail` is given the branch or the issue,
 // polls the bridge for it (branch.get / issue.get), and every agent it renders
 // comes off that payload's agents[].
+//
+// With one exception, and it is the project's agent. A project's agent is
+// reachable from every workspace in the project — that is what makes it the
+// project's — so a workspace's rail carries it as one bubble above a line, and
+// pressing it stands this same rail on the project's conversation without the
+// page leaving the workspace. The rail is on one of the two at a time and reads
+// the other beside it, so the strip says what both are doing.
 
 import { App, go } from "../app.js";
 import { createPatternRenderer } from "./agentCanvas.js";
@@ -23,7 +30,7 @@ import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall } from "./adoption.js";
 import { agentDefaultsForWorkspace, agentDefaultsInWorkspace } from "./workspaceDefaults.js";
-import { projectAgentDefaultsFor, projectAgentDefaultsIn } from "./projectAgentDefaults.js";
+import { projectAgentChoice, projectAgentDefaultsFor, projectAgentDefaultsIn } from "./projectAgentDefaults.js";
 import { workspaceKey } from "./deviceKey.js";
 import {
   AGENT_STARTING,
@@ -77,6 +84,7 @@ import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
   MUTATION_THREAD_PAGE,
+  SMALLEST_THREAD_PAGE,
   activityRunKeyAt,
   activityRunThroughAt,
   chatPaintFingerprint,
@@ -376,24 +384,39 @@ const writePinned = (on) => {
  *  view's right edge on a desktop, across its foot on a phone. */
 const stripRunsAcross = () => window.innerWidth < PANEL_OVERLAYS_BELOW;
 
-export function bubbleHtml(bubble) {
+/** The count over a bubble's face, hidden while nothing is waiting. The `+` is
+ *  a control rather than a conversation, so nothing is ever waiting on it. */
+const bubbleCountHtml = (bubble) => {
+  if (bubble.type === "add") return "";
+  if (!bubble.unread) return `<span class="rail-count" hidden></span>`;
+  return `<span class="rail-count">${esc(String(bubble.unread))}</span>`;
+};
+
+/** A pattern IS the bubble's face, so it takes the label's place: a canvas for
+ *  core/agentCanvas.js to paint into. The `+`, and the project's own initial,
+ *  speak in a glyph and keep a label. */
+const bubbleFaceHtml = (bubble) => {
+  const count = bubbleCountHtml(bubble);
+  if (bubble.pattern) return `<canvas class="rail-glyph" aria-hidden="true"></canvas>${count}`;
+  return `<span class="rail-bubble-label">${esc(bubble.label)}</span>${count}`;
+};
+
+const bubbleClasses = (bubble) => {
   const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
   if (bubble.active) classes.push("active");
   if (bubble.working) classes.push("working");
   if (bubble.starting) classes.push("starting");
-  // A pattern IS the bubble's face, so it takes the label's place: a canvas
-  // for core/agentCanvas.js to paint into, named by the ordinal it wears.
-  // The `+` and anything else that speaks in a glyph keeps a label.
-  const count = bubble.unread
-    ? `<span class="rail-count">${esc(String(bubble.unread))}</span>`
-    : `<span class="rail-count" hidden></span>`;
-  const face = bubble.pattern
-    ? `<canvas class="rail-glyph" aria-hidden="true"></canvas>${count}`
-    : `<span class="rail-bubble-label">${esc(bubble.label)}</span>`;
+  return classes.join(" ");
+};
+
+export function bubbleHtml(bubble) {
+  // The line between the project's agent and this work item's own. It says
+  // nothing and is pressed by nobody, so it is not a button.
+  if (bubble.type === "separator") return `<div class="rail-sep" role="separator"></div>`;
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
-  return `<button type="button" class="${classes.join(" ")}" data-bubble="${esc(bubble.type)}"
+  return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
     data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
-    aria-label="${esc(bubble.title)}">${face}</button>`;
+    aria-label="${esc(bubble.title)}">${bubbleFaceHtml(bubble)}</button>`;
 }
 
 export function syncStripPainters(bubbles, painted, faces) {
@@ -500,6 +523,29 @@ export function panelHeadHtml(who, mode, { provider = "", removable = false, has
   </div>`;
 }
 
+/** The project's conversation as a context of its own: this device's caller,
+ *  cache and conversations, pointed at the project above the work item. Its
+ *  agent is not the work item's selected agent, so the shared selection handle
+ *  is deliberately left behind. */
+const projectAgentContext = (context, known) => ({
+  ...context,
+  kind: "project",
+  projectId: context.projectAgent.projectId,
+  entityId: known.entityId,
+  workspaceId: null,
+  selection: null,
+  openAgentId: null,
+  projectAgent: { ...context.projectAgent, ...known },
+});
+
+/** The work item's own context again, with the agent whose bubble asked for it
+ *  open. */
+const workItemContext = (context, known, openAgentId) => ({
+  ...context,
+  openAgentId,
+  projectAgent: { ...context.projectAgent, ...known },
+});
+
 /**
  * Mount the rail for one work item.
  *
@@ -511,9 +557,74 @@ export function panelHeadHtml(who, mode, { provider = "", removable = false, has
  * it (core/adoption.js `createAdopters`), so the rail does not claim a checkout
  * a sibling surface is claiming too. Returns `{ dispose() }`; disposing tears
  * down the client view only — PTYs and conversations are the daemon's.
+ *
+ * `projectAgent: { projectId }` asks for a second conversation on the same
+ * rail: the project's agent, one bubble above a line, reachable from every
+ * workspace in the project because that is what makes it the PROJECT's. The
+ * rail stands on one of the two at a time and keeps the other beside it, and a
+ * press moves it between them by standing this same host on the other context.
+ * Everything worth keeping across that — which agent was open, what was typed,
+ * the history already read — lives in the injected repository keyed by the
+ * context, so it is all still there on the way back.
  */
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
+  if (!context.projectAgent?.projectId) return mountRailOnContext(host, context, null);
+  // What the rail has learned about the project: its name, and the conversation
+  // owner — minted by the press that opens it, never by a render. Held out here
+  // so a swap does not ask for either of them again.
+  let known = { entityId: context.projectAgent.entityId || null, name: context.projectAgent.name || "" };
+  let live = null;
+  const stand = (standing, alongside) => {
+    live?.dispose();
+    live = mountRailOnContext(host, { ...standing, alongside }, swap);
+  };
+  const swap = {
+    learned: (facts) => {
+      known = { ...known, ...facts };
+    },
+    toProject: (entityId) => {
+      known = { ...known, entityId };
+      stand(projectAgentContext(context, known), workItemContext(context, known, null));
+    },
+    toWorkItem: (openAgentId) => {
+      stand(workItemContext(context, known, openAgentId), projectAgentContext(context, known));
+    },
+  };
+  swap.toWorkItem(null);
+  return {
+    dispose() {
+      live?.dispose();
+      live = null;
+    },
+  };
+}
+
+/** What a rail knows about the project above it before it has read anything:
+ *  whether it was asked for one at all, whether it is the project's own
+ *  conversation it is standing on, and the name and owner the swap before this
+ *  mount already learned. */
+function projectAgentState(context) {
+  const projectAgent = context.projectAgent || null;
+  const standing = !!projectAgent && context.kind === "project";
+  return {
+    projectAgent,
+    standing,
+    entityId: (standing ? context.entityId : projectAgent?.entityId) || null,
+    name: projectAgent?.name || "",
+  };
+}
+
+/** Which conversation the rail was asked to keep beside the one it stands on. */
+const alongsideKind = (context) => context.alongside?.kind || "project";
+
+/** Whose conversation this mount opens on: the bubble that asked to come back
+ *  here, or the one this rail was last left on. */
+const openingAgentId = (context, railView) => context.openAgentId || railView.selectedAgentId();
+
+/** The rail standing on ONE of its contexts. `swap` is how it moves to the
+ *  other, and is null for a rail that has only one. */
+function mountRailOnContext(host, context, swap) {
   const completionTracker = createTaskCompletionTracker();
   const completionToast = mountTaskCompletionToast(host);
   const railContext = createAgentRailContext(context);
@@ -530,8 +641,19 @@ export function mountAgentRail(host, context) {
   const railView = chatRepository.railView(key);
   const selection = context.selection || createAgentSelection();
   let entity = railEntity(null, context.kind);
-  let selectedId = railView.selectedAgentId();
+  let selectedId = openingAgentId(context, railView);
   selection.set(selectedId);
+  // ---- the project's agent, where the view asked for one --------------------
+  // The rail stands on one conversation and keeps the other beside it: the
+  // project's when this is the workspace, the workspace's when this is the
+  // project. `alongside` is the one it is NOT standing on, read for the bubbles
+  // of it the strip carries and for nothing else.
+  const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName } = projectAgentState(context);
+  let projectOwner = knownOwner;
+  let projectName = knownName;
+  let mintingProjectAgent = false;
+  let alongside = context.alongside && createAgentRailContext(context.alongside);
+  let alongsideEntity = railEntity(null, alongsideKind(context));
   // Docked beside the work, or a card on the strip. The pin is the reader's
   // remembered layout choice; visibility belongs to this visit and never
   // rewrites that choice.
@@ -876,6 +998,7 @@ export function mountAgentRail(host, context) {
   };
 
   const refresh = async () => {
+    refreshAlongside();
     const asked = selectedId;
     let payload;
     try {
@@ -916,6 +1039,67 @@ export function mountAgentRail(host, context) {
     showTaskCompletions(answered.agents);
   };
 
+  // ---- the conversation beside this one -------------------------------------
+
+  /// What the rail has just learned about the project. Told to the mount that
+  /// holds this rail's two contexts, so a swap in either direction starts from
+  /// it rather than asking again.
+  const learnProjectFacts = ({ entityId, name }) => {
+    projectName = name || projectName;
+    if (entityId && projectOwner !== entityId) {
+      projectOwner = entityId;
+      if (context.alongside?.kind === "project") {
+        alongside = createAgentRailContext({ ...context.alongside, entityId });
+      }
+    }
+    swap?.learned({ entityId: projectOwner, name: projectName });
+  };
+
+  /// The project's own row off `project.list`, or nothing when that machine has
+  /// no such project.
+  const listedProjectRow = (listed) =>
+    (listed?.projects || []).find((project) => project.project_id === projectAgent.projectId);
+
+  /// What the project above this work item is called, and whether it has a
+  /// conversation yet. `project.list` is the only read that answers the second
+  /// without minting one (planning/v2/workspaces.md), and it answers the first
+  /// in the same breath. Asked once, at mount: the press is what mints, and a
+  /// bubble waiting to be started is a true thing to show until then.
+  const readProjectAgent = async () => {
+    if (!projectAgent || (projectOwner && projectName)) return;
+    const call = chatRepository.currentCall();
+    const row = listedProjectRow(await call("project.list", {}).catch(() => null));
+    if (disposed || !row) return;
+    learnProjectFacts({ entityId: row.entity_id || row.run_id, name: row.name });
+    paint();
+    refreshAlongside();
+  };
+
+  /// One read of the conversation this rail is not standing on — the project's
+  /// from a workspace, the workspace's from inside the project's — for what its
+  /// bubbles say. There is nothing to read while the project has no owner: that
+  /// bubble says how to start one instead, which is not a read.
+  const refreshAlongside = async () => {
+    if (!alongside || (alongside.kind === "project" && !projectOwner)) return;
+    const call = chatRepository.currentCall();
+    // A refusal leaves the strip saying what it said: a bubble that blanks
+    // because one read missed is worse than one a tick behind.
+    const payload = await alongside.detail(call, SMALLEST_THREAD_PAGE).catch(() => null);
+    if (disposed || !payload) return;
+    alongsideEntity = railEntity(payload, alongside.kind);
+    paint();
+  };
+
+  /// The project's bubble, or null on a rail nobody asked for one on. Its
+  /// agents are whichever side of the swap the project is on.
+  const projectAgentEntry = () =>
+    projectAgent && {
+      name: projectName || projectAgent.projectId,
+      entityId: projectOwner,
+      agents: onProjectAgentRail ? visibleAgents() : alongsideEntity.agents,
+      active: onProjectAgentRail,
+    };
+
   // ---- painting -------------------------------------------------------------
 
   const releaseFaces = () => {
@@ -924,6 +1108,8 @@ export function mountAgentRail(host, context) {
   };
 
   const wireBubble = (button, bubble) => {
+    // The line is not a control: nothing to press, nothing to drop on.
+    if (bubble.type === "separator") return;
     button.onclick = () => pressBubble(button.dataset.bubble, button.dataset.agent);
     wireBubbleDrop(button);
     const canvas = bubble.pattern ? button.querySelector("canvas.rail-glyph") : null;
@@ -939,12 +1125,18 @@ export function mountAgentRail(host, context) {
     });
   };
 
+  /// Whether a file dropped on this bubble has a composer to land in. The `+`
+  /// is a chooser, and a bubble standing for a conversation this rail is not on
+  /// — the project's, or a workspace agent's from inside the project's — is a
+  /// doorway rather than a place to leave a file.
+  const bubbleTakesFiles = (type) => type === "ghost" || (type === "agent" && !onProjectAgentRail);
+
   /// A file dragged onto a bubble is for that agent: the drop opens its
   /// conversation and lands the file in the composer, as if it had been dropped
-  /// on the box. Only a bubble that IS a conversation takes one — the + is a
-  /// chooser, and a file is not an answer to "which harness".
+  /// on the box. Only a bubble that IS the open conversation's takes one — a
+  /// file is not an answer to "which harness", nor to "which conversation".
   const wireBubbleDrop = (button) => {
-    if (button.dataset.bubble === "add") return;
+    if (!bubbleTakesFiles(button.dataset.bubble)) return;
     const dragged = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
     const over = (event) => {
       if (!dragged(event)) return;
@@ -1008,8 +1200,12 @@ export function mountAgentRail(host, context) {
     }
     const strip = host.querySelector(".rail-strip");
     paintStrip(strip, railBubbles({
-      agents: visibleAgents(), selectedId, kind: entity.kind, chatCapable: entity.chatCapable !== false,
+      // Below the line are the work item's agents, whichever side of the swap
+      // this rail is standing on.
+      agents: onProjectAgentRail ? alongsideEntity.agents : visibleAgents(),
+      selectedId, kind: entity.kind, chatCapable: entity.chatCapable !== false,
       addingAgent,
+      projectAgent: projectAgentEntry(),
     }));
     let panel = host.querySelector("#rail-panel");
     if (panelOut() && !panel) {
@@ -2249,9 +2445,64 @@ export function mountAgentRail(host, context) {
 
   // ---- the strip's presses --------------------------------------------------
 
+  /** A press that moves the rail between its two conversations, or null when it
+   *  is not one: the project's bubble from the work item, and any bubble below
+   *  the line from the project's — which is the way back. */
+  const swapForPress = (type, agentId) => {
+    if (!swap) return null;
+    if (type === "project" && !onProjectAgentRail) return () => openProjectAgent();
+    if (onProjectAgentRail && (type === "agent" || type === "ghost")) {
+      return () => swap.toWorkItem(agentId || null);
+    }
+    return null;
+  };
+
+  /// The owner `project.ensure_conversation` answers with, minted on what this
+  /// device says a project agent starts on (core/projectAgentDefaults.js) — the
+  /// same choice the project's own page spends. Naming nothing sends nothing,
+  /// and the bridge's own default harness stands.
+  const mintProjectConversation = async () => {
+    const call = chatRepository.currentCall();
+    const choice = projectAgentChoice();
+    const answer = await call("project.ensure_conversation", {
+      project_id: projectAgent.projectId,
+      ...modelParams([], choice.model, choice.effort, choice.provider),
+    });
+    return answer?.entity_id || answer?.run_id;
+  };
+
+  /**
+   * Put the project's conversation in this panel, with the page staying on the
+   * work item it is standing on.
+   *
+   * The owner is minted HERE, by the press — a rail that minted one to paint a
+   * bubble would give every workspace page a project agent, a scratch directory
+   * and a run that nobody asked for.
+   */
+  const openProjectAgent = async () => {
+    if (projectOwner) {
+      swap.toProject(projectOwner);
+      return;
+    }
+    if (mintingProjectAgent) return;
+    mintingProjectAgent = true;
+    try {
+      const entityId = await mintProjectConversation();
+      if (!disposed && entityId) swap.toProject(entityId);
+    } catch (error) {
+      mintingProjectAgent = false;
+      if (!disposed) notifyError("No conversation for this project", error.message || String(error));
+    }
+  };
+
   const pressBubble = (type, agentId) => {
     if (type === "add") {
       pressAddBubble();
+      return;
+    }
+    const swapping = swapForPress(type, agentId);
+    if (swapping) {
+      swapping();
       return;
     }
     if (type === "agent" && agentId && (agentId !== selectedId || addingAgent)) {
@@ -2437,6 +2688,7 @@ export function mountAgentRail(host, context) {
     paint();
   }
   refresh();
+  readProjectAgent();
   // The harnesses and their models, asked of the machine this rail is mounted
   // on and held there (core/modelCatalog.js). The new-agent view leads with
   // that bridge's default, which is this answer's to give, so a paint that
@@ -2454,7 +2706,7 @@ export function mountAgentRail(host, context) {
   poll = watchChanges({
     refresh,
     intervalMs: RAIL_POLL_MS,
-    entity: () => [entity.entityId, entity.worktreeId],
+    entity: () => [entity.entityId, entity.worktreeId, alongsideEntity.entityId],
     // Focus tier: the rail paints lifecycle and conversation, so those are the
     // kinds it asks the bridge for.
     kinds: ["state", "thread"],

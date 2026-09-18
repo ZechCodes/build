@@ -219,6 +219,18 @@ only when it mints the owner, and the rail seeds a new project agent with it the
 way a workspace's rail seeds one from that workspace's own slot. Naming nothing
 sends nothing, and the bridge's own default harness stands.
 
+The project's agent is reachable from every workspace in the project — that is
+what makes it the project's rather than a workspace's — so every workspace's
+rail carries it too: one bubble wearing the project's initial above a line, with
+that workspace's own agents below it. It is there before the project has a
+conversation at all, reading as an agent waiting to be started, and the press is
+what mints the owner: a rail that minted one to paint a bubble would give every
+workspace page a project agent, a scratch directory and a run nobody asked for.
+Pressing it stands the same rail on the project's conversation, in the same
+panel, with the page still on the workspace; pressing a bubble below the line
+stands it back. The rail reads the conversation it is not standing on beside its
+own, so both halves of the strip carry their unread and their working.
+
 ## The project agent
 
 A project's agents reach Build through a surface of their own. It is the same

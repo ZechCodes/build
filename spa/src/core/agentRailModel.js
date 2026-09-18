@@ -158,13 +158,72 @@ export function bubbleTip(agent) {
   return news ? `${title} — ${news}` : title;
 }
 
+const supportsMultipleAgents = (kind) => kind === "branch" || kind === "workspace";
+const addAgentTitle = (kind) => `Add another agent to this ${kind === "workspace" ? "workspace" : "branch"}`;
+
+/** The line under the project's agent: everything below it belongs to the work
+ *  item the page is standing on. Keyed like any other entry — the same shape
+ *  core/thread.js rules its unread line with — so the reconciler draws it once
+ *  and never again. */
+export const RAIL_SEPARATOR_ENTRY = Object.freeze({
+  type: "separator",
+  id: "",
+  label: "",
+  pattern: null,
+  title: "",
+  active: false,
+  unread: 0,
+  working: false,
+});
+
+/** The project's mark: its initial, because the project agent is the project's
+ *  and a face off the same five tilings would read as one more agent on this
+ *  work item. */
+const projectInitial = (name) => (String(name || "").trim().slice(0, 1) || "?").toUpperCase();
+
+/** What the project's bubble is waiting on, in the same order an agent's is
+ *  (core/agentRailModel.js `bubbleNews`): unread over working. */
+function projectAgentNews(agents) {
+  const unread = agents.reduce((total, agent) => total + (agent.unread_count || 0), 0);
+  const asking = agents.find((agent) => agent.unread_count);
+  if (unread) return unreadReasonText(asking?.unread_reason, "agent") || `${unread} unread`;
+  return agents.some((agent) => agent.working) ? "working" : "";
+}
+
 /**
- * The strip, top to bottom: one bubble per agent, then the `+` that gives a
+ * The project's own agent, as a workspace's strip carries it.
+ *
+ * It is there whether or not the project has a conversation yet: the agent is
+ * the project's, not this workspace's, and one nobody has started is still the
+ * one every workspace in the project talks to. Until an agent has been born on
+ * it the tip says how to start it, the way a ghost's does, rather than reading
+ * as a bubble with nothing behind it.
+ */
+export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false } = {}) {
+  const news = projectAgentNews(agents);
+  const who = `Project agent for ${name}`;
+  return {
+    type: "project",
+    id: entityId || "",
+    label: projectInitial(name),
+    pattern: null,
+    title: agents.length ? [who, news].filter(Boolean).join(" — ") : `${who}: send a message to start it`,
+    active,
+    unread: agents.reduce((total, agent) => total + (agent.unread_count || 0), 0),
+    working: agents.some((agent) => !!agent.working),
+  };
+}
+
+/**
+ * The strip, top to bottom: the project's agent and the line under it where the
+ * view asked for one, then one bubble per agent, then the `+` that gives a
  * branch another one.
  *
  * An agent's bubble carries a PATTERN, not a number: `label` is empty for it and
  * `pattern` says which face it wears. The `+` is a control rather than an agent,
- * so it keeps its glyph and wears no pattern.
+ * so it keeps its glyph and wears no pattern, and the project's agent wears the
+ * project's initial — it belongs to the project, not to this work item, and the
+ * strip has to say so at a glance.
  *
  * A work item Build owns no agent in yet gets a single GHOST bubble instead:
  * the conversation exists before the agent does, and the first message is what
@@ -172,10 +231,17 @@ export function bubbleTip(agent) {
  * will. Nothing can be added beside an agent that is not there yet, so the `+`
  * waits for it.
  */
-const supportsMultipleAgents = (kind) => kind === "branch" || kind === "workspace";
-const addAgentTitle = (kind) => `Add another agent to this ${kind === "workspace" ? "workspace" : "branch"}`;
+export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false, projectAgent = null } = {}) {
+  const own = ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent });
+  if (!projectAgent) return own;
+  // The panel holds one conversation: while it is the project's, nothing below
+  // the line is the open one.
+  const beside = projectAgent.active ? own.map((bubble) => ({ ...bubble, active: false })) : own;
+  return [projectAgentBubble(projectAgent), RAIL_SEPARATOR_ENTRY, ...beside];
+}
 
-export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false } = {}) {
+/** The bubbles of the work item the rail is standing on, and nothing else. */
+function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent }) {
   if (!agents.length) {
     return [
       {

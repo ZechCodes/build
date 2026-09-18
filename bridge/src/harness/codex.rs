@@ -470,32 +470,11 @@ fn uuid_in_rollout_name(path: &Path) -> Option<String> {
 
 /// The tools a session owned by `owner_id` may call. Codex wants the allow-list
 /// up front, in the argv that starts the session; the surface the id names is
-/// the one source for it.
-fn mcp_tool_names(owner_id: &str) -> Vec<&'static str> {
-    match crate::mcp::McpSurface::for_owner(owner_id) {
-        crate::mcp::McpSurface::Coding => {
-            vec!["post_thread_message", "search_conversation", "set_topic"]
-        }
-        crate::mcp::McpSurface::Router => vec![
-            "list_projects",
-            "list_work",
-            "read_conversation",
-            "dispatch_branch",
-            "ask_user",
-            "post_thread_message",
-        ],
-        crate::mcp::McpSurface::Project => vec![
-            "list_workspaces",
-            "list_workspace_agents",
-            "create_workspace",
-            "add_workspace_agent",
-            "remove_workspace_agent",
-            "message_workspace_agent",
-            "post_thread_message",
-            "search_conversation",
-            "set_topic",
-        ],
-    }
+/// the one source for it, and the inventory that surface advertises is the one
+/// list — written once, in `mcp.rs`, so a tool a surface gains is a tool a
+/// Codex session on it can call.
+fn mcp_tool_names(owner_id: &str) -> Vec<String> {
+    crate::mcp::DoneServer::tool_names_of(crate::mcp::McpSurface::for_owner(owner_id))
 }
 
 /// Codex stores dated JSONL rollouts. The first line is session metadata with
@@ -798,5 +777,21 @@ mod tests {
         )
         .unwrap();
         assert!(CodexHarness.has_transcript(home.path(), &cwd));
+    }
+
+    /// Codex is handed its allow-list in argv and never reads `tools/list`, so
+    /// a session's allowed tools and the tools its surface advertises have to
+    /// be one list — and the id is what decides which surface that is.
+    #[test]
+    fn every_surface_allows_exactly_the_tools_it_advertises() {
+        for (owner, surface) in [
+            ("agent-01H", crate::mcp::McpSurface::Coding),
+            ("router-01H", crate::mcp::McpSurface::Router),
+            ("project-01H", crate::mcp::McpSurface::Project),
+        ] {
+            let advertised = crate::mcp::DoneServer::tool_names_of(surface);
+            assert!(!advertised.is_empty(), "{surface:?}");
+            assert_eq!(mcp_tool_names(owner), advertised, "{surface:?}");
+        }
     }
 }

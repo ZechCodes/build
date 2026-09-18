@@ -185,8 +185,13 @@ final for this build unless the reviewer overrides them in the thread.
   - 2026-09-17: the writes landed beside the reads — `create_workspace`,
     `add_workspace_agent`, `remove_workspace_agent`, `message_workspace_agent`,
     each a thin wrapper over the verb the client calls, each scoped by the same
-    owner binding rather than by an argument. Deleting a workspace and adding a
-    directory to one are deferred by policy: both are how a project loses work.
+    owner binding rather than by an argument.
+  - 2026-09-17: and the rest of them. `delete_workspace`, `add_project_source`,
+    `remove_project_source`, `add_workspace_directory`,
+    `remove_workspace_directory`, the same way. The earlier line deferring a
+    workspace deletion and a directory add "by policy" is retired: managing the
+    project's folders and its workspaces is what the agent is for, and we trust
+    the user to know what they are asking for.
   - 2026-09-17: a workspace agent's terminal message is forwarded back into the
     conversation of the agent that asked for it, wearing the sender and the
     status. Working and Waiting are not, so the reader is not spammed mid-turn,

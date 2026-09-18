@@ -212,6 +212,14 @@ same code path, the same refusals, the same record afterwards:
 - `message_workspace_agent {workspace_id, agent_id?, body}` — through
   `thread.post` on that agent's conversation; naming no agent is the
   workspace's primary one.
+- `delete_workspace {workspace_id}` — through `workspace.delete`, refusals and
+  all.
+- `add_project_source {path? | remote?, name?, base_branch?}` and
+  `remove_project_source {source_id}` — through `project.add_source` and
+  `project.remove_source`, with the project supplied by the binding.
+- `add_workspace_directory {workspace_id, source_id? | path? | remote?, name?}`
+  and `remove_workspace_directory {workspace_id, directory_id}` — through
+  `workspace.add_directory` and `workspace.remove_directory`.
 - `post_thread_message`, `search_conversation`, `set_topic` — what every agent
   with a conversation has.
 
@@ -255,16 +263,13 @@ the same reason the message that asked for it does. What the workspace agent
 said in its OWN conversation is not a hand-off and still calls the human: it
 stopped and said so.
 
-Two things are deliberately missing: nothing here deletes a workspace, and
-nothing adds a directory to one. Both are how a project loses work, so they stay
-with the human.
-
 The agent runs in the project's durable scratch directory, holds no checkout,
 and receives the same delivery envelope, catch-up packet and topic handling as
 any other agent. What it does not receive is the coding prompt: that one is
 about phases, a plan and a diff, and this agent has none of them. It is told
 which project it is the agent of, why the project's own files are not its to
-change, and what its five tools are. Its messages carry a status and no phase,
+change, and what its tools are — including that a removal takes whatever is in
+what it removed and is not committed and pushed anywhere else. Its messages carry a status and no phase,
 so a terminal message ends the turn and reports no lifecycle outcome.
 
 ## Boundaries

@@ -946,3 +946,161 @@ fn a_mid_turn_message_is_not_an_answer() {
     assert!(body.starts_with("Blocked."), "{body}");
     assert!(body.contains("the router is three files"), "{body}");
 }
+
+/// The project agent manages the project's folders and its workspaces'
+/// directories, through the same verbs the client calls. Which project is
+/// written comes from the owner binding, so `add_project_source` carries no
+/// project id at all.
+#[test]
+fn a_project_agent_adds_and_removes_folders_on_its_own_project() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let assets = state_root.join("assets");
+    std::fs::create_dir(&assets).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+
+    let added = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::AddProjectSource {
+                path: Some(assets.display().to_string()),
+                remote: None,
+                name: Some("assets".to_string()),
+                base_branch: None,
+            },
+        )
+        .expect("a project agent adds a folder to its own project");
+    assert_eq!(added["project_id"], project_id, "{added:?}");
+    let source_id = added["sources"][1]["id"].as_str().unwrap().to_string();
+    assert_eq!(added["sources"][1]["name"], "assets");
+
+    let removed = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::RemoveProjectSource {
+                source_id: source_id.clone(),
+            },
+        )
+        .expect("and takes it off again");
+    assert_eq!(
+        removed["sources"].as_array().unwrap().len(),
+        1,
+        "{removed:?}"
+    );
+
+    let refused = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::RemoveProjectSource {
+                source_id: "source-9".to_string(),
+            },
+        )
+        .expect_err("a source the project does not have is refused");
+    assert!(refused.contains("unknown source_id"), "{refused}");
+}
+
+/// Every workspace tool passes the same gate: the id is checked against the
+/// owner's binding before anything runs.
+#[test]
+fn a_project_agent_changes_only_its_own_projects_workspaces() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let (_other_home, other_repo) = init_repo();
+    let other_repo = std::fs::canonicalize(&other_repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let assets = state_root.join("assets");
+    std::fs::create_dir(&assets).unwrap();
+    let mut state = rooted(&state_root);
+    let mine = added_project(&mut state, &repo);
+    let theirs = added_project(&mut state, &other_repo);
+    let elsewhere = workspace(&mut state, &theirs, "theirs");
+    let ours = workspace(&mut state, &mine, "ours");
+    let (owner, agent_id) = project_agent(&mut state, &mine);
+
+    let grown = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::AddWorkspaceDirectory {
+                workspace_id: ours.clone(),
+                source_id: None,
+                path: Some(assets.display().to_string()),
+                remote: None,
+                name: Some("assets".to_string()),
+            },
+        )
+        .expect("a project agent adds a directory to its own workspace");
+    let directories = grown["directories"].as_array().unwrap();
+    assert_eq!(directories.len(), 2, "{grown:?}");
+    let directory_id = directories[1]["id"].as_str().unwrap().to_string();
+
+    let shrunk = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::RemoveWorkspaceDirectory {
+                workspace_id: ours.clone(),
+                directory_id,
+            },
+        )
+        .expect("and takes it off again");
+    assert_eq!(
+        shrunk["directories"].as_array().unwrap().len(),
+        1,
+        "{shrunk:?}"
+    );
+
+    let deleted = state
+        .agent_action(
+            &owner,
+            &agent_id,
+            BridgeAction::DeleteWorkspace {
+                workspace_id: ours.clone(),
+            },
+        )
+        .expect("a project agent deletes its own workspace");
+    assert_eq!(deleted["deleted"], true, "{deleted:?}");
+    let listed = state.handle(req("workspace.list", json!({"project_id": mine})));
+    assert!(
+        !listed["result"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|workspace| workspace["workspace_id"] == json!(ours)),
+        "{listed:?}"
+    );
+
+    for action in [
+        BridgeAction::DeleteWorkspace {
+            workspace_id: elsewhere.clone(),
+        },
+        BridgeAction::AddWorkspaceDirectory {
+            workspace_id: elsewhere.clone(),
+            source_id: None,
+            path: Some(assets.display().to_string()),
+            remote: None,
+            name: None,
+        },
+        BridgeAction::RemoveWorkspaceDirectory {
+            workspace_id: elsewhere.clone(),
+            directory_id: "whatever".to_string(),
+        },
+    ] {
+        let name = action.tool_name();
+        let refused = state
+            .agent_action(&owner, &agent_id, action)
+            .expect_err("a workspace in another project is refused");
+        assert!(
+            refused.contains(&format!("workspace {elsewhere} is not in project {mine}")),
+            "{name}: {refused}"
+        );
+    }
+}

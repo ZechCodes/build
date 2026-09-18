@@ -18,7 +18,9 @@ pub(in crate::app) struct ProjectSource {
 
 mod agent_tools;
 mod agent_writes;
-pub(in crate::app) use agent_writes::{AgentChoiceArgs, WorkspaceAgentAddress};
+pub(in crate::app) use agent_writes::{
+    AgentChoiceArgs, ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
+};
 mod conversation;
 mod deletion;
 mod lifecycle;

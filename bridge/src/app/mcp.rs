@@ -355,6 +355,103 @@ impl AppState {
         }
     }
 
+    /// The project surface's tools, each a thin wrapper over the verb the
+    /// client calls. `None` is "not one of mine", which is every action the
+    /// coding and router surfaces answer.
+    ///
+    /// Which project is read or written comes from the agent's owner binding
+    /// and never from a tool argument, so none of these carries a project id.
+    fn project_surface_action(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        action: &BridgeAction,
+    ) -> Option<Result<Value, String>> {
+        Some(match action {
+            BridgeAction::ListWorkspaces => self.project_agent_workspaces(entity_id),
+            BridgeAction::ListWorkspaceAgents { workspace_id } => {
+                self.project_agent_workspace_agents(entity_id, workspace_id)
+            }
+            BridgeAction::CreateWorkspace { name, isolation } => {
+                self.project_agent_create_workspace(entity_id, name, isolation.as_deref())
+            }
+            BridgeAction::DeleteWorkspace { workspace_id } => {
+                self.project_agent_delete_workspace(entity_id, workspace_id)
+            }
+            BridgeAction::AddWorkspaceAgent {
+                workspace_id,
+                harness,
+                model,
+                effort,
+            } => self.project_agent_add_workspace_agent(
+                entity_id,
+                workspace_id,
+                crate::app::AgentChoiceArgs {
+                    harness: harness.as_deref(),
+                    model: model.as_deref(),
+                    effort: effort.as_deref(),
+                },
+            ),
+            BridgeAction::RemoveWorkspaceAgent {
+                workspace_id,
+                agent_id: removed,
+            } => self.project_agent_remove_workspace_agent(entity_id, workspace_id, removed),
+            BridgeAction::MessageWorkspaceAgent {
+                workspace_id,
+                agent_id: addressed,
+                body,
+            } => self.project_agent_message_workspace_agent(
+                entity_id,
+                agent_id,
+                crate::app::WorkspaceAgentAddress {
+                    workspace_id,
+                    agent_id: addressed.as_deref(),
+                },
+                body,
+            ),
+            BridgeAction::AddProjectSource {
+                path,
+                remote,
+                name,
+                base_branch,
+            } => self.project_agent_add_project_source(
+                entity_id,
+                crate::app::ProjectSourceArgs {
+                    path: path.as_deref(),
+                    remote: remote.as_deref(),
+                    name: name.as_deref(),
+                    base_branch: base_branch.as_deref(),
+                },
+            ),
+            BridgeAction::RemoveProjectSource { source_id } => {
+                self.project_agent_remove_project_source(entity_id, source_id)
+            }
+            BridgeAction::AddWorkspaceDirectory {
+                workspace_id,
+                source_id,
+                path,
+                remote,
+                name,
+            } => self.project_agent_add_workspace_directory(
+                entity_id,
+                workspace_id,
+                crate::app::WorkspaceDirectoryArgs {
+                    source_id: source_id.as_deref(),
+                    path: path.as_deref(),
+                    remote: remote.as_deref(),
+                    name: name.as_deref(),
+                },
+            ),
+            BridgeAction::RemoveWorkspaceDirectory {
+                workspace_id,
+                directory_id,
+            } => {
+                self.project_agent_remove_workspace_directory(entity_id, workspace_id, directory_id)
+            }
+            _ => return None,
+        })
+    }
+
     /// The same, for a caller that knows WHICH agent is speaking — every real
     /// one, since the MCP control plane authenticates an agent.
     pub(in crate::app) fn on_agent_mcp_action(
@@ -376,56 +473,8 @@ impl AppState {
                 surface.as_str()
             ));
         }
-        // The project reads answer about the project this agent belongs to, and
-        // the daemon holds the binding that says which one that is.
-        if matches!(action, BridgeAction::ListWorkspaces) {
-            return self.project_agent_workspaces(entity_id);
-        }
-        if let BridgeAction::ListWorkspaceAgents { workspace_id } = &action {
-            return self.project_agent_workspace_agents(entity_id, workspace_id);
-        }
-        if let BridgeAction::CreateWorkspace { name, isolation } = &action {
-            return self.project_agent_create_workspace(entity_id, name, isolation.as_deref());
-        }
-        if let BridgeAction::AddWorkspaceAgent {
-            workspace_id,
-            harness,
-            model,
-            effort,
-        } = &action
-        {
-            return self.project_agent_add_workspace_agent(
-                entity_id,
-                workspace_id,
-                crate::app::AgentChoiceArgs {
-                    harness: harness.as_deref(),
-                    model: model.as_deref(),
-                    effort: effort.as_deref(),
-                },
-            );
-        }
-        if let BridgeAction::RemoveWorkspaceAgent {
-            workspace_id,
-            agent_id: removed,
-        } = &action
-        {
-            return self.project_agent_remove_workspace_agent(entity_id, workspace_id, removed);
-        }
-        if let BridgeAction::MessageWorkspaceAgent {
-            workspace_id,
-            agent_id: addressed,
-            body,
-        } = &action
-        {
-            return self.project_agent_message_workspace_agent(
-                entity_id,
-                agent_id,
-                crate::app::WorkspaceAgentAddress {
-                    workspace_id,
-                    agent_id: addressed.as_deref(),
-                },
-                body,
-            );
+        if let Some(answered) = self.project_surface_action(entity_id, agent_id, &action) {
+            return answered;
         }
         if let BridgeAction::ReadOperationMessages { operation_id } = &action {
             return self.read_operation_messages_for_agent(entity_id, agent_id, operation_id);

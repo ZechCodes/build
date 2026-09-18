@@ -166,7 +166,8 @@ use config::{default_state_root, DEFAULT_HARNESS};
 #[cfg(test)]
 use config::{read_config, ConfigPersistStep};
 use projects::{
-    default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, WorkspaceAgentAddress,
+    default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
+    WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
 
 use std::collections::HashMap;

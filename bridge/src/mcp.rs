@@ -419,6 +419,35 @@ pub enum BridgeAction {
         agent_id: Option<String>,
         body: String,
     },
+    /// Take one of this project's workspaces away. Project only.
+    DeleteWorkspace {
+        workspace_id: String,
+    },
+    /// One more folder on this agent's project. Project only. There is no
+    /// project field: which project gains it comes from the owner binding.
+    AddProjectSource {
+        path: Option<String>,
+        remote: Option<String>,
+        name: Option<String>,
+        base_branch: Option<String>,
+    },
+    /// Take a folder off this agent's project. Project only.
+    RemoveProjectSource {
+        source_id: String,
+    },
+    /// One more directory in one of this project's workspaces. Project only.
+    AddWorkspaceDirectory {
+        workspace_id: String,
+        source_id: Option<String>,
+        path: Option<String>,
+        remote: Option<String>,
+        name: Option<String>,
+    },
+    /// Take a directory out of one of this project's workspaces. Project only.
+    RemoveWorkspaceDirectory {
+        workspace_id: String,
+        directory_id: String,
+    },
 }
 
 /// The choices an `ask_user` call offered beside its question. Absent reads as
@@ -463,6 +492,11 @@ impl BridgeAction {
             BridgeAction::AddWorkspaceAgent { .. } => "add_workspace_agent",
             BridgeAction::RemoveWorkspaceAgent { .. } => "remove_workspace_agent",
             BridgeAction::MessageWorkspaceAgent { .. } => "message_workspace_agent",
+            BridgeAction::DeleteWorkspace { .. } => "delete_workspace",
+            BridgeAction::AddProjectSource { .. } => "add_project_source",
+            BridgeAction::RemoveProjectSource { .. } => "remove_project_source",
+            BridgeAction::AddWorkspaceDirectory { .. } => "add_workspace_directory",
+            BridgeAction::RemoveWorkspaceDirectory { .. } => "remove_workspace_directory",
         }
     }
 
@@ -493,7 +527,12 @@ impl BridgeAction {
             | BridgeAction::CreateWorkspace { .. }
             | BridgeAction::AddWorkspaceAgent { .. }
             | BridgeAction::RemoveWorkspaceAgent { .. }
-            | BridgeAction::MessageWorkspaceAgent { .. } => &[McpSurface::Project],
+            | BridgeAction::MessageWorkspaceAgent { .. }
+            | BridgeAction::DeleteWorkspace { .. }
+            | BridgeAction::AddProjectSource { .. }
+            | BridgeAction::RemoveProjectSource { .. }
+            | BridgeAction::AddWorkspaceDirectory { .. }
+            | BridgeAction::RemoveWorkspaceDirectory { .. } => &[McpSurface::Project],
         }
     }
 
@@ -717,6 +756,28 @@ impl DoneServer {
         })
     }
 
+    /// The tools one surface is shown, by name and in the order it shows them.
+    ///
+    /// Codex is handed its allow-list in argv and never asks `tools/list`, so
+    /// the list it is given is built from this rather than written a second
+    /// time (`harness/codex.rs`).
+    pub fn tool_names_of(surface: McpSurface) -> Vec<String> {
+        let server = DoneServer {
+            owner_id: String::new(),
+            surface,
+        };
+        server
+            .tools()
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The tools this session is shown. One inventory per surface, resolved
     /// from the id the session was opened with, so the list a harness is given
     /// and the calls the socket accepts can never be two different answers.
@@ -811,6 +872,63 @@ impl DoneServer {
                     "body": { "type": "string", "description": "What to say, in full. The agent has none of your conversation, so say what it needs rather than pointing at what you were told." }
                 },
                 "required": ["workspace_id", "body"]
+            }
+        }, {
+            "name": "delete_workspace",
+            "description": "Take one of your workspaces away: its agents and terminals stop, its checkouts are handed back to the repositories they were cut from, and the folder goes. Anything in it that is not committed and pushed is gone with it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." }
+                },
+                "required": ["workspace_id"]
+            }
+        }, {
+            "name": "add_project_source",
+            "description": "Add a folder to your project. The project is the template every new workspace is cut from, so this changes what the NEXT workspace gets; use add_workspace_directory to put the folder into a workspace that already exists. Name exactly one of path or remote.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "A folder on this device. A Git repository or an ordinary folder." },
+                    "remote": { "type": "string", "description": "A clone url. Build clones it into the project's own sources folder." },
+                    "name": { "type": "string", "description": "What to call it. The folder's own name when omitted." },
+                    "base_branch": { "type": "string", "description": "The branch workspaces are cut from. The repository's own when omitted." }
+                }
+            }
+        }, {
+            "name": "remove_project_source",
+            "description": "Take a folder off your project. Nothing on disk moves and no workspace loses a directory: new workspaces stop being cut from it. A project keeps at least one source.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source_id": { "type": "string", "description": "From list_workspaces' project sources." }
+                },
+                "required": ["source_id"]
+            }
+        }, {
+            "name": "add_workspace_directory",
+            "description": "Put one more directory into a workspace that is already standing. A Git source arrives as its own checkout on the workspace's branch; anything else is copied in. Name exactly one of source_id, path or remote.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                    "source_id": { "type": "string", "description": "A source of your project this workspace was not cut with." },
+                    "path": { "type": "string", "description": "A folder on this device, for a directory that is nobody's project source." },
+                    "remote": { "type": "string", "description": "A clone url. The clone lands in the workspace and is its own repository." },
+                    "name": { "type": "string", "description": "What to call it, and the folder it mounts under." }
+                },
+                "required": ["workspace_id"]
+            }
+        }, {
+            "name": "remove_workspace_directory",
+            "description": "Take one directory out of a workspace: its checkout is handed back to the repository it was cut from and the folder goes. The workspace and its other directories stay. Uncommitted work in that directory is gone with it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                    "directory_id": { "type": "string", "description": "From list_workspaces' directories." }
+                },
+                "required": ["workspace_id", "directory_id"]
             }
         }, {
             "name": "post_thread_message",
@@ -1067,6 +1185,50 @@ impl DoneServer {
                         BridgeAction::RemoveWorkspaceAgent {
                             workspace_id,
                             agent_id,
+                        },
+                    ),
+                    Err(message) => refused(id, message),
+                }
+            }
+            "delete_workspace" => match required_argument(params, "workspace_id") {
+                Ok(workspace_id) => acted(id, BridgeAction::DeleteWorkspace { workspace_id }),
+                Err(message) => refused(id, message),
+            },
+            "add_project_source" => acted(
+                id,
+                BridgeAction::AddProjectSource {
+                    path: optional_argument(params, "path"),
+                    remote: optional_argument(params, "remote"),
+                    name: optional_argument(params, "name"),
+                    base_branch: optional_argument(params, "base_branch"),
+                },
+            ),
+            "remove_project_source" => match required_argument(params, "source_id") {
+                Ok(source_id) => acted(id, BridgeAction::RemoveProjectSource { source_id }),
+                Err(message) => refused(id, message),
+            },
+            "add_workspace_directory" => match required_argument(params, "workspace_id") {
+                Ok(workspace_id) => acted(
+                    id,
+                    BridgeAction::AddWorkspaceDirectory {
+                        workspace_id,
+                        source_id: optional_argument(params, "source_id"),
+                        path: optional_argument(params, "path"),
+                        remote: optional_argument(params, "remote"),
+                        name: optional_argument(params, "name"),
+                    },
+                ),
+                Err(message) => refused(id, message),
+            },
+            "remove_workspace_directory" => {
+                match required_argument(params, "workspace_id").and_then(|workspace_id| {
+                    Ok((workspace_id, required_argument(params, "directory_id")?))
+                }) {
+                    Ok((workspace_id, directory_id)) => acted(
+                        id,
+                        BridgeAction::RemoveWorkspaceDirectory {
+                            workspace_id,
+                            directory_id,
                         },
                     ),
                     Err(message) => refused(id, message),
@@ -2527,6 +2689,11 @@ mod tests {
                 "add_workspace_agent",
                 "remove_workspace_agent",
                 "message_workspace_agent",
+                "delete_workspace",
+                "add_project_source",
+                "remove_project_source",
+                "add_workspace_directory",
+                "remove_workspace_directory",
                 "post_thread_message",
                 "search_conversation",
                 "set_topic",

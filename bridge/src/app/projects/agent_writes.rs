@@ -47,6 +47,60 @@ impl AgentChoiceArgs<'_> {
     }
 }
 
+/// What a project agent asked one added folder to be made from. Every field is
+/// optional and an absent one is left OUT of the params: the verb reads which
+/// keys are present to tell a path from a remote, and a null would read as a
+/// blank one of either.
+pub(in crate::app) struct ProjectSourceArgs<'a> {
+    pub(in crate::app) path: Option<&'a str>,
+    pub(in crate::app) remote: Option<&'a str>,
+    pub(in crate::app) name: Option<&'a str>,
+    pub(in crate::app) base_branch: Option<&'a str>,
+}
+
+impl ProjectSourceArgs<'_> {
+    fn params(&self) -> Value {
+        named_params(&[
+            ("path", self.path),
+            ("remote", self.remote),
+            ("name", self.name),
+            ("base_branch", self.base_branch),
+        ])
+    }
+}
+
+/// The same, for one directory added to a workspace: a project source it was
+/// not cut with, a path, or a remote.
+pub(in crate::app) struct WorkspaceDirectoryArgs<'a> {
+    pub(in crate::app) source_id: Option<&'a str>,
+    pub(in crate::app) path: Option<&'a str>,
+    pub(in crate::app) remote: Option<&'a str>,
+    pub(in crate::app) name: Option<&'a str>,
+}
+
+impl WorkspaceDirectoryArgs<'_> {
+    fn params(&self) -> Value {
+        named_params(&[
+            ("source_id", self.source_id),
+            ("path", self.path),
+            ("remote", self.remote),
+            ("name", self.name),
+        ])
+    }
+}
+
+/// The params an optional-argument tool sends: the keys it was given, and no
+/// key at all for the ones it was not.
+fn named_params(fields: &[(&str, Option<&str>)]) -> Value {
+    let mut params = json!({});
+    for (key, value) in fields {
+        if let Some(value) = value {
+            params[*key] = json!(value);
+        }
+    }
+    params
+}
+
 impl AppState {
     /// `create_workspace` — cut a workspace in this agent's project, through
     /// `workspace.create` itself. The project id is the binding's; the call
@@ -63,6 +117,74 @@ impl AppState {
             params["isolation"] = json!(isolation);
         }
         self.workspace_create(&params)
+    }
+
+    /// `delete_workspace` — take one of this project's workspaces away,
+    /// through `workspace.delete` itself, refusals and all.
+    pub(in crate::app) fn project_agent_delete_workspace(
+        &mut self,
+        owner_id: &str,
+        workspace_id: &str,
+    ) -> Result<Value, String> {
+        self.project_agent_workspace(owner_id, workspace_id)?;
+        self.workspace_delete(&json!({ "workspace_id": workspace_id }))
+    }
+
+    /// `add_project_source` — one more folder on this agent's project, through
+    /// `project.add_source`. The project id is the binding's; the call carries
+    /// none, so there is none to disagree with.
+    pub(in crate::app) fn project_agent_add_project_source(
+        &mut self,
+        owner_id: &str,
+        source: ProjectSourceArgs<'_>,
+    ) -> Result<Value, String> {
+        let project_id = self.project_agent_project(owner_id)?;
+        let mut params = source.params();
+        params["project_id"] = json!(project_id);
+        self.project_add_source(&params)
+    }
+
+    /// `remove_project_source` — take a folder off this agent's project,
+    /// through `project.remove_source`.
+    pub(in crate::app) fn project_agent_remove_project_source(
+        &mut self,
+        owner_id: &str,
+        source_id: &str,
+    ) -> Result<Value, String> {
+        let project_id = self.project_agent_project(owner_id)?;
+        self.project_remove_source(&json!({
+            "project_id": project_id,
+            "source_id": source_id,
+        }))
+    }
+
+    /// `add_workspace_directory` — one more directory in one of this project's
+    /// workspaces, through `workspace.add_directory`.
+    pub(in crate::app) fn project_agent_add_workspace_directory(
+        &mut self,
+        owner_id: &str,
+        workspace_id: &str,
+        source: WorkspaceDirectoryArgs<'_>,
+    ) -> Result<Value, String> {
+        self.project_agent_workspace(owner_id, workspace_id)?;
+        let mut params = source.params();
+        params["workspace_id"] = json!(workspace_id);
+        self.workspace_add_directory(&params)
+    }
+
+    /// `remove_workspace_directory` — one directory leaves one of this
+    /// project's workspaces, through `workspace.remove_directory`.
+    pub(in crate::app) fn project_agent_remove_workspace_directory(
+        &mut self,
+        owner_id: &str,
+        workspace_id: &str,
+        directory_id: &str,
+    ) -> Result<Value, String> {
+        self.project_agent_workspace(owner_id, workspace_id)?;
+        self.workspace_remove_directory(&json!({
+            "workspace_id": workspace_id,
+            "directory_id": directory_id,
+        }))
     }
 
     /// `add_workspace_agent` — put an agent on one of this project's

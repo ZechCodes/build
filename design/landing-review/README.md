@@ -2,6 +2,8 @@
 
 The public landing page now presents the six chapters from the production brief with original Blender hardware, a shared scroll stage, deterministic screen checkpoints, and readable HTML close-ups. The same story remains available as ordinary sections when motion, media, or WebGL is unavailable.
 
+Graphite surfaces use broad neutral studio lighting so the bodies, bezels, and keyboards separate from the dark background. The live renderer uses a locally generated reflection environment; the Blender posters carry matching fill and edge lighting.
+
 ## Preview and reproduce
 
 From the repository root:
@@ -46,7 +48,7 @@ The final browser matrix is saved in `browser-results.json`. Still frames are `d
 
 The recorded local desktop GPU run had a median frame interval of 16.7 ms and a 95th percentile of 16.8 ms in both desktop and phone-sized browser viewports. Draw-call counts stayed unchanged while idle. These measurements describe this machine, not physical-phone performance. Raw measurements are alongside the videos.
 
-Hero posters are about 91 KB desktop and 50 KB mobile. The three runtime GLBs total about 276 KB; all sixteen screen maps total about 361 KB. The vendored runtime is about 144 KB with gzip. `payload.json` distinguishes file measurements and calculated gzip sizes from actual production network measurements.
+Hero posters are about 80 KB desktop and 47 KB mobile. The three runtime GLBs total about 276 KB; all sixteen screen maps total about 361 KB. The vendored runtime is about 144 KB with gzip. `payload.json` distinguishes file measurements and calculated gzip sizes from actual production network measurements.
 
 ## Publication notes
 

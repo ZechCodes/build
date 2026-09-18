@@ -312,6 +312,8 @@ class DeviceStage {
       HemisphereLight,
       OrthographicCamera,
       PCFSoftShadowMap,
+      PMREMGenerator,
+      RoomEnvironment,
       Scene,
       SRGBColorSpace,
       WebGLRenderer,
@@ -330,15 +332,24 @@ class DeviceStage {
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     if (this.isSoftwareRenderer()) throw new Error("software WebGL renderer");
     this.scene = new Scene();
+    const room = new RoomEnvironment();
+    const environmentGenerator = new PMREMGenerator(this.renderer);
+    this.environmentTarget = environmentGenerator.fromScene(room, 0.05);
+    this.scene.environment = this.environmentTarget.texture;
+    this.scene.environmentIntensity = 0.46;
+    room.dispose();
+    environmentGenerator.dispose();
     this.camera = new OrthographicCamera(-1, 1, 1, -1, 0.01, 20);
     this.camera.position.set(0, 0, 6);
     this.camera.lookAt(0, 0, 0);
-    const sky = new HemisphereLight(0xf4f7f6, 0x111315, 1.35);
-    const key = new DirectionalLight(0xf8fbfa, 3.2);
-    const edge = new DirectionalLight(0x9fffe2, 1.2);
-    key.position.set(-3.5, 4.5, 5);
-    edge.position.set(5, 2, 1.5);
-    this.scene.add(sky, key, edge);
+    const sky = new HemisphereLight(0xf1f3f2, 0x202322, 1);
+    const key = new DirectionalLight(0xfffaf2, 1.9);
+    const fill = new DirectionalLight(0xdde2e1, 0.85);
+    const edge = new DirectionalLight(0xf2f4f3, 0.7);
+    key.position.set(-4, 5, 6);
+    fill.position.set(5, 1, 4);
+    edge.position.set(2, 4, -5);
+    this.scene.add(sky, key, fill, edge);
     this.loader = new this.three.GLTFLoader();
     this.textureLoader = new this.three.TextureLoader();
     const onResize = () => {
@@ -723,6 +734,7 @@ class DeviceStage {
     this.models.clear();
     for (const texture of this.textures.values()) texture.dispose();
     this.textures.clear();
+    this.environmentTarget?.dispose();
     this.renderer?.dispose();
     this.renderer?.forceContextLoss();
     this.canvas?.remove();

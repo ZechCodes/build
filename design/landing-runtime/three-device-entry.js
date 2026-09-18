@@ -10,6 +10,7 @@ export {
   MeshBasicMaterial,
   OrthographicCamera,
   PCFSoftShadowMap,
+  PMREMGenerator,
   Scene,
   SRGBColorSpace,
   TextureLoader,
@@ -17,3 +18,4 @@ export {
   WebGLRenderer,
 } from "three";
 export { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+export { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";

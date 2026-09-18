@@ -35,10 +35,10 @@ BLEND_PATH = SOURCE_DIR / "build-devices.blend"
 SCALE = 0.1  # authored dimensions below are decimeters; Blender/source/export are meters
 
 
-GRAPHITE = (0.036, 0.038, 0.041, 1.0)
-GRAPHITE_EDGE = (0.15, 0.155, 0.165, 1.0)
+GRAPHITE = (0.075, 0.080, 0.088, 1.0)
+GRAPHITE_EDGE = (0.19, 0.20, 0.215, 1.0)
 BLACK = (0.008, 0.010, 0.014, 1.0)
-KEY_COLOR = (0.025, 0.030, 0.038, 1.0)
+KEY_COLOR = (0.065, 0.073, 0.085, 1.0)
 GLASS = (0.012, 0.018, 0.026, 1.0)
 ACCENT = (0.0, 1.0, 0.48, 1.0)
 
@@ -350,7 +350,7 @@ def setup_render(width, height, transparent):
     scene.render.film_transparent = transparent
     scene.render.engine = "BLENDER_EEVEE_NEXT"
     scene.render.image_settings.color_mode = "RGBA" if transparent else "RGB"
-    scene.view_settings.look = "AgX - Medium High Contrast"
+    scene.view_settings.look = "AgX - Medium Low Contrast"
     scene.world.use_nodes = True
     background = scene.world.node_tree.nodes.get("Background")
     background.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
@@ -369,9 +369,10 @@ def render(path, width, height, camera_location, target, lens, transparent, floo
     clear_render_rig()
     setup_render(width, height, transparent)
     add_camera("render_camera", camera_location, target, lens, ortho_scale=ortho_scale)
-    add_area("render_key", (-4.5, -4.8, 6.0), 1050, 4.0, (1.0, 0.96, 0.91), target)
-    add_area("render_rim", (4.5, 0.6, 4.0), 1250, 3.2, (0.58, 0.66, 0.78), target)
-    add_area("render_edge", (0.8, -3.8, 1.5), 420, 2.2, (0.74, 0.78, 0.82), target)
+    add_area("render_key", (-4.2, -5.8, 5.4), 800, 4.8, (1.0, 0.98, 0.95), target)
+    add_area("render_fill", (4.2, -4.4, 3.0), 500, 4.2, (0.82, 0.87, 0.94), target)
+    add_area("render_rim", (3.8, 1.6, 4.6), 420, 3.8, (0.90, 0.93, 1.0), target)
+    add_area("render_top", (-1.0, 0.2, 7.0), 260, 3.5, (1.0, 0.99, 0.97), target)
     if floor:
         add_floor(14, -0.075, black=True)
     bpy.context.scene.render.filepath = str(path)
@@ -576,10 +577,10 @@ def main():
     }
     reset_scene()
     mats = {
-        "graphite": material("Graphite", GRAPHITE, metallic=0.82, roughness=0.23),
-        "edge": material("GraphiteEdge", GRAPHITE_EDGE, metallic=0.75, roughness=0.17),
+        "graphite": material("Graphite", GRAPHITE, metallic=0.70, roughness=0.31),
+        "edge": material("GraphiteEdge", GRAPHITE_EDGE, metallic=0.64, roughness=0.25),
         "black": material("BlackInset", BLACK, metallic=0.15, roughness=0.28),
-        "key": material("KeyGraphite", KEY_COLOR, metallic=0.2, roughness=0.31),
+        "key": material("KeyGraphite", KEY_COLOR, metallic=0.12, roughness=0.39),
         "accent": material("BuildGreen", ACCENT, metallic=0.05, roughness=0.22),
         "desktop_screen": screen_material("ScreenDesktop", default_screens["laptop"]),
         "tablet_screen": screen_material("ScreenTablet", default_screens["tablet"]),

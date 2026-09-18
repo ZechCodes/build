@@ -42,12 +42,12 @@
         0.0035
       ],
       "file": "laptop.glb",
-      "bytes": 1615448,
+      "bytes": 1615440,
       "triangles": 42782,
       "screen_node": "screen",
       "screen_material": "ScreenDesktop",
       "low_detail_file": "laptop-low.glb",
-      "low_detail_bytes": 170580,
+      "low_detail_bytes": 170576,
       "low_detail_triangles": 3386
     },
     "tablet": {
@@ -79,7 +79,7 @@
         ]
       ],
       "file": "tablet.glb",
-      "bytes": 52304,
+      "bytes": 52300,
       "triangles": 986,
       "screen_node": "screen",
       "screen_material": "ScreenTablet"
@@ -113,7 +113,7 @@
         ]
       ],
       "file": "phone.glb",
-      "bytes": 53288,
+      "bytes": 53284,
       "triangles": 1178,
       "screen_node": "screen",
       "screen_material": "ScreenPhone"
@@ -124,7 +124,7 @@
       "file": "hero-laptop.webp",
       "width": 1600,
       "height": 1180,
-      "bytes": 90984,
+      "bytes": 80392,
       "content_bounds_px_bottom_left": [
         0,
         5,
@@ -136,7 +136,7 @@
       "file": "laptop.webp",
       "width": 1200,
       "height": 900,
-      "bytes": 63262,
+      "bytes": 54826,
       "content_bounds_px_bottom_left": [
         0,
         11,
@@ -148,7 +148,7 @@
       "file": "tablet.webp",
       "width": 1000,
       "height": 760,
-      "bytes": 33338,
+      "bytes": 31734,
       "content_bounds_px_bottom_left": [
         152,
         52,
@@ -160,7 +160,7 @@
       "file": "phone.webp",
       "width": 640,
       "height": 1040,
-      "bytes": 25590,
+      "bytes": 23570,
       "content_bounds_px_bottom_left": [
         124,
         106,
@@ -172,7 +172,7 @@
       "file": "mobile-hero.webp",
       "width": 1200,
       "height": 1350,
-      "bytes": 50236,
+      "bytes": 46640,
       "content_bounds_px_bottom_left": [
         141,
         159,
@@ -184,7 +184,7 @@
       "file": "scene-01-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 64256,
+      "bytes": 57208,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -196,7 +196,7 @@
       "file": "scene-01-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 26486,
+      "bytes": 23446,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -208,7 +208,7 @@
       "file": "scene-02-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 40656,
+      "bytes": 36660,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -220,7 +220,7 @@
       "file": "scene-02-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 18040,
+      "bytes": 16624,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -232,7 +232,7 @@
       "file": "scene-03-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 39410,
+      "bytes": 34626,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -244,7 +244,7 @@
       "file": "scene-03-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 28198,
+      "bytes": 25586,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -256,7 +256,7 @@
       "file": "scene-04-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 45620,
+      "bytes": 43464,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -268,7 +268,7 @@
       "file": "scene-04-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 24972,
+      "bytes": 23764,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -280,7 +280,7 @@
       "file": "scene-05-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 59720,
+      "bytes": 53996,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -292,7 +292,7 @@
       "file": "scene-05-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 33128,
+      "bytes": 29948,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -304,7 +304,7 @@
       "file": "scene-06-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 45132,
+      "bytes": 39012,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -316,7 +316,7 @@
       "file": "scene-06-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 37034,
+      "bytes": 34010,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -328,7 +328,7 @@
       "file": "desktop-poster.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 45132,
+      "bytes": 39012,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -340,7 +340,7 @@
       "file": "mobile-poster.webp",
       "width": 720,
       "height": 960,
-      "bytes": 37034,
+      "bytes": 34010,
       "content_bounds_px_bottom_left": [
         0,
         0,
@@ -352,7 +352,7 @@
       "file": "social-preview.webp",
       "width": 1200,
       "height": 630,
-      "bytes": 48234,
+      "bytes": 42910,
       "content_bounds_px_bottom_left": [
         0,
         0,

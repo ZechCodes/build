@@ -12,12 +12,12 @@
     "gzip_bytes": 1666
   },
   "device-stage.js": {
-    "bytes": 26409,
-    "gzip_bytes": 7044
+    "bytes": 26920,
+    "gzip_bytes": 7166
   },
   "vendor/three-device-runtime.js": {
-    "bytes": 567460,
-    "gzip_bytes": 143528
+    "bytes": 571179,
+    "gzip_bytes": 144419
   },
   "cinematic.css": {
     "bytes": 36017,
@@ -28,14 +28,14 @@
     "gzip_bytes": 4957
   },
   "runtime_models": {
-    "laptop-low.glb": 170580,
-    "tablet.glb": 52304,
-    "phone.glb": 53288
+    "laptop-low.glb": 170576,
+    "tablet.glb": 52300,
+    "phone.glb": 53284
   },
   "screen_maps_bytes": 360728,
   "hero_posters": {
-    "hero-laptop.webp": 90984,
-    "mobile-hero.webp": 50236
+    "hero-laptop.webp": 80392,
+    "mobile-hero.webp": 46640
   },
   "note": "File measurements; gzip values are calculated encodings, not production CDN measurements. PNG masters, high-detail GLB, Blender source and animatics are not fetched by the runtime."
 }

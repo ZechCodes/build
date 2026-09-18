@@ -616,3 +616,83 @@ fn settings_set_stays_field_wise_for_an_old_client_and_refuses_an_empty_set() {
         "settings.set: nothing to set"
     );
 }
+
+/// What a project agent starts on is a DEVICE setting, held beside the default
+/// harness: the browser asks nobody at first use, because the answer is already
+/// on the machine that will run the agent.
+///
+/// Every field is optional and set on its own — a `null` clears the one it
+/// names, a `null` object clears all three — and what the device holds outlives
+/// the process, the way `default_harness` does.
+#[test]
+fn the_project_agent_choice_round_trips_field_by_field_and_outlives_a_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.json");
+    let new_app = || {
+        AppState::new_unrooted(
+            directory.path().join("worktrees"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config_path)
+        .unwrap()
+    };
+
+    let mut app = new_app();
+    // Nothing chosen is nothing said: an absent provider means the device's own
+    // default harness, so a bridge nobody has asked answers an empty object
+    // rather than guessing one.
+    assert_eq!(
+        app.handle(req("settings.get", json!({})))["result"]["project_agent"],
+        json!({})
+    );
+
+    let set = app.handle(req(
+        "settings.set",
+        json!({ "project_agent": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "high"
+        } }),
+    ));
+    assert_eq!(set["ok"], true, "{set:?}");
+    assert_eq!(
+        set["result"]["project_agent"],
+        json!({ "provider": "codex", "model": "gpt-5.6-sol", "effort": "high" }),
+        "the set answers with what the device now holds"
+    );
+
+    // Partial: a field the object leaves out stands, and a `null` clears the
+    // one it names.
+    let narrowed = app.handle(req(
+        "settings.set",
+        json!({ "project_agent": { "effort": null } }),
+    ));
+    assert_eq!(narrowed["ok"], true, "{narrowed:?}");
+    assert_eq!(
+        narrowed["result"]["project_agent"],
+        json!({ "provider": "codex", "model": "gpt-5.6-sol" })
+    );
+
+    let mut restarted = new_app();
+    assert_eq!(
+        restarted.handle(req("settings.get", json!({})))["result"]["project_agent"],
+        json!({ "provider": "codex", "model": "gpt-5.6-sol" }),
+        "the config carries the choice across a restart"
+    );
+
+    // A model the chosen harness cannot be asked for is refused, and the device
+    // keeps what it had.
+    let refused = restarted.handle(req(
+        "settings.set",
+        json!({ "project_agent": { "effort": "not-a-level" } }),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(
+        restarted.handle(req("settings.get", json!({})))["result"]["project_agent"],
+        json!({ "provider": "codex", "model": "gpt-5.6-sol" })
+    );
+
+    let cleared = restarted.handle(req("settings.set", json!({ "project_agent": null })));
+    assert_eq!(cleared["ok"], true, "{cleared:?}");
+    assert_eq!(cleared["result"]["project_agent"], json!({}));
+}

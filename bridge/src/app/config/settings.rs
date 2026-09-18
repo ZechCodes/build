@@ -1,17 +1,20 @@
-use super::SettingsPatch;
+use super::{ProjectAgentPatch, SettingsPatch};
 use crate::app::AppState;
 use crate::harness::harness_for;
-use crate::models;
+use crate::models::{self, AgentProvider, ProjectAgentChoice};
 use serde_json::{json, Value};
 
 impl AppState {
     /// Every account setting this bridge holds. `agent_modes` is independent;
     /// legacy mode aliases keep describing the concrete default harness for
     /// clients that still use those fields to choose that fallback.
+    /// `project_agent` is what a project's agent starts on, beside the harness
+    /// every other agent falls back to.
     pub(crate) fn settings_get(&self) -> Value {
         json!({
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
+            "project_agent": self.project_agent,
             "agent_modes": self.agent_modes,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
@@ -33,6 +36,22 @@ impl AppState {
             "agent_modes": self.agent_modes,
             "providers": models::provider_catalogs(),
         })
+    }
+
+    /// What this set leaves the device holding for its project agents, refused
+    /// here if the harness it names cannot be asked for that model or effort —
+    /// before anything is written, like every other field of a set.
+    fn accepted_project_agent(
+        &self,
+        asked: Option<&ProjectAgentPatch>,
+        default_harness: AgentProvider,
+    ) -> Result<ProjectAgentChoice, String> {
+        let chosen = match asked {
+            Some(asked) => asked.over(&self.project_agent),
+            None => self.project_agent.clone(),
+        };
+        chosen.resolved(default_harness).validate()?;
+        Ok(chosen)
     }
 
     /// Set the account settings a client names, and only those: where cloned
@@ -65,15 +84,19 @@ impl AppState {
         let default_harness = patch.default_harness.unwrap_or(self.default_harness);
         let isolation = patch.isolation.unwrap_or(self.isolation);
         let triage_enabled = patch.triage_enabled.unwrap_or(self.triage_enabled);
+        let project_agent =
+            self.accepted_project_agent(patch.project_agent.as_ref(), default_harness)?;
         let mut config = self.config_value(&projects_dir, default_harness, isolation);
         config["agent_modes"] = json!(agent_modes);
         config["triage_enabled"] = json!(triage_enabled);
+        config["project_agent"] = json!(project_agent);
         self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
         self.agent_modes = agent_modes;
         self.isolation = isolation;
         self.triage_enabled = triage_enabled;
+        self.project_agent = project_agent;
         if !triage_enabled {
             self.delivery_queue
                 .retain_queued(|turn| turn.phase != "triage");

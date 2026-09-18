@@ -34,6 +34,7 @@ impl AppState {
             "next_project": self.projects.next_id() + u64::from(prospective_project.is_some()),
             "projects_dir": projects_dir.display().to_string(),
             "default_harness": default_harness,
+            "project_agent": self.project_agent,
             "agent_modes": self.agent_modes,
             "isolation": isolation,
             "triage_enabled": self.triage_enabled,

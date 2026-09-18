@@ -6,11 +6,20 @@
     "agent_modes": {
       "codex": "tui"
     },
-    "triage_enabled": true
+    "triage_enabled": true,
+    "project_agent": {
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    }
   },
   "result": {
     "projects_dir": "/home/ada/.build/projects",
     "default_harness": "claude_adk",
+    "project_agent": {
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    },
     "agent_modes": {
       "claude": "headless",
       "codex": "tui"

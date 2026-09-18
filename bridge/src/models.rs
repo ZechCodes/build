@@ -226,6 +226,40 @@ impl ModelChoice {
     }
 }
 
+/// What this device says a project agent starts on.
+///
+/// Every field may be unsaid, and each unsaid one means a default that already
+/// exists: no provider is the device's default harness, no model or effort is
+/// the harness's own. So a device that has chosen nothing changes nothing,
+/// which is what lets the setting be answered before anyone has visited it.
+///
+/// A project agent talks ABOUT a project rather than working in a checkout, and
+/// the harness that suits that job is often not the one coding work leads with
+/// — which is why it is a setting of its own rather than a second reading of
+/// `default_harness`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectAgentChoice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<AgentProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+impl ProjectAgentChoice {
+    /// The concrete selection a mint spends: what this device said, with
+    /// `default` — the device's default harness — standing where it said
+    /// nothing about the harness.
+    pub fn resolved(&self, default: AgentProvider) -> ModelChoice {
+        ModelChoice {
+            provider: self.provider.unwrap_or(default),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -267,6 +267,10 @@ pub struct AppState {
     /// page and spent at creation — never re-read to move an agent that
     /// already exists.
     default_harness: AgentProvider,
+    /// What a project's agent starts on, as this device chose it. Read at every
+    /// mint on a project's conversation owner, so moving it moves what the next
+    /// project agent opens on and leaves the ones already running alone.
+    project_agent: crate::models::ProjectAgentChoice,
     /// Independent launch presentation for each agent family.
     agent_modes: AgentModes,
     /// How a new checkout is isolated from the project it comes from, for
@@ -505,6 +509,7 @@ impl AppState {
             workspaces,
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
+            project_agent: crate::models::ProjectAgentChoice::default(),
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
             triage_enabled: false,

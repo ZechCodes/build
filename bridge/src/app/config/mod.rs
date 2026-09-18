@@ -1,7 +1,7 @@
 use crate::agent_modes::AgentModes;
 use crate::app::{AppState, Project};
 use crate::isolation::{Isolation, IsolationAvailability, ResolvedIsolation};
-use crate::models::{self, AgentProvider, ModelChoice};
+use crate::models::{self, AgentProvider, ModelChoice, ProjectAgentChoice};
 use serde_json::Value;
 
 mod persistence;
@@ -62,13 +62,14 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) agent_modes: Option<Value>,
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) triage_enabled: Option<bool>,
+    pub(in crate::app) project_agent: Option<ProjectAgentPatch>,
 }
 
 impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 7] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 8] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -121,6 +122,10 @@ impl SettingsPatch {
             );
             Ok(())
         }),
+        ("project_agent", |patch, value, _| {
+            patch.project_agent = Some(ProjectAgentPatch::parse(value)?);
+            Ok(())
+        }),
     ];
 
     /// The patch `params` asks for, or the refusal a set that names no setting
@@ -139,6 +144,81 @@ impl SettingsPatch {
         }
         Ok(patch)
     }
+}
+
+/// One `settings.set`'s words about the project agent.
+///
+/// Each field is what the client said about that one word: `None` where it said
+/// nothing and the device keeps what it has, `Some(value)` where it named one,
+/// and `Some(None)` for the `null` that clears it. A `null` object clears all
+/// three, which is the same three clearings said at once.
+#[derive(Default)]
+pub(in crate::app) struct ProjectAgentPatch {
+    provider: Option<Option<AgentProvider>>,
+    model: Option<Option<String>>,
+    effort: Option<Option<String>>,
+}
+
+impl ProjectAgentPatch {
+    fn parse(value: &Value) -> Result<Self, String> {
+        if value.is_null() {
+            return Ok(Self {
+                provider: Some(None),
+                model: Some(None),
+                effort: Some(None),
+            });
+        }
+        let object = value
+            .as_object()
+            .ok_or_else(|| "project_agent must be an object or null".to_string())?;
+        Ok(Self {
+            provider: object
+                .get("provider")
+                .map(project_agent_provider)
+                .transpose()?,
+            model: object
+                .get("model")
+                .map(|value| project_agent_word(value, "model"))
+                .transpose()?,
+            effort: object
+                .get("effort")
+                .map(|value| project_agent_word(value, "effort"))
+                .transpose()?,
+        })
+    }
+
+    /// `current` with this patch laid over it, word by word.
+    pub(in crate::app) fn over(&self, current: &ProjectAgentChoice) -> ProjectAgentChoice {
+        ProjectAgentChoice {
+            provider: self.provider.unwrap_or(current.provider),
+            model: self.model.clone().unwrap_or_else(|| current.model.clone()),
+            effort: self
+                .effort
+                .clone()
+                .unwrap_or_else(|| current.effort.clone()),
+        }
+    }
+}
+
+/// One word of a project-agent patch. `null` and `""` are both "no preference"
+/// — a preference must be able to say it has none — and anything that is not a
+/// string is refused rather than read as silence.
+fn project_agent_word(value: &Value, field: &str) -> Result<Option<String>, String> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(text) if text.is_empty() => Ok(None),
+        Value::String(text) => Ok(Some(text.clone())),
+        _ => Err(format!("project_agent.{field} must be a string or null")),
+    }
+}
+
+fn project_agent_provider(value: &Value) -> Result<Option<AgentProvider>, String> {
+    let Some(named) = project_agent_word(value, "provider")? else {
+        return Ok(None);
+    };
+    AgentProvider::from_wire(&named)
+        .map(Some)
+        .ok_or_else(|| format!("unknown project_agent provider: {named:?}"))
 }
 
 /// What a field does with the value a client sent for it: refuse it, or put it
@@ -238,6 +318,7 @@ impl AppState {
             self.projects_dir = expand_tilde(dir);
         }
         self.apply_default_harness_config(config);
+        self.apply_project_agent_config(config);
         self.apply_agent_modes_config(config);
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;
@@ -267,6 +348,20 @@ impl AppState {
                 eprintln!("config {key}: unknown {named:?}; using the default")
             }
             None => {}
+        }
+    }
+
+    /// What this device says a project agent starts on, as the config spells
+    /// it. A value this bridge cannot read is logged and left absent — a config
+    /// a newer bridge wrote is not a reason to fail boot, the same answer an
+    /// unknown `default_harness` gets.
+    fn apply_project_agent_config(&mut self, config: &Value) {
+        let Some(value) = config.get("project_agent") else {
+            return;
+        };
+        match serde_json::from_value::<ProjectAgentChoice>(value.clone()) {
+            Ok(choice) => self.project_agent = choice,
+            Err(error) => eprintln!("config project_agent: {error}; using the default"),
         }
     }
 

@@ -395,6 +395,41 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub triage_enabled: Named<bool>,
+    /// What a project's agent starts on. Partial like the set around it: a
+    /// word the object leaves out stands, a `null` word clears that one, and a
+    /// `null` object clears all three.
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub project_agent: Named<ProjectAgentPatch>,
+}
+
+/// The three words a device says about its project agents, each of them
+/// optional twice over: the client need not mention one, and mentioning it as
+/// `null` is how it says the device should hold no preference.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ProjectAgentPatch {
+    /// `claude_adk`, `claude`, `codex`, `codex_app_server` or `pi`.
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider: Named<String>,
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub model: Named<String>,
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effort: Named<String>,
 }
 
 /// A field a client either did not mention (`None`) or named — with a value,
@@ -746,6 +781,7 @@ pub struct AgentModesView {
 pub struct SettingsResult {
     pub projects_dir: String,
     pub default_harness: String,
+    pub project_agent: ProjectAgentView,
     pub agent_modes: AgentModesView,
     /// Deprecated alias, describing the concrete default harness.
     pub claude_mode: String,
@@ -754,6 +790,19 @@ pub struct SettingsResult {
     pub isolation: String,
     pub triage_enabled: bool,
     pub isolation_available: IsolationAvailabilityView,
+}
+
+/// What a project's agent starts on, as this device chose it. Every word may
+/// be absent, and each absent one names a default that already stands: no
+/// provider is `default_harness`, no model or effort is that harness's own.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ProjectAgentView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// One model a harness can be opened on.

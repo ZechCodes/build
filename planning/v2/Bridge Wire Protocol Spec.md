@@ -489,6 +489,25 @@ over. A message carrying `from_agent` never counts as the human
 interacting with the work: they did not send it, and the inbox must not
 say they did.
 
+#### Step 2.7: `project_agent` on `settings.*`
+
+`settings.get` carries `project_agent: { provider?, model?, effort? }` — what
+this device says a project's agent starts on — beside `default_harness`, which
+is what every other agent falls back to. Each word may be absent, and each
+absent one names a default that already stands: no provider is
+`default_harness`, no model or effort is that harness's own. A device that has
+chosen nothing answers `{}`.
+
+`settings.set` takes the same object and is partial the way the set around it
+is: a word the object leaves out stands, a `null` word clears that one, and a
+`null` object clears all three. The set answers with `settings.get`, so a panel
+repaints from what the device now holds rather than from what it attempted. The
+choice is written to `config.json` beside `default_harness` and read back at
+boot; a value this bridge cannot read is logged and left absent.
+
+Additive, so a minor: a client that has never heard of `project_agent` sends
+none and reads past it, and the bridge answers exactly as it did.
+
 ## Verification
 
 - `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt

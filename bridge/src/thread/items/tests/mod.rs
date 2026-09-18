@@ -7,4 +7,5 @@ mod doc_comment_tests;
 mod from_agent_tests;
 mod option_tests;
 mod outcome_message_tests;
+mod sent_to_tests;
 mod viewing_context_tests;

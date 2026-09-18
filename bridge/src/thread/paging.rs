@@ -282,7 +282,7 @@ impl Thread {
                     if message.sequence >= self.last_message_sequence_summary =>
                 {
                     self.last_message_sequence_summary = message.sequence;
-                    if message.from_agent.is_none() {
+                    if message.from_agent.is_none() && message.sent_to.is_none() {
                         self.last_own_message_sequence_summary = message.sequence;
                     }
                     self.conversation_activity_at_summary = Some(message.created_at.clone());

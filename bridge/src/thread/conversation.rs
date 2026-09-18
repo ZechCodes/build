@@ -282,12 +282,9 @@ impl Thread {
             return;
         };
         message.from_agent = Some(Box::new(from_agent));
-        // The post counted this message as the conversation's own, because a
-        // message is posted before it is signed. It is a hand-off, so the
-        // line a dismissal is judged against goes back where it was.
-        if self.last_own_message_sequence_summary == message.sequence {
-            self.last_own_message_sequence_summary = self.own_message_line_before_newest;
-        }
+        // It is a hand-off, so the line a dismissal is judged against goes back
+        // where it was.
+        self.unclaim_own_message_line();
     }
 
     pub fn post_user_with_context(
@@ -520,6 +517,40 @@ impl Thread {
         }
         id
     }
+    /// Record a message this agent sent to another agent's conversation.
+    ///
+    /// Its own words on its own side of the conversation, naming who they went
+    /// to — so the page the human reads shows what was sent and where. It
+    /// leaves the turn open (`still_working`), because calling a tool is not
+    /// handing the turn back, and that is also what keeps it from calling the
+    /// human: the agent wrote to another agent, not to them.
+    pub fn post_agent_sent(
+        &mut self,
+        body: impl Into<String>,
+        sent_to: AgentIdentity,
+        now: impl Into<String>,
+    ) -> String {
+        let id = self.post_agent_with_links_working(body, None, Vec::new(), now, true);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.sent_to = Some(Box::new(sent_to));
+        }
+        self.unclaim_own_message_line();
+        id
+    }
+
+    /// Take the message just posted back off the line a dismissal is judged
+    /// against. For the two kinds of agent-to-agent traffic: words handed in,
+    /// and the record of words sent out. A message is posted before it is
+    /// signed, so the post counted it as this conversation's own.
+    fn unclaim_own_message_line(&mut self) {
+        let Some(ThreadItem::Message(message)) = self.items.last() else {
+            return;
+        };
+        if self.last_own_message_sequence_summary == message.sequence {
+            self.last_own_message_sequence_summary = self.own_message_line_before_newest;
+        }
+    }
+
     /// The message whose options the reviewer may still act on — the newest
     /// message on the thread, if it offered any and none were chosen.
     ///
@@ -641,7 +672,7 @@ impl Thread {
         let metadata = ItemMetadata::derive(
             &completion_text(body, report),
             &existing.links,
-            existing.anchor.as_ref(),
+            existing.anchor.as_deref(),
             &self.scope,
         );
         let ThreadItem::Message(message) = &mut self.items[index] else {
@@ -689,6 +720,7 @@ impl Thread {
             updated_sequence: sequence,
             role,
             from_agent: None,
+            sent_to: None,
             done: false,
             outcome: None,
             completion_report: None,
@@ -699,7 +731,7 @@ impl Thread {
             body,
             created_at: now,
             seen_at: None,
-            anchor,
+            anchor: anchor.map(Box::new),
             resolved_by_revision: None,
             agent_reply: None,
             links,
@@ -1477,7 +1509,7 @@ impl Thread {
             self.items
                 .iter()
                 .rev()
-                .find(|item| matches!(item, ThreadItem::Message(_)) && !item.is_handoff())
+                .find(|item| matches!(item, ThreadItem::Message(_)) && !item.is_agent_traffic())
                 .map(ThreadItem::sequence)
                 .unwrap_or(0),
         )

@@ -55,6 +55,27 @@
           "body": "take the retry path next",
           "created_at": "2026-09-13T10:04:10Z"
         }
+      },
+      {
+        "type": "message",
+        "data": {
+          "id": "message-16",
+          "sequence": 40,
+          "updated_sequence": 0,
+          "role": "agent",
+          "still_working": true,
+          "sent_to": {
+            "id": "agent-9",
+            "owner": {
+              "kind": "workspace",
+              "id": "ws-3f2a91c4",
+              "name": "wire-facade"
+            },
+            "topic": "Retry path"
+          },
+          "body": "the retry path double-posts; take it before the rail",
+          "created_at": "2026-09-13T10:05:02Z"
+        }
       }
     ],
     "activity_digests": [

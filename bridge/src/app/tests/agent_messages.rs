@@ -186,3 +186,61 @@ fn message_agent_is_on_the_coding_and_project_surfaces() {
     assert!(!crate::mcp::DoneServer::tool_names_of(McpSurface::Router)
         .contains(&"message_agent".to_string()));
 }
+
+/// The send is recorded in the SENDER's own thread too: an agent-role message
+/// carrying the body and naming who it went to, so the page the human reads
+/// shows what was sent and where. It is not a hand-off and it calls nobody.
+#[test]
+fn a_send_is_recorded_on_the_senders_own_thread() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let one = workspace(&mut state, &project_id, "one");
+    let two = workspace(&mut state, &project_id, "two");
+    let (sender_owner, sender) = workspace_agent(&mut state, &one);
+    let (target_owner, target) = workspace_agent(&mut state, &two);
+    state
+        .on_agent_mcp_action(
+            &target_owner,
+            &target,
+            BridgeAction::SetTopic {
+                topic: "Reading the router".to_string(),
+            },
+        )
+        .expect("the target names its conversation");
+
+    state
+        .agent_action(
+            &sender_owner,
+            &sender,
+            message_agent(&target, "rebase on main"),
+        )
+        .expect("an agent reaches another agent in its project");
+
+    let recorded = items(&mut state, &sender_owner, &sender)
+        .into_iter()
+        .find(|item| !item["data"]["sent_to"].is_null())
+        .expect("the send is on the sender's own thread");
+    assert_eq!(recorded["data"]["role"], "agent", "{recorded:?}");
+    assert_eq!(recorded["data"]["body"], "rebase on main", "{recorded:?}");
+    assert!(recorded["data"]["from_agent"].is_null(), "{recorded:?}");
+    assert_eq!(
+        recorded["data"]["sent_to"],
+        json!({
+            "id": target,
+            "owner": { "kind": "workspace", "id": two, "name": "two" },
+            "topic": "Reading the router",
+        }),
+        "{recorded:?}"
+    );
+
+    // The recipient's thread carries the words once, as a message sent TO it.
+    let inbound = items(&mut state, &target_owner, &target);
+    assert!(
+        inbound.iter().all(|item| item["data"]["sent_to"].is_null()),
+        "the recipient records no send of its own: {inbound:?}"
+    );
+}

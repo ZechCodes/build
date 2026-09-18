@@ -514,6 +514,46 @@ agent message and link both halves without a second read. `AgentIdentity` is
 also the conversation's own `agent` on `thread.page`, which is never stamped and
 stays `{id}`.
 
+#### Step 2.6b: `sent_to` on a thread message
+
+The other half of `from_agent`. A message carries
+
+```
+sent_to?: {
+  id: string,
+  owner?: { kind: "workspace" | "project", id: string, name: string },
+  topic?: string
+}
+```
+
+when it is the record, in the SENDER's own conversation, of a message that agent
+sent to another agent's. Same shape as `from_agent` and stamped the same way, at
+post time, naming the RECIPIENT. So both ends of a hand-off are on a page: the
+recipient's conversation holds the words wearing the sender, and the sender's
+holds them wearing the recipient, and either can be drawn as
+`{workspace|project} > {conversation}` and linked.
+
+`role` is `agent`: the agent wrote the words. `from_agent` is absent — nobody
+handed this conversation anything. `still_working` is true, because calling a
+tool is not handing the turn back.
+
+What it counts as:
+
+- a MESSAGE — it spends a page's budget (`message = 1` in the store) and a run
+  of activity is cut around it, so a page shows it and it opens a new activity
+  container;
+- not a hand-off (`handoff = 0`), and not the conversation's own two parties
+  speaking: it does not draw the line a dismissal is judged against, so a row
+  the human cleared stays cleared;
+- not attention: nothing unread, no badge, nothing calling the human. The agent
+  wrote to another agent, not to them.
+
+The field is omitted on every message that went nowhere, which is every message
+written before agents could write to each other, so a client that has never
+heard of it is unaffected. In a cold catch-up packet the same fact is one
+trailer on the message's own line — `[sent to agent <id>]`, beside the
+`[from agent <id>]` the other direction carries.
+
 #### Step 2.7: `project_agent` on `settings.*`
 
 `settings.get` carries `project_agent: { provider?, model?, effort? }` — what

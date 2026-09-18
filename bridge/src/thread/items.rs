@@ -459,6 +459,24 @@ pub struct ThreadMessage {
     /// the identity of the rare sender must not cost the rest of them a word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_agent: Option<Box<AgentIdentity>>,
+    /// The agent this message was sent TO, when it is the record of a send
+    /// rather than something said here.
+    ///
+    /// The other half of [`from_agent`](Self::from_agent): the recipient's
+    /// conversation gets the words wearing the sender, and the sender's own
+    /// gets them wearing the recipient, so both ends of a hand-off are on a
+    /// page and either can be drawn and linked. The role is the agent's,
+    /// because the agent wrote them.
+    ///
+    /// It is a message, so a page shows it and a run of activity is cut around
+    /// it. It is not a hand-off — nobody handed this conversation anything —
+    /// and it calls nobody: the human was not written to.
+    ///
+    /// Boxed for the reason `from_agent` is, and absent on everything that went
+    /// nowhere, which is every message written before agents could write to
+    /// each other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_to: Option<Box<AgentIdentity>>,
     /// Client mutation whose durable delivery owns this reviewer message.
     /// Managed messages are read through that exact operation and never by
     /// the legacy catch-all unread mailbox.
@@ -501,8 +519,15 @@ pub struct ThreadMessage {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_at: Option<String>,
+    /// What this message is a comment ON, when it is one: a passage of a diff,
+    /// of a plan, or of a stage document.
+    ///
+    /// Boxed for the reason [`completion_report`](Self::completion_report) is.
+    /// An anchor is six fields wide and the rarest of them on a conversation
+    /// that is mostly prose, so carrying it inline would cost every ordinary
+    /// message its bulk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<MessageAnchor>,
+    pub anchor: Option<Box<MessageAnchor>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_by_revision: Option<String>,
     /// The agent's answer to this message, when it is a plan-doc comment a
@@ -1339,6 +1364,21 @@ impl ThreadItem {
     /// column.
     pub fn is_handoff(&self) -> bool {
         matches!(self, ThreadItem::Message(message) if message.from_agent.is_some())
+    }
+
+    /// Whether this item is one agent writing to another, in either direction:
+    /// a message handed to this conversation, or the record of one sent out of
+    /// it.
+    ///
+    /// Neither is this conversation's own two parties speaking, so neither
+    /// draws the line a dismissal is judged against — a row the human cleared
+    /// stays cleared while the agents work.
+    pub fn is_agent_traffic(&self) -> bool {
+        matches!(
+            self,
+            ThreadItem::Message(message)
+                if message.from_agent.is_some() || message.sent_to.is_some()
+        )
     }
 
     /// What this item referenced, as derived when it was written.

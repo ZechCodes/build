@@ -64,12 +64,38 @@ impl AppState {
             }),
             requester,
         )?;
+        self.record_the_send(sender, target_entity_id, target_agent_id, body);
         Ok(json!({
             "entity_id": posted["entity_id"].as_str().unwrap_or(target_entity_id),
             "agent_id": posted["agent_id"],
             "operation_id": operation_id,
             "posted_sequence": posted["posted_sequence"],
         }))
+    }
+
+    /// Write the send down in the SENDER's own conversation: its words, on its
+    /// own side, naming who they went to.
+    ///
+    /// After the target's copy landed, so a refused send leaves no trace and a
+    /// recorded one is always true. Quiet about its own failure: the message
+    /// was delivered, and losing the sender's copy of it must not read back to
+    /// the agent as the send having failed.
+    fn record_the_send(
+        &mut self,
+        sender: AgentSender<'_>,
+        target_entity_id: &str,
+        target_agent_id: &str,
+        body: &str,
+    ) {
+        let recipient = self.agent_identity(target_entity_id, target_agent_id);
+        let now = crate::store::now_rfc3339();
+        let recorded =
+            self.edit_agent_conversation(sender.entity_id, sender.agent_id, |thread, _| {
+                Ok(thread.post_agent_sent(body, recipient, &now))
+            });
+        if let Err(error) = recorded {
+            eprintln!("record the send from {}: {error}", sender.agent_id);
+        }
     }
 
     /// The conversation owner of the agent this send names, or why it is not

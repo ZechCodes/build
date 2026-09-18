@@ -185,9 +185,10 @@ pub(super) fn catch_up_lines<'a>(
         .rev()
         .filter_map(|item| match item {
             ThreadItem::Message(message) => Some(format!(
-                "- {}{}{}{}: {}{}{}",
+                "- {}{}{}{}{}: {}{}{}",
                 message.role.as_str(),
                 sender_note(message.from_agent.as_deref()),
+                recipient_note(message.sent_to.as_deref()),
                 workspace_note(message.viewing_context.as_deref()),
                 match message.reported_outcome() {
                     Some(outcome) => format!(" [{}]", outcome.as_str()),
@@ -211,6 +212,15 @@ pub(super) fn catch_up_lines<'a>(
 /// the conversation they arrived on.
 pub(super) fn sender_note(from_agent: Option<&super::AgentIdentity>) -> String {
     from_agent.map_or_else(String::new, |sender| format!(" [from agent {}]", sender.id))
+}
+
+/// Where a message went, when this conversation sent it somewhere else. The
+/// sender's own half of the pair: a resumed agent reads its own line and knows
+/// it wrote to another agent rather than to the user.
+pub(super) fn recipient_note(sent_to: Option<&super::AgentIdentity>) -> String {
+    sent_to.map_or_else(String::new, |recipient| {
+        format!(" [sent to agent {}]", recipient.id)
+    })
 }
 
 /// Where the user was standing when they wrote, when the message says. The

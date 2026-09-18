@@ -185,3 +185,22 @@ fn the_packet_names_the_agent_that_sent_a_message() {
         "- user [from agent router-7]: finish the toast\n- user: and rebase it"
     );
 }
+
+/// And the other half: a message this agent SENT somewhere else says so on its
+/// own line, so a resumed session does not read its own hand-off as something
+/// it told the user.
+#[test]
+fn the_packet_names_the_agent_a_message_was_sent_to() {
+    let mut thread = Thread::new("run-sender");
+    thread.post_agent_sent(
+        "rebase on main",
+        AgentIdentity::new("agent-2".to_string()),
+        "2026-09-17T09:00:00Z",
+    );
+    thread.post_agent("on it", None, "2026-09-17T09:01:00Z");
+
+    assert_eq!(
+        thread.catch_up_markdown(40),
+        "- agent [sent to agent agent-2]: rebase on main\n- agent: on it"
+    );
+}

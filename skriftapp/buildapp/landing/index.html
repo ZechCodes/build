@@ -1,116 +1,156 @@
-<nav class="site-nav" data-nav>
-  <div class="content-container nav-bar">
-    <a class="brand" href="/app/"><img class="brand-mark" src="/landing/brand-mark.svg" alt="">build_</a>
-    <ul class="nav-links" id="nav-links" data-nav-menu>
-      <li><a href="#features">[features]</a></li>
-      <li><a href="#agents">[agents]</a></li>
-      <li><a href="#">[docs]</a></li>
-    </ul>
-    <div class="nav-actions">
-      <a class="button-primary button-primary--nav" href="#waitlist">REQUEST ACCESS</a>
-      <button class="nav-menu-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="nav-links" aria-label="Menu"><span class="nav-menu-toggle-bar"></span><span class="nav-menu-toggle-bar"></span><span class="nav-menu-toggle-bar"></span></button>
+<main class="cinematic-page" data-cinematic-page>
+  <nav class="cinematic-nav" data-nav aria-label="Primary navigation">
+    <div class="cinematic-nav__bar">
+      <a class="cinematic-brand" href="/" aria-label="Build home"><img src="/landing/brand-mark.svg" alt="">build_</a>
+      <ul class="cinematic-nav__links" id="nav-links" data-nav-menu>
+        <li><a href="#story">Product</a></li>
+        <li><a href="https://github.com/ZechCodes/build-web" title="Build source repository; access may require an invitation during alpha">GitHub</a></li>
+        <li><a href="/docs">Docs</a></li>
+      </ul>
+      <div class="cinematic-nav__actions">
+        <a class="cinematic-button cinematic-button--small" href="#download">Download Build</a>
+        <button class="cinematic-nav__toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="nav-links" aria-label="Open menu">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
     </div>
+  </nav>
+
+  <section class="story" id="story" data-story>
+    <div class="story__stage" data-story-stage>
+      <div class="story__media" data-device-stage aria-hidden="true">
+        <img class="story-device story-device--laptop" data-device="laptop" data-src="/landing/assets/devices/laptop.webp" alt="" decoding="async">
+        <img class="story-device story-device--tablet" data-device="tablet" data-src="/landing/assets/devices/tablet.webp" alt="" decoding="async">
+        <img class="story-device story-device--phone" data-device="phone" data-src="/landing/assets/devices/phone.webp" alt="" decoding="async">
+      </div>
+
+      <div class="story__scenes">
+        <article class="story-scene story-scene--start" id="start" data-story-scene="start" aria-labelledby="scene-start-title">
+          <div class="story-copy">
+            <p class="story-kicker">01 / Start</p>
+            <h1 id="scene-start-title">Set the work in motion.</h1>
+            <p>Your coding agents. Your hardware. Any screen.</p>
+            <div class="story-actions">
+              <a class="cinematic-button" href="#download">Download Build</a>
+              <a class="cinematic-link" href="https://github.com/ZechCodes/build-web" title="Build source repository; access may require an invitation during alpha">GitHub <span aria-hidden="true">↗</span></a>
+            </div>
+            <p class="story-meta">Free &amp; open source <span aria-hidden="true">·</span> Alpha</p>
+          </div>
+          <picture class="static-visual static-visual--hero">
+            <source media="(max-width:767px)" srcset="/landing/assets/devices/scene-01-mobile.webp">
+            <img src="/landing/assets/devices/scene-01-desktop.webp" width="1440" height="900" alt="Build running the Launch workspace on a graphite laptop" fetchpriority="high">
+          </picture>
+          <div class="demo demo--workspace" aria-label="Non-interactive demonstration: three conversations in the Launch workspace">
+            <div class="demo__bar"><span>Claude Code · Build</span><span class="demo__status">03:42</span></div>
+            <div class="demo__conversation-list"><span><i></i><b>Fixing archive button</b><small>Running</small></span><span><i></i><b>Keyboard review</b><small>Running</small></span><span><i></i><b>Planning next steps</b><small>Running</small></span></div>
+            <div class="demo__repo-list"><span>build-app</span><span>build-bridge</span><span>notes <small>directory</small></span></div>
+          </div>
+        </article>
+
+        <article class="story-scene story-scene--handoff" id="handoff" data-story-scene="handoff" aria-labelledby="scene-handoff-title">
+          <div class="story-copy">
+            <p class="story-kicker">02 / Handoff</p>
+            <h2 id="scene-handoff-title">Your day moves.</h2>
+            <p>Pick up the same workspace wherever you are.</p>
+          </div>
+          <picture class="static-visual static-visual--scene">
+            <source media="(max-width:767px)" srcset="/landing/assets/devices/scene-02-mobile.webp">
+            <img src="/landing/assets/devices/scene-02-desktop.webp" width="1440" height="900" alt="The Launch workspace continuing from laptop to phone" loading="lazy">
+          </picture>
+          <div class="demo demo--inbox" aria-label="Non-interactive demonstration: Launch workspace inbox">
+            <div class="demo__bar"><span>Inbox</span><span class="demo__status">Online</span></div>
+            <div class="demo__inbox-row"><i></i><span><strong>Launch</strong></span><b>03:43</b></div>
+            <div class="demo__counts"><span><strong>+128</strong> added</span><span><strong>−34</strong> removed</span><span><strong>1</strong> running</span></div>
+          </div>
+        </article>
+
+        <article class="story-scene story-scene--direction" id="direction" data-story-scene="direction" aria-labelledby="scene-direction-title">
+          <div class="story-copy">
+            <p class="story-kicker">03 / Direction</p>
+            <h2 id="scene-direction-title">A little direction. Back to work.</h2>
+            <p>Answer your agents from the screen at hand.</p>
+          </div>
+          <picture class="static-visual static-visual--scene">
+            <source media="(max-width:767px)" srcset="/landing/assets/devices/scene-03-mobile.webp">
+            <img src="/landing/assets/devices/scene-03-desktop.webp" width="1440" height="900" alt="The archive question and response shown on a phone" loading="lazy">
+          </picture>
+          <div class="demo demo--conversation" aria-label="Non-interactive demonstration: the Fixing archive button conversation">
+            <div class="demo__bar"><strong>Fixing archive button</strong><span>03:44</span></div>
+            <div class="conversation-step" data-direction-step="question"><span class="demo__speaker">Agent</span><p>Keep archived items in search?</p></div>
+            <div class="conversation-step conversation-step--user" data-direction-step="answer"><span class="demo__speaker">You</span><p>Yes. Label them clearly.</p></div>
+            <div class="conversation-step" data-direction-step="resumed"><span class="demo__speaker">Agent</span><p>Got it. I’ll update the archive behavior and checks.</p><span class="demo__status"><i></i> Working</span></div>
+          </div>
+        </article>
+
+        <article class="story-scene story-scene--overview" id="overview" data-story-scene="overview" aria-labelledby="scene-overview-title">
+          <div class="story-copy">
+            <p class="story-kicker">04 / Overview</p>
+            <h2 id="scene-overview-title">See the whole picture.</h2>
+            <p>Follow agents, workflows, and shells in one place.</p>
+          </div>
+          <picture class="static-visual static-visual--scene">
+            <source media="(max-width:767px)" srcset="/landing/assets/devices/scene-04-mobile.webp">
+            <img src="/landing/assets/devices/scene-04-desktop.webp" width="1440" height="900" alt="Build activity overview on a tablet" loading="lazy">
+          </picture>
+          <div class="demo demo--activity" aria-label="Non-interactive demonstration: activity across agents, workflow, and shells">
+            <div class="demo__bar"><strong>Launch activity</strong><span class="demo__status">Activity</span></div>
+            <div class="activity-columns">
+              <section><p>Sub-agents <b>2</b></p><span><i></i>Keyboard review <em>Running</em></span><span><i class="is-done"></i>Edge-case audit <em>Done</em></span></section>
+              <section><p>Workflow <b>2 / 3</b></p><span><i class="is-done"></i>Inspect <em>Done</em></span><span><i class="is-done"></i>Patch <em>Done</em></span><span><i></i>Verify <em>Running</em></span></section>
+              <section><p>Shells <b>2</b></p><span><i></i>tests <em>Running</em></span><span><i></i>dev server <em>Listening</em></span></section>
+            </div>
+          </div>
+        </article>
+
+        <article class="story-scene story-scene--review" id="review" data-story-scene="review" aria-labelledby="scene-review-title">
+          <div class="story-copy">
+            <p class="story-kicker">05 / Review</p>
+            <h2 id="scene-review-title">Keep the final say.</h2>
+            <p>Understand the changes. Decide what lands.</p>
+          </div>
+          <picture class="static-visual static-visual--scene">
+            <source media="(max-width:767px)" srcset="/landing/assets/devices/scene-05-mobile.webp">
+            <img src="/landing/assets/devices/scene-05-desktop.webp" width="1440" height="900" alt="The archive behavior diff, evidence, and approval review" loading="lazy">
+          </picture>
+          <div class="demo demo--review" data-review-surface aria-label="Non-interactive demonstration: archive behavior review and approval">
+            <div class="demo__bar"><span><strong>archive.ts</strong> · Fixing archive button</span><span>1 file changed <b class="diff-add">+2</b> <b class="diff-remove">−1</b></span></div>
+            <div class="review-layout">
+              <div class="review-summary" data-review-step="summary"><p class="demo__eyebrow">Summary</p><strong>Keep archived items searchable and visibly labeled.</strong><span>Checks passed · Search behavior covered</span></div>
+              <pre class="review-code" data-review-step="diff"><code><span>12  function archiveItem(id) {</span>
+<span class="code-remove">13 −  search.remove(id)</span>
+<span class="code-add">13 +  search.update(id, { archived: true })</span>
+<span>14  }</span></code></pre>
+              <div class="review-evidence" data-review-step="evidence"><span><b>Archived</b> Launch · Archive task</span><span><i></i> archive-search.test.ts passed</span></div>
+              <div class="review-approval" data-review-step="approval"><span><small>You</small> Approved for merge.</span><span class="demo__button">Approve &amp; merge</span></div>
+              <div class="review-merged" data-review-step="merged"><i></i><span><strong>Merged</strong> Archive behavior updated</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="story-scene story-scene--download" id="download-story" data-story-scene="download" aria-labelledby="scene-download-title">
+          <div class="story-copy">
+            <p class="story-kicker">06 / Download</p>
+            <h2 id="scene-download-title">Any screen. Your call.</h2>
+            <p>Free &amp; open source.</p>
+            <div class="story-actions story-actions--centered">
+              <a class="cinematic-button" href="#download">Download Build</a>
+              <a class="cinematic-link cinematic-link--outlined" href="https://github.com/ZechCodes/build-web" title="Build source repository; access may require an invitation during alpha">GitHub <span aria-hidden="true">↗</span></a>
+            </div>
+            <p class="story-meta">Alpha</p>
+          </div>
+          <picture class="static-visual static-visual--closing">
+            <source media="(max-width:767px)" srcset="/landing/assets/devices/scene-06-mobile.webp">
+            <img src="/landing/assets/devices/scene-06-desktop.webp" width="1440" height="900" alt="Build shown across laptop, tablet, and phone" loading="lazy">
+          </picture>
+        </article>
+      </div>
+
+      <div class="story__progress" aria-hidden="true"><span data-story-progress></span></div>
+      <p class="story__position" aria-live="polite" aria-atomic="true" data-story-position>Scene 1 of 6</p>
+    </div>
+  </section>
+
+  <div class="cinematic-practical" data-practical-content>
+{{practical_content}}
   </div>
-</nav>
-<section class="hero rule-bottom" data-hero>
-  <div class="dot-field"><canvas data-dot-field></canvas></div>
-  <div class="content-container hero-stage">
-  <div class="hero-content">
-    <p class="eyebrow hero-eyebrow">PRIVATE BETA</p>
-    <h1 class="section-title section-title--hero">Ship more.<br><span class="title-accent title-accent--glow">Ship confidence.</span></h1>
-    <p class="lead">Build turns an issue into shipped code. An agent plans and builds it on your machine, and a review agent lays the changes out so you know exactly what went out and why.</p>
-{{waitlist}}
-    <p class="note">One email to confirm, one when your invite is ready. Nothing else.</p>
-  </div>
-  <div class="hero-screenshot"><div class="screenshot-frame">
-  <picture>
-    <source media="(max-width: 640px)" srcset="/landing/assets/build-ide-screenshot-mobile-640.png 640w, /landing/assets/build-ide-screenshot-mobile-921.png 921w" sizes="100vw" width="921" height="1880">
-    <img src="/landing/assets/build-ide-screenshot-1240.png" srcset="/landing/assets/build-ide-screenshot-1240.png 1240w, /landing/assets/build-ide-screenshot-1744.png 1744w" sizes="(max-width: 1280px) calc(100vw - 80px), 1160px" width="1744" height="965" decoding="async" alt="The Build IDE — commit history, diff review, and a live agent conversation">
-  </picture>
-  </div></div>
-  </div>
-  <section class="agents-rail rule-top" id="agents"><div class="content-container agents-grid">
-  <p class="eyebrow eyebrow--muted agents-label">USE YOUR HARNESS</p>
-  <div class="agent-cell">Claude Code</div>
-  <div class="agent-cell">Codex</div>
-  <div class="agent-cell">Pi</div>
-  <div class="agent-cell">OpenCode</div>
-  </div></section>
-</section>
-<section class="features-section rule-bottom" id="features"><div class="content-container features-body">
-  <div class="section-header">
-    <h2 class="section-title">From issue<br><span class="title-accent">to merge.</span></h2>
-    <span class="eyebrow eyebrow--muted section-label">HOW IT WORKS /05</span>
-  </div>
-  <div class="feature-cards" data-feature-rail>
-    <article class="feature-card" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/01</span><span class="eyebrow--muted">ISSUE</span></div>
-      <h3 class="card-title">Start with the issue</h3>
-      <p class="card-body">Write what you want. Workshop it with an agent until it's clear enough to build. That conversation is the spec.</p>
-    </article>
-    <article class="feature-card" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/02</span><span class="eyebrow--muted">WORKFLOW</span></div>
-      <h3 class="card-title">The agent plans the work</h3>
-      <p class="card-body">From the issue, the agent builds a workflow and runs it. Every change lands on one branch in its own worktree, so nothing touches main until you say so.</p>
-    </article>
-    <article class="feature-card feature-card--span-2" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/03</span><span class="eyebrow--muted">REVIEW</span></div>
-      <h3 class="card-title">Spot checks, not archaeology</h3>
-      <p class="card-body">A review agent organizes the diff: what changed, why, and where to look first. Comment on any line. Your notes go back as one instruction.</p>
-    </article>
-    <article class="feature-card feature-card--span-4" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/04</span><span class="eyebrow--muted">MERGE</span></div>
-      <h3 class="card-title">Approve and merge from the same screen</h3>
-      <p class="card-body">Git is the source of truth, so what you review is exactly what the agent did. Merge, and the branch cleans itself up.</p>
-    </article>
-    <article class="feature-card feature-card--span-6" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/05</span><span class="eyebrow--muted">YOUR MACHINE</span></div>
-      <h3 class="card-title">Your code stays on your hardware</h3>
-      <p class="card-body">Agents run locally in your own harness. Check in from your phone. Nothing in the middle can read your repo.</p>
-    </article>
-  </div>
-  <div class="rail-dashes"><i class="rail-dash is-active" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i></div>
-</div></section>
-<section class="flow-section rule-bottom" id="flow"><div class="content-container">
-  <div class="section-header">
-    <h2 class="section-title">A run,<br><span class="title-accent">start to finish.</span></h2>
-    <span class="eyebrow eyebrow--muted section-label">EXAMPLE RUN /06</span>
-  </div>
-  <ol class="flow-steps">
-    <li class="flow-step flow-step--you flow-step--to-agents">
-      <div class="card-header eyebrow"><span class="card-number">/01</span><span class="eyebrow--muted">YOU</span></div>
-      <h3 class="card-title">Open an issue</h3>
-      <p class="card-body">Say what you want, in your words.</p>
-    </li>
-    <li class="flow-step flow-step--agents">
-      <div class="card-header eyebrow"><span class="card-number">/02</span><span class="eyebrow--muted">AGENTS</span></div>
-      <h3 class="card-title">Workshop it</h3>
-      <p class="card-body">The agent asks what's unclear. You answer. The issue is now the spec.</p>
-    </li>
-    <li class="flow-step flow-step--agents">
-      <div class="card-header eyebrow"><span class="card-number">/03</span><span class="eyebrow--muted">AGENTS</span></div>
-      <h3 class="card-title">Plan and build</h3>
-      <p class="card-body">A workflow runs. Every change lands on one branch in its own worktree.</p>
-    </li>
-    <li class="flow-step flow-step--agents flow-step--to-you">
-      <div class="card-header eyebrow"><span class="card-number">/04</span><span class="eyebrow--muted">AGENTS</span></div>
-      <h3 class="card-title">Organize the diff</h3>
-      <p class="card-body">A review agent sorts what changed, why, and where to look first.</p>
-    </li>
-    <li class="flow-step flow-step--you">
-      <div class="card-header eyebrow"><span class="card-number">/05</span><span class="eyebrow--muted">YOU</span></div>
-      <h3 class="card-title">Spot-check</h3>
-      <p class="card-body">“Ready for review” hits your inbox. Comment on a line, or approve.</p>
-    </li>
-    <li class="flow-step flow-step--you">
-      <div class="card-header eyebrow"><span class="card-number">/06</span><span class="eyebrow--muted">YOU</span></div>
-      <h3 class="card-title">Merge</h3>
-      <p class="card-body">The branch cleans itself up.</p>
-    </li>
-  </ol>
-</div></section>
-<section class="cta-section viewport-section" id="waitlist"><div class="content-container">
-    <h2 class="section-title section-title--cta">Get in <span class="title-accent title-accent--glow">early.</span></h2>
-    <p class="note cta-note">PRIVATE BETA · RUNS ON YOUR MACHINE</p>
-{{waitlist}}
-</div></section>
+</main>

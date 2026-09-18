@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "fixture": {
+    "project": "Build",
+    "workspace": "Launch",
+    "directories": ["build-app", "build-bridge", "notes"],
+    "conversation": "Fixing archive button",
+    "demonstrationOnly": true
+  },
+  "profiles": {
+    "desktop": { "viewport": [1440, 900], "crop": [0, 0, 1440, 900], "textSafe": [22, 54, 1396, 802] },
+    "mobile": { "viewport": [390, 844], "crop": [0, 0, 390, 844], "textSafe": [14, 50, 362, 744] }
+  },
+  "states": [
+    { "id": "ui01", "order": 1, "checkpoint": "delegated", "timer": "03:42", "description": "Prepared archive request, Claude Code selected, and three primary agents running." },
+    { "id": "ui02", "order": 2, "checkpoint": "handoff", "timer": "03:43", "description": "Launch workspace inbox row with aggregate Git counts and unread attention." },
+    { "id": "ui03-question", "order": 3, "checkpoint": "question", "timer": "03:44", "description": "Agent asks whether archived items should remain in search." },
+    { "id": "ui03-answer", "order": 4, "checkpoint": "answer", "timer": "03:44", "description": "User answers: Yes. Label them clearly." },
+    { "id": "ui03-resumed", "order": 5, "checkpoint": "resumed", "timer": "03:44", "description": "Claude Code resumes implementation with the decision." },
+    { "id": "ui04", "order": 6, "checkpoint": "overview", "timer": "03:44", "description": "Two sub-agents, one three-step workflow, and two shell sessions." },
+    { "id": "ui05-approval", "order": 7, "checkpoint": "approval", "timer": "03:44", "description": "Coherent archive diff, archived-label test evidence, and explicit approval control." },
+    { "id": "ui05-merged", "order": 8, "checkpoint": "merged", "timer": "03:44", "description": "Confirmed merged state after approval." }
+  ],
+  "filePattern": "{state}-{profile}.{png|webp}",
+  "masters": "design/landing-captures/masters/",
+  "derivatives": "skriftapp/buildapp/landing/assets/screens/",
+  "source": "design/landing-captures/",
+  "provenance": "Deterministic marketing fixture composed with current SPA renderers and CSS; it is not a live-host capture."
+}

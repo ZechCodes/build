@@ -1,0 +1,392 @@
+{
+  "version": 1,
+  "units": "meters",
+  "coordinate_system": {
+    "up": "+Y",
+    "forward": "+Z",
+    "right": "+X"
+  },
+  "origin": "device center; laptop origin is hinge pivot projected to ground",
+  "devices": {
+    "laptop": {
+      "dimensions_m": [
+        0.342,
+        0.22,
+        0.2
+      ],
+      "screen_corners_m": [
+        [
+          -0.154,
+          0.02075,
+          0.0035
+        ],
+        [
+          0.154,
+          0.02075,
+          0.0035
+        ],
+        [
+          0.154,
+          0.21325,
+          0.0035
+        ],
+        [
+          -0.154,
+          0.21325,
+          0.0035
+        ]
+      ],
+      "hinge_pivot_m": [
+        0,
+        0.0095,
+        0.0035
+      ],
+      "file": "laptop.glb",
+      "bytes": 1615448,
+      "triangles": 42782,
+      "screen_node": "screen",
+      "screen_material": "ScreenDesktop",
+      "low_detail_file": "laptop-low.glb",
+      "low_detail_bytes": 170580,
+      "low_detail_triangles": 3386
+    },
+    "tablet": {
+      "dimensions_m": [
+        0.252,
+        0.172,
+        0.0105
+      ],
+      "screen_corners_m": [
+        [
+          -0.117,
+          -0.073125,
+          0.0057
+        ],
+        [
+          0.117,
+          -0.073125,
+          0.0057
+        ],
+        [
+          0.117,
+          0.073125,
+          0.0057
+        ],
+        [
+          -0.117,
+          0.073125,
+          0.0057
+        ]
+      ],
+      "file": "tablet.glb",
+      "bytes": 52304,
+      "triangles": 986,
+      "screen_node": "screen",
+      "screen_material": "ScreenTablet"
+    },
+    "phone": {
+      "dimensions_m": [
+        0.084,
+        0.174,
+        0.0092
+      ],
+      "screen_corners_m": [
+        [
+          -0.0385,
+          -0.0825,
+          0.005
+        ],
+        [
+          0.0385,
+          -0.0825,
+          0.005
+        ],
+        [
+          0.0385,
+          0.0815,
+          0.005
+        ],
+        [
+          -0.0385,
+          0.0815,
+          0.005
+        ]
+      ],
+      "file": "phone.glb",
+      "bytes": 53288,
+      "triangles": 1178,
+      "screen_node": "screen",
+      "screen_material": "ScreenPhone"
+    }
+  },
+  "renders": {
+    "hero-laptop": {
+      "file": "hero-laptop.webp",
+      "width": 1600,
+      "height": 1180,
+      "bytes": 90984,
+      "content_bounds_px_bottom_left": [
+        0,
+        5,
+        1600,
+        1147
+      ]
+    },
+    "laptop": {
+      "file": "laptop.webp",
+      "width": 1200,
+      "height": 900,
+      "bytes": 63262,
+      "content_bounds_px_bottom_left": [
+        0,
+        11,
+        1200,
+        861
+      ]
+    },
+    "tablet": {
+      "file": "tablet.webp",
+      "width": 1000,
+      "height": 760,
+      "bytes": 33338,
+      "content_bounds_px_bottom_left": [
+        152,
+        52,
+        763,
+        630
+      ]
+    },
+    "phone": {
+      "file": "phone.webp",
+      "width": 640,
+      "height": 1040,
+      "bytes": 25590,
+      "content_bounds_px_bottom_left": [
+        124,
+        106,
+        404,
+        843
+      ]
+    },
+    "mobile-hero": {
+      "file": "mobile-hero.webp",
+      "width": 1200,
+      "height": 1350,
+      "bytes": 50236,
+      "content_bounds_px_bottom_left": [
+        141,
+        159,
+        959,
+        894
+      ]
+    },
+    "scene-01-desktop": {
+      "file": "scene-01-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 64256,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-01-mobile": {
+      "file": "scene-01-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 26486,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-02-desktop": {
+      "file": "scene-02-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 40656,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-02-mobile": {
+      "file": "scene-02-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 18040,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-03-desktop": {
+      "file": "scene-03-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 39410,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-03-mobile": {
+      "file": "scene-03-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 28198,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-04-desktop": {
+      "file": "scene-04-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 45620,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-04-mobile": {
+      "file": "scene-04-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 24972,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-05-desktop": {
+      "file": "scene-05-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 59720,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-05-mobile": {
+      "file": "scene-05-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 33128,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "scene-06-desktop": {
+      "file": "scene-06-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 45132,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "scene-06-mobile": {
+      "file": "scene-06-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 37034,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "desktop-poster": {
+      "file": "desktop-poster.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 45132,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1440,
+        900
+      ]
+    },
+    "mobile-poster": {
+      "file": "mobile-poster.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 37034,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        720,
+        960
+      ]
+    },
+    "social-preview": {
+      "file": "social-preview.webp",
+      "width": 1200,
+      "height": 630,
+      "bytes": 48234,
+      "content_bounds_px_bottom_left": [
+        0,
+        0,
+        1200,
+        630
+      ]
+    }
+  },
+  "source": {
+    "blend": "build-devices.blend",
+    "generator": "build_device_assets.py",
+    "blender": "4.5.14 LTS"
+  },
+  "screen_fixtures": {
+    "laptop": {
+      "file": "screens/ui01-desktop.webp",
+      "sha256": "66059ffcb352aca55cce77bf753f55b3b132174a7e0a1ffbd07eda2e4f740756",
+      "packed_in_blend": true
+    },
+    "tablet": {
+      "file": "screens/ui04-desktop.webp",
+      "sha256": "304d09264562afa3e3a850130a5c1becdf0ea0c039911277a4c80282bd047644",
+      "packed_in_blend": true
+    },
+    "phone": {
+      "file": "screens/ui02-mobile.webp",
+      "sha256": "7a9d65c97255791b8a9cc1760c72a2b2574aeaa0a7b2013f7b0926bdb9107f07",
+      "packed_in_blend": true
+    }
+  },
+  "screen_provenance": "Reconstructed demonstration fixtures from current Build renderers; not a live-host capture.",
+  "licensing": {
+    "geometry": "Original geometry created for Build; no third-party geometry or materials.",
+    "screen_ui": "Reconstructed Build demonstration fixtures generated from current project renderers; retain project asset terms.",
+    "external_assets": "None."
+  }
+}

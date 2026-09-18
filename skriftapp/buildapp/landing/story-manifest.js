@@ -1,0 +1,149 @@
+const hidden = Object.freeze({ x: 50, y: 62, w: 10, rotate: [0, 0, 0], opacity: 0 });
+
+const pose = (x, y, w, rotate = [0, 0, 0], opacity = 1) =>
+  Object.freeze({ x, y, w, rotate: Object.freeze(rotate), opacity });
+
+const devices = (laptop = hidden, tablet = hidden, phone = hidden, review = hidden) =>
+  Object.freeze({ laptop, tablet, phone, review });
+
+export const STORY_SCENES = Object.freeze([
+  {
+    id: "start",
+    travel: { desktop: 1, tablet: 1, compact: 0.7 },
+    copy: { title: "Set the work in motion.", region: "left" },
+    checkpoints: [{ at: 0, id: "request" }, { at: 0.42, id: "agents-started" }, { at: 0.85, id: "running" }],
+    poses: {
+      desktop: devices(pose(66, 61, 58, [-8, 4, 0])),
+      tablet: devices(pose(52, 61, 68, [-4, 3, 0])),
+      compact: devices(pose(50, 68, 92)),
+    },
+  },
+  {
+    id: "handoff",
+    travel: { desktop: 1.1, tablet: 1, compact: 0.7 },
+    copy: { title: "Your day moves.", region: "left" },
+    checkpoints: [{ at: 0, id: "laptop" }, { at: 0.25, id: "inbox" }, { at: 0.75, id: "handoff-ready" }],
+    poses: {
+      desktop: devices(pose(28, 61, 34, [12, 3, 0], 0.58), hidden, pose(70, 55, 21, [-12, 2, -2])),
+      tablet: devices(pose(25, 67, 43, [5, 2, 0], 0.52), hidden, pose(68, 64, 22, [-4, 1, -1])),
+      compact: devices(pose(20, 64, 50, [0, 0, 0], 0.42), hidden, pose(58, 68, 58, [-5, 0, 0])),
+    },
+  },
+  {
+    id: "direction",
+    travel: { desktop: 1, tablet: 0.9, compact: 0.8 },
+    copy: { title: "A little direction. Back to work.", region: "left" },
+    checkpoints: [{ at: 0, id: "question" }, { at: 0.42, id: "answer" }, { at: 0.68, id: "resumed" }],
+    poses: {
+      desktop: devices(hidden, hidden, pose(69, 58, 28)),
+      tablet: devices(hidden, hidden, pose(50, 64, 24)),
+      compact: devices(hidden, hidden, pose(50, 68, 64)),
+    },
+  },
+  {
+    id: "overview",
+    travel: { desktop: 1.1, tablet: 1, compact: 0.8 },
+    copy: { title: "See the whole picture.", region: "left" },
+    checkpoints: [{ at: 0, id: "workspace" }, { at: 0.3, id: "activity" }, { at: 0.75, id: "review-approach" }],
+    poses: {
+      desktop: devices(hidden, pose(64, 62, 64, [-7, 5, 0])),
+      tablet: devices(hidden, pose(50, 64, 70, [-3, 3, 0])),
+      compact: devices(hidden, pose(50, 70, 94)),
+    },
+  },
+  {
+    id: "review",
+    travel: { desktop: 1.4, tablet: 1.1, compact: 1 },
+    copy: { title: "Keep the final say.", region: "top" },
+    checkpoints: [
+      { at: 0, id: "align" },
+      { at: 0.2, id: "summary" },
+      { at: 0.35, id: "diff" },
+      { at: 0.5, id: "evidence" },
+      { at: 0.65, id: "approval" },
+      { at: 0.8, id: "merged" },
+    ],
+    poses: {
+      desktop: devices(hidden, hidden, hidden, pose(50, 61, 82)),
+      tablet: devices(hidden, hidden, hidden, pose(50, 62, 90)),
+      compact: devices(hidden, hidden, hidden, pose(50, 66, 92)),
+    },
+  },
+  {
+    id: "download",
+    travel: { desktop: 0.8, tablet: 0.6, compact: 0.6 },
+    copy: { title: "Any screen. Your call.", region: "center" },
+    checkpoints: [{ at: 0, id: "arrive" }, { at: 0.35, id: "settled" }],
+    poses: {
+      desktop: devices(pose(30, 72, 34, [4, 1, 0]), pose(54, 73, 31, [-2, 1, 0]), pose(74, 74, 12, [-3, 0, 0])),
+      tablet: devices(pose(27, 74, 42), pose(55, 75, 38), pose(79, 76, 15)),
+      compact: devices(pose(26, 77, 48), pose(58, 78, 43), pose(83, 78, 17)),
+    },
+  },
+]);
+
+export const STORY_PROFILES = Object.freeze({
+  desktop: Object.freeze({ minWidth: 1100, minHeight: 700 }),
+  tablet: Object.freeze({ minWidth: 768, minHeight: 600 }),
+  compact: Object.freeze({ minWidth: 0, minHeight: 600 }),
+});
+
+export function clamp(value, minimum = 0, maximum = 1) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+export function profileForViewport(width, height) {
+  if (height < STORY_PROFILES.compact.minHeight) return "static";
+  if (width >= STORY_PROFILES.desktop.minWidth && height >= STORY_PROFILES.desktop.minHeight) return "desktop";
+  if (width >= STORY_PROFILES.tablet.minWidth) return "tablet";
+  return "compact";
+}
+
+export function storyTravel(profile) {
+  if (profile === "static") return 0;
+  return STORY_SCENES.reduce((total, scene) => total + scene.travel[profile], 0);
+}
+
+export function checkpointAt(scene, local) {
+  return scene.checkpoints.reduce(
+    (current, checkpoint) => (local >= checkpoint.at ? checkpoint.id : current),
+    scene.checkpoints[0].id,
+  );
+}
+
+export function frameAtTravel(travel, profile) {
+  const safeProfile = profile === "static" ? "compact" : profile;
+  const total = storyTravel(safeProfile);
+  const boundedTravel = clamp(travel, 0, total);
+  let traversed = 0;
+
+  for (let sceneIndex = 0; sceneIndex < STORY_SCENES.length; sceneIndex += 1) {
+    const scene = STORY_SCENES[sceneIndex];
+    const sceneTravel = scene.travel[safeProfile];
+    const isLast = sceneIndex === STORY_SCENES.length - 1;
+    if (boundedTravel <= traversed + sceneTravel || isLast) {
+      const local = clamp((boundedTravel - traversed) / sceneTravel);
+      return {
+        scene: scene.id,
+        sceneIndex,
+        local,
+        progress: total === 0 ? 0 : boundedTravel / total,
+        profile: safeProfile,
+        checkpoint: checkpointAt(scene, local),
+        travel: boundedTravel,
+      };
+    }
+    traversed += sceneTravel;
+  }
+
+  return null;
+}
+
+export function travelAtFrame(sceneIndex, local, profile) {
+  const safeProfile = profile === "static" ? "compact" : profile;
+  const preceding = STORY_SCENES.slice(0, sceneIndex).reduce(
+    (total, scene) => total + scene.travel[safeProfile],
+    0,
+  );
+  return preceding + STORY_SCENES[sceneIndex].travel[safeProfile] * clamp(local);
+}

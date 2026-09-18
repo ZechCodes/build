@@ -469,8 +469,13 @@ jobs:
         run: |
           verify() {
             curl -sf -o /dev/null https://getbuild.ing/healthz &&
-            curl -sf https://getbuild.ing/ | grep -q "Ship confidence" &&
-            curl -sf -o /dev/null https://getbuild.ing/landing/landing.css
+            curl -sf https://getbuild.ing/ | grep -q "Set the work in motion" &&
+            curl -sf -o /dev/null https://getbuild.ing/landing/cinematic.css &&
+            curl -sf -o /dev/null https://getbuild.ing/landing/vendor/three-device-runtime.js &&
+            curl -sf -o /dev/null https://getbuild.ing/landing/assets/devices/laptop-low.glb &&
+            curl -sf -o /dev/null https://getbuild.ing/landing/assets/devices/laptop.webp &&
+            curl -sf -o /dev/null https://getbuild.ing/docs &&
+            curl -sf -o /dev/null https://getbuild.ing/privacy
           }
           for _ in $(seq 1 12); do verify && exit 0; sleep 5; done
           verify

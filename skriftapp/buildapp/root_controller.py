@@ -1,6 +1,4 @@
-"""Root: GET / renders the landing body through the shared page shell, and /landing/*
-serves the landing assets behind a traversal guard. The waitlist block appears twice on
-the page, so it is written once in ``waitlist.html`` and substituted into both slots."""
+"""Public landing, documentation, and same-origin landing assets."""
 
 import asyncio
 
@@ -18,16 +16,29 @@ from buildapp.landing_page import (
     read_landing_file,
     render_shell,
 )
+from buildapp.landing_content import (
+    DOCS_PATH,
+    PRIVACY_PATH,
+    render_docs_body,
+    render_practical_content,
+    render_privacy_body,
+)
 
 LANDING_PAGE_NAME = "index.html"
-WAITLIST_FRAGMENT_NAME = "waitlist.html"
-WAITLIST_SLOT_NAME = "waitlist"
-LANDING_TITLE = "Build — Ship more. Ship confidence."
-LANDING_DESCRIPTION = (
-    "Build turns an issue into shipped code. An agent plans and builds it on your machi"
-    "ne, and a review agent lays the changes out so you know exactly what went out and why."
-)
+PRACTICAL_SLOT_NAME = "practical_content"
+LANDING_TITLE = "Build — Any screen. Your call."
+LANDING_DESCRIPTION = "Your coding agents. Your hardware. Any screen. Free and open source."
 LANDING_SCRIPTS = '<script type="module" src="/landing/main.js"></script>'
+LANDING_HEAD = '<link rel="stylesheet" href="/landing/cinematic.css">'
+SOCIAL_HEAD = (
+    '<meta property="og:title" content="Build — Set the work in motion.">'
+    '<meta property="og:description" content="Your coding agents. Your hardware. Any screen.">'
+    '<meta property="og:type" content="website">'
+    '<meta property="og:image" content="https://getbuild.ing/landing/assets/social-preview.png">'
+    '<meta property="og:image:width" content="1200">'
+    '<meta property="og:image:height" content="630">'
+    '<meta name="twitter:card" content="summary_large_image">'
+)
 #: What a query string that is not even shaped like a token is answered with.
 MALFORMED_TOKEN_DETAIL = "malformed download token"
 
@@ -36,20 +47,49 @@ LANDING_MEDIA_TYPES = {
     ".css": "text/css",
     ".svg": "image/svg+xml",
     ".png": "image/png",
+    ".webp": "image/webp",
+    ".glb": "model/gltf-binary",
+    ".json": "application/json",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
 }
 
 
 def render_landing_page() -> str:
-    waitlist = read_landing_file(WAITLIST_FRAGMENT_NAME).rstrip("\n")
+    practical = render_practical_content().rstrip("\n")
     return render_shell(
         title=LANDING_TITLE,
         description=LANDING_DESCRIPTION,
         body=fill_slots(
-            read_landing_file(LANDING_PAGE_NAME), {WAITLIST_SLOT_NAME: waitlist}
+            read_landing_file(LANDING_PAGE_NAME),
+            {PRACTICAL_SLOT_NAME: practical},
         ),
         scripts=LANDING_SCRIPTS,
+        head=LANDING_HEAD + SOCIAL_HEAD,
+        footer="",
+        body_class="cinematic-page",
+    )
+
+
+def render_docs_page() -> str:
+    return render_shell(
+        title="Docs — Build",
+        description="Set up a Build host and check the current coding harness integrations.",
+        body=render_docs_body(),
+        scripts="",
+        head=LANDING_HEAD,
+        body_class="cinematic-page public-doc-page",
+    )
+
+
+def render_privacy_page() -> str:
+    return render_shell(
+        title="Architecture and privacy — Build",
+        description="What Build stores, where agents run, and how browsers connect to hosts.",
+        body=render_privacy_body(),
+        scripts="",
+        head=LANDING_HEAD,
+        body_class="cinematic-page public-doc-page",
     )
 
 
@@ -62,6 +102,16 @@ class RootController(Controller):
     @get("/")
     async def root(self) -> Response:
         html = await asyncio.to_thread(render_landing_page)
+        return Response(html, media_type=MediaType.HTML)
+
+    @get(DOCS_PATH)
+    async def docs(self) -> Response:
+        html = await asyncio.to_thread(render_docs_page)
+        return Response(html, media_type=MediaType.HTML)
+
+    @get(PRIVACY_PATH)
+    async def privacy(self) -> Response:
+        html = await asyncio.to_thread(render_privacy_page)
         return Response(html, media_type=MediaType.HTML)
 
     @get(releases.INSTALL_SCRIPT_PATH)

@@ -5,10 +5,11 @@
 // Reads `archived.list` from every machine that can answer — the archive is the
 // user's, not a project's and not a device's — and holds the merged list newest
 // first. Opening a row states its record and offers nothing to do with it: an
-// archived record is history.
+// archived record is history, and a finished workspace has had its files and
+// its live record removed, so the record is all there is to open.
 
 import { $ } from "../dom.js";
-import { App, go } from "../app.js";
+import { App } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
 import { liveContexts } from "../core/deviceContexts.js";
 import { deviceKey } from "../core/deviceKey.js";
@@ -54,11 +55,6 @@ export function renderArchive(options = {}) {
     host.innerHTML = archiveListHtml(rows, { openKey, deviceNames });
     host.querySelectorAll(".archive-row").forEach((card) => {
       const toggle = () => {
-        const row = rows.find((candidate) => candidate.key === card.dataset.key);
-        if (row?.kind === "workspace" && row.workspaceId && row.projectId) {
-          go({ name: "workspace", deviceId: row.deviceId, projectId: row.projectId, workspaceId: row.workspaceId, tab: "changes" });
-          return;
-        }
         openKey = openKey === card.dataset.key ? null : card.dataset.key;
         draw();
       };

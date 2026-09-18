@@ -6,10 +6,13 @@
 // to go on carrying, which is the one thing Done is supposed to end — so this is
 // one verb with one behavior.
 //
-// It is never refused. What the deletion would cost travels with the row as
-// `finish.warnings` (uncommitted work, commits the remote does not have, commits
-// the base branch does not have), the confirmation puts those above the outline
-// of what will happen, and the user decides.
+// What the deletion would cost travels with the row as `finish.warnings`
+// (uncommitted work, commits the remote does not have, commits the base branch
+// does not have), and the confirmation puts those above the outline of what
+// will happen. They are advance notice, not a veto: the bridge is the one that
+// decides, and it refuses Done while the work is still only in the checkout
+// (planning/v2/workspaces.md, "Finish and retention"). A refusal comes back as
+// the row's error, in the bridge's own words.
 //
 // The inbox row's Done is the same verb from the list side (core/inboxView.js),
 // and says the same words (core/inbox.js branchDoneConfirm) — one wording for

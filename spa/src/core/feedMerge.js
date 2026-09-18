@@ -62,7 +62,16 @@ export function stampWorkspace(workspace, deviceId, summaries = []) {
   const summary = summaries.find((candidate) => candidate.workspace_id === id);
   return {
     ...workspace,
-    ...(summary ? { work_summary: summary.work_summary } : null),
+    // Done is the board's to decide — only it sees every repository in the
+    // workspace and the agents standing in it at once — so a workspace read
+    // without the board carries no verdict and offers no Done.
+    ...(summary
+      ? {
+          work_summary: summary.work_summary,
+          can_finish: summary.can_finish === true,
+          finish_blockers: summary.finish_blockers || [],
+        }
+      : null),
     id,
     deviceId,
     projectKey: deviceKey(deviceId, workspace.project_id),

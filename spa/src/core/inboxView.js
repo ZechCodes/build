@@ -625,16 +625,20 @@ async function finishEntry(entry) {
   await refreshFeed();
 }
 
-/** Archive a clean workspace in one tap. The bridge rechecks cleanliness at
- * execution time, stops every agent it owns, and preserves the checkout. */
+/** Put a finished workspace away in one tap. Done removes it: the bridge
+ * re-measures the work at execution time, stops every agent and terminal
+ * standing in it, hands its checkouts back and walks the root away. No
+ * confirmation, because the bridge does not offer Done until the work is
+ * already in a remote. */
 async function finishWorkspace(entry) {
-  if (!entry || entry.kind !== "workspace" || !entry.clean || workspacesBeingFinished.has(entry.key)) return;
+  if (!entry || entry.kind !== "workspace" || !entry.canFinish || workspacesBeingFinished.has(entry.key)) return;
   workspacesBeingFinished.add(entry.key);
   errors.delete(entry.key);
   draw();
   try {
-    await verbCall(entry)("workspace.finish", { workspace_id: entry.workspaceId, require_clean: true });
+    await verbCall(entry)("workspace.finish", { workspace_id: entry.workspaceId });
     workspaces = workspaces.filter((workspace) => workspace.workspaceKey !== entry.workspaceKey);
+    leaveFinishedWorkspace(entry);
   } catch (error) {
     errors.set(entry.key, messageOf(error));
   } finally {
@@ -642,6 +646,16 @@ async function finishWorkspace(entry) {
     draw();
   }
   await refreshFeed();
+}
+
+/** A surface standing in a workspace that is gone has nothing behind it, so
+ *  the page leaves for the project the workspace belonged to. A reader
+ *  somewhere else is left where they are. */
+function leaveFinishedWorkspace(entry) {
+  const route = App.route;
+  if (route?.name !== "workspace") return;
+  if (route.workspaceId !== entry.workspaceId || route.deviceId !== entry.deviceId) return;
+  goFromInbox(projectRoute({ id: entry.projectId, deviceId: entry.deviceId }));
 }
 
 function showRowError(key, error) {

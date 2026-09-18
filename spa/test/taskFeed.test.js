@@ -83,8 +83,13 @@ describe("the shared feed", () => {
         return {
           items: [],
           workspace_summaries: [
-            { workspace_id: "ws-1", work_summary: { pushes: 2, additions: 8, deletions: 3 } },
-            { workspace_id: "ws-2", work_summary: null },
+            {
+              workspace_id: "ws-1",
+              work_summary: { pushes: 2, additions: 8, deletions: 3 },
+              can_finish: false,
+              finish_blockers: ["unpushed"],
+            },
+            { workspace_id: "ws-2", work_summary: null, can_finish: true, finish_blockers: [] },
           ],
         };
       }),
@@ -104,6 +109,8 @@ describe("the shared feed", () => {
         projectKey: "dev-1/proj-1",
         workspaceKey: "dev-1/ws-1",
         work_summary: { pushes: 2, additions: 8, deletions: 3 },
+        can_finish: false,
+        finish_blockers: ["unpushed"],
       },
       {
         id: "ws-2",
@@ -113,6 +120,8 @@ describe("the shared feed", () => {
         projectKey: "dev-1/proj-1",
         workspaceKey: "dev-1/ws-2",
         work_summary: null,
+        can_finish: true,
+        finish_blockers: [],
       },
       {
         id: "ws-3",

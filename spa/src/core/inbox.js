@@ -86,10 +86,12 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     muted: !!activity.muted,
     dismissed: !!activity.dismissed,
     working: !!activity.working,
-    canFinish: false,
-    // Only the bridge can establish that every Git directory is clean. A
-    // missing value is unknown and must never expose the one-tap archive.
-    clean: workspace.status === "ready" && workspace.work_summary?.clean === true,
+    // Done removes the workspace, so only the bridge decides when it is
+    // offered: it is the one that can see every repository and every agent at
+    // once. A missing verdict is not a yes.
+    ready: workspace.status === "ready",
+    canFinish: workspace.status === "ready" && workspace.can_finish === true,
+    finishBlockers: workspace.finish_blockers || [],
     facts: workspaceFacts(workspace),
     route: workspaceRoute(workspace),
     // The conversation owns the inbox anchor whenever there is one: this is
@@ -659,14 +661,32 @@ function projectTagHtml(entry, ui) {
  *  machines share the name. */
 const titleProject = (entry) => (entry.deviceName ? `${entry.project} (${entry.deviceName})` : entry.project);
 
-/** A clean durable workspace can be put away directly from the row. Finishing
- * preserves its checkout and stops its agents, so it does not use the branch
- * deletion menu or confirmation. Asks the wiring whether this one is already
- * being finished, so the row painter does not have to. */
+/** How each blocker the bridge names reads to a person. The bridge decides
+ *  whether Done is available; this is only how the row says why it is not. */
+const FINISH_BLOCKER_HINTS = {
+  unpushed: "Push to remote first",
+  dirty: "Commit or discard changes first",
+  agent_working: "Agent is working",
+  unknown: "Still reading this workspace",
+};
+
+/** What stands between this workspace and Done, in one line. Empty when Done
+ *  is available, or when the row is not a workspace's. */
+export const finishBlockerHint = (blockers = []) =>
+  blockers.map((blocker) => FINISH_BLOCKER_HINTS[blocker] || FINISH_BLOCKER_HINTS.unknown).join(" · ");
+
+/** A workspace is put away from its own row. Done removes it — the files, the
+ * record and the conversation — so it is offered only once the bridge says the
+ * work is somewhere else, and until then the button is there and shut, wearing
+ * the reason. A workspace that is not ready is not a workspace to finish and
+ * shows nothing. Asks the wiring whether this one is already being finished, so
+ * the row painter does not have to. */
 function workspaceDoneHtml(entry, ui) {
-  if (entry.kind !== "workspace" || !entry.clean) return "";
+  if (entry.kind !== "workspace" || !entry.ready) return "";
   const pending = ui.finishingWorkspaces?.has(entry.key);
-  return `<button class="btn mini inbox-workspace-done" type="button" data-workspace-done="${esc(entry.key)}" aria-label="Archive workspace ${esc(entry.name)}"${pending ? " disabled" : ""}>${pending ? "Done…" : "Done"}</button>`;
+  const hint = finishBlockerHint(entry.finishBlockers);
+  const shut = pending || !entry.canFinish;
+  return `<button class="btn mini inbox-workspace-done" type="button" data-workspace-done="${esc(entry.key)}" aria-label="Finish workspace ${esc(entry.name)}" title="${esc(hint)}"${shut ? " disabled" : ""}>${pending ? "Done…" : "Done"}</button>`;
 }
 
 /** Everything the two lines leave out, on the row itself: what the work is for,

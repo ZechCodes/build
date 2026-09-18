@@ -102,12 +102,17 @@ describe("the account archive page", () => {
     expect(rows()[2].textContent).toContain("Archived");
   });
 
-  it("opens a finished workspace on the machine it was filed on", async () => {
+  // Done removes the workspace, so a finished workspace has no surface left to
+  // open: its record states what was finished, like every other archived row.
+  it("states a finished workspace's record instead of opening a workspace", async () => {
     filed["dev-1"] = [workspaceItem];
+    const hash = location.hash;
     await renderAccount();
     await flush();
     rows()[0].click();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/workspace-1/changes");
+    expect(location.hash).toBe(hash);
+    expect(rows()[0].getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelectorAll(".archive-record")).toHaveLength(1);
   });
 
   it("keeps the machines' records apart when both name a record the same", async () => {

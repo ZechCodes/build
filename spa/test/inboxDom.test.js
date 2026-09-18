@@ -220,15 +220,34 @@ describe("the workspace inbox", () => {
     });
   });
 
-  it("offers Done only for a workspace the bridge reports clean", () => {
+  // Done removes the workspace, so the bridge decides when it is offered and
+  // says why it is not. The row shows the button either way and hands the
+  // reader the bridge's reason.
+  it("offers Done when the bridge says so and says why when it does not", () => {
     feed([
-      workspace({ work_summary: { pushes: 0, additions: 0, deletions: 0, clean: true } }),
-      workspace({ id: "workspace-2", work_summary: { pushes: 0, additions: 0, deletions: 0, clean: false } }),
-      workspace({ id: "workspace-3", work_summary: { pushes: 0, additions: 0, deletions: 0 } }),
-      workspace({ id: "workspace-4", status: "provisioning", work_summary: { pushes: 0, additions: 0, deletions: 0, clean: true } }),
+      workspace({ can_finish: true, finish_blockers: [] }),
+      workspace({ id: "workspace-2", can_finish: false, finish_blockers: ["unpushed"] }),
+      workspace({ id: "workspace-3", can_finish: false, finish_blockers: ["dirty"] }),
+      workspace({ id: "workspace-4", can_finish: false, finish_blockers: ["agent_working"] }),
+      workspace({ id: "workspace-5", can_finish: false, finish_blockers: ["dirty", "unpushed"] }),
+      workspace({ id: "workspace-6", status: "provisioning", can_finish: false, finish_blockers: [] }),
     ]);
-    expect(rows().map((row) => Boolean(row.querySelector("[data-workspace-done]")))).toEqual([true, false, false, false]);
-    expect(rows()[0].querySelector("[data-workspace-done]").getAttribute("aria-label")).toBe("Archive workspace Checkout");
+    const done = () => rows().map((row) => row.querySelector("[data-workspace-done]"));
+    expect(done().map(Boolean)).toEqual([true, true, true, true, true, false]);
+    expect(done().map((button) => button && button.disabled)).toEqual([false, true, true, true, true, null]);
+    expect(done().slice(0, 5).map((button) => button.title)).toEqual([
+      "",
+      "Push to remote first",
+      "Commit or discard changes first",
+      "Agent is working",
+      "Commit or discard changes first · Push to remote first",
+    ]);
+    expect(done()[0].getAttribute("aria-label")).toBe("Finish workspace Checkout");
+  });
+
+  it("shuts Done on a workspace whose bridge sends no verdict at all", () => {
+    feed([workspace({ work_summary: { pushes: 0, additions: 0, deletions: 0, clean: true } })]);
+    expect(rows()[0].querySelector("[data-workspace-done]").disabled).toBe(true);
   });
 
   it("marks the workspace named by the route", () => {
@@ -248,17 +267,17 @@ describe("the workspace inbox", () => {
 });
 
 describe("a workspace's Done", () => {
-  const clean = { pushes: 0, additions: 0, deletions: 0, clean: true };
+  const finishable = { can_finish: true, finish_blockers: [] };
 
   it("finishes on the machine the row is from, and shuts while it is pending", async () => {
     let resolveFinish;
     workshopCall.mockImplementation((method) =>
       method === "workspace.finish" ? new Promise((done) => { resolveFinish = done; }) : Promise.resolve({}),
     );
-    feed([workspace({ work_summary: clean })]);
+    feed([workspace(finishable)]);
     rows()[0].querySelector("[data-workspace-done]").click();
     expect(navigate).not.toHaveBeenCalled();
-    expect(workshopCall).toHaveBeenCalledWith("workspace.finish", { workspace_id: "workspace-1", require_clean: true });
+    expect(workshopCall).toHaveBeenCalledWith("workspace.finish", { workspace_id: "workspace-1" });
     expect(laptopCall).not.toHaveBeenCalled();
     expect(rows()[0].querySelector("[data-workspace-done]").disabled).toBe(true);
     rows()[0].querySelector("[data-workspace-done]").click();
@@ -267,9 +286,9 @@ describe("a workspace's Done", () => {
     await vi.waitFor(() => expect(rows()).toHaveLength(0));
   });
 
-  // Done on the workspace you are standing in leaves you where you are: the
-  // row goes, the surface does not move.
-  it("finishes an already-open clean workspace without navigating", () => {
+  // Done removes the workspace, so standing in one when it goes leaves the page
+  // on nothing. The project it belonged to is where the reader lands.
+  it("leaves the workspace it just removed for the project page", async () => {
     App.route = {
       name: "workspace",
       deviceId: "dev-1",
@@ -278,10 +297,20 @@ describe("a workspace's Done", () => {
       sourceId: "source-api",
       tab: "changes",
     };
-    feed([workspace({ work_summary: clean })]);
+    feed([workspace(finishable)]);
     rows()[0].querySelector("[data-workspace-done]").click();
+    await vi.waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({ name: "project", deviceId: "dev-1", projectId: "project-1" }),
+    );
+    expect(workshopCall).toHaveBeenCalledWith("workspace.finish", { workspace_id: "workspace-1" });
+  });
+
+  it("stays where it is when the workspace it finished is not the open one", async () => {
+    App.route = { name: "inbox" };
+    feed([workspace(finishable)]);
+    rows()[0].querySelector("[data-workspace-done]").click();
+    await vi.waitFor(() => expect(rows()).toHaveLength(0));
     expect(navigate).not.toHaveBeenCalled();
-    expect(workshopCall).toHaveBeenCalledWith("workspace.finish", { workspace_id: "workspace-1", require_clean: true });
   });
 
   it("restores the row and shows the bridge's words when finishing fails", async () => {
@@ -289,7 +318,7 @@ describe("a workspace's Done", () => {
       if (method === "workspace.finish") throw new Error("Workspace has local changes");
       return {};
     });
-    feed([workspace({ work_summary: clean })]);
+    feed([workspace(finishable)]);
     rows()[0].querySelector("[data-workspace-done]").click();
     await vi.waitFor(() => expect(rows()[0].querySelector("[data-done-error]").hidden).toBe(false));
     expect(rows()[0].querySelector("[data-done-error]").textContent).toBe("Workspace has local changes");
@@ -398,11 +427,11 @@ describe("an account with more than one device", () => {
   /** The same two machines, with a workspace on each the bridge calls clean —
    *  so each row carries the one verb that would ask its own machine. */
   const twoDevicesWithDone = () => {
-    const clean = { pushes: 0, additions: 0, deletions: 0, clean: true };
+    const finishable = { can_finish: true, finish_blockers: [] };
     feed(
       [
-        workspace({ work_summary: clean }),
-        workspace({ id: "workspace-2", deviceId: "dev-2", name: "Refunds", work_summary: clean }),
+        workspace(finishable),
+        workspace({ id: "workspace-2", deviceId: "dev-2", name: "Refunds", ...finishable }),
       ],
       projectsOnBoth(),
     );

@@ -40,12 +40,13 @@ import {
 import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
 import { canAnswer, contextFor } from "./deviceContexts.js";
 import { filterByDevice } from "./deviceFilter.js";
-import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
+import { deviceKey, routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { stampWorkspace } from "./feedMerge.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
 import { workspaceRoute } from "./projectModel.js";
-import { directoryTab, workspaceStatusText } from "./workspaceModel.js";
+import { directoryTab, standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
+import { revealInbox } from "./inboxShell.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
@@ -131,7 +132,12 @@ const workspaceAnswer = (answer, deviceId) => stampWorkspace(answer?.workspace |
 
 async function workspaceRows(context, projectId, selectedWorkspaceId) {
   const listed = await context.rpc("workspace.list", { project_id: projectId });
-  const rows = (listed?.workspaces || []).map((workspace) => stampWorkspace(workspace, context.deviceId));
+  // The project's own checkout is never a place to go (core/workspaceModel.js),
+  // whatever an older bridge on that machine still lists.
+  const project = projectFor(deviceKey(context.deviceId, projectId));
+  const rows = (listed?.workspaces || [])
+    .map((workspace) => stampWorkspace(workspace, context.deviceId))
+    .filter((workspace) => !standsOnProjectCheckout(workspace, project));
   if (!selectedWorkspaceId) return rows;
   const selected = rows.find((workspace) => workspace.id === selectedWorkspaceId);
   if (Array.isArray(selected?.directories)) return rows;
@@ -259,9 +265,26 @@ function paint({ entering = false } = {}) {
     });
     const settings = host.querySelector("[data-workspace-settings]");
     if (settings) settings.onclick = () => openStandingWorkspaceSettings();
+    const back = host.querySelector("[data-project-inbox]");
+    if (back) back.onclick = () => goBackToProject();
   }
   paintVerb();
   if (open) paintMenu();
+}
+
+/** Out of the workspace, back to the project it was cut from: the rail standing
+ *  in that project, on the machine the workspace is on, with its workspaces
+ *  listed. A rail that is away is shown, or the press would only blank the view. */
+function goBackToProject() {
+  const { deviceId, projectId } = App.route;
+  const navigation = go({ name: "inbox", ...(deviceId ? { deviceId } : null), projectId });
+  // The workspace's view may veto leaving (unsaved work); the rail is shown
+  // only once the move is actually made.
+  const reveal = (accepted) => {
+    if (accepted) revealInbox();
+    return accepted;
+  };
+  return navigation instanceof Promise ? navigation.then(reveal) : reveal(navigation);
 }
 
 function openWorkspaceDirectory(sourceId) {

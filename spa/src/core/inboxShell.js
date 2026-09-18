@@ -217,6 +217,14 @@ function setInboxPopover(on, { restoreFocus = false } = {}) {
   if (restoreFocus) $("#inbox-open")?.focus();
 }
 
+/** Show the rail where it is away — the same popover the head toggle opens —
+ *  so a navigation that lands ON the rail (the toolbar's back chevron) shows
+ *  the reader where they landed. A docked rail is already showing. */
+export function revealInbox() {
+  if (!document.body.classList.contains("inbox-collapsed")) return;
+  setInboxPopover(true);
+}
+
 function dismissInbox({ restoreFocus = false } = {}) {
   const pinnedMobile = railOverlays() && !document.body.classList.contains("inbox-collapsed");
   if (pinnedMobile) setInboxCollapsed(true, { persist: false, reveal: false });

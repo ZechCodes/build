@@ -55,6 +55,16 @@ const workspaceFailure = (workspace) =>
 export const workspaceStatusText = (workspace) =>
   (workspace?.status === "failed" ? workspaceFailedText(workspaceFailure(workspace)) : workspace?.status) || "";
 
+/** Whether a workspace stands on the project's own checkout — the repository
+ * the project was registered at, which every workspace is cut FROM. A template
+ * is not a place to work, so nothing lists it: the bridge stopped answering it
+ * in `workspace.list`, and a machine still running a bridge that does (as
+ * `legacy-<project>`) has it kept out here, by the one fact that names it. The
+ * project is looked up by the caller, since the two halves of the app hold
+ * their projects differently. */
+export const standsOnProjectCheckout = (workspace, project) =>
+  !!workspace?.root && !!project?.path && workspace.root === project.path;
+
 export function workspaceScope(workspaceId, sourceId) {
   return workspaceId && sourceId ? { workspace_id: workspaceId, source_id: sourceId } : null;
 }

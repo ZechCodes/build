@@ -657,6 +657,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 /* The pack ships 24x24, which is twice this row's font — size it here, once. */
 .tb-settings { flex:none; display:flex; align-items:center; padding:4px; border-radius:6px; }
 .tb-settings svg { width:16px; height:16px; display:block; }
+/* The way back out of a workspace, at the bar's left edge before the switcher:
+   the same quiet icon button as the cog opposite it. */
+.tb-back { flex:none; display:flex; align-items:center; padding:4px; border-radius:6px; margin-right:2px; }
+.tb-back svg { width:16px; height:16px; display:block; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized
    down from the surface's old primary-button treatment: this is a fact in a

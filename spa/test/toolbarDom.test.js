@@ -47,7 +47,7 @@ let feed = {
     },
   ],
   projects: [
-    { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb" },
+    { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb", path: "/repos/relaydb" },
     { id: "p2", deviceId: "dev-1", projectKey: "dev-1/p2", name: "mascot" },
   ],
 };
@@ -341,6 +341,53 @@ describe("the workspace toolbar", () => {
 
 // The cog at the far right, opposite the switcher at the far left. It settles
 // the workspace you are STANDING in, so a route that stands in none has none.
+// The project's own checkout is the template every workspace is cut from, not
+// a place to work. A machine running a bridge that still lists it (older ones
+// did, as `legacy-<project>`) gets it kept out of the switcher here.
+describe("the project's own checkout", () => {
+  it("is never a row in the switcher, whatever the machine lists", async () => {
+    const own = { id: "legacy-p1", workspace_id: "legacy-p1", project_id: "p1", name: "relaydb", root: "/repos/relaydb", directories: [] };
+    workshopHolds({ p1: [own, payments] });
+    await standOnWorkspace();
+    openJump("workspace");
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+  });
+});
+
+// The chevron at the bar's left edge: the way back out of a workspace to the
+// project it was cut from — which is the rail standing in that project, where
+// its workspaces are listed.
+describe("the back chevron", () => {
+  const back = () => bar().querySelector("[data-project-inbox]");
+
+  it("is absent on a legacy branch route, an issue and the inbox", () => {
+    expect(back()).toBeNull();
+    App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
+    toolbarRouteChanged();
+    expect(back()).toBeNull();
+    App.route = { name: "inbox" };
+    toolbarRouteChanged();
+    expect(back()).toBeNull();
+  });
+
+  it("stands left of the workspace switcher, named for the project it goes back to", async () => {
+    await standOnWorkspace();
+    const button = back();
+    expect(button).not.toBeNull();
+    expect(button.getAttribute("aria-label")).toBe("Back to relaydb");
+    expect(button.nextElementSibling).toBe(bar().querySelector('[data-select="workspace"]'));
+  });
+
+  it("takes you to the project's inbox on the machine the workspace is on", async () => {
+    await standOnWorkspace();
+    back().click();
+    // Leaving a workspace asks its view whether it may (App.routeLeaveGuard),
+    // so the navigation settles a tick later.
+    await flush();
+    expect(location.hash).toBe("#/device/dev-1/project/p1/inbox");
+  });
+});
+
 describe("the workspace settings cog", () => {
   const cog = () => bar().querySelector("[data-workspace-settings]");
 
@@ -532,7 +579,7 @@ describe("creating from the menu", () => {
     feed = {
       items: [],
       projects: [
-        { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb" },
+        { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb", path: "/repos/relaydb" },
         { id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "their relaydb" },
       ],
     };

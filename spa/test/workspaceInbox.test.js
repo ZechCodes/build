@@ -144,6 +144,23 @@ describe("workspace inbox rows", () => {
     expect(activeEntryKey(entry.route, [entry])).toBe(`workspace:${workspaceKey(DEVICE, "workspace-1")}`);
   });
 
+  // The project's own checkout is the template every workspace is cut from,
+  // not a place to work; a bridge that still lists it (older ones did) gets it
+  // kept out of the rail here, by the one fact that names it: its root is the
+  // project's own path.
+  it("never lists a project's own checkout, whatever the machine answered", () => {
+    const view = liveFeedSnapshot(
+      { items: [] },
+      { projects: [{ id: "project-1", name: "Payments", path: "/repos/payments" }] },
+      { workspaces: [
+        { id: "legacy-project-1", project_id: "project-1", name: "Payments", root: "/repos/payments" },
+        { id: "workspace-1", project_id: "project-1", name: "Real work", root: "/w/project-1/real-work" },
+      ] },
+      DEVICE,
+    );
+    expect(workspaceEntries(view.workspaces, view.projects, view.items).map((row) => row.workspaceId)).toEqual(["workspace-1"]);
+  });
+
   it("does not turn an unknown workspace work summary into zero work", () => {
     const [entry] = entriesOf([{ id: "workspace-1", project_id: "project-1", work_summary: null }]);
     expect(entry.facts).toBe("Work summary unavailable");

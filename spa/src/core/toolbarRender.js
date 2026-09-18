@@ -6,7 +6,7 @@
 // says what the bar looks like for one identity.
 
 import { esc } from "./text.js";
-import { ICON_SETTINGS } from "./icons.js";
+import { ICON_CHEVRON_LEFT, ICON_SETTINGS } from "./icons.js";
 
 /** One of the bar's popup triggers. The workspace switcher, the project
  *  selector and the collapsed directory menu are the same control wearing a
@@ -24,11 +24,20 @@ const legacyIdentityHtml = (mono) => ({ project, label }) =>
   `${projectSelectorHtml(project)}
      <span class="tb-sep">/</span><span class="tb-legacy-item"><span class="tb-name${mono ? " mono" : ""}">${esc(label)}</span></span>`;
 
+/** The way back out of a workspace: to the project it was cut from, which is
+ *  the rail standing in that project with its workspaces listed. Named for the
+ *  project, so a reader hearing it knows where it goes. */
+const backToProjectHtml = (project) => {
+  const label = project ? `Back to ${project}` : "Back to the project";
+  return `<button class="iconbtn tb-back" data-project-inbox type="button" aria-label="${esc(label)}" title="${esc(label)}">${ICON_CHEVRON_LEFT}</button>`;
+};
+
 /** What the bar stands you in, one writer per kind of route. A workspace names
- *  itself through its own switcher; a route that is no work item at all is the
- *  project selector and nothing else. */
+ *  itself through its own switcher, with the way back to its project before it;
+ *  a route that is no work item at all is the project selector and nothing
+ *  else. */
 const IDENTITIES = {
-  workspace: ({ label }) => selectorHtml({ select: "workspace", name: label }),
+  workspace: ({ project, label }) => `${backToProjectHtml(project)}${selectorHtml({ select: "workspace", name: label })}`,
   branch: legacyIdentityHtml(true),
   issue: legacyIdentityHtml(false),
 };

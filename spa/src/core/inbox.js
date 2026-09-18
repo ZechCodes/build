@@ -31,7 +31,7 @@ import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
-import { workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
+import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -108,10 +108,15 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
  *  account-wide names the feed stamped (core/deviceKey.js): two machines each
  *  hold a `proj-1`, and a run id on one says nothing about the other. */
 export function workspaceEntries(workspaces = [], projects = [], items = []) {
+  const projectsByKey = new Map(projects.map((project) => [project.projectKey, project]));
   const projectNames = new Map(projects.map((project) => [project.projectKey, project.name]));
   const conversations = new Map(items.filter((item) => item.kind === "branch" && entityIdOf(item))
     .map((item) => [JSON.stringify([item.projectKey, entityIdOf(item)]), item]));
-  return workspaces.filter((workspace) => workspace.status !== "finished").map((workspace) => {
+  // Nothing finished is a row, and neither is the project's own checkout
+  // (core/workspaceModel.js): it is the template the rows were cut from.
+  const listed = (workspace) =>
+    workspace.status !== "finished" && !standsOnProjectCheckout(workspace, projectsByKey.get(workspace.projectKey));
+  return workspaces.filter(listed).map((workspace) => {
     const owner = workspace.entity_id || workspace.run_id || workspace.id;
     const conversation = conversations.get(JSON.stringify([workspace.projectKey, owner])) || workspaceRun(workspace, items);
     return toWorkspaceEntry(workspace, projectNames, conversation);

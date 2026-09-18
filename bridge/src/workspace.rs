@@ -89,6 +89,17 @@ pub struct WorkspaceSource {
     pub base_branch: String,
 }
 
+/// What materializing one directory settled. `source_path` and `base_branch`
+/// are written back only by a directory that learned them while it was being
+/// made — a clone knows neither until the remote has answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaterializedDirectory {
+    pub branch: Option<String>,
+    pub isolation: Isolation,
+    pub source_path: Option<PathBuf>,
+    pub base_branch: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RepositoryFinish {
     pub directory_id: String,
@@ -634,6 +645,145 @@ impl WorkspaceRegistry {
         } else {
             WorkspaceStatus::Failed
         };
+        persist(workspace)?;
+        Ok(workspace.clone())
+    }
+
+    /// Record one more directory on a workspace, pending what makes it.
+    ///
+    /// The record is written before anything is on disk, exactly as creation
+    /// writes the whole snapshot first: the manifest is what a restart reads,
+    /// so a directory that is half-made must already be named in it.
+    ///
+    /// An adopted checkout has no manifest to write and was never Build's to
+    /// lay out, so it has no directories to gain.
+    pub fn begin_directory(
+        &mut self,
+        workspace_id: &str,
+        source: &WorkspaceSource,
+    ) -> Result<WorkspaceDirectory, String> {
+        validate_segment("source mount", &source.mount)?;
+        let workspace = self
+            .workspaces
+            .get_mut(workspace_id)
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        if !workspace.managed {
+            return Err(
+                "workspace.add_directory: adopted checkouts are not Build's to change".to_string(),
+            );
+        }
+        if workspace
+            .directories
+            .iter()
+            .any(|directory| directory.source_id == source.id)
+        {
+            return Err(format!(
+                "source {} is already a directory in workspace {workspace_id}",
+                source.id
+            ));
+        }
+        let path = workspace.root.join(&source.mount);
+        if workspace
+            .directories
+            .iter()
+            .any(|directory| directory.path == path)
+        {
+            return Err(format!("duplicate source mount: {:?}", source.mount));
+        }
+        let directory = WorkspaceDirectory {
+            id: format!("{workspace_id}:{}", source.id),
+            source_id: source.id.clone(),
+            name: source.name.clone(),
+            path,
+            is_git: source.is_git,
+            branch: None,
+            effective_isolation: None,
+            finished_head: None,
+            status: DirectoryStatus::Pending,
+            source_path: source.path.clone(),
+            base_branch: source.base_branch.clone(),
+            error: None,
+        };
+        workspace.directories.push(directory.clone());
+        if let Err(error) = persist(workspace) {
+            workspace.directories.pop();
+            return Err(error);
+        }
+        Ok(directory)
+    }
+
+    /// Make one pending directory and write down what it became.
+    ///
+    /// An add that fails leaves no half-directory behind: the record goes back
+    /// out and the error is the caller's. That is the difference from
+    /// [`Self::provision`], which is retrying a workspace whose directories are
+    /// all promised and must stay promised.
+    pub fn materialize_directory<F>(
+        &mut self,
+        workspace_id: &str,
+        directory_id: &str,
+        materialize: F,
+    ) -> Result<Workspace, String>
+    where
+        F: FnOnce(&WorkspaceDirectory) -> Result<MaterializedDirectory, String>,
+    {
+        let workspace = self
+            .workspaces
+            .get_mut(workspace_id)
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        let pending = workspace
+            .directories
+            .iter()
+            .find(|directory| directory.id == directory_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown directory_id: {directory_id}"))?;
+        let made = match materialize(&pending) {
+            Ok(made) => made,
+            Err(error) => {
+                workspace
+                    .directories
+                    .retain(|directory| directory.id != directory_id);
+                let _ = persist(workspace);
+                return Err(error);
+            }
+        };
+        let directory = workspace
+            .directories
+            .iter_mut()
+            .find(|directory| directory.id == directory_id)
+            .expect("the directory was just read");
+        directory.branch = made.branch;
+        directory.effective_isolation = Some(made.isolation);
+        if let Some(path) = made.source_path {
+            directory.source_path = path;
+        }
+        if let Some(base_branch) = made.base_branch {
+            directory.base_branch = base_branch;
+        }
+        directory.status = DirectoryStatus::Ready;
+        directory.error = None;
+        persist(workspace)?;
+        Ok(workspace.clone())
+    }
+
+    /// Drop one directory from a workspace's snapshot, its files having been
+    /// removed and its checkout handed back.
+    pub fn forget_directory(
+        &mut self,
+        workspace_id: &str,
+        directory_id: &str,
+    ) -> Result<Workspace, String> {
+        let workspace = self
+            .workspaces
+            .get_mut(workspace_id)
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        let before = workspace.directories.len();
+        workspace
+            .directories
+            .retain(|directory| directory.id != directory_id);
+        if workspace.directories.len() == before {
+            return Err(format!("unknown directory_id: {directory_id}"));
+        }
         persist(workspace)?;
         Ok(workspace.clone())
     }

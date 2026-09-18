@@ -134,6 +134,8 @@ const INTERNAL_REFUSALS: &[(&str, usize)] = &[
 const FIXTURE_PROBE_REACHES_OUTSIDE: &[&str] = &[
     "fs.mkdir",
     "project.add",
+    // Its fixture names a folder under `~` to open as a source.
+    "project.add_source",
     "project.clone",
     "project.create",
     // Its confirmed fixture would remove the project used by later probes.

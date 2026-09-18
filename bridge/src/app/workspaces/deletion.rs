@@ -237,7 +237,7 @@ impl AppState {
     /// Close every writer at this root — agents first (which also discards
     /// their queued turns), then the terminal tabs — and hand back the reaps
     /// to wait on off the mutex.
-    fn retire_everything_at(&mut self, root: &Path) -> Vec<crate::reaper::Retirement> {
+    pub(super) fn retire_everything_at(&mut self, root: &Path) -> Vec<crate::reaper::Retirement> {
         let mut retirements = self.retire_workspace_agents(root);
         let keys: Vec<_> = self
             .session_registry

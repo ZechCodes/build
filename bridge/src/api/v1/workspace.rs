@@ -97,6 +97,18 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             WorkspaceFinishResult
         ),
         v1_method!(
+            "workspace.add_directory",
+            workspace_add_directory,
+            WorkspaceAddDirectoryParams,
+            WorkspaceDetail
+        ),
+        v1_method!(
+            "workspace.remove_directory",
+            workspace_remove_directory,
+            WorkspaceRemoveDirectoryParams,
+            WorkspaceDetail
+        ),
+        v1_method!(
             "workspace.rename",
             workspace_rename,
             WorkspaceRenameParams,
@@ -126,6 +138,38 @@ pub struct WorkspaceListParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceIdParams {
     pub workspace_id: String,
+}
+
+/// One more directory in a workspace that is already standing: a project
+/// source it was not cut with, a path on this device, or a remote to clone —
+/// exactly one of the three.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceAddDirectoryParams {
+    pub workspace_id: String,
+    /// A source of the workspace's own project. Mutually exclusive with the
+    /// other two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Absolute or `~`-relative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// A clone url. The clone lands in the workspace and is its own
+    /// repository; nothing about the project changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// The branch a Git directory is cut from; the source's own when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+}
+
+/// One directory leaves a workspace. `directory_id` is the directory's own id
+/// or the project source's, the way every directory-scoped verb reads it.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceRemoveDirectoryParams {
+    pub workspace_id: String,
+    pub directory_id: String,
 }
 
 /// The workspace's new human-facing name. Trimmed and refused empty by the
@@ -346,7 +390,12 @@ pub struct WorkspaceInitGitResult {
 const BUSY: [&str; 1] = ["another filesystem operation is still running"];
 
 /// The request was legible and the workspace's own state said no.
-const CONFLICT: [&str; 12] = [
+const CONFLICT: [&str; 15] = [
+    // Adding and removing a directory: what the workspace is, and what is
+    // standing in the way of the folder going.
+    "adopted checkouts are not Build's to change",
+    "is already a directory in workspace",
+    "Cannot remove a workspace directory",
     // `workspace.ensure_conversation: workspace is finished`, and its
     // provisioning and failed spellings.
     "workspace is ",
@@ -368,7 +417,9 @@ const CONFLICT: [&str; 12] = [
 
 /// A word in the request is not one this bridge knows. `unknown <thing>`
 /// otherwise reads as a missing entity, which these are not.
-const INVALID: [&str; 4] = [
+const INVALID: [&str; 6] = [
+    "name a source_id, a path or a remote",
+    "duplicate source mount:",
     "unknown isolation:",
     "unknown git init target:",
     "unknown agent provider:",
@@ -463,6 +514,31 @@ fn workspace_finish(
     .map_err(refine)
 }
 
+/// The checkout, the copy or the clone runs off the app mutex, so both of
+/// these answer the placeholder and the drain publishes the workspace detail
+/// `workspace.get` answers — one read repaints everything naming a directory.
+fn workspace_add_directory(
+    app: &mut AppState,
+    params: WorkspaceAddDirectoryParams,
+) -> Result<Answer<WorkspaceDetail>, ApiError> {
+    answer(
+        app.workspace_add_directory(&params.wire())
+            .map(deferral_placeholder),
+    )
+    .map_err(refine)
+}
+
+fn workspace_remove_directory(
+    app: &mut AppState,
+    params: WorkspaceRemoveDirectoryParams,
+) -> Result<Answer<WorkspaceDetail>, ApiError> {
+    answer(
+        app.workspace_remove_directory(&params.wire())
+            .map(deferral_placeholder),
+    )
+    .map_err(refine)
+}
+
 fn workspace_rename(
     app: &mut AppState,
     params: WorkspaceRenameParams,
@@ -529,6 +605,16 @@ mod tests {
     #[test]
     fn the_workspace_finish_fixture_round_trips() {
         round_trips("workspace.finish");
+    }
+
+    #[test]
+    fn the_workspace_add_directory_fixture_round_trips() {
+        round_trips("workspace.add_directory");
+    }
+
+    #[test]
+    fn the_workspace_remove_directory_fixture_round_trips() {
+        round_trips("workspace.remove_directory");
     }
 
     #[test]

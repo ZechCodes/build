@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 mod deletion;
+mod directories;
 mod git_initialization;
 
 struct WorkspaceCreateWork {
@@ -101,6 +102,40 @@ impl DeferredGitWork for WorkspaceCreateWork {
     }
 }
 
+/// Make one directory from one source: a checkout of the repository on a
+/// branch of the workspace's own, cut from the source's base branch, or a copy
+/// of the folder. The one piece of per-source work workspace creation does, so
+/// a directory added to a live workspace lands the way the ones cut with it
+/// did. The isolation answered is what the volume actually gave, which is not
+/// always what was asked for.
+pub(super) fn materialize_source(
+    source: &WorkspaceSource,
+    destination: &Path,
+    workspace_name: &str,
+    isolation: Isolation,
+    rift_root: &Path,
+) -> Result<(Option<String>, Isolation), String> {
+    if source.is_git {
+        let manager =
+            WorktreeManager::new(&source.path, destination.parent().unwrap_or(destination))
+                .with_rift_registry_root(rift_root);
+        let effective = if manager.availability().lock_reason(isolation).is_some() {
+            Isolation::Worktree
+        } else {
+            isolation
+        };
+        let checkout = manager
+            .create_workspace_checkout(workspace_name, &source.base_branch, destination, effective)
+            .map_err(|error| error.to_string())?;
+        Ok((Some(checkout.worktree.recorded_branch), effective))
+    } else {
+        let resolved =
+            copy_directory_with_rift_root(&source.path, destination, isolation, rift_root)
+                .map_err(|error| error.to_string())?;
+        Ok((None, resolved.isolation))
+    }
+}
+
 impl WorkspaceCreateWork {
     fn materialize(
         &self,
@@ -108,34 +143,13 @@ impl WorkspaceCreateWork {
         destination: &Path,
         isolation: Isolation,
     ) -> Result<(Option<String>, Isolation), String> {
-        if source.is_git {
-            let manager =
-                WorktreeManager::new(&source.path, destination.parent().unwrap_or(destination))
-                    .with_rift_registry_root(&self.rift_root);
-            let effective = if manager.availability().lock_reason(isolation).is_some() {
-                Isolation::Worktree
-            } else {
-                isolation
-            };
-            let checkout = manager
-                .create_workspace_checkout(
-                    &self.workspace_name,
-                    &source.base_branch,
-                    destination,
-                    effective,
-                )
-                .map_err(|error| error.to_string())?;
-            Ok((Some(checkout.worktree.recorded_branch), effective))
-        } else {
-            let resolved = copy_directory_with_rift_root(
-                &source.path,
-                destination,
-                isolation,
-                &self.rift_root,
-            )
-            .map_err(|error| error.to_string())?;
-            Ok((None, resolved.isolation))
-        }
+        materialize_source(
+            source,
+            destination,
+            &self.workspace_name,
+            isolation,
+            &self.rift_root,
+        )
     }
 
     fn rollback(&self, workspace: &Workspace) -> Result<(), String> {

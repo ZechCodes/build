@@ -216,7 +216,7 @@ describe("the composer's model menu", () => {
   });
 
   it("says on its button what the next turn will run on", () => {
-    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE)).toBe("Select model");
+    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE)).toBe("Harness default");
     expect(modelMenuLabel(catalog, "claude", { model: "opus", effort: "" })).toBe("Opus");
     expect(modelMenuLabel(catalog, "claude", { model: "opus", effort: "high" })).toBe("Opus · high");
     // A model the catalog does not carry — an entity dispatched on a newer
@@ -229,8 +229,8 @@ describe("the composer's model menu", () => {
     expect(modelMenuLabel(catalog, "claude", { model: "opus", effort: "" }, "opus-20260214")).toBe("Opus");
   });
 
-  it("asks for a model only when an agent has never run and chose nothing", () => {
-    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE, "")).toBe("Select model");
+  it("says the harness decides only when an agent has never run and chose nothing", () => {
+    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE, "")).toBe("Harness default");
     expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE, "haiku")).toBe("Haiku");
     expect(modelMenuLabel(catalog, "claude", { model: "haiku", effort: "" }, "")).toBe("Haiku");
   });

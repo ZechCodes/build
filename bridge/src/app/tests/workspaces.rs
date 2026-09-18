@@ -1502,3 +1502,170 @@ fn project_delete_preserves_another_projects_source_inside_its_workspace() {
     assert!(state.project(&project_id).is_some());
     assert!(state.project(&other_id).is_some());
 }
+
+// ---- renaming and deleting one workspace -----------------------------------
+
+/// A pretty name is a label and nothing else: the directory the checkouts live
+/// in and the branch they were cut on are what every terminal and agent is
+/// already holding, so renaming must not move either — and must still be there
+/// after the registry is read back off disk.
+#[test]
+fn workspace_rename_moves_the_label_and_survives_a_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "source");
+    let config = tmp.path().join("config.json");
+    let worktrees = tmp.path().join("worktrees");
+    let (workspace_id, root, branch) = {
+        let mut state = AppState::new_unrooted(&worktrees, "main", true, "/tmp/test-mcp.sock")
+            .with_config(&config)
+            .unwrap();
+        let project_id = state.add_project(repo.clone(), "main".into());
+        let workspace = create_workspace(&mut state, &project_id, "first-name");
+        let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+        let root = PathBuf::from(workspace["root"].as_str().unwrap());
+        let branch = workspace["directories"][0]["branch"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let renamed = state.handle(req(
+            "workspace.rename",
+            json!({"workspace_id": workspace_id, "name": "  second name  "}),
+        ));
+        assert_eq!(renamed["ok"], true, "{renamed:?}");
+        assert_eq!(renamed["result"]["name"], "second name", "trimmed");
+        assert_eq!(renamed["result"]["root"], root.display().to_string());
+        assert_eq!(renamed["result"]["directories"][0]["branch"], branch);
+        // The detail shape `workspace.get` answers, so one read repaints.
+        assert!(renamed["result"].get("entity_id").is_some());
+        (workspace_id, root, branch)
+    };
+
+    assert!(
+        root.exists(),
+        "the folder on disk keeps the name it was cut with"
+    );
+    let mut restarted = AppState::new_unrooted(&worktrees, "main", true, "/tmp/test-mcp.sock")
+        .with_config(&config)
+        .unwrap();
+    let got = restarted.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(got["result"]["name"], "second name", "{got:?}");
+    assert_eq!(got["result"]["directories"][0]["branch"], branch);
+}
+
+#[test]
+fn workspace_rename_refuses_a_name_that_is_only_whitespace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "source");
+    let mut state = app(tmp.path());
+    let project_id = state.add_project(repo, "main".into());
+    let workspace = create_workspace(&mut state, &project_id, "keeps-its-name");
+    let refused = state.handle(req(
+        "workspace.rename",
+        json!({"workspace_id": workspace["workspace_id"], "name": "   "}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error_code"], "invalid_params", "{refused:?}");
+    let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
+    assert_eq!(listed["result"]["workspaces"][0]["name"], "keeps-its-name");
+}
+
+/// Delete is the whole teardown in one verb: the conversation the workspace
+/// owned stops and leaves the store, the isolated checkout is handed back to
+/// the repository it was cut from, the root goes, and the listing forgets it —
+/// while the source repository beside it is untouched.
+#[test]
+fn workspace_delete_removes_the_checkout_the_root_and_the_listing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "source");
+    let mut state = app(tmp.path());
+    state.store = Some(crate::store::Store::new(tmp.path().join("tasks")).unwrap());
+    let project_id = state.add_project(repo.clone(), "main".into());
+    let workspace = create_workspace(&mut state, &project_id, "delete-me");
+    let kept = create_workspace(&mut state, &project_id, "keep-me");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let root = PathBuf::from(workspace["root"].as_str().unwrap());
+    let kept_root = PathBuf::from(kept["root"].as_str().unwrap());
+    let conversation = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(conversation["ok"], true, "{conversation}");
+    let conversation_id = conversation["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let deleted = state.handle(req(
+        "workspace.delete",
+        json!({"workspace_id": workspace_id}),
+    ));
+
+    assert_eq!(deleted["ok"], true, "{deleted:?}");
+    assert_eq!(deleted["result"]["deleted"], true);
+    assert_eq!(deleted["result"]["workspace_id"], workspace_id);
+    assert!(!root.exists(), "the workspace root is gone");
+    assert!(kept_root.exists(), "its neighbour is untouched");
+    assert!(repo.join(".git").is_dir(), "the source repository stays");
+    assert!(!state.runs.contains_key(&conversation_id));
+    assert!(state
+        .store
+        .as_ref()
+        .unwrap()
+        .load_all_runs()
+        .unwrap()
+        .is_empty());
+    let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
+    let names: Vec<_> = listed["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"keep-me".to_string()), "{listed:?}");
+    assert!(!names.contains(&"delete-me".to_string()), "{listed:?}");
+    // The worktree registration went with it, so the same branch can be cut
+    // again rather than colliding with an administrative record of a checkout
+    // that is no longer on disk.
+    let again = create_workspace(&mut state, &project_id, "delete-me");
+    assert_eq!(again["status"], "ready", "{again:?}");
+}
+
+#[test]
+fn workspace_delete_refuses_an_adopted_checkout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "legacy");
+    let canonical = std::fs::canonicalize(&repo).unwrap();
+    let mut state = AppState::new(
+        &repo,
+        tmp.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.project_at(0).id.clone();
+    let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
+    let adopted = listed["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|workspace| workspace["root"] == canonical.display().to_string())
+        .unwrap_or_else(|| panic!("the primary checkout is adopted: {listed:?}"))
+        .clone();
+
+    let refused = state.handle(req(
+        "workspace.delete",
+        json!({"workspace_id": adopted["workspace_id"]}),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error_code"], "conflict", "{refused:?}");
+    assert!(canonical.join(".git").is_dir(), "nothing was removed");
+
+    let also_refused = state.handle(req(
+        "workspace.rename",
+        json!({"workspace_id": adopted["workspace_id"], "name": "renamed"}),
+    ));
+    assert_eq!(also_refused["ok"], false, "{also_refused:?}");
+    assert_eq!(also_refused["error_code"], "conflict", "{also_refused:?}");
+}

@@ -414,6 +414,18 @@ describe("the advanced panel", () => {
     expect($("#compose-choice-effort")).toBeTruthy();
   });
 
+  it("seeds a newly picked agent with that harness's saved model and effort", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude",
+      harnesses: { codex: { model: "gpt", effort: "" } },
+    }));
+    await openAdvanced();
+    $("[data-agent-choice-toggle]").click();
+    $("#compose-choice-provider").value = "codex";
+    $("#compose-choice-provider").dispatchEvent(new Event("change", { bubbles: true }));
+    expect($("#compose-choice-model").value).toBe("gpt");
+  });
+
   it("dispatches the default branch destination without troubling the router", async () => {
     await openAdvanced();
     type("#compose-text", "add a /health endpoint");

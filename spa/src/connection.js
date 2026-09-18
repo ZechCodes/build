@@ -8,17 +8,18 @@
 // moment both channels are open (rule 4). There is no relay underneath, so a
 // device whose connection cannot be made is blocked by name, with a reason
 // (rule 3): its rows stay in the rail, greyed, its scope and drafts survive,
-// its calls are refused in those words, and a Retry or the presence poll runs
-// the sequence again. Nothing retries on a loop.
+// its calls are refused in those words, and recovery runs the sequence again
+// while authoritative presence still calls the device online.
 //
-// The account-wide waiting screen is for the state where nothing at all can
-// answer, which is the only one the user can do anything about.
+// The account-wide waiting screen is reserved for authoritative presence saying
+// every machine is offline. Online machines recover behind the existing shell.
 
 import * as transport from "@build/secure-transport";
 import { RELAY_URL } from "./config.js";
 import { createRelayRendezvous } from "./core/rendezvous.js";
 import { createRendezvousLifecycle } from "./core/rendezvousLifecycle.js";
 import { createDeviceConnectionAttempts } from "./core/deviceConnectionAttempts.js";
+import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { connectionDiagnosticHistory } from "./core/connectionDiagnostics.js";
@@ -86,6 +87,17 @@ const rendezvousLifecycle = createRendezvousLifecycle((deviceId) =>
 // its provisional resources; deviceContexts remains the availability model.
 const connectionAttempts = createDeviceConnectionAttempts();
 
+// Recovery decides when another attempt may begin; connectionAttempts remains
+// the sole owner of the attempt and every provisional transport it opens.
+const deviceRecovery = createDeviceRecoverySupervisor({
+  attempt: (deviceId, epoch) => attemptRecoveryDevice(deviceId, epoch),
+  cancelAttempt: (deviceId) => connectionAttempts.forDevice(deviceId).cancel(),
+});
+
+export const syncDeviceRecoveryPresence = (devices) => deviceRecovery.syncPresence(devices);
+export const deviceRecoverySnapshot = (deviceId) => deviceRecovery.snapshot(deviceId);
+export const onDeviceRecoveryChanged = (listener) => deviceRecovery.subscribe(listener);
+
 /** Close this machine's rendezvous whoever was holding it: the device is
  *  blocked, or gone, and nothing is negotiating with it any more. */
 function closeRendezvous(deviceId) {
@@ -95,6 +107,7 @@ function closeRendezvous(deviceId) {
 /** Let go of every attempt and rendezvous (sign-out, teardown): they are this
  *  account's, and none may land or remain open after the account has gone. */
 export function forgetRendezvousSockets() {
+  deviceRecovery.reset();
   connectionAttempts.clear();
   resetDeviceContexts();
   rendezvousLifecycle.clear();
@@ -242,19 +255,41 @@ async function connectOverChannels(deviceId, attempt) {
  *
  * Any failure blocks that device: its rendezvous and session close, its link is
  * dropped, its rows grey with the reason, and whatever was queued for a wire is
- * refused in those words. Nothing falls back to the relay and nothing retries
- * on a loop — the Retry control on its strip and on the waiting screen calls
- * this, and so does the presence poll when the machine comes back.
+ * refused in those words. Nothing falls back to the relay. Recovery, the Retry
+ * controls, and presence when the machine comes back all call this same one
+ * attempt owner.
  */
-export function connectDevice(deviceId) {
+export function connectDevice(deviceId, { recoveryEpoch = null } = {}) {
   handTerminalsTheirMint();
+  const attemptOwner = connectionAttempts.forDevice(deviceId);
+  // Callers converge on the attempt owner's exact promise. Only the caller that
+  // starts it reports its outcome to recovery, or one failure would advance the
+  // backoff once per observer rather than once per dial.
+  if (attemptOwner.connecting) return attemptOwner.connect(() => null);
+  const epoch = recoveryEpoch ?? deviceRecovery.beginAttempt(deviceId);
   const identity = deviceContextIdentity(deviceId);
-  return connectionAttempts.forDevice(deviceId).connect(
+  const pending = attemptOwner.connect(
     (attempt) => connectOnce(deviceId, attempt),
     { onFailure: (error) => {
       if (deviceContextIdentity(deviceId) === identity) connectionFailed(deviceId, error);
     } },
   );
+  pending.then(
+    () => deviceRecovery.connected(deviceId, { epoch }),
+    (error) => deviceRecovery.failed(deviceId, { epoch, retryable: retryableConnectionFailure(deviceId, error) }),
+  );
+  return pending;
+}
+
+function attemptRecoveryDevice(deviceId, epoch) {
+  retryDeviceConnection(deviceId);
+  connectDevice(deviceId, { recoveryEpoch: epoch }).catch(() => {});
+}
+
+function retryableConnectionFailure(deviceId, error) {
+  const lifecycle = existingDeviceLifecycle(deviceId)?.snapshot();
+  if (lifecycle?.securityStop || contextFor(deviceId)?.unsupported) return false;
+  return !error?.securityCritical && error?.blockedReason !== "no-webrtc";
 }
 
 async function connectOnce(deviceId, attempt) {
@@ -289,6 +324,10 @@ function loseEstablishedConnection(deviceId, lifetime) {
   const { context, changed } = loseDeviceConnection(deviceId, lifetime);
   if (!changed) return false;
   syncHome(context);
+  // Before connectOnce hands the lifetime off, its own rejection is the failed
+  // fresh attempt and owns the backoff. Starting recovery here would supersede
+  // that epoch and turn repeated greeting-time drops into a silent tight loop.
+  if (!connectionAttempts.isConnecting(deviceId) && !context.unsupported) deviceRecovery.recoverNow(deviceId);
   return true;
 }
 
@@ -342,7 +381,9 @@ function blockDevice(deviceId, reason) {
   if (!attempts.connecting) attempts.cancel();
   closeRendezvous(deviceId);
   blockCurrentDevice(deviceId, reason);
-  syncHome(contextFor(deviceId));
+  const context = contextFor(deviceId);
+  syncHome(context);
+  if (!context.unsupported) deviceRecovery.recoverNow(deviceId);
 }
 
 /**
@@ -375,6 +416,7 @@ export function deviceWentAway(deviceId) {
   // window out of date. The dial says how it went, and the next poll writes
   // what the account says over it.
   if (connectionAttempts.isConnecting(deviceId)) return;
+  deviceRecovery.stop(deviceId, { cancel: true });
   const attempts = connectionAttempts.forDevice(deviceId);
   attempts.cancel();
   closeRendezvous(deviceId);
@@ -397,6 +439,7 @@ export function deviceWentAway(deviceId) {
 export function retireDevice(deviceId) {
   // A dial in flight at this machine is called off first: whatever it lands or
   // fails at is about a machine the account no longer has.
+  deviceRecovery.stop(deviceId, { cancel: false });
   connectionAttempts.retire(deviceId);
   // Closed first: this machine is not lost, it is gone, and nothing is to be
   // blocked on the way out.
@@ -654,7 +697,9 @@ export function syncHome(landed = null) {
  * reason off every row and dial nobody.
  */
 export function openDeviceSessions({ retry = false } = {}) {
+  deviceRecovery.syncPresence(App.devices);
   const unblocked = retry ? askBlockedMachinesAgain() : [];
+  if (retry) for (const deviceId of unblocked) deviceRecovery.beginAttempt(deviceId, { resetFailures: true });
   const wanted = App.devices.filter(wantsSession).map((device) => device.id);
   const attempts = dialEach([...unblocked, ...wanted]);
   const dials = attempts.length ? attempts : guessAtStaleDevices();
@@ -720,9 +765,9 @@ function neverAsked(device) {
  * A device for this call to open: online by the account list, with nothing
  * already working on it.
  *
- * A machine this client has already failed to reach is not asked again on a
- * cadence (rule 3): it wears its reason until a reader retries it, or until the
- * api says it went and came back — which clears the block on the way past.
+ * A machine this client has already failed to reach is not also asked by the
+ * presence cadence: its recovery supervisor owns the next attempt while it is
+ * still online, and a reader Retry may bring that attempt forward.
  */
 function wantsSession(device) {
   const context = contextFor(device.id);

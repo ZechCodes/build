@@ -226,7 +226,7 @@ jobs:
   # shellcheck itself is the `shell` job's (every *.sh in the tree, one home);
   # this job is install.sh's behaviour, which only its own harness can check.
   scripts:
-    name: install.sh behaviour
+    name: Installer behaviour
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-scripts
       cancel-in-progress: true
@@ -235,8 +235,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install ZIP-capable tar for macOS installer fixtures
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: install.sh behaviour
         run: scripts/test-install.sh
+      - name: Desktop installer behaviour
+        run: scripts/test-install-desktop.sh
   # The API tier's own gate, the mirror of `spa` above: ruff (correctness plus
   # the C901 complexity cap) and the pytest suite. The app image ships spa/ AND
   # skriftapp/ together, so both halves have to be green before it builds — the
@@ -284,13 +288,17 @@ jobs:
         run: git ls-files '*.sh' | xargs shellcheck
 
   desktop:
-    name: Desktop client
+    name: Desktop client (${{ matrix.os }})
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}-desktop
+      group: ${{ github.workflow }}-${{ github.ref }}-desktop-${{ matrix.os }}
       cancel-in-progress: true
     needs: [changes]
     if: ${{ needs.changes.outputs.desktop == 'true' }}
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: desktop
@@ -301,12 +309,11 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - name: Install
-        run: npm ci --no-audit --no-fund
+      - name: Build an unsigned local application
+        working-directory: .
+        run: node scripts/build-desktop.mjs --dir
       - name: Test
         run: npm test
-      - name: Package Linux application
-        run: npm run pack
 
   secrets:
     name: Secret scan
@@ -344,7 +351,7 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-app
       cancel-in-progress: true
-    needs: [changes, spa, skriftapp, secrets]
+    needs: [changes, spa, skriftapp, scripts, shell, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -352,6 +359,8 @@ jobs:
           && needs.changes.outputs.app == 'true'
           && needs.spa.result == 'success'
           && needs.skriftapp.result == 'success'
+          && (needs.scripts.result == 'success' || needs.scripts.result == 'skipped')
+          && (needs.shell.result == 'success' || needs.shell.result == 'skipped')
           && needs.secrets.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:

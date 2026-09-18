@@ -15,7 +15,44 @@ pub(in crate::app) use crate::orchestrator::NEW_THREAD_MESSAGES_PROMPT;
 /// Reading stamps `seen_at`, which is what the reviewer sees as "Working" with
 /// a running timer; posting a reply (`still_working` omitted or false) hands the
 /// turn back and stops it.
-pub(in crate::app) const WORKING_INDICATOR_NOTICE: &str = "Reading these marked them seen, which started the reviewer's \"Working\" indicator and its timer on the newest message. It runs until you post a reply with post_thread_message — an ordinary reply (still_working omitted or false) hands the turn back and stops it; a progress note (still_working: true) keeps it running. The `done` tool also stops it. Do not leave it running after you have finished.";
+pub(in crate::app) const WORKING_INDICATOR_NOTICE: &str = "Receiving these messages started the reviewer's \"Working\" indicator and its timer on the newest message. It runs until you call post_thread_message: status=Working keeps it running, while Waiting hands the turn back and Complete or Blocked records the final outcome. The user sees only messages sent with that tool. Do not leave the indicator running after you have finished.";
+
+fn record_command_activity(
+    state: &Arc<Mutex<AppState>>,
+    timer: &FrameTimer,
+    turn: &PendingAgentTurn,
+    session: &dyn crate::harness::AgentSession,
+    prompt: &str,
+) {
+    if session.terminal().is_none()
+        || !crate::harness::harness_for(turn.model_choice.provider).starts_compaction(prompt)
+    {
+        return;
+    }
+    timer.lock(state).record_agent_activity(
+        &turn.owner,
+        &turn.agent_id,
+        &crate::harness::AgentActivity::Compaction { completed: false },
+        None,
+    );
+}
+
+fn delivered_prompt(
+    prompt: &str,
+    payload: Option<&crate::operation::OperationPayload>,
+    provider: crate::models::AgentProvider,
+) -> String {
+    match payload {
+        Some(payload) if payload.requires_unadorned_delivery(provider) => {
+            payload.legacy_delivery_prompt(false, provider)
+        }
+        Some(payload) => format!(
+            "{prompt}\n\n{}",
+            payload.legacy_delivery_prompt(false, provider)
+        ),
+        None => prompt.to_string(),
+    }
+}
 
 /// Decide how one frozen turn reaches its exact captured destination before
 /// any provider-facing operation occurs.
@@ -240,10 +277,7 @@ pub(in crate::app) fn deliver(
         }
     }
     let reports_turn_boundaries = session.status_changed().is_some();
-    let prompt = match legacy_payload.as_ref() {
-        Some(payload) => format!("{prompt}\n\n{}", payload.legacy_delivery_prompt(false)),
-        None => prompt.clone(),
-    };
+    let prompt = delivered_prompt(prompt, legacy_payload.as_ref(), model_choice.provider);
     let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);
     native_turn.operation_id = turn.operation_id.clone().or_else(|| {
         legacy_payload.as_ref().map(|payload| {
@@ -275,6 +309,7 @@ pub(in crate::app) fn deliver(
         }
         return Err(error.to_string());
     }
+    record_command_activity(state, timer, turn, session.as_ref(), &native_turn.text);
     // The quiescence clock restarts here: whatever the agent was silent about
     // before, it now has something to answer for. A tab that closed while the
     // turn was in flight has no clock left to restart — and the turn still

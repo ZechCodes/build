@@ -19,6 +19,7 @@ import { renderDeviceSettingsPage } from "./deviceSettingsFixture.js";
 // answers with whatever the fixture's bridge is standing at the time.
 const { openSession } = vi.hoisted(() => ({ openSession: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
+  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   openDeviceSettingsSession: openSession,
   chooseCreationDevice: () => {},
   retireDevice: () => {},

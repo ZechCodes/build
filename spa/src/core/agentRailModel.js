@@ -26,11 +26,6 @@ import { isStartupEvent, startupEventTitle } from "./threadEvents.js";
 // the same harness.
 export { providerLabel };
 
-/** Which agent this is, in words: the harness and its place on the strip. */
-export function agentTitle(agent) {
-  return `${providerLabel(agent && agent.provider)} ${(agent && agent.ordinal) || 1}`;
-}
-
 /** What the header over the conversation says: the topic the agent named its
  *  work with (`set_topic`, 2-4 words), or "Starting" until it has — flagged so
  *  the head can shimmer the word rather than sit on it. A blank topic is no
@@ -39,6 +34,18 @@ export const STARTING_HEADING = "Starting";
 export function agentHeading(agent) {
   const topic = agent && typeof agent.topic === "string" ? agent.topic.trim() : "";
   return topic ? { text: topic, starting: false } : { text: STARTING_HEADING, starting: true };
+}
+
+/** Which agent this is, in words — the topic it named its work with, and its
+ *  harness while it has not named one.
+ *
+ *  The ordinal is deliberately absent. It is the agent's place on the strip,
+ *  and the strip already says it in the face the bubble wears; read out as
+ *  "Codex TUI 2" it named a harness and a number over work the agent had
+ *  already named better than the client can. */
+export function agentWho(agent) {
+  const heading = agentHeading(agent);
+  return heading.starting ? providerLabel(agent && agent.provider) : heading.text;
 }
 
 /** Whether this agent has a terminal to drop into.
@@ -125,20 +132,30 @@ export function agentPattern(ordinal) {
   return ((place - 1) % AGENT_PATTERN_COUNT) + 1;
 }
 
-/** The bubble's tooltip: who it is, and the one thing it is waiting on. Unread
- *  wins over working — an agent that asked something while it kept going is
- *  still asking. */
-export function bubbleTip(agent) {
-  const title = agentTitle(agent);
+/** The one thing this agent's bubble is waiting on, or "" when it waits on
+ *  nothing. Unread wins over working — an agent that asked something while it
+ *  kept going is still asking. */
+function bubbleNews(agent, heading) {
   if (agent && agent.unread_count) {
-    const reason = unreadReasonText(agent.unread_reason, "agent");
-    return reason ? `${title} — ${reason}` : `${title} — ${agent.unread_count} unread`;
+    return unreadReasonText(agent.unread_reason, "agent") || `${agent.unread_count} unread`;
   }
-  if (agent && agent.working) return `${title} — working`;
-  if (agent && agent.state === AGENT_STARTING) return `${title} — starting…`;
-  const failure = agentStartFailure(agent);
-  if (failure) return `${title} — ${failure}`;
-  return title;
+  if (agent && agent.working) return "working";
+  // A bubble whose agent has not named its work already opens on "Starting":
+  // appending the session's own "starting…" behind it says the word twice and
+  // tells the hover nothing the first one did not.
+  if (agent && agent.state === AGENT_STARTING) return heading.starting ? "" : "starting…";
+  return agentStartFailure(agent);
+}
+
+/** The bubble's tooltip: the topic the agent named its work with, and the one
+ *  thing it is waiting on. Until there is a topic the tip leads with the
+ *  harness behind the shimmering word — two agents on one work item may run the
+ *  same harness, and it is their painted faces that tell them apart. */
+export function bubbleTip(agent) {
+  const heading = agentHeading(agent);
+  const title = heading.starting ? `${STARTING_HEADING} · ${providerLabel(agent && agent.provider)}` : heading.text;
+  const news = bubbleNews(agent, heading);
+  return news ? `${title} — ${news}` : title;
 }
 
 /**
@@ -217,11 +234,22 @@ export function canRemoveAgent({ agents = [], agentId = null, kind = "branch" } 
   return agents.some((agent) => agent.id === agentId);
 }
 
+/** How removal names the agent it is about to take away — in the button's
+ *  tooltip and in the confirmation behind it, which say the same words.
+ *
+ *  Quoted when the agent named its work, because the name is the agent's own
+ *  and the prompt is only repeating it; pointed at ("this Claude Code agent")
+ *  when it has not named one, because there is nothing yet to quote. */
+export function agentRemovalWho(agent) {
+  const heading = agentHeading(agent);
+  return heading.starting ? `this ${providerLabel(agent && agent.provider)} agent` : `"${heading.text}"`;
+}
+
 /** The confirmation plan for `agent.remove` — the outline core/confirm.js asks
  *  with. Removal kills the agent's session and takes its conversation with it,
  *  so it says both, and says what it does NOT touch. */
 export function removeAgentConfirm(agent, kind = "branch") {
-  const who = agentTitle(agent);
+  const who = agentRemovalWho(agent);
   const owner = kind === "workspace" ? "workspace" : "branch";
   return {
     title: `Remove ${who} from this ${owner}?`,

@@ -25,6 +25,7 @@ use tokio::sync::broadcast;
 
 fn row_kind(reported: &ActivityReport) -> &'static str {
     match &reported.activity {
+        AgentActivity::Compaction { .. } => "compaction",
         AgentActivity::Reasoning { .. } => "reasoning",
         AgentActivity::ToolUse { .. } => "tool_use",
         AgentActivity::ToolResult { .. } => "tool_result",

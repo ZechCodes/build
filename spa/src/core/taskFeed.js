@@ -10,7 +10,7 @@
 import { App } from "../app.js";
 import { canAnswer, contextFor, liveContexts } from "./deviceContexts.js";
 import { watchChanges } from "./changeEvents.js";
-import { liveFeedSnapshot, mergeFeeds } from "./feedMerge.js";
+import { liveFeedSnapshot, mergeFeeds, withoutProject } from "./feedMerge.js";
 import { readCached } from "./localCache.js";
 
 const subscribers = new Set();
@@ -163,6 +163,26 @@ export function dropFeedDevice(deviceId) {
   watchers.get(deviceId)?.dispose();
   watchers.delete(deviceId);
   if (byDevice.delete(deviceId)) deliverFeed();
+}
+
+/**
+ * Take one project's rows out of a device's snapshot, and tell everyone.
+ *
+ * The other half of hiding a project (core/projectHide.js): the cache on disk is
+ * where a gone machine's rows live between sessions, but the snapshot in memory
+ * is where they live right now — and a hide that only cleared the disk would
+ * repaint the block from memory before the reader's finger left the button.
+ *
+ * Hands back the device's view AS IT STOOD, so the caller can read the entity
+ * ids it is about to evict off the rows it just removed. Null when that device
+ * has no snapshot here at all.
+ */
+export function dropFeedProject(deviceId, projectKey) {
+  const view = byDevice.get(deviceId);
+  if (!view || !projectKey) return null;
+  byDevice.set(deviceId, withoutProject(view, projectKey));
+  deliverFeed();
+  return view;
 }
 
 /** Force an immediate refresh (after adding a project, adopting, …) — every

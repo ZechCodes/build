@@ -52,26 +52,27 @@
     ],
     "extraResources": [
       {
-        "from": "../spa/public/icon-512.png",
+        "from": "assets/icon.png",
         "to": "icon.png"
       }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
-      "icon": "../spa/public/icon-512.png",
+      "icon": "assets/icon.icns",
       "target": [
         "dmg",
         "zip"
       ]
     },
     "win": {
-      "icon": "../spa/public/icon-512.png",
+      "icon": "assets/icon.ico",
       "target": "nsis"
     },
     "linux": {
       "category": "Development",
-      "icon": "../spa/public/icon-512.png",
+      "maintainer": "Build <hello@getbuild.ing>",
+      "icon": "assets/icon.png",
       "target": [
         "AppImage",
         "deb"

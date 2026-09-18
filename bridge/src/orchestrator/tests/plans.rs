@@ -1134,7 +1134,7 @@ async fn spawned_plan_and_run_prompts_put_the_ambiguity_rule_before_silent_direc
 
     for (path, prompt) in [("plan", plan_prompt), ("run", run_prompt)] {
         let ambiguity_rule = prompt
-            .find("either a question or a directive")
+            .find("either a question or an ambiguous directive")
             .unwrap_or_else(|| panic!("{path} spawn prompt lacks the ambiguity rule: {prompt}"));
         let silent_directive_allowance =
             prompt

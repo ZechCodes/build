@@ -60,11 +60,9 @@ COPY skriftapp/buildapp ./buildapp
 COPY skriftapp/migrations ./migrations
 # The app's own admin templates: Skrift's engine also reads ./templates/.
 COPY skriftapp/templates ./templates
-# The bridge installer. GET /install.sh serves this file with the deployment's own
-# origin and the caller's download token substituted in, so it must sit where
-# releases.INSTALL_SCRIPT_FILE looks for it — scripts/ beside the app root, which is
-# the repository root in a source tree and / in this image.
+# Public installers served from the same scripts used in source checkouts.
 COPY scripts/install.sh /scripts/install.sh
+COPY scripts/install-desktop.sh /scripts/install-desktop.sh
 COPY --from=spa /build/repo/skriftapp/buildapp/static ./buildapp/static
 RUN chmod +x /app/entrypoint.sh \
  && useradd --create-home --uid 10001 appuser \

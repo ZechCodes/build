@@ -14,7 +14,7 @@ From the repository root:
 skriftapp/.venv/bin/python scripts/preview-landing.py
 ```
 
-Open **http://127.0.0.1:4173**. This loopback preview serves the public landing, docs, privacy, and assets with the production-style content security policy. The complete application owns the authenticated `/app/` installer flow; the preview does not bypass it.
+Open **http://127.0.0.1:4173**. This loopback preview serves the public landing, docs, privacy, installers, and assets with the production-style content security policy. The complete application owns the authenticated `/app/` pairing flow; the preview does not bypass it.
 
 ```sh
 # Browser profiles; use the optional environment variables for local Chromium/GPU.
@@ -41,7 +41,7 @@ The final browser matrix is saved in `browser-results.json`. Still frames are `d
 
 ## Verification
 
-- 558 backend tests; 39 landing JavaScript tests; six focused device-state tests.
+- 514 backend tests and 4,752 SPA tests after upstream integration (including 39 landing tests); six focused device-state tests.
 - Python lint, JavaScript complexity cap of ten, syntax checks, and whitespace checks.
 - Chromium at 1440×900, 1920×1080, 768×1024, 1024×768, 390×844, 360×740, and 844×390; separate reduced-motion and JavaScript-disabled profiles.
 - GPU checks for handoff, forward/reverse checkpoints, tablet-to-review corner alignment, and the merged closing lineup.
@@ -56,4 +56,4 @@ Hero posters are about 82 KB desktop and 52 KB mobile. The three runtime GLBs to
 
 This package records local review checks. Production verification additionally requires matching the deployed app image to the pushed commit and checking the public routes and assets after rollout. The public GitHub endpoint returns 404, so the activity section intentionally has no fabricated entries. `scripts/refresh-landing-activity.py` can populate the checked-in cache from publicly visible, labeled, merged PRs; failed refreshes preserve existing entries. The PR template documents the public summary/category fields.
 
-Download preserves the existing alpha access gate and the actual macOS/Linux host build list. The page's free/open-source copy follows the supplied brief; public repository availability and the final UI/art review remain launch decisions. Performance on physical mobile devices still needs release validation.
+Download offers the public host installer and the actual macOS/Linux host build list. Pairing and using a host still require alpha access. The page's free/open-source copy follows the supplied brief; public repository availability and the final UI/art review remain launch decisions. Performance on physical mobile devices still needs release validation.

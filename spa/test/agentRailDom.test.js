@@ -103,10 +103,20 @@ const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
 
-const agent = (over = {}) => ({
-  id: "ag-1", ordinal: 1, provider: "claude_adk", state: "live",
-  unread_count: 0, unread_reason: null, working: false, ...over,
-});
+/** The topic each fixture agent named its work with. The head and the bubbles
+ *  say the topic now, so it is the topic — not a harness and an ordinal — that
+ *  tells these cases which agent the panel is open on. An agent left out of the
+ *  table has named nothing yet, and says so. */
+const TOPICS = { "ag-1": "Fix login redirect", "ag-2": "Polish the rail" };
+
+const agent = (over = {}) => {
+  const row = {
+    id: "ag-1", ordinal: 1, provider: "claude_adk", state: "live",
+    unread_count: 0, unread_reason: null, working: false,
+    surface_session_generation: "surface-session-1", ...over,
+  };
+  return { topic: TOPICS[row.id] || "", ...row };
+};
 
 const branchRow = (over = {}) => ({
   kind: "branch",
@@ -127,6 +137,12 @@ let rail = null;
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
+};
+
+const finishTitleMotion = async (titleElement) => {
+  for (let turn = 0; turn < 80 && titleElement.dataset.titleMotion; turn += 1) {
+    await new Promise((done) => setTimeout(done, 10));
+  }
 };
 
 const CATALOG = {
@@ -156,9 +172,9 @@ const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
 const panel = () => railHost().querySelector(".rail-panel");
-/** Whose conversation the head says is open. The head wears the topic the agent
- *  named its work with (`set_topic`) and shimmers "Starting" until there is
- *  one, so the harness name and ordinal these cases pin rides as the title. */
+/** Whose conversation the head says is open. The head shimmers "Starting" until
+ *  the agent names its work, so its title — the topic in full, or the harness
+ *  while there is none — is what these cases pin. */
 const headWho = (root = railHost()) => root.querySelector(".rail-who").title;
 const tuiToggle = () => panel().querySelector(".rail-tui");
 const callsTo = (method) => calls.filter((call) => call.method === method);
@@ -266,7 +282,9 @@ describe("where the conversation panel starts", () => {
 
     bubbles()[0].click();
     await flush();
-    expect(panel()).toBeNull();
+    expect(panel()).toBeTruthy();
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    expect(panel().hasAttribute("inert")).toBe(true);
   });
 
   it("holds a phone reader's own choice across mounts", async () => {
@@ -294,9 +312,28 @@ describe("where the conversation panel starts", () => {
 describe("the conversation panel's pin", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
   const pin = () => panel().querySelector(".pinbtn");
-  const scrim = () => railHost().querySelector("#rail-scrim");
 
   afterEach(() => atWidth(1024));
+
+  it("uses the inbox timing while the rail gives workspace width back", () => {
+    expect(shellCss).toMatch(/#agent-rail \{[^}]*transition:width 240ms cubic-bezier\(\.2,\.8,\.2,1\)/);
+    expect(shellCss).toMatch(/\.rail-panel \{[^}]*border-radius 160ms/);
+    expect(shellCss).toMatch(/#agent-rail\.rail-unpinned, #agent-rail\.rail-collapsed \{ width:var\(--agent-strip\); \}/);
+    expect(shellCss).toMatch(/#agent-rail, #agent-rail\.rail-unpinned, #agent-rail\.rail-collapsed \{ position:static; width:0; transition:none; \}/);
+    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*#agent-rail, \.rail-panel \{ transition:none; \}/);
+  });
+
+  it("keeps the attachment drop target over the full glass composer", () => {
+    expect(shellCss).toMatch(/\.rail-composer \.composer > :not\(\.composer-dropmask\) \{ position:relative; z-index:1; \}/);
+    expect(shellCss).toMatch(/\.rail-composer \.composer > \.composer-dropmask \{ position:absolute; inset:0; z-index:2; \}/);
+  });
+
+  it("shares the clearer glass values across the header, composer, and activity viewer", () => {
+    expect(shellCss).toMatch(/--chat-glass-opacity:72%;/);
+    expect(shellCss).toMatch(/--chat-glass-blur:6px;/);
+    expect(shellCss.match(/color-mix\(in srgb, var\(--panel\) var\(--chat-glass-opacity\), transparent\)/g)).toHaveLength(3);
+    expect(shellCss.match(/backdrop-filter:blur\(var\(--chat-glass-blur\)\)/g)).toHaveLength(6);
+  });
 
   it("says what pressing it does, in the inbox's words", async () => {
     atWidth(1024);
@@ -307,11 +344,11 @@ describe("the conversation panel's pin", () => {
     expect(pin().querySelector("svg")).toBeTruthy();
   });
 
-  it("renders no scrim while the panel is pinned", async () => {
+  it("renders no interaction-blocking scrim", async () => {
     atWidth(1024);
     await mount();
     expect(panel()).toBeTruthy();
-    expect(scrim()).toBeNull();
+    expect(railHost().querySelector("#rail-scrim")).toBeNull();
     expect(railHost().classList.contains("rail-popover")).toBe(false);
     expect(panel().dataset.anchor).toBe("");
   });
@@ -324,7 +361,7 @@ describe("the conversation panel's pin", () => {
     // The conversation stays on screen, as a card over the work rather than a
     // column beside it — the same move the inbox's pin makes.
     expect(railHost().classList.contains("rail-popover")).toBe(true);
-    expect(scrim()).toBeTruthy();
+    expect(railHost().querySelector("#rail-scrim")).toBeNull();
     expect(pin().getAttribute("aria-pressed")).toBe("false");
     expect(pin().title).toBe("Pin the conversation");
     expect(localStorage.getItem("build.rail.expanded")).toBe("0");
@@ -333,7 +370,30 @@ describe("the conversation panel's pin", () => {
     await mount();
     // Unpinned, a fresh mount is the strip alone until a bubble is pressed.
     expect(panel()).toBeNull();
-    expect(scrim()).toBeNull();
+  });
+
+  it("keeps the live panel, composer, draft, focus, and history position across pin changes", async () => {
+    atWidth(1024);
+    await mount();
+    const standingPanel = panel();
+    const input = standingPanel.querySelector("#railinput");
+    const history = standingPanel.querySelector(".rail-body");
+    input.value = "still drafting";
+    Object.defineProperties(history, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 500 },
+    });
+    history.scrollTop = 37;
+    input.focus();
+
+    pin().click();
+    await flush();
+
+    expect(panel()).toBe(standingPanel);
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(input.value).toBe("still drafting");
+    expect(document.activeElement).toBe(input);
+    expect(history.scrollTop).toBe(37);
   });
 
   it("pins a popover back into the column", async () => {
@@ -344,7 +404,7 @@ describe("the conversation panel's pin", () => {
     pin().click();
     await flush();
     expect(railHost().classList.contains("rail-popover")).toBe(false);
-    expect(scrim()).toBeNull();
+    expect(railHost().querySelector("#rail-scrim")).toBeNull();
     expect(localStorage.getItem("build.rail.expanded")).toBe("1");
 
     rail.dispose();
@@ -355,7 +415,6 @@ describe("the conversation panel's pin", () => {
 
 describe("the unpinned panel's popover", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
-  const scrim = () => railHost().querySelector("#rail-scrim");
 
   beforeEach(() => {
     atWidth(390);
@@ -372,7 +431,7 @@ describe("the unpinned panel's popover", () => {
     // every box it measures is at the origin; the browser check is the
     // orchestrator's.
     expect(panel().style.getPropertyValue("--rail-anchor")).toBe("0px");
-    expect(scrim()).toBeTruthy();
+    expect(railHost().querySelector("#rail-scrim")).toBeNull();
   });
 
   it("re-anchors on the next bubble rather than closing", async () => {
@@ -385,16 +444,38 @@ describe("the unpinned panel's popover", () => {
     expect(panel().dataset.anchor).toBe("ag-1");
   });
 
-  it("is dismissed by the scrim", async () => {
+  it("is dismissed by an outside press without consuming the target click", async () => {
     await mount();
     bubbles()[1].click();
     await flush();
-    scrim().click();
+    const outside = document.createElement("button");
+    const clicked = vi.fn();
+    outside.onclick = clicked;
+    document.body.append(outside);
+    const press = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+    outside.dispatchEvent(press);
+    outside.click();
     await flush();
-    expect(panel()).toBeNull();
-    expect(scrim()).toBeNull();
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    expect(press.defaultPrevented).toBe(false);
+    expect(clicked).toHaveBeenCalledOnce();
     // Dismissing a popover is not unpinning anything: the choice stands.
     expect(localStorage.getItem("build.rail.expanded")).toBeNull();
+  });
+
+  it("leaves the panel's confirmation popover usable", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    panel().querySelector(".rail-remove").click();
+    await flush();
+    const confirm = document.querySelector(".confirm-popover");
+    const cancel = confirm.querySelector("[data-confirm-cancel]");
+    cancel.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
+    cancel.click();
+    await flush();
+    expect(confirm.isConnected).toBe(false);
   });
 
   it("is dismissed by Escape", async () => {
@@ -403,7 +484,7 @@ describe("the unpinned panel's popover", () => {
     await flush();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flush();
-    expect(panel()).toBeNull();
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
   });
 
   it("leaves Escape to a surface that already answered it", async () => {
@@ -423,7 +504,43 @@ describe("the unpinned panel's popover", () => {
     await flush();
     window.dispatchEvent(new window.HashChangeEvent("hashchange"));
     await flush();
-    expect(panel()).toBeNull();
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("does not report reading from the retained panel while it is collapsed", async () => {
+    payload = branchRow({
+      agents: [agent({ unread_count: 2 })],
+      run: { run_id: "run-3", thread: { items: [
+        { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
+        { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
+      ], sessions: [] } },
+    });
+    await mount();
+    bubbles()[0].click();
+    await flush();
+    const history = panel().querySelector(".rail-body");
+    bubbles()[0].click();
+    await flush();
+    markSeen.mockClear();
+
+    payload = branchRow({
+      agents: [agent({ unread_count: 3 })],
+      run: { run_id: "run-3", thread: { items: [
+        { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
+        { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
+        { id: "m-3", type: "message", data: { sequence: 3, role: "agent", body: "three" } },
+      ], sessions: [] } },
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(markSeen).not.toHaveBeenCalled();
+    expect(history.textContent).not.toContain("three");
+
+    bubbles()[0].click();
+    await flush();
+    expect(history.textContent).toContain("three");
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3);
   });
 
   it("takes its listeners with it when the rail goes", async () => {
@@ -452,25 +569,87 @@ describe("the bubble strip", () => {
     await mount();
     bubbles()[1].click();
     await flush();
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(bubbles()[1].classList.contains("active")).toBe(true);
     bubbles()[1].click();
     await flush();
-    expect(panel()).toBe(null);
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
     // …and the strip is still there with the panel shut.
     expect(bubbles().length).toBe(3);
+  });
+
+  it("collapses and restores the same pinned panel without changing the pin choice", async () => {
+    await mount();
+    const standing = panel();
+    const input = standing.querySelector("#railinput");
+    input.value = "kept draft";
+    input.focus();
+
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBe(standing);
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    expect(bubbles()[0].getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(bubbles()[0]);
+    expect(localStorage.getItem("build.rail.expanded")).toBeNull();
+
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBe(standing);
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
+    expect(panel().querySelector("#railinput").value).toBe("kept draft");
+    expect(bubbles()[0].getAttribute("aria-expanded")).toBe("true");
+    expect(railHost().classList.contains("rail-unpinned")).toBe(false);
+  });
+
+  // A file dragged onto another agent's bubble is for that agent: the drop
+  // opens its conversation with the file already in the box, ready to send.
+  it("takes a file dropped on a bubble into that agent's composer", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount();
+    expect(headWho(panel())).toBe("Fix login redirect");
+    const png = new File(["png"], "shot.png", { type: "image/png" });
+    const over = new Event("dragover", { bubbles: true, cancelable: true });
+    over.dataTransfer = { files: [], items: [], types: ["Files"], dropEffect: "none" };
+    bubbles()[1].dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(true);
+    expect(bubbles()[1].classList.contains("is-dropping")).toBe(true);
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    drop.dataTransfer = { files: [png], items: [], types: ["Files"] };
+    bubbles()[1].dispatchEvent(drop);
+    await flush();
+    expect(drop.defaultPrevented).toBe(true);
+    expect(bubbles()[1].classList.contains("is-dropping")).toBe(false);
+    expect(headWho(panel())).toBe("Polish the rail");
+    expect(bubbles()[1].classList.contains("active")).toBe(true);
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
+    const chips = [...panel().querySelectorAll(".composer-chip")];
+    expect(chips.map((chip) => chip.querySelector(".composer-chip-name").textContent)).toEqual(["shot.png"]);
+    expect(callsTo("thread.attach")[0].params).toMatchObject({ entity_id: "run-3", filename: "shot.png" });
+  });
+
+  it("ignores a file dropped on the + bubble", async () => {
+    await mount();
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    drop.dataTransfer = { files: [new File(["x"], "x.txt")], items: [], types: ["Files"] };
+    railHost().querySelector('[data-bubble="add"]').dispatchEvent(drop);
+    await flush();
+    expect(drop.defaultPrevented).toBe(false);
+    expect(panel().querySelectorAll(".composer-chip")).toHaveLength(0);
+    expect(callsTo("thread.attach")).toEqual([]);
   });
 
   it("repaints the header icon when a provider update arrives", async () => {
     await mount();
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("claude_adk");
 
-    payload = branchRow({ agents: [agent({ provider: "codex_app_server" })] });
+    payload = branchRow({ agents: [agent({ provider: "codex_app_server", topic: "" })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
-    expect(headWho(panel())).toBe("Codex 1");
+    // Nothing named yet, so the hover falls back to the harness — the new one.
+    expect(headWho(panel())).toBe("Codex");
   });
 
   // The rail reads the row every 1.6s and nearly every read says the same
@@ -543,8 +722,10 @@ describe("the bubble strip", () => {
     expect(add.querySelector("canvas")).toBe(null);
     expect(add.textContent.trim()).toBe("+");
     // The name is still said where a name belongs — the tooltip and the
-    // accessible name — so two agents are still tellable apart in words.
-    expect(first.getAttribute("aria-label")).toBe("Claude Code 1");
+    // accessible name — and it is the work the agent named itself, not a
+    // harness and a number.
+    expect(first.getAttribute("aria-label")).toBe("Fix login redirect");
+    expect(second.getAttribute("aria-label")).toBe("Polish the rail");
   });
 
   // The corner badge is gone: an unread count is the whole face now, over a
@@ -768,7 +949,7 @@ describe("the painter behind a bubble", () => {
 describe("taking an agent back off the branch", () => {
   const twoAgents = (over = {}) => branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })], ...over });
   const removeButton = () => panel().querySelector(".rail-remove");
-  const confirmModal = () => document.getElementById("confirm-scrim");
+  const confirmModal = () => document.querySelector(".confirm-popover");
 
   const openSecondAgent = async () => {
     payload = twoAgents();
@@ -789,8 +970,8 @@ describe("taking an agent back off the branch", () => {
   };
   const railBodyNow = () => railHost().querySelector("#rail-body");
   const confirmEveryModal = () => {
-    document.querySelectorAll(".modal-scrim").forEach((scrim) => {
-      const ok = scrim.querySelector("[data-confirm-ok]");
+    document.querySelectorAll(".modal-scrim, .confirm-popover").forEach((dialog) => {
+      const ok = dialog.querySelector("[data-confirm-ok]");
       if (ok) ok.click();
     });
   };
@@ -833,13 +1014,88 @@ describe("taking an agent back off the branch", () => {
     expect(removeButton()).toBe(null);
   });
 
+  // The button says what it will take away in the agent's own words, and the
+  // question behind it says the same ones.
+  it("names the agent it removes by the topic that agent set", async () => {
+    await openSecondAgent();
+    expect(removeButton().title).toBe('Remove "Polish the rail" from this branch');
+    expect(removeButton().getAttribute("aria-label")).toBe('Remove "Polish the rail" from this branch');
+    removeButton().click();
+    await flush();
+    expect(confirmModal().textContent).toContain('Remove "Polish the rail" from this branch?');
+  });
+
+  // A topic arriving keeps the head mounted — it is the title that moves, not
+  // the controls — so the button re-reads its wording on the title's beat
+  // rather than waiting for a rebuild that has no reason to happen.
+  it("points at an agent that has named nothing yet, and picks the name up when it arrives", async () => {
+    payload = branchRow({ agents: [agent({ topic: "" })] });
+    await mount();
+    const standing = removeButton();
+    expect(standing.title).toBe("Remove this Claude Code agent from this branch");
+
+    payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(removeButton()).toBe(standing);
+    expect(standing.title).toBe('Remove "Unify prompt delivery" from this branch');
+    expect(standing.getAttribute("aria-label")).toBe('Remove "Unify prompt delivery" from this branch');
+  });
+
+  // Two agents on one harness with nothing named yet read the same in every
+  // word the head has: the panel is open on an id, not on a name, and the
+  // button takes away the agent whose bubble is lit.
+  it("removes the agent the strip is lit on, even beside its twin", async () => {
+    payload = branchRow({ agents: [agent({ topic: "" }), agent({ id: "ag-2", ordinal: 2, topic: "" })] });
+    await mount();
+    expect(headWho(panel())).toBe("Claude Code");
+    bubbles()[1].click();
+    await flush();
+    expect(headWho(panel())).toBe("Claude Code");
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+  });
+
   it("asks before it removes, and does nothing at all when the answer is no", async () => {
     await openSecondAgent();
     removeButton().click();
     await flush();
     expect(confirmModal()).toBeTruthy();
+    expect(document.getElementById("confirm-scrim")).toBeNull();
     confirmModal().querySelector("[data-confirm-cancel]").click();
     await flush();
+    expect(callsTo("agent.remove")).toEqual([]);
+  });
+
+  it("cancels the question when the conversation changes", async () => {
+    await openSecondAgent();
+    removeButton().click();
+    await flush();
+    expect(confirmModal()).toBeTruthy();
+
+    bubbles()[0].click();
+    await flush();
+
+    expect(confirmModal()).toBeNull();
+    expect(headWho(panel())).toBe("Fix login redirect");
+    expect(callsTo("agent.remove")).toEqual([]);
+  });
+
+  it("cancels the question when the rail is disposed", async () => {
+    await mount();
+    removeButton().click();
+    await flush();
+    rail.dispose();
+    rail = null;
+    await flush();
+
+    expect(confirmModal()).toBeNull();
     expect(callsTo("agent.remove")).toEqual([]);
   });
 
@@ -853,7 +1109,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Fix login redirect");
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -892,7 +1148,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "unknown method: agent.remove");
     // Still open on the agent it failed to remove, still offering to try again.
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(removeButton()).toBeTruthy();
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
   });
@@ -918,7 +1174,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(payload.agents.map((each) => each.id)).toEqual(["ag-1", "ag-2"]);
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Fix login redirect");
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(0);
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
     expect(notifyError).not.toHaveBeenCalled();
@@ -979,7 +1235,7 @@ describe("taking an agent back off the branch", () => {
     await flush();
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
     expect(removeButton()).toBeTruthy();
     expect(notifyError).toHaveBeenCalledTimes(1);
@@ -1005,7 +1261,7 @@ describe("taking an agent back off the branch", () => {
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
     expect(bubbles()[1].classList.contains("active")).toBe(true);
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
   });
 
   it("removes an agent the create record still names", async () => {
@@ -1040,25 +1296,45 @@ describe("taking an agent back off the branch", () => {
 });
 
 describe("the conversation panel", () => {
-  it("wears the topic the agent named its work with, and shimmers until it has", async () => {
+  it("animates only a changed topic while preserving the live header and its focused controls", async () => {
+    payload = branchRow({ agents: [agent({ topic: "" })] });
     await mount();
-    // Nothing named yet: the head says so, in the shimmering word.
-    expect(panel().querySelector(".rail-who").textContent).toBe("Starting");
-    expect(panel().querySelector(".rail-who").classList.contains("rail-who-starting")).toBe(true);
-    expect(headWho(panel())).toBe("Claude Code 1");
+    // Nothing named yet: the head says so, in the shimmering word, and the
+    // hover falls back to the harness.
+    const standingHead = panel().querySelector(".rail-head");
+    const standingTitle = standingHead.querySelector(".rail-who");
+    const standingPin = standingHead.querySelector(".pinbtn");
+    expect(standingTitle.textContent).toBe("Starting");
+    expect(standingTitle.classList.contains("rail-who-starting")).toBe(true);
+    expect(headWho(panel())).toBe("Claude Code");
+    standingPin.focus();
+
+    // An unchanged poll neither rebuilds the head nor starts title motion.
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(panel().querySelector(".rail-head")).toBe(standingHead);
+    expect(standingTitle.dataset.titleMotion).toBeUndefined();
+    expect(document.activeElement).toBe(standingPin);
 
     payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(panel().querySelector(".rail-who").textContent).toBe("Unify prompt delivery");
-    expect(panel().querySelector(".rail-who").classList.contains("rail-who-starting")).toBe(false);
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(panel().querySelector(".rail-head")).toBe(standingHead);
+    expect(panel().querySelector(".pinbtn")).toBe(standingPin);
+    expect(panel().querySelector(".rail-who")).toBe(standingTitle);
+    expect(document.activeElement).toBe(standingPin);
+    expect(standingTitle.dataset.titleMotion).toBe("erasing");
+
+    await finishTitleMotion(standingTitle);
+    expect(standingTitle.textContent).toBe("Unify prompt delivery");
+    expect(standingTitle.classList.contains("rail-who-starting")).toBe(false);
+    expect(headWho(panel())).toBe("Unify prompt delivery");
   });
 
   it("carries the agent, the one way down to its screen, and a box to write in", async () => {
     await mount();
-    expect(headWho(panel())).toBe("Claude Code 1");
+    expect(headWho(panel())).toBe("Fix login redirect");
     const modes = [...panel().querySelectorAll(".rail-mode")];
     expect(modes).toHaveLength(1);
     expect(modes[0].textContent).toBe("TUI");
@@ -1360,7 +1636,7 @@ describe("the conversation panel", () => {
     bubbles()[1].click();
     await flush();
 
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
     expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
@@ -1507,7 +1783,7 @@ describe("the conversation panel", () => {
       bubbles()[1].click();
       await flush();
 
-      expect(headWho(panel())).toBe("Claude Code 2");
+      expect(headWho(panel())).toBe("Polish the rail");
       expect(panel().textContent).toContain("words from ag-2");
       expect(panel().textContent).not.toContain("words from ag-1");
     });
@@ -2057,7 +2333,7 @@ describe("the chat tab of a branch with no agent", () => {
     payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2 })] });
     vi.advanceTimersByTime(1600);
     await flush();
-    expect(headWho(panel())).toBe("Claude Code 2");
+    expect(headWho(panel())).toBe("Polish the rail");
   });
 
   it("moves the highlight to the card that is pressed, and creates that one", async () => {
@@ -2082,6 +2358,46 @@ describe("the chat tab of a branch with no agent", () => {
     chosenCard().click();
     await flush();
     expect(document.activeElement).toBe(chosenCard());
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+  });
+
+  // Each harness has a preference of its own on the account page, so moving
+  // the highlight brings that harness's model and effort with it rather than
+  // starting from nothing — and the composer's menu says so at once.
+  it("seeds a pressed harness with its own saved model and effort", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "codex",
+      harnesses: { claude: { model: "claude-opus-5", effort: "high" }, codex: { model: "", effort: "" } },
+    }));
+    payload = agentless();
+    await mount();
+    expect(chosenCard().dataset.provider).toBe("codex");
+
+    card("claude_adk").click();
+    await flush();
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("high");
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+  });
+
+  it("starts on the catalog's default harness with that harness's saved preference when none is chosen", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "",
+      harnesses: { claude: { model: "claude-opus-5", effort: "high" } },
+    }));
+    payload = agentless();
+    await mount();
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
 
     await send("start here");
     expect(callsTo("agent.add")[0].params).toMatchObject({
@@ -2270,11 +2586,12 @@ describe("the composer's model menu", () => {
     expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
   });
 
-  it("asks for a model when an agent has never run and chose nothing", async () => {
+  it("says the harness's defaults stand when an agent has never run and chose nothing", async () => {
     payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Select model");
+    expect(modelMenuButton().textContent).toContain("Harness default");
+    expect(reasoningMenuButton().textContent).toContain("Default effort");
   });
 
   it("moves the label the instant a model is picked, before agent.choose answers", async () => {
@@ -2641,6 +2958,7 @@ describe("the agent's surfaces, carried by the status row", () => {
     const block = railHost().querySelector(".rail-composer");
     expect([...block.children].map((child) => child.id)).toEqual([
       "rail-surfaces-viewer",
+      "rail-observation",
       "rail-status",
       "rail-chat-recovery",
       "",
@@ -2687,6 +3005,7 @@ describe("the agent's surfaces, carried by the status row", () => {
 });
 
 describe("the agent's surfaces, seeded from the local cache", () => {
+  const generation = "surface-session-1";
   const feedItems = [{
     kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1",
     agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
@@ -2697,7 +3016,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   });
   const aChecklist = { checklist: [{ id: "t-1", subject: "wire the seed", state: "in_progress" }] };
   const surfacesAddress = (sub) => surfacesCacheAddress({ deviceId: "dev-1", entityId: "run-3", agentId: sub });
-  const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), surfacesRecord(surfaces));
+  const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), surfacesRecord(surfaces, generation));
   const saveSurfacesLongAgo = async (sub, surfaces) => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - SURFACE_PILL_GRACE_MS - 1);
     await saveSurfaces(sub, surfaces);
@@ -2711,6 +3030,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     [...railStatusPills().querySelectorAll(".surface-pill")].map((pill) => pill.dataset.surfaceKind);
   const pillCount = (kind) =>
     railStatusPills().querySelector(`[data-surface-kind="${kind}"] .surface-pill-count`).textContent.trim();
+  const openTasks = () => railStatusPills().querySelector('[data-surface-kind="checklist"]').click();
   const answerNothing = () => {
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
@@ -2746,6 +3066,8 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     expect(pillKinds()).toEqual(["checklist"]);
+    openTasks();
+    expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
   });
 
   it("seeds the same snapshot whole while the grace still holds", async () => {
@@ -2753,6 +3075,8 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     expect(pillKinds()).toEqual(["shells", "checklist"]);
+    openTasks();
+    expect(railHost().querySelector(".surface-checklist-context").textContent).toContain("Last known");
   });
 
   it("offers the seeded kinds in the header menu before the first read answers", async () => {
@@ -2800,6 +3124,8 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     bubbles()[1].click();
     await flush();
     expect(pillKinds()).toEqual(["checklist"]);
+    openTasks();
+    expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
   });
 
   it("drops a seed whose agent was left while the read was in flight", async () => {
@@ -2809,6 +3135,32 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     bubbles()[1].click(); // ag-1's seed is still in flight
     await flush();
     expect(pillKinds()).toEqual([]);
+  });
+
+  it("drops a mounted cached observation when a replacement generation answers", async () => {
+    await saveSurfaces("ag-1", {
+      checklist: [{ id: "t-1", subject: "old process step", state: "in_progress" }],
+      observations: { checklist: { support: "supported", freshness: "current", coverage: "complete" } },
+    });
+    let answer;
+    bridge.call = vi.fn(async (method) => {
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise((resolve) => { answer = resolve; });
+      return {};
+    });
+    await mount();
+    expect(pillKinds()).toEqual(["checklist"]);
+    openTasks();
+    expect(railHost().querySelector(".surface-checklist").textContent).toContain("old process step");
+
+    answer(branchRow({
+      agents: [agent({ surface_session_generation: "surface-session-2", surfaces: null })],
+    }));
+    await flush();
+
+    expect(railHost().querySelector(".agent-observation-host").hidden).toBe(true);
+    expect(pillKinds()).toEqual([]);
+    expect(railHost().textContent).not.toContain("old process step");
   });
 
   it("replaces the seeded pills with the first live payload", async () => {
@@ -2844,11 +3196,11 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     expect(await savedDescription("ag-1")).toBe("cargo clippy");
   });
 
-  it("leaves the record alone for a payload carrying no surfaces at all", async () => {
+  it("clears the scoped record for a payload carrying no surfaces at all", async () => {
     await saveSurfaces("ag-1", shellsRunning("from the last visit"));
     payload = branchRow({ agents: [agent()] });
     await mount();
-    expect(await savedDescription("ag-1")).toBe("from the last visit");
+    expect((await savedSurfaces("ag-1")).value).toEqual({ surfaces: null, generation });
   });
 
   it("addresses the conversation and its surfaces alike, the kind apart", async () => {
@@ -2876,6 +3228,38 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await flush();
     expect(railHost().querySelector(".surface-pill")).toBe(null);
     expect(notifyError).not.toHaveBeenCalled();
+  });
+});
+
+describe("task completion notifications", () => {
+  const checklistAgent = (state, epoch) => agent({
+    surfaces: {
+      checklist: [{ id: "turn-1:0", subject: "Ship the release", state }],
+      observations: { checklist: { support: "supported", freshness: "current", coverage: "complete" } },
+      checklist_provenance: {
+        source: "turn_plan", provider_session_generation: 1, turn_id: "turn-1",
+        collection_epoch: epoch, carried_from_prior_turn: false,
+      },
+    },
+  });
+
+  it("announces a live transition once and removes the toast with the rail", async () => {
+    payload = branchRow({ agents: [checklistAgent("in_progress", 1)] });
+    await mount();
+    bubbles()[0].getBoundingClientRect = () => ({ left: 900, right: 932, top: 100, bottom: 132, width: 32, height: 32 });
+    expect(document.querySelector(".task-completion-toast")).toBe(null);
+
+    payload = branchRow({ agents: [checklistAgent("completed", 2)] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(document.querySelector(".task-completion-toast")?.textContent).toContain("Ship the release");
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(document.querySelectorAll(".task-completion-toast")).toHaveLength(1);
+    rail.dispose();
+    rail = null;
+    expect(document.querySelector(".task-completion-toast")).toBe(null);
   });
 });
 
@@ -3072,7 +3456,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
 
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
     expect(bubbles()[0].classList.contains("active")).toBe(true);
-    expect(headWho(panel())).toBe("Claude Code 1");
+    // The agent the press made has named nothing yet: the head says its harness.
+    expect(headWho(panel())).toBe("Claude Code");
     expect(timeline().textContent).toContain("start here");
     expect(composer().value).toBe("");
     expect(callsTo("agent.add")).toHaveLength(1);
@@ -3556,7 +3941,7 @@ describe("the viewer above the conversation footer", () => {
   it("is an independently scrolling popover anchored above the footer", () => {
     const viewerRule = shellCss.match(/\.rail-surfaces-viewer \{[^}]*\}/)[0];
     const composerRule = shellCss.match(/\.rail-composer \{[^}]*\}/)[0];
-    expect(composerRule).toMatch(/position:relative/);
+    expect(composerRule).toMatch(/position:absolute/);
     expect(viewerRule).toMatch(/position:absolute/);
     expect(viewerRule).toMatch(/bottom:100%/);
     expect(viewerRule).toMatch(/max-height:min\(46vh, 420px\)/);

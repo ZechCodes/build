@@ -512,8 +512,9 @@ fn spawned_session_stays_live_after_a_large_completion_and_completes_the_next_tu
     let cwd = root.path().display().to_string();
     let initialize = json!({"id":1,"result":initialize_result(&supported_user_agent())});
     let opened = json!({"id":2,"result":thread_opened_at(&cwd, THREAD_ID, Some(SELECTED_EFFORT))});
-    let first_started = json!({"id":3,"result":{"turn":{"id":TURN_ID}}});
-    let second_started = json!({"id":4,"result":{"turn":{"id":"turn-next"}}});
+    let goal = json!({"id":3,"result":{"goal":null}});
+    let first_started = json!({"id":4,"result":{"turn":{"id":TURN_ID}}});
+    let second_started = json!({"id":5,"result":{"turn":{"id":"turn-next"}}});
     let second_completed = json!({
         "method":"turn/completed",
         "params":{
@@ -522,7 +523,7 @@ fn spawned_session_stays_live_after_a_large_completion_and_completes_the_next_tu
         }
     });
     let script = format!(
-        "read initialize; printf '%s\\n' '{initialize}'; read initialized; read thread; printf '%s\\n' '{opened}'; read first; printf '%s\\n' '{first_started}'; sleep 0.05; sed -n '1p' '{}'; read second; printf '%s\\n' '{second_started}'; sleep 0.05; printf '%s\\n' '{second_completed}'; read hold",
+        "read initialize; printf '%s\\n' '{initialize}'; read initialized; read thread; printf '%s\\n' '{opened}'; read goal; printf '%s\\n' '{goal}'; read first; printf '%s\\n' '{first_started}'; sleep 0.05; sed -n '1p' '{}'; read second; printf '%s\\n' '{second_started}'; sleep 0.05; printf '%s\\n' '{second_completed}'; read hold",
         large_completion_path.display()
     );
     let spec = HarnessSpec::new("sh").arg("-c").arg(script);
@@ -545,6 +546,16 @@ fn spawned_session_stays_live_after_a_large_completion_and_completes_the_next_tu
     };
 
     wait_until("opened its thread", &mut || session.session_id().is_some());
+    wait_until("completed its initial goal read", &mut || {
+        session.surfaces().is_some_and(|surfaces| {
+            surfaces
+                .observations
+                .goal
+                .as_ref()
+                .and_then(crate::harness::surfaces::SurfaceObservation::freshness)
+                == Some(crate::harness::surfaces::SurfaceFreshness::Current)
+        })
+    });
     session.send_turn(&Turn::new("first")).unwrap();
     wait_until("started its first turn", &mut || {
         session.status() == AgentStatus::Working
@@ -3328,6 +3339,7 @@ fn replay_observed_fixture(fixture: &str) -> FixtureReplay {
     let activities = reports
         .iter()
         .filter_map(|report| match &report.activity {
+            AgentActivity::Compaction { .. } => None,
             AgentActivity::Reasoning { .. } => Some(FixtureActivity::Reasoning),
             AgentActivity::Narration { .. } => Some(FixtureActivity::Narration),
             AgentActivity::ToolUse { call_id, .. } => {
@@ -3528,23 +3540,29 @@ fn context_compaction_and_review_mode_transitions_stay_visible() {
             .collect::<Vec<_>>()
     };
 
+    let compactions = |reports: Vec<crate::harness::ActivityReport>| {
+        reports
+            .into_iter()
+            .map(|report| match report.activity {
+                AgentActivity::Compaction { completed } => completed,
+                other => panic!("expected compaction, got {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+
     let compaction = json!({"id":"compaction-1","type":"contextCompaction"});
-    let compaction_started = summaries(
+    let compaction_started = compactions(
         translator
             .translate("item/started", &item_envelope(compaction.clone()))
             .unwrap(),
     );
-    let compaction_completed = summaries(
+    let compaction_completed = compactions(
         translator
             .translate("item/completed", &item_envelope(compaction))
             .unwrap(),
     );
-    assert_eq!(compaction_started.len(), 1);
-    assert!(compaction_started[0].contains("Context compaction"));
-    assert!(compaction_started[0].contains("started"));
-    assert_eq!(compaction_completed.len(), 1);
-    assert!(compaction_completed[0].contains("Context compaction"));
-    assert!(compaction_completed[0].contains("completed"));
+    assert_eq!(compaction_started, [false]);
+    assert_eq!(compaction_completed, [true]);
 
     let mut transitions = Vec::new();
     for (item, expected) in [
@@ -3570,11 +3588,7 @@ fn context_compaction_and_review_mode_transitions_stay_visible() {
         transitions.extend(completed);
     }
 
-    for summary in compaction_started
-        .into_iter()
-        .chain(compaction_completed)
-        .chain(transitions)
-    {
+    for summary in transitions {
         assert!(summary.chars().count() <= crate::harness::adk::TOOL_SUMMARY_LIMIT);
     }
 }
@@ -3704,7 +3718,15 @@ fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
         .iter()
         .find(|argument| argument.starts_with("mcp_servers.build.enabled_tools="))
         .expect("the Build MCP server enables only named tools");
-    assert!(enabled_tools.contains("done"), "{enabled_tools}");
+    assert!(
+        enabled_tools.contains("post_thread_message"),
+        "{enabled_tools}"
+    );
+    assert!(!enabled_tools.contains("done"), "{enabled_tools}");
+    assert!(
+        !enabled_tools.contains("read_unread_messages"),
+        "{enabled_tools}"
+    );
     assert!(
         !enabled_tools.contains("create_issue"),
         "{enabled_tools}: a coding owner gets no router tools"

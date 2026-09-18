@@ -106,14 +106,21 @@ pub(in crate::app) fn diff_file_rows(diff: &crate::diff::WorktreeDiff) -> Vec<Va
 }
 
 impl GitScope {
-    /// The branch history is measured against, so `git.log` can mark which
-    /// commits this checkout carries on top of it. The primary checkout has
-    /// none — its history IS the base.
-    pub(in crate::app) fn mark_ahead_of(&self) -> Option<&str> {
+    /// The meaning of highlighted commit rows in this scope. Workspace history
+    /// marks the exact commits included by All changes; run/worktree history
+    /// retains its base-branch marker; primary project history marks nothing.
+    pub(in crate::app) fn log_highlight(&self) -> Option<crate::gitgui::LogHighlight<'_>> {
+        if self.cache_namespace.is_some() {
+            return Some(crate::gitgui::LogHighlight::Unpushed);
+        }
         self.run
             .as_ref()
-            .map(|run| run.base_branch.as_str())
-            .or_else(|| self.worktree.as_ref().map(|wt| wt.base_branch.as_str()))
+            .map(|run| crate::gitgui::LogHighlight::AheadOfBase(run.base_branch.as_str()))
+            .or_else(|| {
+                self.worktree
+                    .as_ref()
+                    .map(|wt| crate::gitgui::LogHighlight::AheadOfBase(wt.base_branch.as_str()))
+            })
     }
 
     fn namespace_key(&self, key: &str) -> String {
@@ -471,7 +478,7 @@ impl AppState {
                 .unwrap_or(30)
                 .clamp(1, 200) as usize;
             let skip = params.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
-            crate::gitgui::log_page(&scope.repo_path, scope.mark_ahead_of(), limit, skip)
+            crate::gitgui::log_page(&scope.repo_path, scope.log_highlight(), limit, skip)
         })
     }
 

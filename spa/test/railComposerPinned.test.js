@@ -194,7 +194,7 @@ describe("the conversation panel's column", () => {
 });
 
 describe("the panel's stylesheet", () => {
-  const panelRule = () => shellCss.match(/\.rail-panel \{[^}]*\}/)[0];
+  const panelRule = () => shellCss.match(/^\.rail-panel \{[^}]*\}/m)[0];
   const headRule = () => shellCss.match(/\.rail-head \{[^}]*\}/)[0];
   const bodyRule = () => shellCss.match(/\.rail-body \{[^}]*\}/)[0];
   const composerRule = () => shellCss.match(/\.rail-composer \{[^}]*\}/)[0];
@@ -208,9 +208,9 @@ describe("the panel's stylesheet", () => {
     expect(bodyRule()).toMatch(/min-height:0/);
   });
 
-  it("holds the composer out of the scroll, at the panel's bottom edge", () => {
-    expect(headRule()).toMatch(/flex:none/);
-    expect(composerRule()).toMatch(/flex:none/);
+  it("holds the glass header and composer over the scrolling conversation", () => {
+    expect(headRule()).toMatch(/position:absolute/);
+    expect(composerRule()).toMatch(/position:absolute/);
   });
 
   // Growth has to stop somewhere: a pasted paragraph that kept growing would

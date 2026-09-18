@@ -61,6 +61,17 @@ pub(in crate::app) fn record_activity(
     use crate::harness::AgentActivity;
     let parent_sequence = parent_row_sequence(state, key, report.parent_call_id.as_deref());
     match &report.activity {
+        AgentActivity::Compaction { completed: true } => {
+            let landed = state
+                .edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+                    let session_id = open_session_id(thread, agent_id);
+                    Ok(thread.resolve_compaction(session_id.as_deref()))
+                })
+                .unwrap_or(false);
+            if !landed {
+                state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);
+            }
+        }
         AgentActivity::ToolUse { call_id, .. } => {
             let minted =
                 state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);

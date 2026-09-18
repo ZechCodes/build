@@ -20,6 +20,13 @@ describe("confirmModalHtml", () => {
     expect(html).toMatch(/data-confirm-cancel>Keep reviewing<\/button>/);
   });
 
+  it("uses defaults when optional values are explicitly undefined", () => {
+    const html = confirmModalHtml({ title: "t", actions: undefined, warnings: undefined, confirmLabel: undefined });
+    expect(html).toContain("data-confirm-ok>Confirm</button>");
+    expect(html).not.toContain("<ol");
+    expect(html).not.toContain("<ul");
+  });
+
   it("renders the intro sub line only when given", () => {
     expect(confirmModalHtml({ title: "t", intro: "This will:" })).toContain('<div class="sub">This will:</div>');
     expect(confirmModalHtml({ title: "t" })).not.toContain('class="sub"');

@@ -291,6 +291,7 @@ fn real_adk_session_reports_a_background_task_and_stays_working() {
         std::thread::spawn(move || {
             while let Ok(event) = activity.blocking_recv() {
                 let line = match &event.activity {
+                    AgentActivity::Compaction { completed } => format!("compaction: {completed}"),
                     AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                     AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                     AgentActivity::ToolResult {

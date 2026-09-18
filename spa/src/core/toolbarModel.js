@@ -6,6 +6,7 @@
 import { fuzzyRank } from "./fuzzy.js";
 import { deviceTags, projectNameOf } from "./inboxProjects.js";
 import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
+import { workspaceDisplayName } from "./workspaceModel.js";
 
 /** The branch the daemon will cut for a typed name, mirrored for the preview
  *  only — the daemon is still the one that decides. */
@@ -62,7 +63,10 @@ export function workspaceMenuModel({ workspaces = [], projectKey = null, workspa
     .filter((workspace) => !projectKey || workspace.projectKey === projectKey)
     .map((workspace) => ({
       ...workspace,
-      name: workspace.name ?? workspace.id,
+      // What the user called it, not the slug its checkout folder took
+      // (core/workspaceModel.js). A row with nothing to be called at all falls
+      // back to its id, which is at least the thing the menu is addressing.
+      name: workspaceDisplayName(workspace, workspace.id),
       current: workspace.workspaceKey === workspaceKey,
     }));
   return fuzzyRank(entries, query, (entry) => entry.name);
@@ -88,7 +92,12 @@ const STANDING = {
     // A workspace is not a feed row: it is a record of its own, found among the
     // workspaces below rather than among the items.
     rowIs: () => () => false,
-    label: (route, row, carried) => carried.workspace?.name ?? route.workspaceId ?? "Workspace",
+    // The bar says what the user called this workspace, never the slug its
+    // folder and branch were cut from (core/workspaceModel.js). Until that
+    // machine has listed it there is no name to say, and the id the URL carries
+    // is the only honest stand-in.
+    label: (route, row, carried) =>
+      (carried.workspace ? workspaceDisplayName(carried.workspace, route.workspaceId) : route.workspaceId) ?? "Workspace",
     carries: (route, { workspaces }) => {
       const workspace = workspaces.find((candidate) => candidate.workspaceKey === routeWorkspaceKey(route)) || null;
       return {

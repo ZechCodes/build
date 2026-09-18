@@ -405,6 +405,8 @@ pub trait AgentSession: Send + Sync {
 /// read twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentActivity {
+    /// The provider is compacting, or has finished compacting, its context.
+    Compaction { completed: bool },
     /// The agent thought out loud.
     Reasoning { summary: String },
     /// The agent called a tool. `call_id` is the protocol's own id for the
@@ -446,6 +448,8 @@ impl AgentActivity {
     /// The line the timeline shows for this event.
     pub fn summary(&self) -> &str {
         match self {
+            AgentActivity::Compaction { completed: false } => "Compacting",
+            AgentActivity::Compaction { completed: true } => "Compacted",
             AgentActivity::Reasoning { summary }
             | AgentActivity::ToolUse { summary, .. }
             | AgentActivity::ToolResult { summary, .. }
@@ -504,6 +508,17 @@ impl SessionOutput {
         SessionOutput {
             bytes: Some(bytes),
             activity: None,
+            surfaces: None,
+        }
+    }
+
+    pub fn painting_with_activity(
+        bytes: broadcast::Receiver<Vec<u8>>,
+        activity: Option<broadcast::Receiver<ActivityReport>>,
+    ) -> SessionOutput {
+        SessionOutput {
+            bytes: Some(bytes),
+            activity,
             surfaces: None,
         }
     }

@@ -62,10 +62,12 @@ const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts, re
 const {
   chooseCreationDevice,
   connectDevice,
+  deviceRecoverySnapshot,
   deviceWentAway,
   goOffline,
   openDeviceSessions,
   retireDevice,
+  syncDeviceRecoveryPresence,
   syncHome,
 } = await import("../src/connection.js");
 const { initDevicePicker, paintDevicePicker, stopWatchingPresence } = await import("../src/devices.js");
@@ -74,8 +76,15 @@ const { allDevicesOfflineText, deviceUnreachableText, devicesBlockedText } = awa
 const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
 const { holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js");
+const { mountRecoveryBanners, unmountRecoveryBanners } = await import("../src/recoveryBanner.js");
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
+const reachNextRecoveryAttempt = async () => {
+  const waiting = deviceRecoverySnapshot().filter((record) => record.nextAttemptAt != null);
+  const delay = Math.max(...waiting.map((record) => record.nextAttemptAt - Date.now()), 0);
+  await vi.advanceTimersByTimeAsync(delay + 1);
+  for (let index = 0; index < 6; index += 1) await flush();
+};
 
 const online = (id, name) => ({ id, name, status: "online", fingerprint: `${id}-fingerprint` });
 /** The same paired device, as the account lists it while its bridge is down. */
@@ -184,7 +193,8 @@ beforeEach(() => {
   resetApplication();
   stopFeed();
   document.body.innerHTML =
-    '<div id="root"></div><div id="devpick"></div><div id="compose"></div><div id="inbox-list"></div>';
+    '<div id="root"></div><div id="devpick"></div><div id="compose"></div><div id="inbox-list"></div>' +
+    '<div id="recovery-banners"></div><div id="recovery-announcement" aria-live="polite"></div>';
   document.body.className = "";
   App.gated = false;
   App.poll = null;
@@ -234,6 +244,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  unmountRecoveryBanners();
   delete globalThis.RTCPeerConnection;
   stopWatchingPresence();
   unsubscribe();
@@ -346,10 +357,11 @@ describe("per-device connections", () => {
     startFeed(60000);
     await flush();
 
+    unlinkable.add("dev-a");
     await loseTheLink("dev-a");
 
     expect(contextFor("dev-a").offline).toBe(true);
-    expect(contextFor("dev-a").blocked).toBe("lost");
+    expect(contextFor("dev-a").blocked).toBe("timeout");
     expect(knownContexts().map((context) => context.deviceId)).toEqual(["dev-a", "dev-b"]);
     expect(liveIds()).toEqual(["dev-b"]);
     // Its rows are still the account's rows — greyed by the rail, not removed.
@@ -386,6 +398,7 @@ describe("per-device connections", () => {
       [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
     expect(rowOn("dev-a")).toBeTruthy();
 
+    unlinkable.add("dev-a");
     await loseTheLink("dev-a");
 
     expect(rowOn("dev-a").classList.contains("inbox-offline")).toBe(true);
@@ -402,9 +415,11 @@ describe("per-device connections", () => {
     const rowOn = (deviceId) =>
       [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
 
+    unlinkable.add("dev-a");
     await loseTheLink("dev-a");
     expect(rowOn("dev-a").classList.contains("inbox-offline")).toBe(true);
 
+    unlinkable.delete("dev-a");
     await connectDevice("dev-a");
     await flush();
 
@@ -412,10 +427,7 @@ describe("per-device connections", () => {
     expect(contextFor("dev-a").blocked).toBe(null);
   });
 
-  // A machine that could not be reached is not asked for again on a cadence:
-  // there is nothing under it to fall back to and nothing that would change
-  // between one try and the next (rule 3).
-  it("does not dial a blocked machine again until a reader or the account asks", async () => {
+  it("keeps redialling a blocked machine while the account still calls it online", async () => {
     unlinkable.add("dev-b");
     await connectEveryDevice();
     const dialled = openedFor("dev-b").length;
@@ -423,11 +435,10 @@ describe("per-device connections", () => {
     await openDeviceSessions().settled;
     await vi.advanceTimersByTimeAsync(60000);
 
-    expect(openedFor("dev-b")).toHaveLength(dialled);
+    expect(openedFor("dev-b").length).toBeGreaterThan(dialled);
 
     unlinkable.delete("dev-b");
-    await connectDevice("dev-b");
-    await flush();
+    await reachNextRecoveryAttempt();
 
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
   });
@@ -438,6 +449,8 @@ describe("per-device connections", () => {
     // what "offline" on this screen means.
     devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
+    syncDeviceRecoveryPresence(devices);
+    syncDeviceRecoveryPresence(devices);
 
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
@@ -446,29 +459,26 @@ describe("per-device connections", () => {
     expect(waitingNote()).toContain(allDevicesOfflineText());
   });
 
-  // The other way the account can run out: every machine is up and answering
-  // the relay, and none of their connections could be made. Nothing is offline,
-  // so nothing is said to be — and each row carries the one thing a reader can
-  // do about it (rule 3).
-  it("says the machines are online but unreachable, and offers each of them a retry", async () => {
+  it("keeps the shell mounted and schedules recovery when every online machine is unreachable", async () => {
+    mountRecoveryBanners();
     unlinkable.add("dev-a");
     unlinkable.add("dev-b");
 
     await connectEveryDevice();
 
-    expect(held()).toBe(true);
-    expect(waitingNote()).toBe(devicesBlockedText());
-    expect(document.querySelector("#waitlist").textContent).toContain("blocked");
-    expect([...document.querySelectorAll("[data-retry-device]")].map((button) => button.dataset.retryDevice)).toEqual([
-      "dev-a",
-      "dev-b",
+    expect(held()).toBe(false);
+    expect(deviceRecoverySnapshot().map(({ deviceId, status, failedAttempts }) => ({ deviceId, status, failedAttempts }))).toEqual([
+      { deviceId: "dev-a", status: "waiting", failedAttempts: 1 },
+      { deviceId: "dev-b", status: "waiting", failedAttempts: 1 },
     ]);
+    expect(document.getElementById("recovery-banners").textContent).toContain("Reconnecting to Laptop");
+    expect(document.getElementById("recovery-banners").textContent).toContain("Reconnecting to Desktop");
 
     unlinkable.delete("dev-a");
-    document.querySelector('[data-retry-device="dev-a"]').click();
-    await flush();
+    await reachNextRecoveryAttempt();
 
     expect(held()).toBe(false);
+    expect(openedFor("dev-a").length).toBeGreaterThan(1);
     expect(liveIds()).toEqual(["dev-a"]);
   });
 
@@ -477,17 +487,15 @@ describe("per-device connections", () => {
   // stops this layer asking for one again (rule 3). Pressing it has to clear
   // them and dial — routing through a boot that refuses every blocked machine
   // it finds asks nothing of anybody.
-  it("dials every blocked machine again when the reader presses Retry now", async () => {
+  it("dials every blocked machine again when the reader retries now", async () => {
     unlinkable.add("dev-a");
     unlinkable.add("dev-b");
     await connectEveryDevice();
-    expect(held()).toBe(true);
+    expect(held()).toBe(false);
     const asked = openedFor("dev-a").length;
 
     unlinkable.clear();
-    document.getElementById("retrybtn").click();
-    await flush();
-    await flush();
+    await openDeviceSessions({ retry: true }).settled;
 
     expect(openedFor("dev-a").length).toBeGreaterThan(asked);
     expect(held()).toBe(false);
@@ -510,9 +518,7 @@ describe("per-device connections", () => {
     const asked = { a: openedFor("dev-a").length, b: openedFor("dev-b").length };
 
     unreachable.clear();
-    document.getElementById("retrybtn").click();
-    await flush();
-    await flush();
+    await openDeviceSessions({ retry: true }).settled;
 
     expect(openedFor("dev-a").length).toBe(asked.a + 1);
     expect(openedFor("dev-b").length).toBe(asked.b + 1);
@@ -553,28 +559,25 @@ describe("per-device connections", () => {
     await flush();
     await flush();
 
-    expect(held()).toBe(true);
+    expect(held()).toBe(false);
     expect(contextFor("dev-a").blocked).toBe("timeout");
     expect(contextFor("dev-b").blocked).toBe("unreached");
   });
 
-  // A retry that fails again leaves the reader on the same screen, with the
-  // machine wearing whatever reason it was this time.
-  it("repaints the waiting screen when a retry could not reach the machine either", async () => {
+  it("keeps recovery visible when a retry could not reach the machine either", async () => {
     devices = [online("dev-a", "Laptop")];
     App.devices = devices;
     unlinkable.add("dev-a");
     await connectEveryDevice();
-    expect(held()).toBe(true);
+    expect(held()).toBe(false);
 
     unlinkable.delete("dev-a");
     unreachable.add("dev-a");
-    document.querySelector('[data-retry-device="dev-a"]').click();
-    await flush();
+    await openDeviceSessions({ retry: true }).settled;
 
-    expect(held()).toBe(true);
+    expect(held()).toBe(false);
     expect(contextFor("dev-a").blocked).toBe("unreached");
-    expect(document.querySelector("[data-retry-device]")).toBeTruthy();
+    expect(deviceRecoverySnapshot("dev-a").failedAttempts).toBe(1);
   });
 
   // Which sentence this is, is the account's question rather than this client's.
@@ -587,6 +590,7 @@ describe("per-device connections", () => {
     await connectEveryDevice();
     devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
+    syncDeviceRecoveryPresence(devices);
 
     await loseTheLink("dev-a");
 
@@ -600,6 +604,7 @@ describe("per-device connections", () => {
     await connectEveryDevice();
     devices = [away("dev-a", "Laptop")];
     App.devices = devices;
+    syncDeviceRecoveryPresence(devices);
 
     await loseTheLink("dev-a");
 
@@ -608,10 +613,7 @@ describe("per-device connections", () => {
     expect(waitingNote()).toContain(deviceUnreachableText("Laptop", contextFor("dev-a").offlineSince));
   });
 
-  // Every surface is about a machine, so an account with none has nothing to
-  // stand on: the gate takes the app back rather than leaving a dead route
-  // under a banner. The view goes with it — its poll and its own teardown.
-  it("holds the app on the waiting screen when the last device goes", async () => {
+  it("preserves the mounted view while online devices reconnect", async () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
@@ -623,15 +625,11 @@ describe("per-device connections", () => {
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
 
-    expect(held()).toBe(true);
-    // Two machines are listed under it, and either of them hands the app back.
-    expect(waitingHeading()).toBe("Waiting for a device");
-    expect(document.getElementById("waitlist").textContent).toContain("Laptop");
-    expect(document.getElementById("waitlist").textContent).toContain("Desktop");
-    expect(poll.dispose).toHaveBeenCalled();
-    expect(viewDispose).toHaveBeenCalled();
-    expect(App.poll).toBe(null);
-    expect(App.viewDispose).toBe(null);
+    expect(held()).toBe(false);
+    expect(poll.dispose).not.toHaveBeenCalled();
+    expect(viewDispose).not.toHaveBeenCalled();
+    expect(App.poll).toBe(poll);
+    expect(App.viewDispose).toBe(viewDispose);
   });
 
   // The screen's foot is one line about what the app is doing and the two things
@@ -640,6 +638,9 @@ describe("per-device connections", () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    syncDeviceRecoveryPresence(devices);
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
     expect(held()).toBe(true);
@@ -659,6 +660,9 @@ describe("per-device connections", () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    syncDeviceRecoveryPresence(devices);
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
     expect(held()).toBe(true);
@@ -697,6 +701,9 @@ describe("per-device connections", () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    syncDeviceRecoveryPresence(devices);
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
     expect(held()).toBe(true);
@@ -712,10 +719,7 @@ describe("per-device connections", () => {
     expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");
   });
 
-  // Revoking a device is not the same as losing one: it is not coming back, so
-  // nothing is kept for it. The account can run out of machines this way as
-  // surely as by every bridge going, and the gate hears it the same way.
-  it("holds the app when the last device is revoked", async () => {
+  it("does not misreport revoked online rows as an all-offline account", async () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
@@ -725,7 +729,7 @@ describe("per-device connections", () => {
     retireDevice("dev-b");
     await flush();
 
-    expect(held()).toBe(true);
+    expect(held()).toBe(false);
     expect(liveIds()).toEqual([]);
   });
 
@@ -1194,32 +1198,21 @@ describe("per-device connections", () => {
     expect(captures.flush).toHaveBeenCalledTimes(1);
   });
 
-  // Nothing retries on its own any more (rule 3), so the screen the account is
-  // held on is the reader that hears a machine come back: it re-reads presence
-  // on the gate's own three seconds, marks what has gone away — which is what
-  // clears a block — and opens whatever the account starts calling online.
-  it("watches for a machine while it holds the app, and lets one back in", async () => {
+  it("keeps retrying an online machine without waiting for another presence transition", async () => {
     unlinkable.add("dev-a");
     unlinkable.add("dev-b");
     await connectEveryDevice();
-    expect(held()).toBe(true);
+    expect(held()).toBe(false);
     expect(contextFor("dev-a").blocked).toBe("timeout");
     account.fetchDevices.mockClear();
 
-    // The bridge went, and the account says so…
-    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(account.fetchDevices).toHaveBeenCalled();
-    expect(contextFor("dev-a").blocked).toBe(null); // away, not blocked: nothing failed to reach it
-
-    // …and then it is back, and its connection can be made this time.
     unlinkable.clear();
-    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
-    await vi.advanceTimersByTimeAsync(3000);
-    await flush();
+    await reachNextRecoveryAttempt();
 
     expect(held()).toBe(false);
-    expect(liveIds()).toEqual(["dev-a"]);
+    expect(openedFor("dev-a").length).toBeGreaterThan(1);
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+    expect(account.fetchDevices).not.toHaveBeenCalled();
   });
 
   // Presence is the api's while the app is open (rule 6), and the app being
@@ -1277,6 +1270,7 @@ describe("per-device connections", () => {
     const lost = openedFor("dev-a").at(-1);
     const kept = openedFor("dev-b").at(-1);
 
+    unlinkable.add("dev-a");
     await loseTheLink("dev-a");
 
     expect(lost.isPaused()).toBe(true);
@@ -1305,9 +1299,11 @@ describe("per-device connections", () => {
   // about to answer is re-blocked with a reason that was never true.
   it("leaves a machine with a connect in flight alone when the account calls it offline", async () => {
     await connectEveryDevice();
+    unlinkable.add("dev-b");
     await loseTheLink("dev-b");
-    expect(contextFor("dev-b").blocked).toBe("lost");
+    expect(contextFor("dev-b").blocked).toBe("timeout");
 
+    unlinkable.delete("dev-b");
     slowMs.set("dev-b", 20);
     const retry = connectDevice("dev-b");
     await flush();

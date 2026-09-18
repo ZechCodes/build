@@ -67,6 +67,23 @@ describe("where the menu sits", () => {
     const html = composerHtml({ inputId: "i", sendId: "s", hintId: "h", placeholder: "p" });
     expect(html).not.toContain("composer-model");
   });
+
+  it("lifts a clipped menu at a bounded viewport position instead of stretching it from the left edge", () => {
+    mount({ provider: "claude_adk", model: "claude-opus-5", effort: "high" });
+    host().style.overflowY = "hidden";
+    slot().querySelector(".splitbtn").getBoundingClientRect = () => ({ top: 300, bottom: 330, left: 900, right: 1020 });
+    Object.defineProperties(menu(), {
+      offsetWidth: { configurable: true, value: 180 },
+      offsetHeight: { configurable: true, value: 80 },
+    });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
+
+    button().click();
+
+    expect(menu().style.position).toBe("fixed");
+    expect(menu().style.left).toBe("840px");
+    expect(menu().style.right).toBe("auto");
+  });
 });
 
 describe("what the menu offers", () => {
@@ -74,6 +91,8 @@ describe("what the menu offers", () => {
     mount({ provider: "claude_adk", model: "claude-opus-5", effort: "high" });
     expect(button().textContent).toContain("Claude Opus 5");
     expect(reasoningButton().textContent).toContain("high");
+    expect(button().textContent).not.toContain("▾");
+    expect(reasoningButton().textContent).not.toContain("▾");
     button().click();
     expect(items()).toEqual(["model:claude-opus-5", "model:claude-haiku-4-5"]);
     reasoningButton().click();
@@ -85,7 +104,8 @@ describe("what the menu offers", () => {
 
   it("offers the models of the harness the agent is on, and no harness of its own", () => {
     mount({ provider: "codex", model: "", effort: "" }, { provider: "codex" });
-    expect(button().textContent).toContain("Select model");
+    expect(button().textContent).toContain("Harness default");
+    expect(reasoningButton().textContent).toContain("Default effort");
     button().click();
     expect(items()).toEqual(["model:gpt"]);
     reasoningButton().click();
@@ -166,7 +186,7 @@ describe("the model the agent is running on", () => {
       { provider: "claude_adk", model: "claude-opus-5", effort: "" },
       { activeModel: "claude-haiku-4-5", activeEffort: "high" },
     );
-    expect(reasoningButton().textContent).toContain("Select effort");
+    expect(reasoningButton().textContent).toContain("Default effort");
     reasoningButton().click();
     expect(reasoningItem("effort:high").className).not.toContain("on");
   });

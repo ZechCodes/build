@@ -119,6 +119,74 @@ describe("mountSplitButton in-flight guard (DOM)", () => {
       caret.click();
       expect(menu.hidden).toBe(false);
     });
+
+    it("places an upward menu in viewport coordinates under a filtered containing block", () => {
+      const { container, caret, menu } = mount(pendingRun());
+      const scrolling = document.createElement("div");
+      scrolling.style.overflowY = "hidden";
+      scrolling.append(container);
+      document.body.append(scrolling);
+      container.querySelector(".splitbtn").getBoundingClientRect = () => ({
+        left: 268, right: 300, top: 400, bottom: 432, width: 32, height: 32,
+      });
+      let menuHeight = 96;
+      Object.defineProperties(menu, {
+        offsetWidth: { configurable: true, value: 180 },
+        offsetHeight: { configurable: true, get: () => menuHeight },
+      });
+      const containingBlock = { left: 100, top: 50, height: 700, scale: 0.8 };
+      menu.getBoundingClientRect = () => {
+        const height = menuHeight * containingBlock.scale;
+        const bottomInset = Number.parseFloat(menu.style.bottom);
+        const bottom = Number.isFinite(bottomInset)
+          ? containingBlock.top + (containingBlock.height - bottomInset) * containingBlock.scale
+          : containingBlock.top + height;
+        return {
+          left: containingBlock.left + (Number.parseFloat(menu.style.left) || 0) * containingBlock.scale,
+          right: containingBlock.left + (Number.parseFloat(menu.style.left) || 0) * containingBlock.scale + 180 * containingBlock.scale,
+          top: bottom - height,
+          bottom,
+          width: 180 * containingBlock.scale,
+          height,
+        };
+      };
+
+      caret.click();
+
+      const placed = menu.getBoundingClientRect();
+      expect(placed.left + placed.width).toBeCloseTo(300);
+      expect(placed.top + placed.height).toBeCloseTo(394);
+
+      menuHeight = 48;
+      const shrinking = menu.getBoundingClientRect();
+      expect(shrinking.bottom).toBeCloseTo(394);
+      expect(shrinking.top).toBeGreaterThan(placed.top);
+    });
+
+    it("leaves ordinary viewport-fixed placement unchanged", () => {
+      const { container, caret, menu } = mount(pendingRun());
+      const scrolling = document.createElement("div");
+      scrolling.style.overflowY = "auto";
+      scrolling.append(container);
+      document.body.append(scrolling);
+      container.querySelector(".splitbtn").getBoundingClientRect = () => ({
+        left: 768, right: 800, top: 20, bottom: 52, width: 32, height: 32,
+      });
+      Object.defineProperties(menu, {
+        offsetWidth: { configurable: true, value: 180 },
+        offsetHeight: { configurable: true, value: 96 },
+      });
+      menu.getBoundingClientRect = () => ({
+        left: Number.parseFloat(menu.style.left) || 0,
+        top: Number.parseFloat(menu.style.top) || 0,
+        width: 180,
+        height: 96,
+      });
+
+      caret.click();
+
+      expect(menu.getBoundingClientRect()).toMatchObject({ left: 620, top: 58 });
+    });
   });
 
   // Every caller of this component sits under a poll. A tick that would mount

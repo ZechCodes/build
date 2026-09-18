@@ -16,7 +16,8 @@
          reader. A file rather than an inline block because the production CSP
          is script-src 'self' with no unsafe-inline. -->
     <script src="/app/static/theme-boot.js"></script>
-    <link rel="icon" href="/app/static/icon-192.png" />
+    <link rel="icon" href="/app/static/icon-192.png" type="image/png" />
+    <link rel="icon" href="/app/static/favicon.svg" type="image/svg+xml" sizes="any" />
     <link rel="apple-touch-icon" href="/app/static/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -28,6 +29,8 @@
       <span>A new version of Build is available.</span>
       <button class="btn" id="verbar-reload">Reload</button>
     </div>
+    <div id="recovery-banners" aria-label="Connection status"></div>
+    <div id="recovery-announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
     <!-- The universal shell: the inbox rail (global, persistent), the view
          column (toolbar / view body / console), and the agent rail at the
          right edge of the view body. Branches add their view rail beside the
@@ -50,7 +53,7 @@
         </div>
         <div id="inbox-list"></div>
         <div class="inbox-foot">
-          <div class="srow snav" id="nav-account"><span class="sicon">◉</span><span class="stitle">Settings</span></div>
+          <button class="inbox-account" id="nav-account" type="button" title="Settings" aria-label="Settings"></button>
           <div id="devpick" hidden></div>
         </div>
       </aside>

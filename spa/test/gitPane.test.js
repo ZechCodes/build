@@ -52,6 +52,12 @@ describe("gitPollKey", () => {
     expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(status(), log({ more: true }), NOW));
   });
 
+  it("changes when the publication highlight moves without changing HEAD", () => {
+    expect(gitPollKey(status(), log({ highlight_key: "origin-a" }), NOW)).not.toBe(
+      gitPollKey(status(), log({ highlight_key: "origin-b" }), NOW),
+    );
+  });
+
   it("stays stable within a minute but rolls over across minute buckets", () => {
     const minuteStart = Math.floor(NOW / 60) * 60;
     expect(gitPollKey(status(), log(), minuteStart)).toBe(gitPollKey(status(), log(), minuteStart + 30));

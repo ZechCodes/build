@@ -1,4 +1,4 @@
-// Where to get the bridge. One renderer, two hosts: the first-run gate (the
+// Where to get the bridge and desktop app. One renderer, two hosts: the first-run gate (the
 // account has no device yet) and Settings → Downloads (another machine, or an
 // update). Every fact in it — the one-liner, the four builds, the checksums —
 // comes from the api's /app/downloads payload; this module knows no URLs.
@@ -10,11 +10,6 @@
 import { esc } from "./text.js";
 
 const UNAVAILABLE = "Downloads aren't available right now.";
-// The api's download token lives ten minutes. A minute of that is the slack a
-// copy needs — long enough that a copy right after the paint costs nothing,
-// short enough that what lands on the clipboard still has most of its life.
-const FRESH_FOR_MS = 60_000;
-
 const dim = (text, extra = "") => `<div class="dim" style="font-size:12.5px;${extra}">${text}</div>`;
 
 const platformLink = (platform) => `<a href="${esc(platform.url)}" download>${esc(platform.label)}</a>`;
@@ -26,11 +21,11 @@ const everyPlatformHtml = (platforms) =>
   `${dim("Pick the machine your code lives on.", "margin-bottom:6px")}
       <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px">${platforms.map(platformLink).join("")}</div>`;
 
-const installLineHtml = (command) =>
-  `${dim("or install with one line", "margin:14px 0 6px")}
+const installLineHtml = (command, id = "", label = "Install the bridge on macOS or Linux") =>
+  `${dim(label, "margin:14px 0 6px")}
       <div style="display:flex;gap:8px;align-items:flex-start">
-        <code class="mono" id="installcmd" style="flex:1;font-size:11px;line-height:1.5;padding:8px 10px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">${esc(command)}</code>
-        <button class="btn mini" id="copycmd">Copy</button></div>`;
+        <code class="mono" id="${id}installcmd" style="flex:1;font-size:11px;line-height:1.5;padding:8px 10px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">${esc(command)}</code>
+        <button class="btn mini" id="${id}copycmd">Copy</button></div>`;
 
 const otherPlatformsHtml = (others, { checksums_url, releases_url }) => {
   const links = [
@@ -40,6 +35,10 @@ const otherPlatformsHtml = (others, { checksums_url, releases_url }) => {
   ].filter(Boolean);
   return links.length ? dim(`Other platforms: ${links.join(" · ")}`, "margin-top:12px") : "";
 };
+
+const desktopHtml = (downloads) => `
+      ${downloads?.desktop_install_command ? installLineHtml(downloads.desktop_install_command, "desktop", "Install the desktop app on macOS or Linux") : ""}
+      ${downloads?.desktop_releases_url ? dim(`<a href="${esc(downloads.desktop_releases_url)}">Desktop app releases</a>`, "margin-top:8px") : ""}`;
 
 /** The block, painted from the api's payload. `platformKey` is looked up in the
  *  payload rather than branched on: this module knows the four keys only as
@@ -51,6 +50,7 @@ export function downloadsHtml(downloads, platformKey) {
       ${matched ? primaryHtml(matched) : everyPlatformHtml(platforms)}
       ${installLineHtml(downloads?.install_command ?? "")}
       ${otherPlatformsHtml(matched ? platforms.filter((platform) => platform !== matched) : [], downloads ?? {})}
+      ${desktopHtml(downloads)}
       ${dim("Once paired, the bridge runs on your machine and holds its own key; Build's servers move ciphertext.", "margin-top:12px")}
     </div>`;
 }
@@ -62,11 +62,7 @@ export function downloadsPlaceholderHtml() {
       <div class="adderr" id="downloadserr"></div>`;
 }
 
-/** Copy what `resolveText` answers with, and say so for a moment. The text is
- *  asked for at click time, not at bind time: the one-liner carries a token
- *  with ten minutes to live, so what the human copies is decided when they
- *  reach for it. The gate and the downloads block share this so "Copied" means
- *  the same thing everywhere. */
+/** Copy the command shown on screen and say so for a moment. */
 export function bindCopyButton(button, resolveText, clipboard) {
   if (!button) return;
   button.onclick = async () => {
@@ -82,7 +78,7 @@ export function bindCopyButton(button, resolveText, clipboard) {
  *  must survive a downloads route that is missing or closed. */
 export async function mountDownloads(
   host,
-  { fetchDownloads, mintInstallCommand, platformKey, clipboard, now = Date.now } = {},
+  { fetchDownloads, platformKey, clipboard } = {},
 ) {
   const slot = host?.querySelector?.("#downloads");
   if (!slot) return;
@@ -96,26 +92,6 @@ export async function mountDownloads(
     return;
   }
   slot.outerHTML = downloadsHtml(downloads, platformKey);
-  bindCopyButton(host.querySelector("#copycmd"), freshCommand(host, downloads, mintInstallCommand, now), clipboard);
-}
-
-/** The line the human is about to copy. The api mints a token good for ten
- *  minutes; a page left open past a minute of that asks for a new one, repaints
- *  it so the screen and the clipboard never disagree, and — when the api
- *  refuses — hands over the line already on screen and lets the api be the one
- *  judge of it. */
-function freshCommand(host, downloads, mintInstallCommand, now) {
-  let command = downloads?.install_command ?? "";
-  let mintedAt = now();
-  return async () => {
-    if (now() - mintedAt <= FRESH_FOR_MS) return command;
-    try {
-      command = (await mintInstallCommand()).install_command;
-      mintedAt = now();
-      host.querySelector("#installcmd").textContent = command;
-    } catch {
-      /* the line on screen still has whatever life the api gave it */
-    }
-    return command;
-  };
+  bindCopyButton(host.querySelector("#copycmd"), () => downloads?.install_command ?? "", clipboard);
+  bindCopyButton(host.querySelector("#desktopcopycmd"), () => downloads?.desktop_install_command ?? "", clipboard);
 }

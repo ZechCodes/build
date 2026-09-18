@@ -63,6 +63,61 @@ fn conditional_key_moves_when_the_push_tracking_ref_catches_up() {
 }
 
 #[test]
+fn workspace_history_marks_the_unpushed_range_across_pages_and_refreshes_on_push() {
+    let dir = tempfile::tempdir().unwrap();
+    let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+    for number in 1..=3 {
+        write(&clone, &format!("local-{number}.txt"), "local\n");
+        git_ok(&clone, &["add", "."]);
+        git_ok(&clone, &["commit", "-q", "-m", &format!("local {number}")]);
+    }
+
+    let first = log_page(&clone, Some(LogHighlight::Unpushed), 2, 0).unwrap();
+    assert_eq!(first["commits"][0]["unpushed"], true);
+    assert_eq!(first["commits"][1]["unpushed"], true);
+    assert_eq!(first["more"], true);
+    let older = log_page(&clone, Some(LogHighlight::Unpushed), 2, 2).unwrap();
+    assert_eq!(older["commits"][0]["unpushed"], true);
+    assert_eq!(older["commits"][1]["unpushed"], false);
+    assert_eq!(older["highlight_key"], first["highlight_key"]);
+
+    let head = git2::Repository::open(&clone)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap();
+    git_ok(
+        &clone,
+        &["update-ref", "refs/remotes/origin/main", &head.to_string()],
+    );
+    let pushed = log_page(&clone, Some(LogHighlight::Unpushed), 2, 0).unwrap();
+    assert_eq!(pushed["commits"][0]["unpushed"], false);
+    assert_eq!(pushed["commits"][1]["unpushed"], false);
+    assert_ne!(pushed["highlight_key"], first["highlight_key"]);
+    assert_eq!(pushed["commits"][0]["hash"], first["commits"][0]["hash"]);
+}
+
+#[test]
+fn workspace_history_uses_published_ancestor_or_root_like_all_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+    git_ok(&clone, &["checkout", "-q", "-b", "local-only"]);
+    write(&clone, "local.txt", "local\n");
+    git_ok(&clone, &["add", "."]);
+    git_ok(&clone, &["commit", "-q", "-m", "local"]);
+
+    let unpublished = log_page(&clone, Some(LogHighlight::Unpushed), 10, 0).unwrap();
+    assert_eq!(unpublished["commits"][0]["unpushed"], true);
+    assert_eq!(unpublished["commits"][1]["unpushed"], false);
+
+    let local_dir = tempfile::tempdir().unwrap();
+    init_repo(local_dir.path());
+    let never_pushed = log_page(local_dir.path(), Some(LogHighlight::Unpushed), 10, 0).unwrap();
+    assert_eq!(never_pushed["commits"][0]["unpushed"], true);
+}
+
+#[test]
 fn diverged_push_target_uses_merge_base_and_does_not_render_remote_only_work_as_a_revert() {
     let dir = tempfile::tempdir().unwrap();
     let clone = clone_of_an_origin_carrying_feature_x(dir.path());
@@ -133,8 +188,57 @@ fn work_summary_counts_local_commits_and_the_final_tree_delta_once() {
     let summary = work_summary(&clone).unwrap();
 
     assert_eq!(summary.pushes, 2);
+    assert_eq!(summary.behind, 0);
     assert_eq!(summary.additions, 4);
     assert_eq!(summary.deletions, 0);
+}
+
+#[test]
+fn work_summary_counts_the_push_target_commits_missing_from_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+    git_ok(
+        &clone,
+        &["checkout", "-q", "-b", "remote-side", "origin/main"],
+    );
+    write(&clone, "remote.txt", "remote\n");
+    git_ok(&clone, &["add", "."]);
+    git_ok(&clone, &["commit", "-q", "-m", "remote"]);
+    let remote_tip = git2::Repository::open(&clone)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap();
+    git_ok(&clone, &["checkout", "-q", "main"]);
+    git_ok(
+        &clone,
+        &[
+            "update-ref",
+            "refs/remotes/origin/main",
+            &remote_tip.to_string(),
+        ],
+    );
+
+    let remote_ahead = work_summary(&clone).unwrap();
+    assert_eq!(remote_ahead.pushes, 0);
+    assert_eq!(remote_ahead.behind, 1);
+    assert!(
+        remote_ahead.clean,
+        "remote-only work does not dirty this checkout"
+    );
+
+    write(&clone, "local.txt", "local\n");
+    git_ok(&clone, &["add", "."]);
+    git_ok(&clone, &["commit", "-q", "-m", "local"]);
+    let diverged = work_summary(&clone).unwrap();
+    assert_eq!(diverged.pushes, 1);
+    assert_eq!(diverged.behind, 1);
+    assert!(!diverged.clean);
+
+    git_ok(&clone, &["checkout", "-q", "-b", "local-only"]);
+    let without_destination = work_summary(&clone).unwrap();
+    assert_eq!(without_destination.behind, 0);
 }
 
 #[test]
@@ -176,12 +280,35 @@ fn aggregate_work_summary_combines_two_repositories_and_dirty_work() {
         write(repo, name, "committed\n");
         git_ok(repo, &["add", "."]);
         git_ok(repo, &["commit", "-q", "-m", "local"]);
+        git_ok(
+            repo,
+            &["checkout", "-q", "-b", "remote-side", "origin/main"],
+        );
+        write(repo, "remote.txt", "remote\n");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "remote"]);
+        let remote_tip = git2::Repository::open(repo)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap();
+        git_ok(repo, &["checkout", "-q", "main"]);
+        git_ok(
+            repo,
+            &[
+                "update-ref",
+                "refs/remotes/origin/main",
+                &remote_tip.to_string(),
+            ],
+        );
         write(repo, "untracked.txt", "dirty\n");
     }
 
     let summary = aggregate_work_summary(&[first, second]).unwrap();
 
     assert_eq!(summary.pushes, 2);
+    assert_eq!(summary.behind, 2);
     assert_eq!(summary.additions, 4);
     assert_eq!(summary.deletions, 0);
     assert!(!summary.clean);

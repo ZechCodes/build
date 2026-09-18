@@ -5,6 +5,22 @@
 @import "./styles/shell.css";
 @import "./styles/surfaces.css";
 
+#recovery-banners {
+  position:fixed; z-index:60; top:max(10px, env(safe-area-inset-top)); right:12px;
+  display:flex; flex-direction:column; align-items:flex-end; gap:6px;
+  pointer-events:none; max-width:min(360px, calc(100vw - 24px));
+}
+.recovery-banner {
+  padding:7px 11px; border:1px solid var(--line3); border-radius:999px;
+  background:var(--panel); color:var(--ink2); box-shadow:0 4px 16px var(--shadow-soft);
+  font-size:12px; line-height:1.35;
+}
+.sr-only {
+  position:absolute!important; width:1px!important; height:1px!important; padding:0!important;
+  margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important;
+  white-space:nowrap!important; border:0!important;
+}
+
 /* ---- theme tokens -----------------------------------------------------------
    Every colour in this file comes from here, and the two blocks below are the
    whole theme: `:root` is light, `:root[data-theme="dark"]` is dark, and
@@ -14,14 +30,25 @@
    here if none of these says what you mean. */
 :root {
   color-scheme: light;
-  /* Flat by design: --panel is the SAME color as --bg. Every surface (sidebar,
-     tab bar, card, sheet) sits on one background and is separated by borders
-     and spacing, never by a fill. The token stays so a surface can still say
-     which color it wants; it just resolves to the page's. --panel2 is the one
-     exception: the faintly recessed fill under a gutter or a quiet card. */
-  --bg:#f3f7f8; --panel:#f8fbfb; --panel2:#eaf1f2;
+  /* The page is the separator. --bg is the ground NOTHING is drawn on: every
+     top-level region (the inbox rail, the work column, the conversation panel)
+     is a --panel slab with a radius, floating on it with a gap between them, so
+     the negative space does the dividing a hairline used to. --bg is therefore
+     a step darker than --panel — enough that the slabs read as raised, not so
+     much that the page turns into a frame. --panel2 is the step INSIDE a slab:
+     a column seam, a nested card, a gutter fill — again a tone, never a line. */
+  --bg:#e1eaec; --panel:#f8fbfb; --panel2:#eaf1f2;
+  /* The shared top-level band above the inbox and the active view. It is
+     intentionally darker than either content surface; its own dim ink keeps
+     small labels readable against that denser fill. */
+  --shell-chrome:#e2ebed; --shell-chrome-dim:#506970;
   --ink:#13262c; --ink2:#496169; --dim:#5d747c;
   --line:#cbdadd; --line2:#dce7e9; --line3:#adc3c7;
+  /* The row affordance. Rows have no dividers any more, so hover is the whole
+     answer to the pointer — and it has to read on a --panel row AND on a
+     --panel2 column seam. --line2 clears both in light; dark needs its own
+     step (see below), which is why this is a token and not a raw --line2. */
+  --row-hover:var(--line2);
   --accent:#006d43; --accent-fill:#51ffb4; --accent-soft:#ddffed; --accent-ink:#062719;
   --green:#137344; --green-bg:#e3fff0;
   --red:#c43d52; --red-bg:#fbe9ec; --danger-ink:#fff;
@@ -52,9 +79,13 @@
    on top of a filled accent because near-black on neon is what reads. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg:#07151b; --panel:#0b1b22; --panel2:#10262f;
+  --bg:#040d12; --panel:#0b1b22; --panel2:#10262f;
+  --shell-chrome:#041016; --shell-chrome-dim:#839ea7;
   --ink:#e5f1f2; --ink2:#9db2b8; --dim:#839ea7;
-  --line:#1b3640; --line2:#122a33; --line3:#31505a;
+  --line:#1b3640; --line2:#17323c; --line3:#31505a;
+  /* One step above --line2 here: a hover fill on a --panel2 seam has to survive
+     against a near-black column, and --line2 at seam tone is not a state. */
+  --row-hover:#1b3640;
   /* Electric mint is a clear affordance against the dark ground. --green stays
      slightly quieter so merged and passed states do not compete with actions. */
   --accent:#51ffb4; --accent-fill:#51ffb4; --accent-soft:#123b29; --accent-ink:#062719;
@@ -128,7 +159,8 @@ a { color:inherit; }
 .device-picker-choice { flex:1; min-width:0; display:flex; justify-content:space-between; gap:6px; text-align:left; padding:7px; }
 .device-picker-choice > span:first-child { overflow-wrap:anywhere; }
 .device-picker-choice[aria-pressed="true"] { color:var(--accent); }
-.device-picker-settings { flex:0 0 36px; display:grid; place-items:center; }
+.device-picker-settings, .device-picker-offline { flex:0 0 36px; display:grid; place-items:center; }
+.device-picker-offline { color:var(--dim); }
 #devpick svg { display:block; width:16px; height:16px; }
 .device-picker-row button:hover { background:var(--accent-soft); }
 #devpick button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
@@ -139,7 +171,6 @@ body.inbox-collapsed #root.device-settings { padding-top:calc(48px + env(safe-ar
    In flow above the shell, so the locked frame shrinks under it. */
 #verbar { flex:none; display:flex; align-items:center; gap:12px;
   background:var(--accent-soft); color:var(--accent);
-  border-bottom:1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   padding:7px 18px; font-size:12.5px; }
 #verbar[hidden] { display:none; }
 #verbar .btn { padding:3px 12px; font-size:12px; color:var(--accent); border-color:currentColor; background:transparent; }
@@ -167,9 +198,12 @@ main { max-width:min(1180px, 100%); margin:0 auto;
 .bucket { margin:26px 0 8px; }
 .bucket h2 { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; margin:0 0 10px; display:flex; gap:8px; align-items:center; }
 .bucket h2 .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 7px; font-size:10px; }
-.card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:10px; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
-.card:hover { border-color:var(--line3); box-shadow:0 1px 3px var(--shadow-soft); }
-.card.quiet { background:var(--panel2); }
+/* A card is a raised slab on the page, not an outlined box: the fill and the
+   space around it say where it starts and stops, and hover deepens the fill
+   rather than darkening an edge. */
+.card { background:var(--panel2); border:0; border-radius:12px; padding:15px 17px; margin-bottom:14px; cursor:pointer; transition:background .12s, box-shadow .12s; }
+.card:hover { background:var(--row-hover); box-shadow:0 1px 3px var(--shadow-soft); }
+.card.quiet { background:color-mix(in srgb, var(--panel2) 55%, var(--panel)); }
 .card.external { opacity:.68; }
 .card.external:hover { opacity:1; }
 .card.external .chip { background:transparent; border:1px dashed var(--line); color:var(--dim); }
@@ -190,9 +224,12 @@ main { max-width:min(1180px, 100%); margin:0 auto;
 .empty.gone .btn { margin-top:14px; }
 /* settings stub */
 .settings-intro { color:var(--ink2); font-size:14px; max-width:620px; margin-bottom:18px; }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:620px; box-shadow:0 8px 24px var(--shadow-soft); }
+/* A settings panel is a slab on the page: fill, radius and shadow, no outline. */
+.panel { background:var(--panel2); border:0; border-radius:12px; padding:18px 20px; max-width:620px; box-shadow:0 8px 24px var(--shadow-soft); }
 .panel + .panel { margin-top:18px; }
-.panel h3 { margin:0 0 12px; font-size:14px; display:flex; align-items:center; gap:8px; }
+/* A panel title is the type scale's second step: weight carries it, and the
+   room under it is what a rule used to be. */
+.panel h3 { margin:0 0 16px; font-size:15px; font-weight:650; letter-spacing:-.01em; display:flex; align-items:center; gap:8px; }
 .panel .field select, .panel .field input:not([type=checkbox]), .panel .field textarea {
   width:100%; min-height:36px; padding:7px 10px; font:inherit; color:var(--ink);
   background:var(--bg); border:1px solid var(--line); border-radius:8px;
@@ -204,8 +241,10 @@ main { max-width:min(1180px, 100%); margin:0 auto;
   box-shadow:0 0 0 3px var(--focus-ring); }
 .panel .field select:disabled, .panel .field input:not([type=checkbox]):disabled,
 .panel .field textarea:disabled { color:var(--dim); opacity:.7; cursor:not-allowed; }
-.panel .row { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; }
-.panel .row:first-of-type { border-top:0; }
+/* Rows are separated by their own breathing room, not by a rule between them.
+   The horizontal inset stays zero: these rows carry no hover fill of their own,
+   and the panel's padding already puts their text on its text column. */
+.panel .row { display:flex; gap:12px; padding:10px 0; font-size:13px; }
 .panel .row .k { font-family:var(--mono); color:var(--ink); min-width:140px; }
 .panel .row .v { color:var(--ink2); }
 .panel .row.last .k { color:var(--green); }
@@ -213,10 +252,10 @@ main { max-width:min(1180px, 100%); margin:0 auto;
    A record opens under the row it belongs to, so it reads as that row's inside
    rather than as the next thing on the page. */
 .account-nav { margin-bottom:16px; }
-.card.archive-row { cursor:pointer; background:transparent; border:0; border-bottom:1px solid var(--line); border-radius:0; padding:16px 8px; margin:0; box-shadow:none; }
-.archive-row:hover, .archive-row[aria-expanded="true"] { background:var(--line2); border-color:var(--line); box-shadow:none; }
+.card.archive-row { cursor:pointer; background:transparent; border:0; border-radius:8px; padding:14px 13px; margin:0 0 4px; box-shadow:none; }
+.archive-row:hover, .archive-row[aria-expanded="true"] { background:var(--row-hover); box-shadow:none; }
 .archive-row .chip { background:none; border-radius:0; padding-right:0; }
-.archive-record { max-width:none; margin:0; padding:12px 8px 20px; background:transparent; border:0; border-bottom:1px solid var(--line); border-radius:0; box-shadow:none; }
+.archive-record { max-width:none; margin:0 0 14px; padding:8px 13px 18px; background:transparent; border:0; border-radius:0; box-shadow:none; }
 /* ---- full-height worktree surfaces (task / external worktree / main) ----
    The tab bar is the top of the view; #tabbody is the one scroll container
    (so the sticky actionbar pins to its bottom). `bare` tabs (terminals)
@@ -226,7 +265,7 @@ main#root.surface { max-width:none;
      rail must not — auto side margins stop the stretch, size the surface to
      its content, and slide a wide diff under the rail. */
   margin:0;
-  padding:0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0;
+  padding:0 env(safe-area-inset-right, 0px) 0 0;
   /* The locked shell provides the height; the surface just fills its column
      and hands scrolling to #tabbody. */
   height:100%;
@@ -290,13 +329,13 @@ main#root.surface { max-width:none;
    to meet the frame. content-box keeps that one number measuring the same as
    the padded body's.
    RIGHT is the seam with the conversation, and the split itself pays nothing
-   there: the rail's divider, the toolbar's rule, a banner's fill still run to
-   the agent rail's border. The READING columns inside (.cdetail-host, the
+   there: the rail's fill, a banner's fill and a diff card still run to the seam
+   with the conversation, and the divide there is the band of page, not a line. The READING columns inside (.cdetail-host, the
    issue viewer) pay the gutter on that side themselves — a diff pressed
    against the chat's border had no room to breathe — and the control rows
    (the git bar, the commit box) state the same inset they always did.
    TOP is the seam with the nav bar, and it goes for the same reason: the rail's
-   selected row and the toolbar's rule now meet the bar that names where you are,
+   selected row and the rail's fill now meet the bar that names where you are,
    and the reading column below still pays its own top gutter (.cdetail-host).
    BOTTOM: its columns scroll to the frame's edge, and a gap under a live
    scroller is dead space rather than rhythm — the one-column layout's bottom
@@ -345,7 +384,7 @@ main#root.surface { max-width:none;
     flex:none; width:auto; height:var(--surface-head);
     margin-left:calc(var(--pane-gutter) * -1); padding:0 var(--pane-gutter);
     font:inherit; font-size:13px; line-height:1; color:var(--ink); text-align:left;
-    background:var(--panel); border:0; border-bottom:1px solid var(--line);
+    background:var(--panel2); border:0;
     cursor:pointer; -webkit-tap-highlight-color:transparent; }
   /* One line, whatever it is handed: a commit subject is as long as its author
      made it, and a trigger that wrapped would move the hinge the drawer hangs
@@ -363,10 +402,11 @@ main#root.surface { max-width:none;
     left:0; right:0; z-index:12;
     margin-left:0; width:auto; flex:none;
     max-height:min(62vh, calc(100% - var(--surface-head)));
-    background:var(--panel); border-right:0; border-bottom:1px solid var(--line);
+    background:var(--panel2); border:0;
     transform:translateY(-100%); transition:transform .18s ease; }
   /* The shadow is the open drawer's, not the parked one's: a panel parked above
-     the head still spills its shadow back over the trigger row. */
+     the head still spills its shadow back over the trigger row. It is also the
+     drawer's ONLY edge — the line under it went with every other hairline. */
   .pane-split.drawer-open .pane-list { transform:none; box-shadow:0 12px 26px var(--shadow-soft); }
   /* From under the trigger row down: the trigger stays reachable over it,
      because pressing it again is one of the three ways out. */
@@ -408,7 +448,7 @@ main#root.surface { max-width:none;
 /* Sticky like the back chevron on the other end: the row scrolls on a narrow
    screen, and these entries must stay reachable wherever it has been scrolled. */
 .tabs .tabs-right { display:flex; gap:4px; margin-left:auto; padding-left:12px;
-  position:sticky; right:0; background:var(--bg); z-index:1; }
+  position:sticky; right:0; background:var(--panel); z-index:1; }
 /* Lucide SVGs, stroked in currentColor and sized from here: 16px inside 7px of
    padding matches the 30px box a text tab gets from its own padding + line, so
    the icons sit on the row's baseline rather than beside it. */
@@ -457,7 +497,9 @@ main#root.surface { max-width:none;
 .mdtable tr:last-child td { border-bottom:0; }
 .mdtable th:last-child, .mdtable td:last-child { padding-right:0; }
 /* plan */
-.plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; }
+/* The doc card sits INSIDE a panel, so it takes the inner step (--panel2) and
+   no outline at all; the tone is the whole boundary. */
+.plan { background:var(--panel2); border:0; border-radius:12px; padding:26px 30px; margin-bottom:14px; --mdtable-cover:var(--panel2); }
 .plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }
 .plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan p { margin:8px 0; color:var(--ink); }
 .plan ul,.plan ol { margin:6px 0; padding-left:22px; } .plan li { margin:3px 0; }
@@ -490,9 +532,13 @@ main#root.surface { max-width:none;
 .pcomment .pcx { position:absolute; top:6px; right:10px; cursor:pointer; color:var(--dim); font-size:15px; line-height:1; }
 .pcomment .pcx:hover { color:var(--red); }
 .stagehead .hint { color:var(--dim); font-size:12px; }
-.stagelist { display:flex; flex-direction:column; gap:8px; }
-.stagerow { display:flex; gap:12px; align-items:flex-start; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 14px; cursor:pointer; }
-.stagerow:hover { border-color:var(--accent); }
+.stagelist { display:flex; flex-direction:column; gap:4px; }
+/* A stage is a nested card on the panel: the inner fill is its edge, hover is a
+   deeper fill, and the selected one wears the accent bar every active row in
+   the app wears. No outline. */
+.stagerow { display:flex; gap:12px; align-items:flex-start; background:var(--panel2); border:0; border-radius:11px; padding:10px 13px; cursor:pointer; }
+.stagerow:hover { background:var(--row-hover); }
+.stagerow.sel, .stagerow.active { background:var(--accent-soft); box-shadow:inset 3px 0 var(--accent); }
 .stagerow .stagenum { font-family:var(--mono); font-size:12px; color:var(--dim); padding-top:2px; }
 .stagerow .stagemain { flex:1; min-width:0; }
 .stagerow .stagetop { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
@@ -516,7 +562,7 @@ main#root.surface { max-width:none;
 .commentcard .cc-crumb { display:block; font-size:11px; color:var(--accent); cursor:pointer; margin-bottom:3px; }
 .commentcard .cc-snip { display:block; color:var(--ink2); font-style:italic; font-size:12px; border-left:2px solid var(--line); padding-left:8px; margin-bottom:4px; }
 .commentcard .cc-body { color:var(--ink); display:block; }
-.commentcard .cc-reply { margin-top:6px; font-size:12.5px; color:var(--ink2); border-top:1px dashed var(--line); padding-top:5px; }
+.commentcard .cc-reply { margin-top:12px; font-size:12.5px; color:var(--ink2); }
 .commentcard .cc-reply .cc-reply-k { font-weight:600; color:var(--green); font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin-right:5px; }
 .comment-pop { position:fixed; z-index:60; background:var(--pop-bg); border-radius:9px; padding:6px; box-shadow:0 8px 24px var(--shadow); display:flex; flex-wrap:wrap; gap:6px; align-items:flex-start; }
 .comment-pop button { font:inherit; background:var(--accent-fill); color:var(--accent-ink); border:none; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:600; font-size:12px; }
@@ -527,15 +573,22 @@ main#root.surface { max-width:none;
 .comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--pop-warn); }
 /* diff */
 .diffbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
+.diffsort { display:flex; align-items:center; gap:6px; margin-left:auto; color:var(--dim); font:11.5px var(--sans); }
+.diffsort-select { color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:6px;
+  padding:4px 24px 4px 7px; font:inherit; }
 /* The code table scrolls horizontally inside .dscroll while the .file border
    clips the corners. overflow:clip preserves the outer vertical scroller as
    the sticky header's scroll container. */
 .file .dscroll { overflow-x:auto; overflow-y:hidden; }
 .file table { min-width:100%; }
 .file td.code { white-space:pre; }
-.file { container-type:inline-size; background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:clip; }
-.file .fhead { position:sticky; top:var(--diff-sticky-top, 0); z-index:3; display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--line2); background:var(--panel); font-family:var(--mono); font-size:12.5px; }
-.file .fidentity, .file .fmeta, .file .factions { display:contents; }
+/* A diff card on the work column's panel: the inner step is its boundary, and
+   the only line it keeps is the one under its sticky head, which content
+   actually scrolls beneath. */
+.file { container-type:inline-size; background:var(--panel2); border:0; border-radius:11px; margin-bottom:14px; overflow:clip; }
+.file .fhead { position:sticky; top:var(--diff-sticky-top, 0); z-index:3; display:flex; align-items:center; gap:7px; padding:7px 10px; border-bottom:1px solid var(--line2); background:var(--panel2); font-family:var(--mono); font-size:12.5px; }
+.file .fidentity, .file .fmeta { display:contents; }
+.file .factions { display:inline-flex; align-items:center; gap:2px; flex:none; }
 .file .fhead .fpath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .file .fhead .fb { font-size:9px; font-weight:700; letter-spacing:.04em; padding:1px 5px; border-radius:4px; }
 .fb.EDIT { background:var(--accent-soft); color:var(--accent); } .fb.ADD { background:var(--green-bg); color:var(--green); } .fb.DEL { background:var(--red-bg); color:var(--red); }
@@ -543,7 +596,9 @@ main#root.surface { max-width:none;
 .file table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; line-height:20px; }
 .file tr:not(.drow-spacer) { height:20px; }
 .file td { padding:0 8px; white-space:pre; vertical-align:top; }
-.file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:var(--panel2); border-right:1px solid var(--line2); cursor:pointer; }
+/* The line-number gutter keeps its hairline: it is a table rule, one of the
+   three kinds of line left, and its fill is now the step ABOVE the card's. */
+.file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:var(--panel); border-right:1px solid var(--line2); cursor:pointer; }
 .file td.ln:hover { color:var(--accent); }
 .file ::selection { background:var(--sel); }
 tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(--hl-ln) !important; color:var(--hl-ink); }
@@ -578,8 +633,8 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    pane is one message. It stands where the split's first column would, not
    against the frame the split no longer touches. */
 .gitpane > .empty { padding:var(--pane-top) var(--pane-gutter); }
-/* The commit rail: a flush narrow left sidebar (no card chrome), a single right
-   border dividing it from the detail pane, scrolling internally at full height.
+/* The commit rail: a flush narrow left sidebar (no card chrome), separated from
+   the detail pane by a background step, scrolling internally at full height.
    All padding lives inside the section headers / rows. Its width is the shared
    rail token — the same column the file tree gets, so the two tabs are one view
    with two contents.
@@ -588,26 +643,36 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    nowrap line: without this the longest subject in the page sets the rail's
    width and the diffs get whatever is left. The subjects ellipsize instead
    (.crow .csubject below), which is what they are marked up for. */
-/* A flex column now, not the scroller itself: .crail (below) scrolls in the
-   room this leaves it. */
-.crail-host { flex:0 1 var(--pane-rail); min-width:0; border-right:1px solid var(--line);
+/* The rail head floats over .crail, which owns the scroll and starts its rows
+   below that head before letting them pass underneath it. */
+/* The seam with the detail pane is a STEP, not a line: the rail takes the
+   panel's inner tone and the divider disappears into the change of ground. */
+.crail-host { position:relative; flex:0 1 var(--pane-rail); min-width:0; background:var(--panel2);
   display:flex; flex-direction:column; min-height:0; }
 .crail { flex:1 1 auto; min-height:0; overflow-y:auto; }
-/* The right pane: a flex column — pinned toolbar/banner over the scrolling
-   detail host. Its regions pay the gutter on the divider side only: the split
+.crail-host:has(> .workspace-refbar) .crail { padding-top:var(--surface-head); }
+/* The right pane frames glass toolbars over the full-height scrolling detail
+   host. Its regions pay the gutter on the divider side only: the split
    pays nothing on the seam with the conversation, so a diff card, a rule and a
    banner's fill all reach it, and only what is INSIDE a region — the toolbar's
    buttons, an actionbar's controls, the tray's boxes — keeps its distance. */
-.cdetail { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; }
+.cdetail { position:relative; flex:1; min-width:0; display:flex; flex-direction:column; min-height:0;
+  --git-toolbar-height:0px; --git-detail-top:calc(var(--git-toolbar-height) + var(--pane-top));
+  --git-detail-bottom:calc(var(--pane-bottom) + var(--git-commit-height, 0px)); }
+.cdetail:has(> .gp-toolbar:not(:empty)) { --git-toolbar-height:var(--surface-head); }
 .cdetail-host { flex:1; min-height:0; overflow-y:auto;
-  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom) var(--pane-gutter);
+  padding:var(--git-detail-top) var(--pane-gutter) var(--git-detail-bottom) var(--pane-gutter);
+  scroll-padding-top:var(--git-detail-top);
   --diff-sticky-top:calc(0px - var(--pane-top)); }
 .gp-toolbar:empty { display:none; }
-/* Rows of controls, not surfaces: their box still spans to the seam (the
-   toolbar's rule is the pane's own line) while the buttons and boxes on them
-   stop a gutter short of it. */
-.gp-toolbar { container-type:inline-size; display:flex; align-items:center;
-  min-height:var(--surface-head); padding:6px var(--pane-gutter) 6px var(--pane-gutter); border-bottom:1px solid var(--line); }
+/* Rows of controls, not surfaces: their box still spans to the seam while the
+   buttons and boxes on them stop a gutter short of it. The bar carries no rule
+   under it any more — the room below it is the separation. */
+.gp-toolbar { position:absolute; z-index:4; top:0; right:0; left:0;
+  container-type:inline-size; display:flex; align-items:center;
+  min-height:var(--surface-head); padding:6px var(--pane-gutter) 12px var(--pane-gutter);
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 /* Below the stacking width there is no divider to clear — the rail floats over
    this column instead of sitting beside it — so the column's own left gutter
    goes, and the split's left inset with the column's right gutter leave the
@@ -617,10 +682,13 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 @media (max-width: 900px) {
   .cdetail-host, .gp-toolbar { padding-left:0; }
 }
-/* The commit bar is a filled surface, so it keeps its own inset on both sides,
-   the way every card in the one-column layout does. */
-.gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);
-  background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
+/* The measured commit bar floats over the detail scroller; its height becomes
+   that scroller's end clearance as the field grows or wraps. */
+.gp-commit:not(:empty) { position:absolute; z-index:4; right:0; bottom:0; left:0;
+  padding:12px var(--pane-gutter) 14px;
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur));
+  box-shadow:none; }
 /* The gutter's comment button: one element that follows the pointer down the
    line numbers, so a long diff carries no per-row weight. It sits in the
    line-number cell, which is why it moves with the code scrolling sideways. */
@@ -644,22 +712,30 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    column is paid — the same line the toolbar's project name and the tab labels
    stand on. The right side keeps the rail's own tighter inset; nothing is
    aligned against it. */
-.crail .rhead { font-size:10.5px; letter-spacing:.08em; color:var(--dim); font-weight:700;
-  text-transform:uppercase; padding:10px 13px 4px var(--pane-gutter); border-top:1px solid var(--line2); }
+/* A section label is the type scale's bottom step — 11px mono, uppercase, dim —
+   and the room above it is what separates one section from the last. */
+.crail .rhead { font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:650;
+  text-transform:uppercase; margin-top:18px; padding:0 13px 6px var(--pane-gutter); }
+.crail .rhead:first-child { margin-top:10px; }
 .crail .empty { padding:6px 13px 10px var(--pane-gutter); }
-.crail .rrow { display:flex; align-items:baseline; gap:8px; padding:9px 13px 9px var(--pane-gutter); font-size:13px;
-  cursor:pointer; border-top:1px solid var(--line2); }
-.crail .rrow:first-child { border-top:0; }
+/* No rule between rows: space separates them, the hover fill answers the
+   pointer, and the selected one is a soft accent fill with an accent bar. */
+.crail .rrow { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; padding:10px 13px 10px var(--pane-gutter); font-size:13px;
+  cursor:pointer; }
 .crail .rrow .rtitle { font-weight:600; }
 .crail .rrow .rsub { margin-left:auto; font-size:11px; color:var(--dim); }
-.crail .rrow:hover { background:var(--line2); }
-.crail .rrow.sel, .crail .crow.sel { background:var(--accent-soft); }
+.crail .rrow:hover { background:var(--row-hover); }
+.crail .rrow.sel, .crail .crow.sel { background:var(--accent-soft); box-shadow:inset 3px 0 var(--accent); }
 .crail .rrow.sel .rtitle { color:var(--accent); }
-.crow { display:flex; flex-direction:column; gap:1px; padding:7px 13px 7px var(--pane-gutter); border-top:1px solid var(--line2);
+.crow { display:flex; flex-direction:column; gap:1px; margin-bottom:4px; padding:10px 13px 10px var(--pane-gutter);
   font-size:12.5px; cursor:pointer; }
-.crow:hover { background:var(--line2); }
+.crow:hover { background:var(--row-hover); }
+.crow.ahead, .crow.unpushed { background:color-mix(in srgb, var(--accent-soft) 48%, transparent);
+  box-shadow:inset 3px 0 var(--accent); }
+.crow.ahead:hover, .crow.unpushed:hover { background:color-mix(in srgb, var(--accent-soft) 72%, var(--row-hover)); }
+.crow.ahead.sel, .crow.unpushed.sel { background:var(--accent-soft); box-shadow:inset 4px 0 var(--accent); }
 .crow .chash { font-family:var(--mono); font-size:11px; color:var(--dim); }
-.crow.ahead .chash { color:var(--accent); font-weight:600; }
+.crow.ahead .chash, .crow.unpushed .chash { color:var(--accent); font-weight:600; }
 .crow.sel .csubject { color:var(--accent); }
 .crow .csubject { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .crow .cmeta { color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -676,7 +752,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .file.capped { position:relative; }
 .file.capped .dscroll { max-height:300px; overflow-y:hidden; cursor:pointer; }
 .file.capped::after { content:""; position:absolute; left:0; right:0; bottom:0; height:44px;
-  background:linear-gradient(transparent, var(--panel)); pointer-events:none; }
+  background:linear-gradient(transparent, var(--panel2)); pointer-events:none; }
 .diff-expand { display:none; }
 .file.capped .diff-expand { display:flex; position:absolute; left:0; right:0; bottom:7px; z-index:2;
   justify-content:center; color:var(--accent); font-family:var(--mono); font-size:11px;
@@ -699,20 +775,20 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    glyphs at three sizes. The icons come from the app's pack (core/icons.js) and
    are sized here, once. */
 .fcmt, .fopen, .fapprove { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
-  border-radius:5px; padding:4px 7px; cursor:pointer; margin-left:6px; flex:none;
+  border-radius:5px; min-width:28px; min-height:28px; padding:5px 6px; cursor:pointer; flex:none;
   display:inline-flex; align-items:center; gap:5px; }
 .fcmt svg, .fopen svg, .fapprove svg { width:16px; height:16px; flex:none; }
 .fcmt:hover, .fopen:hover, .fapprove:hover { background:var(--accent-soft); color:var(--accent); }
 .fedited { margin-left:7px; color:var(--dim); font-size:11px; white-space:nowrap; }
 @container (max-width: 600px) {
   .file .fhead { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:5px 7px; }
-  .file .fidentity { display:flex; align-items:flex-start; gap:9px; min-width:0; }
+  .file .fidentity { display:flex; align-items:flex-start; gap:7px; min-width:0; }
   .file .fhead .fpath { overflow:visible; text-overflow:clip; white-space:normal; overflow-wrap:anywhere; }
   .file .fmeta { display:flex; grid-column:1 / -1; grid-row:2; align-items:center; flex-wrap:wrap; gap:5px 9px; }
-  .file .fhead:has(.fselect-box) .fmeta { padding-left:calc(13px + 9px); }
+  .file .fhead:has(.fselect-box) .fmeta { padding-left:calc(13px + 7px); }
   .file .fmeta .pm, .file .fmeta .fedited, .file .fmeta .fchanged { margin-left:0; }
   .file .factions { display:flex; align-items:center; align-self:start; gap:2px; }
-  .file .factions > .fcmt, .file .factions > .fopen, .file .factions > .fapprove { margin-left:0; padding-inline:5px; }
+  .file .factions > .fcmt, .file .factions > .fopen, .file .factions > .fapprove { padding-inline:5px; }
   .file .fhead:has(.fmenu-pop) .fidentity { grid-column:1 / -1; }
   .file .fhead:has(.fmenu-pop) .factions { grid-column:1 / -1; grid-row:3; flex-wrap:wrap; justify-content:flex-end; }
 }
@@ -784,7 +860,10 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .file td.code .token.class-name, .fsrc .token.class-name { color:var(--violet); }
 .file td.code .token.punctuation, .fsrc .token.punctuation,
 .file td.code .token.operator, .fsrc .token.operator { color:var(--ink2); }
-.actionbar { position:sticky; bottom:0; background:linear-gradient(to top,var(--bg) 70%,transparent);
+/* The fade is the surface's, not the page's: this bar sticks to the bottom of
+   a --panel reading column and of a --panel2 rail tray alike, so the host names
+   the tone it is fading into (--actionbar-fade) and --panel is the default. */
+.actionbar { position:sticky; bottom:0; background:linear-gradient(to top,var(--actionbar-fade, var(--panel)) 70%,transparent);
   padding:14px 0 calc(4px + env(safe-area-inset-bottom, 0px));
   display:flex; align-items:center; gap:12px; margin-top:6px; }
 .actionbar .hint { color:var(--dim); font-size:12.5px; }
@@ -837,6 +916,27 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
      so the last of them is never clipped at the seam. */
   .gittoolbar .selbar { min-width:0; }
   .gittoolbar .selcount { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+}
+/* Tighter still, for the column this bar actually gets. Icon-only verbs are not
+   the whole answer: with the rail beside it and the conversation past it, the
+   detail column can be narrower than what an icon-only row still measures, and
+   the next thing to give is the ROOM BETWEEN the controls — never the controls
+   themselves, which are the shared button and stay exactly as wide as one is
+   everywhere else (test/buttonVocabulary.test.js).
+   Then one thing the bar says twice: the working tree's +/- pair is the first
+   line of the diff list directly below it ("2 files +4 -1"), so the copy goes
+   and what is only said here — how far the branch is from its upstream — stays.
+   The bar keeps every verb, keeps every split's menu, stays one line at the head
+   height it shares, and stops short of the seam instead of being clipped by the
+   shell at it. */
+@container (max-width: 380px) {
+  .gittoolbar { gap:5px; }
+  .gittoolbar .gtstatus { gap:6px; }
+  .gittoolbar .gtchips { gap:5px; }
+  .gittoolbar .gtstatus .gtweight { display:none; }
+  .gittoolbar .gtsync { gap:3px; }
+  .gittoolbar .gtrest { column-gap:3px; }
+  .gtdivider { margin:0; }
 }
 /* The line that says the verbs after it belong to something else. */
 .gtdivider { width:1px; align-self:stretch; min-height:20px; background:var(--line); margin:0 2px; }
@@ -900,8 +1000,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .browse-path { font-family:var(--mono); font-size:11.5px; color:var(--ink2); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; margin:10px 0 6px; overflow:auto; white-space:nowrap; }
 .browse-toggle { margin:0 0 10px; font-size:12px; color:var(--ink2); }
 .browse-list { max-height:44vh; overflow:auto; border:1px solid var(--line); border-radius:10px; }
-.browse-row { display:flex; align-items:center; gap:10px; padding:8px 11px; border-top:1px solid var(--line2); font-size:13px; }
-.browse-row:first-child { border-top:0; }
+/* Rows in the picker: spacing and the hover fill on .browse-nav do what a rule
+   between them used to. */
+.browse-row { display:flex; align-items:center; gap:10px; padding:10px 13px; font-size:13px; }
 .browse-nav { cursor:pointer; border:0; background:none; color:inherit; font:inherit; text-align:left; padding:6px; border-radius:4px; overflow-wrap:anywhere; min-width:0; }
 .browse-nav:hover { background:var(--accent-soft); }
 .browse-nav:focus-visible { outline:2px solid var(--accent); }
@@ -915,8 +1016,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .locrow { display:flex; gap:8px; align-items:center; }
 .locrow input { cursor:default; color:var(--ink2); }
 .sheet input:not([type=checkbox]):focus, .sheet select:focus, .sheet textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
-.projrow { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; align-items:baseline; }
-.projrow:first-child { border-top:0; }
+.projrow { display:flex; gap:12px; padding:10px 0; font-size:13px; align-items:baseline; }
 .projrow .pname { font-weight:600; min-width:120px; }
 .projrow .ppath { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
 .projrow .premote { font-family:var(--mono); font-size:11px; color:var(--ink2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:230px; }
@@ -998,7 +1098,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .chooser-cards { display:flex; gap:10px; flex-wrap:wrap; }
 .chooser-card { font:inherit; text-align:left; cursor:pointer; flex:1 1 150px; min-width:150px;
   display:flex; flex-direction:column; gap:3px; padding:12px 14px;
-  background:var(--bg); border:1px solid var(--line); border-radius:12px; }
+  background:var(--panel2); border:1px solid var(--line); border-radius:12px; }
 .chooser-card:hover { border-color:var(--accent); }
 .chooser-card .chooser-card-label { font-weight:650; color:var(--ink); }
 /* The picked one is the answer, not a hover — it holds the accent on its own. */
@@ -1023,7 +1123,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .srow { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:7px;
   font-size:13px; color:var(--ink2); cursor:pointer; }
 .srow.snav { -webkit-tap-highlight-color:transparent; user-select:none; }
-.srow:hover { background:var(--line2); }
+.srow:hover { background:var(--row-hover); }
 .srow.active { background:var(--accent-soft); color:var(--accent); }
 .srow .sicon { flex:0 0 14px; text-align:center; font-size:11px; color:var(--dim); }
 .srow.attn .sicon { color:var(--amber); }
@@ -1037,7 +1137,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 /* ---- Files tab (worktree browser) ---- */
 /* Same idiom as the Changes pane: .files is a .pane-split, so the shell states
    the row's width, centring and gutters, and a narrow tree sidebar (no card
-   chrome, a single right divider, its own scroll) sits beside a preview pane
+   chrome, a background step for a seam, its own scroll) sits beside a preview pane
    that fills the rest. All padding lives inside the crumb/rows and the preview
    head/body — never the gutter again, which the split already paid.
    The width is the shared rail token, the same one the commit rail takes, and
@@ -1048,13 +1148,15 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    preview readable, where taking it from the preview leaves the tree listing
    files there is nowhere to read. */
 /* A flex column: .ftree-list (what loadTree replaces) scrolls inside it. */
-.ftree { flex:0 1 var(--pane-rail); min-width:0; border-right:1px solid var(--line);
+/* Same seam, same answer as the commit rail: a background step, no divider. */
+.ftree { flex:0 1 var(--pane-rail); min-width:0; background:var(--panel2);
   display:flex; flex-direction:column; min-height:0; }
-.ftree-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:6px 0; }
+.ftree-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:0 0 6px; }
 /* The floor is the preview's share of that squeeze, and it is deliberately
    below what any real two-column pane hands it — it changes nothing until the
    pane is too narrow for both columns. */
-.fpreview { flex:1; min-width:min(200px, 100%); overflow:hidden; display:flex; flex-direction:column; }
+.fpreview { position:relative; flex:1; min-width:min(200px, 100%); overflow:hidden; display:flex; flex-direction:column;
+  --file-preview-head:var(--surface-head); }
 /* placeholder states (nothing selected / loading / error): no panel box,
    message or throbber centered in the preview area */
 .fpreview.idle { border:none; background:none; align-items:center; justify-content:center; }
@@ -1066,24 +1168,32 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .throbber { width:22px; height:22px; border-radius:50%; border:2px solid var(--line);
   border-top-color:var(--accent); animation:throb .8s linear infinite; }
 @keyframes throb { to { transform:rotate(360deg); } }
-.fcrumb { font-size:11.5px; color:var(--dim); padding:4px 13px 8px var(--pane-gutter); border-bottom:1px solid var(--line);
-  margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fcrumb { position:sticky; z-index:2; top:0; font-size:11.5px; color:var(--dim);
+  padding:10px 13px 16px var(--pane-gutter); margin-bottom:6px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 .frow { display:flex; align-items:center; gap:7px; padding:5px 13px 5px var(--pane-gutter); font-size:13px;
   color:var(--ink2); cursor:pointer; }
-.frow:hover { background:var(--line2); }
-.frow.sel { background:var(--accent-soft); color:var(--accent); }
+.frow:hover { background:var(--row-hover); }
+.frow.sel { background:var(--accent-soft); color:var(--accent); box-shadow:inset 3px 0 var(--accent); }
 .frow.fsym { cursor:default; color:var(--dim); }
 .frow .fk { flex:0 0 12px; text-align:center; color:var(--dim); font-size:11px; }
 /* The name gives ground before the row does: a path with no break opportunity
    would otherwise run past the tree's divider and under the preview. */
 .frow .fname { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .frow .fsize { margin-left:auto; font-size:11px; color:var(--dim); }
-.fphead { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line);
-  font-size:12px; }
+.fphead { position:absolute; z-index:2; top:0; right:0; left:0;
+  display:flex; align-items:center; gap:10px; padding:9px 12px 16px;
+  font-size:12px; background:var(--panel);
+  background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 .fppath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
 .fpsize { color:var(--dim); flex:none; }
-.fpbody { padding:14px; overflow:auto; flex:1; min-height:0; }
-.fpbody .plan { border:none; padding:0; background:none; }
+.fpbody { padding:calc(var(--file-preview-head) + 14px) 14px 14px; overflow:auto; flex:1; min-height:0;
+  scroll-padding-top:var(--file-preview-head); }
+.file-editor-layer { margin-top:var(--file-preview-head); padding-top:14px; }
+.fpbody .plan { border:none; padding:0; margin-bottom:0; background:none; --mdtable-cover:var(--panel); }
 .fsrc { margin:0; overflow:auto; }
 .fsrc table { min-width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; }
 .fsrc td { vertical-align:top; white-space:pre; }
@@ -1191,7 +1301,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .modal h3 { margin:0 0 3px; font-size:17px; }
 .modal .sub { color:var(--ink2); font-size:13px; }
 .modal .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
-.workspace-init-host { padding:10px 13px 12px var(--pane-gutter); border-top:1px solid var(--line2); }
+.workspace-init-host { margin-top:10px; padding:10px 13px 12px var(--pane-gutter); }
 .workspace-init-open { border:0; background:none; color:var(--accent); padding:0; font:inherit; font-size:12px; cursor:pointer; text-align:left; }
 .workspace-init-open:disabled { color:var(--dim); cursor:default; }
 .workspace-init-open-status { display:block; margin-top:5px; color:var(--red); font-size:11px; }
@@ -1222,14 +1332,14 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    pressing each branch would do. The verb leads because it is the promise —
    check out, fetch, adopt, open — and the marks trail on the right, dim, so a
    long branch name never has to fight them for the row. */
-.modal-create .branch-picker { margin-top:8px; max-height:200px; overflow-y:auto;
+.modal-create .branch-picker { display:flex; flex-direction:column; gap:4px;
+  margin-top:8px; max-height:200px; overflow-y:auto; padding:4px;
   border:1px solid var(--line); border-radius:8px; }
 .modal-create .branch-picker:empty { display:none; }
 .modal-create .branch-row { display:flex; align-items:baseline; gap:8px; width:100%;
-  padding:6px 10px; background:none; border:0; border-bottom:1px solid var(--line2);
+  padding:10px 13px; background:none; border:0; border-radius:6px;
   text-align:left; font:inherit; font-size:12px; color:var(--ink); cursor:pointer; }
-.modal-create .branch-row:last-child { border-bottom:0; }
-.modal-create .branch-row:hover { background:var(--panel2); }
+.modal-create .branch-row:hover { background:var(--row-hover); }
 .modal-create .branch-row.on { background:var(--accent-soft); }
 .modal-create .branch-row-verb { flex:none; font-size:11px; color:var(--ink2); }
 .modal-create .branch-row-name { flex:1; min-width:0; font-family:var(--mono); overflow:hidden;
@@ -1250,10 +1360,16 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .confirm-warnings { margin:12px 0 0; padding:9px 12px 9px 26px; font-size:13px; color:var(--amber);
   background:var(--amber-bg); border:1px solid color-mix(in srgb, var(--amber) 40%, transparent); border-radius:8px;
   display:flex; flex-direction:column; gap:6px; }
+.confirm-popover { position:fixed; z-index:151; width:min(400px, calc(100vw - 16px)); overflow:auto;
+  background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px;
+  box-shadow:0 12px 36px var(--shadow); }
+.confirm-popover h3 { margin:0 0 3px; font-size:15px; }
+.confirm-popover .sub { color:var(--ink2); font-size:13px; }
+.confirm-popover .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
 
 /* Durable plan/diff conversation — a GitHub-style issue activity timeline. */
 .review-thread { background:transparent; }
-.thread-title { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px; font-weight:650; }
+.thread-title { display:flex; align-items:center; justify-content:space-between; padding:10px 0 16px; font-size:15px; font-weight:650; }
 /* Where the entity stands, on the record that explains how it got there.
    (Distinct from .thread-status, which is a message's own Seen/Unread mark.) */
 .thread-state { flex:none; }
@@ -1261,7 +1377,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    same place the decision would be made in a conversation. */
 .thread-actions:empty { display:none; }
 .thread-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px;
-  margin:10px 0 8px 44px; padding-top:10px; border-top:1px solid var(--line); }
+  margin:18px 0 8px 44px; }
 .thread-title span { color:var(--dim); font-size:11px; font-weight:500; }
 .thread-timeline { position:relative; display:flex; flex-direction:column; gap:18px; padding:18px 0; }
 .thread-timeline::before { content:""; position:absolute; top:0; bottom:0; left:18px; width:2px; background:var(--line); }
@@ -1276,14 +1392,14 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-message { position:relative; margin-left:44px; min-width:0; }
 .thread-avatar { position:absolute; left:-44px; top:0; z-index:1; display:grid; place-items:center; width:38px; height:38px; border:3px solid var(--bg); border-radius:50%; background:var(--panel); color:var(--ink2); font-weight:700; font-size:12px; }
 .thread-message.user .thread-avatar { background:var(--accent-fill, var(--accent)); color:var(--accent-ink); }
-.thread-comment-card { overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+.thread-comment-card { overflow:hidden; border-radius:8px; background:var(--panel); }
 .thread-event time { color:var(--dim); }
 /* A reported outcome is a status on the agent's own message, so its marker
    rides the card under the head — same tick, same tone and the same two colors
    the done and blocked event rows carry, at the size of a line inside a card
    rather than a node on the timeline's spine. */
 .thread-outcome { display:flex; align-items:center; gap:8px; padding:7px 12px;
-  border-bottom:1px solid var(--line); color:var(--dim); font-size:12px; }
+  background:var(--panel2); color:var(--dim); font-size:12px; }
 .thread-outcome strong { color:var(--ink2); }
 .thread-outcome-icon { flex:none; display:grid; place-items:center; width:20px; height:20px;
   border-radius:50%; background:var(--panel2); color:var(--dim); font-size:10px; font-weight:800; }
@@ -1351,8 +1467,8 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-activity-outcome { flex:none; font-size:10.5px; opacity:.75; }
 .thread-activity-outcome.blocked { color:var(--red); opacity:1; }
 .thread-activity .thread-event-detail { margin-top:2px; }
-.thread-activity-children { --activity-row:26px; margin-top:4px; padding-left:10px;
-  border-left:1px solid var(--line); max-height:calc(var(--activity-row) * 8); overflow-y:auto; }
+.thread-activity-children { --activity-row:26px; margin-top:4px; padding-left:14px;
+  max-height:calc(var(--activity-row) * 8); overflow-y:auto; }
 /* A whole run of activity — everything between two things somebody said — as
    one line: how many, and the newest one's own words, with no label in front of
    them. The quietest row on the timeline, because a run of work asks the reader
@@ -1377,10 +1493,10 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 @keyframes working-pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
 @media (prefers-reduced-motion: reduce) { }
 .thread-revision-link { border:0; padding:0; background:none; color:var(--accent); font:inherit; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
-.thread-revision-view { margin-left:44px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+.thread-revision-view { margin-left:44px; border-radius:8px; background:var(--panel2); margin-bottom:14px; }
 .thread-revision-head { display:flex; justify-content:space-between; gap:12px; padding:8px 12px; color:var(--dim); font-size:11px; }
 .thread-revision-head button { border:0; background:none; color:var(--dim); cursor:pointer; font-size:16px; }
-.thread-revision-view pre { margin:0; padding:12px; max-height:52vh; overflow:auto; border-top:1px solid var(--line2); font:11px/1.5 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+.thread-revision-view pre { margin:0; padding:0 12px 12px; max-height:52vh; overflow:auto; font:11px/1.5 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; }
 /* ---- the composer -------------------------------------------------------
    One bordered box holding the tray, the text, and the toolbar, so a message
    and the files it carries read as the same object rather than three stacked
@@ -1437,14 +1553,26 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 
 /* The tray sits ABOVE the text: what you are sending should be visible while
    you write the sentence about it, not below the fold of the box. */
-.composer-tray { display:flex; flex-wrap:wrap; gap:6px; padding:8px 8px 2px; }
+.composer-tray { display:flex; flex-wrap:wrap; gap:5px; padding:0 2px 5px; }
 .composer-chip { display:flex; align-items:center; gap:8px; max-width:230px;
   border:1px solid var(--line); border-radius:9px; padding:5px 6px; background:var(--panel); }
 .composer-chip.uploading { opacity:.65; }
 .composer-chip.failed { border-color:var(--red); }
 .composer-chip-thumb { flex:0 0 auto; width:30px; height:30px; border-radius:6px; object-fit:cover; background:var(--bg); }
-.composer-chip-glyph { flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
-  border-radius:6px; background:var(--bg); color:var(--dim); font:9px/1 var(--mono); font-weight:700; }
+/* The tile a file wears when it has no thumbnail: an icon for its kind, with
+   the extension pinned to the tile's foot so two code files still differ. The
+   same tile stands in the conversation after the send (.thread-attachment). */
+.attachment-glyph { position:relative; flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
+  border-radius:6px; background:var(--bg); color:var(--ink2); overflow:hidden; }
+.attachment-glyph svg { width:16px; height:16px; }
+.attachment-glyph-tag { position:absolute; left:0; right:0; bottom:0; padding:1px 0 2px; text-align:center;
+  font:700 6.5px/1 var(--mono); letter-spacing:.02em; color:var(--ink);
+  background:color-mix(in srgb, var(--panel) 70%, transparent); }
+.attachment-glyph[data-kind="image"] { color:var(--accent); }
+.attachment-glyph[data-kind="code"] { color:var(--green); }
+.attachment-glyph[data-kind="archive"] { color:var(--amber); }
+.attachment-glyph[data-kind="sheet"] { color:var(--green); }
+.attachment-glyph[data-kind="video"], .attachment-glyph[data-kind="audio"] { color:var(--accent); }
 .composer-chip-meta { display:flex; flex-direction:column; gap:1px; min-width:0; }
 .composer-chip-name { color:var(--ink2); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .composer-chip-note { color:var(--dim); font-size:10.5px; }
@@ -1505,13 +1633,20 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-attachment-figure figcaption { padding-top:4px; color:var(--dim); font-size:11px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .thread-attachment-figure.unavailable figcaption::after { content:" · unavailable"; color:var(--red); }
-.thread-attachment { display:flex; align-items:baseline; gap:8px; max-width:100%;
-  flex:0 0 auto;
-  border:1px solid var(--line); border-radius:8px; padding:7px 10px; background:var(--bg);
+/* A sent file is a card the reader can pick up: the kind's icon, the name,
+   and what it weighs — the same tile it wore in the tray before the send. */
+.thread-attachment { display:flex; align-items:center; gap:9px; max-width:min(260px, 100%);
+  flex:0 0 auto; text-align:left;
+  border:1px solid var(--line); border-radius:9px; padding:6px 10px 6px 6px; background:var(--bg);
   color:var(--ink2); cursor:pointer; font:12px var(--sans); }
-.thread-attachment:hover { border-color:var(--accent); color:var(--accent); }
-.thread-attachment-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.thread-attachment-size { flex:0 0 auto; color:var(--dim); font-size:11px; }
+.thread-attachment:hover { border-color:var(--accent); color:var(--ink); }
+.thread-attachment:hover .thread-attachment-name { color:var(--accent); }
+.thread-attachment-glyph { background:var(--panel2); }
+.thread-attachment-meta { display:flex; flex-direction:column; gap:1px; min-width:0; }
+.thread-attachment-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
+.thread-attachment-size { flex:0 0 auto; color:var(--dim); font-size:11px; font-family:var(--mono); }
+.thread-attachment-figure figcaption { display:flex; align-items:baseline; gap:6px; min-width:0; }
+.thread-attachment-figure figcaption .thread-attachment-name { flex:0 1 auto; color:var(--dim); }
 
 /* Conversation treatment shared by the full-page thread and the agent rail.
    Messages keep their metadata and rich children, but the transcript reads as
@@ -1520,7 +1655,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-timeline::before { display:none; }
 .thread-message { margin-left:0; }
 .thread-avatar { display:none; }
-.thread-comment-card { overflow:visible; border:0; border-radius:0; background:transparent; }
+.thread-comment-card { overflow:visible; border-radius:0; background:transparent; }
 .thread-body { padding:0; color:var(--ink); font-size:13.5px; line-height:1.55; }
 .thread-message.user { align-self:flex-end; width:min(78%, 520px); }
 .thread-message.user .thread-comment-card { overflow:hidden; border-radius:18px;
@@ -1530,7 +1665,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-message.user .thread-references,
 .thread-message.user .thread-attachments,
 .thread-message.user .thread-options { padding-inline:12px; }
-.thread-outcome { margin:0 0 7px; padding:5px 0; border:0; }
+.thread-outcome { margin:0 0 7px; padding:5px 0; background:transparent; }
 .thread-anchor { padding:4px 0 0; }
 .thread-references, .thread-attachments, .thread-options { padding-inline:0; }
 .thread-message-footer { display:flex; align-items:center; gap:5px; padding-top:5px;
@@ -1552,7 +1687,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-event { min-height:24px; padding:1px 0 1px 20px; }
 .thread-event-icon { left:0; top:2px; width:14px; height:14px; border:0;
   background:transparent; font-size:9px; }
-.thread-activity-group { margin-left:0; border-left:1px solid var(--line3); }
+.thread-activity-group { margin-left:0; }
 .thread-activity-group-head { min-height:28px; padding:3px 0 3px 18px; }
 .thread-activity-group-head::before { content:"›"; flex:none; color:var(--ink2);
   transform:rotate(0deg); transition:transform var(--motion-fast, 120ms) ease; }
@@ -1568,7 +1703,6 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-activity-group-list .thread-activity .thread-event-icon { position:static; flex:none; }
 .thread-activity-preview { flex:1 1 auto; }
 .thread-activity-head time { margin-left:auto; }
-.thread-activity-children { border-left-color:var(--line3); }
 .thread-revision-view, .thread-composer { margin-left:0; }
 .composer { border:0; border-radius:0; background:transparent; }
 .composer:focus-within { border-color:transparent; box-shadow:none; }
@@ -1604,8 +1738,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   box-shadow:0 18px 48px var(--shadow), inset 0 1px color-mix(in srgb, white 4%, transparent);
 }
 .sheet, .modal { background:var(--panel); }
-.file, .browse-list, .modal-create .branch-picker { border-color:var(--line); box-shadow:0 4px 16px var(--shadow-soft); }
-.file .fhead, .fphead, .workspace-refbar { background:var(--panel); }
+/* .file is outline-less now (its fill is its edge); the picker boxes here are
+   controls, and controls keep their border. */
+.browse-list, .modal-create .branch-picker { border-color:var(--line); box-shadow:0 4px 16px var(--shadow-soft); }
+.file .fhead {
+  background:var(--panel2); background:color-mix(in srgb, var(--panel2) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 .empty.gone, .fpidle { color:var(--ink2); }
 .notice { border-color:var(--line3); background:var(--panel); box-shadow:0 14px 38px var(--shadow); }
 .notice-x, .notice-expand, .iconbtn, .fmenu, .tdial, .workspace-refrow, .ivassign-head,
@@ -1624,12 +1762,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .settings-open > #scrim { z-index:140; }
 .settings-scrim { position:fixed; inset:0; z-index:100; background:var(--scrim); display:grid; place-items:center; padding:24px; }
 .settings-modal { width:min(1080px, 100%); height:min(820px, 90vh); background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:14px; box-shadow:0 20px 70px var(--shadow); display:grid; grid-template-columns:220px minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); overflow:hidden; }
-.settings-modal > header { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; min-height:48px; padding:8px 16px; border-bottom:1px solid var(--line); }
+.settings-modal > header { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; min-height:48px; padding:12px 16px 16px; }
 .settings-modal > header h2 { margin:0; font-size:15px; font-weight:600; }
 .settings-modal [data-settings-close] { display:grid; place-items:center; width:30px; height:30px; padding:0; border:0; border-radius:4px; background:transparent; color:var(--ink2); font-size:18px; font-weight:400; }
-.settings-sidebar { padding:12px 10px; overflow:auto; border-right:1px solid var(--line); }
+.settings-sidebar { padding:12px 10px; overflow:auto; background:var(--panel2); }
 .settings-sidebar .btn { border:0; border-radius:0; background:transparent; box-shadow:none; color:var(--ink2); padding:8px 10px; font-size:13px; font-weight:500; display:flex; flex-direction:column; align-items:flex-start; width:100%; text-align:left; margin-bottom:6px; white-space:normal; overflow-wrap:anywhere; }
-.settings-sidebar .btn:hover { background:var(--line2); color:var(--ink); }
+.settings-sidebar .btn:hover { background:var(--row-hover); color:var(--ink); }
 .settings-sidebar .btn[aria-current] { background:var(--accent-soft); color:var(--accent); }
 .settings-sidebar h3 { margin:22px 8px 10px; font-size:12px; color:var(--ink2); }
 .settings-sidebar small { font-size:11px; opacity:.75; }
@@ -1637,8 +1775,8 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .settings-content .board-head { margin-top:0; }
 .settings-content h1 { font-size:20px; line-height:1.35; overflow-wrap:anywhere; }
 .settings-content .board-head p { font-size:13px; }
-.settings-content .panel { max-width:none; background:transparent; border:0; border-top:1px solid var(--line); border-radius:0; box-shadow:none; padding:22px 0; margin:0; }
-.settings-content .archive-record { padding:12px 8px 20px; border-top:0; border-bottom:1px solid var(--line); }
+.settings-content .panel { max-width:none; background:transparent; border:0; border-radius:0; box-shadow:none; padding:0; margin:0 0 28px; }
+.settings-content .archive-record { padding:12px 8px 20px; border:0; margin-bottom:14px; }
 :is(.settings-content, .device-settings) .projrow { flex-wrap:wrap; gap:8px 12px; }
 :is(.settings-content, .device-settings) .projrow > * { min-width:0; max-width:100%; overflow-wrap:anywhere; }
 :is(.settings-content, .device-settings) .projrow .pname { flex-basis:100%; }
@@ -1653,10 +1791,10 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   .settings-scrim { padding:8px; }
   .settings-modal { height:calc(100dvh - 16px); grid-template-columns:minmax(0,1fr); grid-template-rows:auto auto minmax(0,1fr); }
   .settings-content { padding:14px; }
-  .settings-sidebar { display:flex; gap:8px; padding:10px 14px; border-right:0; border-bottom:1px solid var(--line); overflow-x:auto; }
+  .settings-sidebar { display:flex; gap:8px; padding:10px 14px; background:var(--panel2); overflow-x:auto; }
   .settings-sidebar h3 { display:none; }
   .settings-sidebar .btn { flex:0 0 130px; margin:0; font-size:12px; justify-content:center; }
-  .settings-content .panel { padding:18px 0; }
+  .settings-content .panel { margin-bottom:22px; }
   .settings-content .row { flex-wrap:wrap; }
   .settings-content .row .k { flex-basis:100%; width:auto; }
   .settings-content .row .v { min-width:0; max-width:100%; }

@@ -16,6 +16,7 @@ use crate::pty::HarnessSpec;
 mod connection;
 mod diagnostics;
 mod limits;
+mod observation;
 mod policy;
 mod process;
 mod protocol;
@@ -79,6 +80,10 @@ impl Harness for CodexAppServerHarness {
 
     fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
         CodexHarness.model_args(choice)
+    }
+
+    fn requires_unadorned_command(&self, prompt: &str) -> bool {
+        CodexHarness.requires_unadorned_command(prompt)
     }
 
     fn spec(

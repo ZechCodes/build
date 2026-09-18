@@ -30,7 +30,13 @@ import { railEntity } from "./agentRailModel.js";
 import { FIRST_PAGE_ITEMS, THREAD_RECORD_KIND, windowFromThreadPayload } from "./thread.js";
 import { cachedEntityIds, cachedSubKeys, evictEntity, readCached, writeCached } from "./localCache.js";
 import { createFileDiffs } from "./fileDiffs.js";
-import { surfacesCacheAddress, surfacesFingerprint, surfacesFromRecord, surfacesRecord } from "./surfacesCache.js";
+import {
+  surfaceSessionGeneration,
+  surfacesCacheAddress,
+  surfacesFingerprint,
+  surfacesFromRecord,
+  surfacesRecord,
+} from "./surfacesCache.js";
 import { coordinatedRead, requestPriorityFields, rpcReadKey } from "./readRequests.js";
 import { pageVisible } from "./visibility.js";
 
@@ -90,13 +96,21 @@ function gitScopeOf(row) {
 async function writeSurfaces(context, entityId, agents) {
   for (const agent of agents) {
     if (!context.active()) return;
-    if (!agent.id || !agent.surfaces) continue;
-    const address = surfacesCacheAddress({ deviceId: context.deviceId, entityId, agentId: agent.id });
-    const stored = surfacesFromRecord(await readCached(address));
-    if (!context.active()) return;
-    if (stored && surfacesFingerprint(stored.surfaces) === surfacesFingerprint(agent.surfaces)) continue;
-    await writeCached(address, surfacesRecord(agent.surfaces));
+    await writeAgentSurfaces(context, entityId, agent);
   }
+}
+
+async function writeAgentSurfaces(context, entityId, agent) {
+  const agentId = agent.id;
+  const generation = surfaceSessionGeneration(agent.surface_session_generation);
+  if (!agentId || !generation) return;
+  const address = surfacesCacheAddress({ deviceId: context.deviceId, entityId, agentId });
+  const stored = surfacesFromRecord(await readCached(address), generation, false);
+  if (!context.active()) return;
+  if (agent.id !== agentId || surfaceSessionGeneration(agent.surface_session_generation) !== generation) return;
+  const arriving = surfacesFingerprint(agent.surfaces ?? null, generation);
+  if (stored && surfacesFingerprint(stored.surfaces, stored.generation) === arriving) return;
+  await writeCached(address, surfacesRecord(agent.surfaces ?? null, generation));
 }
 
 /** Re-read the conversations that were ever warmed on this entity — one full

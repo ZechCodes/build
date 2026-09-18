@@ -31,6 +31,7 @@ def render_practical_content() -> str:
     return fill_slots(
         read_landing_file(PRACTICAL_FRAGMENT_NAME),
         {
+            "install_command": escape(releases.install_command("https://getbuild.ing")),
             "platforms": _render_platforms(),
             "activity": _render_activity(content["activity"]),
             "repository_url": escape(source["repository_url"], quote=True),
@@ -39,6 +40,10 @@ def render_practical_content() -> str:
 
 
 def render_docs_body() -> str:
+    host_install_command = escape(releases.install_command("https://getbuild.ing"))
+    desktop_install_command = escape(
+        releases.install_command("https://getbuild.ing", desktop=True)
+    )
     harnesses = "\n".join(
         '<li><div><strong>{name}</strong><span class="status status--{status}">'
         "{status}</span></div><p>{detail}</p></li>".format(
@@ -53,7 +58,11 @@ def render_docs_body() -> str:
   <h1>Build documentation</h1>
   <section id="setup" aria-labelledby="setup-title">
     <h2 id="setup-title">Set up a host</h2>
-    <p>Install Build on the macOS or Linux computer that holds your projects and runs your coding agents. After alpha access is confirmed, the app provides the authenticated installer, then asks you to pair the host using the code and fingerprint printed by the bridge.</p>
+    <p>Install the Build host on the macOS or Linux computer that holds your projects and runs your coding agents. The host installer is public.</p>
+    <p class="install-command"><code>{host_install_command}</code></p>
+    <p>The optional desktop client has a separate public installer:</p>
+    <p class="install-command"><code>{desktop_install_command}</code></p>
+    <p>Installer downloads are public. Alpha access is required to pair and use a host. Sign in to the app, then pair the host using the code and fingerprint printed by the bridge.</p>
     <a class="primary-action" href="/app/">Open alpha setup</a>
   </section>
   <section id="architecture" aria-labelledby="architecture-title">

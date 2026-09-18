@@ -163,7 +163,7 @@ export function reasoningSelectorOptions(catalog, providerId, choice, activeMode
 }
 
 export function reasoningSelectorLabel(catalog, providerId, choice, activeModel = "", activeEffort = "") {
-  return effectiveEffort(catalog, providerId, choice, activeModel, activeEffort) || "Select effort";
+  return effectiveEffort(catalog, providerId, choice, activeModel, activeEffort) || "Default effort";
 }
 
 export function activeModelLabel(catalog, providerId, modelId) {
@@ -193,7 +193,7 @@ export function movesAtNextStart(catalog, providerId, choice, activeModel) {
 }
 
 export function modelMenuLabel(catalog, providerId, choice, activeModel = "") {
-  if (!activeModel) return choice.model ? pendingModelLabel(catalog, providerId, choice) : "Select model";
+  if (!activeModel) return choice.model ? pendingModelLabel(catalog, providerId, choice) : "Harness default";
   const active = activeModelLabel(catalog, providerId, activeModel);
   if (!movesAtNextStart(catalog, providerId, choice, activeModel)) return withChoiceEffort(active, choice);
   return `${active} → ${pendingModelLabel(catalog, providerId, choice)}`;

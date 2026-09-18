@@ -159,6 +159,12 @@ describe("workspace surface", () => {
     await flush();
     await flush();
     expect(mountGitPane).toHaveBeenCalledTimes(2);
+    const selection = mountAgentRail.mock.calls[0][1].selection;
+    selection.set("second-agent");
+    for (const [, options] of mountGitPane.mock.calls) {
+      expect(options.agentSelection).toBe(selection);
+      expect(options.agentSelection.scope()).toEqual({ agent_id: "second-agent" });
+    }
     expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
   });
 

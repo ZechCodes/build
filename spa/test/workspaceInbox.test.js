@@ -20,9 +20,61 @@ const entriesOf = (workspaces, items = []) => {
 };
 
 describe("workspace inbox rows", () => {
+  it("sorts every device's workspaces together by the existing anchor order", () => {
+    const workspaces = [
+      { id: "new", project_id: "project-1", created_at: "2026-08-03T00:00:00Z" },
+      { id: "old", project_id: "project-1", created_at: "2026-08-01T00:00:00Z" },
+      { id: "middle", project_id: "project-1", created_at: "2026-08-02T00:00:00Z" },
+    ];
+    expect(entriesOf(workspaces).map((row) => row.workspaceId)).toEqual(["old", "middle", "new"]);
+  });
+
+  it("uses a conversation's pickup anchor ahead of the workspace creation date", () => {
+    const rows = entriesOf([
+      { id: "run-1", project_id: "project-1", created_at: "2026-08-01T00:00:00Z" },
+      { id: "run-2", project_id: "project-1", created_at: "2026-08-02T00:00:00Z" },
+    ], [
+      { kind: "branch", project_id: "project-1", run_id: "run-1", anchor: "2026-08-03T00:00:00Z" },
+      { kind: "branch", project_id: "project-1", run_id: "run-2", anchor: "2026-08-02T00:00:00Z" },
+    ]);
+    expect(rows.map((row) => row.workspaceId)).toEqual(["run-2", "run-1"]);
+  });
+
   it.each(["", "  ", "Bridge wire interface / 🦊"])("keeps the chosen workspace display name %j", (name) => {
     const [entry] = entriesOf([{ id: "workspace-1", project_id: "project-1", name, root: "/normalized/path" }]);
     expect(entry.name).toBe(name);
+  });
+
+  // The bridge keeps the typed name byte for byte and derives the CHECKOUT's
+  // folder and the branch it cuts from a bounded slug of it. Neither derivative
+  // is what the workspace is called, so neither may reach the row, its tooltip
+  // or anything else the reader looks at.
+  it("says the name the workspace was given, never the slug its folder and branch took", () => {
+    const [entry] = entriesOf([{
+      id: "workspace-1",
+      project_id: "project-1",
+      name: "Bridge wire interface",
+      root: "/home/zech/.build/workspaces/proj-1/bridge-wire-interface",
+      directories: [{ id: "api", source_id: "api", is_git: true, branch: "build/bridge-wire-interface" }],
+    }]);
+    expect(entry.name).toBe("Bridge wire interface");
+    expect(entry.title).toBe("Bridge wire interface");
+    for (const html of [inboxRowHtml(entry), inboxRowHtml(entry, { quiet: true })]) {
+      expect(html).toContain("Bridge wire interface");
+      expect(html).not.toContain("bridge-wire-interface");
+      expect(html).not.toContain(".build/workspaces");
+    }
+  });
+
+  // A checkout no bridge ever named — an older bridge, an adopted worktree —
+  // has only its folder to be called after. That is a last resort, and it is
+  // the folder rather than the path: a row is one line, and a path is not a
+  // name.
+  it("falls back to a nameless workspace's folder rather than its whole path", () => {
+    const [entry] = entriesOf([{ id: "external-1", project_id: "project-1", root: "/work/checkouts/build-login" }]);
+    expect(entry.name).toBe("build-login");
+    const [rootless] = entriesOf([{ id: "external-2", project_id: "project-1" }]);
+    expect(rootless.name).toBe("Workspace");
   });
 
   it("shows the owning conversation's unread and running state without matching branch names", () => {
@@ -54,7 +106,7 @@ describe("workspace inbox rows", () => {
         name: "Checkout",
         root: "/work/checkout",
         status: "active",
-        work_summary: { pushes: 3, additions: 42, deletions: 7 },
+        work_summary: { pushes: 3, behind: 2, additions: 42, deletions: 7 },
         directories: [
           { id: "docs", source_id: "source-docs", is_git: false },
           { id: "api", source_id: "source-api", is_git: true },
@@ -70,7 +122,7 @@ describe("workspace inbox rows", () => {
       sourceId: "source-api",
       tab: "changes",
     });
-    expect(entry.facts).toBe("3 pushes · +42 −7");
+    expect(entry.facts).toBe("↑3 ↓2 +42 −7");
     // No destructive verb on a workspace row that is not clean: the Done
     // action is `data-done="…"` (the menu item) or `data-workspace-done`; the
     // always-present `data-done-error` slot is where a refusal is painted, not
@@ -103,10 +155,20 @@ describe("workspace inbox rows", () => {
       ]);
       expect(malformed.facts).toBe("Work summary unavailable");
     }
-    const [clean] = entriesOf([
+    const [legacy] = entriesOf([
       { id: "workspace-4", project_id: "project-1", work_summary: { pushes: 0, additions: 0, deletions: 0 } },
     ]);
-    expect(clean.facts).toBe("0 pushes · +0 −0");
+    expect(legacy.facts).toBe("↑0 +0 −0");
+    const [withBehind] = entriesOf([
+      { id: "workspace-5", project_id: "project-1", work_summary: { pushes: 0, behind: 4, additions: 0, deletions: 0 } },
+    ]);
+    expect(withBehind.facts).toBe("↑0 ↓4 +0 −0");
+    for (const invalid of ["1", -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const [malformed] = entriesOf([
+        { id: "workspace-6", project_id: "project-1", work_summary: { pushes: 0, behind: invalid, additions: 0, deletions: 0 } },
+      ]);
+      expect(malformed.facts).toBe("Work summary unavailable");
+    }
   });
 
   // A checkout the bridge could not build has no work to summarize, and saying

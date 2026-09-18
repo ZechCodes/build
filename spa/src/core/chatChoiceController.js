@@ -38,7 +38,7 @@ function stateFromDigest(current, agent, revision, acknowledged) {
   };
 }
 
-export function createChatChoiceController({ repository, identityOf, announce }) {
+export function createChatChoiceController({ repository, identityOf, announce, initial = null, onChange = () => {} }) {
   let sequence = 0;
   let strictRevision = false;
   let tail = null;
@@ -53,6 +53,16 @@ export function createChatChoiceController({ repository, identityOf, announce })
     settledEffort: "",
     revision: 0,
     pendingIntent: null,
+    ...(initial ? {
+      provider: initial.provider || "",
+      requestedModel: initial.model || "",
+      effort: initial.effort || "",
+    } : null),
+  };
+
+  const changed = () => {
+    onChange({ provider: state.provider, model: state.requestedModel, effort: state.effort });
+    announce();
   };
 
   const read = () => ({
@@ -74,7 +84,7 @@ export function createChatChoiceController({ repository, identityOf, announce })
     const pending = state.pendingIntent;
     const acknowledged = digestAcknowledges(pending, agent, revision, dispatched);
     state = stateFromDigest(state, agent, revision, acknowledged);
-    announce();
+    changed();
     return true;
   };
 
@@ -91,7 +101,7 @@ export function createChatChoiceController({ repository, identityOf, announce })
       scopeEpoch: repository.epoch,
     });
     state = { ...state, requestedModel: model, effort, pendingIntent: intent };
-    announce();
+    changed();
     return intent;
   };
 
@@ -114,7 +124,7 @@ export function createChatChoiceController({ repository, identityOf, announce })
       effort: state.settledEffort,
       pendingIntent: null,
     };
-    announce();
+    changed();
     return false;
   };
 
@@ -135,7 +145,7 @@ export function createChatChoiceController({ repository, identityOf, announce })
       revision: answer.choice_revision,
       pendingIntent: null,
     };
-    announce();
+    changed();
     return true;
   };
 
@@ -167,7 +177,7 @@ export function createChatChoiceController({ repository, identityOf, announce })
     dispatched.delete(intent.sequence);
     if (!state.pendingIntent || intent.sequence !== state.pendingIntent.sequence) return false;
     state = { ...state, requestedModel: state.settledModel, effort: state.settledEffort, pendingIntent: null };
-    announce();
+    changed();
     return true;
   };
 
@@ -192,7 +202,7 @@ export function createChatChoiceController({ repository, identityOf, announce })
     choose,
     setProvisional({ provider = "", model = "", effort = "" }) {
       state = { ...state, provider, requestedModel: model, effort };
-      announce();
+      changed();
     },
   });
 }

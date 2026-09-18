@@ -47,7 +47,7 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // `connect` — the device-key wait, the pin check, the re-attach test and the
 // backoff reconnect in one function each — left the tree with both of their
 // exemptions.
-const RATCHETED_FUNCTIONS = 59;
+const RATCHETED_FUNCTIONS = 58;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

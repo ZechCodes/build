@@ -55,6 +55,7 @@ const branchRow = (agentOver = {}) => ({
       state: "live",
       unread_count: 0,
       working: false,
+      surface_session_generation: "session-one",
       surfaces: surfaces(),
       ...agentOver,
     },
@@ -84,19 +85,19 @@ const pressEscape = () =>
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
 const watchDocumentListeners = (watchedType) => {
-  let live = 0;
+  const live = new Set();
   const add = document.addEventListener.bind(document);
   const remove = document.removeEventListener.bind(document);
   document.addEventListener = (type, ...rest) => {
-    if (type === watchedType) live += 1;
+    if (type === watchedType) live.add(rest[0]);
     return add(type, ...rest);
   };
   document.removeEventListener = (type, ...rest) => {
-    if (type === watchedType) live -= 1;
+    if (type === watchedType) live.delete(rest[0]);
     return remove(type, ...rest);
   };
   return {
-    count: () => live,
+    count: () => live.size,
     stop: () => {
       delete document.addEventListener;
       delete document.removeEventListener;
@@ -195,7 +196,7 @@ describe("panelHeadHtml's surface menu", () => {
     expect(html).not.toContain("splitbtn");
   });
 
-  it("places the vertical menu after Done without a collapse control", () => {
+  it("places the pin between Done and the vertical menu without a collapse control", () => {
     const html = panelHeadHtml("Claude Code", "chat", {
       removable: true,
       surfaceOptions: [{ id: SHELL_ENTRY_KIND, label: "Shells", description: "1 running" }],
@@ -203,7 +204,8 @@ describe("panelHeadHtml's surface menu", () => {
     expect(html).toContain(`data-action="${SHELL_ENTRY_KIND}"`);
     expect(html).toContain("Shells");
     expect(html).toContain("1 running");
-    expect(html.indexOf("rail-remove")).toBeLessThan(html.indexOf("rail-surface-menu"));
+    expect(html.indexOf("rail-remove")).toBeLessThan(html.indexOf("pinbtn"));
+    expect(html.indexOf("pinbtn")).toBeLessThan(html.indexOf("rail-surface-menu"));
     expect(html).toContain(">Done</button>");
     expect(html).toContain("⋮");
     expect(html).not.toContain("rail-collapse");
@@ -285,6 +287,37 @@ describe("the conversation header's menu", () => {
     expect(menuCaret().closest(".splitbtn").classList.contains("splitbtn-icon")).toBe(true);
   });
 
+  it("opens from the glass header's containing block and accepts an item click", async () => {
+    await mount();
+    const caret = menuCaret();
+    const menu = openMenuElement();
+    const split = caret.closest(".splitbtn");
+    panel().style.overflowY = "hidden";
+    const headerOffset = { left: 700, top: 12 };
+    split.getBoundingClientRect = () => ({ left: 800, right: 832, top: 20, bottom: 48, width: 32, height: 28 });
+    Object.defineProperties(menu, {
+      offsetWidth: { configurable: true, value: 180 },
+      offsetHeight: { configurable: true, value: 96 },
+    });
+    // backdrop-filter makes the fixed menu resolve from the header rather
+    // than the viewport. Model that browser geometry so this test catches a
+    // menu that opens successfully but lands beyond the visible panel.
+    menu.getBoundingClientRect = () => ({
+      left: headerOffset.left + (Number.parseFloat(menu.style.left) || 0),
+      top: headerOffset.top + (Number.parseFloat(menu.style.top) || 0),
+      width: 180,
+      height: 96,
+    });
+
+    caret.click();
+
+    expect(menu.hidden).toBe(false);
+    expect(menu.getBoundingClientRect()).toMatchObject({ left: 652, top: 54 });
+    menuItem(SHELL_ENTRY_KIND).click();
+    await flush();
+    expect(overlay()).not.toBe(null);
+  });
+
   it("is absent while the agent has no surfaces at all", async () => {
     payload = branchRow({ surfaces: null });
     await mount();
@@ -326,6 +359,67 @@ describe("the conversation header's menu", () => {
     await poll(branchRow({ surfaces: {} }));
 
     expect(menuCaret()).toBe(null);
+  });
+});
+
+describe("the agent's goal and observed checklist", () => {
+  const observed = () => ({
+    goal: { objective: "Ship the release", state: "active" },
+    checklist: [{ id: "one", subject: "Run verification", state: "in_progress" }],
+    observations: {
+      goal: { support: "supported", freshness: "current", coverage: "complete" },
+      checklist: { support: "supported", freshness: "current", coverage: "complete" },
+    },
+  });
+
+  it("paints a goal-only observation above the composer", async () => {
+    payload = branchRow({ surfaces: { goal: { objective: "Ship the release", state: "paused" }, observations: {} } });
+    await mount();
+
+    const observation = panel().querySelector(".agent-observation-host");
+    expect(observation.hidden).toBe(false);
+    expect(observation.textContent).toContain("Goal paused");
+    expect(observation.textContent).toContain("Ship the release");
+  });
+
+  it("moves the observed checklist into a Tasks activity", async () => {
+    payload = branchRow({ surfaces: observed() });
+    await mount();
+
+    expect(panel().querySelector(".agent-observation-checklist")).toBe(null);
+    const tasks = panel().querySelector('[data-surface-kind="checklist"]');
+    expect(tasks.textContent).toContain("Tasks");
+    expect(tasks.textContent).toContain("0/1");
+  });
+
+  it("shows task observation metadata inside the Tasks viewer", async () => {
+    payload = branchRow({ surfaces: observed() });
+    await mount();
+    panel().querySelector('[data-surface-kind="checklist"]').click();
+    expect(panel().querySelector(".surface-checklist-context").textContent).toContain("Run verification");
+    expect(panel().querySelector(".surface-checklist-context").textContent).toContain("0/1");
+  });
+
+  it("keeps partial, stale, and prior-turn task context in the viewer", async () => {
+    const surfaces = observed();
+    surfaces.checklist[0].state = "completed";
+    surfaces.checklist_provenance = { carried_from_prior_turn: true };
+    surfaces.observations.checklist = {
+      support: "supported",
+      freshness: "stale",
+      coverage: "partial",
+      omitted_count: 3,
+    };
+    payload = branchRow({ surfaces });
+    await mount();
+
+    panel().querySelector('[data-surface-kind="checklist"]').click();
+    const context = panel().querySelector(".surface-checklist-context");
+    expect(context.textContent).toContain("1 known completed · 3 omitted");
+    expect(context.textContent).toContain("Last known");
+    expect(context.textContent).toContain("Prior turn");
+    expect(context.textContent).toContain("Partial");
+    expect(context.classList.contains("is-stale")).toBe(true);
   });
 });
 
@@ -463,7 +557,7 @@ describe("what the ⋯ leaves on the document", () => {
 });
 
 describe("collapsing the panel a surface stands over", () => {
-  it("takes the overlay and the pills' grace timer down with the panel", async () => {
+  it("closes the overlay while retaining panel state until disposal", async () => {
     await mount();
     menuCaret().click();
     menuItem(SHELL_ENTRY_KIND).click();
@@ -473,12 +567,18 @@ describe("collapsing the panel a surface stands over", () => {
     await poll(finishedShells());
     expect(timers.count()).toBe(1);
 
+    const standingPanel = document.getElementById("rail-panel");
     document.querySelector(".rail-bubble").click();
     await flush();
 
-    expect(document.getElementById("rail-panel")).toBe(null);
+    expect(document.getElementById("rail-panel")).toBe(standingPanel);
+    expect(standingPanel.getAttribute("aria-hidden")).toBe("true");
+    expect(standingPanel.hasAttribute("inert")).toBe(true);
     expect(overlay()).toBe(null);
     expect(document.querySelector(".modal-scrim")).toBe(null);
+    expect(timers.count()).toBeGreaterThanOrEqual(1);
+    rail.dispose();
+    rail = null;
     expect(timers.count()).toBe(0);
     timers.stop();
   });

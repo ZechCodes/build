@@ -8,7 +8,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { composerHtml, composerPartIds, sendControlHtml } from "../src/core/composer.js";
 
-const styles = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+const styles = ["../src/styles.css", "../src/styles/shell.css"]
+  .map((path) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8"))
+  .join("\n");
 const markup = (over = {}) =>
   composerHtml({ inputId: "i", sendId: "s", hintId: "h", placeholder: "p", attachable: true, ...over });
 
@@ -19,6 +21,13 @@ describe("the composer action row", () => {
     expect(actions, "the actions share one container").not.toBeNull();
     expect(actions[0]).toContain('id="iattach"');
     expect(actions[0]).toContain('id="s"');
+  });
+
+  it("keeps contextual rows above the bordered input and omits visual shortcut and menu arrows", () => {
+    const html = markup({ modelMenu: true });
+    expect(html.indexOf("composer-context")).toBeLessThan(html.indexOf('class="composer attachable"'));
+    expect(html.indexOf("composer-tray")).toBeLessThan(html.indexOf('class="composer attachable"'));
+    expect(html).not.toContain("composer-shortcut");
   });
 
   it("renders send as an icon-only arrow", () => {
@@ -38,6 +47,19 @@ describe("the composer action row", () => {
   it("clears the create button vertically, never by stranding the actions", () => {
     expect(styles).not.toMatch(/\.composer-bar\s*\{[^}]*padding-right:\s*var\(--fab-clear\)/);
     expect(styles).toMatch(/\.composer-actions\s*\{[^}]*margin-left:\s*auto/);
+  });
+
+  it("lets the rail footer overlay the transcript and reserves its measured height in the scroller", () => {
+    expect(styles).toMatch(/\.rail-composer\s*\{[^}]*position:absolute/);
+    expect(styles).toMatch(/\.rail-body\s*\{[^}]*--rail-composer-clearance/);
+  });
+
+  it("keeps the toolbar reachable when a short viewport constrains the floating footer", () => {
+    expect(styles).toMatch(/\.rail-composer\s*\{[^}]*display:flex[^}]*flex-direction:column/);
+    expect(styles).toMatch(/\.rail-composer \.thread-composer\s*\{[^}]*min-height:0[^}]*display:flex/);
+    expect(styles).toMatch(/\.rail-composer \.composer\s*\{[^}]*min-height:0[^}]*display:flex/);
+    expect(styles).toMatch(/\.rail-composer \.composer-bar\s*\{[^}]*flex:none/);
+    expect(styles).toMatch(/\.rail-composer \.composer textarea\s*\{[^}]*flex:1 1 auto[^}]*overflow-y:auto/);
   });
 });
 

@@ -15,6 +15,7 @@
 //! here has to know any of it.
 
 use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -179,6 +180,7 @@ pub struct HarnessSpec {
     /// state lock through a delivery) ever sleeps for it.
     pub submit_delay: Duration,
     pub known_session_id: Option<String>,
+    pub compaction_sidecar: Option<PathBuf>,
 }
 
 impl HarnessSpec {
@@ -193,6 +195,7 @@ impl HarnessSpec {
             settle: DEFAULT_SETTLE,
             submit_delay: Duration::ZERO,
             known_session_id: None,
+            compaction_sidecar: None,
         }
     }
 
@@ -234,6 +237,11 @@ impl HarnessSpec {
         self.known_session_id = Some(session_id.into());
         self
     }
+
+    pub fn compaction_sidecar(mut self, path: PathBuf) -> Self {
+        self.compaction_sidecar = Some(path);
+        self
+    }
 }
 
 /// A live agent session bound to a PTY. Cloneable handles share one underlying PTY.
@@ -264,6 +272,8 @@ pub struct PtySession {
     /// A launch-known or provider-located conversation identity. `None` is for
     /// a terminal with no conversation to name, such as the human's shell.
     identity: Option<crate::harness::SessionIdentitySource>,
+    activity_rx: Mutex<Option<broadcast::Receiver<crate::harness::ActivityReport>>>,
+    compaction_sidecar: Option<PathBuf>,
 }
 
 impl PtySession {
@@ -273,6 +283,26 @@ impl PtySession {
         cwd: Option<PathBuf>,
         size: PtySize,
     ) -> Result<PtySession, HarnessError> {
+        if let Some(path) = spec.compaction_sidecar.as_ref() {
+            let parent = path.parent().ok_or_else(|| {
+                HarnessError::Setup(format!(
+                    "compaction sidecar {} has no parent",
+                    path.display()
+                ))
+            })?;
+            std::fs::create_dir_all(parent).map_err(|error| {
+                HarnessError::Setup(format!("create {}: {error}", parent.display()))
+            })?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|error| {
+                    HarnessError::Setup(format!("create {}: {error}", path.display()))
+                })?;
+        }
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
             .openpty(size)
@@ -363,6 +393,8 @@ impl PtySession {
             submit_delay: spec.submit_delay,
             exit_code: Mutex::new(None),
             identity: None,
+            activity_rx: Mutex::new(None),
+            compaction_sidecar: spec.compaction_sidecar.clone(),
         })
     }
 
@@ -376,7 +408,27 @@ impl PtySession {
         mut self,
         identity: Option<crate::harness::SessionIdentitySource>,
     ) -> PtySession {
+        if let Some(path) = self.compaction_sidecar.clone() {
+            *self.activity_rx.lock().unwrap() =
+                Some(crate::harness::transcript_activity::follow_sidecar(
+                    path,
+                    Arc::downgrade(&self.output_tx),
+                ));
+        }
         self.identity = identity;
+        self
+    }
+
+    pub fn with_activity_locator(
+        self,
+        activity_locator: Option<(Box<dyn crate::harness::SessionLocator>, Option<String>)>,
+    ) -> PtySession {
+        if self.compaction_sidecar.is_none() {
+            if let Some((locator, known)) = activity_locator {
+                *self.activity_rx.lock().unwrap() =
+                    locator.activity(known.as_deref(), Arc::downgrade(&self.output_tx));
+            }
+        }
         self
     }
 
@@ -540,6 +592,10 @@ impl AgentSession for PtySession {
             crate::harness::SessionIdentitySource::Known(id) => Some(id.clone()),
             crate::harness::SessionIdentitySource::Located(locator) => locator.session_id(),
         }
+    }
+
+    fn activity(&self) -> Option<broadcast::Receiver<crate::harness::ActivityReport>> {
+        self.activity_rx.lock().unwrap().take()
     }
 
     /// Test-only: age the paint clock — see

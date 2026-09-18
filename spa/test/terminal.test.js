@@ -87,6 +87,22 @@ async function connected({ session = terminalSession(), settle = tick } = {}) {
 
 const connectedOnFakeTimers = () => connected({ settle: () => vi.advanceTimersByTimeAsync(0) });
 
+function recoveryStatus() {
+  const listeners = new Set();
+  let state = { epoch: 0, recovering: false };
+  const move = (recovering) => {
+    state = { epoch: state.epoch + 1, recovering };
+    for (const listener of [...listeners]) listener(state);
+  };
+  return {
+    snapshot: () => state,
+    subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    listenerCount: () => listeners.size,
+    begin: () => move(true),
+    end: () => move(false),
+  };
+}
+
 /** The wire goes and another one takes its place — a peer connection that
  *  failed and came back on an ICE restart. The re-attach is left in flight for
  *  the caller to answer. */
@@ -659,6 +675,60 @@ describe("TerminalSocket liveness", () => {
     expect(ws.closed).toBe(true);
     expect(statuses).toEqual(["disconnected"]);
     socket.close();
+  });
+
+  it("does not let a pre-recovery ping close the carrier after ICE recovers", async () => {
+    const recovery = recoveryStatus();
+    const socket = new TerminalSocket({ transport: fakeTransport });
+    socket.adoptTerminalSession(terminalSession());
+    const ws = fakeWire();
+    ws.onClose(() => socket.peer(null));
+    await socket.peer(ws, { recovery });
+    await vi.advanceTimersByTimeAsync(2000);
+    const stalePing = pingsSentOn(ws).at(-1);
+
+    recovery.begin();
+    await vi.advanceTimersByTimeAsync(1000);
+    recovery.end();
+    await vi.advanceTimersByTimeAsync(0);
+    const freshPing = pingsSentOn(ws).at(-1);
+    expect(freshPing.id).not.toBe(stalePing.id);
+    respond(ws, {}, freshPing.id, { pong: true });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(ws.closed).toBe(false);
+    socket.close();
+  });
+
+  it("still closes a recovered carrier when its fresh liveness probe is unanswered", async () => {
+    const recovery = recoveryStatus();
+    const socket = new TerminalSocket({ transport: fakeTransport });
+    socket.adoptTerminalSession(terminalSession());
+    const ws = fakeWire();
+    await socket.peer(ws, { recovery });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    recovery.begin();
+    recovery.end();
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(ws.closed).toBe(true);
+    socket.close();
+  });
+
+  it("unsubscribes recovery callbacks when disposed", async () => {
+    const recovery = recoveryStatus();
+    const socket = new TerminalSocket({ transport: fakeTransport });
+    socket.adoptTerminalSession(terminalSession());
+    await socket.peer(fakeWire(), { recovery });
+    expect(recovery.listenerCount()).toBe(1);
+
+    socket.close();
+
+    expect(recovery.listenerCount()).toBe(0);
+    recovery.begin();
+    recovery.end();
+    await vi.advanceTimersByTimeAsync(6000);
   });
 
   it("stops the liveness loop after close()", async () => {

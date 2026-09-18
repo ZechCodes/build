@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn completion_message_correlation_survives_the_control_socket_round_trip() {
+    let report = crate::mcp::DoneReport {
+        phase: crate::mcp::DonePhase::Build,
+        status: crate::mcp::DoneStatus::Completed,
+        summary: "Shipped it".into(),
+        outputs: crate::mcp::DoneOutputs {
+            message_id: Some("message-42".into()),
+            ..crate::mcp::DoneOutputs::default()
+        },
+    };
+    let wire = serde_json::to_vec(&report).unwrap();
+    let decoded: crate::mcp::DoneReport = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(decoded.outputs.message_id.as_deref(), Some("message-42"));
+}
+
+#[test]
 fn first_operation_for_a_user_added_agent_carries_the_cold_start_protocol() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());

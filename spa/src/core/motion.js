@@ -9,6 +9,8 @@ const OPACITY = "opacity";
 const BORROWED_PROPERTIES = ["width", "height", "opacity", "overflow"];
 
 const moves = new WeakMap();
+const rowContentRevisions = new WeakMap();
+const rowResizeAnimations = new WeakMap();
 
 let queue = Promise.resolve();
 let moving = 0;
@@ -48,6 +50,68 @@ export function motionHooks({ axis = "width" } = {}) {
     },
     onExit: (element) => hide(element, { axis }),
   };
+}
+
+/** Replace a whole optional row without throwing its exiting contents away
+ * before the height animation can measure and show them. A new paint
+ * counteracts a pending exit and owns the eventual cleanup. */
+export function setMotionRowHtml(element, html) {
+  const revision = (rowContentRevisions.get(element) || 0) + 1;
+  rowContentRevisions.set(element, revision);
+  if (html) {
+    rowResizeAnimations.get(element)?.cancel();
+    rowResizeAnimations.delete(element);
+    const previousHtml = element.innerHTML;
+    const previousHeight = naturalSize(element, "height");
+    element.innerHTML = html;
+    if (previousHtml && previousHtml !== html) animateRowResize(element, previousHeight, previousHtml);
+    return reveal(element, { axis: "height" });
+  }
+  return hide(element, { axis: "height" }).then(() => {
+    if (rowContentRevisions.get(element) === revision) element.innerHTML = "";
+  });
+}
+
+function animateRowResize(element, previousHeight, previousHtml) {
+  if (!element.isConnected || prefersReducedMotion() || typeof element.animate !== "function") return;
+  const nextHeight = naturalSize(element, "height");
+  const snapshot = document.createElement("div");
+  snapshot.setAttribute("data-motion-snapshot", "");
+  snapshot.setAttribute("aria-hidden", "true");
+  snapshot.inert = true;
+  snapshot.innerHTML = previousHtml;
+  snapshot.querySelectorAll("[id]").forEach((child) => child.removeAttribute("id"));
+  Object.assign(snapshot.style, {
+    position: "absolute", inset: "0", pointerEvents: "none", display: "flex",
+    flexWrap: "wrap", gap: "inherit", padding: "inherit", alignItems: "inherit",
+  });
+  element.style.position = "relative";
+  element.appendChild(snapshot);
+  const resize = element.animate(
+    [{ height: `${previousHeight}px` }, { height: `${nextHeight}px` }],
+    { duration: MOTION_DURATION_MS, easing: MOTION_EASING },
+  );
+  const fade = snapshot.animate([{ opacity: 1 }, { opacity: 0 }], {
+    duration: MOTION_DURATION_MS, easing: MOTION_EASING,
+  });
+  const arrivals = [...element.children]
+    .filter((child) => child !== snapshot)
+    .map((child) => child.animate([{ opacity: 0 }, { opacity: 1 }], {
+      duration: MOTION_DURATION_MS, easing: MOTION_EASING,
+    }));
+  const run = {
+    cancel() {
+      resize.cancel();
+      fade.cancel();
+      arrivals.forEach((animation) => animation.cancel());
+      snapshot.remove();
+    },
+  };
+  rowResizeAnimations.set(element, run);
+  Promise.all([resize, fade, ...arrivals].map((animation) => Promise.resolve(animation.finished).catch(() => {}))).then(() => {
+    snapshot.remove();
+    if (rowResizeAnimations.get(element) === run) rowResizeAnimations.delete(element);
+  });
 }
 
 function move(element, direction, axis) {

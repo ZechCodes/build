@@ -569,8 +569,16 @@ impl AppState {
             .unwrap_or_default();
         let operation_prompt = receipt.and_then(|receipt| {
             delivery.payload.as_ref().map(|payload| TurnText {
-                cold: payload.delivery_prompt(&receipt.operation_id, true),
-                warm: payload.delivery_prompt(&receipt.operation_id, false),
+                cold: payload.delivery_prompt(
+                    &receipt.operation_id,
+                    true,
+                    delivery.model_choice.provider,
+                ),
+                warm: payload.delivery_prompt(
+                    &receipt.operation_id,
+                    false,
+                    delivery.model_choice.provider,
+                ),
             })
         });
         self.delivery_queue.enqueue(PendingAgentTurn {

@@ -289,3 +289,37 @@ describe("the safety sweep", () => {
     expect(called("git.status")).toHaveLength(1);
   });
 });
+
+describe("background surface snapshots", () => {
+  const threadAddress = { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" };
+  const surfacesAddress = { deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-1" };
+
+  it("replaces a prior process snapshot with a generation-scoped clear", async () => {
+    await cache.writeCached(threadAddress, { items: [], deliveredSequence: 1 });
+    await cache.writeCached(surfacesAddress, {
+      generation: "gen-old",
+      surfaces: { goal: { objective: "old goal", state: "active" } },
+    });
+    bridge.call.mockImplementation(async (method) => {
+      if (method === "branch.get") {
+        return {
+          run_id: "run-1",
+          agents: [{ id: "ag-1", surface_session_generation: "gen-new", surfaces: null }],
+          thread: { items: [], delivered_sequence: 1 },
+        };
+      }
+      if (method === "git.status") return warmStatus();
+      if (method === "git.log") return { commits: [], more: false };
+      if (method === "fs.tree") return { path: "", entries: [] };
+      return {};
+    });
+
+    sync.startCacheSync();
+    await feed([branchItem()]);
+
+    expect((await cache.readCached(surfacesAddress)).value).toEqual({
+      generation: "gen-new",
+      surfaces: null,
+    });
+  });
+});

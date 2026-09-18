@@ -16,6 +16,7 @@ import "../styles/surfaces.css";
 import { esc, humanAge } from "./text.js";
 import { lineRangeSuffix } from "./anchors.js";
 import { uncommittedTotals, hasUncommittedChanges } from "./changesModel.js";
+import { diffSortHtml } from "./diffSort.js";
 
 const TRUNCATED_NOTICE = '<div class="ftrunc">diff truncated at 1 MiB — the counts above are exact</div>';
 
@@ -34,8 +35,11 @@ const statSummary = (stat) => {
 
 /** One commit row: subject over short hash · author · relative age. */
 export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now() / 1000 } = {}) {
-  const classes = ["crow", commit.ahead_of_base ? "ahead" : "", selected ? "sel" : ""].filter(Boolean).join(" ");
-  return `<div class="${classes}" data-hash="${esc(commit.hash)}">
+  const classes = ["crow", commit.ahead_of_base ? "ahead" : "", commit.unpushed ? "unpushed" : "", selected ? "sel" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const title = commit.unpushed ? ' title="Not pushed"' : "";
+  return `<div class="${classes}" data-hash="${esc(commit.hash)}"${title}>
     <span class="csubject">${esc(commit.subject)}</span>
     <span class="cmeta"><span class="chash">${esc(commit.short)}</span> · <span class="cauthor">${esc(commit.author)}</span> · <span class="cage">${esc(humanAge(nowSeconds - (commit.time || 0)))}</span></span></div>`;
 }
@@ -79,20 +83,20 @@ export function changesRailEntries({ status, log, selected, review = null, nowSe
   return entries;
 }
 
-/** The uncommitted changeset's header: what this is, its counts, and the notice
- *  the bridge cut its file list short with.
+/** The uncommitted changeset's header: its counts and the notice that the
+ *  bridge cut its file list short.
  *
  *  Nothing about a capped diff: `git.status` ships shape and no patch, so the
  *  1 MiB cap falls on one file's body and the file draws its own line for it
  *  (core/fileEntries.js). */
-export function uncommittedHeaderHtml(status) {
+export function uncommittedHeaderHtml(status, { sortOrder = "latest" } = {}) {
   const totals = uncommittedTotals(status);
   const fileCount = totals.files;
-  return `<div class="csheader"><span class="cstitle">Uncommitted changes</span>${statSummary({
+  return `<div class="csheader">${statSummary({
     files_changed: fileCount,
     insertions: totals.insertions,
     deletions: totals.deletions,
-  })}</div>
+  })}${diffSortHtml(sortOrder)}</div>
     ${status && status.files_truncated ? `<div class="ftrunc">file list truncated — ${fileCount} shown; a commit here commits the listed files</div>` : ""}`;
 }
 

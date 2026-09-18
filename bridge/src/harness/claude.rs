@@ -96,12 +96,20 @@ impl Harness for ClaudeHarness {
         args
     }
 
+    fn requires_unadorned_command(&self, prompt: &str) -> bool {
+        matches!(
+            prompt.split_whitespace().next(),
+            Some("/clear" | "/compact")
+        )
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
     ) -> Result<HarnessSpec, crate::harness::HarnessError> {
+        let (compaction_log, compaction_settings) = compaction_hooks(context);
         let mut spec = HarnessSpec::new("claude")
             .settle(REAL_TUI_SETTLE)
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
@@ -109,6 +117,8 @@ impl Harness for ClaudeHarness {
             .arg("--mcp-config")
             .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
             .arg("--strict-mcp-config")
+            .arg("--settings")
+            .arg(compaction_settings)
             .arg("--dangerously-skip-permissions");
         // The two are alternatives and never both: `--resume` names the exact
         // conversation this agent was having, `--continue` guesses the newest
@@ -125,6 +135,11 @@ impl Harness for ClaudeHarness {
             spec = spec.arg(arg);
         }
         Ok(spec
+            .compaction_sidecar(compaction_log.clone())
+            .env(
+                "BUILD_COMPACTION_LOG",
+                compaction_log.to_string_lossy().into_owned(),
+            )
             .env(
                 "BRIDGE_MCP_SOCKET",
                 context.mcp_socket.to_string_lossy().into_owned(),
@@ -201,6 +216,26 @@ impl SessionLocator for ClaudeSessionLocator {
         }
         named.clone()
     }
+}
+
+fn compaction_hooks(context: &HarnessContext) -> (PathBuf, String) {
+    let directory = context.state_root.join("harness/claude/compactions");
+    let path = directory.join(format!("{}.jsonl", uuid::Uuid::new_v4()));
+    let hook = |completed| {
+        json!({
+            "hooks": [{
+                "type": "command",
+                "command": format!(
+                    "printf '%s\\n' '{{\"type\":\"compaction\",\"completed\":{completed}}}' >> \"$BUILD_COMPACTION_LOG\" 2>/dev/null"
+                )
+            }]
+        })
+    };
+    let settings = json!({ "hooks": {
+        "PreCompact": [hook(false)],
+        "PostCompact": [hook(true)]
+    }});
+    (path, settings.to_string())
 }
 
 /// The transcript directory name Claude Code uses for a cwd under
@@ -410,6 +445,54 @@ mod tests {
             .unwrap()
             .args
             .join(" ")
+    }
+
+    #[test]
+    fn claude_tui_installs_silent_scoped_compaction_hooks_without_writing_state() {
+        let state = tempfile::tempdir().unwrap();
+        let context = HarnessContext {
+            bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
+            mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
+            state_root: state.path().to_path_buf(),
+        };
+        let options = SpawnOptions {
+            mcp_session_token: "secret-capability".to_string(),
+            ..SpawnOptions::default()
+        };
+        let spec = ClaudeHarness
+            .spec(&ModelChoice::default(), &options, &context)
+            .unwrap();
+        let settings_index = spec
+            .args
+            .iter()
+            .position(|arg| arg == "--settings")
+            .unwrap();
+        let settings: Value = serde_json::from_str(&spec.args[settings_index + 1]).unwrap();
+        assert!(settings["hooks"]["PreCompact"].is_array());
+        assert!(settings["hooks"]["PostCompact"].is_array());
+        let commands = settings["hooks"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|groups| {
+                groups
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|group| group["hooks"].as_array().unwrap())
+            });
+        for command in commands {
+            let command = command["command"].as_str().unwrap();
+            assert!(command.contains("$BUILD_COMPACTION_LOG"));
+            assert!(!command.contains("secret-capability"));
+        }
+        let sidecar = spec.compaction_sidecar.unwrap();
+        assert!(sidecar.starts_with(state.path()));
+        assert!(!sidecar.display().to_string().contains("secret-capability"));
+        assert!(
+            !sidecar.exists(),
+            "building an unused spec has no disk side effects"
+        );
     }
 
     /// The three arms, in the one shape claude's argv has for them.

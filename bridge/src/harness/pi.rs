@@ -924,6 +924,7 @@ mod tests {
                 size,
                 turn_ready_grace: Some(Duration::from_secs(3)),
                 identity: Some(identity),
+                activity_locator: None,
             },
         )
         .unwrap()

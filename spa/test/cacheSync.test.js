@@ -441,7 +441,7 @@ describe("keeping warmed conversations fresh", () => {
           run: {
             thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
             agents: [
-              { id: "ag-1", surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running" }] } },
+              { id: "ag-1", surface_session_generation: "session-1", surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running" }] } },
               { id: "ag-2" },
             ],
           },
@@ -466,8 +466,8 @@ describe("keeping warmed conversations fresh", () => {
           run: {
             thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
             agents: [
-              { id: "ag-1", surfaces: { shells: [{ id: "sh-1", state: "running" }] } },
-              { id: "ag-2", surfaces: { checklist: [{ id: "t-1", subject: "ship it", state: "pending" }] } },
+              { id: "ag-1", surface_session_generation: "session-1", surfaces: { shells: [{ id: "sh-1", state: "running" }] } },
+              { id: "ag-2", surface_session_generation: "session-2", surfaces: { checklist: [{ id: "t-1", subject: "ship it", state: "pending" }] } },
             ],
           },
         };
@@ -487,14 +487,14 @@ describe("keeping warmed conversations fresh", () => {
       { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
     );
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    await cache.writeCached(address, { surfaces });
+    await cache.writeCached(address, { surfaces, generation: "session-1" });
     clock.mockRestore();
     bridge.call = vi.fn(async (method) => {
       if (method === "branch.get")
         return {
           run: {
             thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
-            agents: [{ id: "ag-1", surfaces }],
+            agents: [{ id: "ag-1", surface_session_generation: "session-1", surfaces }],
           },
         };
       return {};

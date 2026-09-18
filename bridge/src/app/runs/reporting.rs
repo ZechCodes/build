@@ -88,7 +88,7 @@ pub(in crate::app) fn recovery_agent_prompt(
             .join("\n")
     };
     format!(
-        "You are a RECOVERY agent for an Issue implementation. Work read-only except for restoring the exact persisted branch ref and its registered worktree.\n\nRecovery nonce: {recovery_id}\nIssue: {issue_id}\nImplementation: {run_id}\nRequested stage: {requested_stage_id}\nExact branch: {}\nExpected worktree path: {}\nInitial restore error: {restore_error}\n\nOrdered Issue stage-plan catalog (authoritative order):\n{catalog}\n\nInspect local refs, configured remotes, reflogs, and reachable commits. Never recreate from the moving base. If you can restore the exact branch lineage, do so, then call `done` with phase=\"recover\", status=\"completed\", outputs.recovery={{\"recovery_id\":\"{recovery_id}\",\"recovered\":true,\"branch\":\"{}\",\"head_sha\":\"<40 lowercase hex>\",\"findings\":\"verified evidence\"}}. If exact lineage cannot be recovered, report recovered=false with the same nonce and verified findings.",
+        "You are a RECOVERY agent for an Issue implementation. Work read-only except for restoring the exact persisted branch ref and its registered worktree.\n\nRecovery nonce: {recovery_id}\nIssue: {issue_id}\nImplementation: {run_id}\nRequested stage: {requested_stage_id}\nExact branch: {}\nExpected worktree path: {}\nInitial restore error: {restore_error}\n\nOrdered Issue stage-plan catalog (authoritative order):\n{catalog}\n\nInspect local refs, configured remotes, reflogs, and reachable commits. Never recreate from the moving base. If you can restore the exact branch lineage, do so, then call `post_thread_message` with phase=\"recover\", status=\"Complete\", body=\"<what was recovered and how it was verified>\", and outputs.recovery={{\"recovery_id\":\"{recovery_id}\",\"recovered\":true,\"branch\":\"{}\",\"head_sha\":\"<40 lowercase hex>\",\"findings\":\"verified evidence\"}}. If exact lineage cannot be recovered, send status=\"Blocked\" with recovered=false, the same nonce, and verified findings.",
         worktree.recorded_branch,
         worktree.path.display(),
         worktree.recorded_branch,
@@ -333,6 +333,16 @@ pub(in crate::app) fn record_report_in_thread(
     };
     match recorded {
         ReportRecord::Outcome(outcome, summary) => {
+            if report
+                .outputs
+                .message_id
+                .as_deref()
+                .is_some_and(|message_id| {
+                    thread.mark_agent_message_outcome(message_id, outcome, &summary, None)
+                })
+            {
+                return;
+            }
             // The summary is the whole report now; nothing structured rides
             // beside it. The slot stays for threads written when it did.
             thread.post_outcome(outcome, summary, None, &now);

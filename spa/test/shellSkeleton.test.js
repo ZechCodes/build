@@ -101,6 +101,8 @@ describe("the shell's markup", () => {
     }
     // Account lives at the foot of the inbox rail.
     expect(document.querySelector("#inbox-rail .inbox-foot #nav-account")).toBeTruthy();
+    expect(document.getElementById("nav-account").tagName).toBe("BUTTON");
+    expect(document.getElementById("nav-account").getAttribute("aria-label")).toBe("Settings");
     // The retired sidebar model is gone.
     expect(document.getElementById("sidebar")).toBeNull();
     expect(document.getElementById("side-open")).toBeNull();
@@ -187,7 +189,7 @@ describe("the shell's grid", () => {
     // saying which project and branch the agent is working in, the one fact a
     // phone cannot afford to lose.
     expect(panel).toMatch(/position:absolute/);
-    expect(panel).toMatch(/top:calc\(var\(--toolbar-h\) \+ 1px\)/);
+    expect(panel).toMatch(/top:var\(--toolbar-h\)/);
     expect(panel).not.toMatch(/top:0/);
     // The strip has left the right edge for the column's foot, so the panel
     // takes the whole width and stops on the strip along its bottom instead.
@@ -314,7 +316,7 @@ describe("the console", () => {
     expect(full).toMatch(/position:absolute/);
     // …and never over the toolbar or the bubble strip: where you are standing
     // and what every agent is doing stay legible under an open console.
-    expect(full).toMatch(/top:calc\(var\(--toolbar-h\) \+ 1px\)/);
+    expect(full).toMatch(/top:var\(--toolbar-h\)/);
     expect(full).toMatch(/right:var\(--agent-strip\)/);
   });
 });

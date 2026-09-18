@@ -2,6 +2,7 @@ use crate::harness::surfaces::SurfaceLedger;
 use crate::harness::{AgentStatus, SessionStatusSnapshot, TurnChoiceSupport};
 use crate::models::{AgentProvider, ModelChoice};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::watch;
 
@@ -24,6 +25,8 @@ pub(crate) const ACTIVITY_TEXT_LIMIT: usize = 5_000;
 /// while nothing is draining is a reader problem, not a reason to stall the
 /// child.
 pub(super) const ACTIVITY_BACKLOG: usize = 1024;
+
+static NEXT_SURFACE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// The capability a child announces in its `init` line when the turn it is
 /// running can be stopped over the wire.
@@ -129,7 +132,9 @@ impl ProtocolState {
             reported_error: None,
             last_stderr_line: None,
             tasks: BTreeMap::new(),
-            surfaces: SurfaceLedger::default(),
+            surfaces: SurfaceLedger::for_claude(
+                NEXT_SURFACE_GENERATION.fetch_add(1, Ordering::Relaxed),
+            ),
         }
     }
 

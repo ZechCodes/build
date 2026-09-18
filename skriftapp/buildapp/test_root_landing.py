@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from html import escape
 from pathlib import Path
 
 import pytest
@@ -116,11 +117,17 @@ def test_story_actions_reach_real_public_exits():
     assert releases.DOWNLOADS_PATH not in html
 
 
-def test_download_section_hands_off_to_the_authenticated_alpha_setup():
+def test_download_section_publishes_the_installer_and_hands_off_to_alpha_pairing():
     html = _landing_html()
     assert '<section class="download-chooser" id="download"' in html
+    assert escape(releases.install_command("https://getbuild.ing")) in html
     assert 'href="/app/">Open installer setup</a>' in html
-    assert "after alpha access is confirmed" in html
+    assert (
+        "Installer downloads are public. Alpha access is required to pair and use a host."
+        in html
+    )
+    assert "authenticated installer" not in html
+    assert "installer is available after alpha access" not in html
     for _key, label in releases.PLATFORMS:
         assert label in html
 
@@ -191,6 +198,15 @@ def test_docs_publish_current_host_and_harness_status():
         "Not currently available",
     ):
         assert copy in html
+    assert escape(releases.install_command("https://getbuild.ing")) in html
+    assert escape(
+        releases.install_command("https://getbuild.ing", desktop=True)
+    ) in html
+    assert (
+        "Installer downloads are public. Alpha access is required to pair and use a host."
+        in html
+    )
+    assert "authenticated installer" not in html
     assert 'id="architecture"' in html
     assert 'href="/app/"' in html
     assert releases.DOWNLOADS_PATH not in html

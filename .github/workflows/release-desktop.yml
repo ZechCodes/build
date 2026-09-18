@@ -1,0 +1,326 @@
+name: Release the desktop app
+
+# Desktop releases share the public download repository with the bridge, but
+# use separate tags so the two applications can be versioned independently.
+on:
+  push:
+    tags: ["desktop-v*.*.*"]
+
+permissions:
+  contents: read
+
+env:
+  COSIGN_IDENTITY_REGEXP: '^https://github\.com/ZechCodes/build-web/\.github/workflows/release-desktop\.yml@refs/tags/desktop-v'
+  COSIGN_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  version:
+    name: Validate the version and required credentials
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+      releases_repo: ${{ steps.derive.outputs.releases_repo }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - id: derive
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASES_REPO: ${{ vars.RELEASES_REPO || 'ZechCodes/build-releases' }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const version = JSON.parse(readFileSync('desktop/package.json', 'utf8')).version;
+          const lock = JSON.parse(readFileSync('desktop/package-lock.json', 'utf8'));
+          if (!/^\d+\.\d+\.\d+$/.test(version) || process.env.TAG !== `desktop-v${version}`) {
+            throw new Error(`Tag ${process.env.TAG} must match desktop/package.json version ${version}`);
+          }
+          if (lock.version !== version || lock.packages[''].version !== version) {
+            throw new Error('desktop/package-lock.json must match desktop/package.json version');
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nreleases_repo=${process.env.RELEASES_REPO}\n`);
+          NODE
+
+      - name: Install archive tools for installer fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools
+
+      - name: Lint and test the public desktop installer
+        run: |
+          shellcheck -s sh scripts/install-desktop.sh scripts/test-install-desktop.sh
+          scripts/test-install-desktop.sh
+
+      - name: The installer and workflow demand the same signing identity
+        run: |
+          set -euo pipefail
+          for pin in "COSIGN_IDENTITY_REGEXP=${COSIGN_IDENTITY_REGEXP}" \
+            "COSIGN_ISSUER=${COSIGN_ISSUER}"; do
+            name="${pin%%=*}"
+            value="${pin#*=}"
+            grep -qF "${name}='${value}'" scripts/install-desktop.sh || {
+              echo "::error::install-desktop.sh pins a different ${name} than release-desktop.yml"
+              exit 1
+            }
+          done
+
+      # Unlike local builds, a desktop release must never fall back to ad-hoc
+      # signing. These are the same five Apple secrets used by the bridge.
+      - name: Require signing and publishing credentials
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE_P12 APPLE_CERTIFICATE_PASSWORD APPLE_ID \
+            APPLE_APP_PASSWORD APPLE_TEAM_ID RELEASES_TOKEN; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Required repository secret ${name} is missing"
+              exit 1
+            fi
+          done
+
+  build:
+    name: Sign and notarize macOS ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            key: macos-arm64
+            runner: macos-14
+          - arch: x64
+            key: macos-x86_64
+            runner: macos-15-intel
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install locked dependencies and test
+        run: |
+          npm ci
+          npm test
+
+      # electron-builder imports the P12 into a temporary keychain and staples
+      # the notarization ticket to the app before creating the DMG and ZIP.
+      - name: Package with Developer ID signing and Apple notarization
+        env:
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: >-
+          npm run dist:mac -- --${{ matrix.arch }} --publish never
+          --config.forceCodeSigning=true --config.mac.notarize=true
+
+      - name: Verify the app inside both distributable archives
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          verify_app() {
+            codesign --verify --deep --strict --verbose=2 "$1"
+            details="$(codesign --display --verbose=4 "$1" 2>&1)"
+            printf '%s\n' "$details" | grep -q '^Authority=Developer ID Application:'
+            printf '%s\n' "$details" | grep -qFx "TeamIdentifier=${APPLE_TEAM_ID}"
+            xcrun stapler validate "$1"
+            spctl --assess --type execute --verbose=2 "$1"
+          }
+          zip_path="dist/Build-${VERSION}-mac-${ARCH}.zip"
+          dmg_path="dist/Build-${VERSION}-mac-${ARCH}.dmg"
+          test -s "$zip_path"
+          test -s "$dmg_path"
+          unpacked="$(mktemp -d)"
+          mountpoint="$(mktemp -d)"
+          trap 'hdiutil detach "$mountpoint" >/dev/null 2>&1 || true; rm -rf "$unpacked" "$mountpoint"' EXIT
+          ditto -x -k "$zip_path" "$unpacked"
+          verify_app "$unpacked/Build.app"
+          hdiutil attach "$dmg_path" -readonly -nobrowse -mountpoint "$mountpoint"
+          verify_app "$mountpoint/Build.app"
+          hdiutil detach "$mountpoint"
+          cp "$zip_path" "dist/build-desktop-${{ matrix.key }}.zip"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-macos-${{ matrix.arch }}
+          path: |
+            desktop/dist/Build-${{ needs.version.outputs.version }}-mac-${{ matrix.arch }}.dmg
+            desktop/dist/Build-${{ needs.version.outputs.version }}-mac-${{ matrix.arch }}.zip
+            desktop/dist/build-desktop-${{ matrix.key }}.zip
+          if-no-files-found: error
+
+  build-linux:
+    name: Package Linux ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            key: linux-x86_64
+            runner: ubuntu-22.04
+            unpacked: linux-unpacked
+          - arch: arm64
+            key: linux-aarch64
+            runner: ubuntu-22.04-arm
+            unpacked: linux-arm64-unpacked
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install locked dependencies and test
+        run: |
+          npm ci
+          npm test
+
+      - name: Package AppImage and Debian installers
+        run: npm run dist:linux -- --${{ matrix.arch }} --publish never
+
+      - name: Package the shell installer archive
+        run: |
+          set -euo pipefail
+          test -x "dist/${{ matrix.unpacked }}/build-desktop"
+          tar -czf "dist/build-desktop-${{ matrix.key }}.tar.gz" -C "dist/${{ matrix.unpacked }}" .
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-${{ matrix.key }}
+          path: |
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+            desktop/dist/build-desktop-${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to the releases repo
+    needs: [version, build, build-linux]
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: desktop-release-publish
+      cancel-in-progress: false
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: desktop-*
+          path: assets
+          merge-multiple: true
+
+      - name: Digest every distributable
+        working-directory: assets
+        run: sha256sum *.dmg *.zip *.AppImage *.deb *.tar.gz > SHA256SUMS
+
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign and verify the checksums
+        working-directory: assets
+        run: |
+          cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+          cosign verify-blob \
+            --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
+            --certificate-oidc-issuer "$COSIGN_ISSUER" SHA256SUMS
+
+      - name: Describe the release
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          cat > notes.md <<NOTES
+          Build Desktop ${VERSION}, built from ${SOURCE_REPO}@${COMMIT}.
+
+          macOS apps are signed with a Developer ID certificate and notarized by Apple.
+          Download arm64 for Apple Silicon or x64 for Intel. Open the DMG and drag Build to Applications, or extract the ZIP.
+
+          Linux packages are available for x86_64 and ARM64: use the AppImage or install the Debian package.
+          The shell installer selects the correct platform and verifies the signed checksums:
+
+              curl -fsSL https://getbuild.ing/install-desktop.sh | sh
+
+          The bridge is installed separately; this app connects to the hosted Build service.
+          NOTES
+
+      - name: Create the release if needed and upload verified packages
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+          REPO: ${{ needs.version.outputs.releases_repo }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" \
+              --title "Build Desktop ${VERSION}" --notes-file notes.md --latest=false
+          fi
+          gh release upload "$TAG" --repo "$REPO" --clobber assets/*
+          echo "published https://github.com/${REPO}/releases/tag/${TAG}"
+
+      # The channel holds only a pointer. Installers resolve it once, then fetch
+      # all binaries and checksums from that immutable versioned release.
+      - name: Advance the public desktop channel after all assets are uploaded
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          REPO: ${{ needs.version.outputs.releases_repo }}
+        run: |
+          set -euo pipefail
+          mkdir current-channel
+          if gh release view desktop-latest --repo "$REPO" > /dev/null 2>&1; then
+            # A release created by an interrupted first run may have no pointer
+            # yet. Only that case may initialize it; metadata/download failures
+            # still stop publication instead of risking a channel downgrade.
+            pointer_count="$(gh release view desktop-latest --repo "$REPO" \
+              --json assets --jq '[.assets[] | select(.name == "version.txt")] | length')"
+            if [ "$pointer_count" != 0 ]; then
+              gh release download desktop-latest --repo "$REPO" \
+                --pattern version.txt --dir current-channel
+              current="$(cat current-channel/version.txt)"
+              if ! [[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::Invalid desktop channel version: $current"
+                exit 1
+              fi
+              newest="$(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n 1)"
+              if [ "$newest" != "$VERSION" ]; then
+                echo "Keeping newer desktop channel ${current}"
+                exit 0
+              fi
+            fi
+          else
+            gh release create desktop-latest --repo "$REPO" --latest=false \
+              --title "Latest Build Desktop" \
+              --notes "version.txt identifies the latest complete desktop-v release."
+          fi
+          printf '%s\n' "$VERSION" > version.txt
+          gh release upload desktop-latest --repo "$REPO" --clobber version.txt

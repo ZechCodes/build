@@ -1,9 +1,13 @@
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkSummary {
     pub pushes: u64,
+    /// Commits in the configured push destination that HEAD cannot reach.
+    /// Zero when there is no concrete push destination to compare.
+    pub behind: u64,
     pub additions: u64,
     pub deletions: u64,
     /// No local commit, index, worktree, untracked file, or in-progress Git
@@ -16,6 +20,7 @@ pub struct WorkSummary {
 enum PublishedBase {
     PushTarget {
         oid: Option<git2::Oid>,
+        target: git2::Oid,
         label: String,
     },
     PublishedAncestor(git2::Oid),
@@ -41,6 +46,17 @@ impl PublishedBase {
 
     fn push_target_exists(&self) -> bool {
         matches!(self, Self::PushTarget { .. })
+    }
+
+    fn behind(&self, repo: &git2::Repository, head: git2::Oid) -> Result<u64, String> {
+        let Self::PushTarget { target, .. } = self else {
+            return Ok(0);
+        };
+        repo.graph_ahead_behind(head, *target)
+            .map_err(|error| error.to_string())?
+            .1
+            .try_into()
+            .map_err(|_| "workspace behind count exceeds u64".to_string())
     }
 }
 
@@ -116,7 +132,11 @@ fn published_base(repo: &git2::Repository) -> Result<PublishedBase, String> {
             if let Ok(reference) = repo.find_reference(&format!("refs/remotes/{label}")) {
                 if let Some(target) = reference.target() {
                     let base = repo.merge_base(head, target).ok();
-                    return Ok(PublishedBase::PushTarget { oid: base, label });
+                    return Ok(PublishedBase::PushTarget {
+                        oid: base,
+                        target,
+                        label,
+                    });
                 }
             }
         }
@@ -128,23 +148,35 @@ fn published_base(repo: &git2::Repository) -> Result<PublishedBase, String> {
     })
 }
 
-fn unpublished_commit_count(
+fn commit_ids_since(
     repo: &git2::Repository,
     base: Option<git2::Oid>,
-) -> Result<u64, String> {
+) -> Result<HashSet<git2::Oid>, String> {
     let Some(head) = repo.head().ok().and_then(|head| head.target()) else {
-        return Ok(0);
+        return Ok(HashSet::new());
     };
     let mut walk = repo.revwalk().map_err(|error| error.to_string())?;
     walk.push(head).map_err(|error| error.to_string())?;
     if let Some(base) = base {
         walk.hide(base).map_err(|error| error.to_string())?;
     }
-    walk.collect::<Result<Vec<_>, _>>()
+    Ok(walk
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?
-        .len()
-        .try_into()
-        .map_err(|_| "unpushed commit count exceeds u64".to_string())
+        .into_iter()
+        .collect())
+}
+
+/// Commits represented by `git.unpushed`, plus a key naming the exact base
+/// used to classify them. History uses this rather than independently guessing
+/// from upstream/ahead counts, so its highlights cannot drift from All changes.
+pub(super) fn unpublished_commits(
+    repo: &git2::Repository,
+) -> Result<(HashSet<git2::Oid>, String), String> {
+    let base = published_base(repo)?;
+    let commits = commit_ids_since(repo, base.oid())?;
+    let key = crate::diff::fnv1a64_hex(&format!("unpushed\0{base:?}"));
+    Ok((commits, key))
 }
 
 /// Counts the work not represented by this checkout's publication base.
@@ -168,7 +200,15 @@ pub fn work_summary(repo_path: &Path) -> Result<WorkSummary, String> {
         return Err("path is not the repository working directory".to_string());
     }
     let base = published_base(&repo)?;
-    let pushes = unpublished_commit_count(&repo, base.oid())?;
+    let head = repo.head().ok().and_then(|head| head.target());
+    let pushes = commit_ids_since(&repo, base.oid())?
+        .len()
+        .try_into()
+        .map_err(|_| "unpushed commit count exceeds u64".to_string())?;
+    let behind = match head {
+        Some(head) => base.behind(&repo, head)?,
+        None => 0,
+    };
     let mut status_options = git2::StatusOptions::new();
     status_options
         .include_untracked(true)
@@ -184,6 +224,7 @@ pub fn work_summary(repo_path: &Path) -> Result<WorkSummary, String> {
         .stat();
     Ok(WorkSummary {
         pushes,
+        behind,
         additions: stat.insertions as u64,
         deletions: stat.deletions as u64,
         clean,
@@ -194,6 +235,7 @@ pub fn aggregate_work_summary(repo_paths: &[std::path::PathBuf]) -> Result<WorkS
     repo_paths.iter().try_fold(
         WorkSummary {
             pushes: 0,
+            behind: 0,
             additions: 0,
             deletions: 0,
             clean: true,
@@ -205,6 +247,10 @@ pub fn aggregate_work_summary(repo_paths: &[std::path::PathBuf]) -> Result<WorkS
                     .pushes
                     .checked_add(summary.pushes)
                     .ok_or_else(|| "workspace push count exceeds u64".to_string())?,
+                behind: total
+                    .behind
+                    .checked_add(summary.behind)
+                    .ok_or_else(|| "workspace behind count exceeds u64".to_string())?,
                 additions: total
                     .additions
                     .checked_add(summary.additions)

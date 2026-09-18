@@ -404,6 +404,9 @@ impl CodexSessionState {
             PendingOperation::ReadThread { .. } => Err(StateError(
                 "thread/read metadata response reached session state".to_string(),
             )),
+            PendingOperation::ReadGoal { .. } => Err(StateError(
+                "thread/goal/get observation response reached session state".to_string(),
+            )),
         }
     }
 

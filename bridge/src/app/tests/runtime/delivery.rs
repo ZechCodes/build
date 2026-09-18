@@ -757,13 +757,13 @@ async fn authenticated_listener_rejects_rotated_and_wrong_tokens_and_keeps_canon
     );
     let done_error: Value = serde_json::from_str(done.reply.as_deref().unwrap()).unwrap();
     assert_eq!(done_error["result"]["isError"], true);
-    assert!(done_error["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .starts_with("invalid done arguments:"));
+    assert_eq!(
+        done_error["result"]["content"][0]["text"],
+        "unknown tool: done"
+    );
 
     let post = crate::mcp::DoneServer::for_owner(&agent_id).handle_message(
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"post_thread_message","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Waiting"}}}"#,
     );
     let post_error: Value = serde_json::from_str(post.reply.as_deref().unwrap()).unwrap();
     assert_eq!(post_error["result"]["isError"], true);

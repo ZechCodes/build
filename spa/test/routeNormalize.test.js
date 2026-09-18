@@ -40,6 +40,16 @@ describe("a route that names no device", () => {
 });
 
 describe("a route that names its device", () => {
+  it("replaces the current history entry when navigating between surfaces", () => {
+    const entries = history.length;
+    go({ name: "account" });
+    go({ name: "inbox" });
+    go({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
+
+    expect(history.length).toBe(entries);
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/main/changes");
+  });
+
   it("goes straight to the surface it names", () => {
     const onDevice = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     expect(go(onDevice)).toBe(true);

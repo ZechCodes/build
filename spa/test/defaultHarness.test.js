@@ -21,6 +21,7 @@ const bridge = { call: null };
 // test writes one bridge and both the page and the registry read it.
 const { openSession } = vi.hoisted(() => ({ openSession: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
+  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   openDeviceSettingsSession: openSession,
   chooseCreationDevice: () => {},
   retireDevice: () => {},

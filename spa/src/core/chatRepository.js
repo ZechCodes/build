@@ -3,6 +3,7 @@ import { createOptimisticStore } from "./optimistic.js";
 import { createChatChoiceController } from "./chatChoiceController.js";
 
 const EMPTY_DRAFT = Object.freeze({ body: "", attachments: [] });
+export const CHAT_LOCAL_STATE_PREFIX = "build.chat.v1:";
 const OPERATION_STATES = new Set(["queued", "claimed", "delivered", "uncertain"]);
 const REQUIRED_OPERATION_RECEIPT_FIELDS = [
   "operation_id",
@@ -36,6 +37,41 @@ const randomOperationId = () => {
 
 const controllerKey = ({ entityId = "", agentId = "", draftId = "" }) =>
   draftId ? `draft:${draftId}` : `agent:${entityId}:${agentId}`;
+
+// A promoted controller keeps its draft id as lineage, but reloads address it
+// by the durable entity/agent pair. Storage therefore prefers that pair once
+// it exists, unlike the live controller map while promotion is in progress.
+const storedControllerKey = ({ entityId = "", agentId = "", draftId = "" }) =>
+  agentId ? `agent:${entityId}:${agentId}` : `draft:${draftId}`;
+
+const storageOrNull = (provided) => {
+  if (provided !== undefined) return provided;
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+};
+
+const recordOrEmpty = (value) =>
+  value && typeof value === "object" && !Array.isArray(value) ? value : {};
+
+const readLocalState = (storage, scopeKey) => {
+  try {
+    const value = JSON.parse(storage?.getItem(`${CHAT_LOCAL_STATE_PREFIX}${scopeKey}`) || "{}");
+    return recordOrEmpty(value);
+  } catch {
+    return {};
+  }
+};
+
+const writeLocalState = (storage, scopeKey, value) => {
+  try {
+    storage?.setItem(`${CHAT_LOCAL_STATE_PREFIX}${scopeKey}`, JSON.stringify(value));
+  } catch {
+    /* Storage can be unavailable; the repository remains usable for this tab. */
+  }
+};
 
 const publicIdentity = (identity) => Object.freeze({
   entityId: identity.entityId || "",
@@ -118,7 +154,13 @@ class ChatController {
     this.#repository = repository;
     this.#identity = { ...identity };
     this.#bound = !identity.draftId;
-    this.#draft = { ...EMPTY_DRAFT, attachments: [], revision: 0, attachmentRevision: 0 };
+    const saved = repository.readControllerState(identity);
+    this.#draft = {
+      body: typeof saved.draft?.body === "string" ? saved.draft.body : "",
+      attachments: cloneAttachments(Array.isArray(saved.draft?.attachments) ? saved.draft.attachments : []),
+      revision: 0,
+      attachmentRevision: 0,
+    };
     this.#failures = [];
     this.#listeners = new Set();
     this.#threadState = repository.history(identity.conversationId)?.threadState || createThreadState();
@@ -126,6 +168,8 @@ class ChatController {
       repository,
       identityOf: () => publicIdentity(this.#identity),
       announce: () => this.announce(),
+      initial: saved.choice,
+      onChange: (choice) => repository.writeControllerState(this.#identity, { choice }),
     });
     this.#operations = new Map();
   }
@@ -159,6 +203,7 @@ class ChatController {
       revision: this.#draft.revision + 1,
       attachmentRevision: this.#draft.attachmentRevision + (replacesAttachments ? 1 : 0),
     };
+    this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
     this.announce();
     return this.readDraft();
   }
@@ -199,6 +244,7 @@ class ChatController {
       revision: this.#draft.revision + 1,
       attachmentRevision: this.#draft.attachmentRevision + 1,
     };
+    this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
     const submission = Object.freeze({
       operationId,
       address: publicIdentity(this.#identity),
@@ -231,6 +277,7 @@ class ChatController {
       revision: this.#draft.revision + 1,
       attachmentRevision: this.#draft.attachmentRevision + 1,
     };
+    this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
     const submission = Object.freeze({
       operationId,
       creationId: `creation:${operationId}`,
@@ -416,6 +463,7 @@ class ChatController {
         revision: this.#draft.revision + 1,
         attachmentRevision: this.#draft.attachmentRevision + 1,
       };
+      this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
       this.announce();
       return "restored";
     }
@@ -481,8 +529,10 @@ class ChatController {
   }
 
   bindIdentity(identity) {
+    const previous = this.#identity;
     this.#identity = { ...identity, draftId: this.#identity.draftId };
     this.#bound = true;
+    this.#repository.moveControllerState(previous, this.#identity);
   }
 
   adoptThreadState(threadState) {
@@ -490,11 +540,33 @@ class ChatController {
   }
 }
 
-export function createChatRepository({ scope, call, createOperationId = randomOperationId, viewingContext = null }) {
+export function createChatRepository({
+  scope,
+  call,
+  createOperationId = randomOperationId,
+  viewingContext = null,
+  storage: providedStorage,
+} = {}) {
   if (typeof call !== "function") throw new Error("Chat repository requires an RPC call function");
   let active = true;
   let currentCall = call;
   const scopeKey = scopeKeyOf(scope);
+  const storage = storageOrNull(providedStorage);
+  const localState = readLocalState(storage, scopeKey);
+  localState.controllers = recordOrEmpty(localState.controllers);
+  localState.railViews = recordOrEmpty(localState.railViews);
+  // Re-read before every mutation. Another tab may have written a different
+  // conversation since this repository was created; a targeted update must
+  // preserve that newer, unrelated state without making live UI cross-tab.
+  const mutateStoredState = (mutate) => {
+    const fresh = readLocalState(storage, scopeKey);
+    fresh.controllers = recordOrEmpty(fresh.controllers);
+    fresh.railViews = recordOrEmpty(fresh.railViews);
+    mutate(fresh);
+    writeLocalState(storage, scopeKey, fresh);
+    localState.controllers = fresh.controllers;
+    localState.railViews = fresh.railViews;
+  };
   const controllers = new Map();
   const histories = new Map();
   const railViews = new Map();
@@ -514,6 +586,29 @@ export function createChatRepository({ scope, call, createOperationId = randomOp
     },
 
     createOperationId,
+
+    readControllerState(identity) {
+      return recordOrEmpty(localState.controllers[storedControllerKey(identity)]);
+    },
+
+    writeControllerState(identity, patch) {
+      const key = storedControllerKey(identity);
+      mutateStoredState((fresh) => {
+        fresh.controllers[key] = { ...recordOrEmpty(fresh.controllers[key]), ...patch };
+      });
+    },
+
+    moveControllerState(previous, next) {
+      const from = storedControllerKey(previous);
+      const to = storedControllerKey(next);
+      mutateStoredState((fresh) => {
+        fresh.controllers[to] = {
+          ...recordOrEmpty(fresh.controllers[from]),
+          ...recordOrEmpty(fresh.controllers[to]),
+        };
+        if (from !== to) delete fresh.controllers[from];
+      });
+    },
 
     optimisticStore() {
       return optimisticStore;
@@ -577,7 +672,8 @@ export function createChatRepository({ scope, call, createOperationId = randomOp
     createProvisional({ entityId = "", conversationId = "" } = {}) {
       repository.assertActive();
       provisionalSequence += 1;
-      const draftId = `draft-${scopeKey}-${provisionalSequence}`;
+      const owner = entityId || conversationId || "unaddressed";
+      const draftId = `draft-${scopeKey}-${owner}-${provisionalSequence}`;
       const controller = new ChatController(repository, { entityId, conversationId, agentId: "", draftId });
       controllers.set(controllerKey(controller.identity), controller);
       return controller;
@@ -654,14 +750,23 @@ export function createChatRepository({ scope, call, createOperationId = randomOp
       repository.assertActive();
       let state = railViews.get(key);
       if (!state) {
-        state = { selectedAgentId: null, panelMode: "chat" };
+        const saved = localState.railViews[key] || {};
+        state = {
+          selectedAgentId: typeof saved.selectedAgentId === "string" ? saved.selectedAgentId : null,
+          panelMode: saved.panelMode === "console" ? "console" : "chat",
+        };
         railViews.set(key, state);
       }
+      const persist = () => {
+        mutateStoredState((fresh) => {
+          fresh.railViews[key] = { ...state };
+        });
+      };
       return Object.freeze({
         selectedAgentId: () => state.selectedAgentId,
-        chooseAgent: (agentId) => { state.selectedAgentId = agentId || null; },
+        chooseAgent: (agentId) => { state.selectedAgentId = agentId || null; persist(); },
         panelMode: () => state.panelMode,
-        setPanelMode: (mode) => { state.panelMode = mode; },
+        setPanelMode: (mode) => { state.panelMode = mode; persist(); },
       });
     },
 

@@ -13,8 +13,7 @@
 #                   VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT (web push),
 #                   SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS,
 #                   WAITLIST_NOTIFY_ADDRESS (outbound email),
-#                   CF_TURN_KEY_ID, CF_TURN_KEY_API_TOKEN (Cloudflare TURN),
-#                   GITHUB_RELEASES_TOKEN (private release assets)
+#                   CF_TURN_KEY_ID, CF_TURN_KEY_API_TOKEN (Cloudflare TURN)
 #   build-relay     RELAY_INTERNAL_SECRET (same value as INTERNAL_API_SECRET)
 #
 # The email keys are credentials this script cannot invent: export
@@ -25,8 +24,8 @@
 # The Cloudflare TURN key is minted in the Cloudflare dashboard, so it cannot be
 # invented either — but the app runs without it (the ICE-servers route answers a
 # STUN-only list), so exporting CF_TURN_KEY_ID and CF_TURN_KEY_API_TOKEN is
-# optional and their absence is reported, not fatal. GITHUB_RELEASES_TOKEN is the
-# same shape of thing: minted on github.com, optional, absence reported.
+# optional and their absence is reported, not fatal. Public release downloads
+# need no GitHub credential on the website.
 set -euo pipefail
 
 NAMESPACE=8ly
@@ -142,22 +141,6 @@ if app_key_missing CF_TURN_KEY_ID || app_key_missing CF_TURN_KEY_API_TOKEN; then
     echo "secret build-app: Cloudflare TURN keys added"
   else
     echo "secret build-app: no CF_TURN_KEY_ID/CF_TURN_KEY_API_TOKEN in the environment, ICE stays STUN-only"
-  fi
-fi
-
-# --- build-app github releases token (add-if-missing) --------------------------
-# The read-only PAT the download routes stream private release assets with. Never
-# generated: it is a fine-grained token minted on github.com with Contents: read
-# on ZechCodes/build-web. Without it the same routes 302 to the public assets,
-# which is exactly what they do once the repository is public, so a bootstrap with
-# no token is a supported deployment, not a failure.
-if app_key_missing GITHUB_RELEASES_TOKEN; then
-  if [[ -n "${GITHUB_RELEASES_TOKEN:-}" ]]; then
-    kc patch secret build-app --type merge -p "{\"data\":{
-      \"GITHUB_RELEASES_TOKEN\":\"$(b64_value "$GITHUB_RELEASES_TOKEN")\"}}"
-    echo "secret build-app: GitHub releases token added"
-  else
-    echo "secret build-app: no GITHUB_RELEASES_TOKEN in the environment, downloads redirect to the public assets"
   fi
 fi
 

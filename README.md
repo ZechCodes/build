@@ -19,6 +19,13 @@ Task intake is **goal-form + batched plan/diff comments** — there is deliberat
 See [`planning/v2/`](planning/v2/) for the full scope, UI design brief, and roadmap, and
 [`HANDOFF.md`](HANDOFF.md) for the current state and how to run everything.
 
+## Brand assets
+
+Official SVG and PNG artwork lives in [`assets/brand/`](assets/brand/README.md),
+including the transparent mark and black-on-mint, mint-on-black, and black-on-white
+variants. That directory also documents how to regenerate the website, SPA, and
+desktop icons from the shared artwork.
+
 ## Architecture
 
 ```
@@ -184,6 +191,108 @@ registered by other Rift users. A project already registered in a different
 Rift registry cannot be initialized in Build's registry; Build leaves its
 marker untouched and reports the conflict. Keep the Rift CLI installed while
 Build has Rift checkouts to manage.
+
+## Install
+
+Public installers detect macOS or Linux and select the Intel/x86_64 or ARM64
+release. No website login or download token is required:
+
+```sh
+# Bridge: installs the daemon, pairs it, and enables its background service
+curl -fsSL https://getbuild.ing/install.sh | sh
+
+# Desktop app: installs the app for the current user
+curl -fsSL https://getbuild.ing/install-desktop.sh | sh
+```
+
+The bridge goes in `~/.local/bin`. The desktop app goes in
+`~/Applications/Build.app` on macOS, or `~/.local/share/build-desktop` on Linux,
+with a launcher in `~/.local/bin` and an application-menu entry. Run the desktop
+installer again to update. Application sign-in and bridge pairing still use
+your Build account.
+
+Both installers verify SHA-256 checksums and verify the release's Sigstore
+signature when `cosign` is installed. Downloads come from the public
+[`build-releases`](https://github.com/ZechCodes/build-releases/releases)
+repository. The bridge follows its latest release; the desktop installer
+resolves the `desktop-latest` version pointer and then downloads that specific
+desktop release. This keeps the two products' versions independent.
+
+To select a version, set `BUILD_BRIDGE_VERSION` or `BUILD_DESKTOP_VERSION` on
+the shell receiving the script, for example:
+
+```sh
+curl -fsSL https://getbuild.ing/install-desktop.sh | BUILD_DESKTOP_VERSION=0.1.0 sh
+```
+
+## Build locally
+
+Clone this repository, then run either command from its root. Both scripts build
+for the current machine, download dependencies using committed lockfiles, and
+print the output location. Neither installs the result or publishes a release.
+An internet connection is needed for the initial dependency/tool downloads.
+
+### Bridge (Linux or macOS)
+
+Install current stable Rust (including Cargo), a C/C++ compiler, CMake,
+pkg-config, and OpenSSL development libraries. On Debian/Ubuntu, the native
+prerequisites are `build-essential cmake pkg-config libssl-dev`. On macOS,
+install Xcode Command Line Tools (`xcode-select --install`), then
+`brew install cmake pkg-config openssl`. Install Rust separately with rustup.
+
+```sh
+./scripts/build-bridge.sh
+```
+
+The unsigned release binary is `bridge/target/<host-target>/release/build-bridge`;
+the script prints the exact path. Try that binary with `--version`. This is a
+native build using your system libraries, not a portable distribution archive.
+Native Windows bridge builds are not supported yet.
+
+To use the bridge, Git and your chosen agent CLI must also be installed and
+authenticated. They are runtime prerequisites, not part of the build script.
+
+### Electron app (Linux, macOS, or Windows)
+
+Install Node.js 22.12 or newer with npm. On macOS, also install Xcode Command
+Line Tools. Linux DEB packaging also needs `libcrypt.so.1` (`libcrypt1` on
+Debian/Ubuntu, `libxcrypt-compat` on Arch). Build on the OS and architecture you
+want to run the app on:
+
+```sh
+node scripts/build-desktop.mjs
+```
+
+This runs `npm ci` and produces installers in `desktop/dist/`: AppImage and DEB
+on Linux, DMG and ZIP on macOS, or an NSIS installer on Windows. Use
+`node scripts/build-desktop.mjs --dir` for an unpacked app instead.
+
+Local builds ignore Apple/Windows signing credentials and never publish or
+notarize. macOS uses an ad-hoc signature with hardened runtime disabled for
+local execution; it does not use a Developer ID certificate. These builds are
+for local use. The desktop app loads the hosted web client and requires a
+separately installed bridge; no SPA or backend build is needed.
+
+### Electron releases
+
+The `Release the desktop app` GitHub workflow runs on `desktop-vX.Y.Z` tags.
+The tag must match `desktop/package.json` and its lockfile. It builds native
+macOS ARM64/Intel and Linux ARM64/x86_64 apps. Mac apps are Developer ID signed
+and notarized; Linux apps are unsigned. Releases include DMG/ZIP (macOS),
+AppImage/DEB (Linux), installer archives, SHA-256 checksums, and a Sigstore
+signature over the checksums. Assets publish to `RELEASES_REPO` (default
+`ZechCodes/build-releases`), followed by the `desktop-latest/version.txt` pointer.
+Desktop releases never replace the bridge's latest release.
+
+Configure the same repository secrets used for bridge releases:
+`APPLE_CERTIFICATE_P12` (base64-encoded Developer ID Application certificate),
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_PASSWORD` (app-specific
+password), `APPLE_TEAM_ID`, and `RELEASES_TOKEN` (write access to the releases
+repository). Missing signing credentials fail the desktop release rather than
+publishing unsigned assets. Local builds need none of these secrets.
+Set the website's `RELEASES_REPO` environment variable to the same repository
+if you override the workflow variable. Website-served installers use that
+repository by default; `BUILD_RELEASES_REPO` overrides it for a single install.
 
 ## Develop
 

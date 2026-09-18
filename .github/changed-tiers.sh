@@ -22,7 +22,7 @@ set -eu
 
 REPO="${1:-.}"
 
-APP_PATHS='^(spa|skriftapp)/|^deploy/k8s/app\.yaml$|^scripts/install\.sh$'
+APP_PATHS='^(spa|skriftapp)/|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$'
 RELAY_PATHS='^bridge/|^deploy/k8s/relay\.yaml$'
 E2E_HARNESS_PATHS='^web/|^deploy/compose\.real\.yml$'
 
@@ -67,7 +67,7 @@ checks_base="$(older_commit "$app_base" "$relay_base")"
 
 app="$(moved_since "$app_base" "$APP_PATHS")"
 relay="$(moved_since "$relay_base" "$RELAY_PATHS")"
-desktop="$(moved_since "$checks_base" '^desktop/')"
+desktop="$(moved_since "$checks_base" '^desktop/|^scripts/build-desktop\.mjs$|^\.github/workflows/(ci|release-desktop)\.yml$')"
 scripts="$(moved_since "$checks_base" '^scripts/')"
 shell="$(moved_since "$checks_base" '\.sh$')"
 # The end-to-end suite exercises both tiers, so it runs when either moved and

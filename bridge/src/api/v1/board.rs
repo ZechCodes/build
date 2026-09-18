@@ -576,6 +576,9 @@ pub struct WorkspaceSummaryRow {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkSummaryView {
     pub pushes: u64,
+    /// Commits waiting in configured push destinations across the workspace.
+    #[serde(default)]
+    pub behind: u64,
     pub additions: u64,
     pub deletions: u64,
     /// True only after the complete Git status and unpublished-commit checks

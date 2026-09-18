@@ -434,6 +434,10 @@ pub struct CommitSummary {
     /// base, so the field is omitted there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ahead_of_base: Option<bool>,
+    /// Included by a workspace-directory history: this commit is part of the
+    /// same unpublished range rendered by its All changes aggregate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpushed: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -442,6 +446,10 @@ pub struct GitLogResult {
     pub commits: Vec<CommitSummary>,
     /// Another page follows.
     pub more: bool,
+    /// Names the base used for commit highlighting. A remote-tracking ref can
+    /// move without HEAD changing, so clients use this to invalidate old pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight_key: Option<String>,
 }
 
 /// `git.show` — one commit's metadata, exact stat, and capped patch.

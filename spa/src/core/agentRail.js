@@ -22,7 +22,8 @@ import { createPatternRenderer } from "./agentCanvas.js";
 import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
-import { loadAgentDefaults } from "./agentDefaults.js";
+import { agentDefaultsForWorkspace, agentDefaultsInWorkspace } from "./workspaceDefaults.js";
+import { workspaceKey } from "./deviceKey.js";
 import {
   AGENT_STARTING,
   QUIET_SHAPE,
@@ -32,7 +33,8 @@ import {
   agentSessionAnswered,
   agentStartFailure,
   agentHeading,
-  agentTitle,
+  agentRemovalWho,
+  agentWho,
   canRemoveAgent,
   providerLabel,
   railBubbles,
@@ -47,7 +49,7 @@ import { railStatusLeadClass, railStatusLeadHtml, railWhoHtml } from "./agentRai
 import { createGitStatusTicker } from "./gitStatusTicker.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
-import { confirmAction } from "./confirm.js";
+import { confirmActionAt } from "./confirm.js";
 import {
   insertRecord,
   isProvisionalKey,
@@ -56,7 +58,7 @@ import {
   removeRecord,
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
-import { hide, motionSettled, reveal } from "./motion.js";
+import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
@@ -100,19 +102,25 @@ import { wireExpansionReveal } from "./revealExpanded.js";
 import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
+import { mountAgentObservation } from "./agentObservation.js";
+import { createTaskCompletionTracker } from "./taskCompletionModel.js";
+import { mountTaskCompletionToast } from "./taskCompletionToast.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
+import { surfaceSessionGeneration } from "./surfacesCache.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
-import { PIN_CLASS, pinButtonHtml } from "./pinControl.js";
+import { PIN_CLASS, pinButtonHtml, syncPinButton } from "./pinControl.js";
 import { providerInSameFamily } from "./providerCatalog.js";
+import { mountComposerClearance } from "./composerClearance.js";
+import { createChatPanelMotion } from "./chatPanelMotion.js";
+import { createChatTitleMotion } from "./chatTitleMotion.js";
 import "../styles/shell.css";
 
 /** How often the rail re-reads its work item. The same cadence the detail
  *  surfaces have always polled at: fast enough that a reply appears while you
  *  are still looking at the panel. */
 const RAIL_POLL_MS = 1600;
-
 /** How close to the top of the conversation counts as asking for the page
  *  above it. Not zero: a reader flicking upwards should have the history on
  *  its way before they land, so the join is one they scroll through rather
@@ -126,8 +134,8 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 const PINNED_KEY = "build.rail.expanded";
 /** The thing this rail's pin docks, as the reader would name it. */
 const PANEL_SUBJECT = "conversation";
-const RAIL_SCRIM_ID = "rail-scrim";
 const POPOVER_CLASS = "rail-popover";
+const COLLAPSED_CLASS = "rail-collapsed";
 const ANCHOR_PROPERTY = "--rail-anchor";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
 const RAIL_STATUS_ID = "rail-status";
@@ -135,6 +143,7 @@ const RAIL_STATUS_LEAD_ID = "rail-status-lead";
 const RAIL_STATUS_PILLS_ID = "rail-status-pills";
 const RAIL_STATUS_GIT_ID = "rail-status-git";
 const RAIL_VIEWER_ID = "rail-surfaces-viewer";
+const RAIL_OBSERVATION_ID = "rail-observation";
 const WORKING_WORD_SELECTOR = ".rail-status-working-word";
 const STATUS_TEXT_SELECTOR = ".rail-status-text";
 const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
@@ -447,6 +456,9 @@ const railStatusRowHtml = () =>
 
 const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_VIEWER_ID}" hidden></div>`;
 
+const railObservationHostHtml = () =>
+  `<div class="agent-observation-host" id="${RAIL_OBSERVATION_ID}" hidden></div>`;
+
 function surfaceMenuHtml(options) {
   return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE, icon: true }) : "";
 }
@@ -455,10 +467,14 @@ function surfaceMenuRegionHtml(options) {
   return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(options)}</span>`;
 }
 
+/** What the remove button says it will do, in the same words as the
+ *  confirmation it opens (core/agentRailModel.js's `agentRemovalWho`). */
+const removeButtonTitle = (removalWho) => `Remove ${removalWho} from this branch`;
+
 /** The button that takes this agent off the branch, or nothing when it cannot be. */
-function railRemoveButtonHtml(who, removable) {
+function railRemoveButtonHtml(removalWho, removable) {
   if (!removable) return "";
-  const removeTitle = `Remove ${who} from this branch`;
+  const removeTitle = removeButtonTitle(removalWho);
   return `<button type="button" class="btn mini rail-remove" title="${esc(removeTitle)}"
         aria-label="${esc(removeTitle)}">Done</button>`;
 }
@@ -472,14 +488,14 @@ function railTuiButtonHtml(mode, hasTerminal) {
         aria-pressed="${showingTui}" title="${tuiTitle}">TUI</button>`;
 }
 
-export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null, pinned = true } = {}) {
+export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null, pinned = true, removalWho = "" } = {}) {
   return `<div class="rail-head">
     ${harnessIconHtml(provider)}
     ${railWhoHtml(who, heading)}
     ${railTuiButtonHtml(mode, hasTerminal)}
-    ${railRemoveButtonHtml(who, removable)}
-    ${surfaceMenuRegionHtml(surfaceOptions)}
+    ${railRemoveButtonHtml(removalWho || who, removable)}
     ${pinButtonHtml({ subject: PANEL_SUBJECT, pinned })}
+    ${surfaceMenuRegionHtml(surfaceOptions)}
   </div>`;
 }
 
@@ -497,6 +513,8 @@ export function panelHeadHtml(who, mode, { provider = "", removable = false, has
  */
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
+  const completionTracker = createTaskCompletionTracker();
+  const completionToast = mountTaskCompletionToast(host);
   const railContext = createAgentRailContext(context);
   const key = railContext.key;
   const { cacheScope, ownsRepository: ownsChatRepository, repository: chatRepository } = railChatDependencies(context);
@@ -514,18 +532,19 @@ export function mountAgentRail(host, context) {
   let selectedId = railView.selectedAgentId();
   selection.set(selectedId);
   // Docked beside the work, or a card on the strip. The pin is the reader's
-  // choice and is remembered; the popover is this visit's, and goes when the
-  // scrim, Escape or a navigation says so.
+  // remembered layout choice; visibility belongs to this visit and never
+  // rewrites that choice.
   let pinned = readPinned();
   // An unpinned rail has no composer to focus at all — the human just cut this
   // branch and is about to type into it, so that intent outranks whatever they
   // left the rail at on the last one.
-  let popoverOpen = !pinned && context.autofocusComposer === true;
-  const panelOut = () => pinned || popoverOpen;
+  let panelVisible = pinned || context.autofocusComposer === true;
+  const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let poll = null;
   let disposed = false;
   let tui = null; // the mounted PTY pane, in TUI mode
+  let titleMotion = null;
   const transientThreadCache = createThreadCache();
   let threadCache = transientThreadCache;
   // Choosing the next agent's harness, with the chooser in the panel. Entered
@@ -534,6 +553,7 @@ export function mountAgentRail(host, context) {
   let addingAgent = false;
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
+  let olderItemsAwaitingPaint = false;
   let activityRuns = null; // the open runs of the conversation in the panel
   let activityRunsFor = null; // whose conversation those runs belong to
   let unreadFrom = null; // where the unread line stands in that conversation
@@ -551,13 +571,18 @@ export function mountAgentRail(host, context) {
 
   const cacheIdentity = () => {
     if (disposed) return null;
-    return addressedCacheIdentity({
+    const addressed = addressedCacheIdentity({
       cacheScope,
       context,
       feedRow,
       selectedId,
       controller: controllerForAgent(agentOf(selectedId)),
     });
+    if (!addressed) return null;
+    return {
+      ...addressed,
+      surfaceSessionGeneration: surfaceSessionGeneration(agentOf(selectedId)?.surface_session_generation),
+    };
   };
 
   let conversationCache = null;
@@ -572,7 +597,11 @@ export function mountAgentRail(host, context) {
     },
     onSurfacesSeeded: (seen) => {
       if (disposed) return;
-      seededSurfaces = { surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()), at: seen.at };
+      seededSurfaces = {
+        surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()),
+        generation: seen.generation,
+        at: seen.at,
+      };
       syncSurfaces();
       paintSurfaceMenu();
     },
@@ -592,13 +621,14 @@ export function mountAgentRail(host, context) {
   const absorbSurfaces = () => {
     seededSurfaces = null;
     const agent = agentInFocus();
-    bindConversationCache().absorbSurfaces(agent ? agent.surfaces : null);
+    bindConversationCache().absorbSurfaces(agent?.surfaces ?? null, agent?.surface_session_generation);
   };
 
   const resetConversationCache = () => {
     conversationCache = null;
     absorbedThreadPayload = null;
     seededSurfaces = null;
+    olderItemsAwaitingPaint = false;
   };
   // The one payload already folded through the cache. A repaint hands the same
   // payload back, and absorbing it twice is not idempotent for the one shape
@@ -628,12 +658,15 @@ export function mountAgentRail(host, context) {
   // move — which shape it is wearing — and the model menu on the other side of
   // the row. Null whenever the panel is not showing the conversation.
   let composerControl = null;
+  let disposeComposerClearance = null;
   let composerModelMenu = null;
   let composerController = null;
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
+  let observationBlock = null;
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
+  let panelMotion = null;
 
 
   const agentIdOf = (agent) => agent.id;
@@ -687,9 +720,15 @@ export function mountAgentRail(host, context) {
   };
   const writeNewAgentChoice = (next) => provisionalController().setProvisionalChoice(next);
 
+  /** The account-wide name of the workspace this rail stands in, or null
+   *  outside one: a workspace's own agent defaults (core/workspaceDefaults.js)
+   *  layer over the account's, and only a rail inside one has any to layer. */
+  const railWorkspaceKey = () =>
+    railContext.kind === "workspace" ? workspaceKey(railContext.deviceId, railContext.workspaceId) : null;
+
   const seedNewAgentDefaults = () => {
     if (!catalog || provisionalController().choice().provider) return;
-    writeNewAgentChoice(clampStoredAgentChoice(catalog, loadAgentDefaults()));
+    writeNewAgentChoice(clampStoredAgentChoice(catalog, agentDefaultsInWorkspace(railWorkspaceKey(), catalog)));
   };
 
   /** That choice as `agent.add` params: empties omitted, so the harness's own
@@ -759,6 +798,7 @@ export function mountAgentRail(host, context) {
   };
 
   const paintRailStatus = () => {
+    if (!panelVisible) return;
     const row = statusRow();
     if (!row) return;
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
@@ -812,6 +852,14 @@ export function mountAgentRail(host, context) {
 
   const readIsStale = (asked) => disposed || asked !== selectedId;
 
+  const showTaskCompletions = (agents) => {
+    completionTracker.forgetMissing(agents.map((agent) => agent.id));
+    for (const agent of agents) {
+      const completions = completionTracker.observe(agent);
+      if (completions.length) completionToast.show(agent.id, completions.map((task) => task.title));
+    }
+  };
+
   const refresh = async () => {
     const asked = selectedId;
     let payload;
@@ -850,6 +898,7 @@ export function mountAgentRail(host, context) {
     if (!isProvisionalKey(selectedId)) threadOwner = asked === null ? selectedId : asked;
     absorbSurfaces();
     paint();
+    showTaskCompletions(answered.agents);
   };
 
   // ---- painting -------------------------------------------------------------
@@ -861,6 +910,7 @@ export function mountAgentRail(host, context) {
 
   const wireBubble = (button, bubble) => {
     button.onclick = () => pressBubble(button.dataset.bubble, button.dataset.agent);
+    wireBubbleDrop(button);
     const canvas = bubble.pattern ? button.querySelector("canvas.rail-glyph") : null;
     if (!canvas) return;
     faces.set(bubbleKey(bubble), {
@@ -872,6 +922,53 @@ export function mountAgentRail(host, context) {
       ink: null,
       dimmed: false,
     });
+  };
+
+  /// A file dragged onto a bubble is for that agent: the drop opens its
+  /// conversation and lands the file in the composer, as if it had been dropped
+  /// on the box. Only a bubble that IS a conversation takes one — the + is a
+  /// chooser, and a file is not an answer to "which harness".
+  const wireBubbleDrop = (button) => {
+    if (button.dataset.bubble === "add") return;
+    const dragged = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+    const over = (event) => {
+      if (!dragged(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      button.classList.add("is-dropping");
+    };
+    button.addEventListener("dragenter", over);
+    button.addEventListener("dragover", over);
+    button.addEventListener("dragleave", () => button.classList.remove("is-dropping"));
+    button.addEventListener("drop", (event) => {
+      button.classList.remove("is-dropping");
+      const files = [...(event.dataTransfer?.files || [])];
+      if (!files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dropFilesOnBubble(button.dataset.bubble, button.dataset.agent, files);
+    });
+  };
+
+  /// Files waiting for a composer: a drop that switched conversations lands
+  /// before the new conversation's box is wired when its history is still
+  /// loading, so they are held and handed over when it is.
+  let droppedFiles = null;
+  const deliverDroppedFiles = () => {
+    if (!droppedFiles || !composerControl) return;
+    const files = droppedFiles;
+    droppedFiles = null;
+    composerControl.addFiles(files);
+  };
+  const dropFilesOnBubble = (type, agentId, files) => {
+    droppedFiles = files;
+    if (type === "agent" && agentId && (agentId !== selectedId || addingAgent)) {
+      openAgent(agentId);
+      paint();
+      refresh();
+    }
+    if (!panelOut()) showPanel();
+    deliverDroppedFiles();
   };
 
   const releaseFacesLeftBehind = (keysPainted) => {
@@ -905,31 +1002,12 @@ export function mountAgentRail(host, context) {
       panel.className = "rail-panel";
       panel.id = "rail-panel";
       host.insertBefore(panel, strip);
-    } else if (!panelOut() && panel) {
-      disposeTui();
-      disposeSurfaces();
-      closeSurfaceMenu?.();
-      panel.remove();
     }
     if (panelOut()) paintPanel();
     syncPopover();
   };
 
   // ---- docked, or a card on the strip ---------------------------------------
-
-  /** The layer the popover is read over, which is also what dismisses it. Only
-   *  a popover has one: docked, the panel is part of the frame and there is
-   *  nothing behind it to put away. */
-  const syncScrim = (showing) => {
-    const standing = host.querySelector(`#${RAIL_SCRIM_ID}`);
-    if (!showing) return standing?.remove();
-    if (standing) return;
-    const scrim = document.createElement("div");
-    scrim.className = "rail-scrim";
-    scrim.id = RAIL_SCRIM_ID;
-    scrim.onclick = () => dismissPopover();
-    host.insertBefore(scrim, host.firstChild);
-  };
 
   /** Which bubble the popover points at, and where its notch sits along the
    *  panel's edge to point there — down the panel on a desktop, across its foot
@@ -947,41 +1025,66 @@ export function mountAgentRail(host, context) {
   };
 
   const syncPopover = () => {
-    const showing = popoverOpen && !pinned;
-    host.classList.toggle(POPOVER_CLASS, showing);
-    syncScrim(showing);
+    const card = !pinned;
+    host.classList.toggle("rail-unpinned", !pinned);
+    host.classList.toggle(COLLAPSED_CLASS, !panelVisible);
+    host.classList.toggle(POPOVER_CLASS, card);
     const panel = host.querySelector("#rail-panel");
-    if (panel) anchorPopover(panel, showing);
+    if (panel) {
+      panel.setAttribute("aria-hidden", String(!panelVisible));
+      panel.toggleAttribute("inert", !panelVisible);
+      anchorPopover(panel, card);
+    }
+    host.querySelectorAll(".rail-bubble").forEach((bubble) => {
+      const expanded = panelVisible && bubble.classList.contains("active");
+      bubble.setAttribute("aria-expanded", String(expanded));
+      bubble.setAttribute("aria-controls", "rail-panel");
+    });
   };
 
   /** Dock the panel, or let it go. Unpinning leaves the conversation on screen
    *  as the popover it becomes — the same move the inbox's pin makes
    *  (core/inboxShell.js) — unless the press was a way of shutting it. */
-  const setPinned = (on, { reveal = !on } = {}) => {
+  const setPinned = (on) => {
     pinned = on;
     writePinned(on);
-    popoverOpen = !on && reveal;
+    panelVisible = true;
   };
 
-  /** Off the screen, whichever way it was on it. A pinned panel is unpinned to
-   *  get it out of the column; an unpinned one just closes. */
-  const closePanel = () => {
-    if (pinned) setPinned(false, { reveal: false });
-    popoverOpen = false;
-    disposeTui();
+  const activeBubble = () => host.querySelector(".rail-bubble.active");
+
+  /** Collapse the live panel without changing its docked/card preference. */
+  const closePanel = ({ restoreFocus = false } = {}) => {
+    if (!panelVisible) return;
+    const trigger = activeBubble();
+    closeSurfaceMenu?.();
+    closeSurfaceOverlay();
+    panelMotion.setVisible({
+      panel: host.querySelector("#rail-panel"),
+      visible: false,
+      apply: () => {
+        panelVisible = false;
+        paint();
+      },
+    });
+    if (restoreFocus) trigger?.focus();
   };
 
-  /** The three ways out of a popover: the scrim under it, Escape, and going
-   *  somewhere else. None of them is a change of mind about the pin. */
-  const dismissPopover = () => {
-    if (pinned || !popoverOpen) return;
-    popoverOpen = false;
-    disposeTui();
-    paint();
+  /** Outside press, Escape and navigation put an unpinned card away without
+   * changing the remembered pin preference. */
+  const dismissPopover = ({ restoreFocus = false } = {}) => {
+    if (pinned || !panelVisible) return;
+    closePanel({ restoreFocus });
   };
 
   const dismissOnEscape = (event) => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
+    dismissPopover({ restoreFocus: true });
+  };
+
+  const dismissOnOutsidePointer = (event) => {
+    if (pinned || !panelVisible || host.contains(event.target)) return;
+    if (event.target.closest?.(".confirm-popover")) return;
     dismissPopover();
   };
 
@@ -998,6 +1101,31 @@ export function mountAgentRail(host, context) {
 
   const wantedPanelBody = () => `${shownPanelMode()}:${panelBodyIdentity()}`;
 
+  const disposeTitleMotion = () => {
+    titleMotion?.dispose();
+    titleMotion = null;
+  };
+
+  const mountTitleMotion = (panel) => {
+    const title = panel.querySelector(".rail-who");
+    if (title) titleMotion = createChatTitleMotion(title);
+  };
+
+  const syncPanelTitle = (panel, fingerprint, title) => {
+    if (panel.dataset.title === fingerprint) return;
+    titleMotion?.show(title);
+    panel.dataset.title = fingerprint;
+  };
+
+  const syncRemoveWording = (panel, removalWho) => {
+    const remove = panel.querySelector(".rail-remove");
+    if (!remove) return;
+    const wanted = removeButtonTitle(removalWho);
+    if (remove.title === wanted) return;
+    remove.title = wanted;
+    remove.setAttribute("aria-label", wanted);
+  };
+
   const adoptPanelBody = (controller = null) => {
     const panel = host.querySelector("#rail-panel");
     if (panel) panel.dataset.body = controller
@@ -1010,10 +1138,13 @@ export function mountAgentRail(host, context) {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
     const agent = agentInFocus();
-    const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
-    // The head wears the topic the agent named its work with, and "Starting"
-    // until it has; the harness name stays as the hover title and the remove
-    // button's wording. The harness icon beside it says which harness.
+    // The head wears the topic the agent named its work with, and a shimmering
+    // "Starting" until it has. Hovering it says the topic in full — a head too
+    // narrow for a long topic still gives it up on hover — and the harness name
+    // while there is no topic to say. The harness icon beside it says which
+    // harness either way.
+    const who = agent ? agentWho(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
+    const removalWho = agent ? agentRemovalWho(agent) : who;
     const heading = agent ? agentHeading(agent) : { text: who, starting: false };
     const provider = agent?.provider || "";
     const settled = settledAgentInFocus();
@@ -1030,23 +1161,33 @@ export function mountAgentRail(host, context) {
     // than rewritten, so the agent beside it that does have a terminal is still
     // where the human left it.
     const shownMode = shownPanelMode();
-    // The head is rewritten only when what it SAYS changed: the name, whether
-    // this agent can be taken back off, and whether it has a basement.
-    const wantedHead = `${who}:${provider}:${heading.text}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}:${pinned ? "pinned" : "loose"}`;
+    // Structural head changes replace its controls; a topic change keeps this
+    // head mounted and moves only its title below — so the head is fingerprinted
+    // by WHICH agent it is open on rather than by what that agent is called.
+    // The id is what tells two starting agents on one harness apart: without it
+    // a strip of two unnamed Claude Codes has one fingerprint, and switching
+    // between them would leave the first one's head standing.
+    const wantedHead = JSON.stringify([agent ? agent.id : "", provider, removable, hasTerminal]);
+    const wantedTitle = JSON.stringify([who, heading.text, heading.starting]);
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
     if (panel.dataset.body !== wantedBody) {
+      disposeTitleMotion();
       disposeTui();
       disposeSurfaces();
+      disposeComposerClearance?.();
+      disposeComposerClearance = null;
       closeSurfaceMenu?.();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned, removalWho })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
           : ""}`;
       panel.dataset.head = wantedHead;
+      panel.dataset.title = wantedTitle;
       panel.dataset.body = wantedBody;
+      mountTitleMotion(panel);
       wireHead(panel);
       composerControl?.dispose?.();
       unsubscribeComposerController?.();
@@ -1057,18 +1198,18 @@ export function mountAgentRail(host, context) {
       if (shownMode === "tui") mountTui();
       else if (!rememberedConversationIsLoading() && entity.chatCapable !== false) {
         wireComposer(panel);
+        deliverDroppedFiles();
         if (autofocusComposerPending) {
           autofocusComposerPending = false;
           panel.querySelector(`#${COMPOSER_IDS.input}`)?.focus();
         }
       }
     } else if (panel.dataset.head !== wantedHead) {
-      // The name changed under the panel (an agent whose provider was picked
-      // after the fact, or one that just named its topic), or the last agent
-      // beside this one went away. Nothing
-      // else in the head can move on a poll, and rewriting it every tick would
-      // eat a press that landed mid-repaint.
+      // The agent's provider arrived after the fact, or the last agent beside
+      // this one went away. Rewriting on every poll would eat a press that
+      // landed mid-repaint.
       closeSurfaceMenu?.();
+      disposeTitleMotion();
       panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, {
         provider,
         removable,
@@ -1076,10 +1217,20 @@ export function mountAgentRail(host, context) {
         surfaceOptions: surfaceMenuOptionsInFocus(),
         heading,
         pinned,
+        removalWho,
       });
       panel.dataset.head = wantedHead;
+      panel.dataset.title = wantedTitle;
+      mountTitleMotion(panel);
       wireHead(panel);
     }
+    syncPanelTitle(panel, wantedTitle, { text: heading.text, title: who, starting: heading.starting });
+    // The remove button names the agent by its topic too, and a topic arriving
+    // is not a structural change: it re-reads on the title's beat rather than
+    // waiting for a head the rail has no reason to rebuild.
+    syncRemoveWording(panel, removalWho);
+    const pin = panel.querySelector(`.${PIN_CLASS}`);
+    if (pin) syncPinButton(pin, { subject: PANEL_SUBJECT, pinned });
     paintSurfaceMenu();
     syncSurfaceOverlay();
     if (shownMode === "chat") {
@@ -1098,12 +1249,17 @@ export function mountAgentRail(host, context) {
       };
     }
     const remove = panel.querySelector(".rail-remove");
-    if (remove) remove.onclick = () => removeAgent();
+    if (remove) remove.onclick = () => removeAgent(remove);
     const pin = panel.querySelector(`.${PIN_CLASS}`);
-    if (pin) pin.onclick = () => {
-      setPinned(!pinned);
-      paint();
-    };
+    if (pin) pin.onclick = () => panelMotion.run({
+      panel,
+      direction: pinned ? "popover" : "pinned",
+      scroller: panel.querySelector(".rail-body"),
+      apply: () => {
+        setPinned(!pinned);
+        paint();
+      },
+    });
   };
 
   // ---- chat -----------------------------------------------------------------
@@ -1161,6 +1317,7 @@ export function mountAgentRail(host, context) {
   /// time: a scroll gesture fires the handler many times over, and each of
   /// those would otherwise be a round trip for the same history.
   const olderReadRequest = () => {
+    if (!panelVisible) return null;
     const seek = threadCache.olderPageParam();
     if (loadingOlderItems || !seek || !threadCache.hasOlderItems() || !entity.entityId) return null;
     const call = chatRepository.currentCall();
@@ -1188,7 +1345,10 @@ export function mountAgentRail(host, context) {
     const page = await fetchOlderPage(request);
     loadingOlderItems = false;
     if (!page || disposed || request.asked !== selectedId) return;
-    if (threadCache.absorbOlderPage(page, request.seek)) paintChat({ olderItemsPrepended: true });
+    if (threadCache.absorbOlderPage(page, request.seek)) {
+      olderItemsAwaitingPaint = true;
+      paintChat({ olderItemsPrepended: true });
+    }
   };
 
   /// The chat tab of a work item with no agent: which harness to make one on,
@@ -1219,9 +1379,10 @@ export function mountAgentRail(host, context) {
         return;
       }
       // A model belongs to its harness, so moving the highlight drops one
-      // chosen under the harness beside it.
+      // chosen under the harness beside it and brings the pressed harness's
+      // own saved model and effort instead.
       writeNewAgentChoice(
-        reconcileAgentChoice({ ...newAgentChoice(), provider: card.dataset.provider }, { providerChanged: true }),
+        clampStoredAgentChoice(catalog, agentDefaultsForWorkspace(railWorkspaceKey(), card.dataset.provider)),
       );
       paintChat();
       body.querySelector(".rail-harness-choice.chosen")?.focus();
@@ -1352,6 +1513,7 @@ export function mountAgentRail(host, context) {
   };
 
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
+    if (!panelVisible) return;
     const body = host.querySelector("#rail-body");
     if (!body) return;
     if (entity.chatCapable === false) {
@@ -1369,10 +1531,13 @@ export function mountAgentRail(host, context) {
       syncSurfaces();
       return;
     }
-    paintTimeline(body, threadFor(), olderItemsPrepended);
+    const prepended = olderItemsPrepended || olderItemsAwaitingPaint;
+    paintTimeline(body, threadFor(), prepended);
+    olderItemsAwaitingPaint = false;
     // Assignment rather than a listener: the scroller outlives every repaint,
     // and adding one per paint would ask for the same page once per tick.
     body.onscroll = () => {
+      if (!panelVisible) return;
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
       reportRead(body);
     };
@@ -1421,6 +1586,7 @@ export function mountAgentRail(host, context) {
   const composerRowHtml = () =>
     `<div class="rail-composer" id="rail-composer">
       ${railViewerHostHtml()}
+      ${railObservationHostHtml()}
       ${railStatusRowHtml()}
       <div class="chat-recovery" id="rail-chat-recovery"></div>
       ${composerHtml({
@@ -1475,7 +1641,7 @@ export function mountAgentRail(host, context) {
     const recoveryHost = host.querySelector("#rail-chat-recovery");
     if (!recoveryHost) return;
     const controller = composerController || controllerInFocus();
-    recoveryHost.innerHTML = chatRecoveryHtml(controller);
+    setMotionRowHtml(recoveryHost, chatRecoveryHtml(controller));
     recoveryHost.querySelectorAll(".chat-recovery-entry button").forEach((button) => {
       button.onclick = async () => {
         const operationId = button.closest("[data-operation]").dataset.operation;
@@ -1603,6 +1769,7 @@ export function mountAgentRail(host, context) {
     mountSurfaces(panel);
     syncComposer();
     syncSurfaces();
+    disposeComposerClearance = mountComposerClearance(panel);
   };
 
   const surfaceModelLabel = (modelId) => {
@@ -1636,9 +1803,10 @@ export function mountAgentRail(host, context) {
   const surfacesSeen = () => {
     const agent = agentInFocus();
     const live = agent && agent.surfaces;
-    if (live) return { surfaces: live, at: Date.now() };
-    if (agent && seededSurfaces) return seededSurfaces;
-    return { surfaces: null, at: Date.now() };
+    const generation = surfaceSessionGeneration(agent?.surface_session_generation);
+    if (live) return { surfaces: live, generation, at: Date.now() };
+    if (agent && seededSurfaces?.generation === generation) return seededSurfaces;
+    return { surfaces: null, generation, at: Date.now() };
   };
 
   const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesSeen().surfaces);
@@ -1646,7 +1814,9 @@ export function mountAgentRail(host, context) {
   const mountSurfaces = (panel) => {
     const pillHost = panel.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
     const viewerHost = panel.querySelector(`#${RAIL_VIEWER_ID}`);
-    if (!pillHost || !viewerHost) return;
+    const observationHost = panel.querySelector(`#${RAIL_OBSERVATION_ID}`);
+    if (!pillHost || !viewerHost || !observationHost) return;
+    observationBlock = mountAgentObservation(observationHost);
     surfacesBlock = mountAgentSurfaces({
       pillHost,
       viewerHost,
@@ -1658,15 +1828,21 @@ export function mountAgentRail(host, context) {
 
   const disposeSurfaces = () => {
     closeSurfaceOverlay();
+    observationBlock?.dispose();
+    observationBlock = null;
     if (!surfacesBlock) return;
     surfacesBlock.dispose();
     surfacesBlock = null;
   };
 
   const syncSurfaces = () => {
-    if (!surfacesBlock) return;
+    if (!surfacesBlock || !observationBlock) return;
     const seen = surfacesSeen();
     surfacesBlock.set(seen.surfaces, seen.at);
+    observationBlock.set(seen.surfaces, {
+      generation: seen.generation,
+      working: agentInFocus()?.working === true,
+    });
   };
 
   const paintSurfaceMenu = () => {
@@ -1742,6 +1918,7 @@ export function mountAgentRail(host, context) {
   /// A scroll gesture fires this many times over, so a report that says what
   /// the last one said is never made.
   const reportRead = (body) => {
+    if (!panelVisible) return;
     const agent = agentInFocus();
     if (!agent || !agent.unread_count) return;
     const controller = controllerForAgent(agent);
@@ -2076,16 +2253,20 @@ export function mountAgentRail(host, context) {
     }
     // The bubble already open is the way back out: press it again to put the
     // panel away, whichever way it is on the screen.
-    if (panelOut()) closePanel();
-    else popoverOpen = true;
-    paint();
+    if (panelOut()) closePanel({ restoreFocus: true });
+    else showPanel();
   };
 
   /** Put the panel on screen without touching the pin: docked it is already
    *  there, and unpinned this is the popover opening on the bubble that was
    *  pressed. */
   const showPanel = () => {
-    if (!pinned) popoverOpen = true;
+    if (panelVisible) return;
+    const opening = !host.querySelector("#rail-panel");
+    panelVisible = true;
+    paint();
+    const standing = host.querySelector("#rail-panel");
+    panelMotion.setVisible({ panel: standing, visible: true, opening, apply: syncPopover });
   };
 
   /** Open this agent's conversation in the panel, with the panel out. */
@@ -2128,11 +2309,13 @@ export function mountAgentRail(host, context) {
    * refusal is said the standard way and the same button is still there to try
    * again with.
    */
-  const removeAgent = async () => {
+  const removeAgent = async (anchor) => {
     const agent = settledAgentInFocus();
     if (!agent || !entity.entityId) return;
+    const entityId = entity.entityId;
     const call = chatRepository.currentCall();
-    if (!(await confirmAction(removeAgentConfirm(agent, entity.kind)))) return;
+    if (!(await confirmActionAt(anchor, removeAgentConfirm(agent, entity.kind)))) return;
+    if (disposed || entity.entityId !== entityId || settledAgentInFocus()?.id !== agent.id) return;
     if (isPending(pendingAgentsScope(), agent.id)) return;
     const records = [removeRecord(agent.id)];
     const remaining = projectPending(visibleAgents(), records, { keyOf: agentIdOf });
@@ -2140,7 +2323,7 @@ export function mountAgentRail(host, context) {
     await runOptimistic({
       scope: pendingAgentsScope(),
       records,
-      call: () => call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id }),
+      call: () => call("agent.remove", { entity_id: entityId, agent_id: agent.id }),
       failureSummary: "Could not remove the agent",
       onRevert: () => {
         openConversation(agent.id);
@@ -2268,28 +2451,40 @@ export function mountAgentRail(host, context) {
   // used to.
   statusTicker = setInterval(paintRailStatus, 1000);
   document.addEventListener("keydown", dismissOnEscape);
+  document.addEventListener("pointerdown", dismissOnOutsidePointer);
   window.addEventListener("hashchange", dismissPopover);
+  const cancelPanelMotion = () => panelMotion.cancel();
+  panelMotion = createChatPanelMotion(host, { onPhase: syncPopover });
+  window.addEventListener("resize", cancelPanelMotion);
 
   return {
     dispose() {
       disposed = true;
+      panelMotion.cancel();
       if (poll) poll.dispose();
       poll = null;
       clearInterval(statusTicker);
       statusTicker = null;
       unsubscribePending();
       unsubscribeFeed();
+      disposeTitleMotion();
       disposeTui();
       disposeSurfaces();
+      completionToast.dispose();
+      completionTracker.reset();
+      disposeComposerClearance?.();
+      disposeComposerClearance = null;
       closeSurfaceMenu?.();
       composerControl?.dispose?.();
       unsubscribeComposerController?.();
       unsubscribeComposerController = null;
       releaseFaces();
       document.removeEventListener("keydown", dismissOnEscape);
+      document.removeEventListener("pointerdown", dismissOnOutsidePointer);
       window.removeEventListener("hashchange", dismissPopover);
+      window.removeEventListener("resize", cancelPanelMotion);
       if (ownsChatRepository) chatRepository.dispose();
-      host.classList.remove(POPOVER_CLASS);
+      host.classList.remove(POPOVER_CLASS, COLLAPSED_CLASS, "rail-unpinned");
       host.innerHTML = "";
     },
   };

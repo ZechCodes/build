@@ -8,6 +8,11 @@ use crate::harness::{
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
 use crate::pty::HarnessSpec;
+
+/// A no-op hook makes Claude expose the beginning of compaction on its
+/// stream-json protocol. `compact_boundary` is the matching completion event.
+const COMPACTION_HOOK_SETTINGS: &str =
+    r#"{"hooks":{"PreCompact":[{"hooks":[{"type":"command","command":"true"}]}]}}"#;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -59,13 +64,17 @@ impl Harness for AdkHarness {
         ClaudeHarness.model_args(choice)
     }
 
+    fn requires_unadorned_command(&self, prompt: &str) -> bool {
+        ClaudeHarness.requires_unadorned_command(prompt)
+    }
+
     /// The interactive argv with the TUI swapped for the protocol, and nothing
     /// else moved.
     ///
     /// The MCP half is identical on purpose — the same per-agent
     /// `--mcp-config`, the same `--strict-mcp-config`, the same
-    /// `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because `done`,
-    /// `post_thread_message`, `read_unread_messages` and `search_conversation`
+    /// `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because
+    /// `post_thread_message` and `search_conversation`
     /// arrive over the same unix socket whichever provider is running. No
     /// settle window and no submit delay: those are how a prompt is typed into
     /// a line editor, and this harness is handed a turn as a value.
@@ -86,6 +95,8 @@ impl Harness for AdkHarness {
             // and the conversation would learn what the agent did after it had
             // finished doing it.
             .arg("--verbose")
+            .arg("--settings")
+            .arg(COMPACTION_HOOK_SETTINGS)
             .arg("--mcp-config")
             .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
             .arg("--strict-mcp-config")

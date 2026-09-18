@@ -280,6 +280,7 @@ impl Tab {
                 size,
                 turn_ready_grace: None,
                 identity: None,
+                activity_locator: None,
             },
         )
         .map_err(|error| error.to_string())?;

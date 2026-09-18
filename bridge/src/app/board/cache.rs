@@ -205,6 +205,7 @@ fn workspace_work_summary(repositories: &[std::path::PathBuf]) -> Value {
     };
     json!({
         "pushes": summary.pushes,
+        "behind": summary.behind,
         "additions": summary.additions,
         "deletions": summary.deletions,
         "clean": summary.clean,

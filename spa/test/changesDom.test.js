@@ -512,8 +512,8 @@ describe("comments on any changeset", () => {
   });
 });
 
-describe("the poll freeze holds a review in progress", () => {
-  it("leaves a pending comment (and its tray) alone when the diff moves underneath", async () => {
+describe("a poll preserves a review in progress", () => {
+  it("keeps a pending comment and its tray when the diff moves underneath", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       let served = dirtyStatus();
@@ -533,14 +533,14 @@ describe("the poll freeze holds a review in progress", () => {
       await click(document.querySelector(".cp-save"));
       expect(container.querySelector(".pcomment")).toBeTruthy();
 
-      // The agent commits underneath the reviewer: the poll must not rebuild
-      // the changeset out from under the pending comment.
+      // The agent commits underneath the reviewer: the new diff may paint, but
+      // the already-anchored comment must remain ready to send.
       tree.write("src/a.js", "the agent moved on");
       served = dirtyStatus({ head: "e".repeat(40) });
       await vi.advanceTimersByTimeAsync(2000);
       await settle();
       expect(container.querySelector(".pcomment").textContent).toContain("hold this thought");
-      expect(container.textContent).not.toContain("the agent moved on");
+      expect(container.textContent).toContain("the agent moved on");
       pane.dispose();
     } finally {
       vi.useRealTimers();

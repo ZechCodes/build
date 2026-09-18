@@ -1132,6 +1132,21 @@ describe("attachments on the record", () => {
     expect(html).toContain("2 KB");
   });
 
+  it("gives a sent file the tile for its kind, and a picture its size", () => {
+    const html = threadHtml(withAttachments([
+      { name: "screenshot.png", path: ".build/attachments/ab12-screenshot.png", mime: "image/png", size: 40960 },
+      { name: "server.py", path: ".build/attachments/cd34-server.py", mime: "application/octet-stream", size: 2048 },
+      { name: "logs.tar.gz", path: ".build/attachments/ef56-logs.tar.gz", mime: "application/gzip", size: 5000000 },
+    ]));
+    document.body.innerHTML = html;
+    const chips = [...document.querySelectorAll(".thread-attachment")];
+    expect(chips.map((chip) => chip.querySelector(".attachment-glyph").dataset.kind)).toEqual(["code", "archive"]);
+    expect(chips[0].querySelector(".attachment-glyph-tag").textContent).toBe("PY");
+    expect(chips[0].querySelector(".attachment-glyph svg")).toBeTruthy();
+    expect(chips[1].querySelector(".thread-attachment-size").textContent).toBe("5.0 MB");
+    expect(document.querySelector(".thread-attachment-figure figcaption").textContent).toContain("41 KB");
+  });
+
   it("opens an image in a dismissible lightbox and returns focus", async () => {
     const threadState = createThreadState({ ownerId: "conversation-1" });
     document.body.innerHTML = threadHtml(withAttachments([

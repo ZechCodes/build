@@ -1,5 +1,68 @@
 use super::*;
 
+#[test]
+fn marking_the_posted_message_complete_emits_an_incremental_update() {
+    let mut thread = Thread::new("run-1");
+    let message_id = thread.post_agent_offering(
+        "Shipped it.",
+        None,
+        Vec::new(),
+        Vec::new(),
+        "2026-09-17T12:00:00Z",
+        false,
+    );
+    let original_sequence = thread.items[0].latest_sequence();
+
+    assert!(thread.mark_agent_message_outcome(
+        &message_id,
+        MessageOutcome::Completed,
+        "Shipped it.",
+        None,
+    ));
+    let ThreadItem::Message(message) = &thread.items[0] else {
+        panic!("the outcome stays on the posted message");
+    };
+    assert_eq!(thread.items.len(), 1);
+    assert_eq!(message.outcome, Some(MessageOutcome::Completed));
+    assert!(message.updated_sequence > original_sequence);
+}
+
+#[test]
+fn compaction_completion_updates_the_active_history_line() {
+    let mut thread = Thread::new("plan-1");
+    let sequence = thread.push_event(
+        ThreadEventKind::Compaction,
+        Some("Compacting".to_string()),
+        None,
+        None,
+        "2026-09-17T12:00:00Z",
+    );
+
+    assert!(thread.resolve_compaction(None));
+    assert_eq!(thread.items.len(), 1);
+    let ThreadItem::Event(event) = &thread.items[0] else {
+        panic!("compaction is an event");
+    };
+    assert_eq!(event.sequence, sequence);
+    assert!(event.updated_sequence > sequence);
+    assert_eq!(event.summary.as_deref(), Some("Compacted"));
+    assert!(!thread.resolve_compaction(None));
+    assert_eq!(thread.items.len(), 1);
+}
+
+#[test]
+fn compaction_completion_does_not_close_an_older_sessions_row() {
+    let mut thread = Thread::new("plan-1");
+    thread.push_event(
+        ThreadEventKind::Compaction,
+        Some("Compacting".to_string()),
+        Some("old-session".to_string()),
+        None,
+        "2026-09-17T12:00:00Z",
+    );
+    assert!(!thread.resolve_compaction(Some("new-session")));
+}
+
 fn thread_with_conversation() -> Thread {
     let mut thread = Thread::new("plan-1");
     thread.post_user("please rename the helper", None, "2026-07-24T12:00:00Z");

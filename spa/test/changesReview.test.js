@@ -168,7 +168,7 @@ describe("the review plug (DOM)", () => {
     plug.unmount();
   });
 
-  it("leaves the diff alone while a comment is pending", async () => {
+  it("updates the diff without losing a pending comment", async () => {
     let line = "new";
     const requestedKeys = [];
     const { host, plug } = mountPlug({
@@ -183,11 +183,9 @@ describe("the review plug (DOM)", () => {
     line = "moved underneath";
     await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
     expect(host.querySelector(".pcomment").textContent).toContain("split this up");
-    expect(host.textContent).not.toContain("moved underneath");
+    expect(host.textContent).toContain("moved underneath");
     expect(requestedKeys.at(-1)).toBe("new");
     await plug.sendComments();
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
-    expect(host.textContent).toContain("moved underneath");
     plug.unmount();
   });
 

@@ -27,23 +27,40 @@
   /* What the collapsed toolbar clears: the floating toggle's 12px offset, its
      box, and the 8px gap before the toolbar content. */
   --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
+  --chat-glass-opacity:72%;
+  --chat-glass-blur:6px;
 }
 
 /* The frame is viewport-locked (styles.css body): the page never scrolls, each
    region scrolls itself. A grid rather than a flex row, so the columns are
-   definite and nothing inside can push a region wider than its share. */
+   definite and nothing inside can push a region wider than its share.
+
+   The page itself is the seam: the shell is --bg and each region floats on
+   --panel above it, so what divides the inbox from the work is a band of page
+   rather than a hairline. --region-gap is that band, stated once; the padding
+   is the same number so the outermost regions stand off the viewport edge by
+   what they stand off each other. */
 #shell {
+  --region-gap:10px;
   flex:1 1 auto; /* the body is a viewport-locked flex column; the shell is the row that takes all of it */
   display:grid;
   grid-template-columns:var(--inbox-space) minmax(0, 1fr);
+  column-gap:var(--region-gap);
+  padding:var(--region-gap);
+  background:var(--bg);
   min-height:0;
   overflow:hidden; position:relative;
   transition:grid-template-columns 240ms cubic-bezier(.2,.8,.2,1);
 }
+/* No rail, no band: the gap belongs to the seam between two regions, and with
+   the inbox away there is no seam there to pay for. */
+body.inbox-collapsed #shell { column-gap:0; }
 body.inbox-collapsed { --inbox-space:0px; }
 
+/* Inside the shell's band of page, on the toolbar's own row: the toolbar
+   starts one --region-gap in from the frame, and so does the toggle over it. */
 #global-controls { position:absolute; z-index:48;
-  top:0; left:env(safe-area-inset-left, 0px);
+  top:var(--region-gap, 10px); left:calc(var(--region-gap, 10px) + env(safe-area-inset-left, 0px));
   height:var(--toolbar-h); display:flex; align-items:center;
   padding:0 12px; pointer-events:none; }
 #global-controls > * { pointer-events:auto; }
@@ -63,18 +80,18 @@ body.inbox-collapsed { --inbox-space:0px; }
      its popover under. */
   height:100%;
   display:flex; flex-direction:column; min-height:0;
-  background:var(--panel);
-  border:1px solid var(--line3, var(--line));
-  padding:10px 10px
-    calc(10px + env(safe-area-inset-bottom, 0px))
-    calc(10px + env(safe-area-inset-left, 0px));
+  /* A region of the page, on --panel with a radius, floating on --bg: no
+     border at its trailing edge, because the band of page beside it is the
+     divide. */
+  background:var(--panel); --dim:var(--shell-chrome-dim);
+  border:0; border-radius:10px; padding:0;
 }
 body.inbox-collapsed #inbox-rail { position:absolute; z-index:46;
   top:var(--global-head);
   left:calc(12px + env(safe-area-inset-left, 0px)); bottom:auto;
   width:min(var(--inbox-rail), calc(100vw - 24px - env(safe-area-inset-left, 0px)));
-  height:auto; max-height:calc(100dvh - var(--global-head) - 12px); margin:0;
-  padding:10px; border:1px solid var(--line3, var(--line)); border-radius:10px;
+  height:auto; max-height:calc(100dvh - var(--global-head) - 12px - env(safe-area-inset-bottom, 0px)); margin:0;
+  border:1px solid var(--line3, var(--line)); border-radius:10px;
   box-shadow:0 18px 48px var(--shadow); opacity:0; visibility:hidden;
   transform:translateY(-6px) scale(.985); transform-origin:top left;
   pointer-events:none; transition:opacity 150ms ease, transform 180ms ease, visibility 0s linear 180ms; }
@@ -86,8 +103,15 @@ body.inbox-collapsed.inbox-popover-open #inbox-rail::before,
 body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absolute;
   left:8px; top:-6px; width:10px; height:10px; transform:rotate(45deg);
   border-left:1px solid var(--line3, var(--line)); border-top:1px solid var(--line3, var(--line));
-  background:var(--panel); }
-.inbox-head { display:flex; align-items:center; gap:8px; min-height:30px; margin:0 2px 10px; }
+  background:var(--shell-chrome); }
+/* Docked, this is the left end of the view toolbar: one height, one fill and no
+   seam at the column edge. These insets also stay in place while the inbox
+   becomes a floating card, so its controls do not jump ahead of the motion. */
+.inbox-head { flex:none; display:flex; align-items:center; gap:8px;
+  /* 10px above the controls, and the list's own 10px below them: the same
+     room on both sides, rather than a fixed head that centred them short. */
+  padding:10px 10px 0 calc(10px + env(safe-area-inset-left, 0px));
+  margin:0; background:inherit; border-radius:inherit; }
 /* One width for the toggle wherever it stands — it is what the collapsed
    toolbar's clearance is derived from. */
 #inbox-open, #inbox-collapse { width:var(--inbox-toggle); }
@@ -100,9 +124,9 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
   fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 /* The rail's two faces, one icon each at the head's right edge; the standing
    one is pressed. */
-.inbox-views { display:flex; gap:2px; padding:2px; border-radius:8px; background:var(--line); }
+.inbox-views { display:flex; gap:2px; padding:2px; border-radius:8px; background:transparent; }
 .inbox-view svg { width:16px; height:16px; display:block; }
-.inbox-view.on { color:var(--accent); background:var(--accent-soft); }
+.inbox-view.on { color:var(--accent); background:color-mix(in srgb, var(--accent-soft) 65%, transparent); }
 .inbox-new-project { display:flex; align-items:center; justify-content:center; gap:4px;
   min-width:0; height:28px; margin-left:auto; padding:0 7px; border:1px solid var(--line);
   border-radius:7px; background:var(--panel); color:var(--dim); font:inherit;
@@ -110,10 +134,22 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 .inbox-new-project:hover { color:var(--ink2); border-color:var(--dim); }
 .inbox-new-project svg { width:14px; height:14px; flex:none; }
 #inbox-collapse { display:grid; height:var(--inbox-toggle); padding:0; place-items:center; }
-#inbox-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding-bottom:12px; }
-.inbox-foot { border-top:1px solid var(--line); padding-top:8px; display:flex;
-  flex-direction:column; gap:8px; }
-.inbox-foot #devpick { max-width:100%; }
+/* A list is a column with a gap, not a stack of ruled lines: 4px between
+   siblings, and the rows themselves carry the room. */
+#inbox-list { flex:1 1 auto; min-height:0; overflow-y:auto;
+  display:flex; flex-direction:column; gap:4px;
+  padding:10px 10px 12px calc(10px + env(safe-area-inset-left, 0px)); }
+.inbox-foot { padding:8px 10px calc(6px + env(safe-area-inset-bottom, 0px)) calc(10px + env(safe-area-inset-left, 0px));
+  display:flex; align-items:center; gap:6px; }
+/* A floating card already clears the viewport edge; keep its controls compact
+   and reserve the device safe area outside through the card's max height. */
+body.inbox-collapsed .inbox-foot { padding-bottom:6px; }
+.inbox-foot #devpick { flex:1 1 auto; min-width:0; max-width:100%; }
+.inbox-account { flex:none; display:grid; width:34px; height:34px; padding:0;
+  place-items:center; border:0; border-radius:7px; background:none; color:var(--dim); cursor:pointer; }
+.inbox-account:hover, .inbox-account:focus-visible, .inbox-account.active { color:var(--accent); background:var(--accent-soft); }
+.inbox-account:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.inbox-account svg { display:block; width:17px; height:17px; }
 /* The floating reopen toggle, only while the rail is away: pinned, the rail is
    already the inbox and this would only stand on top of it. The pin in the
    rail's own head is the control at that width. */
@@ -153,7 +189,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   background:var(--panel); border:1px solid var(--line); border-radius:9px;
   padding:9px 10px; font-size:12.5px; color:var(--dim); }
 .compose-prompt:hover { border-color:var(--line2); color:var(--ink2); }
-.compose-box { background:var(--panel); border:1px solid var(--line2); border-radius:9px;
+.compose-box { background:var(--panel2); border:0; border-radius:9px;
   padding:8px; display:flex; flex-direction:column; gap:6px; }
 .compose-box textarea { width:100%; resize:vertical; font-size:12.5px; }
 .compose-row { display:flex; align-items:center; gap:6px; }
@@ -165,7 +201,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .compose-note { font-size:11.5px; }
 .compose-error { font-size:11.5px; }
 .compose-error[hidden] { display:none; }
-.compose-advanced { border-top:1px solid var(--line); padding-top:8px;
+.compose-advanced { margin-top:10px;
   display:flex; flex-direction:column; gap:5px; }
 .compose-advanced label, .agent-choice-fields label { font-size:11px; color:var(--dim); }
 .compose-advanced select, .compose-advanced input, .agent-choice-fields select { width:100%; font-size:12px; }
@@ -230,7 +266,29 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    the unread count at the right edge, and what it weighs. The row shell (.srow,
    .stitle, .badge, .warn) is the shared vocabulary in styles.css; only what the
    inbox adds lives here. */
-.inbox-entry { align-items:flex-start; gap:8px; padding:7px 6px; margin-bottom:1px; }
+/* No divider between rows: room, a hover fill, and on the standing row a fill
+   plus the accent bar that is the one line an item is allowed to wear. The
+   inset is the one the wider rails use (10px 13px, --pane-gutter on the left),
+   so the inbox's text column stands on the same left edge as the commit and
+   file rails beside it — a rail that indents differently reads as a third
+   margin rather than as the same list at a narrower width. */
+.inbox-entry { align-items:flex-start; gap:8px; padding:10px 13px; margin-bottom:0; }
+.inbox-entry.active::before { content:""; position:absolute; left:0; top:6px; bottom:6px;
+  width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
+/* A row's fill runs the full width of the rail: the hover and the standing
+   fill reach the rail's own edges, not a card's edges a few pixels in from
+   them. The row pays its container's side padding back as its own, so its
+   text column stays exactly where it stood; only the fill grows. Outside a
+   band that padding is the list's; inside one it is the band's. */
+.inbox-entry { --inbox-row-bleed-left:calc(10px + env(safe-area-inset-left, 0px)); --inbox-row-bleed-right:10px;
+  border-radius:0;
+  margin-left:calc(-1 * var(--inbox-row-bleed-left)); margin-right:calc(-1 * var(--inbox-row-bleed-right));
+  padding-left:calc(13px + var(--inbox-row-bleed-left)); padding-right:calc(13px + var(--inbox-row-bleed-right)); }
+.inbox-project .inbox-entry { --inbox-row-bleed-left:calc(var(--inbox-band-bleed) + 5px); --inbox-row-bleed-right:15px; }
+/* The overlays that sit on the row's right edge keep to the column the words
+   use, not the gutter the fill now covers. */
+.inbox-entry .inbox-actions { right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); }
+.inbox-entry .inbox-facts-float { right:calc(10px + var(--inbox-row-bleed-right)); }
 .inbox-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
 .inbox-entry .sdot { margin-top:5px; }
 .inbox-line { display:flex; align-items:center; gap:6px; min-width:0; }
@@ -255,10 +313,10 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    over the line's right edge with the row's own background behind it, so a
    long name runs under it rather than wrapping. Its text starts where a live
    row's name does, past the dot column. */
-.inbox-quiet { padding:5px 6px 5px 22px; align-items:center; }
+.inbox-quiet { padding:8px calc(10px + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); align-items:center; }
 .inbox-quiet .inbox-line .stitle { font-size:12.5px; }
-.inbox-facts-float { position:absolute; right:6px; top:50%; transform:translateY(-50%);
-  padding-left:10px; background:var(--bg); box-shadow:-10px 0 10px -6px var(--bg);
+.inbox-facts-float { position:absolute; right:10px; top:50%; transform:translateY(-50%);
+  padding-left:10px; background:var(--panel); box-shadow:-10px 0 10px -6px var(--panel);
   pointer-events:none; white-space:nowrap; }
 .inbox-quiet:hover .inbox-facts-float { background:var(--line2); box-shadow:-10px 0 10px -6px var(--line2); }
 .inbox-quiet.active .inbox-facts-float { background:var(--accent-soft); box-shadow:-10px 0 10px -6px var(--accent-soft); }
@@ -318,8 +376,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-done-width)); }
 .inbox-actions { position:absolute; top:var(--inbox-actions-inset); right:var(--inbox-actions-inset); display:flex;
   align-items:center; gap:2px; opacity:0; pointer-events:none;
-  background:var(--bg); border-radius:6px; padding-left:var(--inbox-actions-fade);
-  box-shadow:-8px 0 8px -6px var(--bg); }
+  background:var(--panel); border-radius:6px; padding-left:var(--inbox-actions-fade);
+  box-shadow:-8px 0 8px -6px var(--panel); }
 .inbox-entry:hover .inbox-actions { background:var(--line2);
   box-shadow:-8px 0 8px -6px var(--line2); }
 .inbox-entry.active .inbox-actions { background:var(--accent-soft);
@@ -329,6 +387,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-actions:has(.inbox-workspace-done),
 .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
 /* One width for Done and for Done…, so pressing it does not widen it. */
+/* Inside a project block the rows stand on the block's step of tone, so the
+   overlays that carry a row's own fill carry that one. */
+.inbox-project .inbox-actions { background:var(--panel2); box-shadow:-8px 0 8px -6px var(--panel2); }
+.inbox-project .inbox-facts-float { background:var(--panel2); box-shadow:-10px 0 10px -6px var(--panel2); }
+.inbox-project.active .inbox-actions, .inbox-project.active .inbox-facts-float {
+  background:var(--accent-soft); box-shadow:none; }
 .inbox-workspace-done { min-width:var(--inbox-done-width); }
 /* No hover on touch: the selected row shows its actions, one tap behind. */
 @media (hover:none) {
@@ -344,42 +408,86 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 
 /* Recent: everything that has gone quiet for a day, behind one disclosure at
    the end of the list. It is still there — it is just not what today is about. */
-.inbox-recent { margin-top:10px; border-top:1px solid var(--line); padding-top:6px; }
+.inbox-recent { margin-top:18px; padding-top:0; }
 .inbox-recent-toggle { display:flex; align-items:center; gap:6px; width:100%;
   background:none; border:0; padding:4px 6px; cursor:pointer;
-  font:inherit; font-size:11.5px; color:var(--dim); text-align:left; }
+  font:inherit; font-family:var(--mono); font-size:11px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--dim); text-align:left; }
 .inbox-recent-toggle:hover { color:var(--ink2); }
 .inbox-recent-caret { flex:none; display:flex; }
 .inbox-recent-count { margin-left:auto; font-family:var(--mono); }
 
-/* Projects share a flat list, separated by rules; selection belongs to the header. */
-.inbox-unsorted:not(:empty) { margin-bottom:8px; }
-.inbox-project { border:0; border-bottom:1px solid var(--line); border-radius:0;
-  padding:6px 4px 8px; margin-bottom:4px; }
-.inbox-project.active > .inbox-project-head { background:var(--accent-soft); }
-.inbox-project.active > .inbox-project-head .inbox-project-name { color:var(--accent); }
-.inbox-project-head:hover { background:var(--line2); }
-.inbox-project .inbox-project-name { border-radius:0; }
-.srow.inbox-entry { border-radius:0; }
+/* ---- the projects face ----
+   The inbox, grouped by project. Each block is a box: its head — fold, name,
+   unread, the + that creates — and its rows; the block holding the branch or
+   issue the route stands on wears the composer's focused look. The unrouted
+   captures stand above every block on their own. */
+.inbox-unsorted:not(:empty) { display:flex; flex-direction:column; gap:4px; }
+/* Empty, it leaves the list's flow: a 0px child still costs the list a gap,
+   which landed as 4px of nothing above the first band. */
+.inbox-unsorted:empty { display:none; }
+/* The blocks are bands of the rail, not cards in it: each one bleeds back
+   through the list's side padding to the rail's own edges, so a block has no
+   right edge to read as a border, and the standing block's accent bar sits on
+   the rail's leading edge the way the commit rail's does. The band's inset
+   pays the padding it swallowed plus the boxed block's old 5px, so the
+   chevron, the + and the rows keep the column they stood in. The bands
+   separate by the gap between them, never by a line. The standing block is
+   its fill alone: the accent bar belongs to the standing ROW inside it, and a
+   second bar on the band drew the same mark twice. */
+.inbox-projects { display:flex; flex-direction:column; gap:8px; }
+.inbox-project { position:relative; border:0; border-radius:0; background:var(--panel2);
+  --inbox-band-bleed:calc(10px + env(safe-area-inset-left, 0px));
+  margin:0 -10px 0 calc(var(--inbox-band-bleed) * -1);
+  padding:5px 15px 6px calc(var(--inbox-band-bleed) + 5px);
+  transition:background-color .12s ease, box-shadow .12s ease; }
+.inbox-project.active { background:var(--accent-soft); }
+/* A block with nothing live is a band like the rest — a bare head between two
+   filled bands read as a gap in the list, not as a project. Its rows are the
+   quiet ones and its fold has nothing to open (below). */
+.inbox-project.inbox-flat { border:0; box-shadow:none; }
 .inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 0; }
-.inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg, .inbox-project-settings svg { width:16px; height:16px; display:block; }
+.inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg,
+.inbox-project-settings svg, .inbox-project-hide svg { width:16px; height:16px; display:block; }
 /* The chevron's column is the rows' state-dot column: the rows sit 2px in and
    pad 6px, the dot is 8px wide — centre 12px; the fold pads 4px round a 16px
    icon — centre 12px. The Recent toggle's caret is padded the same. */
 .inbox-fold { flex:none; padding:3px 4px; }
-.inbox-fold[disabled] { opacity:.35; cursor:default; }
-.inbox-fold[disabled]:hover { background:none; color:var(--dim); }
+/* Nothing to fold: no chevron at all. A dimmed "open" chevron said the block
+   was open when it had nothing to be open; the button keeps its column so the
+   name stands where every other name does. */
+.inbox-fold[disabled] { visibility:hidden; cursor:default; }
 .inbox-project-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; text-align:left; background:none; border:0; padding:4px 4px;
   border-radius:6px; cursor:pointer; font:inherit; font-size:12.5px; font-weight:650;
   color:var(--ink2); }
 .inbox-project-name:hover { background:var(--line2); color:var(--ink); }
 .inbox-project-name.inbox-unroutable:hover { background:none; color:var(--ink2); }
-.inbox-project-head .inbox-unread { margin-left:0; }
+.inbox-project-head .inbox-unread { flex:none; margin-left:2px; }
+.inbox-project-tools { flex:none; display:grid; align-items:center; justify-items:end; margin-left:auto; }
+.inbox-project-device, .inbox-project-actions { grid-area:1 / 1; }
+/* Which machine a block is on is a secondary tag, not a second name: it reads
+   once, when the reader wonders which of two `relaydb`s this is (or why a block
+   is inert — an offline machine says "Offline" here). Smaller, lighter and
+   quieter than the name it hangs off, so it qualifies rather than competes. The
+   same mark rides on the rows, where `.inbox-device` is the class it wears. */
+.inbox-project-device { max-width:88px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  padding:0 4px; pointer-events:none; transition:opacity 120ms ease;
+  font-size:10px; font-weight:400; opacity:.72; }
+.inbox-device { font-size:.86em; font-weight:400; opacity:.78; }
+.inbox-project-actions { display:flex; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
+.inbox-project-head:hover .inbox-project-device,
+.inbox-project-head:focus-within .inbox-project-device { opacity:0; }
+.inbox-project-head:hover .inbox-project-actions,
+.inbox-project-head:focus-within .inbox-project-actions { opacity:1; pointer-events:auto; }
 .inbox-project-create, .inbox-project-settings { flex:none; }
-.inbox-project-rows { padding:2px 2px 0; }
+@media (hover:none) {
+  .inbox-project-device { opacity:0; }
+  .inbox-project-actions { opacity:1; pointer-events:auto; }
+}
+.inbox-project-rows { display:flex; flex-direction:column; gap:4px; padding:4px 0 0; }
 .inbox-folded .inbox-project-rows, .inbox-folded .inbox-recent { display:none; }
-.inbox-project .inbox-recent { margin:2px 0 0; border-top:0; padding-top:0; }
+.inbox-project .inbox-recent { margin:6px 0 0; padding-top:0; }
 .inbox-project .inbox-recent-toggle { padding-left:4px; }
 
 /* ---- view column (centre) ---- */
@@ -401,9 +509,17 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   grid-template-rows:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; position:relative;
 }
-#toolbar { flex:none; border-bottom:1px solid var(--line3, var(--line)); background:var(--panel);
+/* The toolbar is the work region's head, not a region of its own: same fill,
+   rounded at the top, and no rule under it — the 16px of quiet below its text
+   is what ends it. */
+#toolbar { flex:none; background:var(--panel); --dim:var(--shell-chrome-dim);
+  border-radius:10px 10px 0 0;
   container:toolbar-shell / inline-size; }
+/* The body carries no fill of its own: the work column paints --panel, the
+   directory rail a step of --panel2, and the agent rail is a region beside
+   them with a band of page between. */
 #view-body { display:grid; grid-template-columns:auto minmax(0, 1fr) auto;
+  background:transparent;
   min-width:0; min-height:0; overflow:hidden; }
 /* ---- the directory rail: a checkout's two faces, as icons ----
    A column of the SHELL, between the inbox and the work, at every width — the
@@ -418,17 +534,24 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    bubble strip is laid over the foot of this same column, so nothing tappable
    may be parked down there. */
 #dir-rail:empty { display:none; }
-#dir-rail { width:var(--dir-rail); min-height:0; border-right:1px solid var(--line3, var(--line));
-  background:var(--panel); padding:6px 4px; display:flex; flex-direction:column;
+/* The seam between the rail and the work is a step in tone, not a line:
+   a step BELOW --panel2, beside the work's --panel. The work's own leftmost
+   column is often a --panel2 rail (.crail-host, .ftree), and two --panel2
+   columns touching are one slab — so the directory rail takes --panel2 mixed
+   back toward the page, far enough off its neighbour to read as a seam and
+   still plainly off --panel. */
+#dir-rail { width:var(--dir-rail); min-height:0; border:0;
+  background:color-mix(in srgb, var(--panel2) 65%, var(--bg));
+  border-radius:0 0 0 10px;
+  padding:6px 4px; display:flex; flex-direction:column;
   align-items:center; justify-content:flex-start; gap:4px; }
 .dirtab { position:relative; display:flex; align-items:center; justify-content:center;
   width:32px; height:32px; padding:0;
-  border:1px solid transparent; border-radius:8px; background:none; color:var(--ink2); cursor:pointer;
+  border:0; border-radius:0; background:none; color:var(--ink2); cursor:pointer;
   font:inherit; }
-.dirtab:hover { background:var(--panel2); color:var(--ink); }
+.dirtab:hover { color:var(--ink); }
 .dirtab:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-.dirtab.active { border-color:color-mix(in srgb, var(--accent) 45%, var(--line));
-  background:color-mix(in srgb, var(--accent) 12%, var(--panel)); color:var(--accent); }
+.dirtab.active { color:var(--accent); }
 .dirtab.active::before { content:""; position:absolute; left:-5px; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
 .dirtab svg { width:18px; height:18px; display:block; }
@@ -436,16 +559,53 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    page scrolls itself; a view that wants the full-height tab shell adds
    `.surface` and hands scrolling to its own body (that geometry lives in
    styles.css, beside the panes that read it), so it keeps its clip. */
-#shell main#root { grid-column:2; min-width:0; min-height:0; }
-#agent-rail { grid-column:3; }
+#shell main#root { grid-column:2; min-width:0; min-height:0;
+  background:var(--panel); border-radius:0 0 10px 10px; }
+/* With the directory rail standing, the work's left corner is the rail's. */
+#view-body:has(#dir-rail:not(:empty)) main#root { border-bottom-left-radius:0; }
+/* The conversation is its own region: a band of page between it and the work,
+   never a seam drawn on either. */
+#agent-rail { grid-column:3; margin-left:var(--region-gap, 10px); }
+/* ---- the agent rail runs the column's full height ----
+   Beside the work, not between its head and its foot. With the body laid out
+   as a box of its own the toolbar ran on above the rail and the console ran
+   on below it, and the panel sat inset between two bands that overhung it on
+   both ends. Above the phone width the body gives up its box (display:contents)
+   and hands its three columns to the view's grid, so the toolbar and the
+   console span the work's two columns only and the rail takes every row.
+   The first track is stated, never auto: the toolbar spans it, and an auto
+   track would grow to the toolbar's max-content — the same bug the view's
+   single definite track exists to prevent (see #view above). */
+@media (min-width: 761px) {
+  #view { grid-template-columns:0 minmax(0, 1fr) auto; }
+  #view:has(#dir-rail:not(:empty)) { grid-template-columns:var(--dir-rail) minmax(0, 1fr) auto; }
+  #view-body { display:contents; }
+  #toolbar { grid-row:1; grid-column:1 / 3; }
+  /* The directory rail is placed by no rule of its own (it is one column of
+     the shell, stated once, at every width): with every other item placed,
+     the first free cell in the grid is row 2, column 1, and that is its cell. */
+  #shell main#root { grid-row:2; }
+  #agent-rail { grid-row:1 / 4; }
+  #console-region { grid-row:3; grid-column:1 / 3; }
+  /* Nothing above the panel any more, so nothing to clear. Stated on the
+     rail so it outranks the panel's own top below. */
+  #agent-rail .rail-panel { top:0; }
+  /* The full console is out of flow, and an absolutely positioned grid item
+     is boxed by its grid area — row 3, which is 0px tall once the console
+     leaves it. Its area goes back to auto, the whole view, and it stops at
+     the rail's edge rather than running under a panel that now stands the
+     full height beside it. */
+  #console-region[data-size="full"] { grid-row:auto; grid-column:auto; }
+  #view { --agent-rail-space:calc(var(--agent-panel) + var(--agent-strip)); }
+  #view:has(#agent-rail.rail-unpinned), #view:has(#agent-rail.rail-collapsed) { --agent-rail-space:var(--agent-strip); }
+}
 #shell main#root:not(.surface) { overflow-y:auto; }
 
 /* The machine this surface is about went while it was open (core/deviceNotice.js
    mounts it): one line over what that machine last said, naming it. flex:none —
    a full-height surface is a flex column and #tabbody takes the rest. */
 .device-strip { flex:none; background:var(--amber-bg); color:var(--amber);
-  border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent);
-  padding:6px var(--pane-gutter); font-size:12.5px;
+  padding:8px var(--pane-gutter); font-size:12.5px;
   display:flex; align-items:center; gap:8px; }
 /* A machine nothing could reach carries the one thing a reader can do about it
    (Strict P2P Transport Spec, rule 3); one that is merely away carries none. */
@@ -484,7 +644,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-caret { flex:none; font-size:9px; color:var(--dim); }
 .tb-sep { color:var(--line); flex:none; }
 .tb-directories { display:flex; align-self:stretch; align-items:stretch; min-width:0;
-  overflow-x:auto; scrollbar-width:none; margin-left:8px; border-left:1px solid var(--line); }
+  overflow-x:auto; scrollbar-width:none; margin-left:14px; }
 .tb-directories::-webkit-scrollbar { display:none; }
 .tb-directory { flex:none; position:relative; max-width:170px; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; padding:0 10px; border:0;
@@ -495,6 +655,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent-fill, var(--accent)); }
 .tb-directory-menu { display:none; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
+/* The pack ships 24x24, which is twice this row's font — size it here, once. */
+.tb-settings { flex:none; display:flex; align-items:center; padding:4px; border-radius:6px; }
+.tb-settings svg { width:16px; height:16px; display:block; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized
    down from the surface's old primary-button treatment: this is a fact in a
@@ -540,35 +703,35 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   padding:0; cursor:pointer; }
 .tb-scope-switch:hover { text-decoration:underline; }
 .tb-none { font-size:12px; padding:2px 8px 6px; }
-.tbmenu-foot { flex:none; border-top:1px solid var(--line); padding-top:4px; margin-top:4px; }
+.tbmenu-foot { flex:none; padding-top:4px; margin-top:8px; }
 
 
 /* ---- agent rail (right edge of the view body) ----
    The strip is always there and the panel expands to its left, so the rail is
    laid out right-to-left: panel first in the DOM, strip pinned at the edge.
 
-   The seam is one border, and each divide is stated by the surface that BEGINS
-   at it: the panel draws the line between the work and the conversation, the
-   strip draws the line at its own leading edge — which is that same seam
-   whenever the panel is shut. The wrapper draws nothing. It used to carry the
-   seam itself while the panel carried a second rule on its far side, and the
-   two collided wherever an overlay's trailing edge landed on the strip (the
-   phone's panel, the full console): one divide painted twice, with a strip of
-   page beside it rather than the two surfaces touching.
-
-   The strip's border is INSIDE its stated width — the sheet is border-box — so
-   --agent-strip is the single number the strip, the phone's panel and the full
-   console all stop on, and the seam runs unbroken behind all three. */
+   There is no seam to draw any more: the rail is a region of the page, the
+   band of --bg between it and the work is the divide, and neither the strip
+   nor the panel carries a line at its leading edge. (The two used to state one
+   divide between them — the panel's border-left when it stood, the strip's
+   when it was shut — and the pair collided wherever an overlay's trailing edge
+   landed on the strip.) --agent-strip is still the single number the strip,
+   the phone's panel and the full console all stop on. */
 /* position:relative — the rail is the frame its own popover is laid in (below):
    the unpinned panel hangs off the strip's edge, and nothing else in the view
    column is the right thing to measure that from. */
-#agent-rail { display:flex; min-height:0; position:relative; background:var(--bg); }
-/* position:relative — the strip has to be able to rise above the popover's
-   scrim (below): the card is anchored to a bubble, and pressing the bubble
-   beside it has to reach that agent rather than the way out. */
+#view { --agent-panel:min(420px, calc(100vw - 120px)); } /* read by the rail, its panel, and the full console's edge */
+#agent-rail {
+  display:flex; min-height:0; position:relative; background:transparent;
+  width:calc(var(--agent-panel) + var(--agent-strip));
+  transition:width 240ms cubic-bezier(.2,.8,.2,1); }
+#agent-rail.rail-unpinned, #agent-rail.rail-collapsed { width:var(--agent-strip); }
+/* position:relative — the strip rises above the card it anchors, so pressing
+   the bubble beside the open one reaches that agent. */
 .rail-strip { flex:none; width:var(--agent-strip); display:flex; position:relative;
+  margin-left:auto;
   flex-direction:column; align-items:center; gap:8px; padding:10px 0;
-  border-left:1px solid var(--line); overflow-y:auto; }
+  border:0; overflow-y:auto; }
 /* A bubble is the agent: the face it wears, its unread count, and a pulse while
    it is working — the whole state of an agent, legible with the panel shut. */
 .rail-bubble { position:relative; flex:none; width:32px; height:32px; display:grid;
@@ -588,8 +751,17 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble.starting::after { content:""; position:absolute; inset:-3px;
   border-radius:50%; border:1px dashed var(--line3); opacity:.7;
   animation:rail-pulse 2.4s ease-in-out infinite; }
+/* A file held over a bubble: the bubble says it will take it. */
+.rail-bubble.is-dropping { border-color:var(--accent); border-style:solid; color:var(--accent);
+  background:color-mix(in srgb, var(--accent) 16%, var(--panel2));
+  box-shadow:0 0 0 3px var(--accent-soft); }
+.rail-bubble.is-dropping > * { pointer-events:none; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
+.task-completion-toast { position:fixed; z-index:90; max-width:min(320px, calc(100vw - 20px)); max-height:30vh;
+  padding:8px 10px; border:1px solid var(--line2); border-radius:8px;
+  background:var(--panel2); color:var(--ink); box-shadow:0 8px 24px var(--shadow-soft);
+  font:500 12px/1.35 var(--sans); overflow:hidden; overflow-wrap:anywhere; pointer-events:none; }
 @keyframes rail-pulse { 0%,100% { opacity:.55; transform:scale(1); }
   50% { opacity:.15; transform:scale(1.08); } }
 
@@ -624,31 +796,53 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 
 /* The panel: one conversation, or the same agent's screen.
    A column of three — who you are talking to, what was said, and the box you
-   answer in — of which only the middle scrolls. That is what pins the composer
+   answer in — of which only the middle scrolls. It is a region of the page
+   like the work beside it: rounded on all four corners, with the band of --bg
+   above it that the toolbar's slab would otherwise fuse into. That is what pins the composer
    to the bottom edge: the thread runs under it rather than carrying it along,
    and a box grown by what is being typed takes its room from the thread above
    instead of pushing itself off the panel. */
-.rail-panel { flex:none; width:min(420px, calc(100vw - 120px)); position:relative;
+.rail-panel { width:var(--agent-panel); position:absolute; z-index:30;
+  top:var(--region-gap, 10px); bottom:0; right:var(--agent-strip);
   display:flex; flex-direction:column; min-height:0;
-  border-left:1px solid var(--line); }
+  background:var(--panel); border:0; border-radius:10px;
+  opacity:1; transform:none; transform-origin:center right;
+  transition:opacity 160ms cubic-bezier(.2,.8,.2,1),
+    transform 160ms cubic-bezier(.2,.8,.2,1),
+    border-radius 160ms cubic-bezier(.2,.8,.2,1),
+    box-shadow 160ms cubic-bezier(.2,.8,.2,1),
+    background-color 160ms cubic-bezier(.2,.8,.2,1); }
+.rail-panel[aria-hidden="true"], .rail-panel.rail-panel-opening {
+  opacity:0; transform:translateX(10px) scale(.985);
+  pointer-events:none; }
+.rail-panel.rail-panel-concealed { visibility:hidden; }
 /* ---- the conversation, unpinned --------------------------------------------
    The pin in the panel's head (core/pinControl.js, the inbox's own control)
    says which of two things the conversation is. Pinned it is the column above:
    half the frame, beside the work, costing the work its width.
 
-   Unpinned it is a card ON the strip — laid over the work, pointing with a
-   notch at the bubble it was opened from, over a scrim that is also the way out
-   of it. The shape the away inbox wears at the other edge of the frame
+   Unpinned it is a card ON the strip — laid over the work and pointing with a
+   notch at the bubble it was opened from. Outside input remains available, as
+   it does beside the unpinned inbox. The shape the away inbox wears
    (body.inbox-collapsed #inbox-rail, above), turned round to face the strip. */
-.rail-scrim { position:fixed; inset:0; z-index:35; background:var(--scrim); }
-/* Over that scrim: the strip is what the card is anchored TO, so pressing the
-   agent beside the open one re-anchors the card instead of dismissing it. */
 #agent-rail.rail-popover .rail-strip { z-index:37; }
 #agent-rail.rail-popover .rail-panel { position:absolute; z-index:36;
   top:10px; bottom:10px; right:var(--agent-strip); left:auto;
-  width:min(420px, calc(100vw - 120px));
+  width:var(--agent-panel);
   border:1px solid var(--line3, var(--line)); border-radius:10px;
   background:var(--panel); box-shadow:0 18px 48px var(--shadow); }
+/* Card chrome changes with the panel's own 160ms movement. On the first
+   240ms leg the panel keeps the shape it started with while the work takes or
+   gives back the reserved column. */
+#agent-rail[data-panel-transition="popover"][data-panel-transition-phase="layout"] .rail-panel {
+  border:0; border-radius:10px 0 0 10px;
+  background:var(--panel); box-shadow:none; }
+#agent-rail[data-panel-transition="pinned"][data-panel-transition-phase="layout"] .rail-panel {
+  border:1px solid var(--line3, var(--line)); border-radius:10px;
+  background:var(--panel); box-shadow:0 18px 48px var(--shadow); }
+@media (prefers-reduced-motion: reduce) {
+  #agent-rail, .rail-panel { transition:none; }
+}
 /* The notch rides the bubble: core/agentRail.js measures whichever bubble is
    open and writes --rail-anchor, the offset along the panel's edge that points
    at it. Clamped, so a bubble at either end of a long strip still gets a notch
@@ -659,8 +853,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   border-top:1px solid var(--line3, var(--line)); border-right:1px solid var(--line3, var(--line));
   background:var(--panel); }
 
-.rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 9px 8px 14px;
-  min-height:var(--surface-head); border-bottom:1px solid var(--line); background:var(--panel); }
+.rail-head { position:absolute; z-index:5; top:0; right:0; left:0;
+  height:var(--surface-head); min-height:var(--surface-head);
+  display:flex; align-items:center; gap:8px; padding:8px 9px 8px 16px;
+  border:0; border-top-left-radius:inherit; border-top-right-radius:inherit;
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 .rail-harness-icon { flex:none; width:20px; height:20px; display:grid; place-items:center;
   color:var(--ink); }
 .rail-harness-icon svg { display:block; width:20px; height:20px; }
@@ -669,7 +867,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 :root[data-theme="dark"] .rail-harness-icon-light { display:none; }
 :root[data-theme="dark"] .rail-harness-icon-dark { display:block; }
 .rail-who { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; font-size:13.5px; font-weight:600; }
+  white-space:nowrap; font-size:15px; font-weight:650; }
 .rail-mode { flex:none; border:1px solid var(--line); border-radius:6px; background:none;
   font:inherit; font-size:11px; color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
@@ -685,13 +883,14 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    nothing on a tick that says nothing; this is the belt beside it. (Chrome and
    Android honour it; Safari ignores the property and loses nothing.) */
 .rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-anchor:none;
-  padding:14px 16px calc(18px + var(--surface-popover-clearance, 0px));
-  scroll-padding-bottom:var(--surface-popover-clearance, 0px); }
+  padding:calc(var(--surface-head) + 14px) 16px calc(18px + var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px));
+  scroll-padding-top:var(--surface-head);
+  scroll-padding-bottom:calc(var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px)); }
 /* The PTY takes the whole panel: no padding, no scrolling of its own — the
    terminal is its own viewport, and the pane sizes it to this box. The
    composer is gone in TUI mode, so this row is the whole column below the
    head. */
-.rail-body-tui { overflow:hidden; padding:0; }
+.rail-body-tui { overflow:hidden; margin-top:var(--surface-head); padding:0; }
 .rail-body-tui .agentwrap, .rail-body-tui .termpane { height:100%; }
 /* Inside the rail the conversation is a column, not a page: the avatar gutter
    the wide surfaces rule is too much of 400px to give away, and the panel head
@@ -723,11 +922,27 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-harness-choice .rail-harness-icon { width:16px; height:16px; }
 @media (prefers-reduced-motion: reduce) { .rail-harness-choice { transition:none; } }
 
-/* The pinned box. Out of the scroll entirely, so its bottom edge is the
-   panel's. */
-.rail-composer { position:relative; flex:none; padding:9px 14px 13px; border-top:1px solid var(--line);
-  background:var(--panel); }
-.rail-composer .thread-composer { margin-left:0; }
+/* The footer floats over the conversation. Its measured height is reserved in
+   the scroller, so the last message can still move wholly above it. */
+.rail-composer { position:absolute; z-index:4; right:0; bottom:0; left:0; flex:none;
+  max-height:calc(100% - var(--surface-head)); display:flex; flex-direction:column;
+  padding:4px 14px 13px; background:transparent; }
+.rail-composer .thread-composer { flex:1 1 auto; min-height:0; margin-left:0; display:flex; flex-direction:column; overflow:hidden; }
+.rail-composer .chat-recovery { flex:0 1 auto; min-height:0; max-height:80px; overflow-y:auto; }
+.rail-composer .composer { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow:hidden;
+  border:1px solid var(--line); border-radius:12px; background:transparent; }
+.rail-composer .composer::before { content:""; position:absolute; z-index:0; inset:0; border-radius:inherit;
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); pointer-events:none; }
+.rail-composer .composer > :not(.composer-dropmask) { position:relative; z-index:1; }
+.rail-composer .composer > .composer-dropmask { position:absolute; inset:0; z-index:2; }
+.rail-composer .composer:focus-within { border-color:var(--accent);
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.rail-composer .composer textarea { flex:1 1 auto; min-height:36px; max-height:40vh; overflow-y:auto;
+  border:0; border-radius:12px 12px 0 0; padding:9px 11px 1px; background:transparent; box-shadow:none; }
+.rail-composer .composer textarea:focus { border-color:transparent; box-shadow:none; }
+.rail-composer .composer-bar { flex:none; padding:2px 5px 5px; }
+.rail-composer .composer-send,.rail-composer .composer-attach { width:30px; height:30px; }
 /* Growing upward has to stop somewhere, or a pasted paragraph would swallow
    the conversation it is a reply to. Past this the box scrolls its own text.
    The panel is the height of the view column, so 40vh is about 40% of it.
@@ -735,15 +950,17 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    stylesheets land in. */
 .rail-composer .composer textarea { max-height:40vh; }
 .composer-context,.message-viewing-context{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
-.composer-context{padding:7px 8px 0}
+.composer-context{padding:0 2px 5px}
+.rail-composer .composer-context,.rail-composer .composer-tray{flex:0 1 auto;min-height:0;max-height:min(18vh,110px);overflow-y:auto}
+.composer-context[hidden],.composer-tray[hidden],.chat-recovery[hidden]{display:none}
 .message-viewing-context{margin:0 0 7px}
-.viewing-context-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--ink2);font-size:11px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.viewing-context-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 7px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--ink2);font-size:11px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .viewing-context-chip.selection{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,var(--line))}
 .viewing-context-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .viewing-context-chip button{flex:none;border:0;background:none;color:inherit;padding:0;cursor:pointer;font:inherit}
 .viewing-context-detail{position:relative;max-width:100%}
 .viewing-context-detail summary{cursor:pointer;list-style:none}
-.viewing-context-detail pre{max-width:320px;max-height:160px;overflow:auto;margin:5px 0 0;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);white-space:pre-wrap;font-size:11px}
+.viewing-context-detail pre{max-width:320px;max-height:160px;overflow:auto;margin:5px 0 0;padding:7px;border:0;border-radius:6px;background:var(--panel2);color:var(--ink);white-space:pre-wrap;font-size:11px}
 .viewing-context-detail>button{margin-top:4px;border:0;background:none;color:var(--ink2);cursor:pointer;font:inherit;font-size:11px}
 
 .viewing-context-group{position:relative;min-width:0;max-width:100%;font-size:11px}
@@ -756,7 +973,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .viewing-context-count{flex:none}
 .viewing-context-remove{position:absolute;top:1px;right:4px;width:22px;height:22px;padding:0;border:0;border-radius:999px;background:none;color:var(--ink2);cursor:pointer;font:inherit}
 .viewing-context-remove:hover{color:var(--ink);background:var(--line)}
-.viewing-context-file-list{margin:5px 0 0;padding:7px 10px;max-height:160px;overflow:auto;list-style:none;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink2);line-height:18px;overflow-wrap:anywhere}
+.viewing-context-file-list{margin:5px 0 0;padding:7px 10px;max-height:160px;overflow:auto;list-style:none;border:0;border-radius:6px;background:var(--panel2);color:var(--ink2);line-height:18px;overflow-wrap:anywhere}
 /* A row that scrolls sideways rather than wrapping or squeezing what is in it,
    with no scrollbar to show for it. */
 .scrollstrip { overflow-x:auto; scrollbar-width:none; }
@@ -823,18 +1040,28 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-surfaces-viewer { position:absolute; z-index:35; left:10px; right:10px; bottom:100%;
   max-height:min(46vh, 420px); overflow:hidden; margin:0 0 9px;
   display:flex; flex-direction:column;
-  border:1px solid var(--line3); border-radius:10px; background:var(--panel);
-  box-shadow:0 14px 34px var(--shadow); }
+  border:1px solid var(--line3); border-radius:10px; background:transparent;
+  box-shadow:none; }
 .rail-surfaces-viewer[hidden] { display:none; }
 .surface-popover-head { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
   min-height:42px; padding:8px 10px 7px 14px; border-bottom:1px solid var(--line);
   background:var(--panel); }
 .surface-popover-head strong { color:var(--ink); font-size:13.5px; font-weight:600; }
-.surface-popover-kind { color:var(--dim); font-size:11px; }
-.surface-popover-body { min-height:0; overflow-y:auto; }
-.surface-popover-close { margin-left:auto; display:grid; place-items:center; width:28px; height:28px;
-  border:0; border-radius:7px; background:none; color:var(--ink2); cursor:pointer; font:20px/1 var(--sans); }
-.surface-popover-close:hover { background:var(--panel2); color:var(--ink); }
+/* Keep the glass confined to the scrolling body so no blur layer spans the
+   heading or its controls. */
+.surface-popover-body { min-height:0; overflow-y:auto;
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
+.surface-popover-actions { margin-left:auto; display:flex; align-items:center; gap:2px; }
+.surface-history-toggle, .surface-popover-close { position:relative; display:grid; place-items:center; width:28px; height:28px;
+  padding:0; border:0; border-radius:7px; background:none; color:var(--ink2); cursor:pointer; }
+.surface-history-toggle:hover, .surface-popover-close:hover,
+.surface-history-toggle[aria-pressed="true"] { background:var(--panel2); color:var(--ink); }
+.surface-history-toggle svg, .surface-popover-close svg { width:15px; height:15px; }
+.surface-history-count { position:absolute; right:1px; bottom:0; min-width:13px; height:13px; padding:0 2px;
+  display:grid; place-items:center; border-radius:7px; background:var(--panel2); color:var(--ink2);
+  font-size:8px; font-weight:650; font-variant-numeric:tabular-nums; line-height:1; }
+.surface-history-toggle[hidden] { display:none; }
 .surface-workflow-choice { display:inline-flex; align-items:center; gap:5px;
   padding:2px 8px; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
   color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
@@ -899,7 +1126,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-agent-unavailable { color:var(--dim); }
 .surface-agent-fact .surface-row-jump { padding:0; color:var(--accent); }
 .surface-running, .surface-completed-rows { display:flex; flex-direction:column; gap:2px; }
-.surface-completed { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; }
+.surface-completed[open] { margin-top:10px; padding-top:0; }
+.rail-surfaces-viewer .surface-completed-head { display:none; }
 .surface-completed-head { padding:2px 6px; cursor:pointer; color:var(--dim); font-size:10.5px;
   list-style:none; }
 .surface-completed-head::-webkit-details-marker { display:none; }
@@ -953,15 +1181,17 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      read in, and puts the one row that says what every agent is doing where a
      thumb cannot reach it. The strip runs across the foot of the view column
      instead, above whatever the console is showing, and scrolls sideways when
-     there are more agents than fit. It leaves the rail's own box out of the
-     flow — the rail costs the work nothing here — and the strip's leading edge,
-     which is the seam it alone draws, is its top rather than its left. */
-  #agent-rail { position:static; }
+     there are more agents than fit. Its rail box costs the work no width, while
+     the view body reserves its height so controls pinned to a surface's foot
+     stay above it. The strip's leading edge, which is the seam it alone draws,
+     is its top rather than its left. */
+  body:not(.gated) #view-body:has(> #agent-rail:not(:empty)) { padding-bottom:var(--agent-strip); }
+  #agent-rail, #agent-rail.rail-unpinned, #agent-rail.rail-collapsed { position:static; width:0; transition:none; }
   .rail-strip { position:absolute; z-index:31;
     left:0; right:0; bottom:var(--console-space);
     width:auto; height:var(--agent-strip);
     flex-direction:row; align-items:center; gap:10px; padding:0 10px;
-    border-left:0; border-top:1px solid var(--line); background:var(--bg);
+    border:0; background:var(--panel); border-radius:10px;
     overflow-x:auto; overflow-y:hidden; }
 
   /* And the panel is laid over the work rather than beside it, over the VIEW
@@ -972,9 +1202,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      instead of past it. Standing on the strip is what keeps the composer at its
      foot, and the Done control in its head, clear of the bubbles. */
   .rail-panel { position:absolute; left:0; right:0;
-    top:calc(var(--toolbar-h) + 1px); bottom:calc(var(--console-space) + var(--agent-strip));
-    z-index:30; width:auto; background:var(--bg);
+    top:var(--toolbar-h); bottom:calc(var(--console-space) + var(--agent-strip));
+    z-index:30; width:auto; background:var(--panel); border-radius:10px;
     box-shadow:0 8px 24px var(--shadow-soft); }
+  .rail-panel[aria-hidden="true"], .rail-panel.rail-panel-opening {
+    transform:translateY(10px) scale(.985); }
   /* Unpinned, the same room read as a card: it sits ABOVE the strip and points
      down at the bubble it was opened from, because that is where the strip is
      now. Its height clears everything its bottom stands on AND the toolbar it
@@ -996,15 +1228,25 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    sizes are one element changing height, so the panel grows and shrinks rather
    than appearing — and at `full` it leaves the grid entirely and overlays the
    work, which is what "overlay" has to mean in a column whose rows are fixed. */
-#console-region { flex:none; border-top:1px solid var(--line); background:var(--bg);
+/* A region of the page like the others: its own fill, a radius, and the band
+   of --bg above it instead of a rule. */
+#console-region { flex:none; border:0; background:var(--panel);
+  margin-top:var(--region-gap, 10px); border-radius:10px;
   height:var(--console-bar); transition:height .16s ease; }
 #console-region[data-size="half"] { height:var(--console-half); }
-/* The overlay clears two things it must never cover: the toolbar (and its
-   rule), which says where you are standing, and the bubble strip, which says
+/* The overlay clears two things it must never cover: the toolbar, which says
+   where you are standing, and the bubble strip, which says
    what every agent on this work item is doing. */
 #console-region[data-size="full"] { position:absolute; left:0; right:var(--agent-strip);
-  top:calc(var(--toolbar-h) + 1px); bottom:0; height:auto; z-index:34;
+  top:var(--toolbar-h); bottom:0; height:auto; margin:0; z-index:34;
   box-shadow:0 -8px 24px var(--shadow-soft); }
+/* Beside a rail that stands the full height of the column, the overlay stops
+   at the rail's edge with the region's band of page between, rather than
+   running under the panel. Stated after the rule above on purpose: same
+   specificity, so only source order lets this edge win. */
+@media (min-width: 761px) {
+  #console-region[data-size="full"] { right:calc(var(--agent-rail-space) + var(--region-gap)); }
+}
 /* A phone runs the strip across the column's foot instead of down its edge, so
    the overlay stops on the strip's top rather than on its left. Same selector,
    so the media query buys no specificity: it holds because it is written after
@@ -1037,9 +1279,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    right edge over the tabs that scroll under it, so the way to open another
    shell is in the same place whatever the strip is showing. */
 .console-tabs { display:flex; align-items:center; gap:2px; min-width:0; flex:1 1 auto;
-  background:var(--bg); }
+  background:var(--panel); }
 .console-tabs .console-new { position:sticky; right:0; flex:none;
-  background:var(--bg); padding-left:6px; }
+  background:var(--panel); padding-left:6px; }
 .console-tabs .console-new:hover { color:var(--ink2); background:var(--line2); }
 .console-tab { display:flex; align-items:center; gap:2px; flex:none;
   border-radius:6px; padding-right:4px; }

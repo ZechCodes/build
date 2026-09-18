@@ -19,6 +19,7 @@ import { confirmAction } from "../core/confirm.js";
 import { createFileViewerState, encodeBase64Text, fileModeTrayHtml, fileViewerModes } from "../core/fileViewer.js";
 import { mountFileEditor } from "../core/fileEditor.js";
 import { captureFileSelection } from "../core/fileSelection.js";
+import { mountMeasuredHeight } from "../core/measuredInset.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
 
@@ -161,9 +162,16 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   const treeEl = body.querySelector("#ftree");
   const treeListEl = body.querySelector(".ftree-list");
   const previewEl = body.querySelector("#fpreview");
+  let stopPreviewHeadMeasurement = () => {};
+  const measurePreviewHead = () => {
+    stopPreviewHeadMeasurement();
+    const head = previewEl.querySelector(".fphead");
+    stopPreviewHeadMeasurement = mountMeasuredHeight(head, previewEl, "--file-preview-head");
+  };
   // The placeholder states render container-less (no panel box), centered in
   // the preview area; only a loaded file gets the bordered panel back.
   const showPlaceholder = (kind, message, hint) => {
+    stopPreviewHeadMeasurement();
     previewEl.classList.add("idle");
     previewEl.innerHTML = previewPlaceholderHtml(kind, message, hint);
   };
@@ -507,6 +515,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     previewEl.innerHTML = `
       <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${tray}${actions}</div>
       <div class="fpbody file-reading-layer"></div><div class="fpbody file-editor-layer"></div>`;
+    measurePreviewHead();
     previewEl.querySelectorAll("[data-file-mode]").forEach((button) => {
       button.onclick = () => {
         if (editor) viewerState.edit(viewerState.snapshot().value, editor.selection());
@@ -544,6 +553,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
       disposed = true;
       treeRequest += 1;
       fileRequest += 1;
+      stopPreviewHeadMeasurement();
       editor?.dispose();
       viewingContext?.clear?.();
       document.removeEventListener("selectionchange", onDocumentSelectionChange);

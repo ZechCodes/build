@@ -12,8 +12,13 @@
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
-import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
+import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE_OFF, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
 import { clashingNames, dimDeviceHtml } from "./inbox.js";
+
+/** What a block says instead of its machine's name when that machine cannot be
+ *  asked anything: the reader's question about such a block is never "which
+ *  laptop" but "why is nothing in here moving". */
+export const OFFLINE_TAG = "Offline";
 
 /** What a project is called: its name, or the bare id when the device has
  *  given it none. Minted here and read everywhere — the clash set, the block
@@ -25,9 +30,11 @@ export const projectNameOf = (project) => project.name || project.id;
  *  inbox normalized it to. Read here so the rest of this module never asks. */
 const bareProjectIdOf = (row) => row.project_id || row.projectId || "";
 
-/** The blocks' identity and names: every device's projects in the order they
- *  arrived, plus one for any project a row names that its device has not
- *  listed — the row is still work, and it is still somewhere. Work rows and
+/** The blocks' identity and names: every device's projects, plus one for any
+ *  project a row names that its device has not listed — the row is still work,
+ *  and it is still somewhere. The final blocks are ordered by name after every
+ *  device is merged, so a machine's arrival order never partitions the rail.
+ *  Work rows and
  *  workspace rows are named the same way, because they name the same projects.
  *
  *  Keyed by the account-wide project key, never the bare id: both machines call
@@ -67,10 +74,13 @@ function workspaceBlockFor(project, grouped, tag, activeWorkspaceKey) {
  *  project key and never by a name or a bare id: two machines each mint a
  *  `proj-1`, and two projects may share a name — which is what the device tag
  *  on the head is for. */
-export function workspaceProjectBlocks(entries = [], projects = [], activeWorkspaceKey = null, devices = []) {
+export function workspaceProjectBlocks(entries = [], projects = [], activeWorkspaceKey = null, devices = [], offlineDeviceIds = null) {
   const named = projectsNamed(projects, entries);
-  const tags = deviceTags([...named.values()], devices);
-  const blocks = [...named.values()].map((project) =>
+  const tags = deviceTags([...named.values()], devices, offlineDeviceIds);
+  const blocks = [...named.values()].sort((left, right) =>
+    projectNameOf(left).localeCompare(projectNameOf(right), undefined, { sensitivity: "base" })
+      || left.projectKey.localeCompare(right.projectKey),
+  ).map((project) =>
     workspaceBlockFor(
       project,
       entries.filter((entry) => entry.projectKey === project.projectKey),
@@ -88,27 +98,46 @@ export function workspaceProjectBlocks(entries = [], projects = [], activeWorksp
 const clashingProjectNames = (projects) => clashingNames(projects, projectNameOf);
 
 /** What each project in a set wears to say which device it is on, by project
- *  key: the `{ clash, deviceName }` deviceTagHtml reads. Whether a name needs
- *  its device said is a fact about the whole set, so the set is asked once and
- *  every project reads itself out of that one answer. The rail's blocks and the
- *  toolbar's menu rows are both minted here, so they wear the same tag. */
-export function deviceTags(projects, devices = []) {
+ *  key: the `{ clash, deviceName, offline }` deviceTagHtml reads. Whether a name
+ *  needs its device said is a fact about the whole set, so the set is asked once
+ *  and every project reads itself out of that one answer. The rail's blocks and
+ *  the toolbar's menu rows are both minted here, so they wear the same tag.
+ *
+ *  `offlineDeviceIds` is the set of machines that cannot be asked anything right
+ *  now, and null means the caller is not asking about that at all — the toolbar
+ *  lists projects to go to, not machines to worry about, so its rows are marked
+ *  exactly as they always were. A project whose machine the account's device
+ *  list has never heard of is offline too: nothing can answer for it. */
+export function deviceTags(projects, devices = [], offlineDeviceIds = null) {
   const clashes = clashingProjectNames(projects);
-  const deviceNames = new Map(devices.map((device) => [device.id, device.name]));
+  const known = new Map(devices.map((device) => [device.id, device]));
   return new Map(
     projects.map((project) => [
       project.projectKey,
-      { clash: clashes.has(projectNameOf(project)), deviceName: deviceNames.get(project.deviceId) || null },
+      {
+        clash: clashes.has(projectNameOf(project)),
+        deviceName: known.get(project.deviceId)?.name || null,
+        offline: offlineDeviceIds
+          ? !known.has(project.deviceId) || offlineDeviceIds.has(project.deviceId)
+          : false,
+      },
     ]),
   );
 }
 
 /** The device a project is on, said after its name — only on a name two
  *  devices share, so an account with one device reads exactly as it always has.
- *  Takes anything carrying `{ clash, deviceName }`: the rail's blocks and the
- *  toolbar's menu rows both wear it, and they wear the same tag. */
+ *  Takes anything carrying `{ clash, deviceName, offline }`: the rail's blocks
+ *  and the toolbar's menu rows both wear it, and they wear the same tag.
+ *
+ *  A project whose machine is away says so ALWAYS, clash or no clash. Which
+ *  laptop holds it stops being the useful fact the moment none of them can
+ *  answer: what the reader needs to know is why the block is inert, and
+ *  "Offline" is that in one word. */
 export function deviceTagHtml(project) {
-  if (!project || !project.clash) return "";
+  if (!project) return "";
+  if (project.offline) return dimDeviceHtml(OFFLINE_TAG);
+  if (!project.clash) return "";
   return dimDeviceHtml(project.deviceName);
 }
 
@@ -142,6 +171,25 @@ function foldButtonHtml(block, folded) {
   return `<button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.projectKey)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>`;
 }
 
+/**
+ * Put a block away, offered only while the machine holding it cannot answer.
+ *
+ * A machine that is away leaves its projects on the rail for ever: nothing can
+ * refresh them, nothing can be done in them, and an account that has retired a
+ * laptop reads its blocks every day for work it will never pick up again. So an
+ * offline block can be dropped — from the cache, which is all it is once its
+ * machine has gone (core/projectHide.js).
+ *
+ * It is hide, not delete: nothing on the machine is touched, and the project
+ * comes back the moment that machine lists it again. Which is why it is not
+ * offered on a machine that is answering — there it would simply undo itself on
+ * the next tick.
+ */
+const hideButtonHtml = (block) =>
+  block.offline
+    ? `<button class="iconbtn inbox-project-hide" type="button" data-project-hide="${esc(block.projectKey)}" aria-label="Hide project ${esc(block.name)}" title="Hide project">${ICON_EYE_OFF}</button>`
+    : "";
+
 /** The block's head: the fold, the name that opens the project's workspace,
  *  how much inside is waiting, and the + that starts another one. The fold is
  *  disabled on a block with nothing to fold. `ui`: { folded } — the set of
@@ -152,12 +200,12 @@ export function projectHeadHtml(block, ui = {}) {
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
   const title = block.route ? `Open ${block.name}'s workspace` : `${block.name} has no workspace to open`;
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
+  const device = deviceTagHtml(block);
   return `<div class="inbox-project-head">
     ${foldButtonHtml(block, folded)}
-    <button class="${nameClasses}" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}${deviceTagHtml(block)}</button>
+    <button class="${nameClasses}" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}</button>
+    <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${hideButtonHtml(block)}<button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>${create}</span></span>
     ${unread}
-    <button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>
-    ${create}
   </div>`;
 }
 

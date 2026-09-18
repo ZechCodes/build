@@ -50,7 +50,7 @@ async function inspectViewport(width, height) {
   await page.locator("#download").scrollIntoViewIfNeeded();
   await settle(page);
   assert(await page.locator("#download").isVisible(), "installer chooser is reachable");
-  assert(await page.locator('#download a[href="/app/"]').count(), "chooser uses the existing alpha setup flow");
+  assert(await page.locator('#download a[href="/app/"]').count(), "chooser keeps the authenticated pairing flow reachable");
   await page.screenshot({ path: path.join(output, `${width}x${height}-download.png`) });
   assert.deepEqual(errors, [], `browser errors at ${width}×${height}`);
   findings.push({ viewport: [width, height], ...initial, browserErrors: errors });

@@ -5,6 +5,7 @@ import {
   surfacesFingerprint,
   surfacesFromRecord,
   surfacesRecord,
+  surfaceSessionGeneration,
 } from "./surfacesCache.js";
 
 const threadCacheAddress = ({ deviceId, entityId, agentId, conversationId }) => ({
@@ -22,6 +23,7 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
   let persistedSequence = 0;
   let surfacesOnDisk = null;
   let surfacesAnswered = false;
+  let surfaceWriteRevision = 0;
 
   const seedThreadWindow = (record, seededFor) => {
     if (!record || !threadCache.seedWindow(record.value)) return;
@@ -29,10 +31,19 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
     onThreadSeeded(seededFor);
   };
 
-  const seedSurfaces = (record) => {
-    const seen = surfacesFromRecord(record);
+  const sameSurfaceIdentity = (captured, current) =>
+    current
+    && current.deviceId === captured.deviceId
+    && current.entityId === captured.entityId
+    && current.agentId === captured.agentId
+    && surfaceSessionGeneration(current.surfaceSessionGeneration)
+      === surfaceSessionGeneration(captured.surfaceSessionGeneration);
+
+  const seedSurfaces = (record, identity) => {
+    const generation = surfaceSessionGeneration(identity.surfaceSessionGeneration);
+    const seen = surfacesFromRecord(record, generation);
     if (!seen || surfacesAnswered) return;
-    surfacesOnDisk = surfacesFingerprint(seen.surfaces);
+    surfacesOnDisk = surfacesFingerprint(seen.surfaces, generation);
     onSurfacesSeeded(seen);
   };
 
@@ -48,7 +59,7 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
       ]);
       const stillOpen = addressOf();
       if (!stillOpen || stillOpen.agentId !== seededFor) return;
-      seedSurfaces(surfaces);
+      if (sameSurfaceIdentity(identity, stillOpen)) seedSurfaces(surfaces, identity);
       seedThreadWindow(thread, seededFor);
     },
 
@@ -60,13 +71,29 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
       writeCached(threadCacheAddress(identity), window);
     },
 
-    absorbSurfaces(surfaces) {
+    absorbSurfaces(surfaces, generationValue) {
       surfacesAnswered = true;
+      const writeRevision = ++surfaceWriteRevision;
       const identity = addressOf();
-      const arriving = surfacesFingerprint(surfaces);
-      if (!identity || !arriving || arriving === surfacesOnDisk) return;
-      surfacesOnDisk = arriving;
-      writeCached(surfacesCacheAddress(identity), surfacesRecord(surfaces));
+      const generation = surfaceSessionGeneration(generationValue);
+      const arriving = surfacesFingerprint(surfaces, generation);
+      if (!identity || generation !== surfaceSessionGeneration(identity.surfaceSessionGeneration) || !arriving) return;
+      void (async () => {
+        const saved = surfacesFromRecord(
+          await readCached(surfacesCacheAddress(identity)),
+          generation,
+          false,
+        );
+        const current = addressOf();
+        if (writeRevision !== surfaceWriteRevision || !sameSurfaceIdentity(identity, current)) return;
+        const savedFingerprint = saved && surfacesFingerprint(saved.surfaces, saved.generation);
+        if (arriving === surfacesOnDisk || arriving === savedFingerprint) {
+          surfacesOnDisk = arriving;
+          return;
+        }
+        surfacesOnDisk = arriving;
+        await writeCached(surfacesCacheAddress(identity), surfacesRecord(surfaces, generation));
+      })();
     },
 
     reset() {
@@ -75,6 +102,7 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
       persistedSequence = 0;
       surfacesOnDisk = null;
       surfacesAnswered = false;
+      surfaceWriteRevision += 1;
     },
   };
 }

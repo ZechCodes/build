@@ -40,6 +40,12 @@ function providerFamilyForCarrier(providerId) {
   );
 }
 
+/** The family a carrier belongs to — the key a per-harness preference is kept
+ *  under — or the carrier's own name when it belongs to none. */
+export function providerFamilyKey(providerId) {
+  return providerFamilyForCarrier(providerId)?.key || String(providerId || "");
+}
+
 export function providerInSameFamily(providers, providerId) {
   const family = providerFamilyForCarrier(providerId);
   return family?.carriers.find((carrier) =>

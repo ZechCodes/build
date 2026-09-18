@@ -22,6 +22,91 @@ const createRepository = (call = vi.fn(async () => ({}))) => {
 const operationContract = JSON.parse(readFileSync(resolve("../fixtures/api/v1/thread.post.json"), "utf8")).operations;
 
 describe("chat controller ownership", () => {
+  it("restores chat drafts and local chat settings after a reload", () => {
+    const values = new Map();
+    const storage = {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+    };
+    const options = { scope: { accountId: "account-1", deviceId: "device-1" }, call: vi.fn(), storage };
+    const first = createChatRepository(options);
+    const controller = first.controller(address());
+    controller.writeDraft({ body: "survive reload", attachments: [{ path: "uploads/a.png" }] });
+    const provisional = first.provisional("new-agent", { entityId: "run-1", conversationId: "conversation-1" });
+    provisional.setProvisionalChoice({ provider: "codex", model: "gpt-5", effort: "high" });
+    const view = first.railView("branch:p1:main");
+    view.chooseAgent("agent-1");
+    view.setPanelMode("console");
+
+    const reloaded = createChatRepository(options);
+    expect(reloaded.controller(address()).readDraft()).toMatchObject({
+      body: "survive reload",
+      attachments: [{ path: "uploads/a.png" }],
+    });
+    expect(reloaded.railView("branch:p1:main").selectedAgentId()).toBe("agent-1");
+    expect(reloaded.railView("branch:p1:main").panelMode()).toBe("console");
+    expect(reloaded.provisional("new-agent", {
+      entityId: "run-1",
+      conversationId: "conversation-1",
+    }).choice()).toMatchObject({ provider: "codex", requestedModel: "gpt-5", effort: "high" });
+  });
+
+  it("moves a provisional draft to the durable agent address when creation resolves", () => {
+    const values = new Map();
+    const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+    const options = { scope: { key: "device-1" }, call: vi.fn(), storage };
+    const first = createChatRepository(options);
+    const provisional = first.provisional("new:branch:p1:main", {
+      entityId: "run-1", conversationId: "new:branch:p1:main",
+    });
+    provisional.writeDraft({ body: "promote me" });
+    first.resolveProvisional(provisional, address());
+
+    expect(createChatRepository(options).controller(address()).readDraft().body).toBe("promote me");
+  });
+
+  it("gives generated provisional drafts different durable owners", () => {
+    const repository = createRepository();
+    const first = repository.createProvisional({ entityId: "run-1" });
+    const second = repository.createProvisional({ entityId: "run-2" });
+    expect(first.identity.draftId).toContain("run-1");
+    expect(second.identity.draftId).toContain("run-2");
+  });
+
+  it("treats malformed nested storage and a throwing storage implementation as empty", () => {
+    const malformed = {
+      getItem: () => JSON.stringify({ controllers: "bad", railViews: [] }),
+      setItem: vi.fn(),
+    };
+    expect(createChatRepository({ scope: { key: "one" }, call: vi.fn(), storage: malformed })
+      .controller(address()).readDraft().body).toBe("");
+    const unavailable = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
+    const controller = createChatRepository({ scope: { key: "two" }, call: vi.fn(), storage: unavailable }).controller(address());
+    expect(() => controller.writeDraft({ body: "still works" })).not.toThrow();
+    expect(controller.readDraft().body).toBe("still works");
+  });
+
+  it("preserves unrelated chat state written from another tab", () => {
+    const values = new Map();
+    const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+    const options = { scope: { key: "shared-device" }, call: vi.fn(), storage };
+    const firstTab = createChatRepository(options);
+    const secondTab = createChatRepository(options);
+    const firstAddress = address({ entityId: "run-1", agentId: "agent-1", conversationId: "conversation-1" });
+    const secondAddress = address({ entityId: "run-2", agentId: "agent-2", conversationId: "conversation-2" });
+
+    firstTab.controller(firstAddress).writeDraft({ body: "from first tab" });
+    secondTab.controller(secondAddress).writeDraft({ body: "from second tab" });
+    firstTab.railView("branch:first").setPanelMode("console");
+    secondTab.railView("branch:second").chooseAgent("agent-2");
+
+    const reloaded = createChatRepository(options);
+    expect(reloaded.controller(firstAddress).readDraft().body).toBe("from first tab");
+    expect(reloaded.controller(secondAddress).readDraft().body).toBe("from second tab");
+    expect(reloaded.railView("branch:first").panelMode()).toBe("console");
+    expect(reloaded.railView("branch:second").selectedAgentId()).toBe("agent-2");
+  });
+
   it("deep-freezes viewing context at submission and reuses it on retry", async () => {
     const calls = [];
     const context = { version: 1, items: [{ kind: "file", path: "src/a.js" }] };

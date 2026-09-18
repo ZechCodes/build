@@ -176,7 +176,7 @@ describe("the head's rules", () => {
     const rule = shellCss.match(/\.console-tabs \.console-new \{[^}]*\}/)[0];
     expect(rule).toMatch(/position:sticky/);
     expect(rule).toMatch(/right:0/);
-    expect(rule).toMatch(/background:var\(--bg\)/);
+    expect(rule).toMatch(/background:var\(--panel\)/);
   });
 
   it("has no caret left to style", () => {

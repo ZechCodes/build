@@ -113,8 +113,8 @@ impl ScriptedRouter {
         })
         .to_string();
         let handled = self.server.handle_message(&message);
-        // `done` is the one router tool the surface answers itself; every
-        // other one is a question for the daemon.
+        // A terminal message carries the routing report; other calls are
+        // actions for the daemon.
         if let Some(report) = handled.report {
             state.on_router_done(&self.capture_id, report);
             return Ok(Value::Null);
@@ -180,11 +180,11 @@ impl ScriptedRouter {
         }
         self.call(
             state,
-            "done",
+            "post_thread_message",
             json!({
                 "phase": "route",
-                "status": "completed",
-                "summary": "routed the capture",
+                "status": "Complete",
+                "body": "routed the capture",
             }),
         )
         .expect("the router's report is accepted");

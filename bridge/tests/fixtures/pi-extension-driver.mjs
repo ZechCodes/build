@@ -147,21 +147,21 @@ async function latchedMultipleScenario() {
 }
 
 async function realMcpScenario() {
-  const invalidError = await caught({ phase: "build" });
+  const retiredDoneRegistered = tools.has("done");
   let invalidPostError;
   try {
-    await executeTool("post_thread_message", {});
+    await executeTool("post_thread_message", { status: "Waiting" });
     invalidPostError = "unexpected success";
   } catch (error) {
     invalidPostError = error.message;
   }
-  const valid = await execute({
+  const valid = await executeTool("post_thread_message", {
     phase: "build",
-    status: "blocked",
-    summary: "waiting for deterministic input",
+    status: "Blocked",
+    body: "waiting for deterministic input",
   });
   await handlers.get("session_shutdown")();
-  await writeOutput({ invalidError, invalidPostError, valid });
+  await writeOutput({ retiredDoneRegistered, invalidPostError, valid });
 }
 
 async function latchedWriteScenario() {

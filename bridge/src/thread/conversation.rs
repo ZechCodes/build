@@ -579,6 +579,42 @@ impl Thread {
         }
         id
     }
+
+    /// Attach lifecycle status to the exact message that carried it.
+    pub fn mark_agent_message_outcome(
+        &mut self,
+        message_id: &str,
+        outcome: MessageOutcome,
+        body: &str,
+        report: Option<&CompletionReport>,
+    ) -> bool {
+        let Some(index) = self.items.iter().position(|item| {
+            matches!(item, ThreadItem::Message(message) if message.id == message_id && message.role == MessageRole::Agent)
+        }) else {
+            return false;
+        };
+        let sequence = self.next();
+        let ThreadItem::Message(existing) = &self.items[index] else {
+            unreachable!()
+        };
+        let metadata = ItemMetadata::derive(
+            &completion_text(body, report),
+            &existing.links,
+            existing.anchor.as_ref(),
+            &self.scope,
+        );
+        let ThreadItem::Message(message) = &mut self.items[index] else {
+            unreachable!()
+        };
+        message.outcome = Some(outcome);
+        message.body = body.to_string();
+        message.done = outcome == MessageOutcome::Completed;
+        message.completion_report = report.cloned().map(Box::new);
+        message.metadata = metadata;
+        message.updated_sequence = sequence;
+        self.refresh_conversation_summary_from_resident();
+        true
+    }
     pub(super) fn post_message(
         &mut self,
         role: MessageRole,
@@ -1006,6 +1042,27 @@ impl Thread {
             summary.push_str(answer);
         }
         event.outcome = Some(outcome);
+        event.updated_sequence = bumped;
+        true
+    }
+
+    /// Finish the newest active compaction in place, causing cursored clients
+    /// to receive the updated row through its bumped sequence.
+    pub fn resolve_compaction(&mut self, session_id: Option<&str>) -> bool {
+        let found = self.items.iter().rposition(|item| {
+            matches!(item, ThreadItem::Event(event)
+                if event.event == ThreadEventKind::Compaction
+                    && event.session_id.as_deref() == session_id
+                    && event.summary.as_deref() == Some("Compacting"))
+        });
+        let Some(index) = found else {
+            return false;
+        };
+        let bumped = self.next();
+        let ThreadItem::Event(event) = &mut self.items[index] else {
+            return false;
+        };
+        event.summary = Some("Compacted".to_string());
         event.updated_sequence = bumped;
         true
     }

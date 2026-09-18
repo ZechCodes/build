@@ -701,7 +701,9 @@ describe("diff file headers", () => {
     expect(declaration(file.body, "overflow")).toBe("clip");
     expect(declaration(header.body, "position")).toBe("sticky");
     expect(declaration(header.body, "top")).toBe("var(--diff-sticky-top, 0)");
-    expect(declaration(header.body, "background")).toBe("var(--panel)");
+    // .file is a --panel2 slab now, so the glass the head is painted with is
+    // the slab's own tone — not the panel behind it.
+    expect(declaration(header.body, "background")).toBe("var(--panel2)");
     expect(Number(declaration(header.body, "z-index"))).toBeGreaterThan(
       Number(declaration(expandOverlay.body, "z-index")),
     );
@@ -722,14 +724,13 @@ describe("diff file headers", () => {
 // styles/surfaces.css — the columns are the surfaces' own, not the primitive's.
 describe("the tail of a reading column", () => {
   const surfaceRules = () => rulesIn(strippedSurfaces);
-  const COLUMNS = [".gitpane .cdetail-host", ".issueview .ivviewer"];
-
   it("pays its scroll-end room on the tail, not on the column", () => {
-    const [column] = surfaceRules().filter(
-      (rule) => rule.selector.split(",").map((part) => part.trim()).join(",") === COLUMNS.join(","),
-    );
-    expect(column).toBeTruthy();
-    expect(declaration(column.body, "padding-bottom")).toBe("0");
+    const changesColumn = surfaceRules().find((rule) => rule.selector === ".gitpane .cdetail-host");
+    const issueColumn = surfaceRules().find((rule) => rule.selector === ".issueview .ivviewer");
+    expect(changesColumn).toBeTruthy();
+    expect(declaration(changesColumn.body, "padding-bottom")).toBeNull();
+    expect(issueColumn).toBeTruthy();
+    expect(declaration(issueColumn.body, "padding-bottom")).toBe("0");
     // The issue viewer ends on whatever it was written with; the Changes column
     // ends on the keyed stack, which is the one block always at its foot.
     const [tail] = surfaceRules().filter((rule) => rule.selector.includes(":last-child:not(.actionbar)"));
@@ -741,17 +742,21 @@ describe("the tail of a reading column", () => {
     expect(declaration(stack.body, "padding-bottom")).toBe("var(--pane-bottom)");
   });
 
-  it("makes the bar opaque over itself and fades above it", () => {
+  it("gives the bar glass over the content scrolling beneath it", () => {
     // The primitive's gradient fades to nothing across the bar's own box, which
     // puts the hint and whatever is passing under it in the same pixels.
     const [bar] = surfaceRules().filter((rule) => rule.selector.includes("> .actionbar"));
     expect(bar).toBeTruthy();
-    expect(declaration(bar.body, "background")).toBe("var(--bg)");
-    expect(declaration(bar.body, "box-shadow")).toMatch(/var\(--bg\)$/);
+    expect(declaration(bar.body, "background")).toContain("var(--chat-glass-opacity)");
+    expect(declaration(bar.body, "backdrop-filter")).toBe("blur(var(--chat-glass-blur))");
+    expect(declaration(bar.body, "box-shadow")).toBe("none");
     // The changeset's bar lives in the tray it is painted with, and the tray is
     // no box of its own — so the rule names the tray, not the whole column.
     expect(bar.selector).toContain(".gitpane .cstray > .actionbar");
-    expect(bar.selector).toContain(".issueview .ivviewer > .actionbar");
+    const issueBar = surfaceRules().find((rule) => rule.selector === ".issueview .ivviewer > .actionbar");
+    // The fade is mixed from the panel it sits in: under the new near-black
+    // --bg a shell-toned bar would read as a hole in the panel.
+    expect(declaration(issueBar.body, "background")).toBe("var(--panel)");
   });
 });
 
@@ -1022,9 +1027,10 @@ describe("the directory rail", () => {
     for (const rule of rulesFor("#dir-rail")) {
       expect(enclosingAtRule(rule.at)).toBeNull();
     }
-    // The seam with the work is the rail's own, like every other divide in the
-    // shell.
-    expect(declaration(rail.body, "border-right")).toBe("1px solid var(--line3, var(--line))");
+    // The seam with the work is a step in tone, not a line: the rail carries
+    // --panel2 beside the work's --panel and draws no border at all.
+    expect(declaration(rail.body, "border")).toBe("0");
+    expect(declaration(rail.body, "background")).toContain("var(--panel2)");
   });
 
   it("keeps its cells at the head of the column, clear of the phone's bubble strip", () => {
@@ -1085,9 +1091,7 @@ describe("the view column's seam with the agent rail", () => {
     expect(surface).toBeTruthy();
     expect(declaration(surface.body, "margin")).toBe("0");
     expect(sideBorders(surface)).toEqual([]);
-    expect(declaration(surface.body, "padding")).toBe(
-      "0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0",
-    );
+    expect(declaration(surface.body, "padding")).toBe("0 env(safe-area-inset-right, 0px) 0 0");
   });
 
   it("gives each divide one border, stated by the surface that begins at it", () => {
@@ -1095,10 +1099,13 @@ describe("the view column's seam with the agent rail", () => {
     // on the panel inside it is the doubled seam: two rules for one divide,
     // which drift apart the moment either surface moves.
     expect(sideBorders(baseRule("#agent-rail"))).toEqual([]);
-    expect(sideBorders(baseRule(".rail-panel"))).toEqual(["border-left:1px solid var(--line)"]);
-    expect(sideBorders(baseRule(".rail-strip"))).toEqual(["border-left:1px solid var(--line)"]);
-    // Two surfaces, two leading edges, two borders — and no rule anywhere in
-    // the rail draws a trailing one for another surface's edge to land on.
+    expect(sideBorders(baseRule(".rail-panel"))).toEqual(["border:0"]);
+    expect(sideBorders(baseRule(".rail-strip"))).toEqual(["border:0"]);
+    // No divide in the rail is a line any more: the panel separates by its own
+    // --panel fill and radius floating on the shell, and the strip is bare. So
+    // there is nothing to double — and no rule anywhere in the rail draws a
+    // trailing border for another surface's edge to land on either.
+    expect(declaration(baseRule(".rail-panel").body, "background")).toBe("var(--panel)");
     const trailing = ["#agent-rail", ".rail-panel", ".rail-strip"].flatMap((selector) =>
       rulesFor(selector).map((rule) => declaration(rule.body, "border-right")).filter(Boolean),
     );
@@ -1155,13 +1162,12 @@ describe("the view column's seam with the agent rail", () => {
 // The pin in the panel's head says which of two things the conversation is.
 // Pinned it is the column the seam tests above measure — half the frame, beside
 // the work, costing the work its width. Unpinned it is a card ON the strip,
-// pointing with a notch at the bubble it was opened from, over a scrim that is
-// also the way out of it: the shape the away inbox wears at the other edge of
-// the frame, turned round to face the strip.
+// pointing with a notch at the bubble it was opened from while the work around
+// it remains interactive.
 describe("the conversation panel unpinned", () => {
   const POPOVER = "#agent-rail.rail-popover .rail-panel";
 
-  it("floats as a card on the strip's edge, over a scrim", () => {
+  it("floats as a card on the strip's edge without covering the work", () => {
     const card = baseRule(POPOVER);
     expect(card).toBeTruthy();
     expect(declaration(card.body, "position")).toBe("absolute");
@@ -1173,26 +1179,22 @@ describe("the conversation panel unpinned", () => {
     expect(declaration(railBox.body, "position")).toBe("relative");
     expect(enclosingAtRule(railBox.at)).toBeNull();
 
-    const scrim = baseRule(".rail-scrim");
-    expect(declaration(scrim.body, "position")).toBe("fixed");
-    expect(declaration(scrim.body, "inset")).toBe("0");
-    expect(declaration(scrim.body, "background")).toBe("var(--scrim)");
-    // …and it lies under the card it dismisses.
-    expect(Number(declaration(scrim.body, "z-index")))
-      .toBeLessThan(Number(declaration(card.body, "z-index")));
+    expect(baseRule(".rail-scrim")).toBeUndefined();
   });
 
-  it("holds the strip over the scrim, so the next bubble re-anchors the card", () => {
-    // The scrim is what dismisses the card, and it lies over everything under
-    // it — including the row of bubbles the card is anchored to. Pressing
-    // another agent has to reach that agent, not the way out, so the strip
-    // rides above the scrim while the card is open.
+  it("holds the strip over the card so the next bubble re-anchors it", () => {
     const lifted = baseRule("#agent-rail.rail-popover .rail-strip");
     expect(lifted).toBeTruthy();
     expect(Number(declaration(lifted.body, "z-index")))
-      .toBeGreaterThan(Number(declaration(baseRule(".rail-scrim").body, "z-index")));
+      .toBeGreaterThan(Number(declaration(baseRule(POPOVER).body, "z-index")));
     // …which it can only do from a position of its own.
     expect(declaration(baseRule(".rail-strip").body, "position")).toBe("relative");
+  });
+
+  it("anchors every panel beside the strip while the rail changes width", () => {
+    const standing = baseRule(".rail-panel");
+    expect(declaration(standing.body, "position")).toBe("absolute");
+    expect(declaration(standing.body, "right")).toBe("var(--agent-strip)");
   });
 
   it("points its notch at the bubble it was opened from", () => {
@@ -1205,7 +1207,7 @@ describe("the conversation panel unpinned", () => {
     // The same notch the away inbox wears, so the two popovers read as one
     // vocabulary rather than two.
     const inbox = cssRules().find((rule) => rule.selector.includes("#inbox-rail::before"));
-    for (const property of ["transform", "width", "height", "background"]) {
+    for (const property of ["transform", "width", "height"]) {
       expect([property, declaration(notch.body, property)])
         .toEqual([property, declaration(inbox.body, property)]);
     }
@@ -1284,8 +1286,6 @@ describe("the row of heads across a work surface", () => {
       // shared box.
       expect([selector, declaration(rule.body, "display")]).toEqual([selector, "flex"]);
       expect([selector, declaration(rule.body, "align-items")]).toEqual([selector, "center"]);
-      // …and one border under the row, so the shared height is a shared line.
-      expect([selector, declaration(rule.body, "border-bottom")]).toEqual([selector, "1px solid var(--line)"]);
     }
   });
 
@@ -1520,7 +1520,9 @@ describe("the creation sheet", () => {
 // instead — above the console bar, which keeps the very bottom — and the
 // conversation opens above the strip rather than beside it.
 describe("the bubble strip on a phone", () => {
-  const phoneRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === PHONE_QUERY);
+  const phoneRule = (selector) => cssRules().find((rule) =>
+    enclosingAtRule(rule.at) === PHONE_QUERY &&
+    rule.selector.split(",").map((part) => part.trim()).includes(selector));
 
   it("runs across the column's foot instead of down its edge", () => {
     const strip = phoneRule(".rail-strip");
@@ -1533,13 +1535,16 @@ describe("the bubble strip on a phone", () => {
     // More agents than fit scroll sideways rather than squeezing to nothing.
     expect(declaration(strip.body, "overflow-x")).toBe("auto");
     expect(declaration(baseRule(".rail-bubble").body, "flex")).toBe("none");
-    // Each divide is still stated by the surface that begins at it — and the
-    // strip's leading edge is its top now, not its left.
-    expect(declaration(strip.body, "border-left")).toBe("0");
-    expect(declaration(strip.body, "border-top")).toBe("1px solid var(--line)");
+    // On a phone the strip is a floating panel card across the foot — a --panel
+    // fill with a radius over the shell — rather than a bordered edge.
+    expect(declaration(strip.body, "border")).toBe("0");
+    expect(declaration(strip.body, "background")).toBe("var(--panel)");
     // The strip leaves the rail's box out of the flow, so the work keeps the
     // whole width — and the rail's desktop column is untouched.
-    expect(declaration(phoneRule("#agent-rail").body, "position")).toBe("static");
+    const rail = phoneRule("#agent-rail");
+    expect(declaration(rail.body, "position")).toBe("static");
+    expect(declaration(rail.body, "width")).toBe("0");
+    expect(declaration(phoneRule("#agent-rail.rail-unpinned").body, "width")).toBe("0");
     expect(declaration(baseRule("#agent-rail").body, "grid-column")).toBe("3");
   });
 

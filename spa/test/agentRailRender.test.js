@@ -18,20 +18,21 @@ describe("the lead of the pinned status row", () => {
 });
 
 describe("the head's name slot", () => {
-  it("wears the topic, keeps the harness name as the title, and shimmers 'Starting' until there is one", () => {
-    const starting = railWhoHtml("Claude Code 1", { text: "Starting", starting: true });
+  it("wears the topic, hovers it in full, and shimmers 'Starting' until there is one", () => {
+    const starting = railWhoHtml("Claude Code", { text: "Starting", starting: true });
     expect(starting).toContain('class="rail-who rail-who-starting"');
-    expect(starting).toContain('title="Claude Code 1"');
+    // Nothing named yet, so the hover says the harness rather than a number.
+    expect(starting).toContain('title="Claude Code"');
     expect(starting).toContain(">Starting<");
 
-    const named = railWhoHtml("Claude Code 1", { text: "Unify <prompt> delivery", starting: false });
+    const named = railWhoHtml("Unify <prompt> delivery", { text: "Unify <prompt> delivery", starting: false });
     expect(named).toContain('class="rail-who"');
     expect(named).not.toContain("rail-who-starting");
     expect(named).toContain(">Unify &lt;prompt&gt; delivery<");
-    expect(named).toContain('title="Claude Code 1"');
+    expect(named).toContain('title="Unify &lt;prompt&gt; delivery"');
   });
 
-  it("falls back to the harness name when no heading is given", () => {
-    expect(railWhoHtml("Codex TUI 2", null)).toContain(">Codex TUI 2<");
+  it("falls back to the name it was handed when no heading is given", () => {
+    expect(railWhoHtml("Codex TUI", null)).toContain(">Codex TUI<");
   });
 });

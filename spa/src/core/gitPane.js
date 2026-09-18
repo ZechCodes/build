@@ -11,6 +11,8 @@
 // in flight. The pure helpers (poll key, option lists) are exported for unit
 // tests; mountGitPane is the only DOM-touching entry point.
 
+import { workspaceCommentMessages } from "./workspaceCommentMessages.js";
+import { reviewCommentContext } from "./reviewCommentContext.js";
 import { esc } from "./text.js";
 import { directoryCacheId } from "./directoryScope.js";
 import { gitToolbarHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
@@ -55,19 +57,27 @@ import { el } from "../dom.js";
 import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
 import { createReviewPlug } from "./changesReview.js";
+import { mountMeasuredHeight } from "./measuredInset.js";
+import { loadDiffSort, saveDiffSort } from "./diffSort.js";
 
 export const GIT_PANE_POLL_MS = 1600;
 
 /** Workspace directories review everything not represented by their push
  * destination. The plug is created here so every workspace Git pane gets the
  * aggregate without each hosting view having to remember special wiring. */
-export function createWorkspaceReview({ scope, callRpc, navigate = null, viewingContext = null, onBaseChange = () => {} }) {
+export function createWorkspaceReview({ scope, callRpc, navigate = null, viewingContext = null, onBaseChange = () => {}, submit = null }) {
   let base = { kind: "empty", label: null };
   const plug = createReviewPlug({
     navigate,
     viewingContext,
+    submit,
     entity: scope.workspace_id,
     cacheEntity: directoryCacheId(scope),
+    // The surrounding pane already owns the workspace source's push + fast
+    // fallback watcher. Durable workspace ids are not bridge worktree ids, so
+    // a private entity watcher here would stand down to the 60 s safety poll
+    // without ever receiving filesystem pushes.
+    watchDiff: false,
     fetchDiff: async (ifDiffKey) => {
       const payload = await callRpc("git.unpushed", {
         ...scope,
@@ -78,7 +88,7 @@ export function createWorkspaceReview({ scope, callRpc, navigate = null, viewing
         base = payload.base;
         if (changed) onBaseChange();
       }
-      return { ...payload, commentable: false };
+      return { ...payload, commentable: Boolean(submit) };
     },
   });
   return {
@@ -267,7 +277,7 @@ export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
   // A coarse minute bucket: relative commit ages re-render at most once a
   // minute even when the repo itself is untouched.
   const minuteBucket = Math.floor(nowSeconds / 60);
-  return [status.status_key, commits, Boolean(log && log.more), minuteBucket].join("\x03");
+  return [status.status_key, commits, Boolean(log && log.more), String(log?.highlight_key || ""), minuteBucket].join("\x03");
 }
 
 /** What to ask git.status with: the key the pane already holds, so a repo that
@@ -419,8 +429,20 @@ export function mountGitPane(
     viewingContext = null,
   } = {},
 ) {
+  const submitComments = async (messages) => {
+    const destination = agentSelection.scope();
+    if (scope.workspace_id) {
+      const metadata = await callRpc("workspace.get", { workspace_id: scope.workspace_id, ...MUTATION_THREAD_PAGE });
+      messages = workspaceCommentMessages(messages, metadata.workspace || metadata, scope.source_id);
+      const { entity_id } = await callRpc("workspace.ensure_conversation", { workspace_id: scope.workspace_id });
+      if (!entity_id) throw new Error("Workspace conversation is unavailable");
+      await callRpc("thread.post", { entity_id, ...destination, messages, ...MUTATION_THREAD_PAGE });
+    } else {
+      await callRpc("run.request_changes", { run_id: scope.run_id, ...destination, messages, ...MUTATION_THREAD_PAGE });
+    }
+  };
   if (!review && scope?.workspace_id && scope?.source_id) {
-    review = createWorkspaceReview({ scope, callRpc, navigate, viewingContext, onBaseChange: () => render() });
+    review = createWorkspaceReview({ scope, callRpc, navigate, viewingContext, submit: submitComments, onBaseChange: () => render() });
   }
   const parsedDiffs = createParsedDiffCache();
   const viewport = createDiffViewport({ repaint: () => renderAndFetch() });
@@ -430,6 +452,7 @@ export function mountGitPane(
   let bodiesUnpainted = false; // a file body landed while a repaint was held
   let lastStatus = null;
   let lastLog = null; // the poll's first page (limit default)
+  let lastHighlightKey = null; // the remote-publication boundary used to highlight commits
   let lastHead; // undefined until the first poll lands
   let extraCommits = []; // "Show more" pages beyond the poll's first page
   let pagedMore = null; // the last fetched page's `more` (null → use lastLog.more)
@@ -486,6 +509,7 @@ export function mountGitPane(
   // OPEN changeset's files as the stack draws them, which is what a stamp is of.
   let reviewStamps = new Map();
   let renderedViews = [];
+  let sortOrder = loadDiffSort();
   let uncommittedSource = null;
   let uncommittedSourceViews = [];
   let wholePatchIdentity = null;
@@ -493,11 +517,23 @@ export function mountGitPane(
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport drop-down, re-wired per skeleton
+  let stopCommitMeasurement = () => {};
+  let stopToolbarMeasurement = () => {};
   // What the rail was last drawn from — the same parts its trigger names.
   let railParts = { status: null, log: null, selected: null, review: null };
   let paintChangesetInto = null;
   let contextFrame = 0;
   let contextCommit = null;
+
+  const measureCommitHost = (host) => {
+    stopCommitMeasurement();
+    stopCommitMeasurement = mountMeasuredHeight(host, host?.closest(".cdetail"), "--git-commit-height");
+  };
+
+  const measureToolbar = (toolbar) => {
+    stopToolbarMeasurement();
+    stopToolbarMeasurement = mountMeasuredHeight(toolbar, toolbar?.closest(".cdetail"), "--git-toolbar-height");
+  };
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -597,9 +633,8 @@ export function mountGitPane(
     return true;
   };
 
-  // The persistent skeleton: a left rail drives a right pane whose top carries
-  // the toolbar/banner (so the rail runs the pane's full height) and whose
-  // scrolling body is the detail host. The row is the shell's two-column
+  // The persistent skeleton: a left rail drives a right pane whose toolbar and
+  // measured composer float over the full-height scrolling detail host. The row is the shell's two-column
   // primitive, so its width and gutters match every other tab. Each region
   // updates
   // independently so a poll repaint never clobbers the review plug's DOM.
@@ -613,6 +648,8 @@ export function mountGitPane(
           <div class="gp-commit"></div>
         </section>
       </div></div>`;
+    measureCommitHost(container.querySelector(".gp-commit"));
+    measureToolbar(container.querySelector(".gp-toolbar"));
     // The rail is the drawer on a narrow viewport. Both kinds of row it holds —
     // a set of changes, a commit — put something in the detail column behind
     // it, so both close it; the "show more" row, which only lengthens the rail,
@@ -629,6 +666,7 @@ export function mountGitPane(
       summary: () => changesSelectionSummary(railParts),
     });
     container.onclick = handleClick;
+    container.onchange = handleChange;
     container.onkeydown = (event) => {
       if ((event.key === "Enter" || event.key === " ") && event.target.closest(".gitmore")) {
         event.preventDefault();
@@ -648,7 +686,7 @@ export function mountGitPane(
   // Disagreeing with the pass. Only a run has a pass to disagree with (and a
   // run_id to name in the RPC), so a bare worktree or the primary checkout
   // mounts none and its stack draws no offers.
-  const overrides = commentsSupported(scope)
+  const overrides = scope?.run_id
     ? createTriageOverrides({
         post: ({ hunk_id, direction, note }) => {
           if (!triageEnabled()) throw new Error("Review prioritization is turned off.");
@@ -682,14 +720,13 @@ export function mountGitPane(
         submit: async (messages) => {
           const reviewedChangeset = selected;
           const reviewedViews = renderedViews;
-          const destination = agentSelection.scope();
-          const context = viewingContext?.snapshot?.();
-          await callRpc("run.request_changes", {
-            run_id: scope.run_id,
-            ...destination,
-            messages: context ? messages.map((message) => ({ ...message, viewing_context: context })) : messages,
-            ...MUTATION_THREAD_PAGE,
+          const context = reviewCommentContext({
+            paths: renderedViews.map((file) => file.path), selected: marks.selected,
+            mode: selected === "uncommitted" ? "uncommitted" : null,
+            commit: selected === "uncommitted" ? null : selected,
+            snapshot: viewingContext?.snapshot?.(),
           });
+          await submitComments(messages.map((message) => ({ ...message, viewing_context: context })));
           viewingContext?.clearSelectionIfMatches?.(context);
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
@@ -708,7 +745,7 @@ export function mountGitPane(
    *  primary checkout renders the plain stack it always did. The pass is read
    *  fresh on every paint — a re-triage lands under this pane while it is open. */
   const triageOverlay = (patch) => {
-    if (!commentsSupported(scope) || !triageEnabled()) return null;
+    if (!scope?.run_id || !triageEnabled()) return null;
     return {
       triage: currentTriage(),
       patch: patch || "",
@@ -767,15 +804,17 @@ export function mountGitPane(
       review: patch === null ? null : triageOverlay(patch),
     });
     if (selected === "uncommitted") {
+      sortOrder = loadDiffSort();
       renderedViews = hasUncommittedChanges(lastStatus) ? uncommittedViews() : [];
       // The file's own destructive verb lives behind the header ⋯ — the stage
       // checkboxes it replaced are gone with the staged set.
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
       paintChangeset(detailHost, {
-        bar: uncommittedHeaderHtml(lastStatus),
+        bar: uncommittedHeaderHtml(lastStatus, { sortOrder }),
         views: renderedViews,
         stackOptions: {
           ...stackFor(renderedViews, uncommittedWholePatch()),
+          sortOrder,
           fileMenu,
           bodyOf: fileDiffs.bodyOf,
           empty: "No uncommitted changes.",
@@ -902,9 +941,17 @@ export function mountGitPane(
         readDraft: () => resolveCommitDraft(null, commitDraftStash, draftKey),
         // Every keystroke lands in the stash so tab switches and view-shell
         // rebuilds (which remount the pane from scratch) restore the draft.
-        writeDraft: (value) => syncCommitDraft(commitDraftStash, draftKey, value),
+        writeDraft: (value) => {
+          syncCommitDraft(commitDraftStash, draftKey, value);
+          // `runWith` writes the stash before it clears the live textarea; wait
+          // one microtask so the plug's busy check sees the final field value.
+          queueMicrotask(() => {
+            if (!disposed && reviewMounted) review?.resumeRefresh?.();
+          });
+        },
       });
     else composer.refresh();
+    if (reviewMounted) review?.resumeRefresh?.();
     setHint(hint); // the box the refresh may have rebuilt has no hint in it yet
     // A repaint during an in-flight action must not resurrect an enabled button
     // (double-fire) — leave it disabled until the RPC settles.
@@ -1058,7 +1105,10 @@ export function mountGitPane(
 
   const paintFrom = (status, log) => {
     lastStatus = status;
-    if (log) lastLog = log;
+    if (log) {
+      lastLog = log;
+      lastHighlightKey = log.highlight_key ?? null;
+    }
     // A content refresh clears any stale armed confirm (the file/state it named
     // may be gone) — matching "any repaint resets the pending confirm".
     clearConfirm();
@@ -1481,6 +1531,14 @@ export function mountGitPane(
     if (event.target.closest(".gitmore")) showMore();
   };
 
+  function handleChange(event) {
+    const select = event.target.closest?.(".diffsort-select");
+    if (!select || reviewMounted) return;
+    sortOrder = select.value;
+    saveDiffSort(sortOrder);
+    renderAndFetch();
+  }
+
   /** A permanent scope rejection replaces the pane body (there is nothing to
    *  retry: the task/project this scope named no longer resolves). */
   const renderScopeError = (message) => {
@@ -1490,6 +1548,8 @@ export function mountGitPane(
       review.unmount(); // its host is about to be wiped with the skeleton
       reviewMounted = false;
     }
+    stopCommitMeasurement();
+    stopToolbarMeasurement();
     container.innerHTML = `<div class="gitpane"><div class="empty giterror">${esc(message)}</div></div>`;
   };
 
@@ -1501,7 +1561,7 @@ export function mountGitPane(
     Boolean(pendingConfirm) ||
     fileMenuPath !== null ||
     Boolean(container.querySelector(".splitmenu:not([hidden])")) ||
-    Boolean(commentLayer && commentLayer.busy());
+    Boolean(commentLayer && commentLayer.repaintBusy());
 
   /** Whether the pane must keep its hands off the DOM right now — asked by every
    *  paint the pane does on its own initiative, not just the poll's. */
@@ -1537,7 +1597,13 @@ export function mountGitPane(
       extraCommits = []; // HEAD moved — the paged-in history is stale
       pagedMore = null;
     }
+    const highlightKey = log.highlight_key ?? null;
+    if (lastLog && highlightKey !== lastHighlightKey) {
+      extraCommits = []; // the paged rows carry the old publication highlight
+      pagedMore = null;
+    }
     lastHead = status.head;
+    lastHighlightKey = highlightKey;
     lastStatus = status;
     lastLog = log;
     // Every live poll writes the shape through as received: it carries no patch
@@ -1596,6 +1662,7 @@ export function mountGitPane(
     lastHead = cachedStatus.head;
     lastStatus = cachedStatus;
     lastLog = cachedLog;
+    lastHighlightKey = cachedLog.highlight_key ?? null;
     if (selected === undefined) selected = defaultSelection();
     renderAndFetch();
   };
@@ -1606,8 +1673,17 @@ export function mountGitPane(
   // moves — the git watcher stales a run the instant files land in it. A
   // project's own checkout is not an entity the bridge names, and its state
   // moves with the feed, so that scope watches the board instead.
+  const refreshCheckout = () => {
+    poll();
+    // A mounted workspace aggregate deliberately has no private watcher: the
+    // workspace source already stays on this fast path because its durable id
+    // is not a bridge worktree entity. Trigger its serialized conditional read
+    // from the same push/tick, even when HEAD and the visible commit page stay
+    // unchanged.
+    if (scope.workspace_id && reviewMounted) review?.refreshDiff?.();
+  };
   const watcher = watchChanges({
-    refresh: poll,
+    refresh: refreshCheckout,
     intervalMs: GIT_PANE_POLL_MS,
     entity: scope.workspace_id || scope.run_id || scope.worktree_id || null,
     // A workspace source is watched at its own cadence rather than standing
@@ -1625,6 +1701,8 @@ export function mountGitPane(
   return {
     dispose() {
       disposed = true;
+      stopCommitMeasurement();
+      stopToolbarMeasurement();
       watcher.dispose();
       editedTimeWatcher.dispose();
       document.removeEventListener("pointerdown", onOutsidePointerDown);
@@ -1650,6 +1728,7 @@ export function mountGitPane(
       if (commentLayer) commentLayer.dispose();
       if (overrides) overrides.dispose();
       container.onclick = null;
+      container.onchange = null;
     },
   };
 }

@@ -13,8 +13,22 @@
 // the view's draft, not the DOM's.
 
 import { esc } from "./text.js";
-import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_SQUARE, ICON_X } from "./icons.js";
+import {
+  ICON_ARROW_RIGHT,
+  ICON_FILE,
+  ICON_FILE_ARCHIVE,
+  ICON_FILE_AUDIO,
+  ICON_FILE_CODE,
+  ICON_FILE_IMAGE,
+  ICON_FILE_SPREADSHEET,
+  ICON_FILE_TEXT,
+  ICON_FILE_VIDEO,
+  ICON_PAPERCLIP,
+  ICON_SQUARE,
+  ICON_X,
+} from "./icons.js";
 import { menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
+import { setMotionRowHtml } from "./motion.js";
 import {
   modelMenuLabel,
   modelMenuSelection,
@@ -53,7 +67,10 @@ export function isImageAttachment(mime) {
 /// Files win over text whenever the clipboard holds any: a screenshot copied
 /// out of a viewer carries its own filename as text too, and pasting that
 /// filename is never what was meant. Some sources expose the image only as a
-/// clipboard ITEM rather than a file, so both are read.
+/// clipboard ITEM rather than a file, so both are read — and one image the
+/// clipboard offers both ways is still one image. `getAsFile()` hands back a
+/// fresh File object each call (Chromium on Linux does), so identity cannot
+/// say two are the same; what a file is called, weighs, and is can.
 // eslint-disable-next-line complexity -- ratchet: pasteIntent is at 13, cap 10 — reduce it, then drop this line
 export function pasteIntent(clipboardData) {
   if (!clipboardData) return { files: [], asFile: null };
@@ -61,12 +78,17 @@ export function pasteIntent(clipboardData) {
   for (const item of clipboardData.items || []) {
     if (item.kind !== "file") continue;
     const file = item.getAsFile && item.getAsFile();
-    if (file && !files.includes(file)) files.push(file);
+    if (file && !files.some((held) => sameFile(held, file))) files.push(file);
   }
   if (files.length) return { files, asFile: null };
   const text = clipboardData.getData ? clipboardData.getData("text/plain") || "" : "";
   return { files: [], asFile: text.length > LARGE_PASTE_CHARS ? text : null };
 }
+
+/// Whether two File objects describe the same bytes, as far as a paste can
+/// tell without reading them.
+const sameFile = (a, b) =>
+  a === b || (a.name === b.name && a.size === b.size && a.type === b.type && a.lastModified === b.lastModified);
 
 /// A pasted wall of text, named so the reviewer can tell two of them apart.
 export function largePasteFile(text, ordinal) {
@@ -94,7 +116,7 @@ export function base64OfDataUrl(dataUrl) {
 const chipHtml = (entry, index) => {
   const thumb = isImageAttachment(entry.mime) && entry.dataUrl
     ? `<img class="composer-chip-thumb" src="${esc(entry.dataUrl)}" alt="">`
-    : `<span class="composer-chip-glyph" aria-hidden="true">${esc(extensionLabel(entry.name))}</span>`;
+    : attachmentGlyphHtml(entry.name, entry.mime, "composer-chip-glyph");
   const note = entry.status === "uploading"
     ? "Attaching…"
     : entry.status === "failed"
@@ -110,12 +132,72 @@ const chipHtml = (entry, index) => {
   </div>`;
 };
 
+/// The extension a name ends in, lower-case, or "" for none.
+function extensionOf(name) {
+  const dot = String(name || "").lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
 /// The three or four characters that say what a file is when there is no
 /// thumbnail to show — its extension, or a generic mark.
 function extensionLabel(name) {
-  const dot = String(name || "").lastIndexOf(".");
-  const extension = dot > 0 ? name.slice(dot + 1) : "";
+  const extension = extensionOf(name);
   return extension && extension.length <= 4 ? extension.toUpperCase() : "FILE";
+}
+
+const CODE_EXTENSIONS = new Set([
+  "js", "mjs", "cjs", "jsx", "ts", "tsx", "py", "rb", "rs", "go", "java", "kt", "swift", "c", "h", "cc", "cpp",
+  "hpp", "cs", "php", "sh", "bash", "zsh", "fish", "ps1", "sql", "html", "htm", "css", "scss", "less", "vue",
+  "svelte", "lua", "pl", "r", "scala", "ex", "exs", "erl", "hs", "ml", "clj", "dart", "zig", "nim", "toml",
+  "yaml", "yml", "json", "jsonl", "xml", "ini", "cfg", "conf", "env", "dockerfile", "makefile", "nix", "tf",
+]);
+const ARCHIVE_EXTENSIONS = new Set(["zip", "tar", "gz", "tgz", "bz2", "xz", "zst", "7z", "rar", "jar", "whl"]);
+const SHEET_EXTENSIONS = new Set(["csv", "tsv", "xls", "xlsx", "ods", "numbers"]);
+const TEXT_EXTENSIONS = new Set(["txt", "md", "markdown", "rst", "log", "pdf", "doc", "docx", "rtf", "odt", "tex"]);
+
+/// The kinds a file can be read as, in the order they are tried: a type the
+/// browser is sure of first, then the name, because a bridge or a browser
+/// often only knows `application/octet-stream`.
+const KIND_RULES = [
+  ["image", (type) => type.startsWith("image/")],
+  ["video", (type) => type.startsWith("video/")],
+  ["audio", (type) => type.startsWith("audio/")],
+  ["archive", (type, extension) => ARCHIVE_EXTENSIONS.has(extension) || /zip|tar|compressed|archive/.test(type)],
+  ["sheet", (type, extension) => SHEET_EXTENSIONS.has(extension) || /spreadsheet|csv|excel/.test(type)],
+  ["code", (type, extension) => CODE_EXTENSIONS.has(extension) || /json|xml|javascript|yaml/.test(type)],
+  ["text", (type, extension) => TEXT_EXTENSIONS.has(extension) || type.startsWith("text/") || type === "application/pdf"],
+];
+
+/// What kind of thing a file is, from its type and its name: one of image,
+/// video, audio, archive, sheet, code, text, or file.
+export function attachmentKind(name, mime) {
+  const type = String(mime || "").toLowerCase();
+  const extension = extensionOf(name);
+  const match = KIND_RULES.find(([, fits]) => fits(type, extension));
+  return match ? match[0] : "file";
+}
+
+const KIND_ICON = {
+  image: ICON_FILE_IMAGE,
+  video: ICON_FILE_VIDEO,
+  audio: ICON_FILE_AUDIO,
+  archive: ICON_FILE_ARCHIVE,
+  sheet: ICON_FILE_SPREADSHEET,
+  code: ICON_FILE_CODE,
+  text: ICON_FILE_TEXT,
+  file: ICON_FILE,
+};
+
+/// The tile that stands for a file with no thumbnail: an icon for its kind,
+/// with its extension on the tile so `.ts` and `.py` do not wear the same face.
+/// Shared by the composer's tray and the conversation's sent files, so a file
+/// looks the same before and after it is sent.
+export function attachmentGlyphHtml(name, mime, className = "attachment-glyph") {
+  const kind = attachmentKind(name, mime);
+  const tag = extensionLabel(name);
+  return `<span class="${esc(className)} attachment-glyph" data-kind="${esc(kind)}" aria-hidden="true">${KIND_ICON[kind]}${
+    tag === "FILE" ? "" : `<span class="attachment-glyph-tag">${esc(tag)}</span>`
+  }</span>`;
 }
 
 /// Ids for the parts a caller never names itself, derived from the input's own
@@ -159,9 +241,9 @@ export function composerHtml({
        <button type="button" class="composer-attach" id="${esc(parts.attach)}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>`
     : "";
   return `<div class="thread-composer">
+    <div class="composer-context" id="${esc(parts.context)}" hidden></div>
+    ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
     <div class="composer${attachable ? " attachable" : ""}">
-      <div class="composer-context" id="${esc(parts.context)}" hidden></div>
-      ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
       <textarea id="${esc(inputId)}" rows="1" placeholder="${esc(placeholder)}"></textarea>
       <div class="composer-bar">
         ${modelMenu ? `<div class="composer-choice-controls">
@@ -169,7 +251,6 @@ export function composerHtml({
           <div class="composer-reasoning" id="${esc(parts.reasoningMenu)}"></div>
         </div>` : ""}
         <span class="hint" id="${esc(hintId)}"></span>
-        <span class="composer-shortcut" aria-hidden="true">⌘↵</span>
         <div class="composer-actions">
           ${attachControls}
           <div class="composer-send-control" id="${esc(parts.sendControl)}">${sendControlHtml({ sendId, canInterrupt })}</div>
@@ -221,13 +302,13 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
     modelSlot.innerHTML = menuButtonMarkup(
       modelMenuLabel(catalog, provider, { ...choice, effort: "" }, activeModel),
       modelSelectorOptions(catalog, provider, choice),
-      { title: modelMenuTitle(catalog, provider, choice, activeModel) },
+      { title: modelMenuTitle(catalog, provider, choice, activeModel), arrow: false },
     );
     closeModelMenu = mountSplitMenu(modelSlot, { onChoose: choose }).closeMenu;
     const reasoningOptions = reasoningSelectorOptions(catalog, provider, choice, activeModel, activeEffort);
     reasoningSlot.hidden = reasoningOptions.length === 0;
     reasoningSlot.innerHTML = reasoningOptions.length
-      ? menuButtonMarkup(reasoningSelectorLabel(catalog, provider, choice, activeModel, activeEffort), reasoningOptions, { title: "Reasoning level for the next turn" })
+      ? menuButtonMarkup(reasoningSelectorLabel(catalog, provider, choice, activeModel, activeEffort), reasoningOptions, { title: "Reasoning level for the next turn", arrow: false })
       : "";
     closeReasoningMenu = reasoningOptions.length
       ? mountSplitMenu(reasoningSlot, { onChoose: choose }).closeMenu
@@ -278,9 +359,8 @@ export function mountComposerAttachments(root, {
   };
 
   const render = () => {
-    tray.hidden = entries.length === 0;
-    tray.innerHTML = entries.map(chipHtml).join("");
-    tray.querySelectorAll(".composer-chip-remove").forEach((button) => {
+    setMotionRowHtml(tray, entries.map(chipHtml).join(""));
+    tray.querySelectorAll(":scope > .composer-chip .composer-chip-remove").forEach((button) => {
       button.onclick = () => {
         entries = entries.filter((_, index) => index !== Number(button.dataset.index));
         persist();

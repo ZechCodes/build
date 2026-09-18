@@ -228,6 +228,23 @@ describe("openPeerLink", () => {
     expect(peer.closed).toBe(false); // the same channels keep carrying
   });
 
+  it("publishes bounded recovery epochs around an in-place ICE restart", async () => {
+    const { peer, resolved } = await upgrade();
+    const states = [];
+    const unsubscribe = resolved.recovery.subscribe((state) => states.push(state));
+
+    peer.fail();
+    await tick();
+    await tick();
+
+    expect(states).toEqual([
+      { epoch: 1, recovering: true },
+      { epoch: 2, recovering: false },
+    ]);
+    expect(resolved.recovery.snapshot()).toEqual({ epoch: 2, recovering: false });
+    unsubscribe();
+  });
+
   it("does not report a restart restored while stale channels are open but the peer is not connected", async () => {
     const restored = [];
     const { peer } = await upgrade({ onConnected: () => restored.push("up") });

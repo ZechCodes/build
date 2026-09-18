@@ -16,7 +16,7 @@ const KIND_LABELS = {
   [WORKFLOW_ENTRY_KIND]: "Workflows",
   [AGENT_ENTRY_KIND]: "Agents",
   [SHELL_ENTRY_KIND]: "Shells",
-  [CHECKLIST_ENTRY_KIND]: "Checklist",
+  [CHECKLIST_ENTRY_KIND]: "Tasks",
 };
 
 const PENDING_STATE = "pending";
@@ -105,6 +105,12 @@ function runningEntryCount(surfaces, kind) {
   return entriesOfKind(surfaces, kind).filter((entry) => stateMarkIs(kind, entry, RUNNING_MARK)).length;
 }
 
+function checklistProgress(surfaces) {
+  const entries = entriesOfKind(surfaces, CHECKLIST_ENTRY_KIND);
+  const completed = entries.filter((entry) => entry?.state === "completed").length;
+  return `${completed}/${entries.length}`;
+}
+
 function graceExpiryFor(visibility, kind, nowMs) {
   const { lastRunningSeenAt, closedAt } = kindVisibility(visibility, kind);
   const ends = [lastRunningSeenAt, closedAt]
@@ -133,10 +139,14 @@ export function surfaceKindLabel(kind) {
 }
 
 function kindsWithContent(surfaces) {
-  return SURFACE_KINDS.filter((kind) => entriesOfKind(surfaces, kind).length > 0).map((kind) => ({
+  return SURFACE_KINDS.filter(
+    (kind) =>
+      entriesOfKind(surfaces, kind).length > 0,
+  ).map((kind) => ({
     kind,
     label: surfaceKindLabel(kind),
     count: runningEntryCount(surfaces, kind),
+    ...(kind === CHECKLIST_ENTRY_KIND ? { progress: checklistProgress(surfaces) } : {}),
   }));
 }
 
@@ -145,10 +155,10 @@ export function surfacePills(surfaces, visibility = null, nowMs = 0) {
 }
 
 export function surfaceMenuOptions(surfaces) {
-  return kindsWithContent(surfaces).map(({ kind, label, count }) => ({
+  return kindsWithContent(surfaces).map(({ kind, label, count, progress }) => ({
     id: kind,
     label,
-    description: count ? `${count} running` : "",
+    description: progress ? `${progress} completed` : count ? `${count} running` : "",
   }));
 }
 
@@ -261,7 +271,13 @@ export function surfaceRows(kind, surfaces, reading = {}) {
   const entries = entriesOfKind(surfaces, kind);
   if (kind === AGENT_ENTRY_KIND) return agentRows(entries, reading);
   const normalise = ROW_NORMALISERS[kind];
-  return normalise ? keyedRows(kind, kind, entries, normalise, reading) : [];
+  if (!normalise) return [];
+  const rows = keyedRows(kind, kind, entries, normalise, reading);
+  if (kind !== CHECKLIST_ENTRY_KIND) return rows;
+  return [
+    ...rows.filter((row) => row.state !== "completed"),
+    ...rows.filter((row) => row.state === "completed"),
+  ];
 }
 
 function rowHasFinished(row) {

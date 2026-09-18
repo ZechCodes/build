@@ -16,6 +16,32 @@ export function selectedDirectory(workspace, sourceId) {
 export const directoryTab = (directory, wanted = "changes") =>
   directory?.is_git === false ? "files" : wanted || "changes";
 
+/** The last segment of a checkout's path — the folder the bridge made for it.
+ *  Trailing separators are dropped first, so a root recorded with one still
+ *  names its own folder rather than nothing. */
+const folderOf = (root) => String(root || "").replace(/[/\\]+$/, "").split(/[/\\]/).pop() || "";
+
+/**
+ * What a workspace is called, everywhere the account reads one: the name whoever
+ * made it typed.
+ *
+ * That name is user-facing text the bridge keeps byte for byte, while the
+ * checkout's folder and its branch are bounded, portable slugs DERIVED from it —
+ * "Bridge wire interface" lives in `bridge-wire-interface/` on
+ * `build/bridge-wire-interface`. None of those derivatives is the workspace's
+ * name, and a surface that shows one is showing the reader the machinery instead
+ * of what they called their work. So the rail's rows, their tooltips, the
+ * project blocks and the toolbar's switcher all ask here.
+ *
+ * An empty name is a name — the user cleared it, and the row says what they
+ * said — which is why the name is taken whenever the record HAS one. Only a
+ * workspace no bridge ever named (an older bridge, an adopted checkout) falls
+ * back, and it falls back to its folder rather than to the whole path: a row is
+ * one line, and a path is not a name.
+ */
+export const workspaceDisplayName = (workspace, fallback = "Workspace") =>
+  workspace?.name ?? (folderOf(workspace?.root) || fallback);
+
 /** Why a workspace failed, as its bridge told it: the checkout is one build per
  * directory, and the first directory that could not be made carries the
  * message. Empty when the bridge said nothing — a failure is still a failure. */

@@ -11,6 +11,7 @@ import {
   autoGrow,
   composerHtml,
   composerPartIds,
+  attachmentGlyphHtml,
   formatAttachmentSize,
   isImageAttachment,
   mountComposerAttachments,
@@ -22,6 +23,7 @@ import { providerLabel } from "./modelPicker.js";
 import { viewingContextChipsHtml } from "./viewingContext.js";
 import { ICON_CHECK } from "./icons.js";
 import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
+import { setMotionRowHtml } from "./motion.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -681,18 +683,22 @@ function attachmentsHtml(attachments, threadState) {
     .map((attachment) => {
       const path = esc(attachment.path || "");
       const name = esc(attachment.name || attachment.path || "file");
+      const size = esc(formatAttachmentSize(attachment.size));
       if (isImageAttachment(attachment.mime)) {
         const refused = threadState.attachment(attachment.path) === null ? " unavailable" : "";
         return `<figure class="thread-attachment-figure${refused}">
           <button type="button" class="thread-attachment-preview" aria-label="Open ${name}">
             <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
           </button>
-          <figcaption>${name}</figcaption>
+          <figcaption><span class="thread-attachment-name">${name}</span> <span class="thread-attachment-size">${size}</span></figcaption>
         </figure>`;
       }
-      return `<button type="button" class="thread-attachment" data-attachment-path="${path}" data-attachment-name="${name}">
-        <span class="thread-attachment-name">${name}</span>
-        <span class="thread-attachment-size">${esc(formatAttachmentSize(attachment.size))}</span>
+      return `<button type="button" class="thread-attachment" data-attachment-path="${path}" data-attachment-name="${name}" title="Download ${name}">
+        ${attachmentGlyphHtml(attachment.name, attachment.mime, "thread-attachment-glyph")}
+        <span class="thread-attachment-meta">
+          <span class="thread-attachment-name">${name}</span>
+          <span class="thread-attachment-size">${size}</span>
+        </span>
       </button>`;
     })
     .join("")}</div>`;
@@ -1140,10 +1146,12 @@ function foldActivityRuns(rows, digests, view) {
 function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
   if (meta.activity) return activityHtml(event, meta, agentLabel, foldedChildrenHtml);
-  const label = eventLabel(meta, agentLabel);
+  const label = event.event === "compaction" && event.summary
+    ? event.summary
+    : eventLabel(meta, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
-    : event.event !== "done" && event.summary ? renderMarkdown(event.summary) : "";
+    : event.event !== "done" && event.event !== "compaction" && event.summary ? renderMarkdown(event.summary) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
     <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${linksHtml(event.links)}</div>
@@ -1822,10 +1830,12 @@ function mountViewingContext(root, inputId, viewingContext) {
   const paint = (context = viewingContext?.snapshot?.()) => {
     if (!tray) return;
     const expanded = new Set([...tray.querySelectorAll("details[data-context-group][open]")].map((detail) => detail.dataset.contextGroup));
-    tray.innerHTML = viewingContextChipsHtml(context, { removable: true });
-    tray.hidden = !context?.items?.length;
+    const holder = document.createElement("div");
+    holder.innerHTML = viewingContextChipsHtml(context, { removable: true });
+    holder.querySelectorAll("details[data-context-group]").forEach((detail) => { detail.open = expanded.has(detail.dataset.contextGroup); });
+    setMotionRowHtml(tray, holder.innerHTML);
     tray.querySelectorAll("details[data-context-group]").forEach((detail) => { detail.open = expanded.has(detail.dataset.contextGroup); });
-    tray.querySelectorAll("button").forEach((button) => {
+    tray.querySelectorAll(":scope > :not([data-motion-snapshot]) button").forEach((button) => {
       button.onclick = () => {
         const group = button.closest("[data-context-indices]");
         if (group) viewingContext.removeMany(group.dataset.contextIndices.split(",").map(Number));
@@ -1986,5 +1996,14 @@ export function wireThreadComposer(root, {
     }
   };
 
-  return { setCanInterrupt, setBlocked, dispose: () => unsubscribeContext?.() };
+  return {
+    setCanInterrupt,
+    setBlocked,
+    /// Put files in the tray as a drop on the box would — for a drop that
+    /// landed somewhere else and was carried here.
+    addFiles: (files) => {
+      if (tray) tray.addFiles(files);
+    },
+    dispose: () => unsubscribeContext?.(),
+  };
 }

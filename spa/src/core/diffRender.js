@@ -12,6 +12,9 @@ import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
 import { editedTimeLabel, editedTimestamp } from "./editedTime.js";
 import { DIFF_ROW_HEIGHT, fileBodyIsVisible, hunkOffsetAt, rowWindowFor, ROW_WINDOW_SIZE } from "./diffWindow.js";
+import { sortDiffFiles } from "./diffSort.js";
+
+const sortedWhenRequested = (files, order) => (order ? sortDiffFiles(files, order) : files);
 
 const MAX_HIGHLIGHT_LINE_LENGTH = 20_000;
 
@@ -327,13 +330,17 @@ export function diffStackHtml(files, options = {}) {
     .join("");
 }
 
-export function diffStackEntries(files, { noiseExpanded = false, review = null, empty = "No file changes.", ...fileOptions } = {}) {
+export function diffStackEntries(
+  files,
+  { noiseExpanded = false, review = null, sortOrder = null, empty = "No file changes.", ...fileOptions } = {},
+) {
   const grouped = groupNoiseFiles(files);
   if (!grouped.files.length && !grouped.noise.length)
     return [{ key: "empty", html: `<div class="empty">${esc(empty)}</div>` }];
-  const entries = grouped.files.length ? reviewStackEntries(grouped.files, review, fileOptions, files) : [];
+  const entries = grouped.files.length ? reviewStackEntries(grouped.files, review, fileOptions, files, sortOrder) : [];
   if (!grouped.noise.length) return entries;
-  return [...entries, { key: "noise", html: noiseGroupHtml(grouped.noise, noiseExpanded, fileOptions) }];
+  const noise = sortedWhenRequested(grouped.noise, sortOrder);
+  return [...entries, { key: "noise", html: noiseGroupHtml(noise, noiseExpanded, fileOptions) }];
 }
 
 function noiseGroupHtml(noise, noiseExpanded, fileOptions) {
@@ -395,9 +402,12 @@ export function createTriagePlanCache(plan = planChangesetTriage) {
 
 const cachedTriagePlan = createTriagePlanCache();
 
-function reviewStackEntries(files, review, options, sourceFiles) {
+function reviewStackEntries(files, review, options, sourceFiles, sortOrder) {
   const fileEntries = (list, fileOptions) =>
-    list.map((file) => ({ key: fileKey(file), html: fileHtmlFor(fileOptions)(file, fileOptions) }));
+    sortedWhenRequested(list, sortOrder).map((file) => ({
+      key: fileKey(file),
+      html: fileHtmlFor(fileOptions)(file, fileOptions),
+    }));
   if (!review) return fileEntries(files, options);
   const { triage = null, patch = "", dial = false, expandedGroups = null, overridable = false } = review;
   const fileOptions = { ...options, overridable };

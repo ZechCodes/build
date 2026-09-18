@@ -513,6 +513,7 @@ describe("a branch on another device", () => {
   // standing a frame up over calls that will only be refused.
   it("an offline route device renders the offline state naming that device", async () => {
     const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    App.devices = App.devices.map((device) => device.id === "dev-2" ? { ...device, status: "offline" } : device);
     setContextOffline("dev-2");
 
     await renderBranch();

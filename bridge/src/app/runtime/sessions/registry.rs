@@ -104,6 +104,7 @@ pub(in crate::app) struct AgentDigestFacts {
     pub working: bool,
     pub has_terminal: bool,
     pub can_interrupt: bool,
+    pub surface_session_generation: Option<String>,
     pub surfaces: Option<Value>,
 }
 
@@ -450,6 +451,10 @@ impl SessionRegistry {
             working,
             has_terminal: tab.session.terminal().is_some(),
             can_interrupt: tab.session.can_interrupt(),
+            surface_session_generation: tab
+                .session_instance
+                .as_ref()
+                .map(|instance| instance.id.clone()),
             surfaces,
         })
     }

@@ -143,6 +143,7 @@ export function createCommentLayer({
       onChange();
     } catch (e) {
       notifyError("Sending comments failed", (e && e.message) || "error");
+      throw e;
     } finally {
       sending = false;
       renderActions();
@@ -184,6 +185,17 @@ export function createCommentLayer({
     busy: () =>
       commentLayerBusy({
         pending: comments.length,
+        popOpen: hasCommentPop(),
+        generalText: readNote(),
+        selecting: Boolean(selectionInside(host)),
+      }),
+
+    /** Whether repainting would interrupt an interaction that still points at
+     *  the current DOM. Anchored comments already live in this controller and
+     *  are safe to redraw; an open popover, draft note, or live selection is
+     *  not. */
+    repaintBusy: () =>
+      commentLayerBusy({
         popOpen: hasCommentPop(),
         generalText: readNote(),
         selecting: Boolean(selectionInside(host)),

@@ -11,18 +11,25 @@
 
 import { $ } from "./dom.js";
 import { esc } from "./core/text.js";
-import { canAnswer, contextFor, knownContexts } from "./core/deviceContexts.js";
+import { canAnswer, contextFor, knownContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
-import { ICON_CHEVRON_DOWN, ICON_SETTINGS } from "./core/icons.js";
+import { ICON_CHEVRON_DOWN, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { rememberDeviceFilter } from "./core/deviceFilter.js";
-import { deviceWentAway, openDeviceSessions, syncHome } from "./connection.js";
+import { deviceWentAway, openDeviceSessions, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
+
+let presenceGeneration = 0;
 
 export async function refreshDevices() {
-  App.devices = await fetchDevices();
+  const generation = ++presenceGeneration;
+  const accountEpoch = App.accountEpoch;
+  const devices = await fetchDevices();
+  if (generation !== presenceGeneration || accountEpoch !== App.accountEpoch) throw new Error("stale device presence read");
+  App.devices = devices;
+  syncDeviceRecoveryPresence(devices);
   forgetFilterOnMissingDevice();
   paintDevicePicker();
   return App.devices;
@@ -80,6 +87,7 @@ export function watchPresence({ intervalMs = PRESENCE_INTERVAL_MS } = {}) {
 
 /** Stop following it (the gate took the app back, the account signed out). */
 export function stopWatchingPresence() {
+  presenceGeneration += 1;
   clearInterval(presenceTimer);
   presenceTimer = null;
   if (onVisibilityChange) document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -121,6 +129,9 @@ const ALL_DEVICES = "All devices";
 export function paintDevicePicker() {
   const picker = $("#devpick");
   if (!picker) return;
+  const menu = picker.querySelector(".device-picker-menu");
+  const wasOpen = Boolean(menu && !menu.hidden);
+  const focused = focusedPickerControl(picker);
   picker.hidden = App.gated || App.devices.length === 0;
   if (picker.hidden) return;
   // The filter is over the account's own list, so the toggle says what the rail
@@ -133,6 +144,32 @@ export function paintDevicePicker() {
     <div class="device-picker-menu" id="device-picker-menu" aria-label="Devices" hidden>
       ${pickerRowsHtml()}
     </div>`;
+  setPickerOpen(picker, wasOpen);
+  restorePickerFocus(picker, focused);
+}
+
+/** Which picker control had focus before a repaint. Keeping this as data rather
+ * than an element lets a state change replace a stale settings cog with that
+ * row's still-live filter control. */
+function focusedPickerControl(picker) {
+  const button = document.activeElement?.closest?.("button");
+  if (!button || !picker.contains(button)) return null;
+  if (button.classList.contains("device-picker-toggle")) return { kind: "toggle" };
+  if (button.dataset.settingsDevice) return { kind: "settings", deviceId: button.dataset.settingsDevice };
+  if (button.hasAttribute("data-filter-device")) return { kind: "filter", deviceId: button.dataset.filterDevice };
+  return null;
+}
+
+function restorePickerFocus(picker, focused) {
+  if (!focused) return;
+  const buttons = [...picker.querySelectorAll("button")];
+  const matching = (name, deviceId) => buttons.find((button) => button.dataset[name] === deviceId);
+  const target = focused.kind === "toggle"
+    ? picker.querySelector(".device-picker-toggle")
+    : focused.kind === "settings"
+      ? matching("settingsDevice", focused.deviceId) || matching("filterDevice", focused.deviceId)
+      : matching("filterDevice", focused.deviceId);
+  target?.focus();
 }
 
 /** The rows the menu offers: the all-devices choice, then one row per machine.
@@ -152,9 +189,12 @@ function allDevicesRowHtml(filter) {
 }
 
 function deviceRowHtml(device, filter) {
+  const offline = deviceIsOffline(device);
   return `<div class="device-picker-row">
     ${choiceHtml(device.id, deviceLabel(device), filter === device.id)}
-    <button type="button" class="device-picker-settings" data-settings-device="${esc(device.id)}" aria-label="Settings for ${esc(device.name)}" title="Settings for ${esc(device.name)}"><span aria-hidden="true">${ICON_SETTINGS}</span></button>
+    ${offline
+      ? `<span class="device-picker-offline" role="img" aria-label="Device offline" title="Device offline">${ICON_WIFI_OFF}</span>`
+      : `<button type="button" class="device-picker-settings" data-settings-device="${esc(device.id)}" aria-label="Settings for ${esc(device.name)}" title="Settings for ${esc(device.name)}"><span aria-hidden="true">${ICON_SETTINGS}</span></button>`}
   </div>`;
 }
 
@@ -172,8 +212,15 @@ function choiceHtml(deviceId, label, pressed) {
  *  opened yet has nothing of its own to say, so the account list speaks for it. */
 function deviceLabel(device) {
   const context = contextFor(device.id);
-  const away = device.status !== "online" || Boolean(context && !canAnswer(context));
-  return away ? `${device.name} (${deviceAwayWord(context)})` : device.name;
+  if (deviceIsOffline(device)) return device.name;
+  return context && !canAnswer(context) ? `${device.name} (${deviceAwayWord(context)})` : device.name;
+}
+
+/** A connection can go away before the next account-list read arrives. Keep
+ * the picker from offering settings against either signal of an unavailable
+ * machine. Update-only contexts remain available and retain their settings. */
+function deviceIsOffline(device) {
+  return device.status !== "online" || Boolean(contextFor(device.id)?.offline);
 }
 
 function setPickerOpen(picker, open) {
@@ -198,6 +245,11 @@ function pickerClick(event, picker) {
   if (button.classList.contains("device-picker-toggle")) {
     setPickerOpen(picker, button.getAttribute("aria-expanded") !== "true");
   } else if (button.dataset.settingsDevice) {
+    const device = deviceFor(button.dataset.settingsDevice);
+    if (!device || deviceIsOffline(device)) {
+      paintDevicePicker();
+      return;
+    }
     setPickerOpen(picker, false);
     goFromInbox({ name: "device", id: button.dataset.settingsDevice });
   } else if (button.hasAttribute("data-filter-device")) {
@@ -239,8 +291,10 @@ export function initDevicePicker() {
   };
   document.addEventListener("click", dismiss);
   document.addEventListener("focusin", dismiss);
+  const stopWatchingDeviceState = onDeviceStateChanged(paintDevicePicker);
   removePickerListeners = () => {
     document.removeEventListener("click", dismiss);
     document.removeEventListener("focusin", dismiss);
+    stopWatchingDeviceState();
   };
 }

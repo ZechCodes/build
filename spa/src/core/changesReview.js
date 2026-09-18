@@ -14,6 +14,7 @@
 // popover, and typed text, and a rebuild mid-action would wipe a busy button.
 
 import "../styles/surfaces.css";
+import { reviewCommentContext } from "./reviewCommentContext.js";
 import { readCached, writeCached } from "./localCache.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, pathOf } from "./diff.js";
@@ -29,6 +30,7 @@ import { createReviewMarks } from "./reviewMarks.js";
 import { watchEditedTimes } from "./editedTime.js";
 import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
+import { diffSortHtml, loadDiffSort, saveDiffSort } from "./diffSort.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -38,13 +40,16 @@ const fileEditedAtOf = (payload) => payload.file_edited_at || {};
  *  filter narrows what is drawn, never what is counted), whatever the surface
  *  says about its own state, and — once there is a baseline to compare against —
  *  the offer to see only what moved since the last comments went out. */
-export function reviewBarHtml(files, { statusHtml = "", offerChangedOnly = false, changedOnly = false } = {}) {
+export function reviewBarHtml(
+  files,
+  { statusHtml = "", offerChangedOnly = false, changedOnly = false, sortOrder = "latest" } = {},
+) {
   const insertions = files.reduce((total, file) => total + file.add, 0);
   const deletions = files.reduce((total, file) => total + file.del, 0);
   const filter = offerChangedOnly
     ? `<label class="changedonly"><input type="checkbox" class="changedonly-box"${changedOnly ? " checked" : ""}/> Only changes since my review</label>`
     : "";
-  return `<div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${insertions}</span> <span style="color:var(--red)">−${deletions}</span></span>${statusHtml}${filter}</div>`;
+  return `<div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${insertions}</span> <span style="color:var(--red)">−${deletions}</span></span>${statusHtml}${filter}${diffSortHtml(sortOrder)}</div>`;
 }
 
 /** What the stack says when the filter has hidden everything, or there is
@@ -88,6 +93,10 @@ export function createReviewPlug({
   statusHtml = () => "",
   isOffline = () => false,
   pollMs = REVIEW_POLL_MS,
+  // A review embedded in a controller that already watches the same checkout
+  // can use that controller's refresh path. This avoids a second timer while
+  // keeping the plug's serialized, freeze-aware diff fetch intact.
+  watchDiff = true,
   // What the diff belongs to — the run or the worktree — so a bridge that
   // pushes can say when it moved instead of being asked every 1.6 seconds. A
   // surface that names none keeps the safety poll and nothing else.
@@ -142,6 +151,7 @@ export function createReviewPlug({
   // at mount where it has one, so a mark made on this changeset is the same
   // mark on the stacks beside it.
   let marks = createReviewMarks();
+  let sortOrder = loadDiffSort();
 
   /** The rendered files as the views a stamp is taken of: a whole patch's file
    *  wears a hash of its own rows as its content key. */
@@ -152,7 +162,12 @@ export function createReviewPlug({
     ? createCommentLayer({
         readNote: () => noteReader(),
         submit: async (messages) => {
-          await submit(messages);
+          const context = reviewCommentContext({
+            paths: renderedFiles.map((file) => file.path), selected: marks.selected,
+            mode: "all", snapshot: viewingContext?.snapshot?.(),
+          });
+          await submit(messages.map((message) => ({ ...message, viewing_context: context })));
+          viewingContext?.clearSelectionIfMatches?.(context);
           // Stamp what was just reviewed: the next pass marks what moved.
           reviewStamps = stampReview(renderedViews());
           diffKey = null; // the stamp changes what is drawn — force the rebuild
@@ -257,6 +272,7 @@ export function createReviewPlug({
       ...viewport.renderOptions(),
       noiseExpanded,
       empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
+      sortOrder,
       review:
         !triageEnabled || triageReport === undefined
           ? null
@@ -273,6 +289,7 @@ export function createReviewPlug({
         statusHtml: statusHtml(),
         offerChangedOnly: reviewStamps.size > 0,
         changedOnly: changedOnlyFilter,
+        sortOrder,
       }),
       entries,
       tray: trayMounted ? commentLayer.trayHtml() : "",
@@ -354,6 +371,12 @@ export function createReviewPlug({
         render();
         return;
       }
+      if (target.classList.contains("diffsort-select")) {
+        sortOrder = target.value;
+        saveDiffSort(sortOrder);
+        render();
+        return;
+      }
       if (!target.classList.contains("fselect-box")) return;
       marks.toggleSelected(pathOf(target.dataset.key));
       render();
@@ -379,6 +402,7 @@ export function createReviewPlug({
   const diffAddress = () =>
     cacheEntity ? cacheScope?.address({ entityId: cacheEntity, kind: "diff" }) || null : null;
   let livePainted = false; // a live payload outranks whatever the cache held
+  let refreshHeld = false; // news fetched while an interaction froze repainting
 
   /** The saved diff, painted whole — comment tray and verbs included, from the
    *  commentability the last live paint recorded. A comment is drafted locally
@@ -448,8 +472,9 @@ export function createReviewPlug({
     ].join("\x01");
     // Freeze while the reviewer is mid-comment or the surface has an action in
     // flight, and skip the rebuild when nothing moved (fold state survives too).
-    const busy = actionsFrozen() || Boolean(commentLayer && commentLayer.busy());
+    const busy = actionsFrozen() || Boolean(commentLayer && commentLayer.repaintBusy());
     if (host.querySelector(".diffbar") && busy) {
+      refreshHeld = true;
       paintActions();
       return;
     }
@@ -504,10 +529,40 @@ export function createReviewPlug({
     });
   };
 
+  /** A pushed invalidation can land while a comment draft or popover freezes
+   *  repainting. Keep that news pending and consume it as soon as the owning
+   *  surface says the interaction ended; the next safety tick is only backup. */
+  const resumeHeldRefresh = () => {
+    if (!refreshHeld || !host || actionsFrozen() || Boolean(commentLayer && commentLayer.repaintBusy())) return;
+    refreshHeld = false;
+    paint();
+  };
+
+  const startDiffWatcher = () => {
+    if (!watchDiff) return null;
+    return watchChanges({
+      refresh: paint,
+      intervalMs: pollMs,
+      entity,
+      pausesWhileHidden: false,
+      // Focus tier: the changeset is the working tree and its status.
+      kinds: ["git", "files"],
+      mode: "realtime",
+    });
+  };
+
   return {
     /** Redraw the actionbar — what a surface calls when its own verbs change
      *  (an action settled, a flash message expired) but the diff has not. */
     refreshActions: paintActions,
+
+    /** Re-read the diff through the same conditional-key and freeze path the
+     *  plug's watcher uses. Embedded controllers call this from their existing
+     *  checkout watcher instead of mounting a duplicate timer. */
+    refreshDiff: paint,
+
+    /** Resume an invalidation held to protect a draft/popover. */
+    resumeRefresh: resumeHeldRefresh,
 
     /** The pending comments (and typed general note) the surface holds. */
     busy: () => Boolean(commentLayer && commentLayer.busy()),
@@ -526,8 +581,10 @@ export function createReviewPlug({
       onCommentsChanged = onComments;
       onMarksChanged = onMarks;
       if (reviewMarks) marks = reviewMarks;
+      sortOrder = loadDiffSort();
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
+      refreshHeld = false;
       livePainted = false;
       responseDiffKey = null;
       host.innerHTML = '<div class="empty">loading…</div>';
@@ -535,15 +592,7 @@ export function createReviewPlug({
       paint();
       // `pausesWhileHidden: false`: this paint has never been visibility-gated,
       // and an event must not do less than the tick it replaced.
-      watcher = watchChanges({
-        refresh: paint,
-        intervalMs: pollMs,
-        entity,
-        pausesWhileHidden: false,
-        // Focus tier: the changeset is the working tree and its status.
-        kinds: ["git", "files"],
-        mode: "realtime",
-      });
+      watcher = startDiffWatcher();
       editedTimeWatcher = watchEditedTimes(host);
     },
 
@@ -574,6 +623,7 @@ export function createReviewPlug({
         host.onchange = null;
       }
       host = null;
+      refreshHeld = false;
       viewingContext?.clear();
       trayMounted = false;
     },

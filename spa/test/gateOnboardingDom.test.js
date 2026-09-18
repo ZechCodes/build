@@ -19,10 +19,12 @@ let downloads = async () => DOWNLOADS;
 let openSession = async () => ({});
 let refresh = async () => devices;
 const refreshDevices = vi.fn(() => refresh());
+let presence = async () => devices;
 // What connection.js hands the gate: every online device opened at once, and
 // the promise of the first one to answer. The fixture's `openSession` is the
 // one that answers.
 let securityStop = "";
+const lifecycleSecurityStops = new Set();
 const landed = [];
 const openDeviceSessions = vi.fn(() => {
   // connection.js registers a machine with the device registry as it lands it;
@@ -47,6 +49,7 @@ vi.mock("../src/api.js", () => ({
 }));
 vi.mock("../src/devices.js", () => ({
   refreshDevices: (...args) => refreshDevices(...args),
+  readPresence: () => presence(),
   paintDevicePicker: () => {},
   // The account's presence cadence is its own file's subject
   // (devicePresence.test.js); here it is the gate's to start and stop.
@@ -64,6 +67,7 @@ vi.mock("../src/devices.js", () => ({
 // hand-over test below is what fails if a greeting — or a claim on home —
 // creeps back in.
 vi.mock("../src/connection.js", () => ({
+  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   chooseCreationDevice: () => {},
   retireDevice: () => {},
   openDeviceSessions: (...args) => openDeviceSessions(...args),
@@ -88,6 +92,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   knownContexts: () => [...landed],
   liveContexts: () => [...landed],
   onDeviceStateChanged: () => () => {},
+  existingDeviceLifecycle: (deviceId) => ({ snapshot: () => ({ securityStop: lifecycleSecurityStops.has(deviceId) ? securityStop : null }) }),
 }));
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "macos-arm64" }));
 vi.mock("../src/app.js", () => ({
@@ -110,9 +115,11 @@ beforeEach(async () => {
   devices = [];
   landed.length = 0;
   securityStop = "";
+  lifecycleSecurityStops.clear();
   downloads = async () => DOWNLOADS;
   openSession = async () => ({});
   refresh = async () => devices;
+  presence = async () => devices;
   document.body.innerHTML = bodyHtml;
   const { App } = await import("../src/app.js");
   Object.assign(App, { devices: [], selectedDeviceId: null, _connecting: false, _watch: null });
@@ -137,7 +144,7 @@ describe("the device connection gate", () => {
     expect(document.getElementById("root").textContent).not.toContain("Waiting for your device");
   });
 
-  it("does not claim none are online after an online device's handshake fails", async () => {
+  it("keeps the shell available after an online device's handshake fails", async () => {
     devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "online" }];
     openSession = async () => {
       throw new Error("device did not accept the session");
@@ -147,10 +154,9 @@ describe("the device connection gate", () => {
 
     await boot();
 
-    expect(document.getElementById("waitintro").textContent).toContain("report online");
-    expect(document.getElementById("waitintro").textContent).not.toContain("None of your devices");
-    clearInterval(App._watch);
-    App._watch = null;
+    expect(document.body.classList.contains("gated")).toBe(false);
+    expect(document.getElementById("waitintro")).toBeNull();
+    expect(render).toHaveBeenCalledTimes(1);
   });
 
   // A machine whose key did not match the one this account pinned is the one
@@ -159,7 +165,9 @@ describe("the device connection gate", () => {
   it("says on the waiting screen that a device's key did not match the pinned one", async () => {
     devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "online" }];
     securityStop = "relay-supplied device key does not match the api-pinned key — possible tampering";
+    lifecycleSecurityStops.add("dev-a");
     openSession = async () => {
+      landed.push({ deviceId: "dev-a", offline: true, blocked: "refused" });
       throw Object.assign(new Error(securityStop), { securityCritical: true });
     };
     const { App } = await import("../src/app.js");
@@ -170,6 +178,30 @@ describe("the device connection gate", () => {
     expect(document.getElementById("oerr").textContent).toBe(securityStop);
     clearInterval(App._watch);
     App._watch = null;
+  });
+
+  it("keeps the shell available when one refused device has another online device recovering", async () => {
+    devices = [
+      { id: "refused", name: "Studio", fingerprint: "AAAA", status: "online" },
+      { id: "recovering", name: "Laptop", fingerprint: "BBBB", status: "online" },
+    ];
+    const { App } = await import("../src/app.js");
+    App.devices = devices;
+    securityStop = "relay-supplied device key does not match the api-pinned key — possible tampering";
+    lifecycleSecurityStops.add("refused");
+    openSession = async () => {
+      landed.push(
+        { deviceId: "refused", offline: true, blocked: "refused" },
+        { deviceId: "recovering", offline: true, blocked: "refused" },
+      );
+      throw Object.assign(new Error("no device answered yet"), { securityCritical: true });
+    };
+
+    await boot();
+
+    expect(document.body.classList.contains("gated")).toBe(false);
+    expect(document.getElementById("root").textContent).not.toContain("Couldn’t connect securely");
+    expect(render).toHaveBeenCalledTimes(1);
   });
 
   it("does not let an older failed boot re-gate a session established by a newer boot", async () => {
@@ -202,7 +234,7 @@ describe("the device connection gate", () => {
     expect(App._watch).toBe(null);
   });
 
-  it("keeps the newer boot responsible for waiting when a shared connection attempt fails", async () => {
+  it("keeps the newer boot responsible for the usable shell when a shared connection attempt fails", async () => {
     devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "online" }];
     let rejectConnection;
     openSession = vi.fn(
@@ -220,11 +252,59 @@ describe("the device connection gate", () => {
     await Promise.all([olderBoot, newerBoot]);
 
     expect(openSession).toHaveBeenCalledTimes(1);
-    expect(document.getElementById("root").textContent).toContain("Waiting for your device");
+    expect(document.body.classList.contains("gated")).toBe(false);
+    expect(render).toHaveBeenCalledTimes(1);
     const { App } = await import("../src/app.js");
-    expect(App._watch).not.toBe(null);
+    expect(App._watch).toBe(null);
+  });
+
+  it("uses the whole-page waiting screen only when every listed device is offline", async () => {
+    devices = [
+      { id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "offline" },
+      { id: "dev-b", name: "Laptop", fingerprint: "BBBB", status: "offline" },
+    ];
+    const { App } = await import("../src/app.js");
+    App.devices = devices;
+    openSession = async () => { throw new Error("nothing online"); };
+
+    await boot();
+
+    expect(document.getElementById("root").textContent).toContain("All devices are offline");
     clearInterval(App._watch);
     App._watch = null;
+  });
+
+  it("keeps waiting through a failed presence read instead of inferring onboarding", async () => {
+    vi.useFakeTimers();
+    devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "offline" }];
+    const { App } = await import("../src/app.js");
+    App.devices = devices;
+    openSession = async () => { throw new Error("offline"); };
+    presence = async () => null;
+    await boot();
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(document.getElementById("waitintro").textContent).toContain("unreachable");
+    expect(document.getElementById("ocode")).toBeNull();
+    clearInterval(App._watch);
+    App._watch = null;
+    vi.useRealTimers();
+  });
+
+  it("automatically retries a cold device-api failure", async () => {
+    vi.useFakeTimers();
+    refresh = vi.fn().mockRejectedValueOnce(new Error("api unavailable")).mockResolvedValueOnce([]);
+
+    await boot();
+    expect(document.getElementById("root").textContent).toContain("couldn’t refresh device status");
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(document.getElementById("ocode")).toBeTruthy();
+    const { App } = await import("../src/app.js");
+    clearInterval(App._watch);
+    App._watch = null;
+    vi.useRealTimers();
   });
 
   it("shares a successful connection attempt between overlapping boots", async () => {

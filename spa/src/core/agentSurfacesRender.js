@@ -39,7 +39,10 @@ const VIEWER_CLASS = {
   [AGENT_ENTRY_KIND]: "surface-subagents",
   [SHELL_ENTRY_KIND]: "surface-shells",
   [CHECKLIST_ENTRY_KIND]: "surface-checklist",
+  checklistRows: "surface-checklist-rows",
 };
+
+const CHECKLIST_CONTEXT_CLASS = "surface-checklist-context";
 
 const SURFACE_OVERLAY_BODY_CLASS = "surface-overlay-body";
 
@@ -51,6 +54,7 @@ export const PILL_COUNT_SELECTOR = `.${PILL_COUNT_CLASS}`;
 export const CLIP_SELECTOR = `[${CLIP_LINES_ATTRIBUTE}]`;
 export const PRESSABLE_CLIP_SELECTOR = `${CLIP_SELECTOR}[role="button"]`;
 export const TICKING_CLOCK_SELECTOR = `[${RUNNING_SINCE_ATTRIBUTE}]`;
+export const CHECKLIST_CONTEXT_SELECTOR = `.${CHECKLIST_CONTEXT_CLASS}`;
 
 export const SURFACE_SELECTOR = Object.fromEntries(
   Object.entries(VIEWER_CLASS).map(([name, className]) => [name, `.${className}`]),
@@ -171,8 +175,33 @@ export function surfacePillHtml(pill, openKind) {
   return `<button type="button" class="surface-pill" data-motion data-surface-kind="${esc(pill.kind)}"
     aria-pressed="${pill.kind === openKind}">
     <span class="surface-pill-label">${esc(pill.label)}</span>
-    ${pillCountCapHtml(pill.count)}
+    ${pillCountCapHtml(pill.progress ?? pill.count)}
   </button>`;
+}
+
+const checklistNotesHtml = (notes) => (notes || [])
+  .map((note) => `<span class="agent-observation-note">${esc(note)}</span>`)
+  .join("");
+
+export function checklistContextHtml(checklist) {
+  if (!checklist) return `<div class="${CHECKLIST_CONTEXT_CLASS}" hidden></div>`;
+  const step = checklist.currentStep
+    ? `<span class="agent-observation-step">${esc(checklist.currentStep)}</span>`
+    : "";
+  return `<div class="${CHECKLIST_CONTEXT_CLASS}${checklist.stale ? " is-stale" : ""}">
+    ${step}
+    <span class="agent-observation-checklist-meta">
+      <span class="agent-observation-progress">${esc(checklist.progress)}</span>
+      <span class="agent-observation-notes">${checklistNotesHtml(checklist.notes)}</span>
+    </span>
+  </div>`;
+}
+
+export function checklistViewerHtml(checklist = null) {
+  return `<div class="${VIEWER_CLASS.viewer} ${VIEWER_CLASS[CHECKLIST_ENTRY_KIND]}">
+    ${checklistContextHtml(checklist)}
+    <div class="${VIEWER_CLASS.checklistRows}" ${KEYED_LIST_ATTRIBUTE}></div>
+  </div>`;
 }
 
 export function phaseSectionHtml(phase) {
@@ -250,7 +279,12 @@ export function shellRowHtml(row) {
 }
 
 export function checklistItemHtml(row) {
-  return surfaceRowHtml("surface-checklist-item", row, {
+  const unknownState = !row.stateMark && row.state
+    ? `<span class="surface-row-stat agent-observation-unknown">${esc(row.state)}</span>`
+    : "";
+  const completedClass = row.state === "completed" ? " is-completed" : "";
+  return surfaceRowHtml(`surface-checklist-item${completedClass}`, row, {
+    trailing: unknownState,
     body: noteHtml(row.description, row.subject),
   });
 }

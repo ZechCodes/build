@@ -31,7 +31,7 @@ import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
-import { workspaceRun, workspaceStatusText } from "./workspaceModel.js";
+import { workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -48,7 +48,11 @@ function workspaceFacts(workspace) {
   const summary = workspace.work_summary;
   const values = summary && [summary.pushes, summary.additions, summary.deletions];
   if (!values || values.some((value) => !Number.isSafeInteger(value) || value < 0)) return "Work summary unavailable";
-  return `${summary.pushes} ${summary.pushes === 1 ? "push" : "pushes"} · +${summary.additions} −${summary.deletions}`;
+  // Older bridges omit `behind`; its absence is unknown, not zero. Once a
+  // bridge supplies it, however, it is part of the same all-or-nothing summary.
+  const hasBehind = Object.hasOwn(summary, "behind");
+  if (hasBehind && (!Number.isSafeInteger(summary.behind) || summary.behind < 0)) return "Work summary unavailable";
+  return [`↑${summary.pushes}`, hasBehind ? `↓${summary.behind}` : "", `+${summary.additions}`, `−${summary.deletions}`].filter(Boolean).join(" ");
 }
 
 const firstText = (...values) => values.find(Boolean) || "";
@@ -69,8 +73,12 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     projectId: workspace.project_id,
     projectKey: workspace.projectKey,
     project: firstText(projectNames.get(workspace.projectKey), workspace.project, workspace.project_id),
-    name: workspace.name ?? firstText(workspace.root, "Workspace"),
-    title: firstText(workspace.root, workspace.name, "Workspace"),
+    // What the user called it, never the slug its folder and its branch were
+    // derived from (core/workspaceModel.js) — and the tooltip says the same
+    // thing the row does, because the checkout's path is machinery rather than
+    // a longer version of the name.
+    name: workspaceDisplayName(workspace),
+    title: workspaceDisplayName(workspace),
     entityId: entityIdOf(conversation),
     state: entryState(activity),
     unreadCount: activity.unread_count || 0,
@@ -84,12 +92,16 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     clean: workspace.status === "ready" && workspace.work_summary?.clean === true,
     facts: workspaceFacts(workspace),
     route: workspaceRoute(workspace),
-    anchorMs: ms(firstText(workspace.created_at, workspace.updated_at)),
+    // The conversation owns the inbox anchor whenever there is one: this is
+    // the same user-pickup ordering used by ordinary work rows. The workspace
+    // creation date is only the fallback for one that has never spoken.
+    anchorMs: ms(firstText(activity.anchor, workspace.created_at, workspace.updated_at)),
     lastActivityMs: ms(workspace.updated_at),
   };
 }
 
-/** Every device's workspaces as rows. A workspace belongs to one machine, so it
+/** Every device's workspaces as rows, ordered together by the inbox anchor. A
+ * workspace belongs to one machine, so it
  *  is named — and its project and its conversation are looked up — by the
  *  account-wide names the feed stamped (core/deviceKey.js): two machines each
  *  hold a `proj-1`, and a run id on one says nothing about the other. */
@@ -101,7 +113,7 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
     const owner = workspace.entity_id || workspace.run_id || workspace.id;
     const conversation = conversations.get(JSON.stringify([workspace.projectKey, owner])) || workspaceRun(workspace, items);
     return toWorkspaceEntry(workspace, projectNames, conversation);
-  });
+  }).sort(byAnchor);
 }
 
 /** How long a row can say nothing before it belongs to Recent rather than to
@@ -356,6 +368,7 @@ export function captureStatusText(entry) {
     return `→ ${entry.routedTo.project} as ${entry.routedTo.kind}`;
   }
   if (entry.question) return "Waiting for your answer";
+  if (entry.progress) return entry.progress;
   return CAPTURE_STATUS[entry.captureState] || "";
 }
 
@@ -389,6 +402,7 @@ function toCaptureEntry(item) {
     working: !!item.working,
     reason: question || (item.unread_reason === "routing_failed" ? "Routing failed" : ""),
     question,
+    progress: item.progress || "",
     routedTo: routing ? { project: item.project || item.project_id, kind: routing.kind } : null,
     unreadCount: item.unread_count || 0,
     muted: false,
@@ -618,8 +632,13 @@ function menuHtml(entry, open) {
 
 /** The machine something is on, said dim after its name. Minted here because a
  *  row wears it (projectTagHtml) and so does a project block's head
- *  (core/inboxProjects.js deviceTagHtml): it is one mark, in one place. */
-export const dimDeviceHtml = (deviceName) => (deviceName ? ` <span class="dim">${esc(deviceName)}</span>` : "");
+ *  (core/inboxProjects.js deviceTagHtml): it is one mark, in one place.
+ *
+ *  It wears a class of its own beside `dim` so it can be sized as well as
+ *  greyed: which machine a thing is on is a secondary fact about it — the
+ *  answer to "which of the two `relaydb`s is this", read once — and at the
+ *  row's own size it competed with the name it qualifies. */
+export const dimDeviceHtml = (deviceName) => (deviceName ? ` <span class="dim inbox-device">${esc(deviceName)}</span>` : "");
 
 /** The names in a list that more than one machine holds. A name the account
  *  uses once says which thing it is; one two machines both use does not, and

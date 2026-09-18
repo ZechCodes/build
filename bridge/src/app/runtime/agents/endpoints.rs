@@ -303,6 +303,7 @@ pub(in crate::app) fn activity_event_kind(
     use crate::harness::AgentActivity;
     use crate::thread::ThreadEventKind;
     match activity {
+        AgentActivity::Compaction { .. } => ThreadEventKind::Compaction,
         AgentActivity::Reasoning { .. } => ThreadEventKind::Reasoning,
         AgentActivity::ToolUse { .. } => ThreadEventKind::ToolUse,
         AgentActivity::ToolResult { .. } => ThreadEventKind::ToolResult,
@@ -1234,6 +1235,12 @@ impl AppState {
             // decided by the argv, so the same provider answers differently on
             // two versions of the same CLI. No session, no turn to stop.
             "can_interrupt": tab.as_ref().is_some_and(|tab| tab.can_interrupt),
+            // Surfaces are process-local observations. The client scopes its
+            // cache to this instance identity so a restarted process cannot
+            // inherit the previous process's goal or checklist snapshot.
+            "surface_session_generation": tab
+                .as_ref()
+                .and_then(|tab| tab.surface_session_generation.clone()),
             // Why the last turn queued for this agent never reached a harness.
             // The client's "starting" state is laid on before there is any
             // session to report, and this is what takes it off when none ever

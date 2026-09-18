@@ -20,6 +20,7 @@ const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelC
   }));
 vi.mock("../src/app.js", () => ({ App, render: () => {} }));
 vi.mock("../src/connection.js", () => ({
+  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   chooseCreationDevice: () => {},
   retireDevice: (...args) => retireDevice(...args),
   openDeviceSettingsSession: openSession,

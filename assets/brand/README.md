@@ -1,9 +1,9 @@
 # Build brand assets
 
-These assets are copied unchanged from Build branding commit `a96359e6`
-(`Bundle official brand assets and update application icons`). The canonical
-source artwork is `build-mark.svg`. It has a transparent background and uses
-Build mint `#5EF5B5`.
+The canonical source artwork is `build-mark.svg`. It has a transparent
+background and uses Build mint `#5EF5B5`. The root `recreated-vector.svg` is a
+byte-for-byte compatibility copy of this artwork. Edit the canonical file when
+updating the mark; the generator reads its geometry and viewBox directly.
 
 The square variants use these colors:
 
@@ -18,12 +18,32 @@ uniformly scaled and centered on a square canvas. The mark occupies 64% of the
 canvas height, leaving 18% padding above and below. Its proportions and
 negative space remain unchanged, so the cutout shows the background color.
 
-The landing page serves the transparent mark from
-`skriftapp/buildapp/landing/brand-mark.svg` and the black-on-mint favicon from
-`favicon.svg` and `favicon.png` in that directory. The screen-capture fixture
-keeps an identical copy of the transparent mark at
-`design/landing-captures/build-mark.svg`.
+Create a local Python environment and install the generation dependencies:
 
-The shared generation script, `scripts/generate-brand-assets.py`, is retained
-in the source branding commit. Its original generation used CairoSVG 2.9.1
-and Pillow 12.3.0. No geometry or color changes were made for this landing page.
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install CairoSVG Pillow
+```
+
+Then run the generator from the repository root:
+
+```sh
+.venv/bin/python scripts/generate-brand-assets.py
+```
+
+The generator recreates the brand variants and the runtime icons used by the
+web, landing, and desktop apps. It does not rewrite the canonical source.
+
+Runtime output paths are:
+
+- `spa/public/favicon.svg`, `icon-192.png`, `icon-512.png`, and
+  `apple-touch-icon.png`
+- `skriftapp/buildapp/landing/favicon.svg`, `favicon.png`, and `brand-mark.svg`
+- `desktop/assets/icon.png`, `icon.ico`, and `icon.icns`
+
+Generation was verified with CairoSVG 2.9.1 and Pillow 12.3.0.
+
+The landing page uses the transparent mark and black-on-mint favicon from these
+canonical assets. The screen-capture fixture keeps an identical transparent
+mark at `design/landing-captures/build-mark.svg`. No geometry or color changes
+were made for the landing page.

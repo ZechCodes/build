@@ -68,15 +68,17 @@ vi.mock("../src/core/changeEvents.js", () => ({
 }));
 
 const { App, resetApplication } = await import("../src/app.js");
-const { contextFor, onDeviceStateChanged } = await import("../src/core/deviceContexts.js");
+const { adoptBridgeSelection, contextFor, onDeviceStateChanged } = await import("../src/core/deviceContexts.js");
 const {
   connectDevice,
+  deviceRecoverySnapshot,
   goOffline,
   greetLiveBridge,
   openDeviceSessions,
   openDeviceSettingsSession,
   retireDevice,
   securityStopText,
+  syncDeviceRecoveryPresence,
 } = await import("../src/connection.js");
 
 // Every channel the terminals were sent to ride, in order: what the manager
@@ -358,36 +360,57 @@ describe("the connect sequence", () => {
     await openDeviceSessions().settled;
     await connectDevice("dev-a").catch(() => {});
     expect(sockets()).toHaveLength(dialled);
+    expect(deviceRecoverySnapshot("dev-a")).toBe(null);
   });
 });
 
 describe("a connection that goes after it was live", () => {
-  it("blocks the device with lost when a channel closes, and hands both streams back", async () => {
+  it("hands both streams back and immediately reconnects an online device when a channel closes", async () => {
     const link = fakeLink();
     linkOpensWith(link);
     await connect("dev-a");
+    const dialled = sockets().length;
     handedOver.length = 0;
 
     link.app.drop();
     await settle();
 
     const context = contextFor("dev-a");
-    expect(context.blocked).toBe("lost");
-    expect(context.peerLink).toBe(null);
-    expect(handedOver.at(-1)).toBe(null); // the shells have no wire to type down
-    expect(link.close).toHaveBeenCalledTimes(1);
+    expect(sockets()).toHaveLength(dialled + 1);
+    expect(context.blocked).toBe(null);
+    expect(context.peerLink).toBe(link);
+    expect(handedOver).toContain(null); // the lost lifetime first hands the shells back
+    expect(handedOver.at(-1)).toBe(link.term); // the fresh lifetime restores their wire
+    expect(link.close).toHaveBeenCalledTimes(1); // only the departed lifetime closes it
   });
 
-  it("blocks it the same way when the terminal half is the one that goes", async () => {
+  it("reconnects the whole device when the terminal half is the one that goes", async () => {
     const link = fakeLink();
     linkOpensWith(link);
     await connect("dev-a");
+    const dialled = sockets().length;
 
     link.term.drop();
     await settle();
 
-    expect(contextFor("dev-a").blocked).toBe("lost");
+    expect(sockets()).toHaveLength(dialled + 1);
+    expect(contextFor("dev-a").blocked).toBe(null);
     expect(link.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not redial a version-incompatible device when its established link goes", async () => {
+    const link = fakeLink();
+    linkOpensWith(link);
+    await connect("dev-a");
+    const context = contextFor("dev-a");
+    adoptBridgeSelection(context, { unsupported: "app", version: "99.0.0" }, null);
+    const dialled = sockets().length;
+
+    link.app.drop();
+    await settle();
+
+    expect(sockets()).toHaveLength(dialled);
+    expect(deviceRecoverySnapshot("dev-a")).toBe(null);
   });
 
   it("reopens the rendezvous for an ICE restart, and closes it again once it carries", async () => {
@@ -468,6 +491,27 @@ describe("a connection that goes after it was live", () => {
     finishGreeting(true);
     await connecting;
     expect(reopened.readyState).toBe(3);
+  });
+
+  it("backs off when the adopted carrier drops before the initial greeting finishes", async () => {
+    let failGreeting;
+    const link = fakeLink();
+    linkOpensWith(link);
+    greetings.greet.mockImplementationOnce(
+      () => new Promise((_, reject) => { failGreeting = reject; }),
+    );
+    App.devices = [{ id: "dev-a", name: "Laptop", status: "online" }];
+    syncDeviceRecoveryPresence(App.devices);
+
+    const connecting = connectDevice("dev-a");
+    await settle();
+    link.app.drop();
+    failGreeting(new Error("greeting carrier dropped"));
+    await expect(connecting).rejects.toThrow("greeting carrier dropped");
+    await settle();
+
+    expect(sockets()).toHaveLength(1);
+    expect(deviceRecoverySnapshot("dev-a")).toMatchObject({ status: "waiting", failedAttempts: 1 });
   });
 
   it("ignores restart callbacks captured before force close and a new retry", async () => {

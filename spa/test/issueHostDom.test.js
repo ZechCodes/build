@@ -107,6 +107,7 @@ describe("an issue on another device", () => {
 describe("an issue on a device that has gone offline", () => {
   it("an offline route device renders the offline state naming that device", async () => {
     const contexts = await import("../src/core/deviceContexts.js");
+    App.devices = App.devices.map((device) => device.id === "dev-2" ? { ...device, status: "offline" } : device);
     contexts.setContextOffline("dev-2");
 
     await renderIssue();

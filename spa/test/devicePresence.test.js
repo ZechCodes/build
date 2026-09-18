@@ -15,14 +15,17 @@ const connection = vi.hoisted(() => ({
   openDeviceSessions: vi.fn(() => ({ first: Promise.resolve(null), settled: Promise.resolve([]) })),
   deviceWentAway: vi.fn(),
   syncHome: vi.fn(),
+  syncDeviceRecoveryPresence: vi.fn(),
 }));
 const account = vi.hoisted(() => ({ fetchDevices: vi.fn() }));
 
 vi.mock("../src/api.js", () => ({ fetchDevices: (...args) => account.fetchDevices(...args) }));
 vi.mock("../src/connection.js", () => ({
+  deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   openDeviceSessions: (...args) => connection.openDeviceSessions(...args),
   deviceWentAway: (...args) => connection.deviceWentAway(...args),
   syncHome: (...args) => connection.syncHome(...args),
+  syncDeviceRecoveryPresence: (...args) => connection.syncDeviceRecoveryPresence(...args),
   chooseCreationDevice: () => {},
   connectDevice: () => Promise.resolve(null),
   goOffline: () => {},
@@ -56,6 +59,7 @@ beforeEach(() => {
   connection.openDeviceSessions.mockClear();
   connection.deviceWentAway.mockClear();
   connection.syncHome.mockClear();
+  connection.syncDeviceRecoveryPresence.mockClear();
 });
 
 afterEach(() => {
@@ -115,6 +119,33 @@ describe("the presence poll", () => {
 
     expect(connection.openDeviceSessions).toHaveBeenCalledTimes(1);
     expect(connection.syncHome).toHaveBeenCalled();
+  });
+
+  it("keeps the last known presence when the device read fails", async () => {
+    App.devices = [online("dev-a")];
+    account.fetchDevices.mockRejectedValueOnce(new Error("api unavailable"));
+
+    const result = await (await import("../src/devices.js")).readPresence();
+
+    expect(result).toBeNull();
+    expect(App.devices).toEqual([online("dev-a")]);
+    expect(connection.syncDeviceRecoveryPresence).not.toHaveBeenCalled();
+  });
+
+  it("ignores a presence response that lands after watching stops", async () => {
+    App.devices = [online("dev-a")];
+    let resolveRead;
+    account.fetchDevices.mockImplementationOnce(() => new Promise((resolve) => { resolveRead = resolve; }));
+    const pending = (await import("../src/devices.js")).readPresence();
+    stopWatchingPresence();
+
+    resolveRead([away("dev-a")]);
+    await expect(pending).resolves.toBeNull();
+
+    expect(App.devices).toEqual([online("dev-a")]);
+    expect(connection.syncDeviceRecoveryPresence).not.toHaveBeenCalled();
+    expect(connection.openDeviceSessions).not.toHaveBeenCalled();
+    expect(connection.deviceWentAway).not.toHaveBeenCalled();
   });
 
   // The other half of rule 6: the bridge stopped posting its heartbeat, so the

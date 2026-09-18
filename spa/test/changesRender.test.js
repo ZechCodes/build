@@ -127,12 +127,20 @@ describe("commitRowHtml", () => {
     expect(commitRowHtml(commit({ ahead_of_base: true }), { nowSeconds: NOW })).toContain("ahead");
     expect(commitRowHtml(commit(), { selected: true, nowSeconds: NOW })).toContain("sel");
   });
+
+  it("marks commits included in All changes as not pushed", () => {
+    const html = commitRowHtml(commit({ unpushed: true }), { nowSeconds: NOW });
+    expect(html).toContain('class="crow unpushed"');
+    expect(html).toContain('title="Not pushed"');
+    expect(commitRowHtml(commit({ unpushed: false }), { nowSeconds: NOW })).not.toContain("Not pushed");
+  });
 });
 
 describe("uncommittedHeaderHtml", () => {
-  it("names the changeset with its +/− counts", () => {
+  it("shows the changeset counts without repeating its rail label", () => {
     const html = uncommittedHeaderHtml(status());
-    expect(html).toContain("Uncommitted changes");
+    expect(html).not.toContain("Uncommitted changes");
+    expect(html).toContain("2 files");
     expect(html).toContain("+7");
     expect(html).toContain("−3");
   });

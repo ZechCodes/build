@@ -21,12 +21,12 @@ import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
 import "../styles/surfaces.css";
 
-function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext }) {
+function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection }) {
   body.innerHTML = `<div class="workspace-gitpane"></div>`;
   const refbar = document.createElement("div");
   refbar.className = "workspace-refbar";
   const gitHost = body.querySelector(".workspace-gitpane");
-  let gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext });
+  let gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection });
   let disposed = false;
   const attachRefbar = () => {
     const rail = gitHost.querySelector(".crail-host");
@@ -41,7 +41,7 @@ function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, v
   const refPicker = mountWorkspaceRefPicker(refbar, { scope, callRpc, onCheckout: async () => {
       if (disposed) return;
       gitPane.dispose();
-      gitPane = mountGitPane(gitHost, { scope, callRpc, projectId, navigate, viewingContext });
+      gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection });
     } });
   return { dispose: () => {
     disposed = true;
@@ -99,13 +99,14 @@ function installWorkspaceAction(state, workspace) {
   setToolbarVerb(render);
 }
 
-function mountDirectoryPane(body, { directory, canonical, scope, callRpc, cacheScope }) {
+function mountDirectoryPane(body, { directory, canonical, scope, callRpc, cacheScope, agentSelection }) {
   const navigate = { openFile: ({ path, line }) => go({ ...canonical, tab: "files", file: path, line }) };
   if (canonical.tab !== "files") {
     return mountChanges(body, {
       scope,
       callRpc,
       cacheScope,
+      agentSelection,
       projectId: canonical.projectId,
       navigate,
       viewingContext: App.viewingContext,
@@ -250,6 +251,7 @@ function refreshWorkspacePane(state, workspace) {
     scope: workspaceScope(state.route.workspaceId, sourceId),
     callRpc: state.callRpc,
     cacheScope: state.context.cacheScope,
+    agentSelection: state.selection,
   });
   App.routeLeaveGuard = state.pane?.canLeave || null;
   return { directory, canonical, body };
@@ -275,7 +277,7 @@ function mountWorkspaceAgentRail(workspace, state, sourceId) {
     callRpc: context.rpc,
     cacheScope: context.cacheScope,
     chatRepository: context.chatRepository,
-    selection: createAgentSelection(),
+    selection: state.selection,
   });
 }
 
@@ -320,7 +322,7 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { route, context, callRpc: context.rpc, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [] };
+  const state = { selection: createAgentSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [] };
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   // This machine answers now. If it goes while the workspace is open, what was
   // read stays on screen and the strip says whose state that is — but only once

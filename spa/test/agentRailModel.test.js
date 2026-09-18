@@ -10,7 +10,7 @@ import {
   agentSessionIsLive,
   agentHeading,
   agentPattern,
-  agentTitle,
+  agentWho,
   bubbleTip,
   canRemoveAgent,
   providerLabel,
@@ -57,13 +57,22 @@ describe("what the conversation is called", () => {
 });
 
 describe("who an agent is", () => {
-  it("names the harness and which one of it this is", () => {
+  it("names the harness", () => {
     expect(providerLabel("claude_adk")).toBe("Claude Code");
     expect(providerLabel("codex_app_server")).toBe("Codex");
     expect(providerLabel("codex")).toBe("Codex TUI");
     // An agent is locked to its harness, so the bubble says which one it is.
     expect(providerLabel("claude")).toBe("Claude Code TUI");
-    expect(agentTitle(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex TUI 2");
+  });
+
+  // The ordinal is the agent's place on the strip — it picks the face the
+  // bubble wears, and it is never read out: "Codex TUI 2" named a harness and a
+  // number where the human had already named the work.
+  it("names an agent by its topic, and by its harness alone until it has one", () => {
+    expect(agentWho(agent({ ordinal: 2, provider: "codex", topic: "Fix login redirect" })))
+      .toBe("Fix login redirect");
+    expect(agentWho(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex TUI");
+    expect(agentWho(agent({ ordinal: 3, topic: "   " }))).toBe("Claude Code");
   });
 
   it("says what an unnamed provider is, rather than nothing", () => {
@@ -72,10 +81,21 @@ describe("who an agent is", () => {
   });
 
   it("tells the bubble what it is waiting on", () => {
-    expect(bubbleTip(agent({ working: true }))).toBe("Claude Code 1 — working");
-    expect(bubbleTip(agent({ unread_count: 3, unread_reason: "done" })))
-      .toBe("Claude Code 1 — The agent finished — review the work");
-    expect(bubbleTip(agent())).toBe("Claude Code 1");
+    const named = { topic: "Fix login redirect" };
+    expect(bubbleTip(agent({ ...named, working: true }))).toBe("Fix login redirect — working");
+    expect(bubbleTip(agent({ ...named, unread_count: 3, unread_reason: "done" })))
+      .toBe("Fix login redirect — The agent finished — review the work");
+    expect(bubbleTip(agent(named))).toBe("Fix login redirect");
+  });
+
+  // Until the agent names its work there is no topic to hover, and the strip
+  // may be two agents on the same harness deep: the tip says the harness so the
+  // hover is still worth something, and the painted face tells them apart.
+  it("says the harness on a bubble whose agent has not named its work yet", () => {
+    expect(bubbleTip(agent())).toBe("Starting · Claude Code");
+    expect(bubbleTip(agent({ working: true }))).toBe("Starting · Claude Code — working");
+    expect(bubbleTip(agent({ provider: "codex", unread_count: 2, unread_reason: "blocked" })))
+      .toBe("Starting · Codex TUI — Blocked — the agent needs you");
   });
 });
 
@@ -106,7 +126,8 @@ describe("an agent whose start has been asked for", () => {
     expect(agentSessionAnswered(failed)).toBe(true);
     expect(agentSessionAnswered(agent({ state: "live" }))).toBe(true);
     expect(agentSessionAnswered(agent({ state: "idle" }))).toBe(false);
-    expect(bubbleTip(failed)).toBe("Claude Code 1 — could not reach the agent: gone");
+    expect(bubbleTip(agent({ ...failed, topic: "Fix login redirect" })))
+      .toBe("Fix login redirect — could not reach the agent: gone");
   });
 
   // Said once, and only about a start this rail was already showing an agent
@@ -125,15 +146,19 @@ describe("an agent whose start has been asked for", () => {
     const bubbles = railBubbles({ agents: [agent({ state: AGENT_STARTING })], selectedId: null, kind: "branch" });
     expect(bubbles[0].starting).toBe(true);
     expect(bubbles[0].live).toBe(false);
-    expect(bubbleTip(agent({ state: AGENT_STARTING }))).toBe("Claude Code 1 — starting…");
+    expect(bubbleTip(agent({ state: AGENT_STARTING, topic: "Fix login redirect" })))
+      .toBe("Fix login redirect — starting…");
+    // A bubble with no topic yet already opens on "Starting"; saying it twice
+    // tells the hover nothing it did not already have.
+    expect(bubbleTip(agent({ state: AGENT_STARTING }))).toBe("Starting · Claude Code");
     expect(railBubbles({ agents: [agent()], selectedId: null, kind: "branch" })[0].starting).toBe(false);
   });
 
   // Unread wins over starting the way it wins over working: an agent that asked
   // something before its session dropped is still asking.
   it("still says what it is waiting on", () => {
-    expect(bubbleTip(agent({ state: AGENT_STARTING, unread_count: 2, unread_reason: "blocked" })))
-      .toBe("Claude Code 1 — Blocked — the agent needs you");
+    expect(bubbleTip(agent({ state: AGENT_STARTING, unread_count: 2, unread_reason: "blocked", topic: "Fix login redirect" })))
+      .toBe("Fix login redirect — Blocked — the agent needs you");
   });
 });
 
@@ -264,23 +289,32 @@ describe("which agent can be taken back off", () => {
   });
 
   it("outlines what removal actually does before it is confirmed", () => {
-    const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2, provider: "codex" }));
-    expect(plan.title).toBe("Remove Codex TUI 2 from this branch?");
+    const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2, provider: "codex", topic: "Fix login redirect" }));
+    expect(plan.title).toBe('Remove "Fix login redirect" from this branch?');
     expect(plan.actions).toEqual([
       "End the agent's session, if one is running",
-      "Remove Codex TUI 2 and its conversation from the branch",
+      'Remove "Fix login redirect" and its conversation from the branch',
       "Leave the branch and its files untouched",
     ]);
     expect(plan.confirmLabel).toBe("Remove agent");
     expect(plan.danger).toBe(true);
   });
 
+  // Nothing to quote yet: the prompt points at the agent the press came from
+  // rather than inventing a name for it.
+  it("names an agent that has not set a topic by its harness", () => {
+    const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2 }));
+    expect(plan.title).toBe("Remove this Claude Code agent from this branch?");
+    expect(plan.actions[1]).toBe("Remove this Claude Code agent and its conversation from the branch");
+  });
+
   it("names a workspace when removing one of its agents", () => {
-    const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2, provider: "codex" }), "workspace");
-    expect(plan.title).toBe("Remove Codex TUI 2 from this workspace?");
+    const plan = removeAgentConfirm(
+      agent({ id: "ag-2", ordinal: 2, provider: "codex", topic: "Fix login redirect" }), "workspace");
+    expect(plan.title).toBe('Remove "Fix login redirect" from this workspace?');
     expect(plan.actions).toEqual([
       "End the agent's session, if one is running",
-      "Remove Codex TUI 2 and its conversation from the workspace",
+      'Remove "Fix login redirect" and its conversation from the workspace',
       "Leave the workspace and its files untouched",
     ]);
   });

@@ -1,0 +1,40 @@
+{
+  "method": "workspace.rename",
+  "since": "1.1.0",
+  "params": {
+    "workspace_id": "ws-3f2a91c4",
+    "name": "wire facade, take two"
+  },
+  "result": {
+    "id": "ws-3f2a91c4",
+    "workspace_id": "ws-3f2a91c4",
+    "project_id": "proj-1",
+    "name": "wire facade, take two",
+    "root": "/home/ada/.build/workspaces/proj-1/wire-facade",
+    "status": "ready",
+    "directories": [
+      {
+        "id": "ws-3f2a91c4:source-1",
+        "source_id": "source-1",
+        "name": "bridge",
+        "path": "/home/ada/.build/workspaces/proj-1/wire-facade/bridge",
+        "is_git": true,
+        "branch": "build/wire-facade",
+        "isolation": "worktree",
+        "status": "ready",
+        "error": null
+      }
+    ],
+    "entity_id": null,
+    "run_id": null,
+    "agents": [],
+    "thread": null,
+    "run": null
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
+}

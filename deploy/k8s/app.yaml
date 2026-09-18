@@ -1,6 +1,6 @@
 # The Skrift app: auth, device registry, gateway tokens, web push, SPA host.
 # Secrets (build-app: SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL, VAPID_*,
-# CF_TURN_KEY_ID, CF_TURN_KEY_API_TOKEN, GITHUB_RELEASES_TOKEN,
+# CF_TURN_KEY_ID, CF_TURN_KEY_API_TOKEN,
 # SMTP_USERNAME, SMTP_PASSWORD,
 # SMTP_FROM_ADDRESS, WAITLIST_NOTIFY_ADDRESS) come from
 # deploy/k8s/bootstrap-secrets.sh — never from git.
@@ -94,15 +94,9 @@ spec:
                   name: build-app
                   key: CF_TURN_KEY_API_TOKEN
                   optional: true
-            # Read-only GitHub PAT for the bridge's release assets (optional:
-            # absent = the download routes 302 to the public assets, which is
-            # what they do once build-web is public). See bootstrap-secrets.sh.
-            - name: GITHUB_RELEASES_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: build-app
-                  key: GITHUB_RELEASES_TOKEN
-                  optional: true
+            # Public release repository; keep aligned with the Actions variable.
+            - name: RELEASES_REPO
+              value: ZechCodes/build-releases
             # Outbound email (waitlist confirmation + owner notification) over
             # FastMail SMTP. The three SMTP keys are NOT optional: app.yaml
             # interpolates $SMTP_USERNAME, $SMTP_PASSWORD and $SMTP_FROM_ADDRESS

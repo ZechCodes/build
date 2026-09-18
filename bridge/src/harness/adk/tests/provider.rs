@@ -27,6 +27,10 @@ fn the_headless_spec_runs_claude_over_stream_json_on_both_ends() {
     );
     assert!(args.contains("--dangerously-skip-permissions"), "{args}");
     assert!(
+        args.contains("--settings") && args.contains("PreCompact"),
+        "the no-op compaction hook makes the start boundary observable: {args}"
+    );
+    assert!(
         !args.contains("--continue"),
         "nothing to continue was asked for: {args}"
     );
@@ -68,8 +72,16 @@ fn the_headless_spec_carries_exactly_the_interactive_mcp_wiring() {
         .spec(&ModelChoice::default(), &options, &context())
         .unwrap();
 
+    let mcp_env = |spec: &HarnessSpec| {
+        spec.env
+            .iter()
+            .filter(|(key, _)| key.starts_with("BRIDGE_MCP_"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        headless.env, interactive.env,
+        mcp_env(&headless),
+        mcp_env(&interactive),
         "the same socket and the same per-process capability"
     );
     assert_eq!(

@@ -56,9 +56,15 @@ const CATALOG = {
   }],
 };
 
+/** The head says the topic the agent named its work with, so these cases give
+ *  each fixture agent one — that name is how they pin which conversation the
+ *  panel is open on. */
+const TOPICS = { "agent-a": "Fix login redirect", "agent-b": "Polish the rail" };
+
 const agent = (id, ordinal, over = {}) => ({
   id,
   ordinal,
+  topic: TOPICS[id] || "",
   conversation_id: `conversation-${id}`,
   provider: "claude_adk",
   state: "live",
@@ -192,7 +198,7 @@ describe("agent rail chat ownership", () => {
     expect(input()).toBe(focusedInput);
     expect(document.activeElement).toBe(focusedInput);
     expect(input().value).toBe("A stays in focus");
-    expect(host().querySelector(".rail-who").getAttribute("title")).toContain("1");
+    expect(host().querySelector(".rail-who").getAttribute("title")).toBe("Fix login redirect");
 
     bubble("agent-b").click();
     await flush();
@@ -483,7 +489,7 @@ describe("agent rail chat ownership", () => {
 
     expect(input()).toBe(selectedInput);
     expect(input().value).toBe("agent B remains selected");
-    expect(host().querySelector(".rail-who").getAttribute("title")).toContain("2");
+    expect(host().querySelector(".rail-who").getAttribute("title")).toBe("Polish the rail");
     expect(host().querySelector(".rail-newagent")).toBeNull();
     expect(bubble("agent-b").classList.contains("active")).toBe(true);
   });

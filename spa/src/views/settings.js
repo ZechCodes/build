@@ -19,19 +19,9 @@ import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
-import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
-import { chosenProviderId } from "../core/agentChoice.js";
+import { harnessDefaultsPanelHtml, mountHarnessDefaults } from "../core/harnessDefaults.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
 import { onDeviceStateChanged } from "../core/deviceContexts.js";
-import {
-  catalogForProvider,
-  effortOptionsHtml,
-  effortSupported,
-  modelInCatalog,
-  modelOptionsHtml,
-  providerOptionsHtml,
-  creatableCatalog,
-} from "../core/modelPicker.js";
 
 /** One paired machine: what it is called, the key it holds, whether it is
  *  reachable, the way to its own settings, and the way to unpair it. The link
@@ -134,16 +124,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
         <div class="dim" id="creationfallback" style="font-size:12.5px;margin-top:6px" role="status"></div>
       </div>
     </div>
-    <div class="panel">
-      <h3>🤖 Browser agent defaults</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:10px">What a new issue created in this browser starts with. You can still change any of it per issue, under the harness button in the New issue sheet.</div>
-      <div class="field-row" style="display:flex;gap:10px;flex-wrap:wrap">
-        <div class="field" style="flex:1;min-width:150px"><label>Agent</label><select id="defprovider"><option>loading…</option></select></div>
-        <div class="field" style="flex:1;min-width:150px"><label>Model</label><select id="defmodel"><option value="">Harness default</option></select></div>
-        <div class="field" style="flex:1;min-width:150px"><label>Reasoning effort</label><select id="defeffort"><option value="">Default effort</option></select></div>
-      </div>
-      <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
-    </div>
+    ${harnessDefaultsPanelHtml()}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -175,42 +156,14 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   if (!isCurrent()) return;
   bindThemeControl($("#themepick"));
 
-  // The agent defaults panel: the same three selectors the New issue sheet hides
-  // behind its harness button, saved on every change (there is no Save button —
-  // a preference with a commit step is a preference people forget to commit).
+  // The agent defaults panel: a model and effort per harness, and the harness
+  // new work starts on, read from the creation device's own catalog and saved
+  // on every change.
   async function mountAgentDefaults() {
-    const providerSelect = $("#defprovider");
-    if (!providerSelect) return;
+    if (!$("#defprovider")) return;
     const catalog = await deviceCatalog(null);
     if (!isCurrent()) return;
-    let current = loadAgentDefaults();
-    const note = $("#defsaved");
-
-    // These defaults are spent creating agents, so they offer what every create
-    // surface offers: the two agents, never the carrier behind either family —
-    // that question is the machine's, and is asked on its own page.
-    const offered = creatableCatalog(catalog);
-
-    const paint = () => {
-      providerSelect.innerHTML = providerOptionsHtml(offered.providers, chosenProviderId(offered, current));
-      const providerCatalog = catalogForProvider(offered, providerSelect.value);
-      $("#defmodel").innerHTML = modelOptionsHtml(providerCatalog.models, modelInCatalog(providerCatalog.models, current.model));
-      const supported = effortSupported(providerCatalog.models, $("#defmodel").value);
-      $("#defeffort").innerHTML = effortOptionsHtml(providerCatalog.efforts, supported ? current.effort : "", $("#defmodel").value);
-      $("#defeffort").disabled = !supported;
-    };
-    const store = (next, message) => {
-      current = saveAgentDefaults(next);
-      paint();
-      if (note) note.textContent = message;
-    };
-
-    paint();
-    providerSelect.onchange = () =>
-      store(reconcileAgentDefaults({ ...current, provider: providerSelect.value }, { providerChanged: true }), "Saved.");
-    $("#defmodel").onchange = () =>
-      store(reconcileAgentDefaults({ ...current, model: $("#defmodel").value }, { modelChanged: true }), "Saved.");
-    $("#defeffort").onchange = () => store({ ...current, effort: $("#defeffort").value }, "Saved.");
+    mountHarnessDefaults(root, { catalog });
   }
 
   // Notifications: a single toggle backed by the browser's push subscription.

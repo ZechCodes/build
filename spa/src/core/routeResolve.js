@@ -1,11 +1,14 @@
 // Turning a URL that does not say enough into a work item.
 //
-// Two kinds of URL end up here. The old ones addressed runs, worktrees, plans
-// and primary checkouts by id; the new ones address a branch by (project,
-// branch name) and an issue by (project, issue id), so the ids that survived
-// need a lookup. And any work URL that names no device needs one too: every
-// device mints a `proj-1`, so a bare project id names a project only once
-// something says which machine it is on.
+// Two kinds of URL end up here. The old ones addressed runs, worktrees and
+// plans by id; the new ones address a branch by (project, branch name) and an
+// issue by (project, issue id), so the ids that survived need a lookup. A URL
+// that addressed a project's own checkout is not among them: a project is a
+// template, so that URL opens the project's inbox and never gets this far.
+//
+// And any work URL that names no device needs a lookup too: every device mints
+// a `proj-1`, so a bare project id names a project only once something says
+// which machine it is on.
 //
 // The feed carries every half — its items[] rows, its projects and its
 // workspaces all know the device that answered — so this is a lookup plus a
@@ -74,12 +77,10 @@ const byId = (field) => (ref, feed) => feed.items.filter((row) => row[field] ===
 const REFERENCE_KINDS = Object.freeze({
   run: { rows: byId("run_id"), route: branchRouteFor },
   worktree: { rows: byId("worktree_id"), route: branchRouteFor },
-  // A primary checkout is named by its project alone, so the project has to
-  // match — the primary row of some other project is not what the URL meant.
-  primary: {
-    rows: (ref, feed) => feed.items.filter((row) => row.primary && row.project_id === ref.projectId),
-    route: branchRouteFor,
-  },
+  // There is no `primary` kind: a URL that named a project's own checkout has
+  // nothing to look up any more. The base checkout is the template workspaces
+  // are cut from, never a surface, so those URLs land on the project's inbox
+  // without asking any device (core/router.js projectSurface).
   issue: { rows: byId("issue_id"), route: issueRouteFor },
   // A plain folder has no work row at all, so the projects answer for it, and a
   // workspace link that named no device is answered by the workspaces: each is
@@ -117,7 +118,7 @@ const onItsDevice = (route, row) => (route && row.deviceId ? { ...route, deviceI
  * that id (deleted, or not yet polled — the caller decides whether to wait or
  * land on the inbox).
  *
- * @param ref {kind: 'run'|'worktree'|'issue'|'primary'|'project', id?, projectId?, deviceId?, route?, tab?, stage?}
+ * @param ref {kind: 'run'|'worktree'|'issue'|'project', id?, projectId?, deviceId?, route?, tab?, stage?}
  * @param feed {items, projects, workspaces} — the merge, every device's rows at once
  * @param policy {homeDeviceId, deviceOrder} — which device wins a collision
  */

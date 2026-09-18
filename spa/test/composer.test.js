@@ -73,6 +73,32 @@ describe("what a paste means", () => {
     expect(intent.asFile).toBe(null);
   });
 
+  // Chromium on Linux offers a pasted screenshot as a file AND as an item, and
+  // `getAsFile()` mints a new File object each call — so the same image came
+  // through twice, and the tray showed two chips for one paste.
+  it("counts an image the clipboard offers as both a file and an item once", () => {
+    const stamp = 1700000000000;
+    const asFile = new File(["png"], "image.png", { type: "image/png", lastModified: stamp });
+    const asItem = new File(["png"], "image.png", { type: "image/png", lastModified: stamp });
+    const intent = pasteIntent({
+      files: [asFile],
+      items: [{ kind: "file", type: "image/png", getAsFile: () => asItem }],
+      getData: () => "",
+    });
+    expect(intent.files).toEqual([asFile]);
+  });
+
+  it("keeps two different files pasted together", () => {
+    const one = new File(["a"], "a.png", { type: "image/png" });
+    const two = new File(["bb"], "b.png", { type: "image/png" });
+    const intent = pasteIntent({
+      files: [one],
+      items: [{ kind: "file", type: "image/png", getAsFile: () => two }],
+      getData: () => "",
+    });
+    expect(intent.files).toEqual([one, two]);
+  });
+
   it("finds an image pasted as a clipboard item rather than a file", () => {
     const png = new File(["png"], "image.png", { type: "image/png" });
     const intent = pasteIntent({

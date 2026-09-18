@@ -204,6 +204,16 @@ way a run standing in the project's own repository does, so the next
 `project.ensure_conversation` hands the new owner back everything the last one
 wrote.
 
+A project's conversation owner is not one of that project's workspaces. It is a
+run standing in Build's scratch directory, and legacy adoption — which imports
+every run with no base branch whose root no manifest names — used to import it as
+one. `workspace.list`, the feed and the project agent's own `list_workspaces`
+then carried a workspace named after the project, rooted in the scratch
+directory, and the agent found itself in its own list, read its own roster and
+sent itself work. Adoption skips project conversation owners, and
+`workspace_conversation_owner` never answers one, so no workspace resolves to the
+project's own roster however it is addressed.
+
 What a project agent starts on — its harness, model and reasoning effort — is a
 DEVICE setting, held by the bridge beside `default_harness` and carried on
 `settings.get` / `settings.set` as `project_agent: { provider?, model?, effort? }`

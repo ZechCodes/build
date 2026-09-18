@@ -309,13 +309,16 @@ impl AppState {
         &self,
         workspace: &Workspace,
     ) -> Option<String> {
-        if self.runs.contains_key(&workspace.id) {
+        if self.runs.contains_key(&workspace.id)
+            && !self.is_project_conversation_owner(&workspace.id)
+        {
             return Some(workspace.id.clone());
         }
         self.runs
             .iter()
             .find(|(run_id, active)| {
                 !active.run.state.is_terminal()
+                    && !self.is_project_conversation_owner(run_id)
                     && self.projects.project_id_of(run_id) == Some(workspace.project_id.as_str())
                     && same_path(&active.worktree.path, &workspace.root)
             })
@@ -633,6 +636,12 @@ impl AppState {
         // their root is already represented by the manifest, so do not also
         // import them as legacy one-directory workspaces. Real Git adoptions
         // retain their base branch and their run-id workspace compatibility.
+        //
+        // A project's conversation owner is the same shape and no workspace at
+        // all: it stands in Build's own scratch directory, which no manifest
+        // names, so the root test above would import it. A project is not one
+        // of its own workspaces — adopting it put the project agent in its own
+        // `list_workspaces`, where it found itself and sent itself work.
         let workspace_roots = self
             .workspaces
             .list(None)
@@ -642,6 +651,7 @@ impl AppState {
         let runs = self
             .runs
             .values()
+            .filter(|run| !self.is_project_conversation_owner(&run.run.id.0))
             .filter(|run| {
                 !run.worktree.base_branch.is_empty()
                     || !workspace_roots

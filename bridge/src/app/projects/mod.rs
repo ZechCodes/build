@@ -22,6 +22,8 @@ pub(in crate::app) use agent_writes::{
     AgentChoiceArgs, ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
 mod conversation;
+#[cfg(test)]
+pub(in crate::app) use conversation::PROJECT_SCRATCH_DIR_NAME;
 mod deletion;
 mod lifecycle;
 mod list;

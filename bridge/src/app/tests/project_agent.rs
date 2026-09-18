@@ -1104,3 +1104,73 @@ fn a_project_agent_changes_only_its_own_projects_workspaces() {
         );
     }
 }
+
+// ==== the project's own conversation is not a workspace ====================
+
+/// A project's conversation owner stands in a scratch directory, not in a
+/// checkout — so it is not a workspace, and nothing that lists workspaces may
+/// hand it back.
+///
+/// It used to: legacy adoption imports every run with no base branch whose root
+/// is not already a workspace root, and the project's owner is exactly that.
+/// The project agent then read itself out of `list_workspaces`, listed its own
+/// agents, and sent itself a message.
+#[test]
+fn a_projects_conversation_owner_is_never_one_of_its_own_workspaces() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let real = workspace(&mut state, &project_id, "one");
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+    let scratch = state_root.join(crate::app::projects::PROJECT_SCRATCH_DIR_NAME);
+
+    let listed = state.handle(req("workspace.list", json!({ "project_id": project_id })));
+    let workspaces = listed["result"]["workspaces"].as_array().unwrap().clone();
+    for workspace in &workspaces {
+        let root = workspace["root"].as_str().unwrap_or_default();
+        assert!(
+            !std::path::Path::new(root).starts_with(&scratch),
+            "the project's scratch root is not a workspace: {workspace:?}"
+        );
+        assert_ne!(
+            workspace["workspace_id"],
+            json!(owner),
+            "the project's conversation owner is not a workspace: {workspace:?}"
+        );
+    }
+    assert!(
+        workspaces
+            .iter()
+            .any(|workspace| workspace["workspace_id"] == json!(real)),
+        "the real workspace is still there: {listed:?}"
+    );
+
+    // The agent's own read answers the same list, so it never finds itself.
+    let mine = state
+        .on_agent_mcp_action(&owner, &agent_id, BridgeAction::ListWorkspaces)
+        .expect("a project agent reads its own workspaces");
+    assert_eq!(mine["workspaces"], json!(workspaces), "{mine:?}");
+
+    // And no workspace, real or invented, answers the project owner's roster.
+    for workspace_id in [real.as_str(), owner.as_str()] {
+        let agents = state.on_agent_mcp_action(
+            &owner,
+            &agent_id,
+            BridgeAction::ListWorkspaceAgents {
+                workspace_id: workspace_id.to_string(),
+            },
+        );
+        let listed = agents.unwrap_or_else(|_| json!({ "agents": [] }));
+        assert!(
+            !listed["agents"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .any(|agent| agent["id"] == json!(agent_id)),
+            "{workspace_id}: a project agent is never a workspace agent: {listed:?}"
+        );
+    }
+}

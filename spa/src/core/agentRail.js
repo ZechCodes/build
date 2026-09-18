@@ -658,14 +658,14 @@ export function mountAgentRail(host, context) {
   // lands.
   const payloads = new Map();
   let live = null;
+  // The project's side, built from the work item's last read: that read is
+  // where the workspace's name is, and a message sent over there names it.
+  const projectSide = () => projectAgentContext(context, known, payloads.get(context.kind));
   // Whether the panel is out belongs to the HOST, not to either conversation:
   // the swap is a re-mount, and a re-mount that read the pin again would shut
   // an unpinned card the reader had open. A press that crosses the line is a
   // press on another conversation's bubble, so it leaves the panel exactly
   // where pressing a bubble below the line leaves it — out.
-  // The project's side, built from the work item's last read: that is where the
-  // workspace's name is, and a message sent over there names it.
-  const projectSide = () => projectAgentContext(context, known, payloads.get(context.kind));
   const stand = (standing, alongside, { panelOpen = null } = {}) => {
     live?.dispose();
     live = mountRailOnContext(host, {

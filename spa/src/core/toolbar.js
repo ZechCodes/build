@@ -44,9 +44,8 @@ import { deviceKey, routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { stampWorkspace } from "./feedMerge.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
-import { workspaceRoute } from "./projectModel.js";
+import { projectRoute, workspaceRoute } from "./projectModel.js";
 import { directoryTab, standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
-import { revealInbox } from "./inboxShell.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
@@ -265,26 +264,19 @@ function paint({ entering = false } = {}) {
     });
     const settings = host.querySelector("[data-workspace-settings]");
     if (settings) settings.onclick = () => openStandingWorkspaceSettings();
-    const back = host.querySelector("[data-project-inbox]");
+    const back = host.querySelector("[data-project-back]");
     if (back) back.onclick = () => goBackToProject();
   }
   paintVerb();
   if (open) paintMenu();
 }
 
-/** Out of the workspace, back to the project it was cut from: the rail standing
- *  in that project, on the machine the workspace is on, with its workspaces
- *  listed. A rail that is away is shown, or the press would only blank the view. */
+/** Out of the workspace, back to the project it was cut from — the project's
+ *  own page, on the machine the workspace is on: the same place the project's
+ *  name in the inbox opens (core/projectModel.js mints both). */
 function goBackToProject() {
   const { deviceId, projectId } = App.route;
-  const navigation = go({ name: "inbox", ...(deviceId ? { deviceId } : null), projectId });
-  // The workspace's view may veto leaving (unsaved work); the rail is shown
-  // only once the move is actually made.
-  const reveal = (accepted) => {
-    if (accepted) revealInbox();
-    return accepted;
-  };
-  return navigation instanceof Promise ? navigation.then(reveal) : reveal(navigation);
+  return go(projectRoute({ id: projectId, deviceId }));
 }
 
 function openWorkspaceDirectory(sourceId) {

@@ -24,12 +24,12 @@ const legacyIdentityHtml = (mono) => ({ project, label }) =>
   `${projectSelectorHtml(project)}
      <span class="tb-sep">/</span><span class="tb-legacy-item"><span class="tb-name${mono ? " mono" : ""}">${esc(label)}</span></span>`;
 
-/** The way back out of a workspace: to the project it was cut from, which is
- *  the rail standing in that project with its workspaces listed. Named for the
+/** The way back out of a workspace: to the project it was cut from — the
+ *  project's own page, where the inbox's project name goes too. Named for the
  *  project, so a reader hearing it knows where it goes. */
 const backToProjectHtml = (project) => {
   const label = project ? `Back to ${project}` : "Back to the project";
-  return `<button class="iconbtn tb-back" data-project-inbox type="button" aria-label="${esc(label)}" title="${esc(label)}">${ICON_CHEVRON_LEFT}</button>`;
+  return `<button class="iconbtn tb-back" data-project-back type="button" aria-label="${esc(label)}" title="${esc(label)}">${ICON_CHEVRON_LEFT}</button>`;
 };
 
 /** What the bar stands you in, one writer per kind of route. A workspace names

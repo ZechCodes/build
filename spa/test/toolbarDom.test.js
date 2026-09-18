@@ -355,10 +355,10 @@ describe("the project's own checkout", () => {
 });
 
 // The chevron at the bar's left edge: the way back out of a workspace to the
-// project it was cut from — which is the rail standing in that project, where
-// its workspaces are listed.
+// project it was cut from — the project's own page, the same place the
+// project's name in the inbox opens.
 describe("the back chevron", () => {
-  const back = () => bar().querySelector("[data-project-inbox]");
+  const back = () => bar().querySelector("[data-project-back]");
 
   it("is absent on a legacy branch route, an issue and the inbox", () => {
     expect(back()).toBeNull();
@@ -378,13 +378,13 @@ describe("the back chevron", () => {
     expect(button.nextElementSibling).toBe(bar().querySelector('[data-select="workspace"]'));
   });
 
-  it("takes you to the project's inbox on the machine the workspace is on", async () => {
+  it("takes you to the project, on the machine the workspace is on", async () => {
     await standOnWorkspace();
     back().click();
     // Leaving a workspace asks its view whether it may (App.routeLeaveGuard),
     // so the navigation settles a tick later.
     await flush();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/inbox");
+    expect(location.hash).toBe("#/device/dev-1/project/p1");
   });
 });
 

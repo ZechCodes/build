@@ -195,7 +195,8 @@ impl AppState {
     ) -> Result<(), String> {
         if !workspace.managed {
             return Err(
-                "workspace.delete: adopted checkouts are not Build's to remove".to_string(),
+                "Build cannot remove an adopted checkout. Only workspaces Build created can be deleted."
+                    .to_string(),
             );
         }
         let root = Self::canonical_root(&workspace.root);

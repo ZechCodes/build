@@ -202,8 +202,13 @@ fn repeated_both_keeps_the_sources_configured_base_when_head_differs() {
         json!({"path": source, "base_branch": "release"}),
     ));
     let project_id = added["result"]["project_id"].as_str().unwrap();
-    let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
-    let workspace = &listed["result"]["workspaces"][0];
+    // The project's own checkout is never listed; the verb reaches it by id.
+    let got = state.handle(req(
+        "workspace.get",
+        json!({"workspace_id": format!("legacy-{project_id}")}),
+    ));
+    assert_eq!(got["ok"], true, "{got:?}");
+    let workspace = &got["result"];
     let workspace_only = init_request(workspace, "workspace");
     let params = init_request(workspace, "both");
 

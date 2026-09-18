@@ -409,7 +409,7 @@ const CONFLICT: [&str; 15] = [
     // Rename and delete: the workspace is not Build's to rewrite or remove,
     // or something standing in it has to stop first.
     "adopted workspaces are named by their own checkout",
-    "adopted checkouts are not Build's to remove",
+    "Build cannot remove an adopted checkout",
     "Wait for workspace provisioning to finish",
     "Stop running agents before deleting the workspace",
     "Cannot delete a workspace",
@@ -733,7 +733,7 @@ mod tests {
                 "conflict",
             ),
             (
-                "workspace.delete: adopted checkouts are not Build's to remove",
+                "Build cannot remove an adopted checkout. Only workspaces Build created can be deleted.",
                 "conflict",
             ),
             (

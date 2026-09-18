@@ -127,7 +127,7 @@ async fn workspace_finish_refuses_an_adopted_checkout_and_leaves_its_terminal() 
         finished["error"]
             .as_str()
             .unwrap()
-            .contains("not Build's to remove"),
+            .contains("Build cannot remove an adopted checkout"),
         "{finished:?}"
     );
     assert!(checkout.exists(), "a refused Done retains the checkout");

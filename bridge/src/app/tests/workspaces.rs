@@ -111,8 +111,14 @@ fn git_init_source_refreshes_an_adopted_same_path_workspace() {
     let mut state = app(tmp.path());
     let added = state.handle(req("project.add", json!({"path": plain})));
     let project_id = added["result"]["project_id"].as_str().unwrap();
-    let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
-    let adopted = &listed["result"]["workspaces"][0];
+    // The project's own checkout is never listed (it is not a place to work),
+    // but the verb still reaches it by its id.
+    let adopted = state.handle(req(
+        "workspace.get",
+        json!({"workspace_id": format!("legacy-{project_id}")}),
+    ));
+    assert_eq!(adopted["ok"], true, "{adopted:?}");
+    let adopted = &adopted["result"];
 
     let initialized = state.handle(req(
         "workspace.init_git",
@@ -694,6 +700,52 @@ fn legacy_run_finish_routes_a_workspace_conversation_owner_to_its_workspace() {
 }
 
 #[test]
+fn workspace_list_never_carries_the_projects_own_checkout() {
+    let (tmp, repo) = init_repo();
+    let canonical = std::fs::canonicalize(&repo).unwrap();
+    let mut state = qa_state(&repo, tmp.path());
+    let project_id = state.project_at(0).id.clone();
+    let workspace = create_workspace(&mut state, &project_id, "real-work");
+
+    let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
+    let ids: Vec<_> = listed["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["workspace_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![workspace["workspace_id"].as_str().unwrap()],
+        "{listed:?}"
+    );
+
+    // A store written before workspaces can hold a run whose checkout is the
+    // project's own repository; that run is not a listed workspace either —
+    // the root is still the project's own checkout.
+    let run_id = adopted_run(&mut state, &repo, tmp.path(), "was-a-worktree");
+    state.runs.get_mut(&run_id).unwrap().worktree.path = AppState::canonical_root(&repo);
+    let relisted = state.handle(req("workspace.list", json!({"project_id": project_id})));
+    assert!(
+        !relisted["result"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|workspace| workspace["root"] == canonical.display().to_string()),
+        "{relisted:?}"
+    );
+    let unscoped = state.handle(req("workspace.list", json!({})));
+    assert!(
+        !unscoped["result"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|workspace| workspace["root"] == canonical.display().to_string()),
+        "{unscoped:?}"
+    );
+}
+
+#[test]
 fn a_legacy_repo_root_run_still_has_its_run_id_workspace_route() {
     let (tmp, repo) = init_repo();
     let mut state = qa_state(&repo, tmp.path());
@@ -1155,12 +1207,21 @@ fn legacy_git_root_and_external_checkout_are_adopted_without_moving_them() {
     let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
     assert_eq!(listed["ok"], true, "{listed:?}");
     let workspaces = listed["result"]["workspaces"].as_array().unwrap();
-    let primary = workspaces
-        .iter()
-        .find(|workspace| workspace["root"] == canonical.display().to_string())
-        .unwrap_or_else(|| panic!("the project root is adopted: {listed:?}"));
+    // The project's own checkout is the template workspaces are cut from, not
+    // a place to work: it is adopted under its id, and never listed.
+    assert!(
+        !workspaces
+            .iter()
+            .any(|workspace| workspace["root"] == canonical.display().to_string()),
+        "the primary checkout is not a listed workspace: {listed:?}"
+    );
+    let primary = state.handle(req(
+        "workspace.get",
+        json!({"workspace_id": format!("legacy-{project_id}")}),
+    ));
+    assert_eq!(primary["ok"], true, "{primary:?}");
     assert_eq!(
-        primary["directories"][0]["path"],
+        primary["result"]["directories"][0]["path"],
         canonical.display().to_string()
     );
     let adopted = workspaces
@@ -1201,10 +1262,9 @@ fn a_workspace_with_a_failed_plain_source_cannot_finish() {
     assert_eq!(create["ok"], false, "{create:?}");
     let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
     let workspaces = listed["result"]["workspaces"].as_array().unwrap();
-    assert_eq!(workspaces.len(), 1, "{listed:?}");
-    assert_eq!(
-        workspaces[0]["workspace_id"],
-        format!("legacy-{project_id}")
+    assert!(
+        workspaces.is_empty(),
+        "the failed creation leaves nothing listed, and the project's own checkout never is: {listed:?}"
     );
     let project_workspace_root = state.workspaces.root().join(project_id);
     assert!(
@@ -1701,7 +1761,8 @@ fn workspace_delete_removes_the_checkout_the_root_and_the_listing() {
 fn workspace_delete_refuses_an_adopted_checkout() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "legacy");
-    let canonical = std::fs::canonicalize(&repo).unwrap();
+    let external = add_external_worktree(&repo, tmp.path(), "existing-work", "existing-work");
+    let external_canonical = std::fs::canonicalize(&external).unwrap();
     let mut state = AppState::new(
         &repo,
         tmp.path().join("worktrees"),
@@ -1715,8 +1776,8 @@ fn workspace_delete_refuses_an_adopted_checkout() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|workspace| workspace["root"] == canonical.display().to_string())
-        .unwrap_or_else(|| panic!("the project root is adopted: {listed:?}"))
+        .find(|workspace| workspace["root"] == external_canonical.display().to_string())
+        .unwrap_or_else(|| panic!("the existing checkout is adopted: {listed:?}"))
         .clone();
 
     let refused = state.handle(req(
@@ -1726,7 +1787,13 @@ fn workspace_delete_refuses_an_adopted_checkout() {
 
     assert_eq!(refused["ok"], false, "{refused:?}");
     assert_eq!(refused["error_code"], "conflict", "{refused:?}");
-    assert!(canonical.join(".git").is_dir(), "nothing was removed");
+    // The refusal is said plainly, to the reader, not as a verb's log line.
+    assert_eq!(
+        refused["error"],
+        "Build cannot remove an adopted checkout. Only workspaces Build created can be deleted.",
+        "{refused:?}"
+    );
+    assert!(external.join(".git").is_file(), "nothing was removed");
 
     let also_refused = state.handle(req(
         "workspace.rename",

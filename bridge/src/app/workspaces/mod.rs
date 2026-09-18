@@ -260,8 +260,29 @@ impl AppState {
         self.workspaces.refresh_finished_local();
         let project_id = params.get("project_id").and_then(Value::as_str);
         Ok(json!({
-            "workspaces": self.workspaces.list(project_id).into_iter().map(workspace_json).collect::<Vec<_>>()
+            "workspaces": self
+                .workspaces
+                .list(project_id)
+                .into_iter()
+                .filter(|workspace| !self.is_projects_own_checkout(workspace))
+                .map(workspace_json)
+                .collect::<Vec<_>>()
         }))
+    }
+
+    /// Whether this workspace stands on the project's own checkout — the
+    /// repository the project was registered at, which every workspace is cut
+    /// FROM. It is adopted like any other checkout so the verbs that need a
+    /// root (terminals, git init) can still name it, but it is never listed:
+    /// a template is not a place to work, and nothing in the client opens it.
+    /// The same root under a run's id (a primary adoption) is the same answer.
+    fn is_projects_own_checkout(&self, workspace: &Workspace) -> bool {
+        if workspace.managed {
+            return false;
+        }
+        self.projects
+            .get(&workspace.project_id)
+            .is_some_and(|project| same_path(&project.repo_path, &workspace.root))
     }
 
     pub(crate) fn workspace_get(&mut self, params: &Value) -> Result<Value, String> {

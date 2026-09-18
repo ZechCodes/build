@@ -1754,7 +1754,7 @@ const CONFLICT: [&str; 11] = [
     // Done, refused because the work is still only in the workspace, or
     // because the checkout is not Build's to remove.
     "workspace.finish is not available yet",
-    "adopted checkouts are not Build's to remove",
+    "Build cannot remove an adopted checkout",
     "Cannot delete a workspace",
     "illegal run transition",
     "only terminal runs",

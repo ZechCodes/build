@@ -565,7 +565,9 @@ const workItemContext = (context, known, openAgentId) => ({
  * press moves it between them by standing this same host on the other context.
  * Everything worth keeping across that — which agent was open, what was typed,
  * the history already read — lives in the injected repository keyed by the
- * context, so it is all still there on the way back.
+ * context, so it is all still there on the way back. What the repository does
+ * not hold, this wrapper does: whether the panel is out, and what each side was
+ * last read to be, so the rail that comes up is the one that went down.
  */
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
@@ -574,6 +576,13 @@ export function mountAgentRail(host, context) {
   // owner — minted by the press that opens it, never by a render. Held out here
   // so a swap does not ask for either of them again.
   let known = { entityId: context.projectAgent.entityId || null, name: context.projectAgent.name || "" };
+  // The last payload read for each side, kept by the kind it answers for. The
+  // rail reads both — the one it stands on and the one beside it — so a swap
+  // has what the side it is standing up already is, and hands it over as that
+  // mount's first answer. Without it the new rail starts from nothing and
+  // paints a workspace full of agents as one that has none until its own read
+  // lands.
+  const payloads = new Map();
   let live = null;
   // Whether the panel is out belongs to the HOST, not to either conversation:
   // the swap is a re-mount, and a re-mount that read the pin again would shut
@@ -582,11 +591,19 @@ export function mountAgentRail(host, context) {
   // where pressing a bubble below the line leaves it — out.
   const stand = (standing, alongside, { panelOpen = null } = {}) => {
     live?.dispose();
-    live = mountRailOnContext(host, { ...standing, alongside, panelOpen }, swap);
+    live = mountRailOnContext(host, {
+      ...standing,
+      payload: payloads.get(standing.kind) || null,
+      alongside: { ...alongside, payload: payloads.get(alongside.kind) || null },
+      panelOpen,
+    }, swap);
   };
   const swap = {
     learned: (facts) => {
       known = { ...known, ...facts };
+    },
+    read: (kind, payload) => {
+      payloads.set(kind, payload);
     },
     toProject: (entityId) => {
       known = { ...known, entityId };
@@ -623,9 +640,18 @@ function projectAgentState(context) {
 /** Which conversation the rail was asked to keep beside the one it stands on. */
 const alongsideKind = (context) => context.alongside?.kind || "project";
 
+/** What one of a swap's two sides was last read to be, or null for a side
+ *  nothing has read yet — a rail standing up for the first time. */
+const seedPayload = (side) => side?.payload || null;
+
 /** Whose conversation this mount opens on: the bubble that asked to come back
- *  here, or the one this rail was last left on. */
-const openingAgentId = (context, railView) => context.openAgentId || railView.selectedAgentId();
+ *  here, or the one this rail was last left on. With a payload already in hand
+ *  the choice settles the way a read settles it — the remembered conversation
+ *  while it still exists, else this side's first. */
+const openingAgentId = (context, railView, agents) => {
+  const remembered = context.openAgentId || railView.selectedAgentId();
+  return agents.length ? selectAgentId(agents, remembered) : remembered;
+};
 
 /** The rail standing on ONE of its contexts. `swap` is how it moves to the
  *  other, and is null for a rail that has only one. */
@@ -645,8 +671,11 @@ function mountRailOnContext(host, context, swap) {
   } = chatRepository.optimisticStore();
   const railView = chatRepository.railView(key);
   const selection = context.selection || createAgentSelection();
-  let entity = railEntity(null, context.kind);
-  let selectedId = openingAgentId(context, railView);
+  // What the side this mount stands on was last read to be, where a swap put
+  // this rail here holding it. The strip paints its agents — their unread,
+  // their working — on the first frame, and the read under way reconciles.
+  let entity = railEntity(seedPayload(context), context.kind);
+  let selectedId = openingAgentId(context, railView, entity.agents);
   selection.set(selectedId);
   // ---- the project's agent, where the view asked for one --------------------
   // The rail stands on one conversation and keeps the other beside it: the
@@ -658,7 +687,7 @@ function mountRailOnContext(host, context, swap) {
   let projectName = knownName;
   let mintingProjectAgent = false;
   let alongside = context.alongside && createAgentRailContext(context.alongside);
-  let alongsideEntity = railEntity(null, alongsideKind(context));
+  let alongsideEntity = railEntity(seedPayload(context.alongside), alongsideKind(context));
   // Docked beside the work, or a card on the strip. The pin is the reader's
   // remembered layout choice; visibility belongs to this visit and never
   // rewrites that choice.
@@ -1042,6 +1071,7 @@ function mountRailOnContext(host, context, swap) {
     }
     agentlessOnce = false;
     entity = answered;
+    keepForSwap(context.kind, payload);
     for (const agent of answered.agents) controllerForAgent(agent);
     reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });
     chooseAgent(selectAgentId(visibleAgents(), selectedId));
@@ -1056,6 +1086,11 @@ function mountRailOnContext(host, context, swap) {
   };
 
   // ---- the conversation beside this one -------------------------------------
+
+  /// What this rail has just read, for the mount that holds its two contexts to
+  /// keep: the other side of a swap is stood up on it, so the strip it paints
+  /// says what this side is doing rather than starting again from nothing.
+  const keepForSwap = (kind, payload) => swap?.read(kind, payload);
 
   /// What the rail has just learned about the project. Told to the mount that
   /// holds this rail's two contexts, so a swap in either direction starts from
@@ -1117,6 +1152,7 @@ function mountRailOnContext(host, context, swap) {
     const payload = await alongside.detail(call, SMALLEST_THREAD_PAGE).catch(() => null);
     if (disposed || !payload) return;
     alongsideEntity = railEntity(payload, alongside.kind);
+    keepForSwap(alongside.kind, payload);
     paint();
   };
 

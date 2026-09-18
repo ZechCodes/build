@@ -280,3 +280,43 @@ describe("swapping with the panel unpinned", () => {
     expect(headWho()).toBe("Sort the workspaces");
   });
 });
+
+// The rail hosts one conversation and reads the other beside it, so it already
+// knows what both sides are. A swap must paint from that: a strip that starts
+// again from nothing reads as a workspace with no conversations at all, and
+// then fills in — which is the workspace's agents blinking out under a press
+// that was only meant to change which one is open.
+describe("the strip across a swap", () => {
+  it("paints the workspace's agents on the first frame after the swap back", async () => {
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+
+    agentBubble("wa-1").click();
+
+    // No flush: this is what the strip says before any read answers.
+    expect(strip().map((element) => element.dataset.bubble || element.className)).toEqual([
+      "project",
+      "rail-sep",
+      "agent",
+      "add",
+    ]);
+    expect(host().querySelector('[data-bubble="ghost"]')).toBeNull();
+    expect(agentBubble("wa-1").classList.contains("active")).toBe(true);
+  });
+
+  it("carries what each side is doing across, so neither goes quiet mid-swap", async () => {
+    owner = OWNER;
+    workspace = { ...workspacePayload(), agents: [agent("wa-1", { unread_count: 2, working: true })] };
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+
+    agentBubble("wa-1").click();
+
+    expect(agentBubble("wa-1").querySelector(".rail-count").textContent).toBe("2");
+    expect(agentBubble("wa-1").classList.contains("working")).toBe(true);
+    // …and the project's bubble, now the one beside, still says its own.
+    expect(projectBubble().title).toBe("Project agent for build");
+  });
+});

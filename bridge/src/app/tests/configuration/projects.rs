@@ -978,3 +978,140 @@ fn configured_project_ids_survive_gaps_and_keep_the_allocator_above_deleted_ids(
     assert_eq!(restored.projects.at(1).id, "proj-9");
     assert_eq!(restored.projects.next_id(), 10);
 }
+
+/// A project's sources are not settled when it is opened. `project.add_source`
+/// appends one the way the project was opened over the ones it has — the same
+/// open, the same validation — and writes the config, so the next boot reads
+/// the project with its new folder on it.
+#[test]
+fn add_source_appends_a_folder_to_a_project_and_writes_it_down() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_repo_directory, repo) = init_repo();
+    let extra = directory.path().join("assets");
+    std::fs::create_dir(&extra).unwrap();
+    std::fs::write(extra.join("logo.svg"), b"<svg/>").unwrap();
+    let config = directory.path().join("config.json");
+    std::fs::write(&config, b"{}").unwrap();
+    let mut state = AppState::new_unrooted(
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+    let project_id = state.add_project(repo, "main".to_string());
+
+    let added = state.handle(req(
+        "project.add_source",
+        json!({"project_id": project_id, "path": extra, "name": "assets"}),
+    ));
+
+    assert_eq!(added["ok"], true, "{added:?}");
+    let sources = added["result"]["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 2, "{added:?}");
+    assert_eq!(sources[1]["name"], "assets");
+    assert_eq!(sources[1]["is_git"], false);
+    assert_ne!(sources[1]["id"], sources[0]["id"]);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(saved["projects"][0]["sources"][1]["name"], "assets");
+}
+
+#[test]
+fn add_source_refuses_a_project_this_bridge_does_not_have() {
+    let directory = tempfile::tempdir().unwrap();
+    let extra = directory.path().join("assets");
+    std::fs::create_dir(&extra).unwrap();
+    let mut state = AppState::new_unrooted(
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+
+    let refused = state.handle(req(
+        "project.add_source",
+        json!({"project_id": "proj-9", "path": extra}),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error_code"], "not_found", "{refused:?}");
+}
+
+/// Removing a source is forward-looking: the project stops cutting that folder
+/// into new workspaces, and the workspaces that already have it keep it.
+#[test]
+fn remove_source_drops_it_from_the_project_and_leaves_workspaces_alone() {
+    let directory = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(directory.path(), "code");
+    let extra = directory.path().join("assets");
+    std::fs::create_dir(&extra).unwrap();
+    let config = directory.path().join("config.json");
+    std::fs::write(&config, b"{}").unwrap();
+    let mut state = AppState::new_unrooted(
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+    let opened = state.handle(req(
+        "project.create",
+        json!({
+            "name": "mixed",
+            "sources": [{"name": "code", "path": repo}, {"name": "assets", "path": extra}],
+        }),
+    ));
+    assert_eq!(opened["ok"], true, "{opened:?}");
+    let project_id = opened["result"]["project_id"].as_str().unwrap().to_string();
+    let created = state.handle(req(
+        "workspace.create",
+        json!({"project_id": project_id, "name": "work", "isolation": "worktree"}),
+    ));
+    assert_eq!(created["ok"], true, "{created:?}");
+    let workspace_id = created["result"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let removed = state.handle(req(
+        "project.remove_source",
+        json!({"project_id": project_id, "source_id": "source-2"}),
+    ));
+
+    assert_eq!(removed["ok"], true, "{removed:?}");
+    let sources = removed["result"]["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 1, "{removed:?}");
+    assert_eq!(sources[0]["id"], "source-1");
+    assert!(extra.is_dir(), "the folder itself is not Build's to remove");
+    let read = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(
+        read["result"]["directories"].as_array().unwrap().len(),
+        2,
+        "an existing workspace keeps the directory it was cut with: {read:?}"
+    );
+    let saved: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(saved["projects"][0]["sources"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn remove_source_refuses_a_source_the_project_does_not_have() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_repo_directory, repo) = init_repo();
+    let mut state = AppState::new_unrooted(
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.add_project(repo, "main".to_string());
+
+    let refused = state.handle(req(
+        "project.remove_source",
+        json!({"project_id": project_id, "source_id": "source-9"}),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error_code"], "not_found", "{refused:?}");
+}

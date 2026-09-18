@@ -16,10 +16,27 @@ directory or a remote repository that Build clones when the project is created.
 Local directories may be Git repositories or ordinary directories. Every source
 has a stable source identity, a display name, and its source configuration.
 
-Project edits are forward-looking. A workspace records a snapshot of its source
-configuration when it is created. Adding, removing, or changing sources on the
-project changes future workspace creation and does not rewrite, add to, remove,
-or otherwise mutate an existing workspace.
+Sources are added and removed after a project is opened. `project.add_source`
+appends one — a path on the device, or a remote Build clones into the project's
+own sources folder — the same way the project was opened over the sources it
+has; `project.remove_source` takes one off. A project always has at least one.
+
+A project edit is forward-looking. A workspace records a snapshot of its source
+configuration when it is created, and a project edit changes what the next
+workspace is cut from: it does not rewrite, add to, or remove a directory in a
+workspace that already exists. A workspace's own directories are changed by
+`workspace.add_directory` and `workspace.remove_directory`, which name the
+workspace they act on.
+
+`workspace.add_directory` materializes one more directory into a workspace root
+that is already there — a project source not in it yet, a path on the device, or
+a remote to clone — using the same per-source work creation does: a Git source
+becomes a checkout on a branch of the workspace's own cut from that source's
+base branch, anything else is copied. The directory is provisioning until it
+lands. `workspace.remove_directory` hands its checkout back to the repository it
+was cut from and takes the folder, closing the agents and terminals standing in
+that directory and leaving the ones whose cwd is elsewhere. It refuses only a
+directory that resolves outside the workspace root.
 
 Legacy projects whose project root is a Git checkout remain supported as a
 single-source project. Their source is represented by `.` at the existing root;

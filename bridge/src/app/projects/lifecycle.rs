@@ -59,6 +59,38 @@ impl AppState {
         Ok(reply)
     }
 
+    /// Append the sources one `project.add_source` opened.
+    ///
+    /// The project may have gone while the clone ran; a checkout this call
+    /// made has nowhere to belong then, so it is walked away the same way a
+    /// failed registration's is.
+    pub(in crate::app) fn append_project_sources(
+        &mut self,
+        project_id: &str,
+        added: Vec<ProjectSource>,
+        created_checkouts: Vec<std::path::PathBuf>,
+    ) -> Result<Value, String> {
+        let Some(project) = self.projects.get(project_id) else {
+            for path in created_checkouts {
+                self.run_off_lock(RemoveUnregisteredProject { path });
+            }
+            return Err(format!("unknown project: {project_id}"));
+        };
+        let mut sources = project.sources.clone();
+        sources.extend(added);
+        assert!(
+            self.projects.set_sources(project_id, sources),
+            "the project was just resolved"
+        );
+        self.persist();
+        let project = self
+            .projects
+            .get(project_id)
+            .expect("the project was just resolved");
+        let remote = crate::worktree::git_remote_origin(&project.repo_path);
+        Ok(self.project_json(project, remote))
+    }
+
     /// Register the repository opened by any project-creation door.
     pub(in crate::app) fn register_opened_repository(
         &mut self,

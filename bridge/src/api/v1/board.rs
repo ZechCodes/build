@@ -70,6 +70,18 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ProjectRow
         ),
         v1_method!(
+            "project.add_source",
+            project_add_source,
+            ProjectAddSourceParams,
+            ProjectRow
+        ),
+        v1_method!(
+            "project.remove_source",
+            project_remove_source,
+            ProjectRemoveSourceParams,
+            ProjectRow
+        ),
+        v1_method!(
             "project.set_isolation",
             project_set_isolation,
             ProjectSetIsolationParams,
@@ -231,6 +243,34 @@ pub struct ProjectSetRemoteParams {
     pub project_id: String,
     /// An empty url clears `origin`.
     pub url: String,
+}
+
+/// One more directory on a project that already exists: a host path on this
+/// device, or a remote to clone into the project's own sources folder —
+/// exactly one of the two, the way `project.add`'s sources name themselves.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectAddSourceParams {
+    pub project_id: String,
+    /// Absolute or `~`-relative. Mutually exclusive with `remote`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// A clone url. Mutually exclusive with `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// The directory's own last segment (or the url's repo name) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The source's own checked-out branch when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+}
+
+/// Take a source off a project. Forward-looking: the folder stays where it is
+/// and every workspace already cut from it keeps its directory.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectRemoveSourceParams {
+    pub project_id: String,
+    pub source_id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -740,7 +780,10 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 9] = [
+const CONFLICTS: [&str; 12] = [
+    "a project must have at least one source",
+    "source overlaps",
+    "source remote is already registered",
     "is already a git repository",
     "is not a git repository",
     "already became",
@@ -756,7 +799,9 @@ const CONFLICTS: [&str; 9] = [
 /// one of the ones on offer, or a request that names nothing to do. The three
 /// harness names read alike because the two aliases and the harness itself
 /// are one setting.
-const INVALID: [&str; 12] = [
+const INVALID: [&str; 14] = [
+    "each source must specify exactly one of path or remote",
+    "duplicate source remote",
     "invalid project name",
     "project.delete requires confirm: true",
     "nothing to set",
@@ -863,6 +908,22 @@ fn project_delete(
     params: ProjectDeleteParams,
 ) -> Result<Answer<ProjectDeleteResult>, ApiError> {
     answer(app.project_delete(&params.wire())).map_err(refine)
+}
+
+/// The open or the clone runs off the app mutex, so this answers the
+/// placeholder and the drain publishes the project row itself.
+fn project_add_source(
+    app: &mut AppState,
+    params: ProjectAddSourceParams,
+) -> Result<Answer<ProjectRow>, ApiError> {
+    answer(app.project_add_source(&params.wire())).map_err(refine)
+}
+
+fn project_remove_source(
+    app: &mut AppState,
+    params: ProjectRemoveSourceParams,
+) -> Result<Answer<ProjectRow>, ApiError> {
+    answer(app.project_remove_source(&params.wire())).map_err(refine)
 }
 
 fn project_set_isolation(
@@ -992,6 +1053,16 @@ mod tests {
     #[test]
     fn the_project_delete_fixture_round_trips() {
         round_trips("project.delete");
+    }
+
+    #[test]
+    fn the_project_add_source_fixture_round_trips() {
+        round_trips("project.add_source");
+    }
+
+    #[test]
+    fn the_project_remove_source_fixture_round_trips() {
+        round_trips("project.remove_source");
     }
 
     #[test]

@@ -9,8 +9,8 @@ const MODEL_URLS = Object.freeze({
 const SCREEN_DIRECTORY = "/landing/assets/screens";
 const EMPTY_POSE = Object.freeze({ x: 50, y: 58, w: 0, rotate: [0, 0, 0], opacity: 0 });
 const VISIBLE_OPACITY = 0.015;
-const ARRIVAL_END = 0.3;
-const DEPARTURE_START = 0.7;
+const ARRIVAL_END = 0.45;
+const DEPARTURE_START = 0.55;
 
 export function getContainedTextureLayout(imageWidth, imageHeight, screenAspect) {
   const width = Math.max(1, Number(imageWidth) || 1);
@@ -353,7 +353,6 @@ class DeviceStage {
       DirectionalLight,
       HemisphereLight,
       OrthographicCamera,
-      PCFSoftShadowMap,
       PMREMGenerator,
       RoomEnvironment,
       Scene,
@@ -370,8 +369,6 @@ class DeviceStage {
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.04;
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = PCFSoftShadowMap;
     if (this.isSoftwareRenderer()) throw new Error("software WebGL renderer");
     this.scene = new Scene();
     const room = new RoomEnvironment();
@@ -421,8 +418,10 @@ class DeviceStage {
     if (!this.renderer) return;
     const { width, height } = this.stage.getBoundingClientRect();
     if (width < 1 || height < 1) return;
-    const mobileCap = width < 768 ? 1.5 : 2;
-    this.pixelRatio = Math.min(devicePixelRatio || 1, mobileCap) * this.qualityScale;
+    // 1.5x is enough for a device render behind copy; 2x doubles the fill
+    // cost on every scroll frame.
+    this.pixelRatio = Math.min(devicePixelRatio || 1, 1.5) * this.qualityScale;
+    this.reviewWidthPercent = this.measureReviewWidth();
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(width, height, false);
     const aspect = width / height;
@@ -504,8 +503,6 @@ class DeviceStage {
         return clone;
       });
       node.material = Array.isArray(node.material) ? clones : clones[0];
-      node.castShadow = true;
-      node.receiveShadow = true;
     });
     if (!screenMeshes.length) throw new Error(`Missing ${name} screen mesh`);
     const root = new Group();
@@ -678,6 +675,12 @@ class DeviceStage {
   }
 
   reviewWidth() {
+    if (this.reviewWidthPercent === undefined) this.reviewWidthPercent = this.measureReviewWidth();
+    return this.reviewWidthPercent;
+  }
+
+  // Layout reads are done on resize, not on every scroll frame.
+  measureReviewWidth() {
     const stageWidth = this.eventTarget.getBoundingClientRect().width;
     if (stageWidth <= 0 || !this.reviewSurface) return undefined;
     return this.reviewSurface.getBoundingClientRect().width / stageWidth * 100;

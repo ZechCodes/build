@@ -35,8 +35,8 @@ function readerPosition(story, stage) {
   };
 }
 
-const LEAVE_START = 0.8;
-const ENTER_START = 0.9;
+const LEAVE_START = 0.7;
+const ENTER_START = 0.85;
 
 // The outgoing scene is fully gone before the incoming one starts, so two
 // headlines never share the stage.
@@ -96,12 +96,16 @@ function applyFrame({ frame, stage, scenes, progressElement, positionElement }) 
   stage.style.setProperty("--story-progress", String(frame.progress));
   stage.style.setProperty("--scene-local", String(frame.local));
 
+  const activeChanged = stage.dataset.sceneIndex !== String(frame.sceneIndex);
+  stage.dataset.sceneIndex = String(frame.sceneIndex);
   scenes.forEach((scene, index) => {
     const isActive = index === frame.sceneIndex;
     scene.style.setProperty("--scene-opacity", String(clamp(opacityForScene(index, frame))));
     scene.style.setProperty("--scene-enter", String(enterForScene(index, frame)));
-    scene.classList.toggle(ACTIVE_CLASS, isActive);
-    setSceneInteractive(scene, isActive);
+    if (activeChanged) {
+      scene.classList.toggle(ACTIVE_CLASS, isActive);
+      setSceneInteractive(scene, isActive);
+    }
     scene.dataset.checkpoint = isActive ? frame.checkpoint : "";
   });
 
@@ -117,6 +121,7 @@ function clearEnhancedState({ stage, scenes }) {
   stage.removeAttribute("data-scene");
   stage.removeAttribute("data-checkpoint");
   stage.removeAttribute("data-profile");
+  stage.removeAttribute("data-scene-index");
   stage.style.removeProperty("--story-progress");
   stage.style.removeProperty("--scene-local");
   scenes.forEach((scene) => {

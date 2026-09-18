@@ -39,6 +39,12 @@ describe("landing story progression", () => {
     }
     expect(getDeviceFramePoses(STORY_SCENES, { sceneIndex: 0, local: 0, profile: "desktop" }).laptop.w).toBeGreaterThan(0);
   });
+
+  it("keeps devices moving through the middle of a scene instead of parking them", () => {
+    const at = (local) => getDeviceFramePoses(STORY_SCENES, { sceneIndex: 1, local, profile: "desktop" }).phone;
+    expect(at(0.3)).not.toEqual(at(0.4));
+    expect(at(0.6)).not.toEqual(at(0.7));
+  });
 });
 
 describe("landing story browser behavior", () => {
@@ -106,11 +112,11 @@ describe("landing story browser behavior", () => {
     const controller = install();
     const opacity = (index) => Number(document.querySelectorAll("[data-story-scene]")[index].style.getPropertyValue("--scene-opacity"));
     const entered = (index) => Number(document.querySelectorAll("[data-story-scene]")[index].style.getPropertyValue("--scene-enter"));
-    controller.seek(0, 0.85);
+    controller.seek(0, 0.775);
     window.dispatchEvent(new Event("scroll"));
     expect(opacity(0)).toBeCloseTo(0.5);
     expect(opacity(1)).toBe(0);
-    controller.seek(0, 0.95);
+    controller.seek(0, 0.925);
     window.dispatchEvent(new Event("scroll"));
     expect(opacity(0)).toBe(0);
     expect(opacity(1)).toBeCloseTo(0.5);

@@ -310,6 +310,17 @@ def test_practical_details_stay_reachable_and_tappable():
     assert "body.is-menu-open{overflow:hidden}" in css
 
 
+def test_story_details_follow_the_scroll_position_instead_of_flipping():
+    css = read_landing_file("cinematic.css").replace(" ", "")
+    # Conversation and review steps, and the review card itself, are driven by
+    # the continuous --scene-local value rather than checkpoint attributes.
+    assert "--step-in:clamp(0,calc((var(--scene-local,0)-var(--step-at))/" in css
+    assert '[data-checkpoint="answer"]' not in css
+    assert '[data-checkpoint="diff"]' not in css
+    assert '[data-scene="review"].demo--review{opacity:1}' not in css
+    assert ".demo--review{" in css and "opacity:clamp(0,calc(var(--scene-local,0)/" in css
+
+
 def test_review_scene_shows_every_step_and_sizes_the_card_to_its_content():
     css = read_landing_file("cinematic.css").replace(" ", "")
     assert "aspect-ratio:4/3" not in css

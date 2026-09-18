@@ -41,8 +41,9 @@ The final browser matrix is saved in `browser-results.json`. Still frames are `d
 
 ## Verification
 
-- 514 backend tests and 4,752 SPA tests after upstream integration (including 39 landing tests); six focused device-state tests.
+- 521 backend tests and 4,752 SPA tests after upstream integration (including 39 landing tests); six focused device-state tests.
 - Python lint, JavaScript complexity cap of ten, syntax checks, and whitespace checks.
+- Production rate limiting gives `GET /landing/` its own bounded 600/minute per-IP budget, preventing full-scroll asset fanout from exhausting the 60/minute default.
 - Chromium at 1440×900, 1920×1080, 768×1024, 1024×768, 390×844, 360×740, and 844×390; separate reduced-motion and JavaScript-disabled profiles.
 - GPU checks for handoff, forward/reverse checkpoints, tablet-to-review corner alignment, and the merged closing lineup.
 - Keyboard menu/Escape/focus, chapter anchors, installer anchor, resizing below the story, data saving, failed model requests, WebGL context loss, and a 720×450 layout equivalent to a 1440×900 viewport at 200% browser zoom.

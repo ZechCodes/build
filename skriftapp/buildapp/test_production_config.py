@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 from skrift.config import RateLimitConfig
+from skrift.ratelimit import RateLimiter
 
 from buildapp.invites import INVITE_PATH_PREFIX
 from buildapp.waitlist_controller import JOIN_ROUTE_PATH
@@ -18,6 +20,7 @@ SKRIFTAPP_DIR = Path(__file__).resolve().parent.parent
 PRODUCTION_BASE_URL = "https://getbuild.ing"
 JOIN_RATE_LIMIT_WINDOWS = [(3, 60.0), (100, 86400.0)]
 INVITE_OPEN_RATE_LIMIT_WINDOWS = [(30, 60.0)]
+LANDING_RATE_LIMIT_WINDOWS = [(600, 60.0)]
 INVITE_CONTROLLERS = (
     "buildapp.invites_controller:InvitesController",
     "buildapp.invites_admin:InvitesAdminController",
@@ -61,6 +64,57 @@ def test_production_redirect_base_url_pins_passkey_origin():
 
 def test_production_rate_limiting_enabled():
     assert load_config("app.yaml")["rate_limit"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_landing_assets_have_an_independent_bounded_browser_budget():
+    rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
+    landing_policy = rate_limit.resolve("/landing/assets/devices/tablet.glb", "GET")
+    root_policy = rate_limit.resolve("/", "GET")
+    auth_policy = rate_limit.resolve("/auth/login", "GET")
+    limiter = RateLimiter(redis_client=None)
+    caller = "203.0.113.8"
+
+    assert landing_policy.key == "ip"
+    assert landing_policy.limits == LANDING_RATE_LIMIT_WINDOWS
+    assert landing_policy.name not in {root_policy.name, auth_policy.name}
+
+    for _ in range(600):
+        assert (await limiter.check(landing_policy.name, caller, landing_policy.limits)).allowed
+    assert not (await limiter.check(landing_policy.name, caller, landing_policy.limits)).allowed
+
+    for _ in range(60):
+        assert (await limiter.check(root_policy.name, caller, root_policy.limits)).allowed
+    assert not (await limiter.check(root_policy.name, caller, root_policy.limits)).allowed
+
+    for _ in range(10):
+        assert (await limiter.check(auth_policy.name, caller, auth_policy.limits)).allowed
+    assert not (await limiter.check(auth_policy.name, caller, auth_policy.limits)).allowed
+
+
+@pytest.mark.parametrize(
+    ("path", "method", "expected_policy"),
+    (
+        ("/landing/main.js", "GET", "landing_assets"),
+        ("/landing/main.js", "POST", "default"),
+        ("/landing", "GET", "default"),
+        ("/docs", "GET", "default"),
+        ("/install.sh", "GET", "default"),
+        ("/api/nonmatch", "GET", "default"),
+    ),
+)
+def test_landing_asset_budget_matches_only_static_gets(
+    path: str, method: str, expected_policy: str
+):
+    rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
+    policy = rate_limit.resolve(path, method)
+    assert policy.name == expected_policy
+    expected_limits = (
+        LANDING_RATE_LIMIT_WINDOWS
+        if expected_policy == "landing_assets"
+        else [rate_limit.effective_default().pair]
+    )
+    assert policy.limits == expected_limits
 
 
 def test_the_waitlist_join_route_is_rate_limited_far_below_the_default():

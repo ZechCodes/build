@@ -188,7 +188,11 @@ it. The operation the post creates remembers the requester: which project agent
 asked, the owner it belongs to, and its own conversation, which is where the
 answer is owed. `note_user_message` is skipped for it, because one agent handing
 work to another is the work happening and must not move the inbox anchor under
-the reader.
+the reader. For the same reason it crosses no dismissal line: a row the human
+cleared stays cleared until somebody speaks to THEM, so the line is the newest
+message no other agent signed. The store keeps that line as a column of its
+own, so it reads the same after a restart that loads a conversation as a tail
+of hand-offs.
 
 The answer comes back on its own. When the workspace agent ends that turn — a
 `post_thread_message` with status Complete or Blocked — its terminal message is
@@ -205,8 +209,10 @@ the answer it is waiting for is still owed. And a forwarded answer is never
 itself forwarded: it records no requester of its own, so the turn it starts owes
 nobody a reply and nothing can bounce between two agents. The requester is
 settled as it is read — one message handed over, one answer handed back — and a
-forwarded answer skips `note_user_message` for the same reason the message that
-asked for it does.
+forwarded answer skips `note_user_message`, and crosses no dismissal line, for
+the same reason the message that asked for it does. What the workspace agent
+said in its OWN conversation is not a hand-off and still calls the human: it
+stopped and said so.
 
 Two things are deliberately missing: nothing here deletes a workspace, and
 nothing adds a directory to one. Both are how a project loses work, so they stay

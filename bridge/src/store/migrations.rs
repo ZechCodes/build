@@ -42,12 +42,14 @@ impl Store {
             "DROP INDEX IF EXISTS thread_items_attention;
              DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
+             DROP INDEX IF EXISTS thread_items_own_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
              DROP INDEX IF EXISTS thread_items_activity;
              ALTER TABLE thread_items DROP COLUMN attention;
              ALTER TABLE thread_items DROP COLUMN message;
              ALTER TABLE thread_items DROP COLUMN tool_call;
              ALTER TABLE thread_items DROP COLUMN activity;
+             ALTER TABLE thread_items DROP COLUMN handoff;
              UPDATE meta SET value = '1' WHERE key = 'schema_version';",
         )
         .expect("the v1 shape is staged");
@@ -59,11 +61,13 @@ impl Store {
         conn.execute_batch(
             "DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
+             DROP INDEX IF EXISTS thread_items_own_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
              DROP INDEX IF EXISTS thread_items_activity;
              ALTER TABLE thread_items DROP COLUMN message;
              ALTER TABLE thread_items DROP COLUMN tool_call;
              ALTER TABLE thread_items DROP COLUMN activity;
+             ALTER TABLE thread_items DROP COLUMN handoff;
              UPDATE meta SET value = '2' WHERE key = 'schema_version';",
         )
         .expect("the v2 shape is staged");
@@ -73,10 +77,12 @@ impl Store {
     pub fn pretend_to_be_v3(&self) {
         let conn = self.connection();
         conn.execute_batch(
-            "DROP INDEX IF EXISTS thread_items_tool_calls;
+            "DROP INDEX IF EXISTS thread_items_own_messages;
+             DROP INDEX IF EXISTS thread_items_tool_calls;
              DROP INDEX IF EXISTS thread_items_activity;
              ALTER TABLE thread_items DROP COLUMN tool_call;
              ALTER TABLE thread_items DROP COLUMN activity;
+             ALTER TABLE thread_items DROP COLUMN handoff;
              UPDATE meta SET value = '3' WHERE key = 'schema_version';",
         )
         .expect("the v3 shape is staged");
@@ -86,20 +92,35 @@ impl Store {
     pub fn pretend_to_be_v4(&self) {
         let conn = self.connection();
         conn.execute_batch(
-            "DROP INDEX IF EXISTS thread_items_activity;
+            "DROP INDEX IF EXISTS thread_items_own_messages;
+             DROP INDEX IF EXISTS thread_items_activity;
              ALTER TABLE thread_items DROP COLUMN activity;
+             ALTER TABLE thread_items DROP COLUMN handoff;
              UPDATE meta SET value = '4' WHERE key = 'schema_version';",
         )
         .expect("the v4 shape is staged");
+    }
+    /// Test-only: the v6 shape — every column but the hand-off flag.
+    #[cfg(test)]
+    pub fn pretend_to_be_v6(&self) {
+        self.connection()
+            .execute_batch(
+                "DROP INDEX IF EXISTS thread_items_own_messages;
+                 ALTER TABLE thread_items DROP COLUMN handoff;
+                 UPDATE meta SET value = '6' WHERE key = 'schema_version';",
+            )
+            .expect("the v6 shape is staged");
     }
     /// Test-only: the v5 shape, before durable operation receipts.
     #[cfg(test)]
     pub fn pretend_to_be_v5(&self) {
         self.connection()
             .execute_batch(
-                "DROP INDEX IF EXISTS operations_by_status;
+                "DROP INDEX IF EXISTS thread_items_own_messages;
+                 DROP INDEX IF EXISTS operations_by_status;
                  DROP TABLE IF EXISTS operations;
                  DROP TABLE IF EXISTS agent_migration_backups;
+                 ALTER TABLE thread_items DROP COLUMN handoff;
                  UPDATE meta SET value = '5' WHERE key = 'schema_version';",
             )
             .expect("the v5 shape is staged");

@@ -644,6 +644,7 @@ fn a_project_agent_messages_no_agent_outside_its_project() {
 struct HandedOver {
     owner: String,
     agent_id: String,
+    workspace_id: String,
     entity_id: String,
     worker: String,
 }
@@ -670,7 +671,7 @@ fn handed_over(state: &mut AppState, project_id: &str, body: &str) -> HandedOver
             &owner,
             &agent_id,
             BridgeAction::MessageWorkspaceAgent {
-                workspace_id,
+                workspace_id: workspace_id.clone(),
                 agent_id: None,
                 body: body.to_string(),
             },
@@ -679,6 +680,7 @@ fn handed_over(state: &mut AppState, project_id: &str, body: &str) -> HandedOver
     HandedOver {
         owner,
         agent_id,
+        workspace_id,
         entity_id,
         worker,
     }
@@ -787,6 +789,75 @@ fn a_workspace_agents_answer_reaches_the_project_agent_that_asked() {
         last_user_message(&state, &handed.owner),
         quiet,
         "the human's own message does move it"
+    );
+}
+
+/// The inbox belongs to the human. A project agent handing work over and the
+/// answer travelling back are both the work happening, so neither crosses the
+/// line the human drew on a row. What the agent says in its OWN conversation
+/// still does: that one is the row speaking.
+#[test]
+fn neither_direction_of_a_hand_off_brings_back_a_cleared_row() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let handed = handed_over(&mut state, &project_id, "read the router");
+    for entity_id in [&handed.entity_id, &handed.owner] {
+        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": entity_id })));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+    }
+
+    // Out: the project agent hands over more work. The board is what discards
+    // a dismissal whose line was crossed, so it is read before the row is
+    // judged.
+    state
+        .agent_action(
+            &handed.owner,
+            &handed.agent_id,
+            BridgeAction::MessageWorkspaceAgent {
+                workspace_id: handed.workspace_id.clone(),
+                agent_id: None,
+                body: "and the rail after it".to_string(),
+            },
+        )
+        .expect("a project agent speaks to an agent on its workspace");
+    let board = state.handle(req("board.list", json!({})));
+    assert_eq!(board["ok"], true, "{board:?}");
+    assert!(
+        state.is_dismissed(&handed.entity_id),
+        "a message a machine sent is not the row speaking"
+    );
+
+    // Back: the workspace agent ends its turn. Its own conversation calls the
+    // human — it stopped and said so — and the copy forwarded to the project
+    // agent does not.
+    state.on_agent_done(
+        &handed.entity_id,
+        terminal(DoneStatus::Completed, "the router reads top to bottom"),
+    );
+    state.handle(req("board.list", json!({})));
+    assert!(
+        !state.is_dismissed(&handed.entity_id),
+        "the agent handing its turn back is the row speaking"
+    );
+    assert!(
+        state.is_dismissed(&handed.owner),
+        "but the answer forwarded to the agent that asked for it is not"
+    );
+
+    // And the human's own words still cross the line that was kept.
+    let posted = state.handle(req(
+        "thread.post",
+        json!({ "entity_id": handed.owner, "agent_id": handed.agent_id, "body": "thanks" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    state.handle(req("board.list", json!({})));
+    assert!(
+        !state.is_dismissed(&handed.owner),
+        "the dismissal was kept, not discarded, so the human can cross it"
     );
 }
 

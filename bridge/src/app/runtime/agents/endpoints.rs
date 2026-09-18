@@ -1076,7 +1076,7 @@ impl AppState {
                     &agent.thread
                 };
                 let attention = self.board.attention().attention(&entity_id)?;
-                let sequence = thread.last_message_sequence();
+                let sequence = thread.last_own_message_sequence();
                 let crossed = match attention.dismissed_line_for(&agent.id, position == 0) {
                     Some(line) => sequence > line,
                     None => sequence > 0 && attention.has_message_dismissal(),

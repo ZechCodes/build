@@ -323,6 +323,10 @@ impl AppState {
     /// first agent's line is drawn in THAT thread; every other agent's in its
     /// own. The first pair is the roster's first agent — the only one the
     /// pre-agent dismissal folds onto.
+    ///
+    /// A hand-off does not draw a line and does not cross one: one agent's
+    /// words in another agent's conversation are the work happening, not the
+    /// row calling the human back.
     pub(in crate::app) fn dismissal_lines(&self, entity_id: &str) -> Vec<(String, u64)> {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
@@ -333,7 +337,7 @@ impl AppState {
                 let thread = self
                     .agent_conversation(entity_id, Some(&agent.id))
                     .unwrap_or(&agent.thread);
-                (agent.id.clone(), thread.last_message_sequence())
+                (agent.id.clone(), thread.last_own_message_sequence())
             })
             .collect()
     }

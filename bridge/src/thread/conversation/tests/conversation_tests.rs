@@ -77,6 +77,47 @@ fn thread_with_conversation() -> Thread {
     thread
 }
 
+/// The dismissal line ignores a hand-off, and a hand-off ignores it from
+/// both post paths: the one that signs as it posts and the one that signs the
+/// message it just pushed. The general message line counts them all.
+#[test]
+fn the_own_message_line_skips_what_another_agent_signed() {
+    let mut thread = Thread::new("run-1");
+    thread.post_user("please investigate", None, "2026-09-08T10:00:00Z");
+    let asked = thread.last_own_message_sequence();
+    assert_eq!(asked, thread.last_message_sequence());
+
+    thread.post_user_from_agent(
+        "take the retry path",
+        AgentIdentity {
+            id: "project-1".to_string(),
+        },
+        "2026-09-08T10:01:00Z",
+    );
+    assert_eq!(
+        thread.last_own_message_sequence(),
+        asked,
+        "signed as posted"
+    );
+    assert!(
+        thread.last_message_sequence() > asked,
+        "but still a message"
+    );
+
+    thread.post_user("actually, hold on", None, "2026-09-08T10:02:00Z");
+    thread.wear_sender(AgentIdentity {
+        id: "project-1".to_string(),
+    });
+    assert_eq!(thread.last_own_message_sequence(), asked, "signed after");
+
+    thread.post_agent("on it", None, "2026-09-08T10:03:00Z");
+    assert_eq!(
+        thread.last_own_message_sequence(),
+        thread.last_message_sequence(),
+        "the agent answering in its own conversation is the row speaking"
+    );
+}
+
 #[test]
 fn conversation_summary_tracks_speech_and_only_an_in_flight_stop() {
     let mut thread = Thread::new("plan-1");

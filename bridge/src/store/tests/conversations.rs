@@ -160,6 +160,45 @@ fn conversation_summary_survives_activity_burial_and_restart() {
     );
 }
 
+/// The dismissal line is one of those summaries, and it counts only what
+/// this conversation's own two parties said. A run of hand-offs on top of a
+/// buried message is the case the hoisted column exists for: without it the
+/// newest message the store can find is a machine's, and a row the human
+/// cleared comes back at every boot.
+#[test]
+fn the_own_message_line_survives_a_burial_under_hand_offs() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let mut record = run_record("run-1", None, NOW);
+    let thread = &mut record.agents[0].thread;
+    thread.post_agent("which name did you want?", None, "2026-08-13T10:00:00Z");
+    let own_sequence = thread.last_own_message_sequence();
+    for n in 0..=RESIDENT_CONVERSATION_TAIL {
+        thread.post_user_from_agent(
+            format!("step {n}"),
+            crate::thread::AgentIdentity {
+                id: "project-1".to_string(),
+            },
+            "2026-08-13T10:02:00Z",
+        );
+    }
+    assert_eq!(thread.last_own_message_sequence(), own_sequence);
+    assert!(thread.last_message_sequence() > own_sequence, "in memory");
+
+    Store::new(&root).unwrap().save_run(&record).unwrap();
+    let loaded = reload_run(&Store::new(&root).unwrap(), "run-1");
+    let thread = &loaded.agents[0].thread;
+    assert!(
+        thread.items.iter().all(ThreadItem::is_handoff),
+        "the tail holds nothing but hand-offs"
+    );
+    assert_eq!(thread.last_own_message_sequence(), own_sequence);
+    assert!(
+        thread.last_message_sequence() > own_sequence,
+        "and reloaded"
+    );
+}
+
 /// What paging is for, said at the load: a conversation costs the daemon
 /// its tail, not its length. A boot that reads every item of every
 /// conversation back into memory pays the whole cost the paged reads
@@ -978,6 +1017,44 @@ fn a_v2_database_is_migrated_and_its_messages_classified() {
         ),
         vec![1],
         "the backfill classified the items already stored"
+    );
+}
+
+/// A v6 database gains the hand-off column the same way, and the dismissal
+/// line comes back right on the first boot that added it: a store written
+/// before the column knew nothing about who signed a message.
+#[test]
+fn a_v6_database_is_migrated_and_its_hand_offs_classified() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let own_sequence;
+    {
+        let store = Store::new(&root).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        let thread = &mut record.agents[0].thread;
+        thread.post_agent("which name did you want?", None, NOW);
+        own_sequence = thread.last_own_message_sequence();
+        // Under the tail, so only the column can find it.
+        for n in 0..=RESIDENT_CONVERSATION_TAIL {
+            thread.post_user_from_agent(
+                format!("step {n}"),
+                crate::thread::AgentIdentity {
+                    id: "project-1".to_string(),
+                },
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the run saves");
+        store.pretend_to_be_v6();
+    }
+
+    let migrated = Store::new(&root).expect("a v6 store opens");
+
+    let loaded = reload_run(&migrated, "run-1");
+    assert_eq!(
+        loaded.agents[0].thread.last_own_message_sequence(),
+        own_sequence,
+        "the backfill classified the hand-offs already stored"
     );
 }
 

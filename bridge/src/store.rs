@@ -80,7 +80,8 @@ use schema::{
     HOISTED_ITEM_COLUMNS, SCHEMA, THREAD_ACTIVITY_COUNT_SQL, THREAD_ACTIVITY_RANGE_SQL,
     THREAD_CONVERSATION_FLOOR_SQL, THREAD_CURSOR_SQL, THREAD_FIRST_ATTENTION_AFTER_SQL,
     THREAD_ITEM_COUNT_SQL, THREAD_LAST_ATTENTION_SQL, THREAD_LAST_MESSAGE_SQL,
-    THREAD_LAST_SEQUENCE_SQL, THREAD_MESSAGE_PAGE_SQL, THREAD_PAGE_SQL, THREAD_TOOL_CALL_COUNT_SQL,
+    THREAD_LAST_OWN_MESSAGE_SQL, THREAD_LAST_SEQUENCE_SQL, THREAD_MESSAGE_PAGE_SQL,
+    THREAD_PAGE_SQL, THREAD_TOOL_CALL_COUNT_SQL,
 };
 
 /// Things that can go wrong reading or writing the store.
@@ -154,7 +155,7 @@ pub enum StoreError {
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -234,7 +235,8 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         // The columns BEFORE the schema batch: `SCHEMA` indexes them, and an
         // older table has no such column for an index to name. A v1 database
-        // arrives here needing all four, and reaches v5 in one open.
+        // arrives here needing all five, and reaches the current version in
+        // one open.
         for (arrived_in, column) in HOISTED_ITEM_COLUMNS {
             if stored.is_some_and(|found| found < arrived_in) {
                 Store::add_hoisted_column(&conn, column)?;

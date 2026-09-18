@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS thread_items (
     -- calls it made, and the calls a page did not ship can only be counted by
     -- the database.
     tool_call        INTEGER NOT NULL DEFAULT 0,
+    -- 1 when this message is one agent's words in another agent's
+    -- conversation. Hoisted for the same reason the rest are: the line a
+    -- dismissal is judged against is the newest message that is NOT one of
+    -- these, and a conversation loaded as its tail cannot find that message
+    -- under a long run of hand-offs without the database.
+    handoff          INTEGER NOT NULL DEFAULT 0,
     -- 1 when this item is the agent working rather than something said or
     -- decided. Hoisted because a page reads the conversation and the newest of
     -- each run between it: without the column the read has to fetch a run to
@@ -85,6 +91,11 @@ CREATE INDEX IF NOT EXISTS thread_items_conversation
 -- between them.
 CREATE INDEX IF NOT EXISTS thread_items_messages
     ON thread_items(agent_id, sequence) WHERE message = 1;
+-- The dismissal line, indexed: what a row was cleared against is the newest
+-- message the conversation's own two parties spoke, so the seek that finds it
+-- walks past the hand-offs between them without reading one.
+CREATE INDEX IF NOT EXISTS thread_items_own_messages
+    ON thread_items(agent_id, sequence) WHERE message = 1 AND handoff = 0;
 -- The census, indexed: a page's digest counts the tool calls of a run exactly,
 -- including the ones the per-run cap left off the wire. Partial and covering,
 -- so the count is a seek down the calls themselves and never reads a row.
@@ -266,6 +277,14 @@ pub(super) const THREAD_LAST_SEQUENCE_SQL: &str =
 pub(super) const THREAD_LAST_MESSAGE_SQL: &str = "SELECT sequence, item FROM thread_items \
      WHERE agent_id = ?1 AND message = 1 ORDER BY sequence DESC LIMIT 1";
 
+/// The dismissal line: the newest message no other agent signed. Read on its
+/// own because a hand-off is a message — it is the newest one whenever a
+/// project agent spoke last — and a line drawn off it would put a row the
+/// human cleared back on the list at every restart.
+pub(super) const THREAD_LAST_OWN_MESSAGE_SQL: &str =
+    "SELECT COALESCE(MAX(sequence), 0) FROM thread_items \
+     WHERE agent_id = ?1 AND message = 1 AND handoff = 0";
+
 pub(super) const THREAD_FIRST_ATTENTION_AFTER_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND attention = 1 AND sequence > ?2 ORDER BY sequence LIMIT 1";
 
@@ -281,9 +300,10 @@ pub(super) const THREAD_LAST_ATTENTION_SQL: &str =
 /// One list rather than one migration step per column, because every one of
 /// them is the same upgrade — an integer flag, defaulted to zero, backfilled
 /// from the items already stored.
-pub(super) const HOISTED_ITEM_COLUMNS: [(i64, &str); 4] = [
+pub(super) const HOISTED_ITEM_COLUMNS: [(i64, &str); 5] = [
     (2, "attention"),
     (3, "message"),
     (4, "tool_call"),
     (5, "activity"),
+    (7, "handoff"),
 ];

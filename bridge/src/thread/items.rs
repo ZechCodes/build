@@ -1240,6 +1240,20 @@ impl ThreadItem {
         matches!(self, ThreadItem::Message(_))
     }
 
+    /// Whether this item is a message one agent handed to another: the user's
+    /// role, because that is the side an instruction arrives on whoever wrote
+    /// it, and `from_agent` saying a machine wrote it.
+    ///
+    /// The one thing that reads differently from everything else a
+    /// conversation holds: it is words, and it is not the human being spoken
+    /// to. So it never crosses the line a dismissal drew.
+    ///
+    /// The store filters the same rule as `handoff = 1` over the hoisted
+    /// column.
+    pub fn is_handoff(&self) -> bool {
+        matches!(self, ThreadItem::Message(message) if message.from_agent.is_some())
+    }
+
     /// What this item referenced, as derived when it was written.
     pub fn metadata(&self) -> &ItemMetadata {
         match self {

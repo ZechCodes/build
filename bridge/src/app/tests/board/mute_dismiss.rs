@@ -397,6 +397,123 @@ fn mute_and_dismiss_are_independent() {
     assert_eq!(row["dismissed"], true, "{row:?}");
 }
 
+/// A hand-off is machine-to-machine traffic: one agent's words arriving in
+/// another agent's conversation, wearing the sender that wrote them. It never
+/// crosses the line the human drew — a project agent staffing a workspace
+/// must not put back on the list a row the human cleared — and the human or
+/// the agent itself speaking still does.
+#[test]
+fn an_agents_hand_off_never_brings_back_a_cleared_row() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (issue_id, run_id) = planned_run_in_review(&mut state, "handed over");
+    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+        thread.post_agent("which name did you want?", None, now_rfc3339());
+    });
+    state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+    let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+    assert_eq!(cleared["ok"], true, "{cleared:?}");
+
+    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+        thread.post_user_from_agent(
+            "take the retry path next",
+            crate::thread::AgentIdentity {
+                id: "project-1".to_string(),
+            },
+            now_rfc3339(),
+        );
+    });
+
+    let row = work_item_row_for(&mut state, &run_id);
+    assert_eq!(
+        row["dismissed"], true,
+        "one agent handing work to another is not the row speaking: {row:?}"
+    );
+
+    // And the dismissal is still there to be crossed: the human speaking
+    // brings the row back the way it always did.
+    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+        thread.post_user("actually, hold on", None, now_rfc3339());
+    });
+    let row = work_item_row_for(&mut state, &run_id);
+    assert_eq!(row["dismissed"], false, "{row:?}");
+}
+
+/// The same line, across a restart. A conversation is loaded as its newest
+/// 200 items, so a session's worth of hand-offs buries what the human and
+/// the agent said under the tail — and the line has to come out of the store
+/// knowing which of those messages were hand-offs. Otherwise the newest
+/// message there is is always a machine's, and the row the human cleared
+/// comes back at every boot.
+#[test]
+fn the_line_a_hand_off_does_not_cross_survives_a_restart() {
+    let (dir, repo) = init_repo();
+    let bury = |state: &mut AppState, run_id: &str, agent_id: &str| {
+        state
+            .edit_agent_conversation(run_id, agent_id, |thread, _| {
+                for index in 0..crate::store::RESIDENT_CONVERSATION_TAIL + 40 {
+                    thread.post_user_from_agent(
+                        format!("step {index}"),
+                        crate::thread::AgentIdentity {
+                            id: "project-1".to_string(),
+                        },
+                        now_rfc3339(),
+                    );
+                }
+                Ok(())
+            })
+            .expect("the hand-offs are written");
+    };
+
+    let (run_id, agent_id) = {
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "handed-over");
+        let agent_id = primary_agent_id(&state, &run_id);
+        state
+            .edit_agent_conversation(&run_id, &agent_id, |thread, _| {
+                thread.post_agent("which name did you want?", None, now_rfc3339());
+                Ok(())
+            })
+            .expect("the question is written");
+        state.handle(req("entity.seen", json!({ "entity_id": run_id.clone() })));
+        let cleared = state.handle(req(
+            "entity.dismiss",
+            json!({ "entity_id": run_id.clone() }),
+        ));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        bury(&mut state, &run_id, &agent_id);
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+        (run_id, agent_id)
+    };
+
+    let mut rebooted = qa_state(&repo, dir.path());
+    let row = work_item_row_for(&mut rebooted, &run_id);
+    assert_eq!(
+        row["dismissed"], true,
+        "a tail of hand-offs is not the row speaking: {row:?}"
+    );
+
+    // And the agent itself speaking still crosses the line, however deeply
+    // the traffic after it buries what was said. Nothing reads the board
+    // between the two, so the answer has to come back out of the store.
+    rebooted
+        .edit_agent_conversation(&run_id, &agent_id, |thread, _| {
+            thread.post_agent("the retry path is ready — take a look", None, now_rfc3339());
+            Ok(())
+        })
+        .expect("the answer is written");
+    bury(&mut rebooted, &run_id, &agent_id);
+    drop(rebooted);
+
+    let mut rebooted = qa_state(&repo, dir.path());
+    let row = work_item_row_for(&mut rebooted, &run_id);
+    assert_eq!(
+        row["dismissed"], false,
+        "the agent asked for the human and the row is back on the list: {row:?}"
+    );
+}
+
 #[test]
 fn entity_dismiss_refuses_what_it_cannot_clear() {
     let (dir, repo) = init_repo();

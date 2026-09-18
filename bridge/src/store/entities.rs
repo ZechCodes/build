@@ -2,8 +2,8 @@ use super::{
     load_legacy_owner_context, read_thread_page, remove_dir_if_present,
     stored_conversation_summary, Store, StoreError, RESIDENT_CONVERSATION_TAIL,
     THREAD_ACTIVITY_COUNT_SQL, THREAD_FIRST_ATTENTION_AFTER_SQL, THREAD_ITEM_COUNT_SQL,
-    THREAD_LAST_ATTENTION_SQL, THREAD_LAST_MESSAGE_SQL, THREAD_LAST_SEQUENCE_SQL, THREAD_PAGE_SQL,
-    THREAD_TOOL_CALL_COUNT_SQL,
+    THREAD_LAST_ATTENTION_SQL, THREAD_LAST_MESSAGE_SQL, THREAD_LAST_OWN_MESSAGE_SQL,
+    THREAD_LAST_SEQUENCE_SQL, THREAD_PAGE_SQL, THREAD_TOOL_CALL_COUNT_SQL,
 };
 use crate::agent::Agent;
 use crate::agent::AgentRoster;
@@ -277,8 +277,8 @@ impl Store {
     /// on the upgrade, because a column added with a default says nothing about
     /// the items already under it. Every column is written on every upgrade
     /// path — a v1 database gains them together, and rewriting one with the
-    /// value it already holds is what makes a single classifier serve all
-    /// three.
+    /// value it already holds is what makes a single classifier serve them
+    /// all.
     pub(super) fn classify_stored_items(conn: &Connection) -> Result<(), StoreError> {
         let rows: Vec<(String, i64, String)> = {
             let mut statement =
@@ -290,7 +290,7 @@ impl Store {
         };
         let mut set = conn.prepare(
             "UPDATE thread_items SET attention = ?3, message = ?4, tool_call = ?5, \
-                                     activity = ?6 \
+                                     activity = ?6, handoff = ?7 \
              WHERE agent_id = ?1 AND sequence = ?2",
         )?;
         for (agent_id, sequence, raw) in rows {
@@ -303,7 +303,8 @@ impl Store {
                 i64::from(item.attention_reason().is_some()),
                 i64::from(item.counts_toward_page()),
                 i64::from(item.is_tool_call()),
-                i64::from(item.is_activity())
+                i64::from(item.is_activity()),
+                i64::from(item.is_handoff())
             ])?;
         }
         Ok(())
@@ -430,11 +431,11 @@ impl Store {
         let mut upsert_item = tx.prepare(
             "INSERT INTO thread_items \
              (agent_id, sequence, updated_sequence, attention, message, tool_call, \
-              activity, item)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+              activity, handoff, item)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(agent_id, sequence)
              DO UPDATE SET updated_sequence = ?3, attention = ?4, message = ?5, \
-                           tool_call = ?6, activity = ?7, item = ?8",
+                           tool_call = ?6, activity = ?7, handoff = ?8, item = ?9",
         )?;
         let mut delete_item =
             tx.prepare("DELETE FROM thread_items WHERE agent_id = ?1 AND sequence = ?2")?;
@@ -484,6 +485,7 @@ impl Store {
                     i64::from(item.counts_toward_page()),
                     i64::from(item.is_tool_call()),
                     i64::from(item.is_activity()),
+                    i64::from(item.is_handoff()),
                     serde_json::to_string(item).expect("a thread item always serializes")
                 ])?;
             }
@@ -517,6 +519,7 @@ impl Store {
         let mut count = conn.prepare(THREAD_ITEM_COUNT_SQL)?;
         let mut last_sequence = conn.prepare(THREAD_LAST_SEQUENCE_SQL)?;
         let mut last_message = conn.prepare(THREAD_LAST_MESSAGE_SQL)?;
+        let mut last_own_message = conn.prepare(THREAD_LAST_OWN_MESSAGE_SQL)?;
         let mut first_attention_after = conn.prepare(THREAD_FIRST_ATTENTION_AFTER_SQL)?;
         let mut last_attention = conn.prepare(THREAD_LAST_ATTENTION_SQL)?;
         let mut agents = Vec::with_capacity(rows.len());
@@ -545,8 +548,11 @@ impl Store {
                 stored_conversation_summary(&mut last_message, &mut first_attention_after, &id)?;
             let last_attention_sequence =
                 last_attention.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
+            let last_own_message_sequence =
+                last_own_message.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
             agent.thread.adopt_conversation_summary(
                 summary.last_message_sequence,
+                last_own_message_sequence,
                 last_attention_sequence,
                 summary.activity_at,
                 summary.working,

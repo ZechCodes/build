@@ -117,6 +117,17 @@ pub struct Thread {
     /// behind a long run of tool activity.
     #[serde(default)]
     pub(super) last_message_sequence_summary: u64,
+    /// The same, counting only what this conversation's own two parties said.
+    /// A hand-off another agent wrote is words the human is not being spoken
+    /// to with, and the line a dismissal is judged against is drawn here.
+    #[serde(default)]
+    pub(super) last_own_message_sequence_summary: u64,
+    /// What the own-message line held before the newest message, so
+    /// [`wear_sender`](Self::wear_sender) can put it back when that message
+    /// turns out to be another agent's. Never persisted: the sender is worn
+    /// in the same breath as the post.
+    #[serde(skip)]
+    own_message_line_before_newest: u64,
     #[serde(default)]
     pub(super) last_attention_sequence_summary: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -223,11 +234,13 @@ impl Thread {
     pub fn adopt_conversation_summary(
         &mut self,
         last_message_sequence: u64,
+        last_own_message_sequence: u64,
         last_attention_sequence: u64,
         activity_at: Option<String>,
         working: bool,
     ) {
         self.last_message_sequence_summary = last_message_sequence;
+        self.last_own_message_sequence_summary = last_own_message_sequence;
         self.last_attention_sequence_summary = last_attention_sequence;
         self.conversation_activity_at_summary = activity_at;
         self.conversation_working = working;
@@ -271,8 +284,15 @@ impl Thread {
     /// For the post paths that carry an anchor, a viewing context or files and
     /// so cannot go through [`post_user_from_agent`](Self::post_user_from_agent).
     pub fn wear_sender(&mut self, from_agent: AgentIdentity) {
-        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
-            message.from_agent = Some(Box::new(from_agent));
+        let Some(ThreadItem::Message(message)) = self.items.last_mut() else {
+            return;
+        };
+        message.from_agent = Some(Box::new(from_agent));
+        // The post counted this message as the conversation's own, because a
+        // message is posted before it is signed. It is a hand-off, so the
+        // line a dismissal is judged against goes back where it was.
+        if self.last_own_message_sequence_summary == message.sequence {
+            self.last_own_message_sequence_summary = self.own_message_line_before_newest;
         }
     }
 
@@ -695,6 +715,8 @@ impl Thread {
             answers_options_of: None,
         }));
         self.last_message_sequence_summary = sequence;
+        self.own_message_line_before_newest = self.last_own_message_sequence_summary;
+        self.last_own_message_sequence_summary = sequence;
         self.conversation_activity_at_summary = self
             .items
             .last()
@@ -1444,6 +1466,24 @@ impl Thread {
                 .iter()
                 .rev()
                 .find(|item| matches!(item, ThreadItem::Message(_)))
+                .map(ThreadItem::sequence)
+                .unwrap_or(0),
+        )
+    }
+
+    /// The same line with the hand-offs taken out: the newest message this
+    /// conversation's own two parties spoke, the human's or this agent's.
+    ///
+    /// This is what a dismissal is drawn at and judged against. A project
+    /// agent staffing a workspace, and the answer travelling back, are the
+    /// work happening rather than the row calling the human — so they must
+    /// not put a cleared row back on the list.
+    pub fn last_own_message_sequence(&self) -> u64 {
+        self.last_own_message_sequence_summary.max(
+            self.items
+                .iter()
+                .rev()
+                .find(|item| matches!(item, ThreadItem::Message(_)) && !item.is_handoff())
                 .map(ThreadItem::sequence)
                 .unwrap_or(0),
         )

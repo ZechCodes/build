@@ -43,6 +43,11 @@ pub(in crate::app) struct Project {
     pub(in crate::app) base_branch: String,
     pub(in crate::app) is_git: bool,
     pub(in crate::app) sources: Vec<ProjectSource>,
+    /// The number the next `source-N` is minted from. Held past every id this
+    /// project has ever carried, not just the ones it still holds: a workspace
+    /// records the id it was cut from, so handing a removed id to another
+    /// folder would make one name mean two repositories.
+    pub(in crate::app) next_source: u64,
     pub(in crate::app) orch: Orchestrator,
     /// Which isolation this project's new checkouts are made with, when the
     /// account's answer is not the one wanted here. `None` inherits it.
@@ -62,6 +67,18 @@ pub(in crate::app) fn usable_project_name(name: impl AsRef<str>) -> Result<Strin
         return Err(format!("invalid project name: {name:?}"));
     }
     Ok(name.to_string())
+}
+
+/// The number past every `source-N` in this set — where a project that has
+/// only ever appended starts minting.
+pub(in crate::app) fn next_source_number(sources: &[ProjectSource]) -> u64 {
+    sources
+        .iter()
+        .filter_map(|source| source.id.strip_prefix("source-"))
+        .filter_map(|number| number.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1
 }
 
 pub(in crate::app) fn safe_mount_name(name: &str) -> String {
@@ -227,6 +244,9 @@ impl AppState {
                     self.projects.set_sources(&id, sources);
                 }
             }
+            if let Some(next) = project.get("next_source").and_then(Value::as_u64) {
+                self.projects.reserve_source_ids_through(&id, next);
+            }
             let isolation = configured_isolation(project, "project isolation");
             self.projects.set_isolation(&id, isolation);
         }
@@ -348,6 +368,7 @@ impl AppState {
                     repo_path: repo_path.to_path_buf(),
                     base_branch: base_branch.to_string(),
                     is_git,
+                    next_source: next_source_number(&sources),
                     sources,
                     orch,
                     isolation: None,

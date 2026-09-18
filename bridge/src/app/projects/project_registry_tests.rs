@@ -139,6 +139,7 @@ fn project_fixture(id: ProjectId, path: &Path, base: &str) -> Project {
         base_branch: base.to_string(),
         is_git: true,
         sources: vec![],
+        next_source: 1,
         orch: Orchestrator::new(
             path,
             path.join(".registry-test-worktrees").join(&id),

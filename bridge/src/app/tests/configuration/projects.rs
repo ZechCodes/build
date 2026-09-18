@@ -1159,3 +1159,68 @@ fn add_source_clones_a_remote_into_the_projects_sources_folder() {
         "{added:?}"
     );
 }
+
+/// A source id is never reissued. A workspace records the id it was cut from,
+/// so handing a removed id to a different folder would make one name mean two
+/// repositories: the project's new source and the older workspace's directory.
+/// The count the project mints from is its own, past every id it has ever
+/// held, and it survives a restart.
+#[test]
+fn a_removed_source_id_is_not_minted_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let code = init_repo_named(directory.path(), "code");
+    let docs = init_repo_named(directory.path(), "docs");
+    let tokens = init_repo_named(directory.path(), "tokens");
+    let assets = init_repo_named(directory.path(), "assets");
+    let config = directory.path().join("config.json");
+    std::fs::write(&config, b"{}").unwrap();
+    let worktrees = directory.path().join("worktrees");
+    let project_id = {
+        let mut state = AppState::new_unrooted(&worktrees, "main", true, "/tmp/test-mcp.sock")
+            .with_config(&config)
+            .unwrap();
+        let opened = state.handle(req(
+            "project.create",
+            json!({
+                "name": "many",
+                "sources": [{"path": code}, {"path": docs}, {"path": tokens}],
+            }),
+        ));
+        assert_eq!(opened["ok"], true, "{opened:?}");
+        let project_id = opened["result"]["project_id"].as_str().unwrap().to_string();
+        let removed = state.handle(req(
+            "project.remove_source",
+            json!({"project_id": project_id, "source_id": "source-3"}),
+        ));
+        assert_eq!(removed["ok"], true, "{removed:?}");
+
+        let added = state.handle(req(
+            "project.add_source",
+            json!({"project_id": project_id, "path": assets}),
+        ));
+
+        assert_eq!(added["ok"], true, "{added:?}");
+        let sources = added["result"]["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 3, "{added:?}");
+        assert_eq!(
+            sources[2]["id"], "source-4",
+            "the id the removed source held is not handed to another folder: {added:?}"
+        );
+        project_id
+    };
+
+    let mut restarted = AppState::new_unrooted(&worktrees, "main", true, "/tmp/test-mcp.sock")
+        .with_config(&config)
+        .unwrap();
+    let more = init_repo_named(directory.path(), "more");
+    let added = restarted.handle(req(
+        "project.add_source",
+        json!({"project_id": project_id, "path": more}),
+    ));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let sources = added["result"]["sources"].as_array().unwrap();
+    assert_eq!(
+        sources[3]["id"], "source-5",
+        "the count the project mints from survived the restart: {added:?}"
+    );
+}

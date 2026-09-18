@@ -14,7 +14,10 @@ flow. Those flows are outside the workspace lifecycle.
 A project contains one or more ordered sources. A source is either a local
 directory or a remote repository that Build clones when the project is created.
 Local directories may be Git repositories or ordinary directories. Every source
-has a stable source identity, a display name, and its source configuration.
+has a stable source identity, a display name, and its source configuration. An
+identity is never reissued: the project mints from a count of its own, held past
+every id it has ever carried, so a removed source's id is not handed to another
+folder while a workspace cut from it still names it.
 
 Sources are added and removed after a project is opened. `project.add_source`
 appends one — a path on the device, or a remote Build clones into the project's

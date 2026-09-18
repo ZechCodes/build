@@ -181,18 +181,6 @@ impl WorktreeMutation for OpenProjectSources {
     }
 }
 
-/// The id a source appended to a project takes: past every `source-N` the
-/// project already holds, so nothing that a workspace was cut from is reused.
-fn next_source_id(sources: &[ProjectSource]) -> String {
-    let highest = sources
-        .iter()
-        .filter_map(|source| source.id.strip_prefix("source-"))
-        .filter_map(|number| number.parse::<u64>().ok())
-        .max()
-        .unwrap_or(0);
-    format!("source-{}", highest + 1)
-}
-
 impl AppState {
     /// Register a project from a host path. Validates it is a git repo with the
     /// requested base branch before adding, so a bad path fails loudly here rather
@@ -480,9 +468,11 @@ impl AppState {
     ///
     /// The same open the project was registered with, the same validation, and
     /// the same off-lock drain: a local path is opened where it stands, a
-    /// remote is cloned into the project's own sources folder. The id is minted
-    /// past everything the project already holds, so appending can never
-    /// rewrite a source a workspace was cut from.
+    /// remote is cloned into the project's own sources folder. The id comes off
+    /// the project's own count (`Project::next_source`), which is held past
+    /// every id it has ever carried and written to the config, so an id a
+    /// workspace was cut from is not reissued to another folder — not after a
+    /// removal, and not after a restart.
     ///
     /// Forward-looking, like every project edit: a workspace already cut keeps
     /// the directories it was cut with, and `workspace.add_directory` is how
@@ -492,8 +482,9 @@ impl AppState {
         let project = self.project_for(&project_id)?;
         let project_name = usable_project_name(safe_mount_name(&project.name))?;
         let sources = project.sources.clone();
+        let next_source = project.next_source;
         let mut taken = TakenSourceNames::over(&sources);
-        let request = self.source_request(params, next_source_id(&sources), &mut taken)?;
+        let request = self.source_request(params, format!("source-{next_source}"), &mut taken)?;
         let managed_root = self.projects_dir.join(format!("{project_name}-sources"));
         let canonical_projects_dir =
             std::fs::canonicalize(&self.projects_dir).unwrap_or_else(|_| self.projects_dir.clone());

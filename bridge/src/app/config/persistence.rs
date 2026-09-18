@@ -43,6 +43,9 @@ impl AppState {
                     "id": p.id,
                     "path": p.repo_path.display().to_string(),
                     "base_branch": p.base_branch,
+                    // Past every source id this project has held, so a removed
+                    // one is not reissued after a restart either.
+                    "next_source": p.next_source,
                     "sources": p.sources.iter().map(|source| json!({
                         "id": source.id,
                         "name": source.name,

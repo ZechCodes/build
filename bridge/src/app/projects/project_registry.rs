@@ -1,4 +1,4 @@
-use super::{Project, ProjectSource};
+use super::{next_source_number, Project, ProjectSource};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -155,8 +155,21 @@ impl ProjectRegistry {
         else {
             return false;
         };
+        project.next_source = project.next_source.max(next_source_number(&sources));
         project.sources = sources;
         true
+    }
+
+    /// Hold this project's source count past `next`, for one restored from a
+    /// config that recorded where its minting had got to.
+    pub(in crate::app) fn reserve_source_ids_through(&mut self, project_id: &str, next: u64) {
+        if let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        {
+            project.next_source = project.next_source.max(next);
+        }
     }
 
     pub(in crate::app) fn find_by_canonical_path(&self, path: &Path) -> Option<&Project> {

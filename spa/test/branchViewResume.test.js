@@ -55,6 +55,20 @@ const bridge = () =>
 
 const askedFor = (call, method) => call.mock.calls.some(([asked]) => asked === method);
 
+/** The row this machine holds, on disk, with the feed reading it: what the
+ *  branch surface stands on. */
+async function cacheRow() {
+  const { writeCached } = await import("../src/core/localCache.js");
+  const { startFeed } = await import("../src/core/taskFeed.js");
+  const { liveFeedSnapshot } = await import("../src/core/feedMerge.js");
+  const projects = [{ project_id: "p1", name: "relaydb", is_git: true, base_branch: "main" }];
+  const view = liveFeedSnapshot({ items: [row] }, { projects }, { workspaces: [] }, "dev-1");
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, view);
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, view.projects);
+  await startFeed();
+  await flush();
+}
+
 let App;
 let renderBranch;
 let adoptDeviceSession;
@@ -66,6 +80,7 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   location.hash = "#/device/dev-1/project/p1/branch/build%2Flogin/changes";
   ({ App } = await import("../src/app.js"));
+  await (await import("../src/core/localCache.js")).wipeCache();
   ({ renderBranch } = await import("../src/views/branchView.js"));
   ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   ({ refetchEverything } = await import("../src/core/changeEvents.js"));
@@ -75,10 +90,11 @@ beforeEach(async () => {
   document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (App.viewDispose) App.viewDispose();
   App.viewDispose = null;
   App.poll = null;
+  (await import("../src/core/taskFeed.js")).stopFeed();
   resetDeviceContexts();
 });
 
@@ -86,6 +102,7 @@ describe("a mounted branch surface across a resume", () => {
   it("reads through the session its device is on now, not the one it mounted over", async () => {
     const dropped = bridge();
     adoptDeviceSession({ ...fakeSession("dev-1"), call: dropped });
+    await cacheRow();
     await renderBranch();
     await flush();
     expect(askedFor(dropped, "git.status")).toBe(true);

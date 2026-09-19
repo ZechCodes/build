@@ -1,14 +1,17 @@
-// What the branch surface stands up from before its first read answers.
+// What the branch surface stands on: one machine's slice of the cache.
 //
-// The feed already carries the branch's row — ids, scope, agents — and a plain
-// folder (a project with no git in it) has no row at all and has to be asked
-// for. Both answers are pure enough to keep out of the view: this module reads
-// one device's slice of the shared snapshot, asks the machine when the snapshot
-// has nothing, and says which tab the surface opens on.
+// A branch is three things depending on what is under it — a run Build cut, a
+// checkout nobody has claimed, or a plain folder with no git in it — and the
+// cache holds all three in collections of its own. This module is the one place
+// the three are read and folded into the row the surface is written against.
+//
+// Nothing here asks a bridge. The feed is a view over the cache
+// (core/taskFeed.js), so a `state` push that moves this row moves what these
+// answer, and the surface hears it on the same delivery the rail does.
 
-import { branchRowIn, deviceFeedNow } from "../core/feedRows.js";
+import { branchRowIn, deviceFeedNow, runBodyIn, worktreeRowIn } from "../core/feedRows.js";
 
-/** Nothing to stand up from: the Changes tab, and a live read to fill it. */
+/** Nothing this machine holds answers to the branch. */
 const NO_SEED = { row: null, defaultTab: "changes" };
 
 /** The one row a project with no git in it has: its folder, browsable in the
@@ -24,52 +27,52 @@ const folderRow = (project, projectId, branch) => ({
   is_git: false,
 });
 
+const projectIn = (snapshot, projectId) =>
+  (snapshot?.projects || []).find((candidate) => candidate.id === projectId) || null;
+
 const folderRowIn = (snapshot, projectId, branch) => {
-  const project = (snapshot.projects || []).find((candidate) => candidate.id === projectId);
+  const project = projectIn(snapshot, projectId);
   return project && project.is_git === false ? folderRow(project, projectId, branch) : null;
 };
 
-/** The row this surface stands up from, and the tab that row is best seen in. */
-function seedBranchState(deviceId, projectId, branch) {
-  const snapshot = deviceFeedNow(deviceId);
+/** The feed row with the run's own body on it, the way `branch.get` used to
+ *  answer. The board carries every live run whole beside its rows — the goal
+ *  and state the commit box reads, the base the diff is measured against, and
+ *  the triage pass that orders it — and a row that names no run carries null,
+ *  exactly as a bare checkout always did. */
+const withRunBody = (snapshot, row) => ({ ...row, run: runBodyIn(snapshot, row.run_id) });
+
+/**
+ * The row this surface stands on and the tab that row is best seen in, out of
+ * one machine's slice.
+ *
+ * In the order a branch can be backed: the board's own row for work Build is
+ * carrying, then a checkout on that branch the board does not list (a worktree
+ * nobody has adopted — the inbox leaves those out, and a link to one still has
+ * to open), then the project's folder when the project is not a repository.
+ */
+export function branchStateIn(snapshot, projectId, branch) {
   if (!snapshot) return NO_SEED;
-  const seeded = branchRowIn(snapshot, projectId, branch);
-  if (seeded) return { row: seeded, defaultTab: "changes" };
+  const listed = branchRowIn(snapshot, projectId, branch);
+  if (listed) return { row: withRunBody(snapshot, listed), defaultTab: "changes" };
+  const checkout = worktreeRowIn(snapshot, projectId, branch);
+  if (checkout) return { row: checkout, defaultTab: "changes" };
   const folder = folderRowIn(snapshot, projectId, branch);
   return folder ? { row: folder, defaultTab: "files" } : NO_SEED;
 }
 
-/** What the machine lists under this project id, or null when it lists nothing
- *  under it and when it could not be asked at all. */
-async function listedProject(callRpc, projectId) {
-  try {
-    const listed = await callRpc("project.list");
-    return (listed.projects || []).find((candidate) => (candidate.project_id || candidate.id) === projectId) || null;
-  } catch {
-    return null;
-  }
-}
-
-/** The folder behind a project with no git in it. Null for anything the machine
- *  calls a git project. */
-async function loadPlainBranch(callRpc, projectId, branch) {
-  const project = await listedProject(callRpc, projectId);
-  return project && project.is_git === false ? folderRow(project, projectId, branch) : null;
-}
-
-/** Whether the machine calls this project a git one, or null when it could not
- *  be asked — a folder that has just been initialized elsewhere says true. */
-export async function projectGitState(callRpc, projectId) {
-  const project = await listedProject(callRpc, projectId);
+/** Whether this machine's cache calls the project a git one, or null when it
+ *  holds nothing about the project at all — a folder initialized a moment ago
+ *  says true as soon as the pass that heard about it lands. */
+export function projectGitState(deviceId, projectId) {
+  const project = projectIn(deviceFeedNow(deviceId), projectId);
   return project ? project.is_git !== false : null;
 }
 
-/** The row and the tab the surface opens with: the feed's row where there is
- *  one, the folder behind a plain project where there is not, and the tab the
- *  URL asked for or the one that row is best seen in. */
-export async function initialBranchState(callRpc, { deviceId, projectId, branch, requestedTab }) {
-  const seeded = seedBranchState(deviceId, projectId, branch);
-  const row = seeded.row || (await loadPlainBranch(callRpc, projectId, branch));
-  const defaultTab = row?.is_git === false ? "files" : seeded.defaultTab;
-  return { row, tab: requestedTab || defaultTab };
+/** The row and the tab the surface opens with: the URL's tab where it asked
+ *  for one, and otherwise the tab that row is best seen in. */
+export function initialBranchState({ deviceId, projectId, branch, requestedTab }) {
+  const seeded = branchStateIn(deviceFeedNow(deviceId), projectId, branch);
+  const defaultTab = seeded.row?.is_git === false ? "files" : seeded.defaultTab;
+  return { row: seeded.row, tab: requestedTab || defaultTab };
 }

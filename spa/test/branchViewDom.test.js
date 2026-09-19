@@ -40,6 +40,36 @@ async function stopReaders() {
   stopFeed();
 }
 
+/** The cache as one pass would have left it for a machine: the board's list
+ *  and the two lists in their own records, a record per row, and the feed
+ *  reading all of it. The surface stands on records — what a bridge answers to
+ *  a read is somebody else's business. */
+async function cacheBoard({
+  deviceId = "dev-1",
+  items = [],
+  runs = [],
+  projects = [{ project_id: "p1", name: "notes", is_git: true }],
+  workspaces = [],
+} = {}) {
+  const { writeCached } = await import("../src/core/localCache.js");
+  const { startFeed } = await import("../src/core/taskFeed.js");
+  const { liveFeedSnapshot } = await import("../src/core/feedMerge.js");
+  const { entityIdOf } = await import("../src/core/entityId.js");
+  const view = liveFeedSnapshot({ items, runs }, { projects }, { workspaces }, deviceId);
+  await writeCached({ deviceId, entityId: "", kind: "feed" }, view);
+  await writeCached({ deviceId, entityId: "", kind: "projects" }, view.projects);
+  await writeCached({ deviceId, entityId: "", kind: "workspaces" }, view.workspaces);
+  for (const item of view.items) {
+    const entityId = entityIdOf(item);
+    if (entityId) await writeCached({ deviceId, entityId, kind: "row" }, item);
+  }
+  await startFeed();
+  for (let index = 0; index < 12; index += 1) await flush();
+}
+
+/** The one branch row this machine holds. */
+const cacheRow = (branchRow, over = {}) => cacheBoard({ items: branchRow ? [branchRow] : [], ...over });
+
 const row = {
   kind: "branch",
   project_id: "p1",
@@ -73,6 +103,9 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   location.hash = "#/p/p1/branch/build%2Flogin/changes";
   ({ App } = await import("../src/app.js"));
+  // One database for the file, so each case starts on an empty one: the
+  // surface stands on records, and another case's board is not this one's.
+  await (await import("../src/core/localCache.js")).wipeCache();
   ({ renderBranch, shouldRetainDirtyFilesPane } = await import("../src/views/branchView.js"));
   // The feed polls device contexts, so this file's one device has one: its call
   // is whatever the case in hand scripted onto bridge.call. It is the home device
@@ -130,6 +163,7 @@ describe("the branch surface", () => {
       if (method === "fs.read") return { mime: "text/plain", size: 12, editable: true, encoding: "utf-8", revision: "notes-1", content_b64: btoa("folder notes") };
       throw new Error(`unexpected ${method}`);
     });
+    await cacheBoard({ projects: [{ project_id: "p1", name: "notes", is_git: false, base_branch: "main" }] });
     await renderBranch();
     await vi.waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
     expect(document.querySelector("#tabbody .files")).toBeTruthy();
@@ -190,42 +224,47 @@ describe("the branch surface", () => {
     await stopReaders();
   });
 
-  it("does not mount after navigation while project metadata is loading", async () => {
-    let answerProjects;
-    bridge.call = vi.fn((method) => {
-      if (method === "project.list") return new Promise((resolve) => { answerProjects = resolve; });
-      return Promise.resolve({});
-    });
-    const mounting = renderBranch();
+  // A view the shell has torn down owns nothing on the page: the slot it was
+  // painting into belongs to whatever is mounted now, and a cache delivery
+  // that lands after the teardown must not paint over it.
+  it("does not paint over the next view when the cache moves after its teardown", async () => {
+    bridge.call = vi.fn(async () => ({}));
+    await cacheRow(row);
+    await renderBranch();
     await flush();
+
     App.viewDispose();
     document.querySelector("#tabbody").innerHTML = '<div id="next-view">next</div>';
-    answerProjects({ projects: [{ project_id: "p1", is_git: false }] });
-    await mounting;
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached(
+      { deviceId: "dev-1", entityId: "wt-1", kind: "row" },
+      { ...row, deviceId: "dev-1", projectKey: "dev-1/p1", state: "review" },
+    );
+    for (let index = 0; index < 12; index += 1) await flush();
+
     expect(document.querySelector("#next-view")).toBeTruthy();
   });
 
   it("detects Git initialized by another client and replaces the folder prompt", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-
-    let initialized = false;
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async (method) => {
-      if (method === "board.list") return { items: [] };
-      if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: initialized }] };
-      if (method === "branch.get") return { ...row, branch: "main", primary: true, worktree_id: null };
       if (method === "git.status") return { files: [], head: "abc" };
       if (method === "git.log") return { commits: [] };
       return {};
     });
-    await readTheBoard();
+    await cacheBoard({ projects: [{ project_id: "p1", name: "notes", is_git: false }] });
     await renderBranch();
     expect(document.querySelector("#init-git")).toBeTruthy();
-    initialized = true;
-    await vi.advanceTimersByTimeAsync(2000);
+
+    // Another client initialized it, and the pass that heard so rewrote the
+    // project list. The surface hears that write, not a poll.
+    await cacheBoard({
+      items: [{ ...row, branch: "main", primary: true, worktree_id: null, run_id: "run-main" }],
+      projects: [{ project_id: "p1", name: "notes", is_git: true }],
+    });
+
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     await stopReaders();
-    vi.useRealTimers();
   });
 
   // The reviewer's complaint: switching branches showed a bare loading frame
@@ -245,26 +284,26 @@ describe("the branch surface", () => {
     await stopReaders();
   });
 
-  it("polls the row once mounted", async () => {
-    bridge.call = vi.fn(async () => row);
+  it("hears the cache once mounted, and asks the bridge for no row at all", async () => {
+    bridge.call = vi.fn(async () => ({}));
+    await cacheRow(row);
     await renderBranch();
     await flush();
     expect(App.poll).not.toBeNull();
-    expect(bridge.call).toHaveBeenCalledWith("branch.get", expect.objectContaining({ project_id: "p1" }));
+    expect(bridge.call.mock.calls.some(([method]) => method === "branch.get")).toBe(false);
   });
 
   // A bridge can be updated past this tab while the surface stands over it: the
   // session drops, re-greets, and settles unsupported. The mount already
-  // happened, so nothing asks canAnswer again — the poll just calls the caller
-  // it captured. It must be refused there, or a 1.x-shaped read goes at a 2.x
-  // bridge and whatever comes back is painted under the update strip.
-  it("stops polling a machine whose greeting settles unsupported under it", async () => {
+  // happened, so nothing asks canAnswer again — and a 1.x-shaped read must not
+  // go at a 2.x bridge and be painted under the update strip.
+  it("asks nothing of a machine whose greeting settles unsupported under it", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { adoptBridgeSelection, contextFor } = await import("../src/core/deviceContexts.js");
-    bridge.call = vi.fn(async () => row);
+    bridge.call = vi.fn(async () => ({}));
+    await cacheRow(row);
     await renderBranch();
     await flush();
-    expect(bridge.call.mock.calls.some(([method]) => method === "branch.get")).toBe(true);
 
     adoptBridgeSelection(contextFor("dev-1"), { version: "9.0.0", unsupported: "bridge" }, null);
     bridge.call.mockClear();
@@ -275,23 +314,18 @@ describe("the branch surface", () => {
     vi.useRealTimers();
   });
 
-  // This poll runs every 1.6s and again on every change event, and the surface
-  // renders no conversation — the rail beside it does, off its own paged read
-  // of the same RPC. A read that names no bound is answered with every item the
-  // conversation ever held, so a branch with hundreds of them shipped them all,
-  // twice a second, to be thrown away unread.
-  it("names a bound on the conversation it does not render", async () => {
-    bridge.call = vi.fn(async () => row);
+  // The surface renders no conversation — the rail beside it does, off the
+  // cache. It used to carry one on every row read, a page of items twice a
+  // second thrown away unread; now it reads nothing at all.
+  it("asks for no conversation it does not render", async () => {
+    bridge.call = vi.fn(async () => ({}));
+    await cacheRow(row);
     await renderBranch();
     await flush();
-    const reads = bridge.call.mock.calls.filter(([method]) => method === "branch.get").map(([, params]) => params);
-    expect(reads.length).toBeGreaterThan(0);
-    // The rail's read of the same RPC pages the conversation it paints; the
-    // surface's own asks for the smallest page there is. Neither may go
-    // unbounded — silence is what tells the daemon to ship every item.
-    for (const params of reads)
-      expect(params.thread_limit !== undefined || params.thread_after_sequence !== undefined).toBe(true);
-    expect(reads.some((params) => params.thread_limit === 1)).toBe(true);
+
+    const asked = bridge.call.mock.calls.map(([method]) => method);
+    expect(asked).not.toContain("branch.get");
+    expect(asked).not.toContain("thread.page");
   });
 
   // Both tabs paint a .pane-split, which states the shell's gutters itself. In
@@ -301,6 +335,7 @@ describe("the branch surface", () => {
   it.each(["changes", "files"])("hands the %s pane a flush tab body", async (tab) => {
     App.route = { ...App.route, tab };
     bridge.call = vi.fn(async () => row);
+    await cacheRow(row);
     await renderBranch();
     await flush();
     expect(document.querySelector("#tabbody").classList.contains("flush")).toBe(true);
@@ -320,6 +355,7 @@ describe("the branch surface", () => {
 
   it("leaves focus alone on an ordinary visit", async () => {
     bridge.call = vi.fn(async () => row);
+    await cacheRow(row);
     await renderBranch();
     await flush();
     expect(document.getElementById("railinput")).not.toBe(document.activeElement);
@@ -347,19 +383,18 @@ describe("the branch surface", () => {
   // The branch never resolved: every tick fails the same way, and the empty
   // state is all there is. Repainting it would rebuild the one control on it.
   it("states a branch it cannot find once, and leaves the way out standing", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    bridge.call = vi.fn(async () => {
-      throw new Error("unknown branch");
-    });
+    bridge.call = vi.fn(async () => ({}));
+    await cacheBoard({ items: [] });
     await renderBranch();
-    await vi.advanceTimersByTimeAsync(0);
+    await flush();
     const back = document.querySelector("#branchback");
     expect(back).toBeTruthy();
 
-    await vi.advanceTimersByTimeAsync(4000); // two more failing reads
+    // More of the same news: the rest of the board moved, and this branch is
+    // still not on it. Repainting would rebuild the one control on the screen.
+    await cacheBoard({ items: [{ ...row, branch: "build/other", run_id: "run-other" }] });
 
     expect(document.querySelector("#branchback"), "the empty state was rebuilt").toBe(back);
-    vi.useRealTimers();
   });
 });
 
@@ -409,40 +444,40 @@ describe("a branch on another device", () => {
   const reached = (call, method) => call.mock.calls.some(([name]) => name === method);
   const reachedGit = (call) => call.mock.calls.some(([name]) => name.startsWith("git."));
 
-  it("the view calls the route device's call, not the home device's", async () => {
+  /** The desktop's board on disk, then the surface over it. */
+  const mountTheirs = async () => {
+    await cacheBoard({
+      deviceId: "dev-2",
+      items: [theirRow],
+      projects: [{ project_id: "p1", name: "their notes", is_git: true }],
+    });
     await renderBranch();
     await flush();
+  };
 
-    expect(reached(theirCall, "branch.get")).toBe(true);
+  it("the view calls the route device's call, not the home device's", async () => {
+    await mountTheirs();
+
     expect(reachedGit(theirCall)).toBe(true);
-    expect(reached(bridge.call, "branch.get")).toBe(false);
+    expect(reached(theirCall, "branch.get")).toBe(false);
     expect(reachedGit(bridge.call)).toBe(false);
   });
 
   it("stands the surface up from the route device's row, not the home device's", async () => {
-
-    theirCall.mockImplementation(async (method) => {
-      if (method === "board.list") return { items: [theirRow] };
-      if (method === "project.list") return { projects: [{ project_id: "p1", name: "their notes", is_git: true }] };
-      if (method === "branch.get") return new Promise(() => {}); // the first read is still in flight
-      if (method === "git.status") return { files: [], head: "abc", status_key: "clean" };
-      if (method === "git.log") return { commits: [] };
-      return {};
+    await cacheBoard({
+      deviceId: "dev-1",
+      items: [],
+      projects: [{ project_id: "p1", name: "my notes", is_git: false }],
     });
-    await readTheBoard();
-
-    renderBranch();
-    await flush();
+    await mountTheirs();
 
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     expect(document.querySelector("#init-git")).toBeNull();
-    await stopReaders();
   });
 
   it("Done finishes on the route's device", async () => {
     theirRow = finishableRow({ branch: "main", run_id: "run-7" });
-    await renderBranch();
-    await flush();
+    await mountTheirs();
     document.querySelector("#tb-verb .btn.mini:not(.caret)").click();
     await flush();
     document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
@@ -458,6 +493,11 @@ describe("a branch on another device", () => {
 
   it("the Files tab marks a route that keeps the device", async () => {
     App.route = { ...App.route, tab: "files" };
+    await cacheBoard({
+      deviceId: "dev-2",
+      items: [theirRow],
+      projects: [{ project_id: "p1", name: "their notes", is_git: true }],
+    });
     await renderBranch();
     await vi.waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
 
@@ -473,6 +513,11 @@ describe("a branch on another device", () => {
     const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
     await wipeCache();
     theirRow = { ...row, branch: "main", worktree_id: "wt-9" };
+    await cacheBoard({
+      deviceId: "dev-2",
+      items: [theirRow],
+      projects: [{ project_id: "p1", name: "their notes", is_git: true }],
+    });
     // This machine holds a checkout of the same id, synced earlier.
     await writeCached({ deviceId: "dev-1", entityId: "wt-9", kind: "status" }, { files: [], head: "mine", status_key: "mine" });
 
@@ -489,8 +534,7 @@ describe("a branch on another device", () => {
   // and that stays. All that is missing is whose state it is.
   it("keeps what was read when that machine goes, and names the machine over it", async () => {
     const { setContextOffline } = await import("../src/core/deviceContexts.js");
-    await renderBranch();
-    await flush();
+    await mountTheirs();
 
     setContextOffline("dev-2");
 
@@ -504,7 +548,7 @@ describe("a branch on another device", () => {
   // filled — so the surface says the plain thing instead.
   it("says the machine cannot be opened while nothing has been painted yet", async () => {
     const { setContextOffline } = await import("../src/core/deviceContexts.js");
-    theirCall.mockImplementation(async (method) => (method === "branch.get" ? new Promise(() => {}) : {}));
+    // Nothing on disk for that machine yet: the frame is up and empty.
     renderBranch();
     await flush();
     expect(document.getElementById("tabbody").textContent).toContain("loading…");
@@ -517,8 +561,7 @@ describe("a branch on another device", () => {
   });
 
   it("keeps the device on the tab bar's own links", async () => {
-    await renderBranch();
-    await flush();
+    await mountTheirs();
 
     document.querySelector('[data-tab="files"]').click();
     await flush();
@@ -574,10 +617,13 @@ describe("a branch on a device this client has not opened", () => {
     App.route = { name: "branch", deviceId: "dev-3", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async () => ({}));
     const theirCall = vi.fn(async (method) => {
-      if (method === "branch.get") return { ...row, branch: "main", primary: true, worktree_id: null };
       if (method === "git.status") return { files: [], head: "abc", status_key: "clean" };
       if (method === "git.log") return { commits: [] };
       return {};
+    });
+    await cacheBoard({
+      deviceId: "dev-3",
+      items: [{ ...row, branch: "main", primary: true, worktree_id: null, run_id: "run-main" }],
     });
 
     await renderBranch();
@@ -593,8 +639,7 @@ describe("a branch on a device this client has not opened", () => {
 
     expect(document.getElementById("root").textContent).not.toContain("isn't connected");
     expect(document.getElementById("tabbody")).toBeTruthy();
-    expect(theirCall.mock.calls.some(([method]) => method === "branch.get")).toBe(true);
-    expect(bridge.call.mock.calls.some(([method]) => method === "branch.get")).toBe(false);
+    expect(bridge.call).not.toHaveBeenCalled();
   });
 
   it("a route naming a device this account has no context for renders the offline state and mounts nothing", async () => {
@@ -624,10 +669,10 @@ describe("closing the branch out", () => {
 
   const mountWith = async (branchRow, answers = {}) => {
     bridge.call = vi.fn(async (method, params) => {
-      if (method === "branch.get") return branchRow;
       if (answers[method]) return answers[method](params);
       return {};
     });
+    await cacheRow(branchRow);
     await renderBranch();
     await flush();
   };
@@ -749,12 +794,12 @@ describe("closing the branch out", () => {
       dismissed: false,
     };
     bridge.call = vi.fn(async (method) => {
-      if (method === "branch.get") return boardRow;
       if (method === "board.list") return { items: [boardRow] };
-      if (method === "project.list") return { projects: [{ id: "p1", name: "relaydb" }] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "relaydb" }] };
       if (method === "branch.finish") return new Promise(() => {});
       return {};
     });
+    await cacheRow(boardRow);
     await renderBranch();
     await flush();
     doneButton().click();
@@ -834,5 +879,79 @@ describe("closing the branch out", () => {
     expect(notices[0].textContent).toContain("build/login");
     expect(notices[0].textContent).toContain("worktree.finish cleanup requires no uncommitted changes");
     expect(App.route.name).toBe("inbox");
+  });
+});
+
+// ---- the surface on the cache alone -------------------------------------------
+//
+// The row is a record, not a read. The pass fills it; a `state` push moves it;
+// the surface hears the write and repaints. Nothing here asks a bridge what
+// branch this is.
+describe("the branch surface on the cache alone", () => {
+  const boardWith = (items, runs = []) =>
+    vi.fn(async (method) => {
+      if (method === "board.list") return { items, runs };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: true }] };
+      if (method === "workspace.list") return { workspaces: [] };
+      if (method === "git.status") return { files: [], head: "abc", status_key: "clean" };
+      if (method === "git.log") return { commits: [] };
+      return {};
+    });
+
+  const branchGets = () => bridge.call.mock.calls.filter(([method]) => method === "branch.get");
+
+  it("mounts the pane off the cached row, asking no bridge what the branch is", async () => {
+    bridge.call = boardWith([finishableRow({ run_id: "run-1" })]);
+    await readTheBoard();
+
+    await renderBranch();
+    await flush();
+
+    expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
+    expect(branchGets()).toHaveLength(0);
+  });
+
+  it("takes the run's own body off the board's run list", async () => {
+    bridge.call = boardWith(
+      [finishableRow({ run_id: "run-1" })],
+      [{ run_id: "run-1", state: "review", goal: "land it", base_branch: "trunk", triage_enabled: true }],
+    );
+    await readTheBoard();
+
+    await renderBranch();
+    await flush();
+
+    // The base a run's diff is measured against is on the run body, and the
+    // Changes pane asks the review plug for it.
+    expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
+    expect(branchGets()).toHaveLength(0);
+  });
+
+  it("repaints when the row's own record moves", async () => {
+    bridge.call = boardWith([finishableRow({ run_id: "run-1", can_finish: false })]);
+    await readTheBoard();
+    await renderBranch();
+    await flush();
+    expect(document.querySelector("#tb-verb .btn")).toBeNull();
+
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "row" },
+      { ...finishableRow({ run_id: "run-1" }), deviceId: "dev-1", projectKey: "dev-1/p1" },
+    );
+    for (let index = 0; index < 20; index += 1) await flush();
+
+    expect(document.querySelector("#tb-verb .btn")).toBeTruthy();
+  });
+
+  it("says so when the cache names no checkout on this branch", async () => {
+    bridge.call = boardWith([]);
+    await readTheBoard();
+
+    await renderBranch();
+    await flush();
+
+    expect(document.querySelector("#tabbody .empty.gone")).toBeTruthy();
+    expect(branchGets()).toHaveLength(0);
   });
 });

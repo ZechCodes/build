@@ -60,7 +60,7 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // 54 since the Changes pane has no poll to hold the whole of a turn in one
 // function: it reads its records, paints them, and the checkout it is the only
 // reader of is read by the one function a mutation already used.
-const RATCHETED_FUNCTIONS = 54;
+const RATCHETED_FUNCTIONS = 53;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

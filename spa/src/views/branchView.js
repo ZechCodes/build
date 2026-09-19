@@ -23,7 +23,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go, markRoute } from "../app.js";
-import { watchChanges } from "../core/changeEvents.js";
+import { deviceFeedNow } from "../core/feedRows.js";
 import { paintDirectoryRail } from "../core/directoryRail.js";
 import { mountConsole } from "../core/console.js";
 import { setToolbarVerb, clearToolbarVerb } from "../core/toolbar.js";
@@ -33,7 +33,7 @@ import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { renderFilesTab } from "./files.js";
 import { createTaskReview } from "./taskReview.js";
 import { createWorktreeReview } from "./worktreeReview.js";
-import { initialBranchState, projectGitState } from "./branchSeed.js";
+import { branchStateIn, initialBranchState, projectGitState } from "./branchSeed.js";
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
@@ -42,8 +42,7 @@ import { routeProjectKey } from "../core/deviceKey.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
-import { refreshFeed } from "../core/taskFeed.js";
-import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
+import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import {
   branchCloseout,
   branchFinishConfirm,
@@ -54,10 +53,6 @@ import {
 import { isPending, removeRecord, runOptimistic } from "../core/optimistic.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
-
-// The cadence every work surface has always read its entity at: fast enough
-// that a state flip (building → review) moves the actionbar while you watch.
-const ROW_POLL_MS = 1600;
 
 /** The git scope of what stands under the branch row: exactly one of
  *  { run_id } / { project_id, worktree_id } / { project_id }, or null when
@@ -155,7 +150,7 @@ export async function renderBranch() {
   const agentSelection = createAgentSelection();
 
   let disposed = false;
-  let row = null; // the branch.get payload: the feed row plus `run`
+  let row = null; // the cached feed row, with the run's own body on it
   // This machine answers now. If it goes while the surface is open, what was
   // read stays on screen and the strip says whose state that is — but only once
   // there is something to be whose: until the row lands this frame says
@@ -429,49 +424,50 @@ export async function renderBranch() {
     mountFreshBody(host, scope);
   };
 
-  /** One read of the branch row. `force` remounts even when the backing is
-   *  unchanged (an adoption just happened underneath the plug). */
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
-  const refreshGit = async (force = false) => {
-    let payload;
-    try {
-      payload = await callRpc("branch.get", {
-        project_id: projectId,
-        branch,
-        ...agentSelection.scope(),
-        ...SMALLEST_THREAD_PAGE,
-      });
-    } catch {
-      // The branch stopped resolving: merged away, renamed, or the worktree is
-      // gone. A row we already painted stays; a first read that fails says so —
-      // once. Every tick after says the same thing, and repainting would rebuild
-      // the one way out the empty state offers.
-      if (!disposed && !row && mountedKey !== "gone") {
-        const host = $("#tabbody");
-        if (host)
-          host.innerHTML = `<div class="empty gone">No checkout in this project carries <span class="mono">${esc(branch)}</span>.<div><button class="btn" id="branchback">Back to inbox</button></div></div>`;
-        const back = $("#branchback");
-        if (back) back.onclick = () => home();
-        mountedKey = "gone";
-      }
+  /** The branch has nothing under it on this machine: merged away, renamed, or
+   *  the checkout is gone. Said once — every later delivery says the same
+   *  thing, and repainting would rebuild the one way out this offers. */
+  const paintGone = () => {
+    if (row || mountedKey === "gone") return;
+    const host = $("#tabbody");
+    if (!host) return;
+    host.innerHTML = `<div class="empty gone">No checkout in this project carries <span class="mono">${esc(branch)}</span>.<div><button class="btn" id="branchback">Back to inbox</button></div></div>`;
+    const back = $("#branchback");
+    if (back) back.onclick = () => home();
+    mountedKey = "gone";
+  };
+
+  /** Take up a row the cache answered with. `force` remounts even when the
+   *  backing is unchanged (an adoption just happened underneath the plug). */
+  const takeRow = (next, force) => {
+    if (!next) {
+      paintGone();
       return;
     }
-    if (disposed) return;
-    const runAppeared = Boolean(payload.run) !== Boolean(row && row.run);
-    row = payload;
-    // A remount when the run's knowledge appears (the feed-seeded row carries
-    // ids but not the run body), so the commit box gets its agent options.
+    // A remount when the run's knowledge appears — a checkout adopted under
+    // the surface gains one — so the commit box gets its agent options.
+    const runAppeared = Boolean(next.run) !== Boolean(row && row.run);
+    row = next;
     if (force || runAppeared) mountedKey = null;
     mountBody();
     paintFinish();
     ensureBranchChrome();
   };
 
-  const refresh = async (force = false) => {
+  /** What this machine's slice says the branch is right now. Null while the
+   *  cache holds nothing at all for the machine — a deep link that landed
+   *  before its first pass — which is not the same as "no such branch". */
+  const rowNow = () => {
+    const snapshot = deviceFeedNow(deviceId);
+    return snapshot ? { held: true, row: branchStateIn(snapshot, projectId, branch).row } : { held: false, row: null };
+  };
+
+  const refresh = (force = false) => {
+    if (disposed) return;
     if (row && row.is_git === false) {
-      const gitState = await projectGitState(callRpc, projectId);
-      if (disposed) return;
-      if (gitState !== true) {
+      // A folder that has since been initialized is a repository, and its row
+      // is the board's rather than this stand-in.
+      if (projectGitState(deviceId, projectId) !== true) {
         if (force) mountedKey = null;
         mountBody();
         return;
@@ -479,16 +475,18 @@ export async function renderBranch() {
       row = null;
       mountedKey = null;
     }
-    await refreshGit(force);
+    const answer = rowNow();
+    if (!answer.held && !answer.row) return;
+    takeRow(answer.row, force);
   };
 
-  let watcher = null;
+  let unwatch = null;
   App.viewDispose = () => {
     disposed = true;
-    // The view ends its own read rather than trusting the shell to clear the
-    // slot it put it in.
-    if (watcher) watcher.dispose();
-    watcher = null;
+    // The view stops hearing the cache rather than trusting the shell to clear
+    // the slot it put it in.
+    if (unwatch) unwatch();
+    unwatch = null;
     const dirRail = $("#dir-rail");
     if (dirRail) dirRail.innerHTML = "";
     clearToolbarVerb(paintFinish);
@@ -498,14 +496,12 @@ export async function renderBranch() {
     consolePanel?.dispose();
     deviceStrip();
   };
-  // The feed already carries this branch's row — ids, scope, agents — and the
-  // cached snapshot replays synchronously at subscribe. Standing the tabs and
-  // panes up from it means switching branches shows the full surface (which
-  // then fills from its own caches) instead of a bare loading frame for the
-  // length of a round trip; the first live read reconciles.
+  // The cache already carries this branch's row — ids, scope, agents, and the
+  // run's own body — and the feed replays its snapshot synchronously at
+  // subscribe. So the whole surface is up on the first frame: switching
+  // branches never shows a bare loading frame for the length of a round trip.
   if (!row) {
-    const initial = await initialBranchState(callRpc, { deviceId, projectId, branch, requestedTab: App.route.tab });
-    if (disposed) return;
+    const initial = initialBranchState({ deviceId, projectId, branch, requestedTab: App.route.tab });
     row = initial.row;
     tab = initial.tab;
     paintTabs();
@@ -517,23 +513,19 @@ export async function renderBranch() {
   if (!row || row.is_git !== false) {
     ensureBranchChrome();
   }
-  await refresh();
-  // The first read can outlive the view: a navigation mid-flight has already
-  // torn this view down (render() ran viewDispose), and the poll slot belongs
-  // to whatever is mounted now. Claiming it here would orphan an interval that
-  // reads a dead branch forever — the leaked-poller slowdown.
+  refresh();
   if (disposed) return;
-  // The run behind the branch is the entity whose events say this row moved;
-  // until the first read names one (an unadopted checkout has none), the safety
-  // poll is what carries the surface.
-  watcher = watchChanges({
-    refresh,
-    intervalMs: ROW_POLL_MS,
-    entity: () => [row && row.run_id, row && row.worktree_id],
-    // Focus tier: the mounted work surface reads all four kinds of this
-    // checkout, and wants them as they happen.
-    kinds: ["state", "thread", "git", "files"],
-    mode: "realtime",
+  // Every later frame is the cache's: a `state` push rewrites this row's
+  // record, the feed re-reads it, and the delivery is what repaints. There is
+  // nothing behind this to poll.
+  let painted = JSON.stringify(row);
+  unwatch = subscribeFeed(() => {
+    if (disposed) return;
+    const answer = rowNow();
+    const signature = JSON.stringify(answer.row);
+    if (signature === painted) return;
+    painted = signature;
+    refresh();
   });
-  App.poll = watcher;
+  App.poll = { dispose: () => unwatch && unwatch() };
 }

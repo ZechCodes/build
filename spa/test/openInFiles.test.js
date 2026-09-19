@@ -5,6 +5,7 @@
 // send.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mountGitPane } from "../src/core/gitPane.js";
@@ -15,6 +16,11 @@ import { worktreeOf } from "./gitWireFixture.js";
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
 const bridge = { call: null };
+
+// The branch surface stands on records, so the suite needs a store to put them
+// in.
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -12,2 +12,2 @@\n-old\n+${line}\n`;
@@ -257,11 +263,31 @@ describe("the file the route names", () => {
   let renderBranch;
   let resetDeviceContexts;
 
+  /** The row this machine holds, on disk, with the feed reading it — which is
+   *  the whole of what the branch surface stands on. */
+  async function cacheRow(branchRow, runs = []) {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const { startFeed } = await import("../src/core/taskFeed.js");
+    const { liveFeedSnapshot } = await import("../src/core/feedMerge.js");
+    const { entityIdOf } = await import("../src/core/entityId.js");
+    const projects = [{ project_id: "p1", name: "relaydb", is_git: true }];
+    const view = liveFeedSnapshot({ items: [branchRow], runs }, { projects }, { workspaces: [] }, "dev-1");
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, view);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, view.projects);
+    for (const item of view.items) {
+      const entityId = entityIdOf(item);
+      if (entityId) await writeCached({ deviceId: "dev-1", entityId, kind: "row" }, item);
+    }
+    await startFeed();
+    for (let index = 0; index < 12; index += 1) await flush();
+  }
+
   beforeEach(async () => {
     vi.resetModules();
     document.body.innerHTML = bodyHtml;
     location.hash = "#/device/dev-1/project/p1/branch/build%2Flogin/files";
     ({ App } = await import("../src/app.js"));
+    await (await import("../src/core/localCache.js")).wipeCache();
     ({ renderBranch } = await import("../src/views/branchView.js"));
     // The surface takes its caller from the machine its link names.
     let adoptDeviceSession;
@@ -278,17 +304,17 @@ describe("the file the route names", () => {
     document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (App.poll) App.poll.dispose();
     App.poll = null;
     if (App.viewDispose) App.viewDispose();
     App.viewDispose = null;
+    (await import("../src/core/taskFeed.js")).stopFeed();
     resetDeviceContexts();
   });
 
   const answering = (asked) =>
     vi.fn(async (method, params) => {
-      if (method === "branch.get") return row;
       asked.push({ method, params });
       if (method === "fs.tree")
         return { path: params.path || "", entries: [{ kind: "file", name: params.path ? "a.js" : "README.md", size: 20 }] };
@@ -300,6 +326,7 @@ describe("the file the route names", () => {
   it("opens the Files tab on the file the URL names", async () => {
     const asked = [];
     bridge.call = answering(asked);
+    await cacheRow(row);
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files", file: "src/a.js", line: 2 };
     await renderBranch();
     await flush();
@@ -315,8 +342,6 @@ describe("the file the route names", () => {
   it("renders the whole Changes surface, toolbar verbs and box included", async () => {
     const asked = [];
     bridge.call = vi.fn(async (method, params) => {
-      if (method === "branch.get")
-        return { ...row, run_id: "run-1", run: { run_id: "run-1", state: "review", base_branch: "main", thread: { items: [], sessions: [] } } };
       asked.push({ method, params });
       if (method === "git.status")
         return {
@@ -327,6 +352,15 @@ describe("the file the route names", () => {
       if (method === "run.diff") return { patch: "" };
       return {};
     });
+    await cacheRow({ ...row, run_id: "run-1" }, [
+      {
+        run_id: "run-1",
+        state: "review",
+        base_branch: "main",
+        goal: "land the login flow",
+        thread: { items: [], sessions: [] },
+      },
+    ]);
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
     await renderBranch();
     await flush();
@@ -335,12 +369,15 @@ describe("the file the route names", () => {
 
     expect(document.querySelector(".gtpush .btn"), "Push").toBeTruthy();
     expect(document.querySelector(".gtstash .btn"), "Stash").toBeTruthy();
-    expect(document.querySelector(".gp-commit .csinput"), "the box under the diff").toBeTruthy();
+    await vi.waitFor(() =>
+      expect(document.querySelector(".gp-commit .csinput"), "the box under the diff").toBeTruthy(),
+    );
   });
 
   it("leaves an ordinary visit to the Files tab at the root", async () => {
     const asked = [];
     bridge.call = answering(asked);
+    await cacheRow(row);
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files" };
     await renderBranch();
     await flush();
@@ -355,6 +392,7 @@ describe("the file the route names", () => {
   it("writes the file the reader picks into the URL, without a re-render", async () => {
     const asked = [];
     bridge.call = answering(asked);
+    await cacheRow(row);
     // A branch surface always names the machine the checkout is on; moving
     // within the tab keeps naming it, or the link stops addressing anything.
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files" };

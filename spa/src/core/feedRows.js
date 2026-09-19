@@ -26,3 +26,19 @@ export const branchRowIn = (snapshot, projectId, branch) =>
   (snapshot?.items || []).find(
     (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
   ) || null;
+
+/** The live run body the board carries beside its rows — the goal, the state,
+ *  the base the diff is measured against, the triage pass. A row that names no
+ *  run has none, and neither has a slice the board has not filled. */
+export const runBodyIn = (snapshot, runId) =>
+  (runId && (snapshot?.runs || []).find((run) => run.run_id === runId)) || null;
+
+/** A checkout on this branch the board's own list leaves out: a worktree
+ *  nobody has adopted earns no inbox row, and a link to one still has to open.
+ *  Shaped as the branch row the surfaces are written against. */
+export const worktreeRowIn = (snapshot, projectId, branch) => {
+  const held = (snapshot?.externalWorktrees || []).find(
+    (checkout) => checkout.project_id === projectId && checkout.branch === branch,
+  );
+  return held ? { ...held, kind: "branch", run: null } : null;
+};

@@ -351,17 +351,30 @@ export function routeContext(route) {
 }
 
 /**
- * One device's slice of a merged feed snapshot: its rows and its projects.
+ * One device's slice of a merged feed snapshot: its rows, its projects, the
+ * live run behind each row, and the checkouts the board does not list.
  *
  * A surface about where you are — the toolbar, the capture decision page, a
  * branch — is about one machine, and so is what a row's verb offers: a reroute
  * names a project by the bare id the daemon holding it minted, and every daemon
  * mints a `proj-1`. Naming no device means the home device, which is where
  * creation goes when nothing else says.
+ *
+ * Named collections rather than the whole view: a slice is what a surface is
+ * handed, and a field nobody here names is a field no surface may quietly come
+ * to depend on. `runs` carries what a branch row does not — the goal, the
+ * state, the base a diff is measured against, the triage pass — and
+ * `externalWorktrees` carries the checkouts the inbox leaves out, which a link
+ * to one still has to open.
  */
 export function deviceFeedView(snapshot, deviceId = null) {
   const view = deviceView(snapshot, deviceId || homeContext()?.deviceId);
-  return { items: view.items || [], projects: view.projects || [] };
+  return {
+    items: view.items || [],
+    projects: view.projects || [],
+    runs: view.runs || [],
+    externalWorktrees: view.externalWorktrees || [],
+  };
 }
 
 export function resetDeviceContexts() {

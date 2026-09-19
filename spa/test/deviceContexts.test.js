@@ -381,26 +381,36 @@ describe("the device context registry", () => {
 // rather than every device's rows at once. Which device is the home one unless
 // something names another: a row's verbs are its own machine's.
 describe("one device's view of the feed", () => {
-  const mine = { items: [{ id: "a" }], projects: [{ id: "p1" }] };
-  const theirs = { items: [{ id: "b" }], projects: [{ id: "p9" }] };
+  const mine = { items: [{ id: "a" }], projects: [{ id: "p1" }], runs: [{ run_id: "run-a" }] };
+  const theirs = { items: [{ id: "b" }], projects: [{ id: "p9" }], externalWorktrees: [{ worktree_id: "wt-b" }] };
   const merged = { items: [...mine.items, ...theirs.items], devices: { "dev-a": mine, "dev-b": theirs } };
 
   it("reads the home device's rows and projects out of a merged snapshot", () => {
     adoptHome("dev-a");
     adoptDeviceSession(fakeSession("dev-b"));
 
-    expect(deviceFeedView(merged)).toEqual({ items: mine.items, projects: mine.projects });
+    expect(deviceFeedView(merged)).toEqual({
+      items: mine.items,
+      projects: mine.projects,
+      runs: mine.runs,
+      externalWorktrees: [],
+    });
   });
 
   it("reads the device it is given, whoever is home", () => {
     adoptHome("dev-a");
     adoptDeviceSession(fakeSession("dev-b"));
 
-    expect(deviceFeedView(merged, "dev-b")).toEqual({ items: theirs.items, projects: theirs.projects });
+    expect(deviceFeedView(merged, "dev-b")).toEqual({
+      items: theirs.items,
+      projects: theirs.projects,
+      runs: [],
+      externalWorktrees: theirs.externalWorktrees,
+    });
   });
 
   it("answers empty collections while no device is home", () => {
-    expect(deviceFeedView(merged)).toEqual({ items: [], projects: [] });
+    expect(deviceFeedView(merged)).toEqual({ items: [], projects: [], runs: [], externalWorktrees: [] });
   });
 });
 

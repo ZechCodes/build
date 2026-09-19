@@ -88,6 +88,16 @@ pub const FILES_PER_FLUSH: usize = 200;
 /// client reads it when a reviewer opens the changes.
 pub const WORKING_TREE_DIFF_MAX_BYTES: usize = 262_144;
 
+/// The most unpublished commits one `git` item names.
+///
+/// A checkout with no publication base — a repository with no remote, or one
+/// whose history is unrelated to its push target — has its WHOLE history
+/// standing above that base, so the list is capped at what a client keeps
+/// (`UNPUSHED_COMMITS_MAX` in the SPA, the commits whose patches it syncs).
+/// Newest first, so the cap drops the oldest. A reviewer wanting further
+/// back pages `git.log`.
+pub const UNPUSHED_COMMITS_MAX: usize = 20;
+
 /// The most conversation items one `thread` item carries.
 ///
 /// A push is a cache write, and past a hundred rows the write is bigger than

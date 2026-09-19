@@ -321,7 +321,13 @@ fn unpushed_diff_key(repo_path: &Path, base: &PublishedBase) -> Result<String, S
 }
 
 /// The commits above the publication base, newest first — what a checkout
-/// holds that its push destination does not.
+/// holds that its push destination does not, capped at
+/// [`UNPUSHED_COMMITS_MAX`].
+///
+/// The cap is the point: a checkout with no base at all — a repository with
+/// no remote — has its entire history standing above that base, and this
+/// list rides a push. The walk streams, so stopping at the cap is the
+/// cheaper walk as well as the smaller item.
 fn unpublished_commit_list(
     repo: &git2::Repository,
     base: Option<git2::Oid>,
@@ -337,7 +343,7 @@ fn unpublished_commit_list(
         walk.hide(base).map_err(|e| e.to_string())?;
     }
     let mut commits = Vec::new();
-    for oid in walk {
+    for oid in walk.take(crate::changes::UNPUSHED_COMMITS_MAX) {
         let commit = repo
             .find_commit(oid.map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;

@@ -330,3 +330,40 @@ fn zero_line_untracked_work_is_not_clean() {
         "status, not line counts, decides cleanliness"
     );
 }
+
+/// A repository with no remote has no publication base at all, so EVERY
+/// commit it holds is unpublished — which is the whole history of a project
+/// a human has never pushed anywhere. The pushed commit list is capped at
+/// the commits a client keeps, newest first, so a `git` item's size is a
+/// constant rather than the length of the repository.
+#[test]
+fn a_checkout_with_no_publication_base_pushes_a_capped_commit_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("local-only");
+    std::fs::create_dir(&repo).unwrap();
+    init_repo(&repo);
+    let above_the_cap = crate::changes::UNPUSHED_COMMITS_MAX + 3;
+    for number in 1..=above_the_cap {
+        git_ok(
+            &repo,
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &format!("local {number}"),
+            ],
+        );
+    }
+
+    let summary = unpushed_summary(&repo).unwrap();
+
+    assert_eq!(summary["base"]["kind"], "empty", "{summary:?}");
+    let commits = summary["commits"].as_array().unwrap();
+    assert_eq!(commits.len(), crate::changes::UNPUSHED_COMMITS_MAX);
+    assert_eq!(
+        commits[0]["subject"],
+        format!("local {above_the_cap}"),
+        "newest first: {summary:?}"
+    );
+}

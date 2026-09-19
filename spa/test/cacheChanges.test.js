@@ -155,7 +155,7 @@ describe("a pane over a filled cache", () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }, show());
   };
 
-  it("paints all four without asking the machine anything", async () => {
+  it("paints the status, the commits and a held patch without asking the machine anything", async () => {
     await fill();
     const never = vi.fn(() => new Promise(() => {}));
     const { container, pane } = await mountPane(never);
@@ -353,6 +353,36 @@ describe("a pane over a checkout nothing walks", () => {
     const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
     expect(callRpc.mock.calls.filter(([method]) => method === "git.status")).toHaveLength(1);
     expect(container.textContent).toContain("landed since");
+    pane.dispose();
+  });
+
+  // The fourth record a mount reads. Its one consumer is the review over a
+  // workspace source, which is measured against what the unpushed record says
+  // the base is — so the rail says what the diff is against on the first frame,
+  // rather than one round trip later.
+  it("names what the review is against off the unpushed record", async () => {
+    await fill();
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: ENTITY, kind: "unpushed" },
+      { base: { kind: "push_target", label: "origin/main" }, diff_key: "d1" },
+    );
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.unpushed") return new Promise(() => {}); // still in flight
+      return sourceRpc()(method, params);
+    });
+    const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
+    expect(container.querySelector('.rrow[data-sel="review"]').textContent).toContain("vs origin/main");
+    pane.dispose();
+  });
+
+  it("says the review is against nothing yet where no record says otherwise", async () => {
+    await fill();
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.unpushed") return new Promise(() => {});
+      return sourceRpc()(method, params);
+    });
+    const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
+    expect(container.querySelector('.rrow[data-sel="review"]').textContent).toContain("Not pushed yet");
     pane.dispose();
   });
 

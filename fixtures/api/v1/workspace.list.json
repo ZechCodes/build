@@ -36,7 +36,8 @@
             "status": "ready",
             "error": null
           }
-        ]
+        ],
+        "entity_id": "run-8c41d2f0"
       },
       {
         "id": "legacy-proj-1",
@@ -57,7 +58,8 @@
             "status": "failed",
             "error": "copy assets: Operation not supported (os error 95)"
           }
-        ]
+        ],
+        "entity_id": null
       }
     ]
   },

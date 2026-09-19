@@ -265,7 +265,15 @@ impl AppState {
                 .list(project_id)
                 .into_iter()
                 .filter(|workspace| !self.is_projects_own_checkout(workspace))
-                .map(workspace_json)
+                .map(|workspace| {
+                    // The conversation entity, as `workspace.get` names it: a
+                    // client standing on the list files the workspace's git
+                    // under it without asking for the row.
+                    let owner = self.workspace_conversation_owner(workspace);
+                    let mut value = workspace_json(workspace);
+                    value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
+                    value
+                })
                 .collect::<Vec<_>>()
         }))
     }

@@ -274,9 +274,20 @@ pub struct WorkspaceRow {
     pub directories: Vec<WorkspaceDirectoryRow>,
 }
 
+/// A workspace as the list answers it: the row, and the conversation entity
+/// that owns it — `null` for a workspace nobody has spoken in — so a client
+/// standing on the list files the workspace's git under that entity without
+/// asking for the detail.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceListRow {
+    #[serde(flatten)]
+    pub workspace: WorkspaceRow,
+    pub entity_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceListResult {
-    pub workspaces: Vec<WorkspaceRow>,
+    pub workspaces: Vec<WorkspaceListRow>,
 }
 
 /// A workspace with its conversation, when it has one.

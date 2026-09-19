@@ -303,6 +303,33 @@ describe("the cursors", () => {
     expect(record.value.deliveredSequence).toBe(40);
   });
 
+  // A record made by a send is not a window: the reader wrote one message into
+  // a conversation this cache had never read, so it says nothing about how far
+  // back the conversation goes. The page that arrives IS that window — take
+  // its `has_more`, or "load earlier" is off for the life of the record and
+  // the reader can never scroll past the hundred items the page carried.
+  it("lets the first page say how far back a record a send created reaches", async () => {
+    const conversations = await import("../src/core/conversationCache.js");
+    await conversations.writeProvisionalMessage(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      "op-1",
+      { body: "ship it" },
+    );
+    script["thread.page"] = () => ({ items: [{ id: "m-1", data: { sequence: 500 } }], has_more: true, thread_total: 600 });
+
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+
+    expect(paramsOf("thread.page")).toEqual([
+      { entity_id: "run-1", agent_id: "ag-1", limit: sync.LATEST_THREAD_ITEMS },
+    ]);
+    const record = await read("run-1", "thread", "ag-1");
+    expect(record.value.olderItemsRemain).toBe(true);
+    expect(record.value.knownTotalItems).toBe(600);
+    expect(record.value.deliveredSequence).toBe(500);
+    // And the reader's own message is still standing in it.
+    expect(record.value.items.map((one) => one.data.operation_id)).toEqual([undefined, "op-1"]);
+  });
+
   it("stores a conversation under its conversation id where it has one", async () => {
     script["thread.page"] = () => ({ items: [{ id: "m-1", data: { sequence: 1 } }], has_more: false });
     await boot([branchItem({ agents: [{ id: "ag-1", conversation_id: "conv-9" }] })]);

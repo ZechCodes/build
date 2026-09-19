@@ -40,7 +40,14 @@ export const threadCacheAddress = ({ deviceId, entityId, agentId, conversationId
 });
 
 /** The shape a window has before anything has been read into it — what the
- *  first message in a brand-new conversation is written into. */
+ *  first message in a brand-new conversation is written into.
+ *
+ *  `deliveredSequence: 0` is what says this is not a window over the
+ *  conversation but a place to stand a message up in: the sync layer reads it
+ *  as "nothing has been read here yet" and lets the page that arrives say how
+ *  far back the conversation reaches (core/cacheSync.js `threadWindow`). The
+ *  panel needs every field of the shape to paint from, which is why the rest
+ *  are here at all. */
 const EMPTY_WINDOW = Object.freeze({
   items: [],
   olderItemsRemain: false,

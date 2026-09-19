@@ -601,10 +601,19 @@ const threadPageParams = (entityId, agent, after) => ({
   limit: LATEST_THREAD_ITEMS,
 });
 
+/** Whether the record is a window over the conversation, or only this tab's
+ *  own stand-ins waiting for one.
+ *
+ *  A send into a conversation this cache has never read makes the record
+ *  itself (core/conversationCache.js), and such a record names no sequence the
+ *  bridge has counted. It says nothing about how far back the conversation
+ *  goes, so nothing in it may be read as saying there is nothing behind it. */
+const holdsAWindow = (held) => Number(held?.deliveredSequence || 0) > 0;
+
 /**
  * The saved window after a page.
  *
- * With nothing held, the page IS the window: it is the latest hundred items,
+ * With no window held, the page IS the window: it is the latest hundred items,
  * and `has_more` on it means the conversation reaches back further than the
  * window does. With a window held, the page is a forward delta — items after
  * the cursor — so it is appended, the cursor moves to the newest sequence, and
@@ -615,7 +624,13 @@ export function threadWindow(held, page) {
   if (!held) return arrived;
   if (!arrived) return null; // nothing new: the record stands
   return {
-    ...held,
+    // A record of stand-ins alone is not a window to append to: the page is
+    // the window, and only the reader's own messages carry over into it.
+    // Spreading such a record instead would fix `olderItemsRemain` at false
+    // for the life of the record, since only a page ever sets it and every
+    // later page is a forward delta — "load earlier" off for good on a
+    // conversation the reader happened to write to first.
+    ...(holdsAWindow(held) ? held : arrived),
     // Merged rather than appended: the record may hold this tab's own message
     // waiting for the wire to carry it, and the arrival is what takes that
     // stand-in away (core/thread.js).

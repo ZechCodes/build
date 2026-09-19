@@ -32,7 +32,7 @@ import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } fro
 import { entityIdOf } from "./entityId.js";
 import { liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { mergeActivityDigests } from "./activityDigest.js";
-import { THREAD_RECORD_KIND, threadItemKey, windowFromThreadPayload } from "./thread.js";
+import { THREAD_RECORD_KIND, mergeThreadItems, windowFromThreadPayload } from "./thread.js";
 import {
   cachedAddresses,
   cachedEntityIds,
@@ -591,10 +591,12 @@ export function threadWindow(held, page) {
   const arrived = windowFromThreadPayload(page);
   if (!held) return arrived;
   if (!arrived) return null; // nothing new: the record stands
-  const seen = new Set(held.items.map(threadItemKey));
   return {
     ...held,
-    items: [...held.items, ...arrived.items.filter((item) => !seen.has(threadItemKey(item)))],
+    // Merged rather than appended: the record may hold this tab's own message
+    // waiting for the wire to carry it, and the arrival is what takes that
+    // stand-in away (core/thread.js).
+    items: mergeThreadItems(held.items, arrived.items),
     deliveredSequence: Math.max(Number(held.deliveredSequence || 0), arrived.deliveredSequence),
     knownTotalItems: arrived.knownTotalItems ?? held.knownTotalItems ?? null,
     activityDigests: mergeActivityDigests(held.activityDigests || [], page),

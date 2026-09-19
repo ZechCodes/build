@@ -388,6 +388,36 @@ describe("applying one item", () => {
     expect(calls("thread.page")).toEqual([]);
   });
 
+  // A message sent from this tab stands in the record until the conversation
+  // carries it. The push that carries it is what takes the stand-in away —
+  // nobody should see their own message twice, once queued and once sent.
+  it("takes this tab's stand-in out of the record when the real item arrives", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      {
+        items: [
+          { id: "m-1", data: { sequence: 7 } },
+          { data: { provisional: true, operation_id: "op-1", sequence: 9, role: "user", body: "ship it" } },
+        ],
+        deliveredSequence: 7,
+      },
+    );
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    bridge.call.mockClear();
+    await deliver([{
+      entity_id: "run-1",
+      thread: [{
+        agent_id: "ag-1",
+        last_sequence: 9,
+        since_sequence: 7,
+        items: [{ id: "m-2", data: { sequence: 9, role: "user", body: "ship it" } }],
+      }],
+    }]);
+    const record = await read("run-1", "thread", "ag-1");
+    expect(record.value.items.map((one) => one.data.sequence)).toEqual([7, 9]);
+    expect(record.value.items.map((one) => one.id)).toEqual(["m-1", "m-2"]);
+  });
+
   it("reads one cursored page for a tip that outran the push cap", async () => {
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },

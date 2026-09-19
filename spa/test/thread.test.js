@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { FIRST_PAGE_ITEMS, createThreadCache, createThreadState, currentRevisionId, formatRelativeDate, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { FIRST_PAGE_ITEMS, acknowledgeProvisionalItem, createThreadCache, createThreadState, currentRevisionId, formatRelativeDate, mergeThreadItems, provisionalThreadItem, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, withoutProvisionalItem } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
@@ -432,6 +432,90 @@ describe("relative conversation dates", () => {
     });
 
     expect(document.querySelector("time").textContent).toBe("5 minutes ago");
+  });
+});
+
+// A message this tab has sent stands in the conversation before the wire has
+// echoed it back. It lives in the same record as every other item — views hold
+// no second store — under a key made of the operation that is carrying it, and
+// it leaves the record the moment the real item arrives.
+describe("provisional items in the thread record", () => {
+  const item = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+  const sent = (operationId, body, sequence = null) => provisionalThreadItem({
+    operationId,
+    message: { body },
+    sequence,
+  });
+
+  it("keys a provisional item by its operation and a real one by its sequence", () => {
+    expect(threadItemKey(item(4, "a"))).toBe("4");
+    expect(threadItemKey(sent("op-1", "ship it"))).toBe("provisional:op-1");
+    // The key is the operation's whatever the post has said so far: an
+    // acknowledged send is still this tab's stand-in until the item itself
+    // arrives, and rekeying it to the sequence would leave both on screen.
+    expect(threadItemKey(sent("op-1", "ship it", 9))).toBe("provisional:op-1");
+  });
+
+  it("carries the words, the attachments and the queued mark the panel draws", () => {
+    const message = sent("op-1", "ship it");
+    expect(message.type).toBe("message");
+    expect(message.data.role).toBe("user");
+    expect(message.data.body).toBe("ship it");
+    expect(message.data.sequence).toBeNull();
+    expect(message.data.delivery_status).toBe("queued");
+    expect(message.data.operation_id).toBe("op-1");
+  });
+
+  it("stands a provisional item after everything the wire has sent", () => {
+    const merged = mergeThreadItems([item(1, "a"), item(3, "c")], [sent("op-1", "ship it")]);
+    expect(merged.map(threadItemKey)).toEqual(["1", "3", "provisional:op-1"]);
+  });
+
+  it("replaces a provisional item with the real item carrying its operation", () => {
+    const held = [item(1, "a"), sent("op-1", "ship it")];
+    const arrived = { type: "message", data: { sequence: 4, role: "user", body: "ship it", operation_id: "op-1" } };
+
+    const merged = mergeThreadItems(held, [arrived]);
+
+    expect(merged.map(threadItemKey)).toEqual(["1", "4"]);
+    expect(merged[1].data.body).toBe("ship it");
+  });
+
+  // Nothing on the wire carries an operation id on the item itself. What the
+  // post answers with is the sequence it was written at, so a provisional item
+  // that has been acknowledged knows which arrival is its own — and the
+  // arrival takes its place in sequence order rather than at the end.
+  it("replaces an acknowledged provisional item with the item at its sequence", () => {
+    const held = [item(1, "a"), item(5, "e"), sent("op-1", "ship it", 6)];
+    const merged = mergeThreadItems(held, [item(6, "ship it"), item(7, "reply")]);
+
+    expect(merged.map(threadItemKey)).toEqual(["1", "5", "6", "7"]);
+    expect(merged.map((entry) => entry.data.body)).toEqual(["a", "e", "ship it", "reply"]);
+  });
+
+  it("keeps the record in sequence order whatever order an arrival is in", () => {
+    const merged = mergeThreadItems([item(2, "b")], [item(4, "d"), item(1, "a")]);
+    expect(merged.map(threadItemKey)).toEqual(["1", "2", "4"]);
+  });
+
+  it("lets an arrived copy of a held item win, without growing the record", () => {
+    const merged = mergeThreadItems([item(1, "a"), item(2, "stale")], [item(2, "reshipped")]);
+    expect(merged.map(threadItemKey)).toEqual(["1", "2"]);
+    expect(merged[1].data.body).toBe("reshipped");
+  });
+
+  it("drops a provisional item by its operation, for a send that was refused", () => {
+    const held = [item(1, "a"), sent("op-1", "ship it")];
+    expect(withoutProvisionalItem(held, "op-1").map(threadItemKey)).toEqual(["1"]);
+    expect(withoutProvisionalItem(held, "op-2")).toBe(held);
+  });
+
+  it("stamps the sequence a post was acknowledged at onto the item waiting for it", () => {
+    const held = [item(1, "a"), sent("op-1", "ship it")];
+    const acknowledged = acknowledgeProvisionalItem(held, "op-1", 6);
+    expect(acknowledged.map(threadItemKey)).toEqual(["1", "provisional:op-1"]);
+    expect(acknowledged[1].data.sequence).toBe(6);
+    expect(acknowledged[1].data.delivery_status).toBe("sent");
   });
 });
 

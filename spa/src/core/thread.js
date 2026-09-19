@@ -113,7 +113,107 @@ export const MUTATION_THREAD_PAGE = Object.freeze({ thread_limit: FIRST_PAGE_ITE
 // thread these surfaces do read (the diff revision a comment anchors to).
 export const SMALLEST_THREAD_PAGE = Object.freeze({ thread_limit: 1 });
 
-export const threadItemKey = (item) => String(item?.data?.sequence ?? "");
+// ─── Provisional items ───────────────────────────────────────────────────────
+//
+// A message sent from this tab is on the conversation the moment it is written,
+// and the wire says so a round trip later. In between it stands in the thread
+// record itself — the same record every other item is in, because a view that
+// kept a second store would have to merge the two on every paint and would
+// still show the two out of order.
+//
+// It is held under the OPERATION carrying it rather than under a sequence,
+// since it has none: the conversation's counter belongs to the bridge. When the
+// post is acknowledged the sequence it was written at is stamped on, which is
+// what puts the message in its place in the order — but the key does not move,
+// because the stand-in is still a stand-in until the item itself arrives.
+
+const PROVISIONAL_KEY_PREFIX = "provisional:";
+
+/** The key the record holds a sent-but-unechoed message under. */
+export const provisionalItemKey = (operationId) => `${PROVISIONAL_KEY_PREFIX}${operationId}`;
+
+/** Whether an item is this tab's own stand-in rather than the conversation's.
+ *  An item off the wire may one day carry the operation that made it; what
+ *  makes this one provisional is that nothing has confirmed it yet. */
+const isProvisionalItem = (item) => item?.data?.provisional === true && !!item?.data?.operation_id;
+
+/** The key an item is held under: its sequence, or the operation standing in
+ *  for one. */
+export const threadItemKey = (item) =>
+  isProvisionalItem(item) ? provisionalItemKey(item.data.operation_id) : String(item?.data?.sequence ?? "");
+
+/** The message the panel draws while the post carrying it is in flight. */
+export const provisionalThreadItem = ({ operationId, message = {}, sequence = null, deliveryStatus = "queued" }) => ({
+  type: "message",
+  data: {
+    role: "user",
+    provisional: true,
+    operation_id: operationId,
+    sequence,
+    body: message.body || "",
+    attachments: message.attachments || [],
+    ...(message.viewing_context ? { viewing_context: message.viewing_context } : {}),
+    created_at: new Date().toISOString(),
+    delivery_status: deliveryStatus,
+  },
+});
+
+/** Where an item sits in the record. A provisional item with no sequence yet
+ *  is newer than everything the bridge has counted, which is where the reader
+ *  just put it. */
+const orderingSequence = (item) => {
+  const held = item?.data?.sequence;
+  const sequence = held == null ? NaN : Number(held);
+  return Number.isFinite(sequence) ? sequence : Number.MAX_SAFE_INTEGER;
+};
+
+/** Whether an arriving item is the real one behind a stand-in: the operation
+ *  it names where the wire names one, else the sequence the post was
+ *  acknowledged at. */
+const standsInFor = (provisional, arrived) => {
+  const operationId = arrived?.data?.operation_id;
+  if (operationId && operationId === provisional.data.operation_id) return true;
+  const sequence = provisional.data.sequence;
+  return sequence != null && arrived?.data?.sequence === sequence;
+};
+
+/**
+ * The record's items after an arrival.
+ *
+ * Held by key, so a re-shipped item replaces the copy in hand rather than
+ * doubling it, and a stand-in leaves as its own message arrives. Sorted by
+ * sequence, because neither a push nor a page promises an order and the
+ * reader's own message has no sequence to arrive in.
+ */
+export function mergeThreadItems(held = [], arriving = []) {
+  const byKey = new Map(held.map((item) => [threadItemKey(item), item]));
+  for (const arrived of arriving) {
+    for (const [key, item] of [...byKey]) {
+      if (isProvisionalItem(item) && standsInFor(item, arrived)) byKey.delete(key);
+    }
+    byKey.set(threadItemKey(arrived), arrived);
+  }
+  return [...byKey.values()].sort((one, other) => orderingSequence(one) - orderingSequence(other));
+}
+
+/** The items without one operation's stand-in — a send the bridge refused. The
+ *  list itself where it holds none, so a caller can tell nothing happened. */
+export function withoutProvisionalItem(items = [], operationId) {
+  const key = provisionalItemKey(operationId);
+  const kept = items.filter((item) => threadItemKey(item) !== key);
+  return kept.length === items.length ? items : kept;
+}
+
+/** The items with the sequence a post was acknowledged at stamped onto the
+ *  stand-in waiting for it, so it sits where the message will. */
+export function acknowledgeProvisionalItem(items = [], operationId, sequence, deliveryStatus = "sent") {
+  const key = provisionalItemKey(operationId);
+  return items.map((item) =>
+    threadItemKey(item) === key
+      ? { ...item, data: { ...item.data, sequence, delivery_status: deliveryStatus } }
+      : item,
+  );
+}
 
 export function createThreadCache() {
   let accumulatedItems = [];

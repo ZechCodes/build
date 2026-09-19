@@ -277,6 +277,28 @@ function stopWatchingForOnline() {
   App._watch = null;
 }
 
+/** How often the gate asks the account again while it is holding the page.
+ *  The app's own presence cadence is 15 s (devices.js); a screen whose whole
+ *  purpose is waiting for a machine asks quicker. */
+const GATE_CADENCE_MS = 3000;
+
+/**
+ * The gate's clock — the one place this screen starts a timer.
+ *
+ * What it reads is the account's REST list (`GET /api/devices`, spec rule 6),
+ * which has no push path and is the one thing this client still reads on a
+ * cadence. Never a bridge: the gate is up precisely when there is no machine
+ * to ask anything of, and it hands the page back the moment there is.
+ *
+ * One tick function at a time, so arming a second waiting loop can never leave
+ * the first one running behind it — a poll nobody holds a handle to re-enters
+ * the app over whatever the reader is standing in.
+ */
+function watchOnGateCadence(tick) {
+  stopWatchingForOnline();
+  App._watch = setInterval(tick, GATE_CADENCE_MS);
+}
+
 /** One boot at a time: a second call while the first is still opening devices
  *  waits on the same promise rather than starting a second handshake. */
 async function enterApp(asked) {
@@ -297,9 +319,8 @@ async function enterApp(asked) {
 // is marked away — which is what lets a machine that was blocked be asked for
 // again when it comes back.
 function watchForOnline() {
-  stopWatchingForOnline();
   const generation = gateGeneration;
-  App._watch = setInterval(async () => {
+  watchOnGateCadence(async () => {
     const devices = await readPresence();
     if (generation !== gateGeneration) return;
     if (!devices) return;
@@ -317,7 +338,7 @@ function watchForOnline() {
         enterShellWhileRecovering();
       }
     }
-  }, 3000);
+  });
 }
 
 const STEP_BULLET =
@@ -538,9 +559,9 @@ function renderPresenceUnavailable() {
  *  is the one the page belongs to. */
 function watchForBoot() {
   const generation = gateGeneration;
-  App._watch = setInterval(() => {
+  watchOnGateCadence(() => {
     if (generation === gateGeneration) boot();
-  }, 3000);
+  });
 }
 
 function enterShellWhileRecovering() {

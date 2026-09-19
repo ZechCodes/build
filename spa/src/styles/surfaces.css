@@ -143,7 +143,7 @@
 .ivassign-text { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; }
 .ivassign-sum { font-size:12px; color:var(--ink2); max-width:100%;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ivassign-caret { margin-left:auto; font-size:12px; line-height:1; color:var(--ink2); }
+.ivassign-caret { margin-left:auto; color:var(--ink2); }
 .ivassign.open .ivassign-sum, .ivassign.open .ivassign-caret { color:var(--accent); }
 
 /* The overlay itself: anchored under the control on a desktop (placed in JS,

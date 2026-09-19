@@ -281,7 +281,7 @@ export function diffStackEntries(
 
 function noiseGroupHtml(noise, noiseExpanded, fileOptions) {
   return `<div class="noisegroup${noiseExpanded ? " open" : ""}">
-    <button class="noisehead" aria-expanded="${noiseExpanded}">${noiseExpanded ? "▾" : "▸"} ${noiseGroupLabel(noise.length)}</button>
+    <button class="noisehead" aria-expanded="${noiseExpanded}"><span class="disclosure-caret" aria-hidden="true">${noiseExpanded ? "▾" : "▸"}</span> ${noiseGroupLabel(noise.length)}</button>
     ${noiseExpanded ? `<div class="noisefiles">${diffFilesHtml(noise, fileOptions)}</div>` : ""}</div>`;
 }
 

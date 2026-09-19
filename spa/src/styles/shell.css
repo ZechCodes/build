@@ -641,7 +641,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font-size:13px; color:var(--ink); }
 .tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tb-workspace .tb-name { white-space:pre; }
-.tb-caret { flex:none; font-size:9px; color:var(--dim); }
+.tb-caret { flex:none; color:var(--dim); }
 .tb-sep { color:var(--line); flex:none; }
 .tb-directories { display:flex; align-self:stretch; align-items:stretch; min-width:0;
   overflow-x:auto; scrollbar-width:none; margin-left:14px; }

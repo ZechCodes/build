@@ -44,7 +44,7 @@ export function menuButtonMarkup(label, options, { title = "", icon = false, arr
   const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
   const opener = icon
     ? `<button type="button" class="iconbtn caret"${titled}>${esc(label)}</button>`
-    : `<button type="button" class="btn mini caret"${titled}>${esc(label)}${arrow ? " ▾" : ""}</button>`;
+    : `<button type="button" class="btn mini caret"${titled}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
   return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
     ${opener}
     <div class="splitmenu" hidden>${menuItemsHtml(options)}</div>
@@ -68,7 +68,7 @@ export function splitButtonMarkup(options, { variant = "primary", primaryId = ""
   const primary = options[0];
   const primaryButton = `<button class="${buttonClass}"${primaryId ? ` id="${esc(primaryId)}"` : ""} data-action="${esc(primary.id)}">${esc(primary.label ?? primary.menuLabel)}</button>`;
   if (options.length === 1) return `<div class="splitbtn">${primaryButton}</div>`;
-  return `<div class="splitbtn">${primaryButton}<button class="${buttonClass} caret" title="More actions">▾</button><div class="splitmenu" hidden>${menuItemsHtml(options)}</div></div>`;
+  return `<div class="splitbtn">${primaryButton}<button class="${buttonClass} caret" title="More actions" aria-label="More actions"><span class="disclosure-caret" aria-hidden="true">▾</span></button><div class="splitmenu" hidden>${menuItemsHtml(options)}</div></div>`;
 }
 
 /** Pure single-flight latch: begin() arms and returns true, or returns false

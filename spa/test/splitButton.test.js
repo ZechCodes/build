@@ -127,7 +127,7 @@ describe("menuButtonMarkup", () => {
   it("opens with a labelled mini button and a caret glyph by default", () => {
     const html = menuButtonMarkup("Ask", [MERGE, KEEP], { title: "Ask the agent" });
     expect(html).toContain('class="btn mini caret"');
-    expect(html).toContain("Ask ▾");
+    expect(html).toContain('Ask <span class="disclosure-caret" aria-hidden="true">▾</span>');
     expect(html).not.toContain("splitbtn-icon");
   });
 

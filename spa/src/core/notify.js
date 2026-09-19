@@ -28,7 +28,7 @@ export function noticeHtml(notice) {
   const role = notice.kind === "error" ? "alert" : "status";
   const multiplier = notice.count > 1 ? ` ×${notice.count}` : "";
   const expandButton = notice.detail
-    ? `<button class="notice-expand" aria-label="Show details">▾</button>`
+    ? `<button class="notice-expand" aria-label="Show details"><span class="disclosure-caret" aria-hidden="true">▾</span></button>`
     : "";
   const detailHtml = notice.detail ? `<pre class="notice-detail" hidden>${esc(notice.detail)}</pre>` : "";
   return (
@@ -81,7 +81,7 @@ function applyDisclosure(noticeEl, id) {
   if (!detail || !expand) return;
   const open = expandedNotices.has(id);
   detail.hidden = !open;
-  expand.textContent = open ? "▴" : "▾";
+  expand.querySelector(".disclosure-caret").textContent = open ? "▴" : "▾";
   expand.setAttribute("aria-label", open ? "Hide details" : "Show details");
 }
 

@@ -145,6 +145,16 @@ body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:colum
   background:var(--bg); color:var(--ink); font:14px/1.55 var(--sans); -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 a { color:inherit; }
 .mono { font-family:var(--mono); }
+
+/* Dropdown and disclosure triangles share a legible size independently of the
+   surrounding label's font. Keep their line box compact in dense toolbars. */
+.disclosure-caret,
+.viewing-context-files summary::before,
+.agent-observation-checklist summary::before {
+  display:inline-flex; align-items:center; justify-content:center; flex:none;
+  width:16px; height:16px; vertical-align:middle;
+  font:400 18px/1 var(--sans); letter-spacing:0;
+}
 .dim { color:var(--dim); }
 /* shared chrome bits (used by the inbox rail and gate/settings views) */
 .badge { background:var(--accent-fill); color:var(--accent-ink); border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
@@ -391,7 +401,7 @@ main#root.surface { max-width:none;
      from off the number above. */
   .pane-handle-what { flex:1 1 auto; min-width:0;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .pane-handle-caret { flex:none; font-size:9px; color:var(--dim);
+  .pane-handle-caret { flex:none; color:var(--dim);
     transition:transform .18s ease; }
   .pane-handle-caret::after { content:"▾"; }
   .pane-split.drawer-open .pane-handle-caret { transform:rotate(180deg); }

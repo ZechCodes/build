@@ -33,7 +33,7 @@ export function paneDrawerHtml(label) {
     `<div class="pane-scrim" data-pane-scrim="1"></div>` +
     `<button class="pane-handle" type="button" data-pane-handle="1" aria-expanded="false" aria-label="Show ${esc(label)}" data-pane-label="${esc(label)}">` +
     `<span class="pane-handle-what" data-pane-summary="1"></span>` +
-    `<span class="pane-handle-caret" aria-hidden="true"></span>` +
+    `<span class="pane-handle-caret disclosure-caret" aria-hidden="true"></span>` +
     `</button>`
   );
 }

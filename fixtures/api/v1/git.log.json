@@ -4,11 +4,14 @@
   "params": {
     "run_id": "run-7",
     "limit": 30,
-    "skip": 0
+    "skip": 0,
+    "since": "1f0c9a7"
   },
   "result": {
     "branch": "build/wire",
     "more": true,
+    "reset": false,
+    "newest": "1f0c9a7b5e2d4c5566778899aabbccddeeff0011",
     "highlight_key": "0000000000000001",
     "commits": [
       {

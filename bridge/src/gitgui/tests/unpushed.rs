@@ -72,11 +72,11 @@ fn workspace_history_marks_the_unpushed_range_across_pages_and_refreshes_on_push
         git_ok(&clone, &["commit", "-q", "-m", &format!("local {number}")]);
     }
 
-    let first = log_page(&clone, Some(LogHighlight::Unpushed), 2, 0).unwrap();
+    let first = log_page(&clone, Some(LogHighlight::Unpushed), 2, 0, None).unwrap();
     assert_eq!(first["commits"][0]["unpushed"], true);
     assert_eq!(first["commits"][1]["unpushed"], true);
     assert_eq!(first["more"], true);
-    let older = log_page(&clone, Some(LogHighlight::Unpushed), 2, 2).unwrap();
+    let older = log_page(&clone, Some(LogHighlight::Unpushed), 2, 2, None).unwrap();
     assert_eq!(older["commits"][0]["unpushed"], true);
     assert_eq!(older["commits"][1]["unpushed"], false);
     assert_eq!(older["highlight_key"], first["highlight_key"]);
@@ -91,7 +91,7 @@ fn workspace_history_marks_the_unpushed_range_across_pages_and_refreshes_on_push
         &clone,
         &["update-ref", "refs/remotes/origin/main", &head.to_string()],
     );
-    let pushed = log_page(&clone, Some(LogHighlight::Unpushed), 2, 0).unwrap();
+    let pushed = log_page(&clone, Some(LogHighlight::Unpushed), 2, 0, None).unwrap();
     assert_eq!(pushed["commits"][0]["unpushed"], false);
     assert_eq!(pushed["commits"][1]["unpushed"], false);
     assert_ne!(pushed["highlight_key"], first["highlight_key"]);
@@ -107,13 +107,14 @@ fn workspace_history_uses_published_ancestor_or_root_like_all_changes() {
     git_ok(&clone, &["add", "."]);
     git_ok(&clone, &["commit", "-q", "-m", "local"]);
 
-    let unpublished = log_page(&clone, Some(LogHighlight::Unpushed), 10, 0).unwrap();
+    let unpublished = log_page(&clone, Some(LogHighlight::Unpushed), 10, 0, None).unwrap();
     assert_eq!(unpublished["commits"][0]["unpushed"], true);
     assert_eq!(unpublished["commits"][1]["unpushed"], false);
 
     let local_dir = tempfile::tempdir().unwrap();
     init_repo(local_dir.path());
-    let never_pushed = log_page(local_dir.path(), Some(LogHighlight::Unpushed), 10, 0).unwrap();
+    let never_pushed =
+        log_page(local_dir.path(), Some(LogHighlight::Unpushed), 10, 0, None).unwrap();
     assert_eq!(never_pushed["commits"][0]["unpushed"], true);
 }
 

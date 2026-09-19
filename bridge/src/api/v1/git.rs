@@ -145,15 +145,33 @@ pub struct BranchScopeParams {
     pub worktree_id: Option<String>,
 }
 
+/// How many commits a CURSORED `git.log` answers with when the caller names
+/// no limit.
+///
+/// Small on purpose: a client that already holds a log asks what has landed
+/// since, and the answer to that is almost always nothing. The browsing
+/// default (30, unchanged) is for a reader who is about to scroll.
+pub const LATEST_COMMITS: u64 = 20;
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitLogParams {
     #[serde(flatten)]
     pub scope: ScopeParams,
-    /// Clamped to 1..=200 server-side; 30 when absent.
+    /// Clamped to 1..=200 server-side; 30 when absent, or
+    /// [`LATEST_COMMITS`] when `since` names a cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip: Option<u64>,
+    /// The newest commit the client already holds: a 4-40 character
+    /// lowercase hex object-id prefix, validated exactly as
+    /// [`GitShowParams::hash`] is and never a revspec.
+    ///
+    /// The answer is then `since..HEAD`, newest first. A cursor HEAD cannot
+    /// reach — a rebase, a reset, a hash from another checkout — is not a
+    /// refusal: the answer is the latest page with `reset` set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -446,6 +464,15 @@ pub struct GitLogResult {
     pub commits: Vec<CommitSummary>,
     /// Another page follows.
     pub more: bool,
+    /// The `since` cursor named no ancestor of HEAD, so these commits are the
+    /// latest page rather than what landed after the cursor: the client
+    /// replaces its log instead of prepending to it.
+    #[serde(default)]
+    pub reset: bool,
+    /// HEAD, as the client's next `since`. Absent only on an unborn HEAD,
+    /// which has no commit to cursor on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest: Option<String>,
     /// Names the base used for commit highlighting. A remote-tracking ref can
     /// move without HEAD changing, so clients use this to invalidate old pages.
     #[serde(default, skip_serializing_if = "Option::is_none")]

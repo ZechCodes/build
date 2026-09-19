@@ -161,43 +161,105 @@ fn commits_ahead_of(
     Ok((commits, key))
 }
 
+/// Where a cursored log starts, once the cursor has been read against the
+/// history it claims to sit in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogCursor {
+    /// Nobody named one: the page is the latest, as it always was.
+    Unnamed,
+    /// The cursor is behind HEAD, so the page is what landed after it.
+    Behind(git2::Oid),
+    /// HEAD cannot reach the cursor — a rebase, a reset, a hash from another
+    /// checkout, a commit this repository has never held. The page is the
+    /// latest one again and the client is told to replace rather than
+    /// prepend.
+    Reset,
+}
+
+/// Read a `since` cursor against the history HEAD reaches.
+///
+/// An unreadable cursor is a refusal (it is a param, validated exactly as
+/// `git.show`'s hash is); a readable one HEAD cannot reach is not — the
+/// client's log is simply stale in a way prepending cannot fix.
+fn log_cursor(
+    repo: &git2::Repository,
+    since: Option<&str>,
+    head: git2::Oid,
+) -> Result<LogCursor, String> {
+    let Some(since) = since else {
+        return Ok(LogCursor::Unnamed);
+    };
+    if !is_valid_hash_prefix(since) {
+        return Err("since must be 4-40 lowercase hex characters".to_string());
+    }
+    let Ok(commit) = resolve_commit_prefix(repo, since) else {
+        return Ok(LogCursor::Reset);
+    };
+    // A commit is not its own descendant, and a client whose cursor IS HEAD
+    // is the caught-up case this read exists to answer cheaply.
+    if commit.id() == head {
+        return Ok(LogCursor::Behind(head));
+    }
+    match repo.graph_descendant_of(head, commit.id()) {
+        Ok(true) => Ok(LogCursor::Behind(commit.id())),
+        Ok(false) => Ok(LogCursor::Reset),
+        Err(error) => Err(format!("cannot read history: {error}")),
+    }
+}
+
+/// Which commits a page marks, and under what key — the highlight mode's
+/// whole effect on a log.
+fn commit_marker(
+    repo: &git2::Repository,
+    highlight: Option<LogHighlight<'_>>,
+) -> Result<Option<CommitMarker>, String> {
+    let (field, (commits, key)) = match highlight {
+        Some(LogHighlight::AheadOfBase(base_branch)) => {
+            ("ahead_of_base", commits_ahead_of(repo, base_branch)?)
+        }
+        Some(LogHighlight::Unpushed) => ("unpushed", super::unpushed::unpublished_commits(repo)?),
+        None => return Ok(None),
+    };
+    Ok(Some(CommitMarker {
+        field,
+        commits,
+        key,
+    }))
+}
+
 /// One page of commit history from HEAD, topological newest-first. With
 /// a highlight mode each entry carries the matching boolean and the result
 /// carries a key for that classification. Project scope omits both entirely.
+///
+/// `since` makes the read cursored: the page is then `since..HEAD` rather
+/// than the latest commits, and `newest` is the cursor the client stores for
+/// next time. Both extra fields ride every answer, cursored or not, so a
+/// client can start holding a cursor from any page it has.
 pub fn log_page(
     repo_path: &Path,
     highlight: Option<LogHighlight<'_>>,
     limit: usize,
     skip: usize,
+    since: Option<&str>,
 ) -> Result<Value, String> {
     let repo = open_repo(repo_path)?;
     let branch = current_branch(&repo)?;
-    if head_commit_id(&repo)?.is_none() {
-        return Ok(json!({ "branch": branch, "commits": [], "more": false }));
-    }
-    let marker = match highlight {
-        Some(LogHighlight::AheadOfBase(base_branch)) => {
-            let (commits, key) = commits_ahead_of(&repo, base_branch)?;
-            Some(CommitMarker {
-                field: "ahead_of_base",
-                commits,
-                key,
-            })
-        }
-        Some(LogHighlight::Unpushed) => {
-            let (commits, key) = super::unpushed::unpublished_commits(&repo)?;
-            Some(CommitMarker {
-                field: "unpushed",
-                commits,
-                key,
-            })
-        }
-        None => None,
+    let Some(head) = head_commit_id(&repo)? else {
+        // Nothing committed yet: no cursor to hand back, and nothing a stale
+        // one could be stale against.
+        return Ok(json!({
+            "branch": branch, "commits": [], "more": false, "reset": false,
+        }));
     };
+    let cursor = log_cursor(&repo, since, head)?;
+    let marker = commit_marker(&repo, highlight)?;
     let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
     walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
         .map_err(|e| e.to_string())?;
     walk.push_head().map_err(|e| e.to_string())?;
+    if let LogCursor::Behind(oid) = cursor {
+        walk.hide(oid).map_err(|e| e.to_string())?;
+    }
     let mut page = walk.skip(skip);
     let mut commits = Vec::with_capacity(limit);
     for _ in 0..limit {
@@ -216,7 +278,13 @@ pub fn log_page(
         .transpose()
         .map_err(|e| e.to_string())?
         .is_some();
-    let mut payload = json!({ "branch": branch, "commits": commits, "more": more });
+    let mut payload = json!({
+        "branch": branch,
+        "commits": commits,
+        "more": more,
+        "reset": cursor == LogCursor::Reset,
+        "newest": head.to_string(),
+    });
     if let Some(marker) = marker {
         payload["highlight_key"] = json!(marker.key);
     }

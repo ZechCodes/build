@@ -470,13 +470,22 @@ impl AppState {
     /// the base branch.
     pub(crate) fn git_log(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
+            let since = params.get("since").and_then(Value::as_str);
+            // A cursored read asks what has landed since a hash it already
+            // holds, and the answer to that is usually nothing — so its
+            // default page is the small one. A browsing read keeps the page
+            // it has always had.
+            let default_limit = match since {
+                Some(_) => crate::api::v1::git::LATEST_COMMITS,
+                None => 30,
+            };
             let limit = params
                 .get("limit")
                 .and_then(Value::as_u64)
-                .unwrap_or(30)
+                .unwrap_or(default_limit)
                 .clamp(1, 200) as usize;
             let skip = params.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
-            crate::gitgui::log_page(&scope.repo_path, scope.log_highlight(), limit, skip)
+            crate::gitgui::log_page(&scope.repo_path, scope.log_highlight(), limit, skip, since)
         })
     }
 

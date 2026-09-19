@@ -12,15 +12,13 @@
 // The plug instance belongs to the worktree view, so remounts (tab switches,
 // the rail selection moving away and back) keep pending review comments.
 
-import { createReviewPlug, REVIEW_POLL_MS } from "../core/changesReview.js";
+import { createReviewPlug } from "../core/changesReview.js";
 import { esc } from "../core/text.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
 import { coordinatedRead, rpcReadKey } from "../core/readRequests.js";
-
-export const WORKTREE_REVIEW_POLL_MS = REVIEW_POLL_MS;
 
 // The adopted-task merge set for the browse view: prune / keep / release only.
 // Committing and pushing this worktree is what the Changes surface around this

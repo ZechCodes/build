@@ -4,7 +4,7 @@
 // Abandon button beside it has to be the same element it was.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createWorktreeReview, WORKTREE_REVIEW_POLL_MS } from "../src/views/worktreeReview.js";
+import { createWorktreeReview } from "../src/views/worktreeReview.js";
 
 const PATCH = [
   "diff --git a/a.txt b/a.txt",
@@ -54,7 +54,7 @@ function mountReview({ calls = [], adoptable = true } = {}) {
   return { review, host, toolbar, calls };
 }
 
-describe("the worktree review actionbar under the poll", () => {
+describe("the worktree review actionbar under a re-read", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     document.body.innerHTML = "";
@@ -69,9 +69,11 @@ describe("the worktree review actionbar under the poll", () => {
     const menu = toolbar.querySelector(".splitmenu");
     expect(menu.hidden).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(WORKTREE_REVIEW_POLL_MS * 2 + 10);
+    review.refreshDiff();
+    review.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(toolbar.querySelector(".splitmenu"), "the poll replaced the menu").toBe(menu);
+    expect(toolbar.querySelector(".splitmenu"), "the re-read replaced the menu").toBe(menu);
     expect(menu.hidden).toBe(false);
 
     menu.querySelector('[data-action="merge_keep"]').click();
@@ -88,7 +90,8 @@ describe("the worktree review actionbar under the poll", () => {
     const abandon = [...toolbar.querySelectorAll(".btn")].find((b) => b.textContent === "Abandon & delete");
     expect(abandon).toBeTruthy();
 
-    await vi.advanceTimersByTimeAsync(WORKTREE_REVIEW_POLL_MS + 10);
+    review.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
 
     const after = [...toolbar.querySelectorAll(".btn")].find((b) => b.textContent === "Abandon & delete");
     expect(after).toBe(abandon);

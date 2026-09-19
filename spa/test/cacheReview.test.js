@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-// The All-changes review plug against the local cache: a saved aggregate diff
-// paints read-only while the live one is fetched, and every changed live
-// paint writes through for the next visit.
+// The All-changes review plug against the local cache. The `diff` record IS
+// the changeset: it paints whole, the wire is reached for only where there is
+// no record or a push said it could not carry one, and a record rewritten
+// under an open plug moves the stack.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -78,7 +79,11 @@ describe("the saved aggregate diff", () => {
     plug.unmount();
   });
 
-  it("keeps a saved triage report hidden until a live payload confirms it is enabled", async () => {
+  // The record is not one round trip behind the pass any more: it is what the
+  // last read of this surface said, and a push rewrites it. So the ordering it
+  // names is the ordering, and the reviewer is not shown file order for a
+  // frame and then the pass.
+  it("draws the pass the record names", async () => {
     const triage = { based_on: "old-revision", hunks: [] };
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "diff" };
     await writeCached(address, { patch: PATCH, triageEnabled: true, triage });
@@ -87,15 +92,53 @@ describe("the saved aggregate diff", () => {
     await settle();
 
     expect(host.textContent).toContain("cached line");
-    expect(host.querySelector(".triagebar")).toBeNull();
-    expect(host.querySelector(".tgrouphead")).toBeNull();
-    expect(host.querySelector(".toverride")).toBeNull();
+    expect(host.querySelector(".triagebar")).toBeTruthy();
     expect((await readCached(address)).value.triage).toEqual(triage);
     plug.unmount();
   });
 
-  it("lets the live diff replace it and writes the change through", async () => {
+  it("asks the surface for nothing while the cache holds the diff", async () => {
     await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
+    const fetchDiff = vi.fn(async () => ({ patch: PATCH.replace("cached line", "live line") }));
+    plug = plugOn("dev-1", { fetchDiff, entity: "run-1" });
+    plug.mount(host);
+    await settle();
+    expect(host.textContent).toContain("cached line");
+    expect(fetchDiff).not.toHaveBeenCalled();
+    plug.unmount();
+  });
+
+  it("reads the surface once when a push said the diff was too big to carry", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH, stale: true });
+    const live = PATCH.replace("cached line", "live line");
+    const fetchDiff = vi.fn(async () => ({ patch: live }));
+    plug = plugOn("dev-1", { fetchDiff, entity: "run-1" });
+    plug.mount(host);
+    await settle();
+    expect(host.textContent).toContain("live line");
+    expect(fetchDiff).toHaveBeenCalledTimes(1);
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" });
+    expect(record.value.patch).toBe(live);
+    plug.unmount();
+  });
+
+  it("moves the stack when a push rewrites the record under it", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
+    plug = plugOn("dev-1", { fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1" });
+    plug.mount(host);
+    await settle();
+    expect(host.textContent).toContain("cached line");
+
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "diff" },
+      { patch: PATCH.replace("cached line", "pushed line") },
+    );
+    await settle();
+    expect(host.textContent).toContain("pushed line");
+    plug.unmount();
+  });
+
+  it("writes what it read off the wire through for the next mount", async () => {
     const live = PATCH.replace("cached line", "live line");
     plug = plugOn("dev-1", { fetchDiff: vi.fn(async () => ({ patch: live, key: "building" })), entity: "run-1" });
     plug.mount(host);
@@ -110,6 +153,7 @@ describe("the saved aggregate diff", () => {
   // what it is filed under, whatever machine the rest of this suite works.
   it("caches under the cacheScope it is handed", async () => {
     await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
+    // dev-2 holds none, so this plug reads its own and files it there.
     const live = PATCH.replace("cached line", "their line");
     plug = plugOn("dev-2", { fetchDiff: vi.fn(async () => ({ patch: live })), entity: "run-1" });
     plug.mount(host);

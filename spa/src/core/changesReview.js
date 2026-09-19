@@ -9,13 +9,18 @@
 // the mounting surface is only what it alone knows: where the diff comes from,
 // where comments go, and what finishing the work means here.
 //
-// The plug owns its host's DOM and a poll with the same freeze discipline as
-// the pane around it: a rebuild mid-comment would drop anchors, the open
-// popover, and typed text, and a rebuild mid-action would wipe a busy button.
+// The plug owns its host's DOM, and what it draws is the `diff` record: the
+// working tree as the last push left it. The wire is reached for only where
+// the cache holds no diff at all, or holds one a push has said it could not
+// carry — and that read writes the record, so the next mount is instant.
+//
+// Its repaints keep the same freeze discipline as the pane around it: a
+// rebuild mid-comment would drop anchors, the open popover, and typed text,
+// and a rebuild mid-action would wipe a busy button.
 
 import "../styles/surfaces.css";
 import { reviewCommentContext } from "./reviewCommentContext.js";
-import { readCached, writeCached } from "./localCache.js";
+import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
@@ -24,15 +29,12 @@ import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
-import { watchChanges } from "./changeEvents.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { createReviewMarks } from "./reviewMarks.js";
 import { watchEditedTimes } from "./editedTime.js";
 import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
 import { diffSortHtml, loadDiffSort, saveDiffSort } from "./diffSort.js";
-
-export const REVIEW_POLL_MS = 1600;
 
 const fileEditedAtOf = (payload) => payload.file_edited_at || {};
 
@@ -92,14 +94,9 @@ export function createReviewPlug({
   actionsFrozen = () => false,
   statusHtml = () => "",
   isOffline = () => false,
-  pollMs = REVIEW_POLL_MS,
-  // A review embedded in a controller that already watches the same checkout
-  // can use that controller's refresh path. This avoids a second timer while
-  // keeping the plug's serialized, freeze-aware diff fetch intact.
-  watchDiff = true,
-  // What the diff belongs to — the run or the worktree — so a bridge that
-  // pushes can say when it moved instead of being asked every 1.6 seconds. A
-  // surface that names none keeps the safety poll and nothing else.
+  // What the diff belongs to — the run or the worktree. It is what the record
+  // is filed under, and a surface that names none caches nothing and reads its
+  // diff off the wire once per mount.
   entity = null,
   cacheEntity = entity,
   navigate = null,
@@ -107,7 +104,7 @@ export function createReviewPlug({
 }) {
   const openFile = (navigate && navigate.openFile) || null;
   let host = null;
-  let watcher = null;
+  let unwatchDiff = null;
   let editedTimeWatcher = null;
   let diffKey = null;
   let responseDiffKey = null;
@@ -248,6 +245,14 @@ export function createReviewPlug({
   // A mark is the SURFACE's — its bar names what is selected and its commit
   // narrows to it — so the surface is told whenever one moves in here.
   let onMarksChanged = () => {};
+
+  /** What this plug is holding the DOM still for: the surface's own action, or
+   *  a review in progress — a pending comment, an open popover, typed text. */
+  const repaintFrozen = () => actionsFrozen() || Boolean(commentLayer && commentLayer.repaintBusy());
+
+  /** One record, as a string, so a write this plug made is recognised when it
+   *  comes back round as an announcement. */
+  const fingerprintOf = (value) => JSON.stringify(value ?? null);
 
   function render() {
     if (!host) return;
@@ -398,40 +403,76 @@ export function createReviewPlug({
   }
 
   // The local cache's slot for this surface's aggregate diff, keyed by the
-  // entity the diff belongs to. A surface that names none caches nothing.
-  const diffAddress = () =>
-    cacheEntity ? cacheScope?.address({ entityId: cacheEntity, kind: "diff" }) || null : null;
-  let livePainted = false; // a live payload outranks whatever the cache held
+  // entity the diff belongs to. A worktree names its entity with a function —
+  // the id moves when the worktree is adopted — so it is asked, never read as
+  // an id. A surface that names none caches nothing.
+  const cacheEntityId = () => (typeof cacheEntity === "function" ? cacheEntity() : cacheEntity);
+  const diffAddress = () => {
+    const entityId = cacheEntityId();
+    return entityId ? cacheScope?.address({ entityId, kind: "diff" }) || null : null;
+  };
   let refreshHeld = false; // news fetched while an interaction froze repainting
+  let writtenRecord = null; // the fingerprint of the record this plug last wrote
 
-  /** The saved diff, painted whole — comment tray and verbs included, from the
-   *  commentability the last live paint recorded. A comment is drafted locally
-   *  and every send re-verifies against the bridge, so the cost of a state
-   *  that moved while away is one refused send, not a wrong write; the cost of
-   *  hiding the chrome was the whole actionbar popping in a round trip late. */
+  /** The saved diff, painted whole — comment tray and verbs included, and the
+   *  triage pass the last live read recorded. The record IS the diff on this
+   *  surface: a push rewrites it, and nothing here is one round trip behind
+   *  it, so what it says about the pass is what the pass says. */
   const applyCachedDiff = (value) => {
     fileEditedAt = fileEditedAtOf(value);
     renderedFiles = parsedDiffs.views(value.patch, { editedAt: fileEditedAt });
     renderedPatch = value.patch || "";
     responseDiffKey = value.diff_key || null;
     commentableNow = value.commentable !== false && Boolean(commentLayer);
-    // A saved setting can be older than the run payload already on screen.
-    // Keep the report in the record, but only a live read may opt this paint
-    // into triage; the instant cached diff therefore always starts in file
-    // order and cannot expose a disabled overlay while the bridge is offline.
-    triageEnabled = false;
-    triageReport = undefined;
+    triageEnabled = value.triageEnabled === true;
+    triageReport = triageEnabled ? value.triage || null : undefined;
     if (!value.projectId || value.projectId === triageProject) return;
     triageProject = value.projectId;
     trustDial = loadTrustDial(triageProject);
   };
 
-  const seedFromCache = async () => {
+  const heldDiff = async () => {
     const address = diffAddress();
-    const record = address ? await readCached(address) : undefined;
-    if (!record || !host || livePainted) return;
-    applyCachedDiff(record.value);
+    return address ? (await readCached(address))?.value : undefined;
+  };
+
+  /** What the plug draws on mount: the record, and one read of the wire only
+   *  where there is no record to draw — or where the push that wrote it said
+   *  it could not carry the body. */
+  const standUp = async () => {
+    const mounted = host;
+    const record = await heldDiff();
+    if (host !== mounted) return;
+    if (record) {
+      applyCachedDiff(record);
+      render();
+    }
+    if (!record || record.stale) paint();
+  };
+
+  /** The record moved — a `git` push carried a new working tree, or another
+   *  tab read one. A record this plug wrote itself is not news to it. */
+  const rereadDiff = async () => {
+    const mounted = host;
+    const record = await heldDiff();
+    if (!record || host !== mounted || fingerprintOf(record) === writtenRecord) return;
+    if (record.stale) {
+      paint();
+      return;
+    }
+    if (repaintFrozen()) {
+      refreshHeld = true;
+      return;
+    }
+    applyCachedDiff(record);
+    diffKey = null; // the stack is being rebuilt from a body that moved
     render();
+  };
+
+  const watchDiffRecord = () => {
+    unwatchDiff?.();
+    const address = diffAddress();
+    unwatchDiff = address ? subscribeCache(address, () => void rereadDiff()) : null;
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 22, cap 10 — reduce it, then drop this line
@@ -451,7 +492,6 @@ export function createReviewPlug({
         patch: renderedPatch,
         file_edited_at: payload.file_edited_at || fileEditedAt,
       };
-    livePainted = true;
     const nextCommentable = payload.commentable !== false && Boolean(commentLayer);
     // The pass, and the project whose dial governs how it is read. A project
     // the plug has not seen before brings its remembered dial with it.
@@ -472,7 +512,7 @@ export function createReviewPlug({
     ].join("\x01");
     // Freeze while the reviewer is mid-comment or the surface has an action in
     // flight, and skip the rebuild when nothing moved (fold state survives too).
-    const busy = actionsFrozen() || Boolean(commentLayer && commentLayer.repaintBusy());
+    const busy = repaintFrozen();
     if (host.querySelector(".diffbar") && busy) {
       refreshHeld = true;
       paintActions();
@@ -494,10 +534,10 @@ export function createReviewPlug({
     triageEnabled = nextTriageEnabled;
     diffKey = key;
     // Only a paint that changed anything rewrites the record — the skip branch
-    // above already filtered the every-1.6s sameness out.
+    // above already filtered the unmoved answers out.
     const address = diffAddress();
-    if (address)
-      writeCached(address, {
+    if (address) {
+      const value = {
         patch: payload.patch,
         commentable: payload.commentable !== false,
         triage: Object.hasOwn(payload, "triage") ? payload.triage || null : null,
@@ -505,7 +545,12 @@ export function createReviewPlug({
         projectId: payload.projectId || null,
         file_edited_at: fileEditedAt,
         diff_key: responseDiffKey,
-      });
+      };
+      // Remembered so the announcement this write makes is not read back as
+      // news: the paint below is already the record.
+      writtenRecord = fingerprintOf(value);
+      writeCached(address, value);
+    }
     render();
   };
 
@@ -529,26 +574,14 @@ export function createReviewPlug({
     });
   };
 
-  /** A pushed invalidation can land while a comment draft or popover freezes
+  /** A diff that moved can land while a comment draft or popover freezes
    *  repainting. Keep that news pending and consume it as soon as the owning
-   *  surface says the interaction ended; the next safety tick is only backup. */
+   *  surface says the interaction ended. */
   const resumeHeldRefresh = () => {
-    if (!refreshHeld || !host || actionsFrozen() || Boolean(commentLayer && commentLayer.repaintBusy())) return;
+    if (!refreshHeld || !host || repaintFrozen()) return;
     refreshHeld = false;
+    void rereadDiff();
     paint();
-  };
-
-  const startDiffWatcher = () => {
-    if (!watchDiff) return null;
-    return watchChanges({
-      refresh: paint,
-      intervalMs: pollMs,
-      entity,
-      pausesWhileHidden: false,
-      // Focus tier: the changeset is the working tree and its status.
-      kinds: ["git", "files"],
-      mode: "realtime",
-    });
   };
 
   return {
@@ -556,9 +589,10 @@ export function createReviewPlug({
      *  (an action settled, a flash message expired) but the diff has not. */
     refreshActions: paintActions,
 
-    /** Re-read the diff through the same conditional-key and freeze path the
-     *  plug's watcher uses. Embedded controllers call this from their existing
-     *  checkout watcher instead of mounting a duplicate timer. */
+    /** Go past the record and ask the surface for its diff, through the same
+     *  conditional-key and freeze path the mount uses. What a surface calls
+     *  when it knows something the record cannot say — an adoption, a merge it
+     *  just ran — has moved the changeset. */
     refreshDiff: paint,
 
     /** Resume an invalidation held to protect a draft/popover. */
@@ -572,7 +606,8 @@ export function createReviewPlug({
       { gitActions = () => null, readNote = () => "", onComments = () => {}, onMarks = () => {}, reviewMarks = null } = {},
     ) {
       detachViewingContext();
-      if (watcher) watcher.dispose(); // a mount over a live one reads twice
+      unwatchDiff?.(); // a mount over a live one reads twice
+      unwatchDiff = null;
       if (editedTimeWatcher) editedTimeWatcher.dispose();
       host = element;
       attachViewingContext();
@@ -585,14 +620,11 @@ export function createReviewPlug({
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       refreshHeld = false;
-      livePainted = false;
+      writtenRecord = null;
       responseDiffKey = null;
       host.innerHTML = '<div class="empty">loading…</div>';
-      seedFromCache();
-      paint();
-      // `pausesWhileHidden: false`: this paint has never been visibility-gated,
-      // and an event must not do less than the tick it replaced.
-      watcher = startDiffWatcher();
+      watchDiffRecord();
+      void standUp();
       editedTimeWatcher = watchEditedTimes(host);
     },
 
@@ -610,8 +642,8 @@ export function createReviewPlug({
 
     unmount() {
       detachViewingContext();
-      if (watcher) watcher.dispose();
-      watcher = null;
+      unwatchDiff?.();
+      unwatchDiff = null;
       if (editedTimeWatcher) editedTimeWatcher.dispose();
       editedTimeWatcher = null;
       if (commentLayer) commentLayer.dispose();

@@ -3,7 +3,7 @@
 // layer, one actionbar the surface fills with its own verbs.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createReviewPlug, reviewBarHtml, emptyStackText, REVIEW_POLL_MS } from "../src/core/changesReview.js";
+import { createReviewPlug, reviewBarHtml, emptyStackText } from "../src/core/changesReview.js";
 
 const patchOf = (line) =>
   [
@@ -157,7 +157,8 @@ describe("the review plug (DOM)", () => {
     expect(host.querySelector(".fchanged")).toBe(null); // nothing moved yet
 
     line = "newer";
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(host.querySelector(".fchanged").textContent).toContain("changed since your review");
 
     // Narrowing to what moved keeps the totals honest: the bar counts them all.
@@ -181,7 +182,8 @@ describe("the review plug (DOM)", () => {
     await vi.advanceTimersByTimeAsync(0);
     await commentOnTheFile(host);
     line = "moved underneath";
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(host.querySelector(".pcomment").textContent).toContain("split this up");
     expect(host.textContent).toContain("moved underneath");
     expect(requestedKeys.at(-1)).toBe("new");
@@ -201,7 +203,8 @@ describe("the review plug (DOM)", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(host.querySelector(".fcmt")).toBeTruthy();
     commentable = false;
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(host.querySelector(".fcmt")).toBe(null);
     plug.unmount();
   });
@@ -212,7 +215,8 @@ describe("the review plug (DOM)", () => {
     const fetchDiff = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const { host, plug } = mountPlug({ fetchDiff });
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(fetchDiff).toHaveBeenCalledTimes(1);
 
     first.resolve({ patch: patchOf("old"), diff_key: "old" });
@@ -239,13 +243,15 @@ describe("the review plug (DOM)", () => {
     window.getSelection().addRange(range);
 
     line = "moved underneath";
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(host.contains(code), "the rows the selection points into were replaced").toBe(true);
     expect(host.textContent).not.toContain("moved underneath");
 
     // Letting go hands the surface back: the next tick draws what moved.
     window.getSelection().removeAllRanges();
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(host.textContent).toContain("moved underneath");
     plug.unmount();
   });

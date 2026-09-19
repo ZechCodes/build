@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane } from "../src/core/gitPane.js";
-import { createReviewPlug, REVIEW_POLL_MS } from "../src/core/changesReview.js";
+import { createReviewPlug } from "../src/core/changesReview.js";
 
 import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
@@ -137,7 +137,8 @@ describe("the review plug's folds", () => {
     expect(fileOf(host, "src/a.js").classList.contains("capped")).toBe(false);
 
     line = "moved underneath";
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(host.textContent).toContain("moved underneath");
     expect(fileOf(host, "src/a.js").classList.contains("capped")).toBe(false);
     plug.unmount();
@@ -156,7 +157,8 @@ describe("the review plug's folds", () => {
     expect(fileOf(host, "src/a.js").classList.contains("collapsed")).toBe(true);
 
     line = "moved underneath";
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(fileOf(host, "src/a.js").classList.contains("collapsed")).toBe(true);
     plug.unmount();
   });

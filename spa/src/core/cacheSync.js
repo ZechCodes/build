@@ -570,13 +570,21 @@ async function pullWorkingDiff(context, entityId, row, priority) {
 /** The diff record after a new body, wherever the body came from. The body
  *  replaces what was held; the two fields the review surface keeps beside it —
  *  which project the diff belongs to, and what the reviewer has triaged in it —
- *  are nothing the wire knows about and stay where they were put. */
+ *  are nothing the wire knows about and stay where they were put. A body in
+ *  hand is the end of whatever staleness put the record here. */
 const diffRecord = (held, diff, row) => ({
   ...held,
   ...diff,
+  stale: false,
   triage: held?.triage || null,
   projectId: row?.project_id || held?.projectId || null,
 });
+
+/** The record after a push that HAD a diff and could not send it: too big for
+ *  the cap. The body held is the last one anybody saw, so it stays on screen —
+ *  marked, so the surface that opens it reads the real one once rather than
+ *  showing yesterday's tree for ever. */
+const staleDiffRecord = (held) => (!held || held.stale ? null : { ...held, stale: true });
 
 /** Every conversation on this workspace. The feed row's `agents[]` IS the
  *  conversation list, so a conversation nobody has opened is still read once
@@ -881,11 +889,15 @@ async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
   const scope = gitScopeOf(row);
   if (!scope) return;
   if (git.unpushed) await syncPatches(context, entityId, scope, git.unpushed, "background");
+  if (git.diff !== null) return;
   // A null diff is one the bridge had and could not send. It is only worth a
-  // round trip for the workspace on screen; the rest read it when opened.
-  if (git.diff === null && subscriptions.get(context.deviceId)?.activeId === entityId) {
+  // round trip for the workspace on screen; the rest are marked, and read it
+  // when a reader opens them.
+  if (subscriptions.get(context.deviceId)?.activeId === entityId) {
     await pullWorkingDiff(context, entityId, row, "foreground");
+    return;
   }
+  await mergeCached(addressOf(context, entityId, "diff"), staleDiffRecord);
 }
 
 /** `files`: the root listing rides the push. The deeper ones the reader walked

@@ -10,15 +10,13 @@
 // remounts — tab switches, shell rebuilds — keep review state.
 
 import { createAgentSelection } from "../core/agentSelection.js";
-import { createReviewPlug, REVIEW_POLL_MS } from "../core/changesReview.js";
+import { createReviewPlug } from "../core/changesReview.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { currentRevisionId, MUTATION_THREAD_PAGE } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError, notifySuccess } from "../core/notify.js";
 import { coordinatedRead, rpcReadKey } from "../core/readRequests.js";
-
-export { REVIEW_POLL_MS };
 
 // How long a git action's result (Committed./Pushed.) stays in the hint.
 

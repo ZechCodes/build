@@ -5,7 +5,7 @@
 // split button (which would carry a new latch — a second concurrent merge).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createTaskReview, reviewMergeOptions, REVIEW_POLL_MS } from "../src/views/taskReview.js";
+import { createTaskReview, reviewMergeOptions } from "../src/views/taskReview.js";
 import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
 
 const PATCH = [
@@ -64,9 +64,11 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(rpcCalls.filter((m) => m === "run.git_action")).toHaveLength(1);
 
-    // Two full poll ticks while the RPC is in flight: the button must stay the
-    // same disabled busy button — not a fresh enabled remount.
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS * 2 + 10);
+    // Two re-reads while the RPC is in flight: the button must stay the same
+    // disabled busy button — not a fresh enabled remount.
+    plug.refreshDiff();
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     const after = toolbar.querySelector(".btn:not(.caret)");
     expect(after.disabled).toBe(true);
     expect(after.textContent).toBe("merging…");
@@ -81,9 +83,9 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     plug.unmount();
   });
 
-  // The reviewer opens the merge menu to reach an option in it. The 1.6s poll
-  // must not shut it before they get there.
-  it("leaves the open merge menu standing through a poll tick, and still runs its item", async () => {
+  // The reviewer opens the merge menu to reach an option in it. A diff that
+  // moved underneath must not shut it before they get there.
+  it("leaves the open merge menu standing through a re-read, and still runs its item", async () => {
     const calls = [];
     const callRpc = (method, params) => {
       calls.push([method, params]);
@@ -107,9 +109,11 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     const menu = toolbar.querySelector(".splitmenu");
     expect(menu.hidden).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS * 2 + 10);
+    plug.refreshDiff();
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(toolbar.querySelector(".splitmenu"), "the poll replaced the menu").toBe(menu);
+    expect(toolbar.querySelector(".splitmenu"), "the re-read replaced the menu").toBe(menu);
     expect(menu.hidden).toBe(false);
 
     menu.querySelector('[data-action="merge_release"]').click();

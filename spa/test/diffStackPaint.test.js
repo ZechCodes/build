@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane } from "../src/core/gitPane.js";
-import { createReviewPlug, REVIEW_POLL_MS } from "../src/core/changesReview.js";
+import { createReviewPlug } from "../src/core/changesReview.js";
 
 import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
@@ -253,7 +253,8 @@ describe("the review plug's stack", () => {
     await vi.advanceTimersByTimeAsync(0);
     const writes = watchScrollTop(host);
     const records = await churn(host, async () => {
-      await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+      plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     });
     expect(records).toEqual([]);
     expect(writes).toEqual([]);
@@ -267,7 +268,8 @@ describe("the review plug's stack", () => {
     await vi.advanceTimersByTimeAsync(0);
     const held = fileOf(host, "src/b.js");
     patch = patchFor("src/a.js", "the agent moved on") + patchFor("src/b.js", "second");
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect(host.textContent).toContain("the agent moved on");
     expect(fileOf(host, "src/b.js")).toBe(held);
     plug.unmount();
@@ -283,7 +285,8 @@ describe("the review plug's stack", () => {
     expect(held.classList.contains("collapsed")).toBe(true);
 
     edited = { "src/a.js": 20, "src/b.js": 30 };
-    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    plug.refreshDiff();
+    await vi.advanceTimersByTimeAsync(0);
     expect([...host.querySelectorAll(".file")].map((file) => file.dataset.key)).toEqual([
       "EDIT:src/b.js",
       "EDIT:src/a.js",

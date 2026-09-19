@@ -12,6 +12,11 @@
 #     (crypto_kdf_blake2b_BYTES_MAX, ...) misread as generic API keys
 #   - bridge/target: gitignored Cargo build output; the `pem` crate bakes its
 #     own doc-example RSA key into the rmeta it compiles
+#   - v2 wire fixtures and push-bus tests: `status_key`, `content_key`,
+#     `highlight_key` and `diff_key` are fnv1a64 hashes OF A PAYLOAD, and the
+#     example payloads hash to the made-up sixteen hex characters allowlisted
+#     below. They name content, never access; the same values appear in twenty
+#     `fixtures/api/v1/*.json` files as the one example key the wire docs use.
 # Real leaks anywhere else still fail the scan.
 
 [extend]
@@ -29,4 +34,11 @@ paths = [
   '''spa/test/diffRender\.test\.js''',
   '''themes/build/static/js/libsodium-wrappers\.js''',
   '''bridge/target/''',
+]
+regexes = [
+  # The example content keys the v1 wire fixtures and the push-bus tests hash
+  # their example payloads to.
+  '''9f3c1a0b7e2d4c55''',
+  '''3f9a1c0b7e2d4c55''',
+  '''5c6d7e8f90123456''',
 ]

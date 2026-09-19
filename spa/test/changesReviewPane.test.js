@@ -269,7 +269,7 @@ describe("the aggregate over a filled cache", () => {
 });
 
 describe("workspace comments", () => {
-  async function workspacePane({ fail = false } = {}) {
+  async function workspacePane({ fail = false, listed = true } = {}) {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const calls = [];
@@ -285,10 +285,11 @@ describe("workspace comments", () => {
     };
     // Where each source of this workspace is mounted is the machine's
     // workspace list's to say, and the pane reads it there.
-    await writeCached(
-      { deviceId: "dev-1", entityId: "", kind: "workspaces" },
-      [{ id: "w", root: "/work", directories: [{ source_id: "s", path: "/work/source" }] }],
-    );
+    if (listed)
+      await writeCached(
+        { deviceId: "dev-1", entityId: "", kind: "workspaces" },
+        [{ id: "w", root: "/work", directories: [{ source_id: "s", path: "/work/source" }] }],
+      );
     const pane = mountGitPane(container, {
       scope: { workspace_id: "w", source_id: "s" }, callRpc,
       cacheScope: scopeFor("dev-1"),
@@ -354,6 +355,21 @@ describe("workspace comments", () => {
     await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
     const posted = calls.find(({ method }) => method === "thread.post").params;
     expect(posted.messages[0]).toMatchObject({ body: "Rename this", anchor: { path: "source/src/a.js", snippet: "new", line_start: 1, line_end: 1, side: "new" } });
+    pane.dispose();
+  });
+
+  // Where each source is mounted is the workspace list's to say, and a comment
+  // is written against the workspace root. A device whose list has not landed
+  // yet — a first boot, a sign-out wipe — cannot say where this source is, so
+  // the comment is refused and the draft stays in the box for the retry a
+  // second later, when it has.
+  it("keeps the draft where the machine's workspace list has not landed yet", async () => {
+    const { pane, container, calls } = await workspacePane({ listed: false });
+    container.querySelector(".csinput").value = "Keep my comment";
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    expect(calls.some(({ method }) => method === "thread.post")).toBe(false);
+    expect(container.querySelector(".csinput").value).toBe("Keep my comment");
+    expect(document.body.textContent).toContain("Workspace source directory is unavailable");
     pane.dispose();
   });
 

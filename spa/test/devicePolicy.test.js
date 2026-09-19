@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { creationDeviceId, homeDeviceId, onlineStickyDeviceId } from "../src/core/devicePolicy.js";
+import {
+  creationDeviceId,
+  homeDeviceId,
+  listingCouldBeLagging,
+  onlineStickyDeviceId,
+} from "../src/core/devicePolicy.js";
 
 // The sticky device choice is only honored when that device is actually online.
 // Anything else must fall back to "any device" — pinning a resume to an offline
@@ -52,6 +57,73 @@ describe("homeDeviceId", () => {
   it("answers null when nothing is online", () => {
     expect(homeDeviceId([{ id: "dev-a", status: "offline" }], "dev-a")).toBeNull();
     expect(homeDeviceId([], "dev-a")).toBeNull();
+  });
+
+  // A machine this client has given up on keeps its place in the account's
+  // list, and loses its claim to home: handing creation to a listed-online
+  // machine that answers nothing is how every home-addressed call refuses
+  // "Device not reachable" while the reader's own workspace works perfectly.
+  describe("when the caller can say which machines it has given up on", () => {
+    const devices = [
+      { id: "dev-a", status: "online" },
+      { id: "dev-b", status: "online" },
+      { id: "dev-c", status: "online" },
+    ];
+    const exceptFor = (...givenUpOn) => (deviceId) => !givenUpOn.includes(deviceId);
+
+    it("skips a listed-online machine it has given up on", () => {
+      expect(homeDeviceId(devices, null, exceptFor("dev-a"))).toBe("dev-b");
+    });
+
+    it("keeps the sticky pick while it is still worth asking", () => {
+      expect(homeDeviceId(devices, "dev-c", exceptFor("dev-a"))).toBe("dev-c");
+    });
+
+    it("moves off the sticky pick once it has been given up on", () => {
+      expect(homeDeviceId(devices, "dev-a", exceptFor("dev-a", "dev-b"))).toBe("dev-c");
+    });
+
+    // With every machine given up on there is still a home to name, or the
+    // surfaces that refuse would have no machine to refuse about.
+    it("falls back to the listing when every machine has been given up on", () => {
+      expect(homeDeviceId(devices, null, exceptFor("dev-a", "dev-b", "dev-c"))).toBe("dev-a");
+      expect(homeDeviceId(devices, "dev-b", exceptFor("dev-a", "dev-b", "dev-c"))).toBe("dev-b");
+    });
+
+    it("never names a machine the account does not list online", () => {
+      const listed = [
+        { id: "dev-a", status: "offline" },
+        { id: "dev-b", status: "online" },
+      ];
+      expect(homeDeviceId(listed, "dev-a", exceptFor())).toBe("dev-b");
+    });
+  });
+});
+
+// Whether the account calling a machine offline could be the list lagging
+// rather than the machine being away. The api derives online from a 90 s
+// heartbeat window, so the lag is short and bounded — and a machine last seen
+// days ago is off, not late.
+describe("listingCouldBeLagging", () => {
+  const now = Date.parse("2026-09-19T21:15:47Z");
+  const seenAt = (msAgo) => ({ last_seen_at: new Date(now - msAgo).toISOString() });
+
+  it("second-guesses a machine that beat within the window", () => {
+    expect(listingCouldBeLagging(seenAt(0), now)).toBe(true);
+    expect(listingCouldBeLagging(seenAt(90000), now)).toBe(true);
+    expect(listingCouldBeLagging(seenAt(180000), now)).toBe(true);
+  });
+
+  it("takes the listing at its word past that", () => {
+    expect(listingCouldBeLagging(seenAt(180001), now)).toBe(false);
+    expect(listingCouldBeLagging(seenAt(4 * 24 * 60 * 60 * 1000), now)).toBe(false);
+  });
+
+  it("does not guess at a machine the account has never seen beat", () => {
+    expect(listingCouldBeLagging({ last_seen_at: null }, now)).toBe(false);
+    expect(listingCouldBeLagging({}, now)).toBe(false);
+    expect(listingCouldBeLagging({ last_seen_at: "not a date" }, now)).toBe(false);
+    expect(listingCouldBeLagging(undefined, now)).toBe(false);
   });
 });
 

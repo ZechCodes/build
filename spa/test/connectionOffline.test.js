@@ -60,9 +60,8 @@ const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 const mints = vi.hoisted(() => ({ provided: null }));
 
 const { App, resetApplication, rememberSelectedDevice } = await import("../src/app.js");
-const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts, resetDeviceContexts } = await import(
-  "../src/core/deviceContexts.js"
-);
+const { canAnswer, contextFor, deviceFeedView, homeContext, knownContexts, liveContexts, resetDeviceContexts } =
+  await import("../src/core/deviceContexts.js");
 const {
   chooseCreationDevice,
   connectDevice,
@@ -92,9 +91,23 @@ const reachNextRecoveryAttempt = async () => {
   for (let index = 0; index < 6; index += 1) await flush();
 };
 
-const online = (id, name) => ({ id, name, status: "online", fingerprint: `${id}-fingerprint` });
-/** The same paired device, as the account lists it while its bridge is down. */
+const online = (id, name) => ({
+  id,
+  name,
+  status: "online",
+  fingerprint: `${id}-fingerprint`,
+  last_seen_at: new Date(Date.now()).toISOString(),
+});
+/** The same paired device, as the account lists it while its bridge is down —
+ *  beating moments ago, so the offline it wears may be the list not having
+ *  caught up (core/devicePolicy.js). */
 const away = (id, name) => ({ ...online(id, name), status: "offline" });
+/** A machine the account has not heard from in days. Nothing about that listing
+ *  is the api lagging. */
+const longGone = (id, name) => ({
+  ...away(id, name),
+  last_seen_at: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(),
+});
 
 /** Every time this machine was asked for a session. */
 const openedFor = (deviceId) => opened.filter((options) => options.deviceId === deviceId);
@@ -399,10 +412,11 @@ describe("per-device connections", () => {
     // Its rows are still the account's rows — greyed by the rail, not removed.
     expect(feed.items.map((item) => item.deviceId)).toEqual(["dev-a", "dev-b"]);
     expect(held()).toBe(false); // the account still has a machine to stand on
-    // The account still lists dev-a online, so it is still where creation would
-    // go — and what the composer reads off it is that it cannot answer.
-    expect(homeContext()).toBe(contextFor("dev-a"));
-    expect(homeContext().offline).toBe(true);
+    // The account lists dev-a online, but it has answered nothing: creation goes
+    // to the machine that can take it rather than refusing on the one that is
+    // merely listed first.
+    expect(homeContext()).toBe(contextFor("dev-b"));
+    expect(canAnswer(homeContext())).toBe(true);
   });
 
   // Rule 3 is per device and nothing else: a machine nothing could reach is
@@ -561,6 +575,35 @@ describe("per-device connections", () => {
     expect(openedFor("dev-a").length).toBe(asked.a + 1);
     expect(openedFor("dev-b").length).toBe(asked.b + 1);
     expect(held()).toBe(false);
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+  });
+
+  // The account's list lags by a heartbeat window, so a boot that has nothing
+  // answering asks the machines it calls offline anyway. That hedge is against
+  // a window of lag and nothing more: on 2026-09-19 it dialled a Mac mini the
+  // api had not heard from in four days, over and over, and the relay answered
+  // `rejected session to device` every time.
+  it("does not dial a machine the account has not heard from in days", async () => {
+    devices = [longGone("dev-a", "Laptop"), longGone("dev-b", "Desktop")];
+    App.devices = devices;
+
+    await connectEveryDevice();
+
+    expect(openedFor("dev-a")).toEqual([]);
+    expect(openedFor("dev-b")).toEqual([]);
+    expect(knownContexts()).toEqual([]);
+  });
+
+  // The hedge itself still stands: a machine that beat moments ago is one whose
+  // offline may simply not have caught up, and nothing else is answering.
+  it("still dials a machine listed offline whose last beat is inside the window", async () => {
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+
+    await connectEveryDevice();
+
+    expect(openedFor("dev-a").length).toBe(1);
+    expect(openedFor("dev-b").length).toBe(1);
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
   });
 

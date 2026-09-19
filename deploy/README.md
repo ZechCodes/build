@@ -42,6 +42,22 @@ No secrets to provision: dev defaults are baked into the compose file and can
 be overridden with `BUILD_SECRET_KEY`, `BUILD_INTERNAL_API_SECRET`,
 `BUILD_PAIRING_CODE`.
 
+**One stack per machine, not one per checkout.** Compose names the project after
+this directory, so every worktree of this repo drives the same `deploy-app-1`,
+`deploy-relay-1` and `deploy-bridge-1` containers on the same host ports — two
+people (or two agents) bringing the stack up from different checkouts rebuild
+and re-pair on top of each other, and the app's sqlite is container-lifetime, so
+whoever recreates it takes the other's account with it. Say whose stack it is
+with `-p`:
+
+```bash
+docker compose -p device-presence -f deploy/compose.real.yml up -d --build
+```
+
+That separates the containers, not the host ports — 8090 and 18090 are written
+into the compose file — so a second stack still needs those two lines edited
+before it can come up beside the first.
+
 ### Two bridges on one account
 
 Anything about *which* device — two machines' work in one rail, the device tag

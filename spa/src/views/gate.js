@@ -110,7 +110,7 @@ async function paintFromCache() {
   if (gatedDeviceId) return false;
   const devices = (await readCached(DEVICES_ADDRESS))?.value || [];
   if (!devices.length) return false;
-  App.devices = devices;
+  App.devices = devices.map(asTheCacheKnowsIt);
   setGate(false);
   // The rail's rows, read off disk for every machine the list names — awaited,
   // so the shell and what is in it land in the same frame.
@@ -121,6 +121,19 @@ async function paintFromCache() {
   render(); // the hash route survives a reload, so deep links paint from disk too
   return true;
 }
+
+/**
+ * One machine as the cache knows it: its name, its keys, and no claim about
+ * whether it is up.
+ *
+ * The list on disk was written by the last read of a past session, and a status
+ * is only as true as the moment it was written — the machine it called online
+ * may have been shut since. Presence is a live read's to say (spec rule 6), and
+ * that read is the next thing this boot does, so the seconds before it are
+ * spent saying the under-claiming thing rather than dialling a machine that
+ * went away while the tab was closed.
+ */
+const asTheCacheKnowsIt = (device) => ({ ...device, status: "offline" });
 
 // Whether the gate is holding the app for want of a machine that can answer,
 // and how it hears that that changed.

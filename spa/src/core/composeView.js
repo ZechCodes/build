@@ -13,9 +13,9 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
-import { canAnswer, deviceFeedView, homeContext } from "./deviceContexts.js";
+import { canAnswer, creationDevice, deviceFeedView, homeContext } from "./deviceContexts.js";
 import { deviceCall, deviceCatalog } from "./inboxDevices.js";
-import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
+import { deviceNameOf } from "./devicePolicy.js";
 import { UNASKED_CATALOG } from "./modelCatalog.js";
 import { agentDefaultsFor, agentDefaultsIn, loadAgentDefaults } from "./agentDefaults.js";
 import { isConfirmOpen } from "./confirm.js";
@@ -70,7 +70,7 @@ const projectNameOf = (projectId) =>
  *  which is the one it was sent to or is waiting for. The rail is one list
  *  across every machine, so a row the feed does not carry yet still has to say
  *  whose it is. */
-const captureDeviceId = () => creationDeviceId(App.devices, App.selectedDeviceId);
+const captureDeviceId = () => creationDevice();
 
 /** One capture this client is holding, as a row: the daemon's record, the
  *  project name off the creation device's slice of the feed, and the machine

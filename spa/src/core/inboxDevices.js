@@ -10,8 +10,8 @@
 // — the create dialog — asks the same way, by device id.
 
 import { App } from "../app.js";
-import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
-import { creationDeviceId, deviceNameOf } from "./devicePolicy.js";
+import { canAnswer, contextFor, creationDevice, homeContext } from "./deviceContexts.js";
+import { deviceNameOf } from "./devicePolicy.js";
 import { allDevicesOfflineText } from "./text.js";
 import { deviceAwayMark, deviceAwayWord } from "./deviceAway.js";
 import { deviceOfflineNotice } from "./deviceNotice.js";
@@ -187,6 +187,6 @@ export function creationCall(deviceId) {
  * it describes: no machine to name at all.
  */
 function creationRefusal() {
-  const deviceId = creationDeviceId(App.devices, App.selectedDeviceId);
+  const deviceId = creationDevice();
   return deviceId ? deviceOfflineNotice(deviceId) : allDevicesOfflineText();
 }

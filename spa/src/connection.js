@@ -54,7 +54,7 @@ import {
   retireDeviceContext,
 } from "./core/deviceContexts.js";
 import { deviceAwayText } from "./core/deviceAway.js";
-import { deviceNameOf } from "./core/devicePolicy.js";
+import { deviceNameOf, listingCouldBeLagging } from "./core/devicePolicy.js";
 import { pinnedDeviceTransportKey } from "./devices.js";
 import { followTerminalDevice, provideTerminalSessions, terminalDeviceId } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
@@ -747,10 +747,24 @@ function askBlockedMachinesAgain() {
  * answering, so each such machine is asked once, without waiting on it: it
  * either answers, or it is blocked with its reason and waits for the poll to
  * say it is back.
+ *
+ * Only the machines whose listing could actually be that far behind, though
+ * (core/devicePolicy.js). The guess is a hedge against a window of lag, not a
+ * licence to dial the whole account: a machine the api has not heard from in
+ * days is off, and asking the relay for it only earns another
+ * `rejected session to device`.
  */
 function guessAtStaleDevices() {
   if (liveContexts().length) return []; // something is answering; the poll will hear the rest
-  return App.devices.filter(neverAsked).map((device) => connectDevice(device.id));
+  return App.devices.filter(worthGuessingAt).map((device) => connectDevice(device.id));
+}
+
+/** A machine nobody has asked for, whose listing this call has a reason to
+ *  doubt: it is listed online already, or it beat recently enough that the
+ *  offline it is wearing may simply not have caught up. */
+function worthGuessingAt(device) {
+  if (!neverAsked(device)) return false;
+  return device.status === "online" || listingCouldBeLagging(device);
 }
 
 /** A machine nothing here has asked for yet: it has never answered and has

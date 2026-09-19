@@ -9,7 +9,7 @@
 
 import { App } from "../app.js";
 import { releaseScope, scopeFor } from "./cacheScope.js";
-import { homeDeviceId } from "./devicePolicy.js";
+import { creationDeviceId, homeDeviceId } from "./devicePolicy.js";
 import { createChatRepository } from "./chatRepository.js";
 import { deviceView, feedHoldsDevice } from "./feedMerge.js";
 import { createModelCatalog } from "./modelCatalog.js";
@@ -340,8 +340,34 @@ export function setContextOffline(deviceId, mark = {}) {
  * it does.
  */
 export function homeContext() {
-  return contextFor(homeDeviceId(App.devices, App.selectedDeviceId));
+  return contextFor(homeDeviceId(App.devices, App.selectedDeviceId, stillWorthAsking));
 }
+
+/**
+ * Whether home is still this machine's to claim.
+ *
+ * It is, unless this client has given up on it: a context wearing a reason it
+ * cannot answer — blocked, away, speaking an API nothing here reads. A machine
+ * with no context at all has not failed, it has not answered YET (a dial in
+ * flight, a boot that has not reached it), and taking home off it would hand
+ * every account's home to whichever bridge shook hands quickest.
+ */
+const stillWorthAsking = (deviceId) => {
+  const context = contexts.get(deviceId);
+  return !context || canAnswer(context);
+};
+
+/**
+ * The machine creation goes to, named even while nothing can take it
+ * (core/devicePolicy.js).
+ *
+ * Asked here rather than of the policy directly, so the machine a surface says
+ * a capture is for is the machine `homeContext` would hand it to. A surface
+ * naming one and a send addressing another is how a composer promises a
+ * workspace on the laptop and refuses on the desktop.
+ */
+export const creationDevice = () =>
+  creationDeviceId(App.devices, App.selectedDeviceId, stillWorthAsking);
 
 /** The context a route is about: work surfaces are about the machine their link
  *  names. A route that names no device, or one this client has never opened, is

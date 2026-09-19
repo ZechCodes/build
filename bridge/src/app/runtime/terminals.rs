@@ -248,11 +248,17 @@ pub(in crate::app) fn session_hello(
         "coalesce_window_ms": changes.window().as_millis() as u64,
         // What a Part 1 adapter reads instead of probing for
         // `changes.subscribe`: whether this bridge serves subscriptions, the
-        // kinds it filters on, and the clamp on a batch interval.
+        // kinds it filters on, whether an item carries what moved or only
+        // its name, and the clamp on a batch interval.
         "changes": {
             "subscriptions": true,
             "mode": if subscriptions { "subscriptions" } else { "legacy" },
             "kinds": Kind::ALL.map(Kind::as_str),
+            // `"bodies"`: every item carries the shape it names, so a client
+            // paints from the push instead of refetching after it. The one
+            // older answer this replaces is `"names"`, which no bridge that
+            // reports this field ever sends.
+            "items": "bodies",
             "batch_ms": { "min": MIN_BATCH_MS, "max": MAX_BATCH_MS },
         },
         "thread_post_operations": {

@@ -99,17 +99,24 @@ async fn the_greeting_announces_push_events() {
         json!(["board.changed", "entity.changed", "changes"]),
         "{hello:?}"
     );
-    // Step 1.5: what a Part 1 adapter reads instead of probing.
+    // Step 1.5: what a Part 1 adapter reads instead of probing — now
+    // including whether a `changes` item carries the body of what moved or
+    // only its name, which is the difference between a client that paints
+    // from a push and one that refetches after it.
     assert_eq!(
         hello["result"]["changes"],
         json!({
             "subscriptions": true,
             "mode": "legacy",
             "kinds": ["state", "thread", "git", "files", "terminals"],
+            "items": "bodies",
             "batch_ms": { "min": 1000, "max": 600_000 },
         }),
         "{hello:?}"
     );
+    // The minor that announced them. A client picks its adapter off this
+    // number, so the number moving with the announcement is the contract.
+    assert_eq!(hello["result"]["api_version"], "1.2.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

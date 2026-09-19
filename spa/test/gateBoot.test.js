@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { fakeSession } from "./deviceSessionFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -65,6 +66,7 @@ vi.mock("../src/core/cacheSync.js", () => ({
 
 let App;
 let boot;
+let holdAppWhileNoDeviceAnswers;
 let writeCached;
 let DEVICES_ADDRESS;
 let stopFeed;
@@ -102,6 +104,9 @@ async function warmCache(devices = [device("dev-1")]) {
   await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [cachedWorkspace]);
 }
 
+/** A turn of the event loop, which is what the cache answers on. */
+const tick = () => new Promise((done) => setTimeout(done, 5));
+
 const railEntries = () => [...document.querySelectorAll("#inbox-list .inbox-entry")].map((row) => row.dataset.key);
 const unreachableMark = () => document.querySelector(".device-picker-unreachable");
 
@@ -120,7 +125,7 @@ beforeEach(async () => {
   ({ writeCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js"));
   ({ stopFeed } = await import("../src/core/taskFeed.js"));
   Object.assign(App, { devices: [], gated: true, route: { name: "inbox" }, _connecting: false, _watch: null });
-  ({ boot } = await import("../src/views/gate.js"));
+  ({ boot, holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js"));
 });
 
 afterEach(() => {
@@ -193,6 +198,29 @@ describe("booting from the cache", () => {
     // The gate's own three seconds: the one thing that re-enters the app when
     // a machine comes back, now that the painted app has no Retry button.
     expect(App._watch).not.toBeNull();
+  });
+
+  // The one screen a cached board cannot stand in for: a bridge answering in a
+  // shape this tab cannot read. The gate's own watch re-boots every three
+  // seconds while nothing answers, and a boot that repainted the app over that
+  // screen would take away the only thing saying why the app cannot be used.
+  it("leaves a version gate on the page rather than painting the cache over it", async () => {
+    await warmCache();
+    App.devices = [device("dev-1")];
+    const { adoptBridgeSelection, adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
+    adoptDeviceSession(fakeSession("dev-1"));
+    adoptBridgeSelection(contextFor("dev-1"), { unsupported: "app", version: "2.0.0" });
+    holdAppWhileNoDeviceAnswers();
+    await vi.waitFor(() => expect(document.querySelector("#root h1")).not.toBeNull());
+    const heading = document.querySelector("#root h1").textContent;
+
+    void boot();
+    await tick();
+    await tick();
+
+    expect(App.gated).toBe(true);
+    expect(document.querySelector("#root h1")?.textContent).toBe(heading);
+    expect(railEntries()).toEqual([]);
   });
 
   it("starts the sync layer before the first session answers", async () => {

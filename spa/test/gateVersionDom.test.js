@@ -5,7 +5,7 @@
 // a machine that cannot answer — so it takes #root only while no other machine
 // can, and a later greeting that does select an adapter hands the app back.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -40,6 +40,7 @@ vi.mock("../src/devices.js", () => ({
   // (devicePresence.test.js); here it is the gate's to start and stop.
   watchPresence: () => {},
   stopWatchingPresence: () => {},
+  readPresence: async () => App.devices,
 }));
 vi.mock("../src/connection.js", () => ({
   syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
@@ -99,6 +100,13 @@ beforeEach(async () => {
   document.body.className = "";
   ({ adoptBridgeSelection, adoptDeviceSession, contextFor, setContextOffline } = await import("../src/core/deviceContexts.js"));
   gate = await import("../src/views/gate.js");
+});
+
+// A hold over a painted shell watches the account on the gate's own cadence;
+// nothing here is about what that watch reads.
+afterEach(() => {
+  clearInterval(App._watch);
+  App._watch = null;
 });
 
 /** The app as the gate hands it over: a machine has answered, and the gate is
@@ -219,6 +227,27 @@ describe("the version gates", () => {
 
     expect(App.gated).toBe(true);
     expect(unmountView).toHaveBeenCalled();
+    expect(root().querySelector("h1").textContent).toBe("This app is behind the bridge on studio");
+  });
+
+  // An app that is already holding for want of a machine keeps its painted
+  // shell — the hold is the mark on the picker, not a page. A version gate is
+  // the exception the shell does not cover: it says the bridge answering
+  // cannot be read at all, so it takes the page from a painted app as it takes
+  // it from anything else.
+  it("takes the page from a painted shell that is already holding for want of a machine", async () => {
+    enterApp();
+    App.devices = [{ id: "d1", name: "studio", status: "offline" }];
+    setContextOffline("d1", { blocked: "lost" });
+    await flush();
+    expect(App.gated).toBe(false); // the hold kept the app the cache painted
+
+    // The greeting of the session that was lost lands late, and no adapter
+    // here speaks to the bridge that sent it.
+    adoptBridgeSelection(contextFor("d1"), { unsupported: "app", version: "2.0.0" });
+    await flush();
+
+    expect(App.gated).toBe(true);
     expect(root().querySelector("h1").textContent).toBe("This app is behind the bridge on studio");
   });
 

@@ -95,6 +95,11 @@ function keepPaintedShell() {
  */
 async function paintFromCache() {
   if (shellIsPainted()) return true;
+  // A version gate has the page, and the cache cannot stand in for it: a
+  // bridge answering in a shape this tab cannot read is not a board to
+  // repaint. The gate's own watch re-boots while it is up, and painting the
+  // last good board over it would take away the only thing saying why.
+  if (gatedDeviceId) return false;
   const devices = (await readCached(DEVICES_ADDRESS))?.value || [];
   if (!devices.length) return false;
   App.devices = devices;
@@ -237,8 +242,10 @@ const allDevicesOffline = () => App.devices.length > 0 && App.devices.every((dev
 /** Whether the screen this hold stands on is still on the page. A hold is only
  *  as good as what it put there: one whose screen has been taken down leaves a
  *  page with nothing on it, so it is stood up again rather than trusted. A
- *  hold over a painted shell put the app itself there, which is still up. */
-const holdIsOnScreen = () => Boolean($("#waitlist") || gatedDeviceId || shellIsPainted());
+ *  hold over a painted shell put the app itself there, which is still up —
+ *  unless what this hold owes is a version gate, which a painted shell does
+ *  not stand in for any more than an empty page does. */
+const holdIsOnScreen = () => Boolean($("#waitlist") || gatedDeviceId || (shellIsPainted() && !gatedContext()));
 
 /** A machine answered: the reader gets the route they were standing on back,
  *  with the feed reading that machine again. The hold stopped the feed, so this

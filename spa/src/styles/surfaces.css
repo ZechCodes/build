@@ -41,61 +41,6 @@
 .noisegroup.open .noisehead { border-radius:11px 11px 0 0; }
 .noisefiles { padding:12px 12px 2px; }
 
-/* ---- the triage overlay -----------------------------------------------------
-   Review prioritization: an ordering over the same stack, never a filter over
-   it. The banner says what reading is being applied (and offers the dial that
-   turns it off), critical work sits under a heading of its own, and low-risk
-   work folds into named groups whose diffs are still in the page, one click
-   from being read. */
-.triagebar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-  padding:8px 2px 12px; font-size:12px; color:var(--dim); }
-.triagebar .tsummary { font-family:var(--mono); }
-.triagebar .tuntriaged { font-family:var(--mono); color:var(--dim); }
-.triagebar .tstale { font-family:var(--mono); color:var(--amber); }
-.tdial { margin-left:auto; font:inherit; font-size:12px; color:var(--dim); background:none;
-  border:1px solid var(--line); border-radius:7px; padding:3px 9px; cursor:pointer; }
-.tdial:hover { color:var(--accent); border-color:var(--accent); }
-.tdial[aria-pressed="true"] { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }
-
-.tsectionhead { font-size:12px; font-family:var(--mono); color:var(--dim);
-  padding:2px 2px 8px; letter-spacing:.02em; }
-.file.tcritical { border-left:2px solid var(--red); }
-
-/* Same card-without-an-outline as .noisegroup: tone, not a rule. */
-.tgroup { background:var(--panel2); border:0; border-radius:11px; margin:4px 0 14px; }
-.tgrouphead { font:inherit; font-size:12px; font-family:var(--mono); color:var(--dim); background:none;
-  border:none; width:100%; text-align:left; padding:10px 13px; cursor:pointer; border-radius:11px;
-  display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
-.tgrouphead:hover { color:var(--accent); background:var(--line2); }
-.tgrouphead.open { border-radius:11px 11px 0 0; margin-top:4px; }
-.tgrouphead .tgname { color:var(--ink); }
-.tgrouphead .tgrationale { flex:1 1 100%; color:var(--dim); font-family:inherit; }
-.file.tgrouped { margin-left:12px; }
-.tgroup .tgfiles { display:none; padding:12px 12px 2px; }
-
-.hchip { display:inline-flex; align-items:baseline; gap:6px; margin-left:10px; padding:1px 7px;
-  border-radius:999px; font-size:11px; font-family:var(--mono); cursor:default; }
-.hchip.critical { color:var(--red); background:var(--accent-soft); }
-.hchip.untriaged { color:var(--dim); border:1px dashed var(--line3); }
-.hchip .hchip-note { color:var(--dim); }
-/* The rationale is the chip's whole point: on the pointer it is a hover, and on
-   a touch screen a tap focuses the chip and reveals the same line. */
-.hchip .hrationale { display:none; color:var(--dim); }
-.hchip:hover .hrationale, .hchip:focus .hrationale, .hchip:focus-within .hrationale { display:inline; }
-/* The reviewer's own reading of a hunk, told apart from the pass's: it reads as
-   a fact about who decided, not as a level. */
-.hchip.overridden { color:var(--ink); border:1px solid var(--line); }
-
-/* The offer to disagree, on the hunk the decision was about. Quiet but never
-   hidden: a control that appears only under the pointer is one a reviewer has
-   to already know about, and this one has to be found. It comes forward as the
-   row it belongs to does. */
-.toverride { font:inherit; font-size:11px; font-family:var(--mono); margin-left:8px; padding:1px 8px;
-  color:var(--dim); background:none; border:1px dashed var(--line3); border-radius:999px;
-  cursor:pointer; opacity:.6; transition:opacity .12s ease, color .12s ease; }
-tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
-.toverride:hover { color:var(--accent); border-color:var(--accent); border-style:solid; opacity:1; }
-
 /* The pending-comment tray under a changeset: what has been written but not yet
    sent, plus the general note and the send controls.
    It pays the seam's gutter its column no longer does (see .pane-split): a diff

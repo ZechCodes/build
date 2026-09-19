@@ -182,7 +182,7 @@ impl WorktreeMutation for RestoreImplementationCheckout {
     type Output = RestoredCheckout;
     fn perform(self) -> Result<Performed<Self::Output>, String> {
         // A branch that is gone is a finding, not a failure of this job: the
-        // apply phase hands the run to the recovery agent over it.
+        // apply phase refuses the caller with git's reason.
         let restored = self
             .project
             .restore_run_worktree(

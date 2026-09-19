@@ -228,8 +228,19 @@ describe("stageViewerHtml", () => {
       paneState: "ready",
     });
     expect(html).toContain("Wire");
-    expect(html).toContain("VALIDATED");
+    expect(html).toContain("COMPLETE");
+    expect(html).not.toContain("VALIDATED");
     expect(html).toContain('id="stagedoc"');
+  });
+
+  it("says why a stage is incomplete in a neutral invalidation box, not a validation verdict", () => {
+    const html = stageViewerHtml({
+      stage: stage({ approval: "approved", execution: "incomplete", invalidation_reason: "worktree <moved>" }),
+      paneState: "ready",
+    });
+    expect(html).toContain('<div class="stage-invalidation"><strong>Stage incomplete</strong>');
+    expect(html).toContain("worktree &lt;moved&gt;");
+    expect(html).not.toContain("stage-validation");
   });
 
   it("says what to do rather than showing a blank column when no stage is open", () => {

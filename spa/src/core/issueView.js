@@ -534,8 +534,8 @@ export function mountIssueView(
   };
 
   /** The open stage's own actions: approve its plan while it is still planned,
-   *  send its open comments back for a revision, implement just this stage, send
-   *  a failed one back to fix, and read a completed stage's stable diff. */
+   *  send its open comments back for a revision, implement just this stage, and
+   *  read a completed stage's stable diff. */
   // eslint-disable-next-line complexity -- ratchet: this callback is at 20, cap 10 — reduce it, then drop this line
   const wireStageActions = (viewerHost, stage) => {
     const actions = viewerHost.querySelector("#stageactions");
@@ -547,9 +547,8 @@ export function mountIssueView(
     const parts = [];
     if (openComments > 0)
       parts.push(`<button class="btn" id="sendnotes">Send ${openComments} comment${openComments === 1 ? "" : "s"}</button>`);
-    if (token === "validated" && stage.start_sha && stage.completion_sha)
+    if (token === "complete" && stage.start_sha && stage.completion_sha)
       parts.push('<button class="btn" id="stagediff">View stable diff</button>');
-    if (token === "validation_failed") parts.push('<button class="btn primary" id="fixstage">Send stage back to fix</button>');
     if (stageApprovable(stage)) parts.push('<button class="btn primary" id="approvestage">Approve stage plan</button>');
     else if (issue.state === "approved" && (stage.execution || "pending") === "pending" && predecessorsComplete(stage))
       parts.push('<button class="btn primary" id="implementstage">Implement Stage</button>');
@@ -574,12 +573,6 @@ export function mountIssueView(
       afterDispatch(
         await openImplementation("issue.implement_stage", implementParams(issueId, assignment, { catalog, stageId: stage.id })),
       );
-    });
-    bindAction(viewerHost.querySelector("#fixstage"), "sending…", async () => {
-      await guarded(() =>
-        callRpc("issue.stage_fix", { issue_id: issueId, stage_id: stage.id, note: "", ...MUTATION_THREAD_PAGE }),
-      );
-      await refresh();
     });
     const sendNotes = viewerHost.querySelector("#sendnotes");
     if (sendNotes) {
@@ -608,17 +601,13 @@ export function mountIssueView(
       }
       pane.textContent = diff.status === "available" ? diff.patch || "No changes." : diff.reason || "Stable diff unavailable.";
     });
-    if (stageHint)
-      stageHint.textContent =
-        token === "validation_failed" ? "Validation failed — send the stage back to fix."
-        : ["building", "built", "validating"].includes(token) ? "Agent is working on this stage."
-        : "";
+    if (stageHint) stageHint.textContent = token === "building" ? "Agent is working on this stage." : "";
   };
 
   const predecessorsComplete = (stage) => {
     const list = stages();
     const index = list.findIndex((candidate) => candidate.id === stage.id);
-    return index >= 0 && list.slice(0, index).every((candidate) => stageStateToken(candidate) === "validated");
+    return index >= 0 && list.slice(0, index).every((candidate) => stageStateToken(candidate) === "complete");
   };
 
   /** Ask the daemon to open an implementation, and answer with what it opened —

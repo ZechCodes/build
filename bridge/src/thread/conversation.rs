@@ -416,28 +416,6 @@ impl Thread {
             })
             .collect()
     }
-    /// Record the agent's answer to one open comment, which closes it. `false`
-    /// when no open comment has that id.
-    pub fn resolve_doc_comment(&mut self, comment_id: &str, reply: &str) -> bool {
-        let found = self.items.iter().position(|item| {
-            matches!(item, ThreadItem::Message(message)
-                if message.id == comment_id
-                    && message.agent_reply.is_none()
-                    && doc_comment_of(message).is_some())
-        });
-        let Some(index) = found else {
-            return false;
-        };
-        // An in-place mutation of an already-sequenced item, like read_unread:
-        // bump so the cursored polls re-ship the answered comment.
-        let sequence = self.next();
-        let ThreadItem::Message(message) = &mut self.items[index] else {
-            return false;
-        };
-        message.agent_reply = Some(reply.to_string());
-        message.updated_sequence = sequence;
-        true
-    }
     /// Delete one open comment — and with it the post, because the post is the
     /// comment. `None` when no OPEN comment has that id: an answered comment is
     /// conversation history.
@@ -505,13 +483,11 @@ impl Thread {
     pub fn post_agent_offering(
         &mut self,
         body: impl Into<String>,
-        anchor: Option<MessageAnchor>,
-        links: Vec<ThreadLink>,
         options: Vec<MessageOption>,
         now: impl Into<String>,
         still_working: bool,
     ) -> String {
-        let id = self.post_agent_with_links_working(body, anchor, links, now, still_working);
+        let id = self.post_agent_with_links_working(body, None, Vec::new(), now, still_working);
         if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
             message.options = options;
         }

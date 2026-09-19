@@ -43,7 +43,7 @@ pub(in crate::app) fn worktree_diff_json(
 }
 
 /// The wire view of a run stage's execution progress: id, sub-state, immutable
-/// commit boundaries, publication evidence, and its validation report if any.
+/// commit boundaries, and publication evidence.
 pub(in crate::app) fn run_stage_json(progress: &StageProgress) -> Value {
     json!({
         "id": progress.stage_id,
@@ -53,11 +53,6 @@ pub(in crate::app) fn run_stage_json(progress: &StageProgress) -> Value {
         "completion_sha": progress.completion_sha,
         "publication": progress.publication,
         "invalidation_reason": progress.invalidation_reason,
-        "validation": progress.validation.as_ref().map(|v| json!({
-            "passed": v.passed,
-            "findings": v.findings,
-            "notes_for_next_stage": v.notes_for_next_stage,
-        })),
     })
 }
 
@@ -83,10 +78,7 @@ pub(in crate::app) fn run_state_str(state: &RunState) -> String {
 pub(in crate::app) fn run_stage_progress_str(state: &StageProgressState) -> String {
     match state {
         StageProgressState::Building => "building",
-        StageProgressState::Built => "built",
-        StageProgressState::Validating => "validating",
-        StageProgressState::Validated { passed: true } => "validated_passed",
-        StageProgressState::Validated { passed: false } => "validated_failed",
+        StageProgressState::Completed => "completed",
     }
     .to_string()
 }
@@ -114,7 +106,7 @@ impl AppState {
     }
 
     /// The wire view of a run (spec §board.list): identity + plan link, state,
-    /// branch/base, per-stage execution progress (with validation), model, and
+    /// branch/base, per-stage execution progress, model, and
     /// timestamps. The live diffstat rides along in `board.list`.
     /// `thread_detail` picks a bounded digest (list surfaces) or the full
     /// conversation (detail surfaces + mutation responses).
@@ -183,12 +175,9 @@ impl AppState {
             // The rail's bubble strip — see `plan_view`.
             "agents": self.agent_digests(run_id, scope),
             // Review prioritization: an overlay on the diff, never a gate.
-            "triage": self.triage_json(active),
-            "triage_enabled": self.triage_enabled,
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
-            "recovery": active.recovery,
             "can_finish": active.run.state == RunState::Merged
                 || (active.run.state == RunState::Review && active.worktree.path.exists()),
             "created_at": self.board.attention().clock(run_id).created_at,
@@ -199,32 +188,6 @@ impl AppState {
                 .iter()
                 .map(run_stage_json)
                 .collect::<Vec<_>>(),
-        })
-    }
-
-    /// The run's triage pass, with the one thing the SPA cannot derive: whether
-    /// the diff has moved since the pass read it.
-    ///
-    /// `stale` is derived here and never stored — the diff moves under a triage
-    /// constantly, and a stored flag would be a second thing to keep true. A
-    /// stale pass still ships: an ordering from the previous revision beats no
-    /// ordering at all while the re-triage runs, and the SPA labels it.
-    pub(in crate::app) fn triage_json(&self, active: &ActiveRun) -> Value {
-        let Some(triage) = &active.triage else {
-            return Value::Null;
-        };
-        let current_revision = self
-            .conversation_thread_for_run(active)
-            .and_then(|thread| thread.current_revision(crate::thread::ArtifactKind::Diff))
-            .map(|revision| revision.content_hash.clone());
-        json!({
-            "based_on": triage.based_on,
-            "hunks": triage.hunks,
-            // Where the reviewer already disagreed with the pass. Renders as
-            // the level they chose, over the one the agent chose.
-            "overrides": triage.overrides,
-            // No revision recorded yet means nothing has been observed to move.
-            "stale": current_revision.is_some_and(|current| current != triage.based_on),
         })
     }
 

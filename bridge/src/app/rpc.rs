@@ -331,11 +331,7 @@ fn retired_planning_operation(method: &str) -> bool {
     }
     matches!(
         method,
-        "run.create"
-            | "run.stage_dispatch"
-            | "run.stage_fix"
-            | "run.stage_send_notes"
-            | "run.set_auto_advance"
+        "run.create" | "run.stage_dispatch" | "run.stage_send_notes" | "run.set_auto_advance"
     )
 }
 

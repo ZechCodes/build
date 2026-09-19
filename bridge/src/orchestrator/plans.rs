@@ -1,13 +1,14 @@
 use crate::agent::AgentRoster;
 use crate::git_process::run_git;
-use crate::mcp::{DonePhase, DoneReport, DoneStatus};
+use crate::mcp::{DoneReport, DoneStatus};
 use crate::models::ModelChoice;
 use crate::plan::{
     plan_transition, stage_doc_transition, Plan, PlanEvent, PlanId, StageDoc, StageDocEvent,
+    StageManifestEntry,
 };
 use crate::run::RunState;
 use crate::store::{PersistedPlan, Store};
-use crate::templates::{self, Vars, DEFAULT_PLAN_PATH};
+use crate::templates::{self, Vars, DEFAULT_PLAN_PATH, STAGES_MANIFEST_PATH};
 use crate::thread::DocComment;
 use std::path::{Path, PathBuf};
 
@@ -237,54 +238,37 @@ impl Orchestrator {
         store: &Store,
         report: DoneReport,
     ) -> Result<(), OrchestratorError> {
-        match (report.phase, report.status) {
+        match report.status {
             // A blocked/failed report from any plan-side session parks the plan.
-            (_, DoneStatus::Blocked) => {
+            DoneStatus::Blocked => {
                 active.plan.apply(PlanEvent::Blocked)?;
             }
-            (_, DoneStatus::Failed) => {
+            DoneStatus::Failed => {
                 active.plan.apply(PlanEvent::Failed)?;
             }
-            (DonePhase::Plan, DoneStatus::Completed) => {
+            // A per-stage plan-revision session completed: the doc changed, so
+            // any prior approval is stale.
+            DoneStatus::Completed if active.revising_stage_id.is_some() => {
+                self.consume_plan_stage_revision(active, store)?;
+            }
+            DoneStatus::Completed => {
                 // Legality FIRST: a stray plan report must be rejected with
                 // zero mutation — the caller persists the plan even on Err, so
                 // a manifest merged (or docs ingested) before the check would
                 // smuggle agent output past a closed gate.
                 plan_transition(&active.plan.state, PlanEvent::PlanReady)?;
-                let plan_path = report
-                    .outputs
-                    .plan_path
-                    .clone()
-                    .unwrap_or_else(|| active.plan_path.clone());
+                let manifest = self.read_stage_manifest(active)?;
+                let plan_path = if manifest.is_some() {
+                    STAGES_MANIFEST_PATH.to_string()
+                } else {
+                    active.plan_path.clone()
+                };
                 self.ingest_plan_docs_transactionally(active, store, &plan_path)?;
-                if let Some(entries) = &report.outputs.stages {
-                    if !entries.is_empty() {
-                        merge_stage_docs(&mut active.stages, entries);
-                    }
+                if let Some(entries) = &manifest {
+                    merge_stage_docs(&mut active.stages, entries);
                 }
                 active.plan.apply(PlanEvent::PlanReady)?;
-                // The reported path was fenced and ingested; adopt it.
                 active.plan_path = plan_path;
-            }
-            // A per-stage plan-revision session completed: the doc changed
-            // (any prior approval is stale) and the agent's per-comment
-            // resolutions land on the stored comments.
-            (DonePhase::Revise, DoneStatus::Completed) => {
-                self.consume_plan_stage_revision(active, store, &report)?;
-            }
-            (
-                DonePhase::Build
-                | DonePhase::Validate
-                | DonePhase::Triage
-                | DonePhase::Recover
-                | DonePhase::Route,
-                DoneStatus::Completed,
-            ) => {
-                return Err(OrchestratorError::Gate(format!(
-                    "a planning session reported phase={:?}; plans only accept plan/revise \
-                     reports",
-                    report.phase
-                )));
             }
         }
         // Only a consumed report leaves a trace: the surfaced summary and the
@@ -293,6 +277,32 @@ impl Orchestrator {
         active.last_summary = Some(report.summary.clone());
         active.last_error = None;
         Ok(())
+    }
+    /// The plan's `.build/plan/stages.json`, read from its docs dir: `None`
+    /// when there is none (a single-document plan), the stages when there is,
+    /// and an error — surfaced on the card — when the file is there but is not
+    /// a manifest Build can use.
+    fn read_stage_manifest(
+        &self,
+        active: &mut ActivePlan,
+    ) -> Result<Option<Vec<StageManifestEntry>>, OrchestratorError> {
+        let Some(workspace) = &active.workspace else {
+            return Ok(None);
+        };
+        let manifest = workspace.docs_dir.join(STAGES_MANIFEST_PATH);
+        let contents = match std::fs::read_to_string(&manifest) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        match crate::plan::parse_stage_manifest(&contents) {
+            Ok(entries) => Ok(Some(entries)),
+            Err(reason) => {
+                let reason = format!("Build could not read the plan's stages: {reason}");
+                active.last_error = Some(reason.clone());
+                Err(OrchestratorError::Gate(reason))
+            }
+        }
     }
     /// The transactional half of every plan/revise `done`: copy the scratch
     /// docs into the store, or fail the report with the reason surfaced on the
@@ -325,7 +335,6 @@ impl Orchestrator {
         &self,
         active: &mut ActivePlan,
         store: &Store,
-        report: &DoneReport,
     ) -> Result<(), OrchestratorError> {
         let stage_id = active.revising_stage_id.clone().ok_or_else(|| {
             OrchestratorError::Gate(
@@ -343,25 +352,6 @@ impl Orchestrator {
         active.stages[index].state =
             stage_doc_transition(&active.stages[index].state, StageDocEvent::Revised)?;
         active.plan.apply(PlanEvent::PlanReady)?;
-        if let Some(resolutions) = &report.outputs.comment_resolutions {
-            for resolution in resolutions {
-                let answers_this_stage = active
-                    .open_comments_for(&stage_id)
-                    .iter()
-                    .any(|comment| comment.id == resolution.comment_id);
-                if !answers_this_stage
-                    || !active
-                        .agents
-                        .sole_thread_mut()
-                        .resolve_doc_comment(&resolution.comment_id, &resolution.response)
-                {
-                    eprintln!(
-                        "stage revision for {stage_id}: unknown or non-open comment {:?}; skipping",
-                        resolution.comment_id
-                    );
-                }
-            }
-        }
         active.revising_stage_id = None;
         Ok(())
     }
@@ -539,8 +529,7 @@ impl Orchestrator {
     }
     /// Render a stage-scoped template for a plan (the plan-side twin of
     /// [`render_run_stage`](Self::render_run_stage)): the stage doc's own fields
-    /// plus the next stage's doc path. The run-side variables (start sha,
-    /// validation findings, prior-stage notes) are all empty — they belong to a
+    /// plus the next stage's doc path. The start sha is empty — it belongs to a
     /// run's execution progress, not a plan's doc review.
     pub(super) fn render_plan_stage(
         &self,
@@ -569,8 +558,6 @@ impl Orchestrator {
                 stage_summary: &doc.summary,
                 next_stage_path,
                 stage_start_sha: "",
-                findings: "",
-                prior_notes: "",
                 ..Vars::default()
             },
         );

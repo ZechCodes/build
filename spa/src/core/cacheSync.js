@@ -204,10 +204,7 @@ async function refreshDiff(context, entityId, row) {
       load: (envelope) => context.call(method, params, envelope),
     });
     if (context.active() && !diff.unchanged) {
-      await writeCached(
-        address,
-        { ...held, ...diff, triage: held?.triage || null, projectId: row.project_id || null },
-      );
+      await writeCached(address, { ...held, ...diff });
     }
   } catch {
     /* transient — the next event tries again */

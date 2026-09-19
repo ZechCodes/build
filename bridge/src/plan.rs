@@ -105,7 +105,7 @@ impl PlanState {
 pub enum PlanEvent {
     /// Begin work. Created → Drafting.
     Dispatch,
-    /// `done(phase=plan, completed)`; docs ingested. Drafting → PlanReview.
+    /// The plan agent reported Complete; docs ingested. Drafting → PlanReview.
     PlanReady,
     /// The user submits a batch of plan notes. PlanReview → Drafting (a
     /// revision turn, with the scratch docs refilled from the store first).
@@ -266,6 +266,55 @@ pub struct StageManifestEntry {
     pub summary: String,
 }
 
+/// A stable kebab-case slug: lowercase alphanumerics in hyphen-separated runs,
+/// no leading/trailing/doubled hyphens.
+fn is_kebab_slug(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && candidate.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+/// Read a plan agent's `.build/plan/stages.json`: the ordered stage entries,
+/// or the first rule the manifest breaks, named so the reviewer can act on it.
+///
+/// Build reads the manifest from disk when the plan agent reports Complete —
+/// the file is the plan, so nothing the agent says about it has to agree.
+pub fn parse_stage_manifest(contents: &str) -> Result<Vec<StageManifestEntry>, String> {
+    let entries: Vec<StageManifestEntry> = serde_json::from_str(contents)
+        .map_err(|error| format!("stages.json is not a list of stages: {error}"))?;
+    if entries.is_empty() {
+        return Err("stages.json lists no stages".to_string());
+    }
+    let mut seen_ids = std::collections::HashSet::new();
+    for entry in &entries {
+        if !is_kebab_slug(&entry.id) {
+            return Err(format!(
+                "stage id \"{}\" is not a kebab-case slug",
+                entry.id
+            ));
+        }
+        if !seen_ids.insert(entry.id.as_str()) {
+            return Err(format!("stage id \"{}\" appears twice", entry.id));
+        }
+        // The prefix check alone accepts `.build/plan/../../..` — the path
+        // must also be traversal-free so it can never leave the plan dir.
+        if !entry.path.starts_with(".build/plan/") || !is_worktree_contained_path(&entry.path) {
+            return Err(format!(
+                "stage path \"{}\" must be a plain path under .build/plan/",
+                entry.path
+            ));
+        }
+        if entry.title.trim().is_empty() {
+            return Err(format!("stage \"{}\" has an empty title", entry.id));
+        }
+    }
+    Ok(entries)
+}
+
 /// One stage doc: manifest metadata + plan-side review sub-state. Run-side
 /// execution progress for the same stage id lives on the run
 /// (`crate::run::StageProgress`), joined by stage id.
@@ -358,6 +407,50 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_manifest_parses_in_order() {
+        let entries = parse_stage_manifest(
+            r#"[{"id":"db-schema","title":"Schema","path":".build/plan/01-db-schema.md","summary":"Tables."},
+                {"id":"api","title":"API","path":".build/plan/02-api.md"}]"#,
+        )
+        .expect("a well-formed manifest parses");
+        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, ["db-schema", "api"]);
+        assert_eq!(entries[1].summary, "");
+    }
+
+    #[test]
+    fn stage_manifest_names_the_rule_it_breaks() {
+        let broken = [
+            ("[]", "lists no stages"),
+            ("{}", "not a list of stages"),
+            (
+                r#"[{"id":"Not_Kebab","title":"A","path":".build/plan/01-a.md"}]"#,
+                "kebab-case",
+            ),
+            (
+                r#"[{"id":"a","title":"A","path":".build/plan/01-a.md"},{"id":"a","title":"B","path":".build/plan/02-b.md"}]"#,
+                "appears twice",
+            ),
+            (
+                r#"[{"id":"a","title":"A","path":"docs/01-a.md"}]"#,
+                "under .build/plan/",
+            ),
+            (
+                r#"[{"id":"a","title":"A","path":".build/plan/../../../etc/passwd"}]"#,
+                "under .build/plan/",
+            ),
+            (
+                r#"[{"id":"a","title":" ","path":".build/plan/01-a.md"}]"#,
+                "empty title",
+            ),
+        ];
+        for (manifest, expected) in broken {
+            let error = parse_stage_manifest(manifest).expect_err(manifest);
+            assert!(error.contains(expected), "{manifest}: {error}");
+        }
+    }
 
     fn plan() -> Plan {
         Plan::new(PlanId::new("plan-1"), "plan the thing")

@@ -313,7 +313,7 @@ describe("the device's settings page", () => {
     // neighbour: both say what an agent nobody configured starts on.
     expect(at("Project agent")).toBe(at("Fallback agent") + 1);
     expect(at("Work isolation")).toBe(at("Project agent") + 1);
-    expect(at("Diff triage")).toBe(at("Work isolation") + 1);
+    expect(at("Diff triage")).toBe(-1);
   }, SLOW_IMPORT_MS);
 
   it("asks this machine what its project agents start on", async () => {

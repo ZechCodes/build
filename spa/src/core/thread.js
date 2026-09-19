@@ -518,24 +518,21 @@ const LINK_FIELDS = Object.freeze([
   { field: "run_id", data: "runId" },
   { field: "worktree_id", data: "worktreeId" },
   { field: "sha", data: "sha" },
-  { field: "recovery_id", data: "recoveryId" },
-  { field: "line_start", data: "lineStart", number: true },
-  { field: "line_end", data: "lineEnd", number: true },
 ]);
 
-/// The attribute a dataset key is written as: `lineStart` rides on
-/// `data-line-start`, which is the one rule the DOM already has for the pair.
+/// The attribute a dataset key is written as: `issueId` rides on
+/// `data-issue-id`, which is the one rule the DOM already has for the pair.
 const datasetAttribute = (data) => `data-${data.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
 
 /// What a reference is worth writing onto its chip. An empty string and a
-/// missing field say the same nothing; a zero does not, and is kept.
+/// missing field say the same nothing.
 const linkFieldWritten = (value) => value != null && value !== "";
 
 function linkAttributes(link) {
   return [
     `data-kind="${esc(link.kind || "")}"`,
     ...LINK_FIELDS.filter(({ field }) => linkFieldWritten(link[field])).map(
-      ({ field, data, number }) => `${datasetAttribute(data)}="${number ? Number(link[field]) : esc(link[field])}"`,
+      ({ field, data }) => `${datasetAttribute(data)}="${esc(link[field])}"`,
     ),
   ].join(" ");
 }
@@ -543,45 +540,30 @@ function linkAttributes(link) {
 /// What a chip reads back off itself when it is pressed — the reference the
 /// render was given, as far as the table carries it.
 const linkFromDataset = (dataset) => LINK_FIELDS.reduce(
-  (link, { field, data, number }) =>
-    dataset[data] ? { ...link, [field]: number ? Number(dataset[data]) : dataset[data] } : link,
+  (link, { field, data }) => (dataset[data] ? { ...link, [field]: dataset[data] } : link),
   { kind: dataset.kind },
 );
 
-/// The fields a reference is named by when it is not a file, best first.
-const LABEL_FIELDS = ["path", "implementation_id", "run_id", "worktree_id", "sha", "recovery_id"];
+/// The fields a reference is named by, best first.
+const LABEL_FIELDS = ["path", "implementation_id", "run_id", "worktree_id", "sha"];
 
-/// Which lines of a file a reference stands on: one line, a span, or none.
-function linkLines(link) {
-  const { line_start: start, line_end: end } = link;
-  if (start == null) return "";
-  return start === end || end == null ? `:${start}` : `:${start}-${end}`;
-}
+/// Kinds a stored conversation may still carry but nothing writes any more:
+/// agents no longer attach file links, and the recovery agent is gone. They
+/// draw no chip — there is nowhere left for one to go.
+const RETIRED_LINK_KINDS = new Set(["file", "recovery"]);
 
-function linkLocation(link) {
-  if (link.kind !== "file") return LABEL_FIELDS.map((field) => link[field]).find(Boolean) || "Open";
-  return `${link.path || "file"}${linkLines(link)}`;
-}
+const linkLocation = (link) => LABEL_FIELDS.map((field) => link[field]).find(Boolean) || "Open";
 
-/// One reference, as the chip under a message.
-///
-/// A file is an anchor, because it names a place in this app that has a URL of
-/// its own: the href is written by whoever wires the chip, which is the surface
-/// that knows which checkout the conversation is about (`wireThreadLinks`). The
-/// browser's own gestures then work on it — middle-click, Cmd-click, "open in
-/// new tab" — which a button can never offer. Every other kind opens a work
-/// item the render cannot name a URL for, so it stays a button.
+/// One reference, as the chip under a message: a button that opens the work
+/// item it names.
 function linkChipHtml(link) {
-  const attributes = `class="thread-reference" ${linkAttributes(link)}`;
-  const label = esc(linkLocation(link));
-  return link.kind === "file"
-    ? `<a ${attributes}>${label}</a>`
-    : `<button type="button" ${attributes}>${label}</button>`;
+  return `<button type="button" class="thread-reference" ${linkAttributes(link)}>${esc(linkLocation(link))}</button>`;
 }
 
 function linksHtml(links) {
-  if (!links || !links.length) return "";
-  return `<div class="thread-references">${links.map(linkChipHtml).join("")}</div>`;
+  const shown = (links || []).filter((link) => link && !RETIRED_LINK_KINDS.has(link.kind));
+  if (!shown.length) return "";
+  return `<div class="thread-references">${shown.map(linkChipHtml).join("")}</div>`;
 }
 
 /// Attachment bytes already fetched, keyed by path — and `null` for a path the
@@ -1958,28 +1940,19 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
 
 /// Whether a press is the browser's rather than the app's. A middle click, or
 /// a click held with a modifier, means "open this somewhere else" — another
-/// tab, another window — and a chip that is a real link already knows how.
+/// tab, another window — and a real link already knows how.
 export const pressIsTheBrowsers = (event) =>
   event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
 
 /**
  * Wire the reference chips under the messages of a conversation.
- *
- * `openLink(link)` navigates the app. `routeFor(link)` says where a file
- * reference goes — the caller's, because only the surface holding the
- * conversation knows which checkout its paths are written against
- * (core/threadLinks.js) — and its answer becomes the anchor's href, so the
- * browser can open the file in a tab of its own. A caller that names no route
- * leaves the chips hrefless and keeps the in-app press.
+ * `openLink(link)` navigates the app to the work item a chip names.
  */
-export function wireThreadLinks(root, openLink, routeFor = () => null) {
+export function wireThreadLinks(root, openLink) {
   if (!root) return;
   root.querySelectorAll(".thread-reference").forEach((chip) => {
     const link = linkFromDataset(chip.dataset);
-    const route = chip.tagName === "A" ? routeFor(link) : null;
-    if (route) chip.href = hashFromRoute(route);
     chip.onclick = (event) => {
-      if (chip.href && pressIsTheBrowsers(event)) return;
       event.preventDefault();
       openLink(link);
     };

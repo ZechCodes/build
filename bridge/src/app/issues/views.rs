@@ -26,14 +26,13 @@ pub(in crate::app) fn plan_stage_json(active: &ActivePlan, doc: &StageDoc) -> Va
 }
 
 /// The first stage an Issue still owes work on: the earliest one this run has
-/// recorded no progress against, or whose progress is not a passed validation,
-/// or whose pass a later change invalidated. `None` once every stage of the
+/// recorded no progress against, or that has not completed, or whose
+/// completion a later change invalidated. `None` once every stage of the
 /// manifest has settled. A run that does not exist yet has settled nothing, so
 /// the first stage is the answer.
 ///
-/// One predicate, four readers — boot's activity reconstruction, the
-/// scheduler's target stage, a recovery's requested stage, and the Issue's
-/// rendered activity — because what counts as settled has to move for all of
+/// One predicate, three readers — boot's activity reconstruction, the
+/// scheduler's target stage, and the Issue's rendered activity — because what counts as settled has to move for all of
 /// them at once.
 pub(in crate::app) fn next_unsettled_stage<'a>(
     stages: &'a [StageDoc],
@@ -42,23 +41,22 @@ pub(in crate::app) fn next_unsettled_stage<'a>(
     stages.iter().find(|doc| {
         run.and_then(|run| run.stage_progress(&doc.id))
             .is_none_or(|progress| {
-                progress.state != StageProgressState::Validated { passed: true }
+                progress.state != StageProgressState::Completed
                     || progress.invalidation_reason.is_some()
             })
     })
 }
 
 /// The first stage `run.stage_dispatch` would currently accept for a run: the
-/// earliest stage not yet validated-passed — provided its plan doc is
-/// `Approved` and every earlier stage already passed validation on this run.
+/// earliest stage not yet complete — provided its plan doc is `Approved` and
+/// every earlier stage already completed on this run.
 /// `None` when nothing is dispatchable right now (mirrors `dispatch_run_stage`).
 pub(in crate::app) fn dispatchable_next_run_stage(
     run: &ActiveRun,
     plan_docs: &[StageDoc],
 ) -> Option<String> {
     let passed = |stage_id: &str| {
-        run.stage_progress(stage_id).map(|p| p.state)
-            == Some(StageProgressState::Validated { passed: true })
+        run.stage_progress(stage_id).map(|p| p.state) == Some(StageProgressState::Completed)
     };
     for (index, doc) in plan_docs.iter().enumerate() {
         if passed(&doc.id) {
@@ -100,13 +98,8 @@ pub(in crate::app) fn canonical_stage_execution(progress: &StageProgress) -> &'s
     match progress.state {
         _ if progress.invalidation_reason.is_some() => "incomplete",
         StageProgressState::Building => "building",
-        StageProgressState::Built => "built",
-        StageProgressState::Validating => "validating",
-        StageProgressState::Validated { passed: true } if progress.completion_sha.is_some() => {
-            "complete"
-        }
-        StageProgressState::Validated { passed: true } => "legacy_unpinned",
-        StageProgressState::Validated { passed: false } => "validation_failed",
+        StageProgressState::Completed if progress.completion_sha.is_some() => "complete",
+        StageProgressState::Completed => "legacy_unpinned",
     }
 }
 
@@ -188,10 +181,6 @@ impl AppState {
                 object.insert(
                     "publication".to_string(),
                     json!(progress.map(|p| p.publication)),
-                );
-                object.insert(
-                    "validation".to_string(),
-                    json!(progress.and_then(|p| p.validation.as_ref())),
                 );
                 object.insert(
                     "invalidation_reason".to_string(),
@@ -329,7 +318,6 @@ impl AppState {
                     "state": run_state_str(&run.run.state),
                     "branch": run.worktree.branch(),
                     "worktree_path": run.worktree.path.display().to_string(),
-                    "recovery": run.recovery,
                     "created_at": self.board.attention().clock(&run.run.id.0).created_at,
                 })
             })
@@ -390,7 +378,6 @@ impl AppState {
                 "state": run_state_str(&run.run.state),
                 "branch": run.worktree.branch(),
                 "worktree_path": run.worktree.path.display().to_string(),
-                "recovery": run.recovery,
             })),
             "implementation_lineage": implementation_lineage,
             "implementation_intent": active.plan.implementation_intent,
@@ -445,7 +432,7 @@ impl AppState {
             ) && plan.stages.iter().all(|stage| {
                 run.stages.iter().any(|progress| {
                     progress.stage_id == stage.id
-                        && progress.state == StageProgressState::Validated { passed: true }
+                        && progress.state == StageProgressState::Completed
                         && (progress.completion_sha.is_some()
                             || progress.publication == StagePublication::LegacyUnknown)
                         && progress.invalidation_reason.is_none()

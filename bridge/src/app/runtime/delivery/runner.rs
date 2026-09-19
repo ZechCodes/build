@@ -70,17 +70,6 @@ impl DeliveryRunner {
         let timer = turns.clock.frame(AGENT_DELIVERY_METHOD);
         let mut completed_delivery_freed_capacity = false;
         while let Some((turn, mark)) = turns.next_turn() {
-            // A triage turn may have left the app queue before the account setting
-            // was switched off. Recheck at the last point before delivery; a turn
-            // already handed to its agent is allowed to finish and report normally.
-            if turn.phase == "triage" {
-                let mut app = timer.lock(state);
-                if !app.triage_enabled {
-                    mark.settle(&mut app);
-                    completed_delivery_freed_capacity = true;
-                    continue;
-                }
-            }
             if let Some(operation_id) = turn.operation_id.as_deref() {
                 let claimed = timer.lock(state).transition_delivery_operation(
                     operation_id,

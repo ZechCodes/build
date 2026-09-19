@@ -397,12 +397,6 @@ export async function renderBranch() {
       agentSelection,
       navigate,
       viewingContext: App.viewingContext,
-      // Review prioritization: the run's freshest triage pass orders whichever
-      // changeset is open, and the reviewer's trust dial is remembered for the
-      // project they are reading.
-      projectId,
-      triageEnabled: () => Boolean(row && row.run && row.run.triage_enabled === true),
-      triage: () => (row && row.run && row.run.triage) || null,
     });
   };
 

@@ -5,11 +5,11 @@
 //! (harness-agnostic, user-overridable, zero special cases). Variables: `{goal}`,
 //! `{plan_path}`, `{docs_dir}`, `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`,
 //! `{stage_path}`, `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`,
-//! `{findings}`, `{prior_notes}`, `{capture_text}`, `{user_answer}`.
+//! `{capture_text}`, `{user_answer}`.
 
-/// Where the plan file lives by convention (the agent reports the real path back
-/// via its completion message, so this is a default, not a hardcode). Legacy single-plan / Quick
-/// tasks only — multi-stage plans use `STAGES_MANIFEST_PATH`.
+/// Where a single-document plan lives. A plan whose docs dir holds
+/// `STAGES_MANIFEST_PATH` when its agent reports Complete is multi-stage
+/// instead, read from that manifest.
 pub const DEFAULT_PLAN_PATH: &str = ".build/plan.md";
 
 /// The directory multi-stage plan docs and the manifest live under.
@@ -52,9 +52,10 @@ conversation must be able to execute any single stage document from scratch
 given only the previous stages' commits. Plan only — do not implement anything.
 Write nothing outside the docs directory.
 
-When the plan is ready, call `post_thread_message` with phase=\"plan\", status=\"Complete\",
-outputs.plan_path=\".build/plan/stages.json\", outputs.stages set to the exact
-contents of the manifest, and set body to the report the user should see.
+When the plan is ready, call `post_thread_message` with status=\"Complete\" and set
+body to the report the user should see. Build reads the stages from
+`.build/plan/stages.json` in the docs directory when you do, so write the
+manifest before you report.
 Reserve status=\"Blocked\" for an unexpected environment or
 implementation problem that makes planning impossible (a broken checkout,
 missing tooling) — never for waiting on answers — and use one concise sentence
@@ -73,7 +74,7 @@ change. Prefer several focused commits over one large one. Never stage or commit
 anything under `.build/` — Build manages that directory. Ensure every code
 change is committed before you send status=\"Complete\".
 
-When the work is complete, call `post_thread_message` with phase=\"build\",
+When the work is complete, call `post_thread_message` with
 status=\"Complete\", and set body to the report the user should see about what was
 completed. If a question arises that only the reviewer can answer, post it with
 `post_thread_message` with status=\"Waiting\" and keep building what is unambiguous.
@@ -90,9 +91,7 @@ Execute ONE stage of a multi-stage implementation plan. The overall goal is:
 Your stage is \"{stage_title}\" — its plan document is at {stage_path}. Earlier
 stages are already implemented in this worktree (branched from {base_branch});
 later stages will be built by other agents afterwards, so implement this stage
-only. Notes from the previous stage's validation:
-
-{prior_notes}
+only.
 
 As you complete each logically-grouped piece of this work, commit it with git
 as a small, atomic commit whose message clearly and specifically describes that
@@ -100,7 +99,7 @@ change. Prefer several focused commits over one large one. Never stage or commit
 anything under `.build/` — Build manages that directory. Ensure every code
 change is committed before you send status=\"Complete\".
 
-When this stage's work is complete, call `post_thread_message` with phase=\"build\",
+When this stage's work is complete, call `post_thread_message` with
 status=\"Complete\", and set body to the report the user should see about what was
 completed. If a question arises that only the reviewer can answer, post it with
 `post_thread_message` with status=\"Waiting\" and keep building what is unambiguous.
@@ -119,8 +118,8 @@ directory for this issue:
 
 Revise the plan to address every note. Keep writing only inside that docs
 directory — the primary checkout you are running in stays untouched. When done,
-call `post_thread_message` with phase=\"plan\", status=\"Complete\", outputs.plan_path=\"{plan_path}\",
-and a concise report in body stating what was revised.";
+call `post_thread_message` with status=\"Complete\" and a concise report in body
+stating what was revised.";
 
 const REVISE_STAGE: &str = "\
 The reviewer left comments on the plan document for stage \"{stage_title}\" at
@@ -135,36 +134,8 @@ stage's \"title\" and \"summary\" fields in `.build/plan/stages.json`, but do no
 add, remove, reorder, or re-id stages, and do not touch other stages' documents.
 Keep writing only inside that docs directory — the primary checkout you are
 running in stays untouched. When done, call `post_thread_message` with
-phase=\"revise\", status=\"Complete\", outputs.comment_resolutions set to one
-{\"comment_id\", \"response\"} entry per [c-N] comment above saying how you addressed
-it, and a concise report in body stating what was revised.";
-
-const FIX_STAGE: &str = "\
-An automated validation pass reviewed stage \"{stage_title}\" (plan document at
-{stage_path}) against the changes it produced, and it did not pass. Findings:
-
-{findings}
-
-Reviewer note (may be empty):
-
-{comments}
-
-Address every finding in this worktree — the stage's earlier work is your
-starting point (`git diff {stage_start_sha}` shows everything this stage has
-changed so far). Implement this stage only.
-
-As you complete each logically-grouped piece of this work, commit it with git
-as a small, atomic commit whose message clearly and specifically describes that
-change. Prefer several focused commits over one large one. Never stage or commit
-anything under `.build/` — Build manages that directory. Ensure every code
-change is committed before you send status=\"Complete\".
-
-When done, call `post_thread_message` with
-phase=\"build\", status=\"Complete\", and a concise report in body stating
-what was fixed. If a question arises that only the reviewer can answer, post it
-with `post_thread_message` and status=\"Waiting\", then keep going on what is unambiguous.
-Send status=\"Blocked\" only for an unexpected environment or implementation
-problem you cannot work around, and say what is needed to proceed.";
+status=\"Complete\" and a concise report in body stating what was revised and
+how you addressed each comment.";
 
 const REVIEW_CHANGES: &str = "\
 The reviewer requested changes on your diff:
@@ -172,85 +143,7 @@ The reviewer requested changes on your diff:
 {comments}
 
 Address every comment in this worktree. When done, call `post_thread_message` with
-phase=\"revise\", status=\"Complete\", and a concise report in body stating
-what was changed.";
-
-const VALIDATE: &str = "\
-You are a VALIDATION agent. Stage \"{stage_title}\" of a multi-stage plan was just
-built in this worktree. Do not modify any files — observe and report only.
-
-Read the stage's plan document at {stage_path}, then examine exactly what the
-stage changed with `git diff {stage_start_sha}` (plus any commands you need to
-inspect the result, e.g. running the project's tests). Then read the NEXT stage's
-plan document at {next_stage_path} (if that path is empty, this was the final
-stage — judge readiness for merge review instead).
-
-Decide whether the stage's changes faithfully and completely implement its plan
-document and leave the codebase ready for the next stage. When you have decided,
-call `post_thread_message` with phase=\"validate\", status=\"Complete\", and
-outputs.validation = {\"passed\": true|false, \"findings\": \"...\", \"notes_for_next_stage\": \"...\"}.
-`findings` is a short markdown report: a one-line verdict, then `-` bullets of
-what was verified and any divergences. `notes_for_next_stage` is markdown the
-next stage's builder should know (surprises, renamed symbols, follow-ups) — use
-\"\" if there is nothing. Use body to state
-the verdict. If a question would change your verdict, post it with
-`post_thread_message` and judge on the evidence in front of you. If an
-unexpected environment or implementation problem prevents the review itself,
-send status=\"Blocked\" and use one concise
-sentence to say why.";
-
-const TRIAGE: &str = "\
-You are a TRIAGE agent. Work in this worktree was just reported complete. Do not
-modify any files — read and classify only.
-
-Your job is to say how much review each hunk of the diff needs, so the reviewer
-reads the change that matters before the version bump. You are not deciding
-whether the work is right, and nothing waits on your answer: triage orders the
-reviewer's attention and gates nothing.
-
-What the agent that wrote these changes reported:
-
-{agent_report}
-
-Read the diff with `git diff {diff_ref}`. Build has already split it into hunks
-and named each one. These are the names you classify, verbatim:
-
-{diff_summary}
-
-Classify EVERY hunk in that list, using exactly these levels:
-
-- \"critical\" — a reviewer who skipped this would miss something that matters:
-  security, auth, data loss, money, migrations, concurrency, public contracts,
-  and anything the report above called risky or central.
-- \"normal\" — ordinary implementation work, read in the order it comes.
-- \"low\" — mechanical or inconsequential: formatting, generated files, version
-  bumps, pure renames, import reordering, boilerplate.
-
-Every \"low\" hunk carries a \"group\": a short name several hunks share (\"version
-bumps\", \"generated protobuf\", \"import reordering\"), and a \"rationale\": one line
-saying why it is safe to collapse. The reviewer reads that line INSTEAD of the
-hunk, so it has to be true — if you cannot write one honestly, the hunk is not
-\"low\". Give each \"critical\" hunk a one-line rationale too, saying what to look
-at.
-
-If `.build/review-rules.json` exists in this repository, read it before you
-classify. It is where this project's reviewer has already disagreed with passes
-like yours: each rule names a path pattern, a direction (\"surface\" means they
-opened something a pass collapsed, \"collapse\" means they closed something a
-pass surfaced), and how many times they have said it. Respect that signal —
-the higher the count, the more it takes to classify against it. It is
-accumulated judgment, not a rule you have to obey: a hunk in a repeatedly
-collapsed pattern that genuinely touches security is still \"critical\", and the
-rationale is where you say why this one is different.
-
-When every hunk is classified, call `post_thread_message` with phase=\"triage\",
-status=\"Complete\", and outputs.triage = {\"based_on\": \"{revision_sha}\",
-\"hunks\": [{\"hunk_id\", \"level\", \"rationale\", \"group\"}]} — `based_on` echoed
-back exactly as given, one entry per hunk id listed above, and no id you made
-up. Use one concise sentence in body to say what carries the risk in this
-change. If an unexpected environment or implementation problem prevents the
-pass, send status=\"Blocked\" and use one concise
-sentence to say what is broken.";
+status=\"Complete\" and a concise report in body stating what was changed.";
 
 const ROUTER: &str = "\
 You are the ROUTER. Something was captured from the user and nothing has decided
@@ -289,7 +182,7 @@ The decision rule, in order:
    naming that destination, and the user can type instead of any of them.
 
 Call exactly one of `dispatch_branch` or `ask_user`, then call
-`post_thread_message` with phase=\"route\", status=\"Complete\" and one concise sentence in body saying
+`post_thread_message` with status=\"Complete\" and one concise sentence in body saying
 where the capture went and why. If nothing lets you decide, send status=\"Blocked\"
 and one concise sentence saying what stopped you — the capture
 goes back to the user with a retry.";
@@ -411,12 +304,7 @@ pub struct Templates {
     pub build_stage: String,
     pub revise: String,
     pub revise_stage: String,
-    pub fix_stage: String,
     pub review_changes: String,
-    pub validate: String,
-    /// Review prioritization: classify the diff that was just reported done.
-    /// Presentational — the run's lifecycle never waits on it.
-    pub triage: String,
     pub message: String,
     /// The one template that belongs to no phase of a piece of work: routing
     /// decides which piece of work the capture is.
@@ -434,10 +322,7 @@ impl Default for Templates {
             build_stage: reporting_template(BUILD_STAGE),
             revise: coding_template(REVISE),
             revise_stage: coding_template(REVISE_STAGE),
-            fix_stage: reporting_template(FIX_STAGE),
             review_changes: reporting_template(REVIEW_CHANGES),
-            validate: coding_template(VALIDATE),
-            triage: phase_template(TRIAGE),
             message: coding_template(MESSAGE),
             router: phase_template(ROUTER),
             project_agent: phase_template(PROJECT_AGENT),
@@ -458,8 +343,7 @@ A message from the reviewer:
 {comments}
 
 Honor the message, then carry the task to completion and report via `post_thread_message`
-exactly as your original instructions described (same phase, honest
-status). If the message asks something only the reviewer can resolve, post your
+exactly as your original instructions described, with an honest status. If the message asks something only the reviewer can resolve, post your
 question with `post_thread_message` and keep going on what is unambiguous;
 reserve status=\"Blocked\" for an unexpected environment or implementation
 problem you cannot work around.";
@@ -479,14 +363,10 @@ pub struct Vars<'a> {
     pub stage_title: &'a str,
     pub stage_path: &'a str,
     pub stage_summary: &'a str,
-    /// The next stage's doc path, or "" when validating the final stage.
+    /// The next stage's doc path, or "" on the final stage.
     pub next_stage_path: &'a str,
     /// git sha of the worktree HEAD when the stage was first dispatched.
     pub stage_start_sha: &'a str,
-    /// Validation findings, for the `fix_stage` template.
-    pub findings: &'a str,
-    /// `notes_for_next_stage` from the previous stage's validation report.
-    pub prior_notes: &'a str,
     /// What the user said, verbatim, for the `router` template.
     pub capture_text: &'a str,
     /// The project a project agent is the agent of, for the `project_agent`
@@ -494,17 +374,6 @@ pub struct Vars<'a> {
     pub project_name: &'a str,
     /// The user's answer to the router's clarifying question, or "".
     pub user_answer: &'a str,
-    /// The `triage` template's hunk list: one line per hunk, `id  path  header`.
-    pub diff_summary: &'a str,
-    /// What the builder's completion message said, seeding triage: the body is the
-    /// whole report, so the pass reads the same account the reviewer does.
-    pub agent_report: &'a str,
-    /// What the reviewed diff is taken against — the run's `base_sha`, or its
-    /// base branch when there is none.
-    pub diff_ref: &'a str,
-    /// The diff revision the triage pass reads, echoed back as `based_on` so a
-    /// triage that arrives after the diff moved can be labelled stale.
-    pub revision_sha: &'a str,
 }
 
 /// Render a template by substituting every `{var}` placeholder.
@@ -521,15 +390,9 @@ pub fn render(template: &str, vars: &Vars) -> String {
         .replace("{stage_summary}", vars.stage_summary)
         .replace("{next_stage_path}", vars.next_stage_path)
         .replace("{stage_start_sha}", vars.stage_start_sha)
-        .replace("{findings}", vars.findings)
-        .replace("{prior_notes}", vars.prior_notes)
         .replace("{capture_text}", vars.capture_text)
         .replace("{project_name}", vars.project_name)
         .replace("{user_answer}", vars.user_answer)
-        .replace("{diff_summary}", vars.diff_summary)
-        .replace("{agent_report}", vars.agent_report)
-        .replace("{diff_ref}", vars.diff_ref)
-        .replace("{revision_sha}", vars.revision_sha)
 }
 
 #[cfg(test)]
@@ -560,7 +423,7 @@ mod tests {
     #[test]
     fn render_substitutes_every_stage_placeholder() {
         let out = render(
-            "{stage_id}/{stage_title}/{stage_path}/{stage_summary}/{next_stage_path}/{stage_start_sha}/{findings}/{prior_notes}",
+            "{stage_id}/{stage_title}/{stage_path}/{stage_summary}/{next_stage_path}/{stage_start_sha}",
             &Vars {
                 stage_id: "database-schema",
                 stage_title: "Database schema",
@@ -568,14 +431,12 @@ mod tests {
                 stage_summary: "Create the tables.",
                 next_stage_path: ".build/plan/02-api-endpoints.md",
                 stage_start_sha: "abc123",
-                findings: "missing index",
-                prior_notes: "watch the rename",
                 ..Vars::default()
             },
         );
         assert_eq!(
             out,
-            "database-schema/Database schema/.build/plan/01-database-schema.md/Create the tables./.build/plan/02-api-endpoints.md/abc123/missing index/watch the rename"
+            "database-schema/Database schema/.build/plan/01-database-schema.md/Create the tables./.build/plan/02-api-endpoints.md/abc123"
         );
     }
 
@@ -586,8 +447,6 @@ mod tests {
         assert!(t.plan.contains("status=\"Complete\""));
         assert!(t.plan.contains("stages.json"));
         assert!(t.plan.contains(".build/"));
-        assert!(t.build.contains("phase=\"build\""));
-        assert!(t.review_changes.contains("phase=\"revise\""));
         for template in [&t.plan, &t.build, &t.review_changes] {
             assert!(!template.contains("`done`"), "retired tool in {template}");
             assert!(
@@ -603,7 +462,7 @@ mod tests {
     #[test]
     fn every_code_changing_template_asks_for_the_full_report_in_the_terminal_body() {
         let t = Templates::default();
-        for template in [&t.build, &t.build_stage, &t.fix_stage, &t.review_changes] {
+        for template in [&t.build, &t.build_stage, &t.review_changes] {
             assert!(
                 template.contains("`body` is the whole report"),
                 "{template}"
@@ -618,7 +477,7 @@ mod tests {
     #[test]
     fn the_plan_document_templates_ask_for_no_report() {
         let t = Templates::default();
-        for template in [&t.plan, &t.revise, &t.revise_stage, &t.validate] {
+        for template in [&t.plan, &t.revise, &t.revise_stage] {
             assert!(!template.contains("whole report"), "{template}");
             assert!(!template.contains("completion_report"), "{template}");
         }
@@ -628,10 +487,12 @@ mod tests {
     fn plan_template_instructs_manifest_and_stage_docs() {
         let t = Templates::default();
         assert!(t.plan.contains(".build/plan/"));
-        assert!(t.plan.contains("outputs.stages"));
-        assert!(t
-            .plan
-            .contains("outputs.plan_path=\".build/plan/stages.json\""));
+        assert!(t.plan.contains(".build/plan/stages.json"));
+        assert!(
+            collapse_whitespace(&t.plan).contains("write the manifest before you report"),
+            "Build reads the manifest from disk on Complete: {}",
+            t.plan
+        );
     }
 
     #[test]
@@ -677,9 +538,6 @@ mod tests {
             ("plan", &t.plan),
             ("build", &t.build),
             ("build_stage", &t.build_stage),
-            ("fix_stage", &t.fix_stage),
-            ("validate", &t.validate),
-            ("triage", &t.triage),
             ("message", &t.message),
         ] {
             assert!(
@@ -699,8 +557,7 @@ mod tests {
         let t = Templates::default();
         assert!(t.build_stage.contains("{stage_title}"));
         assert!(t.build_stage.contains("{stage_path}"));
-        assert!(t.build_stage.contains("{prior_notes}"));
-        assert!(t.build_stage.contains("phase=\"build\""));
+        assert!(t.build_stage.contains("status=\"Complete\""));
     }
 
     #[test]
@@ -710,7 +567,7 @@ mod tests {
         // for atomic commits, forbid touching `.build/`, and require everything
         // committed before the Complete message.
         let t = Templates::default();
-        for tmpl in [&t.build, &t.build_stage, &t.fix_stage] {
+        for tmpl in [&t.build, &t.build_stage] {
             assert!(
                 tmpl.contains("atomic commit"),
                 "template must ask for atomic commits: {tmpl}"
@@ -727,140 +584,11 @@ mod tests {
     }
 
     #[test]
-    fn revise_stage_template_asks_for_comment_resolutions() {
+    fn revise_stage_template_carries_its_stage_and_comments() {
         let t = Templates::default();
         assert!(t.revise_stage.contains("{stage_title}"));
         assert!(t.revise_stage.contains("{comments}"));
-        assert!(t.revise_stage.contains("outputs.comment_resolutions"));
-        assert!(t.revise_stage.contains("phase=\"revise\""));
-    }
-
-    #[test]
-    fn fix_stage_template_carries_findings_and_start_sha() {
-        let t = Templates::default();
-        assert!(t.fix_stage.contains("{findings}"));
-        assert!(t.fix_stage.contains("{stage_start_sha}"));
-        assert!(t.fix_stage.contains("phase=\"build\""));
-    }
-
-    #[test]
-    fn validate_template_reports_a_validation_outcome() {
-        let t = Templates::default();
-        assert!(t.validate.contains("{stage_path}"));
-        assert!(t.validate.contains("{next_stage_path}"));
-        assert!(t.validate.contains("{stage_start_sha}"));
-        assert!(t.validate.contains("outputs.validation"));
-        assert!(t.validate.contains("phase=\"validate\""));
-    }
-
-    /// Triage's whole contract: the level vocabulary, the grouping rule, the
-    /// rationale that is read INSTEAD of the hunk, and a `done` shaped so the
-    /// bridge can check it against the diff it was taken on.
-    #[test]
-    fn triage_template_teaches_the_levels_groups_and_typed_completion_message() {
-        let t = Templates::default();
-        for placeholder in [
-            "{agent_report}",
-            "{diff_summary}",
-            "{diff_ref}",
-            "{revision_sha}",
-        ] {
-            assert!(t.triage.contains(placeholder), "{placeholder} missing");
-        }
-        for level in ["\"critical\"", "\"normal\"", "\"low\""] {
-            assert!(
-                t.triage.contains(level),
-                "{level} missing from {}",
-                t.triage
-            );
-        }
-        assert!(t.triage.contains("phase=\"triage\""));
-        assert!(t.triage.contains("outputs.triage"));
-        assert!(t.triage.contains("hunk_id"));
-        let triage = collapse_whitespace(&t.triage);
-        assert!(
-            triage.contains("Classify EVERY hunk in that list"),
-            "every hunk must be classified: {triage}"
-        );
-        assert!(
-            triage.contains("no id you made up"),
-            "the id vocabulary is closed: {triage}"
-        );
-        assert!(
-            triage.contains("The reviewer reads that line INSTEAD of the hunk"),
-            "a collapse is only as honest as its rationale: {triage}"
-        );
-        assert!(
-            triage.contains("triage orders the reviewer's attention and gates nothing"),
-            "triage is presentational, and the agent is told so: {triage}"
-        );
-        assert!(
-            triage.contains("Do not modify any files"),
-            "triage is observational: {triage}"
-        );
-    }
-
-    /// Overrides are durable per-project signal, and signal nobody reads is
-    /// not signal. Until the learned-defaults layer exists, the triage prompt
-    /// IS the reader: it is told where the accumulated disagreement lives and
-    /// that it is judgment to weigh, not a rule that overrules the diff.
-    #[test]
-    fn the_triage_prompt_reads_what_the_reviewer_has_already_disagreed_with() {
-        let t = Templates::default();
-        assert!(
-            t.triage.contains(crate::review_rules::REVIEW_RULES_PATH),
-            "the prompt must name the file: {}",
-            t.triage
-        );
-        let triage = collapse_whitespace(&t.triage);
-        for direction in ["surface", "collapse"] {
-            assert!(
-                triage.contains(direction),
-                "the prompt explains what a {direction} rule means: {triage}"
-            );
-        }
-        assert!(
-            triage.contains("Respect that signal"),
-            "accumulated signal is to be respected: {triage}"
-        );
-        assert!(
-            triage.contains("not a rule you have to obey"),
-            "and weighed, not obeyed — a collapsed pattern can still carry risk: {triage}"
-        );
-    }
-
-    /// Triage writes no code, so it is asked for no report of its own — the
-    /// builder's report is what it READS.
-    #[test]
-    fn triage_reports_no_full_report_of_its_own() {
-        let t = Templates::default();
-        assert!(!t.triage.contains("whole report"), "{}", t.triage);
-    }
-
-    #[test]
-    fn triage_template_substitutes_its_seed_and_its_hunks() {
-        let out = render(
-            &Templates::default().triage,
-            &Vars {
-                agent_report: "- critical: crypto.rs",
-                diff_summary: "habc123def456  crypto.rs  @@ -1,2 +1,3 @@",
-                diff_ref: "abc123",
-                revision_sha: "deadbeef",
-                ..Vars::default()
-            },
-        );
-        assert!(out.contains("- critical: crypto.rs"));
-        assert!(out.contains("habc123def456  crypto.rs  @@ -1,2 +1,3 @@"));
-        assert!(out.contains("git diff abc123"));
-        assert!(out.contains("\"based_on\": \"deadbeef\""));
-        for placeholder in [
-            "{agent_report}",
-            "{diff_summary}",
-            "{diff_ref}",
-            "{revision_sha}",
-        ] {
-            assert!(!out.contains(placeholder), "{placeholder} left unrendered");
-        }
+        assert!(t.revise_stage.contains("status=\"Complete\""));
     }
 
     #[test]
@@ -872,10 +600,7 @@ mod tests {
             &t.build_stage,
             &t.revise,
             &t.revise_stage,
-            &t.fix_stage,
             &t.review_changes,
-            &t.validate,
-            &t.triage,
         ] {
             assert!(
                 tmpl.contains("body"),
@@ -1058,7 +783,8 @@ mod tests {
         }
         assert!(!router.contains("create_issue"), "{router}");
         assert!(router.contains("You are not in a repository"), "{router}");
-        assert!(router.contains("phase=\"route\""), "{router}");
+        assert!(router.contains("status=\"Complete\""), "{router}");
+        assert!(!router.contains("phase="), "{router}");
         assert!(router.contains("status=\"Blocked\""), "{router}");
     }
 
@@ -1091,9 +817,7 @@ mod tests {
             ("build_stage", &t.build_stage),
             ("revise", &t.revise),
             ("revise_stage", &t.revise_stage),
-            ("fix_stage", &t.fix_stage),
             ("review_changes", &t.review_changes),
-            ("validate", &t.validate),
             ("message", &t.message),
         ] {
             let text = collapse_whitespace(template);
@@ -1169,12 +893,31 @@ mod tests {
             ("build_stage", &t.build_stage),
             ("revise", &t.revise),
             ("revise_stage", &t.revise_stage),
-            ("fix_stage", &t.fix_stage),
             ("review_changes", &t.review_changes),
-            ("validate", &t.validate),
             ("message", &t.message),
             ("project_agent", &t.project_agent),
         ]
+    }
+
+    /// A terminal message carries no phase and no structured outputs: the
+    /// session already is its phase, and the plan's stages are read from disk.
+    #[test]
+    fn no_template_asks_for_a_phase_or_structured_outputs() {
+        let t = Templates::default();
+        for template in [
+            &t.plan,
+            &t.build,
+            &t.build_stage,
+            &t.revise,
+            &t.revise_stage,
+            &t.review_changes,
+            &t.message,
+            &t.router,
+            &t.project_agent,
+        ] {
+            assert!(!template.contains("phase="), "{template}");
+            assert!(!template.contains("outputs."), "{template}");
+        }
     }
 
     #[test]

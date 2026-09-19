@@ -696,7 +696,6 @@ impl Orchestrator {
         active.current_stage_id = None;
         active.revising_stage_id = None;
         active.auto_advance = false;
-        active.recovery = None;
         active.publication_attempt = None;
         active.model_choice = model_choice.clone();
         active.last_summary = None;
@@ -765,8 +764,6 @@ impl Orchestrator {
             revising_stage_id: None,
             auto_advance: false,
             adopted: true,
-            triage: None,
-            recovery: None,
             publication_attempt: None,
             model_choice,
             agents: AgentRoster::empty(),

@@ -504,12 +504,7 @@ fn an_answer_re_fires_the_router_with_the_answer_in_hand() {
     // The asking router reported and went away, as a router that asked does.
     state.on_router_done(
         &capture_id,
-        DoneReport {
-            phase: DonePhase::Route,
-            status: DoneStatus::Completed,
-            summary: "asked which project".to_string(),
-            outputs: crate::mcp::DoneOutputs::default(),
-        },
+        DoneReport::new(DoneStatus::Completed, "asked which project"),
     );
     assert!(!state.router_sessions.contains_key(&capture_id));
     assert_eq!(
@@ -678,12 +673,7 @@ fn a_router_that_reports_without_routing_marks_the_capture_failed() {
 
     state.on_router_done(
         &capture_id,
-        DoneReport {
-            phase: DonePhase::Route,
-            status: DoneStatus::Failed,
-            summary: "nothing here says which project".to_string(),
-            outputs: crate::mcp::DoneOutputs::default(),
-        },
+        DoneReport::new(DoneStatus::Failed, "nothing here says which project"),
     );
 
     let record = capture_record(&mut state, &capture_id);
@@ -896,12 +886,7 @@ fn a_reroute_with_no_destination_re_fires_the_router() {
     let (capture_id, primary_agent) = captured(&mut state, "ship it");
     state.on_router_done(
         &capture_id,
-        DoneReport {
-            phase: DonePhase::Route,
-            status: DoneStatus::Failed,
-            summary: "could not decide".to_string(),
-            outputs: crate::mcp::DoneOutputs::default(),
-        },
+        DoneReport::new(DoneStatus::Failed, "could not decide"),
     );
     assert_eq!(capture_record(&mut state, &capture_id)["state"], "failed");
     state.delivery_queue.clear_queued();

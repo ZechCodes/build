@@ -444,8 +444,5 @@ fn extension_uses_real_mcp_stdio_token_and_canonical_tool_errors() {
     assert_eq!(report["task_id"], "agent-real-mcp");
     assert_eq!(report["session_token"], "rotated-real-token");
     assert_eq!(report["report"]["status"], "blocked");
-    assert_eq!(
-        report["report"]["outputs"]["message_id"],
-        "message-real-mcp"
-    );
+    assert_eq!(report["report"]["message_id"], "message-real-mcp");
 }

@@ -121,22 +121,12 @@ pub struct PersistedRun {
     /// store write-back from post-review changes on `done(revise)`).
     #[serde(default)]
     pub revising_stage_id: Option<String>,
-    /// "Run all": auto-dispatch the next approved stage when validation passes.
+    /// "Run all": auto-dispatch the next approved stage when one completes.
     #[serde(default)]
     pub auto_advance: bool,
     /// True for a run minted around a pre-existing (user-created) worktree.
     #[serde(default)]
     pub adopted: bool,
-    /// The last triage pass over this run's diff. Presentational, so it is
-    /// persisted purely so a restart does not throw away an ordering the
-    /// reviewer was reading; nothing waits on it and nothing reads it back into
-    /// the lifecycle.
-    #[serde(default)]
-    pub triage: Option<crate::run::TriageReport>,
-    /// Durable nonce-bound recovery journal. A started attempt survives daemon
-    /// restart and can never be mistaken for a verified success.
-    #[serde(default)]
-    pub recovery: Option<crate::run::RecoveryAttempt>,
     /// Write-ahead journal for push/merge. It is cleared only after refs prove
     /// the candidate commit's publication (including after daemon restart).
     #[serde(default)]

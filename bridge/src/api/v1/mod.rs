@@ -30,7 +30,7 @@
 //! (`thread.*`, `agent.add/choose/remove/list`), [`changes`]
 //! (`changes.subscribe/unsubscribe/list`), [`git`] (`git.*`, `fs.*`,
 //! and the diff reads), [`lifecycle`] (`issue.*`, `plan.*`, `run.*`,
-//! `branch.*`, `worktree.create/finish`, `entity.*`, `triage.override`),
+//! `branch.*`, `worktree.create/finish`, `entity.*`),
 //! [`workspace`] (`workspace.*`).
 
 pub mod board;

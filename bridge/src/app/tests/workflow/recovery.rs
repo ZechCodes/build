@@ -94,8 +94,6 @@ fn building_run(id: &str, repo: &std::path::Path, worktree: &std::path::Path) ->
         revising_stage_id: None,
         auto_advance: false,
         adopted: false,
-        triage: None,
-        recovery: None,
         publication_attempt: None,
         provider: AgentProvider::Claude,
         model: None,

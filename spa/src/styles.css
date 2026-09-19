@@ -546,14 +546,8 @@ main#root.surface { max-width:none;
 .stagechip { margin-left:0; }
 .cbadge { font-size:11px; color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:2px 8px; white-space:nowrap; }
 .stagesummary { color:var(--ink2); font-size:12.5px; margin-top:4px; }
-.stage-validation { border:1px solid var(--line); border-radius:11px; padding:12px 15px; margin-bottom:14px; }
-.stage-validation .sv-head { font-weight:650; font-size:13.5px; margin-bottom:4px; }
-.stage-validation .sv-body { font-size:13px; }
-.stage-validation .sv-body p { margin:6px 0; }
-.stage-validation.pass { background:var(--green-bg); border-color:var(--green); }
-.stage-validation.pass .sv-head { color:var(--green); }
-.stage-validation.fail { background:var(--red-bg); border-color:var(--red); }
-.stage-validation.fail .sv-head { color:var(--red); }
+.stage-invalidation { border:1px solid var(--red); border-radius:11px; padding:12px 15px; margin-bottom:14px;
+  background:var(--red-bg); }
 .stagecomments { margin-top:14px; display:flex; flex-direction:column; gap:8px; }
 .commentcard { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:9px 30px 9px 12px; font-size:13px; position:relative; }
 .commentcard.addressed { border-left-color:var(--green); opacity:.72; }
@@ -1786,7 +1780,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 .empty.gone, .fpidle { color:var(--ink2); }
 .notice { border-color:var(--line3); background:var(--panel); box-shadow:0 14px 38px var(--shadow); }
-.notice-x, .notice-expand, .iconbtn, .fmenu, .tdial, .workspace-refrow, .ivassign-head,
+.notice-x, .notice-expand, .iconbtn, .fmenu, .workspace-refrow, .ivassign-head,
 .browse-nav, .chooser-card, .stagerow, .frow, .srow {
   transition:background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), opacity var(--motion-fast), transform var(--motion-fast);
 }

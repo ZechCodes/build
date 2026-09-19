@@ -15,18 +15,10 @@ export const EVENT_META = {
   worktree_reused: { label: "Implementation worktree reused", icon: "↻", tone: "success" },
   worktree_recreated: { label: "Implementation worktree recreated", icon: "↻", tone: "success" },
   worktree_deleted: { label: "Implementation worktree deleted", icon: "×", tone: "blocked" },
-  recovery_started: { label: "Verified recovery started", icon: "▶" },
-  recovery_succeeded: { label: "Verified recovery succeeded", icon: "✓", tone: "success" },
   recovery_failed: { label: "Verified recovery failed", icon: "×", tone: "blocked" },
   stage_completed: { label: "Stage completed", icon: "✓", tone: "success" },
   stage_invalidated: { label: "Stage marked incomplete", icon: "!", tone: "blocked" },
   implementation_archived: { label: "Implementation archived", icon: "■" },
-  // A pass that only orders the diff for review: it carries no tone, because
-  // it asks the reviewer for nothing.
-  triaged: { label: "Diff ordered for review", icon: "≡" },
-  // The reviewer disagreed with where the pass put something. Also toneless:
-  // it is a note to the agent, not a call on anybody.
-  triage_overridden: { label: "Review order corrected", icon: "≠" },
   committed: { label: "Changes committed", icon: "◆", tone: "success" },
   pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
   merged: { label: "Changes merged", icon: "⌁", tone: "success" },

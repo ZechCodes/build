@@ -36,15 +36,13 @@ const isOpen = (openPaths, path) => Boolean(openPaths && openPaths.has(path));
  *
  *  An open file with no body, or one whose content moved, is fetched eagerly:
  *  it is on screen. A collapsed file waits for the reader to expand it or for
- *  the warmer to reach it in idle time. A triaged stack is all eager, because
- *  the triage overlay reads the whole patch and cannot be given a subset of it.
+ *  the warmer to reach it in idle time.
  *
  *  `openPaths` is a Set of paths; `cached` answers the body held for a path. */
 export function pathsToFetch(status, options = {}) {
   const bodyOf = options.cached || nothingCached;
-  const opened = options.triaged ? () => true : (path) => isOpen(options.openPaths, path);
   return filesOf(status)
-    .filter((file) => opened(file.path) && !bodyMatches(bodyOf(file.path), file.content_key))
+    .filter((file) => isOpen(options.openPaths, file.path) && !bodyMatches(bodyOf(file.path), file.content_key))
     .map((file) => file.path);
 }
 
@@ -53,19 +51,6 @@ export function batchPaths(paths, max = GIT_DIFF_MAX_PATHS) {
   const batches = [];
   for (let start = 0; start < paths.length; start += max) batches.push(paths.slice(start, start + max));
   return batches;
-}
-
-/** A shape plus its bodies, back as one patch — the whole working-tree diff the
- *  triage overlay reads. Null while any file's body is missing or stale: a
- *  partial patch would name hunks that are not in it. */
-export function wholePatch(status, bodyOf) {
-  const parts = [];
-  for (const file of filesOf(status)) {
-    const body = bodyOf(file.path);
-    if (!bodyMatches(body, file.content_key)) return null;
-    parts.push(body.patch);
-  }
-  return parts.join("");
 }
 
 /** A previous fill's outcome, already delivered to whoever asked for it: the
@@ -146,8 +131,8 @@ export function createFileDiffs({
    *  local cache can answer with the body a file held before its last edit —
    *  fetch again whatever came back stale. A body from the wire matches by
    *  definition, so two goes are always enough. */
-  async function fill(status, { openPaths = null, triaged = false, budget = Infinity }) {
-    const wanted = pathsToFetch(status, { openPaths, cached: bodyOf, triaged }).slice(0, budget);
+  async function fill(status, { openPaths = null, budget = Infinity }) {
+    const wanted = pathsToFetch(status, { openPaths, cached: bodyOf }).slice(0, budget);
     if (!wanted.length || disposed) return 0;
     const filled = await fetchBatches(wanted);
     const stale = stillWanted(status, wanted);
@@ -156,7 +141,7 @@ export function createFileDiffs({
 
   return {
     bodyOf,
-    sync: ({ status, openPaths = null, triaged = false }) => enqueue(() => fill(status, { openPaths, triaged })),
+    sync: ({ status, openPaths = null }) => enqueue(() => fill(status, { openPaths })),
     warm: (status, { budget = GIT_DIFF_MAX_PATHS } = {}) =>
       enqueue(() => fill(status, { openPaths: new Set(statusPaths(status)), budget })),
     dispose: () => {

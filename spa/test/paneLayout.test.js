@@ -298,7 +298,7 @@ describe("tab layout primitives", () => {
     ".plan-summary",
     ".plan-feedback",
     ".stagelist",
-    ".stage-validation",
+    ".stage-invalidation",
     ".fixbar",
     ".stagecomments",
   ];

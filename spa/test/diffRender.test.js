@@ -386,7 +386,7 @@ describe("folds the reader owns", () => {
 });
 
 // The stack is a keyed list: every block a repaint can move — a file, the
-// triage bar, a group — has a name of its own, so patching one leaves the rest
+// noise group — has a name of its own, so patching one leaves the rest
 // standing. diffStackHtml is those entries joined, and nothing else.
 describe("diffStackEntries", () => {
   const source = { path: "src/main.py", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] };

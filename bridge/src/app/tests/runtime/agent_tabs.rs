@@ -434,12 +434,7 @@ async fn done_then_a_warm_turn_stays_in_one_open_session() {
 
     state.lock().unwrap().on_agent_done(
         "run-lineage",
-        DoneReport {
-            phase: DonePhase::Build,
-            status: DoneStatus::Completed,
-            summary: "built".into(),
-            outputs: DoneOutputs::default(),
-        },
+        DoneReport::new(DoneStatus::Completed, "built"),
     );
     queue_turn();
     deliver_pending_agent_turns(&state);

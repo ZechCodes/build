@@ -1,5 +1,5 @@
 //! The lifecycle family: `issue.*`, `plan.*`, `run.*`, `branch.*`,
-//! `worktree.create`, `worktree.finish`, `entity.*`, `triage.override`.
+//! `worktree.create`, `worktree.finish`, `entity.*`.
 //! (The diff reads — `run.diff`, `run.stage_diff`, `issue.diff`,
 //! `issue.stage_diff` — are the git family's.)
 //!
@@ -165,12 +165,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             IssueView
         ),
         v1_method!(
-            "issue.stage_fix",
-            issue_stage_fix,
-            StageFixParams,
-            IssueView
-        ),
-        v1_method!(
             "issue.request_changes",
             issue_request_changes,
             RequestChangesParams,
@@ -190,12 +184,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             EntityDismissParams,
             DismissResult
         ),
-        v1_method!(
-            "triage.override",
-            triage_override,
-            TriageOverrideParams,
-            TriageOverrideResult
-        ),
         // ---- end issue/plan (the run/branch/worktree half appends below)
         // ---- run/branch/worktree
         v1_method!("run.create", run_create, RunCreateParams, RunView),
@@ -212,7 +200,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             RunStageDispatchParams,
             RunView
         ),
-        v1_method!("run.stage_fix", run_stage_fix, RunStageFixParams, RunView),
         v1_method!(
             "run.stage_send_notes",
             run_stage_send_notes,
@@ -512,18 +499,6 @@ pub struct SetAutoAdvanceParams {
     pub thread_limit: Option<ThreadLimit>,
 }
 
-/// Send one stage back to its builder with a note.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct StageFixParams {
-    #[serde(flatten)]
-    pub issue: IssueRef,
-    pub stage_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
 /// Diff comments to the issue's implementation. The implementation agent is
 /// the run's own; an `agent_id` naming the ISSUE's agent is not on that
 /// roster, so this verb does not take one.
@@ -590,17 +565,6 @@ pub struct EntityDismissParams {
     pub branch: Option<String>,
 }
 
-/// The reviewer disagreeing with how one hunk was classified.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TriageOverrideParams {
-    pub run_id: String,
-    pub hunk_id: String,
-    /// `surface` or `collapse`.
-    pub direction: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-}
-
 // ---------------------------------------------------- issue/plan: results ---
 
 /// Where an entity sits in the inbox, and whether the human has seen where it
@@ -631,8 +595,6 @@ pub struct ImplementationRef {
     pub state: String,
     pub branch: String,
     pub worktree_path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<crate::run::RecoveryAttempt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
 }
@@ -683,8 +645,7 @@ pub struct IssueStageRow {
     /// The same sub-state as `state`, under the name the stage board reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<String>,
-    /// `pending`, `building`, `built`, `validating`, `complete`,
-    /// `validation_failed`, `incomplete`, or `legacy_unpinned`.
+    /// `pending`, `building`, `complete`, `incomplete`, or `legacy_unpinned`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -695,8 +656,6 @@ pub struct IssueStageRow {
     pub completion_sha: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<crate::run::StagePublication>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation: Option<crate::run::ValidationReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalidation_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -865,40 +824,6 @@ pub enum DismissResult {
     Row(RowDismissed),
 }
 
-/// The project-level rule one disagreement moved, and how many disagreements
-/// now stand behind it.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TriageRule {
-    pub pattern: String,
-    pub direction: String,
-    /// Absent when the reviewer said the same thing about the same hunk twice
-    /// — one disagreement, so the count does not move.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub count: Option<u64>,
-}
-
-/// The triage pass as the review surface renders it.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TriageView {
-    pub based_on: String,
-    pub hunks: Vec<crate::run::TriageHunk>,
-    pub overrides: Vec<crate::run::TriageOverride>,
-    /// The diff moved under the pass.
-    pub stale: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TriageOverrideResult {
-    pub run_id: String,
-    pub hunk_id: String,
-    pub direction: String,
-    pub path: String,
-    pub rule: TriageRule,
-    /// Absent on a run with no triage pass.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub triage: Option<TriageView>,
-}
-
 // --------------------------------------------------- issue/plan: handlers ---
 
 fn issue_create(
@@ -1039,13 +964,6 @@ fn issue_set_auto_advance(
     answer(app.issue_set_auto_advance(&params.wire()))
 }
 
-fn issue_stage_fix(
-    app: &mut AppState,
-    params: StageFixParams,
-) -> Result<Answer<IssueView>, ApiError> {
-    answer(app.issue_run_action(&params.wire(), "fix"))
-}
-
 fn issue_request_changes(
     app: &mut AppState,
     params: RequestChangesParams,
@@ -1079,13 +997,6 @@ fn entity_dismiss(
     params: EntityDismissParams,
 ) -> Result<Answer<DismissResult>, ApiError> {
     answer(app.entity_dismiss(&params.wire()))
-}
-
-fn triage_override(
-    app: &mut AppState,
-    params: TriageOverrideParams,
-) -> Result<Answer<TriageOverrideResult>, ApiError> {
-    answer(app.triage_override(&params.wire()))
 }
 
 // ------------------------------------------------------ issue/plan: tests ---
@@ -1183,13 +1094,11 @@ mod issue_plan_tests {
         issue_implement_stage => "issue.implement_stage",
         issue_implement_all => "issue.implement_all",
         issue_set_auto_advance => "issue.set_auto_advance",
-        issue_stage_fix => "issue.stage_fix",
         issue_request_changes => "issue.request_changes",
         issue_git_action => "issue.git_action",
         entity_seen => "entity.seen",
         entity_mute => "entity.mute",
         entity_dismiss => "entity.dismiss",
-        triage_override => "triage.override",
     }
 }
 
@@ -1211,8 +1120,8 @@ mod issue_plan_tests {
 // documents and the drain fills in.
 //
 // The shared wire above is shared: [`ThreadWindowParams`],
-// [`ReviewerMessageParams`], [`AttentionView`], [`FinishView`] and
-// [`TriageView`] are the same shapes on both halves of the family.
+// [`ReviewerMessageParams`], [`AttentionView`] and [`FinishView`] are the
+// same shapes on both halves of the family.
 
 // ---------------------------------------- run/branch/worktree: params ---
 
@@ -1296,18 +1205,6 @@ pub struct RunStageDispatchParams {
     pub stage_id: String,
     #[serde(flatten)]
     pub choice: RunAgentChoiceParams,
-    #[serde(flatten)]
-    pub view: ThreadWindowParams,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunStageFixParams {
-    pub run_id: String,
-    pub stage_id: String,
-    /// What to fix, in the reviewer's words; absent when the failed
-    /// validation speaks for itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
     #[serde(flatten)]
     pub view: ThreadWindowParams,
 }
@@ -1440,8 +1337,7 @@ pub struct WorktreeFinishParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RunStageView {
     pub id: String,
-    /// `building`, `built`, `validating`, `validated_passed`, or
-    /// `validated_failed`.
+    /// `building` or `completed`.
     pub state: String,
     /// HEAD when the stage was first dispatched — the base of "the diff this
     /// stage produced".
@@ -1454,12 +1350,10 @@ pub struct RunStageView {
     pub completion_sha: Option<String>,
     /// `local`, `pushed`, `merged`, or `legacy_unknown`.
     pub publication: String,
-    /// Why the stage's evidence stopped being readable — worktree loss, or a
-    /// recovery that moved the branch.
+    /// Why the stage's evidence stopped being readable — the worktree was
+    /// lost before its commits were published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalidation_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation: Option<crate::run::ValidationReport>,
 }
 
 /// A run as every run verb answers it: identity and issue link, lifecycle
@@ -1516,19 +1410,12 @@ pub struct RunView {
     pub effort: Option<String>,
     pub thread: ThreadPayload,
     pub agents: Vec<AgentDigest>,
-    /// The last triage pass over this run's diff; absent on a run that has
-    /// had none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub triage: Option<TriageView>,
-    pub triage_enabled: bool,
     /// "Run all" is armed.
     pub auto_advance: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_stage_id: Option<String>,
     /// Minted around a checkout the human already had.
     pub adopted: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<crate::run::RecoveryAttempt>,
     /// Whether `run.finish` would be accepted, so the control is never
     /// offered where it would be refused.
     pub can_finish: bool,
@@ -1817,13 +1704,6 @@ fn run_stage_dispatch(
     answer(app.run_stage_dispatch(&params.wire())).map_err(refine)
 }
 
-fn run_stage_fix(
-    app: &mut AppState,
-    params: RunStageFixParams,
-) -> Result<Answer<RunView>, ApiError> {
-    answer(app.run_stage_fix(&params.wire())).map_err(refine)
-}
-
 fn run_stage_send_notes(
     app: &mut AppState,
     params: RunStageParams,
@@ -1949,7 +1829,6 @@ mod run_branch_worktree_tests {
         run_get => "run.get",
         run_request_changes => "run.request_changes",
         run_stage_dispatch => "run.stage_dispatch",
-        run_stage_fix => "run.stage_fix",
         run_stage_send_notes => "run.stage_send_notes",
         run_set_auto_advance => "run.set_auto_advance",
         run_git_action => "run.git_action",

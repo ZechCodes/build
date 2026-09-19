@@ -1,5 +1,5 @@
 // Incremental unified-diff parsing. Aggregate review payloads still carry one
-// complete patch because triage and comment anchors depend on it, but parsing
+// complete patch because comment anchors depend on it, but parsing
 // is isolated per file so an edit in one file does not rebuild every row model.
 
 import { parseDiff } from "./diff.js";

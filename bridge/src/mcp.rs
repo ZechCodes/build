@@ -4,8 +4,8 @@
 //! baked into the transport: no shared server, no auth, no ambiguity. The
 //! `--task` flag stays opaque across the plan/run split — the id is a plan id or
 //! a run id, and the daemon routes each completion report by owner lookup (plans
-//! map, then runs map). It exposes one conversation tool which also reports
-//! phase status. Everything here is hand-rolled
+//! map, then runs map). It exposes one conversation tool whose terminal
+//! statuses double as the completion report. Everything here is hand-rolled
 //! newline-delimited JSON-RPC 2.0 — the MCP stdio framing — so the surface stays
 //! minimal and the parsing stays testable.
 
@@ -17,30 +17,11 @@ use serde_json::{json, Value};
 /// The protocol version this server advertises when a client omits one.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// Which phase the agent is reporting on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DonePhase {
-    Plan,
-    Build,
-    Revise,
-    /// An automated validation pass gating the next stage of a multi-stage plan.
-    Validate,
-    /// A review-prioritization pass over the diff a build/revise just reported.
-    /// It gates nothing — see [`crate::run::TriageReport`].
-    Triage,
-    /// A branch-lineage recovery agent reporting a nonce-bound result.
-    Recover,
-    /// A router session reporting where it sent a capture. The only phase on
-    /// the router surface, and never on a coding agent's.
-    Route,
-}
-
-/// The agent's claim about how the phase ended.
+/// The agent's claim about how its turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DoneStatus {
-    /// The phase objective is met (a claim, not a verdict — the human gate decides).
+    /// The objective is met (a claim, not a verdict — the human gate decides).
     Completed,
     /// The agent cannot proceed and is saying why.
     Blocked,
@@ -48,65 +29,7 @@ pub enum DoneStatus {
     Failed,
 }
 
-/// One per-comment resolution from a stage plan-revision session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommentResolution {
-    pub comment_id: String,
-    pub response: String,
-}
-
-/// A recovery agent's claim. The daemon accepts it only for its currently
-/// persisted recovery nonce, then independently verifies branch, HEAD and the
-/// restored worktree before unblocking implementation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecoveryReport {
-    pub recovery_id: String,
-    pub recovered: bool,
-    pub branch: String,
-    pub head_sha: String,
-    #[serde(default)]
-    pub findings: String,
-}
-
-/// Structured outputs a phase can report.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DoneOutputs {
-    /// Exact visible message carrying this report, filled after a successful
-    /// post. Internal correlation only; never part of the MCP wire shape.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_id: Option<String>,
-    /// Required when `phase=plan` and `status=completed`: where the plan was written.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_path: Option<String>,
-    /// Echo of `.build/plan/stages.json`. Presence of a non-empty array on
-    /// phase=plan/completed marks the plan multi-stage.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stages: Option<Vec<crate::plan::StageManifestEntry>>,
-    /// Required when phase=validate and status=completed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation: Option<crate::run::ValidationReport>,
-    /// Required when phase=triage and status=completed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub triage: Option<crate::run::TriageReport>,
-    /// Required when phase=recover and status=completed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<RecoveryReport>,
-    /// Optional on phase=revise/completed: per-comment resolutions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comment_resolutions: Option<Vec<CommentResolution>>,
-}
-
-/// The raw `done` arguments as they arrive over the wire, before validation.
-#[derive(Debug, Deserialize)]
-struct DoneArgs {
-    phase: DonePhase,
-    status: DoneStatus,
-    summary: String,
-    #[serde(default)]
-    outputs: DoneOutputs,
-}
-
-/// Whether a message ends the current phase or describes an in-progress turn.
+/// Whether a message ends the current turn or describes an in-progress one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 enum MessageStatus {
     #[serde(alias = "complete")]
@@ -119,191 +42,48 @@ enum MessageStatus {
     Working,
 }
 
+impl MessageStatus {
+    /// The report a terminal message makes, or `None` for a progress note or
+    /// a question: only `Complete` and `Blocked` hand the turn back.
+    fn report(self) -> Option<DoneStatus> {
+        match self {
+            MessageStatus::Complete => Some(DoneStatus::Completed),
+            MessageStatus::Blocked => Some(DoneStatus::Blocked),
+            MessageStatus::Waiting | MessageStatus::Working => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Router messages share the coding schema; these fields are coding-only.
 struct SendMessageArgs {
     status: MessageStatus,
     body: String,
-    #[serde(default)]
-    phase: Option<DonePhase>,
-    #[serde(default)]
-    outputs: DoneOutputs,
-    #[serde(default)]
-    anchor: Option<crate::thread::MessageAnchor>,
-    #[serde(default)]
-    links: Vec<crate::thread::ThreadLink>,
-    #[serde(default)]
-    options: Vec<crate::thread::MessageOptionDraft>,
 }
 
-/// A validated `done` report — the typed completion event the lifecycle consumes.
+/// A terminal message — the typed completion event the lifecycle consumes.
+///
+/// It carries no phase: the session that sent it already is one. A plan
+/// session's report is a plan report, a run's is a run report, a router's is
+/// a routing report — the daemon routes by owner, so the agent never has to
+/// say which, and cannot say the wrong thing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoneReport {
-    pub phase: DonePhase,
     pub status: DoneStatus,
     pub summary: String,
-    pub outputs: DoneOutputs,
-}
-
-/// Why a `done` call was rejected (a tool-level error the agent can correct).
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DoneError {
-    #[error("plan_path is required when phase=plan and status=completed")]
-    MissingPlanPath,
-    #[error("outputs.validation is required when phase=validate and status=completed")]
-    MissingValidationReport,
-    #[error("outputs.recovery is required when phase=recover and status=completed")]
-    MissingRecoveryReport,
-    #[error("outputs.triage is required when phase=triage and status=completed")]
-    MissingTriageReport,
-    #[error("outputs.triage classifies hunk {0:?} more than once")]
-    DuplicateTriageHunk(String),
-    #[error(
-        "outputs.triage names hunks that are not in this diff: {}. The hunk ids of the current diff are: {}",
-        unknown.join(", "),
-        valid.join(", ")
-    )]
-    UnknownTriageHunks {
-        unknown: Vec<String>,
-        valid: Vec<String>,
-    },
-    #[error("invalid outputs.stages: {0}")]
-    InvalidStages(String),
-    #[error("plan_path {0:?} must be a plain relative path inside the worktree (no '..', no leading '/')")]
-    PlanPathEscapesWorktree(String),
-}
-
-/// A stable kebab-case slug: lowercase alphanumerics in hyphen-separated runs,
-/// no leading/trailing/doubled hyphens.
-fn is_kebab_slug(candidate: &str) -> bool {
-    !candidate.is_empty()
-        && candidate.split('-').all(|part| {
-            !part.is_empty()
-                && part
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        })
-}
-
-/// Validate a manifest echo per the spec's ordered rule list, naming the first
-/// offense found (checked in manifest order, one rule at a time per entry).
-fn validate_stages(entries: &[crate::plan::StageManifestEntry]) -> Result<(), String> {
-    if entries.is_empty() {
-        return Err("stages must be non-empty".to_string());
-    }
-    let mut seen_ids = std::collections::HashSet::new();
-    for entry in entries {
-        if !is_kebab_slug(&entry.id) {
-            return Err(format!("id \"{}\" is not a kebab-case slug", entry.id));
-        }
-        if !seen_ids.insert(entry.id.clone()) {
-            return Err(format!("duplicate id \"{}\"", entry.id));
-        }
-        if !entry.path.starts_with(".build/plan/") {
-            return Err(format!(
-                "path \"{}\" must start with .build/plan/",
-                entry.path
-            ));
-        }
-        // The prefix check alone accepts `.build/plan/../../..` — the joined
-        // path must also be traversal-free so it can never leave the plan dir.
-        if !crate::plan::is_worktree_contained_path(&entry.path) {
-            return Err(format!(
-                "path \"{}\" must not contain traversal segments",
-                entry.path
-            ));
-        }
-        if entry.title.trim().is_empty() {
-            return Err(format!("stage \"{}\" has an empty title", entry.id));
-        }
-    }
-    Ok(())
+    /// Exact visible message carrying this report, filled after a successful
+    /// post. Internal correlation only; never part of the MCP wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
 }
 
 impl DoneReport {
-    fn from_args(args: DoneArgs) -> Result<DoneReport, DoneError> {
-        let mut args = args;
-        // Correlation is minted only after Build successfully posts the
-        // message. Never trust a caller-supplied internal message id.
-        args.outputs.message_id = None;
-        if args.phase == DonePhase::Plan
-            && args.status == DoneStatus::Completed
-            && args.outputs.plan_path.is_none()
-        {
-            return Err(DoneError::MissingPlanPath);
+    pub fn new(status: DoneStatus, summary: impl Into<String>) -> DoneReport {
+        DoneReport {
+            status,
+            summary: summary.into(),
+            message_id: None,
         }
-        // A reported plan_path is later joined under the worktree and read back
-        // over RPC, so an escaping path would exfiltrate arbitrary host files.
-        if let Some(path) = &args.outputs.plan_path {
-            if !crate::plan::is_worktree_contained_path(path) {
-                return Err(DoneError::PlanPathEscapesWorktree(path.clone()));
-            }
-        }
-        if args.phase == DonePhase::Plan && args.status == DoneStatus::Completed {
-            if let Some(entries) = &args.outputs.stages {
-                validate_stages(entries).map_err(DoneError::InvalidStages)?;
-            }
-        }
-        if args.phase == DonePhase::Validate
-            && args.status == DoneStatus::Completed
-            && args.outputs.validation.is_none()
-        {
-            return Err(DoneError::MissingValidationReport);
-        }
-        if args.phase == DonePhase::Recover
-            && args.status == DoneStatus::Completed
-            && args.outputs.recovery.is_none()
-        {
-            return Err(DoneError::MissingRecoveryReport);
-        }
-        if args.phase == DonePhase::Triage && args.status == DoneStatus::Completed {
-            let Some(triage) = &args.outputs.triage else {
-                return Err(DoneError::MissingTriageReport);
-            };
-            // A hunk classified twice has no classification. The ids are
-            // checked against the actual diff where the diff exists — see
-            // [`check_triage_hunk_ids`].
-            let mut seen = std::collections::HashSet::new();
-            for hunk in &triage.hunks {
-                if !seen.insert(hunk.hunk_id.as_str()) {
-                    return Err(DoneError::DuplicateTriageHunk(hunk.hunk_id.clone()));
-                }
-            }
-        }
-        Ok(DoneReport {
-            phase: args.phase,
-            status: args.status,
-            summary: args.summary,
-            outputs: args.outputs,
-        })
     }
-}
-
-/// Check a triage report's hunk ids against the diff it claims to describe.
-///
-/// The tool boundary can only check the report's shape; the vocabulary of hunk
-/// ids belongs to a patch, which lives where the worktree is. So the daemon
-/// calls this with `crate::diff::hunk_ids` of the run's current diff, and an
-/// invented or mistyped id comes back to the agent WITH the ids it could have
-/// used — a correctable tool error, not a silent drop.
-pub fn check_triage_hunk_ids(
-    report: &crate::run::TriageReport,
-    valid_ids: &[String],
-) -> Result<(), DoneError> {
-    let valid: std::collections::HashSet<&str> = valid_ids.iter().map(String::as_str).collect();
-    let unknown: Vec<String> = report
-        .hunks
-        .iter()
-        .map(|hunk| hunk.hunk_id.clone())
-        .filter(|id| !valid.contains(id.as_str()))
-        .collect();
-    if unknown.is_empty() {
-        return Ok(());
-    }
-    Err(DoneError::UnknownTriageHunks {
-        unknown,
-        valid: valid_ids.to_vec(),
-    })
 }
 
 /// The result of handling one JSON-RPC message: a line to write back (absent for
@@ -332,8 +112,6 @@ pub enum BridgeAction {
         /// rather than handing the turn back. See the tool description.
         still_working: bool,
         body: String,
-        anchor: Option<crate::thread::MessageAnchor>,
-        links: Vec<crate::thread::ThreadLink>,
         /// Actions suggested beside the message, already numbered.
         options: Vec<crate::thread::MessageOption>,
     },
@@ -634,7 +412,6 @@ impl DoneServer {
         json!({
             "type": "object",
             "properties": {
-                "phase": { "type": "string", "enum": ["route"], "description": "Required with status Complete or Blocked." },
                 "status": { "type": "string", "enum": ["Complete", "Blocked", "Waiting", "Working"] },
                 "body": { "type": "string", "description": "One concise sentence saying where the capture went and why. If you could not route it, say what stopped you." }
             },
@@ -725,7 +502,7 @@ impl DoneServer {
             // means it is the ONE statement guaranteed to still be
             // in context when an ambiguous message actually arrives.
             // A pointer would resolve to nothing exactly then.
-            "description": "Send a message to the user. This tool is the only way the user can see your messages; terminal output and ordinary assistant responses are not visible to them. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome. Complete and Blocked must include the current phase and any required phase outputs.",
+            "description": "Send a message to the user. This tool is the only way the user can see your messages; terminal output and ordinary assistant responses are not visible to them. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
             "inputSchema": Self::message_input_schema()
         }, {
             "name": "message_agent",
@@ -977,117 +754,24 @@ impl DoneServer {
         }])
     }
 
-    /// The message schema includes phase outputs because Complete and Blocked
-    /// replace the former completion-only tool.
+    /// The coding agent's message: what it says, how its turn stands, and the
+    /// choices it offers. Nothing else — which phase a report closes is the
+    /// session's to know, not the agent's to claim.
     fn message_input_schema() -> Value {
-        let mut schema = json!({
+        json!({
             "type": "object",
             "properties": {
-                "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate", "triage", "recover"], "description": "Required with status Complete or Blocked; omit for Working and Waiting." },
                 "status": { "type": "string", "enum": ["Complete", "Blocked", "Waiting", "Working"] },
                 "body": { "type": "string", "description": SUMMARY_DESCRIPTION },
-                "outputs": {
-                    "type": "object",
-                    "properties": {
-                        "plan_path": { "type": "string", "description": "Required when phase=plan and status=completed. For a multi-stage plan, the manifest path .build/plan/stages.json." },
-                        "stages": {
-                            "type": "array",
-                            "description": "Echo of .build/plan/stages.json, in execution order. Required when phase=plan, status=completed and the plan is multi-stage.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": { "type": "string", "description": "Stable kebab-case slug; never changes across revisions." },
-                                    "title": { "type": "string" },
-                                    "path": { "type": "string", "description": "Worktree-relative, under .build/plan/." },
-                                    "summary": { "type": "string" }
-                                },
-                                "required": ["id", "title", "path"]
-                            }
-                        },
-                        "validation": {
-                            "type": "object",
-                            "description": "Required when phase=validate and status=completed.",
-                            "properties": {
-                                "passed": { "type": "boolean" },
-                                "findings": { "type": "string", "description": "Markdown: what the diff did and did not satisfy from the stage doc." },
-                                "notes_for_next_stage": { "type": "string", "description": "Markdown notes the next stage's builder should know. Empty string if none." }
-                            },
-                            "required": ["passed", "findings", "notes_for_next_stage"]
-                        },
-                        "triage": {
-                            "type": "object",
-                            "description": "Required when phase=triage and status=completed. One entry per hunk id the triage prompt listed, and no others.",
-                            "properties": {
-                                "based_on": { "type": "string", "description": "The revision the triage prompt named, echoed back exactly." },
-                                "hunks": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "hunk_id": { "type": "string", "description": "A hunk id from the prompt's list, verbatim." },
-                                            "level": { "type": "string", "enum": ["critical", "normal", "low"], "description": "How much review this hunk needs." },
-                                            "rationale": { "type": "string", "description": "One line. For a low hunk it is what the reviewer reads INSTEAD of the hunk; for a critical one, what to look at." },
-                                            "group": { "type": "string", "description": "Required on low hunks: the short name several collapsed hunks share." }
-                                        },
-                                        "required": ["hunk_id", "level"]
-                                    }
-                                }
-                            },
-                            "required": ["based_on", "hunks"]
-                        },
-                        "recovery": {
-                            "type": "object",
-                            "description": "Required when phase=recover and status=completed. Echo the recovery_id nonce from the recovery prompt.",
-                            "properties": {
-                                "recovery_id": { "type": "string" },
-                                "recovered": { "type": "boolean" },
-                                "branch": { "type": "string" },
-                                "head_sha": { "type": "string" },
-                                "findings": { "type": "string" }
-                            },
-                            "required": ["recovery_id", "recovered", "branch", "head_sha", "findings"]
-                        },
-                        "comment_resolutions": {
-                            "type": "array",
-                            "description": "When phase=revise and the prompt listed [c-N] comment ids: one entry per comment saying how it was addressed.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "comment_id": { "type": "string" },
-                                    "response": { "type": "string" }
-                                },
-                                "required": ["comment_id", "response"]
-                            }
-                        },
-                    }
+                "options": {
+                    "type": "array", "maxItems": crate::thread::MAX_MESSAGE_OPTIONS,
+                    "items": { "type": "object", "properties": {
+                        "label": { "type": "string" }, "message": { "type": "string" }
+                    }, "required": ["label"] }
                 }
             },
             "required": ["status", "body"]
-        });
-        let properties = schema["properties"].as_object_mut().unwrap();
-        properties.insert("anchor".into(), json!({ "type": "object", "description": "Optional structured plan/diff anchor copied from the reviewer message." }));
-        properties.insert(
-            "options".into(),
-            json!({
-                "type": "array", "maxItems": crate::thread::MAX_MESSAGE_OPTIONS,
-                "items": { "type": "object", "properties": {
-                    "label": { "type": "string" }, "message": { "type": "string" }
-                }, "required": ["label"] }
-            }),
-        );
-        properties.insert(
-            "links".into(),
-            json!({
-                "type": "array", "maxItems": 20,
-                "items": { "type": "object", "properties": {
-                    "kind": { "type": "string", "enum": ["file"] },
-                    "path": { "type": "string" },
-                    "line_start": { "type": "integer", "minimum": 1 },
-                    "line_end": { "type": "integer", "minimum": 1 }
-                }, "required": ["kind", "path"] }
-            }),
-        );
-        schema
+        })
     }
 
     /// Handle one newline-delimited JSON-RPC message.
@@ -1290,21 +974,22 @@ impl DoneServer {
                 .and_then(|p| p.get("arguments"))
                 .cloned()
                 .unwrap_or(Value::Null);
-            let status = match arguments.get("status").cloned().map(serde_json::from_value) {
-                Some(Ok(status)) => status,
-                Some(Err(error)) => {
-                    return Handled {
-                        reply: Some(tool_error(id, format!("invalid status: {error}"))),
-                        ..Handled::default()
+            let status: MessageStatus =
+                match arguments.get("status").cloned().map(serde_json::from_value) {
+                    Some(Ok(status)) => status,
+                    Some(Err(error)) => {
+                        return Handled {
+                            reply: Some(tool_error(id, format!("invalid status: {error}"))),
+                            ..Handled::default()
+                        }
                     }
-                }
-                None => {
-                    return Handled {
-                        reply: Some(tool_error(id, "status is required".to_string())),
-                        ..Handled::default()
+                    None => {
+                        return Handled {
+                            reply: Some(tool_error(id, "status is required".to_string())),
+                            ..Handled::default()
+                        }
                     }
-                }
-            };
+                };
             let body = arguments
                 .get("body")
                 .and_then(Value::as_str)
@@ -1315,52 +1000,6 @@ impl DoneServer {
                     reply: Some(tool_error(id, "body is required".to_string())),
                     ..Handled::default()
                 };
-            };
-            let anchor = match arguments.get("anchor") {
-                None | Some(Value::Null) => None,
-                Some(value) => match serde_json::from_value(value.clone()) {
-                    Ok(anchor) => Some(anchor),
-                    Err(error) => {
-                        return Handled {
-                            reply: Some(tool_error(id, format!("invalid anchor: {error}"))),
-                            ..Handled::default()
-                        }
-                    }
-                },
-            };
-            let links = match arguments.get("links") {
-                None | Some(Value::Null) => Vec::new(),
-                Some(Value::Array(values)) if values.len() <= 20 => {
-                    match values
-                        .iter()
-                        .cloned()
-                        .map(serde_json::from_value)
-                        .collect::<Result<Vec<crate::thread::ThreadLink>, _>>()
-                    {
-                        Ok(links) => links,
-                        Err(error) => {
-                            return Handled {
-                                reply: Some(tool_error(id, format!("invalid links: {error}"))),
-                                ..Handled::default()
-                            }
-                        }
-                    }
-                }
-                Some(Value::Array(_)) => {
-                    return Handled {
-                        reply: Some(tool_error(
-                            id,
-                            "links must contain at most 20 entries".to_string(),
-                        )),
-                        ..Handled::default()
-                    }
-                }
-                Some(_) => {
-                    return Handled {
-                        reply: Some(tool_error(id, "links must be an array".to_string())),
-                        ..Handled::default()
-                    }
-                }
             };
             let options = match arguments.get("options") {
                 None | Some(Value::Null) => Vec::new(),
@@ -1389,62 +1028,12 @@ impl DoneServer {
                     }
                 }
             };
-            let report = match status {
-                MessageStatus::Complete | MessageStatus::Blocked => {
-                    let Some(phase) = arguments
-                        .get("phase")
-                        .cloned()
-                        .and_then(|value| serde_json::from_value(value).ok())
-                    else {
-                        return Handled {
-                            reply: Some(tool_error(
-                                id,
-                                "phase is required for Complete and Blocked messages".to_string(),
-                            )),
-                            ..Handled::default()
-                        };
-                    };
-                    let outputs = match arguments.get("outputs") {
-                        None | Some(Value::Null) => DoneOutputs::default(),
-                        Some(value) => match serde_json::from_value(value.clone()) {
-                            Ok(outputs) => outputs,
-                            Err(error) => {
-                                return Handled {
-                                    reply: Some(tool_error(
-                                        id,
-                                        format!("invalid outputs: {error}"),
-                                    )),
-                                    ..Handled::default()
-                                }
-                            }
-                        },
-                    };
-                    match DoneReport::from_args(DoneArgs {
-                        phase,
-                        status: if status == MessageStatus::Complete {
-                            DoneStatus::Completed
-                        } else {
-                            DoneStatus::Blocked
-                        },
-                        summary: body.to_string(),
-                        outputs,
-                    }) {
-                        Ok(report) => Some(report),
-                        Err(error) => {
-                            return Handled {
-                                reply: Some(tool_error(id, error.to_string())),
-                                ..Handled::default()
-                            }
-                        }
-                    }
-                }
-                MessageStatus::Waiting | MessageStatus::Working => None,
-            };
+            let report = status
+                .report()
+                .map(|status| DoneReport::new(status, body.to_string()));
             return Handled {
                 action: Some(BridgeAction::PostThreadMessage {
                     body: body.to_string(),
-                    anchor,
-                    links,
                     options,
                     still_working: status == MessageStatus::Working,
                 }),
@@ -1527,7 +1116,7 @@ impl DoneServer {
                         ..Handled::default()
                     };
                 }
-                if matches!(args.status, MessageStatus::Waiting | MessageStatus::Working) {
+                let Some(status) = args.status.report() else {
                     return Handled {
                         action: Some(BridgeAction::RouterMessage {
                             body: args.body,
@@ -1536,36 +1125,12 @@ impl DoneServer {
                         action_id: Some(id),
                         ..Handled::default()
                     };
-                }
-                if args.phase != Some(DonePhase::Route) {
-                    return Handled {
-                        reply: Some(tool_error(
-                            id,
-                            "a terminal router message requires phase=\"route\"".to_string(),
-                        )),
-                        ..Handled::default()
-                    };
-                }
-                let report = DoneReport::from_args(DoneArgs {
-                    phase: DonePhase::Route,
-                    status: if args.status == MessageStatus::Complete {
-                        DoneStatus::Completed
-                    } else {
-                        DoneStatus::Blocked
-                    },
-                    summary: args.body,
-                    outputs: args.outputs,
-                });
-                return match report {
-                    Ok(report) => Handled {
-                        reply: Some(tool_ok(id, &report.summary)),
-                        report: Some(report),
-                        ..Handled::default()
-                    },
-                    Err(error) => Handled {
-                        reply: Some(tool_error(id, error.to_string())),
-                        ..Handled::default()
-                    },
+                };
+                let report = DoneReport::new(status, args.body);
+                return Handled {
+                    reply: Some(tool_ok(id, &report.summary)),
+                    report: Some(report),
+                    ..Handled::default()
                 };
             }
             other => Err(format!("unknown tool: {other}")),
@@ -1627,7 +1192,7 @@ impl DoneServer {
             if action_succeeded {
                 if let Some(report) = handled.report {
                     let mut report = report;
-                    report.outputs.message_id = posted_message_id;
+                    report.message_id = posted_message_id;
                     on_report(report);
                 }
             }
@@ -1794,14 +1359,12 @@ fn project_message(id: Value, params: Option<&Value>) -> Handled {
         BridgeAction::PostThreadMessage {
             still_working: status == MessageStatus::Working,
             body: body.to_string(),
-            anchor: None,
-            links: Vec::new(),
             options: Vec::new(),
         },
     )
 }
 
-const SUMMARY_DESCRIPTION: &str = "The full report of this phase, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.";
+const SUMMARY_DESCRIPTION: &str = "The full report of this turn, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.";
 
 /// What `set_topic` says about itself on every `tools/list`. The cold prompt
 /// asks for the call; this is what is still in context when the agent makes
@@ -1893,7 +1456,6 @@ mod tests {
         assert_eq!(tools[1]["name"], "message_agent");
         assert_eq!(tools[2]["name"], "search_conversation");
         assert_eq!(tools[3]["name"], "set_topic");
-        assert!(tools[0]["inputSchema"]["properties"]["phase"].is_object());
         assert_eq!(
             tools[0]["inputSchema"]["properties"]["status"]["enum"],
             json!(["Complete", "Blocked", "Waiting", "Working"])
@@ -2007,69 +1569,41 @@ mod tests {
             assert!(desc.contains(asked), "{asked}: {desc}");
         }
         assert!(desc.contains("activity log"), "{desc}");
-        assert!(
-            schema["properties"]["outputs"]["properties"]["completion_report"].is_null(),
-            "no structured report beside the body: {schema}"
-        );
     }
 
-    /// An agent on an older prompt still sends the structured report. It is
-    /// ignored rather than refused: the completion message it rides is a real outcome.
+    /// An agent on an older prompt still sends a phase, structured outputs,
+    /// an anchor or links. They are ignored rather than refused: the message
+    /// they ride is a real outcome, and nothing of them reaches the record.
     #[test]
-    fn a_completion_message_still_carrying_a_completion_report_is_accepted_without_it() {
+    fn a_message_still_carrying_retired_fields_is_accepted_without_them() {
         let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"revise","status":"Complete","body":"addressed the notes","outputs":{"completion_report":{"decisions":["kept the old name"]}}}}}"#,
+            r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"plan","status":"Complete","body":"addressed the notes","outputs":{"plan_path":".build/plan.md","completion_report":{"decisions":["kept the old name"]}},"anchor":{"artifact":"diff"},"links":[{"kind":"file","path":"src/lib.rs"}]}}}"#,
         );
         let report = h.report.expect("the outcome is kept");
-        assert_eq!(report.summary, "addressed the notes");
         assert_eq!(
-            serde_json::to_value(&report.outputs).unwrap(),
-            serde_json::json!({}),
-            "nothing of the old report survives onto the record"
+            report,
+            DoneReport::new(DoneStatus::Completed, "addressed the notes")
         );
+        assert!(matches!(
+            h.action,
+            Some(BridgeAction::PostThreadMessage { ref body, still_working: false, .. })
+                if body == "addressed the notes"
+        ));
     }
 
     #[test]
-    fn done_plan_completed_with_plan_path_emits_report() {
+    fn a_blocked_message_reports_blocked() {
         let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"plan","status":"Complete","body":"plan ready","outputs":{"plan_path":".build/plan.md"}}}}"#,
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Blocked","body":"missing credentials"}}}"#,
         );
         assert!(
             h.reply.is_none(),
             "a posted message is completed by the daemon"
         );
-        let report = h.report.expect("a report should be emitted");
-        assert_eq!(report.phase, DonePhase::Plan);
-        assert_eq!(report.status, DoneStatus::Completed);
-        assert_eq!(report.summary, "plan ready");
-        assert_eq!(report.outputs.plan_path.as_deref(), Some(".build/plan.md"));
-    }
-
-    #[test]
-    fn done_plan_completed_without_plan_path_is_rejected() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"plan","status":"Complete","body":"oops"}}}"#,
-        );
-        let v = parse(&h.reply.unwrap());
         assert_eq!(
-            v["result"]["isError"], true,
-            "missing plan_path is a tool error"
+            h.report.unwrap(),
+            DoneReport::new(DoneStatus::Blocked, "missing credentials")
         );
-        assert!(h.report.is_none(), "no report when validation fails");
-    }
-
-    #[test]
-    fn done_build_blocked_needs_no_plan_path() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"build","status":"Blocked","body":"missing credentials"}}}"#,
-        );
-        assert!(
-            h.reply.is_none(),
-            "a posted message is completed by the daemon"
-        );
-        let report = h.report.unwrap();
-        assert_eq!(report.phase, DonePhase::Build);
-        assert_eq!(report.status, DoneStatus::Blocked);
     }
 
     #[test]
@@ -2098,28 +1632,22 @@ mod tests {
         assert!(h.report.is_none());
     }
 
+    /// The whole coding schema: what the agent says, how its turn stands, and
+    /// the choices it offers. Nothing about phases, outputs, anchors or links.
     #[test]
-    fn tools_list_schema_enumerates_validate_phase_and_new_outputs() {
+    fn the_message_schema_carries_status_body_and_options_only() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let schema = &v["result"]["tools"][0]["inputSchema"];
-        let phases = schema["properties"]["phase"]["enum"].as_array().unwrap();
-        assert!(phases.iter().any(|p| p == "validate"));
-        assert!(phases.iter().any(|p| p == "triage"));
-        let outputs = &schema["properties"]["outputs"]["properties"];
-        assert!(outputs["stages"].is_object());
-        assert!(outputs["validation"].is_object());
-        assert!(outputs["comment_resolutions"].is_object());
-        let triage = &outputs["triage"];
-        assert_eq!(triage["type"], "object");
-        let levels = triage["properties"]["hunks"]["items"]["properties"]["level"]["enum"]
-            .as_array()
-            .expect("the level vocabulary is closed in the schema too");
-        assert_eq!(levels, &vec!["critical", "normal", "low"]);
-        assert_eq!(
-            triage["required"].as_array().unwrap(),
-            &vec!["based_on", "hunks"]
-        );
+        let mut fields: Vec<&str> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["body", "options", "status"]);
+        assert_eq!(schema["required"], json!(["status", "body"]));
     }
 
     #[test]
@@ -2236,34 +1764,16 @@ mod tests {
         );
         assert!(matches!(
             post.action,
-            Some(BridgeAction::PostThreadMessage { ref body, anchor: None, ref links, .. })
-                if body == "Which name should I use?" && links.is_empty()
+            Some(BridgeAction::PostThreadMessage { ref body, .. })
+                if body == "Which name should I use?"
         ));
         assert!(post.reply.is_none());
     }
 
     #[test]
-    fn post_thread_message_accepts_typed_file_links() {
-        let post = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Waiting","body":"See the parser.","links":[{"kind":"file","path":"src/parser.rs","line_start":12,"line_end":18}]}}}"#,
-        );
-
-        assert!(matches!(
-            post.action,
-            Some(BridgeAction::PostThreadMessage { ref links, .. })
-                if links == &vec![crate::thread::ThreadLink::File {
-                    path: "src/parser.rs".to_string(),
-                    line_start: Some(12),
-                    line_end: Some(18),
-                }]
-        ));
-        assert!(post.reply.is_none());
-    }
-
-    #[test]
-    fn complete_message_posts_and_reports_the_phase() {
+    fn complete_message_posts_and_reports_completion() {
         let sent = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","phase":"build","body":"Shipped it.","links":[{"kind":"file","path":"src/lib.rs"}]}}}"#,
+            r#"{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"Shipped it."}}}"#,
         );
 
         assert!(matches!(
@@ -2272,7 +1782,6 @@ mod tests {
                 if body == "Shipped it."
         ));
         let report = sent.report.expect("Complete advances the lifecycle");
-        assert_eq!(report.phase, DonePhase::Build);
         assert_eq!(report.status, DoneStatus::Completed);
         assert_eq!(report.summary, "Shipped it.");
     }
@@ -2333,337 +1842,6 @@ mod tests {
             assert!(post.action.is_none(), "{arguments}");
             assert!(post.reply.is_some(), "{arguments}");
         }
-    }
-
-    #[test]
-    fn done_validate_completed_without_validation_is_rejected() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"validate","status":"Complete","body":"looks good"}}}"#,
-        );
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        assert_eq!(
-            v["result"]["content"][0]["text"],
-            DoneError::MissingValidationReport.to_string()
-        );
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn done_validate_completed_with_validation_emits_report() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"validate","status":"Complete","body":"pass","outputs":{"validation":{"passed":true,"findings":"all good","notes_for_next_stage":"none"}}}}}"#,
-        );
-        assert!(
-            h.reply.is_none(),
-            "a posted message is completed by the daemon"
-        );
-        let report = h.report.expect("a report should be emitted");
-        assert_eq!(report.phase, DonePhase::Validate);
-        let validation = report.outputs.validation.expect("validation carried");
-        assert!(validation.passed);
-        assert_eq!(validation.findings, "all good");
-        assert_eq!(validation.notes_for_next_stage, "none");
-    }
-
-    /// The typed triage report: the levels are a closed vocabulary, the
-    /// optional per-hunk prose rides along, and `based_on` says which revision
-    /// was read.
-    #[test]
-    fn done_triage_completed_carries_the_classified_hunks() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"triage","status":"Complete","body":"the crypto change carries the risk","outputs":{"triage":{"based_on":"rev-1","hunks":[{"hunk_id":"habc","level":"critical","rationale":"changes key derivation"},{"hunk_id":"hdef","level":"low","rationale":"version bump only","group":"version bumps"},{"hunk_id":"hghi","level":"normal"}]}}}}}"#,
-        );
-        assert!(
-            h.reply.is_none(),
-            "a posted message is completed by the daemon"
-        );
-        let report = h.report.expect("a triage report is emitted");
-        assert_eq!(report.phase, DonePhase::Triage);
-        let triage = report.outputs.triage.expect("triage carried");
-        assert_eq!(triage.based_on, "rev-1");
-        assert_eq!(triage.hunks.len(), 3);
-        assert_eq!(triage.hunks[0].level, crate::run::TriageLevel::Critical);
-        assert_eq!(
-            triage.hunks[1].group.as_deref(),
-            Some("version bumps"),
-            "a collapsed hunk names its group"
-        );
-        assert_eq!(triage.hunks[2].level, crate::run::TriageLevel::Normal);
-        assert_eq!(triage.hunks[2].rationale, None);
-    }
-
-    #[test]
-    fn done_triage_completed_without_a_triage_report_is_rejected() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"triage","status":"Complete","body":"triaged"}}}"#,
-        );
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        assert_eq!(
-            v["result"]["content"][0]["text"],
-            DoneError::MissingTriageReport.to_string()
-        );
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn a_level_outside_the_vocabulary_is_refused() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"triage","status":"Complete","body":"triaged","outputs":{"triage":{"based_on":"rev-1","hunks":[{"hunk_id":"habc","level":"urgent"}]}}}}}"#,
-        );
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("urgent"), "{text}");
-        assert!(h.report.is_none());
-    }
-
-    /// A field the phase does not define is a misunderstanding of the contract,
-    /// not a harmless extra: refuse it while the agent can still correct it.
-    #[test]
-    fn an_unknown_field_on_a_triage_hunk_is_refused() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"triage","status":"Complete","body":"triaged","outputs":{"triage":{"based_on":"rev-1","hunks":[{"hunk_id":"habc","level":"low","severity":"minor"}]}}}}}"#,
-        );
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        assert!(v["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("severity"));
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn one_hunk_classified_twice_is_refused() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"triage","status":"Complete","body":"triaged","outputs":{"triage":{"based_on":"rev-1","hunks":[{"hunk_id":"habc","level":"low"},{"hunk_id":"habc","level":"critical"}]}}}}}"#,
-        );
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        assert_eq!(
-            v["result"]["content"][0]["text"],
-            DoneError::DuplicateTriageHunk("habc".to_string()).to_string()
-        );
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn done_triage_blocked_needs_no_triage_report() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":45,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"triage","status":"Blocked","body":"the worktree is gone"}}}"#,
-        );
-        assert!(
-            h.reply.is_none(),
-            "a posted message is completed by the daemon"
-        );
-        assert!(h.report.is_some());
-    }
-
-    /// The id vocabulary belongs to the patch, so the check happens where the
-    /// patch is — and the refusal hands back the ids the agent could have used.
-    #[test]
-    fn a_hunk_id_that_is_not_in_the_diff_is_refused_with_the_ones_that_are() {
-        let report = crate::run::TriageReport {
-            based_on: "rev-1".to_string(),
-            hunks: vec![
-                crate::run::TriageHunk {
-                    hunk_id: "hpresent".to_string(),
-                    level: crate::run::TriageLevel::Normal,
-                    rationale: None,
-                    group: None,
-                },
-                crate::run::TriageHunk {
-                    hunk_id: "hinvented".to_string(),
-                    level: crate::run::TriageLevel::Low,
-                    rationale: Some("looks harmless".to_string()),
-                    group: Some("noise".to_string()),
-                },
-            ],
-            overrides: Vec::new(),
-        };
-        let valid = vec!["hpresent".to_string(), "hmissed".to_string()];
-        let error = check_triage_hunk_ids(&report, &valid).expect_err("an invented id is refused");
-        let message = error.to_string();
-        assert!(message.contains("hinvented"), "{message}");
-        assert!(
-            message.contains("hpresent") && message.contains("hmissed"),
-            "{message}"
-        );
-
-        // Classifying only some of the diff is allowed: the rest renders as it
-        // does today, which is what an untriaged hunk means.
-        let partial = crate::run::TriageReport {
-            based_on: "rev-1".to_string(),
-            hunks: vec![report.hunks[0].clone()],
-            overrides: Vec::new(),
-        };
-        assert!(check_triage_hunk_ids(&partial, &valid).is_ok());
-    }
-
-    #[test]
-    fn done_recover_completed_requires_a_verified_recovery_report() {
-        let missing = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"recover","status":"Complete","body":"recovered"}}}"#,
-        );
-        assert_eq!(parse(&missing.reply.unwrap())["result"]["isError"], true);
-        assert!(missing.report.is_none());
-
-        let complete = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":92,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"recover","status":"Complete","body":"recovered","outputs":{"recovery":{"recovery_id":"recovery-nonce","recovered":true,"branch":"build/fix","head_sha":"0123456789012345678901234567890123456789","findings":"branch restored"}}}}}"#,
-        );
-        let report = complete.report.expect("verified recovery report");
-        assert_eq!(report.phase, DonePhase::Recover);
-        assert_eq!(
-            report.outputs.recovery.unwrap().recovery_id,
-            "recovery-nonce"
-        );
-    }
-
-    #[test]
-    fn done_validate_blocked_needs_no_validation_report() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"validate","status":"Blocked","body":"cannot run tests"}}}"#,
-        );
-        assert!(
-            h.reply.is_none(),
-            "a posted message is completed by the daemon"
-        );
-        assert!(h.report.is_some());
-    }
-
-    fn plan_done_message(id: i64, stages_json: &str) -> String {
-        format!(
-            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"post_thread_message","arguments":{{"phase":"plan","status":"Complete","body":"plan ready","outputs":{{"plan_path":".build/plan/stages.json","stages":{stages_json}}}}}}}}}"#
-        )
-    }
-
-    #[test]
-    fn done_plan_completed_with_good_manifest_echo_carries_entries() {
-        let stages = r#"[{"id":"database-schema","title":"Database schema","path":".build/plan/01-database-schema.md","summary":"Create the tables."},{"id":"api-endpoints","title":"API endpoints","path":".build/plan/02-api-endpoints.md","summary":""}]"#;
-        let h = server().handle_message(&plan_done_message(11, stages));
-        assert!(
-            h.reply.is_none(),
-            "a posted message is completed by the daemon"
-        );
-        let report = h.report.expect("a report should be emitted");
-        let entries = report.outputs.stages.expect("stages carried");
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].id, "database-schema");
-        assert_eq!(entries[1].summary, "");
-    }
-
-    #[test]
-    fn done_plan_completed_with_duplicate_stage_ids_is_rejected() {
-        let stages = r#"[{"id":"dup","title":"A","path":".build/plan/01-a.md"},{"id":"dup","title":"B","path":".build/plan/02-b.md"}]"#;
-        let h = server().handle_message(&plan_done_message(12, stages));
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("duplicate id"), "got: {text}");
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn done_plan_completed_with_bad_id_chars_is_rejected() {
-        let stages = r#"[{"id":"Not_Kebab","title":"A","path":".build/plan/01-a.md"}]"#;
-        let h = server().handle_message(&plan_done_message(13, stages));
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("kebab-case"), "got: {text}");
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn done_plan_completed_with_path_outside_plan_dir_is_rejected() {
-        let stages = r#"[{"id":"a","title":"A","path":"src/a.md"}]"#;
-        let h = server().handle_message(&plan_done_message(14, stages));
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains(".build/plan/"), "got: {text}");
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn done_plan_completed_with_traversal_stage_path_is_rejected() {
-        // `.build/plan/../../..` satisfies a naive prefix check but escapes the
-        // plan dir (and the worktree) when joined — it must be rejected.
-        let stages =
-            r#"[{"id":"a","title":"A","path":".build/plan/../../../../../../etc/passwd"}]"#;
-        let h = server().handle_message(&plan_done_message(19, stages));
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("traversal"), "got: {text}");
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn done_plan_completed_with_traversal_plan_path_is_rejected() {
-        for bad_path in ["../../outside.md", "/etc/passwd"] {
-            let message = format!(
-                r#"{{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{{"name":"post_thread_message","arguments":{{"phase":"plan","status":"Complete","body":"plan ready","outputs":{{"plan_path":"{bad_path}"}}}}}}}}"#
-            );
-            let h = server().handle_message(&message);
-            let v = parse(&h.reply.unwrap());
-            assert_eq!(v["result"]["isError"], true, "path {bad_path:?} accepted");
-            assert!(h.report.is_none());
-        }
-    }
-
-    #[test]
-    fn done_plan_completed_with_empty_title_is_rejected() {
-        let stages = r#"[{"id":"a","title":"","path":".build/plan/01-a.md"}]"#;
-        let h = server().handle_message(&plan_done_message(15, stages));
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("empty title"), "got: {text}");
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn done_plan_completed_with_empty_stages_array_is_rejected() {
-        let h = server().handle_message(&plan_done_message(16, "[]"));
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("non-empty"), "got: {text}");
-        assert!(h.report.is_none());
-    }
-
-    #[test]
-    fn done_revise_completed_with_comment_resolutions_round_trips() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"revise","status":"Complete","body":"addressed comments","outputs":{"comment_resolutions":[{"comment_id":"c-1","response":"switched to a timestamp"}]}}}}"#,
-        );
-        assert!(
-            h.reply.is_none(),
-            "a posted message is completed by the daemon"
-        );
-        let report = h.report.expect("a report should be emitted");
-        let resolutions = report
-            .outputs
-            .comment_resolutions
-            .expect("resolutions carried");
-        assert_eq!(resolutions.len(), 1);
-        assert_eq!(resolutions[0].comment_id, "c-1");
-        assert_eq!(resolutions[0].response, "switched to a timestamp");
-    }
-
-    #[test]
-    fn done_build_completed_ignores_stray_stages_and_validation_outputs() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"build","status":"Complete","body":"done","outputs":{"stages":[],"validation":{"passed":true,"findings":"","notes_for_next_stage":""}}}}}"#,
-        );
-        assert!(
-            h.reply.is_none(),
-            "a posted message is completed by the daemon"
-        );
-        assert!(h.report.is_some());
     }
 
     #[test]
@@ -2929,27 +2107,20 @@ mod tests {
         let h = router().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let schema = &v["result"]["tools"][5]["inputSchema"];
-        assert_eq!(schema["properties"]["phase"]["enum"], json!(["route"]));
+        assert!(schema["properties"]["phase"].is_null(), "{schema}");
         assert_eq!(
             schema["properties"]["status"]["enum"],
             json!(["Complete", "Blocked", "Waiting", "Working"])
         );
 
         let routed = router().handle_message(
-            r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"route","status":"Complete","body":"filed an issue on the bridge"}}}"#,
+            r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"filed an issue on the bridge"}}}"#,
         );
         let report = routed.report.expect("a routing report");
-        assert_eq!(report.phase, DonePhase::Route);
-        assert_eq!(report.summary, "filed an issue on the bridge");
-
-        let wrong_phase = router().handle_message(
-            r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"build","status":"Complete","body":"built it"}}}"#,
-        );
         assert_eq!(
-            parse(&wrong_phase.reply.unwrap())["result"]["isError"],
-            true
+            report,
+            DoneReport::new(DoneStatus::Completed, "filed an issue on the bridge")
         );
-        assert!(wrong_phase.report.is_none());
     }
 
     /// The parser's whole job on this surface: turn a tool call into the typed
@@ -3247,7 +2418,7 @@ mod tests {
             "\n",
             r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
             "\n",
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"revise","status":"Complete","body":"addressed comments"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"addressed comments"}}}"#,
             "\n",
         );
         let mut out = Vec::new();
@@ -3264,7 +2435,8 @@ mod tests {
         // One report (the completion message), and two response lines (initialize + tools/call;
         // the notification produces none).
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].phase, DonePhase::Revise);
+        assert_eq!(reports[0].summary, "addressed comments");
+        assert_eq!(reports[0].message_id.as_deref(), Some("m-1"));
         let lines: Vec<&str> = std::str::from_utf8(&out).unwrap().lines().collect();
         assert_eq!(lines.len(), 2);
     }
@@ -3272,7 +2444,7 @@ mod tests {
     #[test]
     fn run_stdio_does_not_complete_when_the_message_cannot_be_posted() {
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"phase":"build","status":"Complete","body":"finished"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"finished"}}}"#,
             "\n",
         );
         let mut out = Vec::new();

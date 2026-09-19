@@ -112,7 +112,7 @@ function hydrateViews(views, bodyOf) {
 }
 
 /** A whole stack of views as the entries `patchList` paints: noise grouped and
- *  triage ordering as ever, with every file drawn through the fold-aware entry.
+ *  as ever, with every file drawn through the fold-aware entry.
  *  `bodyOf(path)` answers the body cached for a file, or undefined. */
 export function fileStackEntries(views, options = {}) {
   const bodyOf = options.bodyOf || noBodies;

@@ -21,8 +21,6 @@ import { createFileFolds, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
-import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
-import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
@@ -61,17 +59,11 @@ export function emptyStackText(totalFiles, changedOnly) {
 /**
  * createReviewPlug(options) → { mount(host), unmount(), refreshActions() }.
  *
- * - `fetchDiff()` → `{ patch, commentable?, key?, triage?, projectId? }` (or
- *   null to paint nothing). `commentable` is whether this surface can talk to an
- *   agent right now; `key` is whatever else, besides the patch, changes what is
- *   drawn. A surface that is triaged reports `triage` on every payload — the
- *   run's pass, or null when no pass has read this diff yet — and `projectId`,
- *   which the reviewer's trust dial is remembered under. A surface that never
- *   reports `triage` renders the plain stack, with no overlay and no label.
+ * - `fetchDiff()` → `{ patch, commentable?, key? }` (or null to paint
+ *   nothing). `commentable` is whether this surface can talk to an agent right
+ *   now; `key` is whatever else, besides the patch, changes what is drawn.
  * - `submit(messages)` sends the anchored comment posts; omitting it makes the
  *   surface read-only.
- * - `submitOverride({ hunk_id, direction, note })` sends the reviewer's
- *   disagreement with where the pass put a hunk; omitting it draws no offers.
  * - `revisionId()` names the revision the anchors belong to.
  * - `renderIdleActions(actionsHost)` fills the git toolbar's verb host while no
  *   comment is pending; it returns whether it drew anything.
@@ -86,7 +78,6 @@ export function createReviewPlug({
   // hands it down, and a plug made without one caches nothing.
   cacheScope,
   submit = null,
-  submitOverride = null,
   revisionId = () => null,
   renderIdleActions = () => false,
   actionsFrozen = () => false,
@@ -113,35 +104,12 @@ export function createReviewPlug({
   let responseDiffKey = null;
   const parsedDiffs = createParsedDiffCache();
   let renderedFiles = []; // the freshest parsed diff — what a stamp is taken from
-  let renderedPatch = ""; // the patch those files came from — where hunk ids live
+  let renderedPatch = ""; // the patch those files came from
   let commentableNow = false;
   let trayMounted = false;
   let noiseExpanded = false; // the collapsed generated-files group at the bottom
-  // Review prioritization. `triageReport` is undefined until a payload speaks
-  // about triage at all: a surface that never mentions it renders the plain
-  // stack, while one that reports `triage: null` has a pass missing and says so.
-  let triageReport;
-  let triageEnabled = false;
-  let triageProject = null;
-  let trustDial = false;
   let contextFrame = 0;
-  const expandedGroups = new Set(); // the collapsed triage groups the reviewer opened
   const folds = createFileFolds();
-  // Disagreeing with the pass: applied to the stack on the tap, sent after, and
-  // held here only until the pass comes back carrying it.
-  const overrides = submitOverride
-    ? createTriageOverrides({
-        post: submitOverride,
-        onChange: () => {
-          diffKey = null; // the reading changed under an unchanged patch
-          render();
-        },
-      })
-    : null;
-  /** The pass as the reviewer's latest word makes it — what is rendered, and
-   *  what the poll compares against. */
-  const currentTriage = () => (overrides ? overrides.apply(triageReport) : triageReport);
-
   // Re-review memory, per plug instance (per session): what the reviewer saw
   // when they last sent comments, which files they have approved, which they
   // have selected, and whether the stack is narrowed to only what moved since.
@@ -273,16 +241,6 @@ export function createReviewPlug({
       noiseExpanded,
       empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
       sortOrder,
-      review:
-        !triageEnabled || triageReport === undefined
-          ? null
-          : {
-              triage: currentTriage(),
-              patch: renderedPatch,
-              dial: trustDial,
-              expandedGroups,
-              overridable: Boolean(overrides),
-            },
     });
     paintChangeset({
       bar: reviewBarHtml(renderedFiles, {
@@ -314,26 +272,6 @@ export function createReviewPlug({
     return true;
   };
 
-  const claimTrustDial = (event) => {
-    if (!event.target.closest(".tdial")) return false;
-    trustDial = !trustDial;
-    saveTrustDial(triageProject, trustDial);
-    render();
-    return true;
-  };
-
-  const claimOverride = (event) => Boolean(overrides && overrides.handleClick(event));
-
-  const claimTriageGroup = (event) => {
-    const head = event.target.closest(".tgrouphead");
-    if (!head) return false;
-    const name = head.dataset.group;
-    if (expandedGroups.has(name)) expandedGroups.delete(name);
-    else expandedGroups.add(name);
-    render();
-    return true;
-  };
-
   /// The reviewer approving a file, or taking it back. An approved file
   /// collapses, which is what makes the stack shorten as they work down it.
   const claimApprove = (event) => {
@@ -349,9 +287,6 @@ export function createReviewPlug({
     claimSecret,
     claimApprove,
     claimNoiseGroup,
-    claimTrustDial,
-    claimOverride,
-    claimTriageGroup,
     ...stackClaims({
       comments: () => (trayMounted ? commentLayer : null),
       openFile: () => openFile,
@@ -415,15 +350,6 @@ export function createReviewPlug({
     renderedPatch = value.patch || "";
     responseDiffKey = value.diff_key || null;
     commentableNow = value.commentable !== false && Boolean(commentLayer);
-    // A saved setting can be older than the run payload already on screen.
-    // Keep the report in the record, but only a live read may opt this paint
-    // into triage; the instant cached diff therefore always starts in file
-    // order and cannot expose a disabled overlay while the bridge is offline.
-    triageEnabled = false;
-    triageReport = undefined;
-    if (!value.projectId || value.projectId === triageProject) return;
-    triageProject = value.projectId;
-    trustDial = loadTrustDial(triageProject);
   };
 
   const seedFromCache = async () => {
@@ -453,20 +379,9 @@ export function createReviewPlug({
       };
     livePainted = true;
     const nextCommentable = payload.commentable !== false && Boolean(commentLayer);
-    // The pass, and the project whose dial governs how it is read. A project
-    // the plug has not seen before brings its remembered dial with it.
-    const nextTriageEnabled = payload.triageEnabled === true;
-    const nextTriage = nextTriageEnabled && Object.hasOwn(payload, "triage") ? payload.triage || null : undefined;
-    if (payload.projectId && payload.projectId !== triageProject) {
-      triageProject = payload.projectId;
-      trustDial = loadTrustDial(triageProject);
-    }
     const key = [
       String(payload.key ?? ""),
       String(nextCommentable),
-      String(nextTriageEnabled),
-      String(trustDial),
-      triageFingerprint(overrides ? overrides.apply(nextTriage) : nextTriage),
       String(payload.diff_key ?? payload.revision ?? payload.patch ?? ""),
       JSON.stringify(fileEditedAtOf(payload)),
     ].join("\x01");
@@ -490,8 +405,6 @@ export function createReviewPlug({
       : parsedDiffs.views(payload.patch, { contentKeys, editedAt: fileEditedAt });
     renderedPatch = payload.patch || "";
     commentableNow = nextCommentable;
-    triageReport = nextTriage;
-    triageEnabled = nextTriageEnabled;
     diffKey = key;
     // Only a paint that changed anything rewrites the record — the skip branch
     // above already filtered the every-1.6s sameness out.
@@ -500,9 +413,6 @@ export function createReviewPlug({
       writeCached(address, {
         patch: payload.patch,
         commentable: payload.commentable !== false,
-        triage: Object.hasOwn(payload, "triage") ? payload.triage || null : null,
-        triageEnabled: nextTriageEnabled,
-        projectId: payload.projectId || null,
         file_edited_at: fileEditedAt,
         diff_key: responseDiffKey,
       });
@@ -615,7 +525,6 @@ export function createReviewPlug({
       if (editedTimeWatcher) editedTimeWatcher.dispose();
       editedTimeWatcher = null;
       if (commentLayer) commentLayer.dispose();
-      if (overrides) overrides.dispose();
       parsedDiffs.clear();
       viewport.dispose();
       if (host) {

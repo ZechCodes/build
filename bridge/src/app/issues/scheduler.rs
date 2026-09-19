@@ -241,25 +241,6 @@ impl AppState {
                 .map(Some);
         };
 
-        if let Some(attempt) = self.runs[&run_id]
-            .recovery
-            .as_ref()
-            .filter(|attempt| attempt.state == crate::run::RecoveryState::Started)
-        {
-            return self
-                .set_issue_scheduler_activity(
-                    issue_id,
-                    None,
-                    ImplementationActivity::Blocked {
-                        stage_id: attempt.requested_stage_id.clone(),
-                        reason: self.runs[&run_id].last_error.clone().unwrap_or_else(|| {
-                            format!("verified recovery {} is running", attempt.id)
-                        }),
-                    },
-                )
-                .map(|()| None);
-        }
-
         let waiting = self.issue_scheduler_waiting_on(issue_id, &intent);
         if let Some(job) = self.ensure_issue_implementation_worktree(issue_id, &run_id, waiting)? {
             return Ok(Some(job));
@@ -364,18 +345,16 @@ impl AppState {
             )
         };
         // An adopted checkout is somebody else's directory: Build never cut it,
-        // so it cannot cut it again. Standing is all this can ask of one — and
-        // when it is gone there is no git to run, only the recovery agent to
-        // start and the Issue to tell.
+        // so it cannot cut it again. Standing is all this can ask of one.
         if adopted {
             if checkout_stood {
                 return Ok(None);
             }
-            return Err(self.start_checkout_recovery(
-                issue_id,
-                run_id,
-                "adopted worktree is missing; its original checkout cannot be recreated safely",
-            )?);
+            return Err(
+                "Build cannot recreate an adopted worktree that is missing. \
+                        Restore the checkout, then try again."
+                    .to_string(),
+            );
         }
         let project_id = self.project_of(run_id)?;
         let resolved = self.resolved_isolation(&project_id);
@@ -419,32 +398,6 @@ impl AppState {
         let Some(run) = self.current_issue_implementation(issue_id) else {
             return Ok(());
         };
-        if let Some(attempt) = run.recovery.as_ref().filter(|attempt| {
-            matches!(
-                attempt.state,
-                crate::run::RecoveryState::Started | crate::run::RecoveryState::Failed
-            )
-        }) {
-            return self.set_issue_scheduler_activity(
-                issue_id,
-                None,
-                ImplementationActivity::Blocked {
-                    stage_id: attempt.requested_stage_id.clone(),
-                    reason: run
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| match attempt.state {
-                            crate::run::RecoveryState::Started => {
-                                format!("verified recovery {} is running", attempt.id)
-                            }
-                            crate::run::RecoveryState::Failed => {
-                                format!("verified recovery {} failed", attempt.id)
-                            }
-                            crate::run::RecoveryState::Succeeded => unreachable!("filtered above"),
-                        }),
-                },
-            );
-        }
         let (intent, activity) = match run.run.state {
             RunState::Review | RunState::Merged => (
                 Some(ImplementationIntent::None),
@@ -565,7 +518,6 @@ impl AppState {
         // it maps to is that run's first, which is what the verb defaults to.
         object.remove("agent_id");
         match action {
-            "fix" => self.run_stage_fix(&run_params)?,
             "diff" => return self.plan_run_diff(&run_params, Some(issue_id)),
             "request_changes" => self.run_request_changes(&run_params)?,
             "git_action" => self.run_git_action(&run_params)?,

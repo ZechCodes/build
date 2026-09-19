@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-// Push invalidation, client side: the bridge says what moved, and the surface
-// showing it refetches. Everything here is about the two modes being separate —
-// an old bridge never arms, and an unarmed client polls exactly as it always
-// did.
+// The subscriptions this client holds: the bridge flushes what moved, and the
+// surfaces standing for those entities hear it. Nothing here runs on a timer,
+// and a registration that asks for one is refused — an old bridge that never
+// arms is a machine this client hears nothing from, which is what the ordered
+// pass on every greeting is for.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
@@ -12,11 +13,9 @@ let armChangeEvents,
   disarmChangeEvents,
   dispatchChangeEvent,
   greetBridge,
-  pollIntervalMs,
   refetchEverything,
   resetChangeEvents,
-  watchChanges,
-  SAFETY_POLL_MS;
+  watchChanges;
 
 const setHidden = (hidden) =>
   Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
@@ -25,6 +24,16 @@ const becomeVisible = () => {
   setHidden(false);
   document.dispatchEvent(new Event("visibilitychange"));
 };
+
+/** One flush off a machine: the bodies of what moved, addressed by entity.
+ *  The board's own line rides under the id the bridge gives it. */
+const flush = (items, deviceId) => dispatchChangeEvent({ type: "changes", items }, deviceId);
+
+/** The board moved on this machine. */
+const boardMoved = (deviceId) => flush([{ entity_id: "board", state: {} }], deviceId);
+
+/** One entity moved on this machine, carrying the body named. */
+const entityMoved = (entityId, deviceId, body = { state: {} }) => flush([{ entity_id: entityId, ...body }], deviceId);
 
 beforeEach(async () => {
   vi.resetModules();
@@ -37,11 +46,9 @@ beforeEach(async () => {
     disarmChangeEvents,
     dispatchChangeEvent,
     greetBridge,
-    pollIntervalMs,
     refetchEverything,
     resetChangeEvents,
     watchChanges,
-    SAFETY_POLL_MS,
   } = await import("../src/core/changeEvents.js"));
 });
 
@@ -68,104 +75,56 @@ describe("arming", () => {
   });
 });
 
-describe("the poll cadence", () => {
-  it("keeps polling directories whose external edits have no push watcher", () => {
-    const refresh = vi.fn();
-    const watcher = watchChanges({ refresh, intervalMs: 1600, entity: "workspace-1", keepPolling: true });
-    armChangeEvents({ push_events: true });
-    vi.advanceTimersByTime(3200);
-    expect(refresh).toHaveBeenCalledTimes(2);
-    dispatchChangeEvent({ type: "entity.changed", id: "workspace-1" });
-    expect(refresh).toHaveBeenCalledTimes(3);
-    watcher.dispose();
-    vi.advanceTimersByTime(1600);
-    expect(refresh).toHaveBeenCalledTimes(3);
-  });
-  it("keeps a surface's own interval while unarmed", () => {
-    expect(pollIntervalMs(1600)).toBe(1600);
-  });
-
-  it("stands a fast poll down to the safety poll once armed", () => {
-    armChangeEvents({ push_events: true }, "dev-a");
-    expect(pollIntervalMs(1600)).toBe(SAFETY_POLL_MS);
-    expect(SAFETY_POLL_MS).toBe(60000);
-  });
-
-  it("never speeds a slow poll up to the safety cadence", () => {
-    armChangeEvents({ push_events: true }, "dev-a");
-    expect(pollIntervalMs(120000)).toBe(120000);
-  });
-
-  it("polls a watcher at its own interval while unarmed", () => {
-    const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 1600 });
-    vi.advanceTimersByTime(1600);
-    expect(refresh).toHaveBeenCalledTimes(1);
-  });
-
-  it("polls an armed watcher only at the safety cadence", () => {
-    armChangeEvents({ push_events: true }, "dev-a");
-    const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 1600 });
-    vi.advanceTimersByTime(59000);
-    expect(refresh).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1000);
-    expect(refresh).toHaveBeenCalledTimes(1);
-  });
-
-  it("re-times watchers that were already mounted when the mode changed", () => {
-    const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 1600 });
-    armChangeEvents({ push_events: true }, "dev-a");
-    vi.advanceTimersByTime(1600);
-    expect(refresh).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(58400);
-    expect(refresh).toHaveBeenCalledTimes(1);
-  });
-
-  // A cache-first surface has no poll at all: it subscribes, it hears, it
-  // paints. Naming no interval used to mean `setInterval(fn, undefined)` —
-  // a timer firing as fast as the browser will run it — so the one way to
-  // register without a poll was to invent a cadence nobody wanted.
-  it("starts no timer at all for a watcher that names no interval", () => {
+// A surface here has no poll at all: it subscribes, it hears, it paints. The
+// registry used to run one per surface, so the one way to register without a
+// poll was to invent a cadence nobody wanted.
+describe("the cadence there is not", () => {
+  it("starts no timer, for any registration", () => {
     const refresh = vi.fn();
     watchChanges({ refresh, entity: "run-1", kinds: ["git"] });
+    watchChanges({ refresh, kinds: ["state"] });
     vi.advanceTimersByTime(60 * 60 * 1000);
     expect(refresh).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("still delivers a push to a watcher that names no interval", () => {
+  // Honouring a cadence quietly would put a poll back without anybody reading
+  // a line of the module, so a registration naming one is refused outright.
+  it("takes a registration that names no cadence, and no other shape", () => {
     const refresh = vi.fn();
-    armChangeEvents({ push_events: true }, "dev-a");
-    watchChanges({ refresh, entity: "run-1", deviceId: "dev-a", kinds: ["git"] });
-    dispatchChangeEvent({ type: "entity.changed", id: "run-1" }, "dev-a");
-    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(() => watchChanges({ refresh, intervalMs: 1600 })).toThrow(/does not poll/);
+    expect(() => watchChanges({ refresh, keepPolling: true })).toThrow(/does not poll/);
+    expect(() => watchChanges({ refresh, catchUpOnVisible: false })).toThrow(/does not poll/);
+    expect(() => watchChanges({ refresh, entity: "run-1", kinds: ["git"] })).not.toThrow();
   });
 
-  it("stops polling once disposed", () => {
+  it("delivers a push to a watcher, and stops once it is disposed", () => {
     const refresh = vi.fn();
-    const watcher = watchChanges({ refresh, intervalMs: 1000 });
+    armChangeEvents({ push_events: true }, "dev-a");
+    const watcher = watchChanges({ refresh, entity: "run-1", deviceId: "dev-a", kinds: ["git"] });
+    entityMoved("run-1", "dev-a", { git: {} });
+    expect(refresh).toHaveBeenCalledTimes(1);
+
     watcher.dispose();
-    vi.advanceTimersByTime(5000);
-    expect(refresh).not.toHaveBeenCalled();
+    entityMoved("run-1", "dev-a", { git: {} });
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("board.changed", () => {
+describe("the board's own item", () => {
   it("refetches every board-scoped surface exactly once", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const feed = vi.fn();
-    watchChanges({ refresh: feed, intervalMs: 2000 });
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    watchChanges({ refresh: feed });
+    boardMoved("dev-a");
     expect(feed).toHaveBeenCalledTimes(1);
   });
 
   it("leaves entity surfaces alone — their own event says when they moved", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const detail = vi.fn();
-    watchChanges({ refresh: detail, intervalMs: 1600, entity: "run-7" });
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    watchChanges({ refresh: detail, entity: "run-7" });
+    boardMoved("dev-a");
     expect(detail).not.toHaveBeenCalled();
   });
 });
@@ -177,27 +136,31 @@ describe("an event this client does not act on", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const feed = vi.fn();
     const detail = vi.fn();
-    watchChanges({ refresh: feed, intervalMs: 2000 });
-    watchChanges({ refresh: detail, intervalMs: 1600, entity: "run-7" });
+    watchChanges({ refresh: feed });
+    watchChanges({ refresh: detail, entity: "run-7" });
 
     expect(dispatchChangeEvent({ type: "session.hello" }, "dev-a")).toBe(false);
-    expect(dispatchChangeEvent({ type: "entity.changed" }, "dev-a")).toBe(false);
     expect(dispatchChangeEvent({ type: "constructor" }, "dev-a")).toBe(false);
+    // The bridge still sends the legacy hints. This client paints from the
+    // cache and acts on bodies, so a hint is not news it can do anything with.
+    expect(dispatchChangeEvent({ type: "board.changed" }, "dev-a")).toBe(false);
+    expect(dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a")).toBe(false);
+    expect(flush([], "dev-a")).toBe(false);
     expect(feed).not.toHaveBeenCalled();
     expect(detail).not.toHaveBeenCalled();
   });
 });
 
-describe("entity.changed", () => {
+describe("an entity's item", () => {
   it("refetches only the surfaces showing that entity", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const shown = vi.fn();
     const other = vi.fn();
     const feed = vi.fn();
-    watchChanges({ refresh: shown, intervalMs: 1600, entity: "run-7" });
-    watchChanges({ refresh: other, intervalMs: 1600, entity: "run-9" });
-    watchChanges({ refresh: feed, intervalMs: 2000 });
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
+    watchChanges({ refresh: shown, entity: "run-7" });
+    watchChanges({ refresh: other, entity: "run-9" });
+    watchChanges({ refresh: feed });
+    entityMoved("run-7", "dev-a");
     expect(shown).toHaveBeenCalledTimes(1);
     expect(other).not.toHaveBeenCalled();
     expect(feed).not.toHaveBeenCalled();
@@ -207,27 +170,27 @@ describe("entity.changed", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     let showing = "run-7";
     const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 1600, entity: () => showing });
+    watchChanges({ refresh, entity: () => showing });
     showing = "run-9";
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
+    entityMoved("run-7", "dev-a");
     expect(refresh).not.toHaveBeenCalled();
-    dispatchChangeEvent({ type: "entity.changed", id: "run-9" }, "dev-a");
+    entityMoved("run-9", "dev-a");
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("matches any of the ids a surface stands for", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 1600, entity: () => ["run-7", "wt-3"] });
-    dispatchChangeEvent({ type: "entity.changed", id: "wt-3" }, "dev-a");
+    watchChanges({ refresh, entity: () => ["run-7", "wt-3"] });
+    entityMoved("wt-3", "dev-a");
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("ignores an entity surface that does not know its id yet", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 1600, entity: () => null });
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
+    watchChanges({ refresh, entity: () => null });
+    entityMoved("run-7", "dev-a");
     expect(refresh).not.toHaveBeenCalled();
   });
 });
@@ -236,10 +199,10 @@ describe("an unarmed client", () => {
   it("ignores change events entirely", () => {
     const feed = vi.fn();
     const detail = vi.fn();
-    watchChanges({ refresh: feed, intervalMs: 2000 });
-    watchChanges({ refresh: detail, intervalMs: 1600, entity: "run-7" });
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
+    watchChanges({ refresh: feed });
+    watchChanges({ refresh: detail, entity: "run-7" });
+    boardMoved("dev-a");
+    entityMoved("run-7", "dev-a");
     expect(feed).not.toHaveBeenCalled();
     expect(detail).not.toHaveBeenCalled();
   });
@@ -249,19 +212,19 @@ describe("a hidden tab", () => {
   it("skips the refetch an event asks for, exactly as it skips a poll", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 2000 });
+    watchChanges({ refresh });
     setHidden(true);
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    boardMoved("dev-a");
     expect(refresh).not.toHaveBeenCalled();
   });
 
   it("catches up on the events it missed the moment it comes back", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 2000 });
+    watchChanges({ refresh });
     setHidden(true);
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    boardMoved("dev-a");
+    boardMoved("dev-a");
     becomeVisible();
     expect(refresh).toHaveBeenCalledTimes(1);
   });
@@ -269,18 +232,8 @@ describe("a hidden tab", () => {
   it("has nothing to catch up on when no event arrived while it was away", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 2000 });
+    watchChanges({ refresh });
     setHidden(true);
-    becomeVisible();
-    expect(refresh).not.toHaveBeenCalled();
-  });
-
-  it("leaves the catch-up to a surface that owns its own", () => {
-    armChangeEvents({ push_events: true }, "dev-a");
-    const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 2000, catchUpOnVisible: false });
-    setHidden(true);
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
     becomeVisible();
     expect(refresh).not.toHaveBeenCalled();
   });
@@ -288,9 +241,9 @@ describe("a hidden tab", () => {
   it("still delivers to a surface whose poll does not pause while hidden", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 1600, entity: "iss-1", pausesWhileHidden: false });
+    watchChanges({ refresh, entity: "iss-1", pausesWhileHidden: false });
     setHidden(true);
-    dispatchChangeEvent({ type: "entity.changed", id: "iss-1" }, "dev-a");
+    entityMoved("iss-1", "dev-a");
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 });
@@ -332,13 +285,19 @@ describe("the greeting", () => {
     expect(accepted).toHaveBeenCalledWith(greeting);
   });
 
-  it("leaves a bridge that refuses the greeting polling", async () => {
+  it("leaves a bridge that refuses the greeting unarmed, hearing nothing", async () => {
     const call = vi.fn(async () => {
       throw new Error("unknown method: session.hello");
     });
+    const refresh = vi.fn();
+    watchChanges({ refresh, entity: "run-7" });
     await greetBridge(call, { deviceId: "dev-a" });
+
     expect(changeEventsArmed("dev-a")).toBe(false);
-    expect(pollIntervalMs(1600)).toBe(1600);
+    expect(entityMoved("run-7", "dev-a")).toBe(false);
+    // The greeting itself still reads everything once: the gap behind a
+    // session that has just been greeted announced nothing.
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("requires an actual transport acknowledgement for a strict initial greeting", async () => {
@@ -349,13 +308,13 @@ describe("the greeting", () => {
 
   it("refetches every surface, whichever mode it lands in", async () => {
     const armedRefresh = vi.fn();
-    watchChanges({ refresh: armedRefresh, intervalMs: 2000 });
+    watchChanges({ refresh: armedRefresh });
     await greetBridge(async () => ({ push_events: true }), { deviceId: "dev-a" });
     expect(armedRefresh).toHaveBeenCalledTimes(1);
 
     resetChangeEvents();
     const pollingRefresh = vi.fn();
-    watchChanges({ refresh: pollingRefresh, intervalMs: 2000 });
+    watchChanges({ refresh: pollingRefresh });
     await greetBridge(async () => {
       throw new Error("unknown method: session.hello");
     }, { deviceId: "dev-a" });
@@ -375,7 +334,7 @@ describe("the greeting", () => {
     let current = true;
     const refreshed = vi.fn();
     const accepted = vi.fn();
-    watchChanges({ refresh: refreshed, intervalMs: 1600 });
+    watchChanges({ refresh: refreshed });
     const pending = greetBridge(
       () => new Promise((resolve) => { resolveGreeting = resolve; }),
       { deviceId: "dev-a", isCurrent: () => current, onGreeting: accepted },
@@ -395,16 +354,16 @@ describe("a reconnect", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const feed = vi.fn();
     const detail = vi.fn();
-    watchChanges({ refresh: feed, intervalMs: 2000 });
-    watchChanges({ refresh: detail, intervalMs: 1600, entity: "run-7" });
+    watchChanges({ refresh: feed });
+    watchChanges({ refresh: detail, entity: "run-7" });
     refetchEverything();
     expect(feed).toHaveBeenCalledTimes(1);
     expect(detail).toHaveBeenCalledTimes(1);
   });
 
-  it("refetches while polling too — a poll-mode gap loses just as much", () => {
+  it("refetches an unarmed device's surfaces too — that gap loses just as much", () => {
     const feed = vi.fn();
-    watchChanges({ refresh: feed, intervalMs: 2000 });
+    watchChanges({ refresh: feed });
     refetchEverything();
     expect(feed).toHaveBeenCalledTimes(1);
   });
@@ -415,17 +374,17 @@ describe("a reconnect", () => {
 // a device hears only that device; the merged inbox names none and hears them
 // all, which is what makes one list out of several machines.
 describe("several devices", () => {
-  it("refreshes B's feed watcher and the merged inbox watcher on B's board.changed, not A's", () => {
+  it("refreshes B's feed watcher and the merged inbox watcher on B's board item, not A's", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     armChangeEvents({ push_events: true }, "dev-b");
     const feedA = vi.fn();
     const feedB = vi.fn();
     const inbox = vi.fn();
-    watchChanges({ refresh: feedA, intervalMs: 2000, deviceId: "dev-a" });
-    watchChanges({ refresh: feedB, intervalMs: 2000, deviceId: "dev-b" });
-    watchChanges({ refresh: inbox, intervalMs: 2000 });
+    watchChanges({ refresh: feedA, deviceId: "dev-a" });
+    watchChanges({ refresh: feedB, deviceId: "dev-b" });
+    watchChanges({ refresh: inbox });
 
-    dispatchChangeEvent({ type: "board.changed" }, "dev-b");
+    boardMoved("dev-b");
 
     expect(feedB).toHaveBeenCalledTimes(1);
     expect(inbox).toHaveBeenCalledTimes(1);
@@ -439,34 +398,21 @@ describe("several devices", () => {
     expect(changeEventsArmed("dev-b")).toBe(false);
 
     const feedB = vi.fn();
-    watchChanges({ refresh: feedB, intervalMs: 2000, deviceId: "dev-b" });
-    expect(dispatchChangeEvent({ type: "board.changed" }, "dev-b")).toBe(false);
+    watchChanges({ refresh: feedB, deviceId: "dev-b" });
+    expect(boardMoved("dev-b")).toBe(false);
     expect(feedB).not.toHaveBeenCalled();
   });
 
-  it("stands the any-device cadence down only when every known device is armed", () => {
+  // "Is anything pushing?" is only true of the account when every machine on
+  // it pushes: one machine that does not is a machine nothing would announce.
+  it("calls the account armed only when every known device is", () => {
     armChangeEvents({ push_events: true }, "dev-a");
     armChangeEvents(null, "dev-b");
-    expect(pollIntervalMs(1600)).toBe(1600); // dev-b still pushes nothing
-    expect(pollIntervalMs(1600, "dev-a")).toBe(SAFETY_POLL_MS);
+    expect(changeEventsArmed()).toBe(false);
+    expect(changeEventsArmed("dev-a")).toBe(true);
 
     armChangeEvents({ push_events: true }, "dev-b");
-    expect(pollIntervalMs(1600)).toBe(SAFETY_POLL_MS);
-  });
-
-  it("re-times the any-device watchers when the last polling device arms", () => {
-    armChangeEvents({ push_events: true }, "dev-a");
-    armChangeEvents(null, "dev-b");
-    const inbox = vi.fn();
-    watchChanges({ refresh: inbox, intervalMs: 1600 });
-    vi.advanceTimersByTime(1600);
-    expect(inbox).toHaveBeenCalledTimes(1);
-
-    armChangeEvents({ push_events: true }, "dev-b");
-    vi.advanceTimersByTime(1600);
-    expect(inbox).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(SAFETY_POLL_MS);
-    expect(inbox).toHaveBeenCalledTimes(2);
+    expect(changeEventsArmed()).toBe(true);
   });
 
   it("forgets a device's armed state when it is disarmed", () => {
@@ -476,18 +422,18 @@ describe("several devices", () => {
 
     expect(changeEventsArmed("dev-b")).toBe(false);
     expect(changeEventsArmed("dev-a")).toBe(true);
-    // The retired device is forgotten, not counted as a device that polls.
-    expect(pollIntervalMs(1600)).toBe(SAFETY_POLL_MS);
-    expect(dispatchChangeEvent({ type: "board.changed" }, "dev-b")).toBe(false);
+    // The retired device is forgotten, not counted as one that pushes nothing.
+    expect(changeEventsArmed()).toBe(true);
+    expect(boardMoved("dev-b")).toBe(false);
   });
 
   it("arms the device greetBridge greeted and refetches that device's and the any-device watchers", async () => {
     const feedA = vi.fn();
     const feedB = vi.fn();
     const inbox = vi.fn();
-    watchChanges({ refresh: feedA, intervalMs: 2000, deviceId: "dev-a" });
-    watchChanges({ refresh: feedB, intervalMs: 2000, deviceId: "dev-b" });
-    watchChanges({ refresh: inbox, intervalMs: 2000 });
+    watchChanges({ refresh: feedA, deviceId: "dev-a" });
+    watchChanges({ refresh: feedB, deviceId: "dev-b" });
+    watchChanges({ refresh: inbox });
 
     await greetBridge(async () => ({ push_events: true }), { deviceId: "dev-b" });
 
@@ -503,8 +449,8 @@ describe("several devices", () => {
     armChangeEvents({ push_events: true }, "dev-b");
     const feedA = vi.fn();
     const feedB = vi.fn();
-    watchChanges({ refresh: feedA, intervalMs: 2000, deviceId: "dev-a" });
-    watchChanges({ refresh: feedB, intervalMs: 2000, deviceId: "dev-b" });
+    watchChanges({ refresh: feedA, deviceId: "dev-a" });
+    watchChanges({ refresh: feedB, deviceId: "dev-b" });
 
     refetchEverything();
 

@@ -1,32 +1,22 @@
-// Push invalidation, client side.
+// The subscriptions this client holds, and the pushes that arrive on them.
 //
-// Every detail surface used to poll on a 1.6–2s timer because nothing told it
-// anything had happened. A bridge that pushes change events tells it, so the
-// timers stand down to a safety poll and the refetch happens when the state
-// actually moved.
+// NOTHING HERE RUNS ON A TIMER. Every detail surface used to poll on a 1.6–2 s
+// interval because nothing told it anything had happened; a bridge that pushes
+// tells it, and the client's whole cadence is now the flush arriving. A
+// registration that names a poll is refused rather than quietly honoured
+// (`watchChanges` below).
 //
-// Two events come off the session (the bridge's wire, unchanged here):
+// What arrives is a subscription flush: a list of items, each naming an entity
+// and carrying the bodies of the kinds that subscription asked for. The sync
+// layer writes those bodies into the cache, and the views repaint off the
+// cache (core/cacheSync.js, core/localCache.js).
 //
-//   {"type":"board.changed"}                  the feed is stale
-//   {"type":"entity.changed","id":"run-7"}    one entity's detail is stale
-//
-// Nothing about WHAT changed rides the wire — the client refetches what it is
-// already showing, which is the only thing it could render anyway.
-//
-// # Two modes, and the old bridge
+// # Arming, and the old bridge
 //
 // Event mode arms only on `push_events: true` in the `session.hello` greeting.
 // A bridge that predates push invalidation refuses that method, the greeting
-// yields nothing, and every surface keeps the interval it has always had. That
-// fallback is not a degraded path: it is today's behaviour, unchanged, and the
-// deployed client has to keep working against a bridge nobody has updated.
-//
-// # One paint, whatever woke it
-//
-// A surface registers its EXISTING poll callback here. An event runs that same
-// callback — the same freeze guards, the same render-key comparison, the same
-// keyed list patch — so a push and a tick end in the same paint. There is no
-// second refresh path to keep in step with the first.
+// yields nothing, and this client hears nothing from that machine — which is
+// what the ordered pass on every greeting and every reconnect is for.
 //
 // # One bridge is not the account
 //
@@ -71,18 +61,12 @@
 // speaks to installs nothing and arms nothing: that machine answers nothing,
 // and nothing below is asked to guess at a shape.
 
-import { pageVisible, whenVisible } from "./visibility.js";
+import { pageVisible } from "./visibility.js";
 import { greetingVersion, PRE_ALPHA_API_VERSION, selectAdapter, SPA_API_RANGE } from "./bridgeApi/index.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
  *  greeting so `bridge.stats` can count who is still on which. */
 export { SPA_API_RANGE };
-
-/** How often an armed surface still reads on its own. Events do the work; this
- *  is what catches whatever an event never covered — a bridge restart, a
- *  coalesced flush lost to a socket hiccup — without being a poll anyone waits
- *  on. */
-export const SAFETY_POLL_MS = 60000;
 
 /** What no adapter claims: every capability off. What a surface reads before
  *  a greeting, and about a bridge nobody here speaks to. */
@@ -147,10 +131,6 @@ export function armChangeEvents(greeting, deviceId = null) {
   const nowArmed = Boolean(greeting && greeting.push_events === true);
   if (armed.get(device) === nowArmed) return nowArmed;
   armed.set(device, nowArmed);
-  // A surface mounted before the mode was known (or across a reconnect onto a
-  // different bridge) keeps polling at whatever cadence it started with unless
-  // it is re-timed here.
-  retime(device);
   return nowArmed;
 }
 
@@ -164,14 +144,7 @@ export function disarmChangeEvents(deviceId) {
     setSubscriptionsMode(state, false);
     bridges.delete(device);
   }
-  if (!armed.delete(device)) return;
-  retime(device);
-}
-
-/** Re-time every watcher that hears this device — its own, and the ones that
- *  span devices and therefore follow every bridge's mode. */
-function retime(device) {
-  [...watchers].filter((watcher) => watcher.hears(device)).forEach(startTimer);
+  armed.delete(device);
 }
 
 /** Whether pushes can be expected. For one device, that device's bridge; for a
@@ -205,17 +178,9 @@ export function bridgeCapabilities(deviceId = null) {
   return bridgeFor(deviceId)?.adapter?.capabilities || NO_CAPABILITIES;
 }
 
-/** The interval a surface polling every `fastMs` should actually run at. Event
- *  mode stands a fast poll down to the safety poll and leaves a slow one alone —
- *  standing down must never mean speeding up. */
-export function pollIntervalMs(fastMs, deviceId = null) {
-  return changeEventsArmed(deviceId) ? Math.max(fastMs, SAFETY_POLL_MS) : fastMs;
-}
-
 /** Forget every watcher and every bridge. Tests, and a client that lost its
  *  sessions. */
 export function resetChangeEvents() {
-  watchers.forEach((watcher) => clearInterval(watcher.timer));
   watchers.clear();
   armed.clear();
   for (const state of [...bridges.values()]) {
@@ -371,22 +336,6 @@ export async function subscriptionsSettled() {
   } while (!sameChains(before, pendingChains()));
 }
 
-function startTimer(watcher) {
-  clearInterval(watcher.timer);
-  watcher.timer = null;
-  // A watcher that names no interval has no poll behind it: it is a
-  // cache-first surface, which subscribes and paints what it hears. Starting
-  // an interval of `undefined` would run it as fast as the browser will.
-  if (!Number.isFinite(watcher.intervalMs)) return;
-  // `keepPolling` holds a watcher at its own cadence instead of standing it
-  // down to the safety poll once a pushing bridge is armed.
-  const interval = watcher.keepPolling ? watcher.intervalMs : pollIntervalMs(watcher.intervalMs, watcher.deviceId);
-  watcher.timer = setInterval(() => {
-    scheduleSyncHeardBy(watcher);
-    watcher.tick();
-  }, interval);
-}
-
 /** Run a watcher's refresh for an event, under the same visibility gate its
  *  poll runs under. A hidden tab notes that it owes a refetch instead. */
 function deliver(watcher) {
@@ -398,14 +347,14 @@ function deliver(watcher) {
   watcher.refresh();
 }
 
-/** Coming back to a tab that was told about changes it could not act on. The
- *  poll's own visible-again catch-up, for pushes. */
+/** Coming back to a tab that was told about changes it could not act on while
+ *  it was away. */
 function onVisibilityChange() {
   if (!pageVisible()) return;
   [...watchers].forEach((watcher) => {
     if (!watcher.missed) return;
     watcher.missed = false;
-    if (watcher.catchUpOnVisible) watcher.refresh();
+    watcher.refresh();
   });
 }
 
@@ -414,15 +363,24 @@ function onVisibilityChange() {
 const WATCHER_DEFAULTS = {
   entity: null,
   deviceId: null,
-  catchUpOnVisible: true,
   pausesWhileHidden: true,
-  keepPolling: false,
   kinds: [],
   mode: "realtime",
   priority: "foreground",
   scope: null,
   onChanges: null,
 };
+
+/** What a registration may no longer say. A surface naming one of these is a
+ *  surface with a poll in it, and the point of this module now is that there
+ *  are none: honouring them quietly would put one back without anybody
+ *  reading a line of this file. */
+const RETIRED_OPTIONS = ["intervalMs", "keepPolling", "catchUpOnVisible"];
+
+function refuseRetiredOptions(registration) {
+  const named = RETIRED_OPTIONS.filter((option) => option in registration);
+  if (named.length) throw new TypeError(`watchChanges does not poll: remove ${named.join(", ")}`);
+}
 
 function withDefaults(registration, defaults) {
   const spec = { ...defaults };
@@ -433,36 +391,33 @@ function withDefaults(registration, defaults) {
 }
 
 /**
- * Register a polling surface.
+ * Subscribe a surface to what its machine pushes.
  *
- * `refresh` is the surface's existing poll callback — the one whose paint the
- * whole surface is built around. `intervalMs` is the cadence it polls at while
- * nothing is pushing; event mode re-times it to the safety poll. `entity` names
- * what the surface is showing (a string, or a function returning a string or a
- * list); leaving it out makes the surface board-scoped — it is the feed, and
- * `board.changed` is its event. `deviceId` names the machine the surface is
+ * `refresh` is what the surface does when it hears that something it is
+ * showing moved. `entity` names what that is (a string, or a function
+ * returning a string or a list); leaving it out makes the surface
+ * board-scoped — it is the feed. `deviceId` names the machine the surface is
  * about; leaving it out makes the surface one that spans every device.
  *
  * `kinds` names what the surface reads — any of `state`, `thread`, `git`,
- * `files` — and is what the bridge subscribes it to; a surface that names none
- * asks for no subscription and lives on the legacy events and its poll. `mode`
+ * `files`, `terminals` — and is what the bridge subscribes it to; a surface
+ * that names none asks for no subscription and hears whatever arrives. `mode`
  * is `"realtime"` for a mounted surface or `{ batch_ms: N }` for a background
  * tier, `priority` orders the flush and the pulls it causes, and `scope: "all"`
  * is the background tier's whole-board watch. `onChanges(items)` receives the
  * items for the entities this surface stands for; without one, an item runs
- * `refresh` instead, which is what a legacy event always did.
+ * `refresh` instead.
  *
- * `keepPolling: true` holds the surface at its own `intervalMs` even once an
- * event-pushing bridge is armed, for a scope the bridge does not push for.
+ * `pausesWhileHidden: false` is for a surface that keeps up while the tab is
+ * away; by default a hidden tab notes what it missed and acts on it when the
+ * reader comes back.
  *
- * `catchUpOnVisible: false` is for a surface that already refreshes itself on
- * visibilitychange (the feed does), so coming back does not read twice.
- * `pausesWhileHidden: false` is for a surface whose poll is not visibility-gated
- * — its events are not gated either, because parity with the poll is the rule.
+ * There is no cadence to name: a registration that names one is refused.
  *
- * Returns `{ dispose }`; it owns the interval, so the caller stops clearing one.
+ * Returns `{ dispose }`.
  */
 export function watchChanges(registration) {
+  refuseRetiredOptions(registration);
   const spec = withDefaults(registration, WATCHER_DEFAULTS);
   const watcher = {
     id: `sub-${++watcherSeq}`,
@@ -474,11 +429,8 @@ export function watchChanges(registration) {
     // would answer later.
     boardScoped: spec.scope !== "all" && spec.entity === null,
     missed: false,
-    timer: null,
-    tick: spec.pausesWhileHidden ? whenVisible(spec.refresh) : spec.refresh,
   };
   watchers.add(watcher);
-  startTimer(watcher);
   scheduleSyncHeardBy(watcher);
   if (!visibilityWired && typeof document !== "undefined") {
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -486,8 +438,6 @@ export function watchChanges(registration) {
   }
   return {
     dispose() {
-      clearInterval(watcher.timer);
-      watcher.timer = null;
       watchers.delete(watcher);
       scheduleSyncHeardBy(watcher);
     },
@@ -640,27 +590,13 @@ function dispatchItems(payload, deviceId) {
   return true;
 }
 
-const wake = (audience) => {
-  audience.forEach(deliver);
-  return true;
-};
-
-/** Who each kind of event wakes. The board moved on a device, so its board
- *  watchers read again; an entity moved, so whoever is showing it does —
- *  wherever it is, since an entity id is the same id on any surface holding it;
- *  a subscription flush is routed item by item. A kind with no entry here is an
- *  event this client does not act on. */
-const EVENT_DISPATCHERS = new Map([
-  ["board.changed", (payload, deviceId) => wake(watchersWhere((watcher) => watcher.boardScoped && watcher.hears(deviceId)))],
-  [
-    "entity.changed",
-    (payload) => {
-      const id = idText(payload.id);
-      return id ? wake(watchersWhere((watcher) => entityIdsOf(watcher).includes(id))) : false;
-    },
-  ],
-  ["changes", dispatchItems],
-]);
+/** Who each kind of event wakes. A subscription flush is routed item by item,
+ *  and that is the whole of what this client acts on: the bridge still sends
+ *  the bare `board.changed` / `entity.changed` of the legacy mode, and nothing
+ *  here reads them — a client that painted on a hint would be reading the wire
+ *  from a view again. A kind with no entry here is an event this client does
+ *  not act on. */
+const EVENT_DISPATCHERS = new Map([["changes", dispatchItems]]);
 
 /** A change event off one device's session. Ignored entirely while that device
  *  is unarmed — an old bridge sends none, and a client that never greeted must

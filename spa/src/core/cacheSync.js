@@ -701,7 +701,6 @@ export function threadWindow(held, page) {
 const subscriptionShape = (deviceId) => ({
   deviceId,
   refresh: NOTHING,
-  catchUpOnVisible: false,
   // A push carries bodies, so a hidden tab writing them is a hidden tab that
   // paints instantly when it comes back. Nothing here is a read to defer.
   pausesWhileHidden: false,

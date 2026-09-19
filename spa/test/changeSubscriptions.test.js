@@ -82,7 +82,7 @@ describe("negotiating the contract", () => {
   });
 
   it("stays legacy against a bridge that advertises nothing, and subscribes to nothing", async () => {
-    changeEvents.watchChanges({ refresh: () => {}, intervalMs: 1600, entity: "run-7", kinds: ["state", "git"] });
+    changeEvents.watchChanges({ refresh: () => {}, entity: "run-7", kinds: ["state", "git"] });
     await changeEvents.greetBridge(legacyBridge());
     await settle();
     expect(hellos()).toHaveLength(1);
@@ -92,7 +92,7 @@ describe("negotiating the contract", () => {
   });
 
   it("falls back to legacy when a reconnect lands on a bridge without subscriptions", async () => {
-    changeEvents.watchChanges({ refresh: () => {}, intervalMs: 1600, entity: "run-7", kinds: ["git"] });
+    changeEvents.watchChanges({ refresh: () => {}, entity: "run-7", kinds: ["git"] });
     await changeEvents.greetBridge(subscribingBridge());
     await settle();
     // The old bridge ignores the field it does not know and answers legacy.
@@ -108,7 +108,6 @@ describe("the desired map", () => {
   it("subscribes a mounted entity surface with its kinds, mode and priority", async () => {
     changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 1600,
       entity: () => ["run-7", "wt-3"],
       kinds: ["state", "thread", "git", "files"],
       mode: "realtime",
@@ -127,7 +126,7 @@ describe("the desired map", () => {
   });
 
   it("keeps a board-scoped surface to state, which is all board scope accepts", async () => {
-    changeEvents.watchChanges({ refresh: () => {}, intervalMs: 2000, kinds: ["state", "git"] });
+    changeEvents.watchChanges({ refresh: () => {}, kinds: ["state", "git"] });
     await changeEvents.greetBridge(subscribingBridge());
     await settle();
     expect(subscribes()).toEqual([
@@ -138,7 +137,6 @@ describe("the desired map", () => {
   it("subscribes the background tier over the whole board at its own cadence", async () => {
     changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 600000,
       scope: "all",
       kinds: ["files"],
       mode: { batch_ms: 180000 },
@@ -156,7 +154,7 @@ describe("the desired map", () => {
   });
 
   it("asks for nothing on behalf of a surface that named no kinds", async () => {
-    changeEvents.watchChanges({ refresh: () => {}, intervalMs: 1600, entity: "run-7" });
+    changeEvents.watchChanges({ refresh: () => {}, entity: "run-7" });
     await changeEvents.greetBridge(subscribingBridge());
     await settle();
     expect(subscribes()).toEqual([]);
@@ -167,7 +165,6 @@ describe("the desired map", () => {
     await settle();
     const watcher = changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 1600,
       entity: "run-7",
       kinds: ["git"],
     });
@@ -180,7 +177,7 @@ describe("the desired map", () => {
   });
 
   it("replays the whole map after a reconnect, since the new session holds none of it", async () => {
-    changeEvents.watchChanges({ refresh: () => {}, intervalMs: 1600, entity: "run-7", kinds: ["git"] });
+    changeEvents.watchChanges({ refresh: () => {}, entity: "run-7", kinds: ["git"] });
     await changeEvents.greetBridge(subscribingBridge());
     await settle();
     expect(subscribes()).toHaveLength(1);
@@ -192,7 +189,7 @@ describe("the desired map", () => {
 
   it("re-subscribes the same id when a surface's entity id resolves late", async () => {
     let showing = null;
-    changeEvents.watchChanges({ refresh: () => {}, intervalMs: 1600, entity: () => showing, kinds: ["git"] });
+    changeEvents.watchChanges({ refresh: () => {}, entity: () => showing, kinds: ["git"] });
     await changeEvents.greetBridge(subscribingBridge());
     await settle();
     expect(subscribes()).toEqual([]);
@@ -203,7 +200,7 @@ describe("the desired map", () => {
   });
 
   it("does not re-send a subscription that has not moved", async () => {
-    changeEvents.watchChanges({ refresh: () => {}, intervalMs: 1600, entity: "run-7", kinds: ["git"] });
+    changeEvents.watchChanges({ refresh: () => {}, entity: "run-7", kinds: ["git"] });
     await changeEvents.greetBridge(subscribingBridge());
     await settle();
     changeEvents.refetchEverything();
@@ -223,14 +220,12 @@ describe("the changes event", () => {
     const other = vi.fn();
     changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 1600,
       entity: "run-7",
       kinds: ["git"],
       onChanges: (items) => seen.push(...items),
     });
     changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 1600,
       entity: "run-9",
       kinds: ["git"],
       onChanges: other,
@@ -255,7 +250,6 @@ describe("the changes event", () => {
     const seen = [];
     changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 600000,
       scope: "all",
       kinds: ["state", "thread"],
       mode: "realtime",
@@ -275,7 +269,6 @@ describe("the changes event", () => {
     const seen = [];
     changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 600000,
       scope: "all",
       kinds: ["git", "files"],
       mode: { batch_ms: 30000 },
@@ -295,7 +288,6 @@ describe("the changes event", () => {
     const seen = [];
     changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 2000,
       kinds: ["state"],
       onChanges: (items) => seen.push(...items),
     });
@@ -367,7 +359,7 @@ describe("the changes event", () => {
 
   it("runs the plain poll callback for a watcher that declared no onChanges", async () => {
     const refresh = vi.fn();
-    changeEvents.watchChanges({ refresh, intervalMs: 1600, entity: "run-7", kinds: ["state", "git"] });
+    changeEvents.watchChanges({ refresh, entity: "run-7", kinds: ["state", "git"] });
     await armed();
     refresh.mockClear();
     changeEvents.dispatchChangeEvent({
@@ -380,7 +372,7 @@ describe("the changes event", () => {
 
   it("ignores an event with nothing in it, and one that arrived unarmed", () => {
     const refresh = vi.fn();
-    changeEvents.watchChanges({ refresh, intervalMs: 1600, entity: "run-7", kinds: ["git"] });
+    changeEvents.watchChanges({ refresh, entity: "run-7", kinds: ["git"] });
     expect(changeEvents.dispatchChangeEvent({ type: "changes", items: [{ entity_id: "run-7" }] })).toBe(false);
     changeEvents.armChangeEvents({ push_events: true });
     expect(changeEvents.dispatchChangeEvent({ type: "changes", subscription_id: "s1", items: [] })).toBe(false);
@@ -402,7 +394,7 @@ describe("the board revision", () => {
 
   const feedWatcher = () => {
     const refresh = vi.fn();
-    changeEvents.watchChanges({ refresh, intervalMs: 2000, kinds: ["state"] });
+    changeEvents.watchChanges({ refresh, kinds: ["state"] });
     return refresh;
   };
 
@@ -444,7 +436,6 @@ describe("the board revision", () => {
     const seen = [];
     changeEvents.watchChanges({
       refresh: () => {},
-      intervalMs: 1600,
       entity: "run-7",
       kinds: ["state"],
       onChanges: (items) => seen.push(...items),

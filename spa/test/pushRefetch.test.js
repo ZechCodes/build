@@ -71,13 +71,20 @@ async function mountPane(scope = { run_id: "run-7" }) {
   return { pane, reads };
 }
 
+/** One flush off a machine: the bodies of what moved, addressed by entity. */
+const flush = (items, deviceId) => dispatchChangeEvent({ type: "changes", items }, deviceId);
+
+/** The board's own line, and one entity's, as the bridge addresses them. */
+const boardMoved = (deviceId) => flush([{ entity_id: "board", state: {} }], deviceId);
+const entityMoved = (entityId, deviceId) => flush([{ entity_id: entityId, git: {} }], deviceId);
+
 describe("a surface against a bridge that pushes", () => {
   it("reads again when the entity it is showing changes", async () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
+    entityMoved("run-7", "dev-a");
     await settle();
     expect(reads()).toBe(before + 1);
     pane.dispose();
@@ -88,18 +95,18 @@ describe("a surface against a bridge that pushes", () => {
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    dispatchChangeEvent({ type: "entity.changed", id: "run-99" }, "dev-a");
+    entityMoved("run-99", "dev-a");
     await settle();
     expect(reads()).toBe(before);
     pane.dispose();
   });
 
-  it("ignores board.changed — the feed moved, not this entity's detail", async () => {
+  it("ignores the board's own item — the feed moved, not this entity's detail", async () => {
     armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    boardMoved("dev-a");
     await settle();
     expect(reads()).toBe(before);
     pane.dispose();
@@ -110,7 +117,7 @@ describe("a surface against a bridge that pushes", () => {
     const { pane, reads } = await mountPane({ project_id: "p1" });
     const before = reads();
 
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    boardMoved("dev-a");
     await settle();
     expect(reads()).toBe(before + 1);
     pane.dispose();
@@ -126,7 +133,7 @@ describe("a surface against a bridge that pushes", () => {
     const { pane, reads } = await mountPane({ workspace_id: "ws-1", source_id: "src-1" });
     const before = reads();
 
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    boardMoved("dev-a");
     await settle();
     expect(reads()).toBe(before + 1);
     pane.dispose();
@@ -164,7 +171,7 @@ describe("a surface against a bridge that pushes", () => {
     pane.dispose();
     const before = reads();
 
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
+    entityMoved("run-7", "dev-a");
     await settle();
     expect(reads()).toBe(before);
   });
@@ -187,8 +194,8 @@ describe("a surface against a bridge that does not", () => {
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-a");
-    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    entityMoved("run-7", "dev-a");
+    boardMoved("dev-a");
     await settle();
     expect(reads()).toBe(before);
     pane.dispose();

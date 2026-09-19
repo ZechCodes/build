@@ -64,7 +64,7 @@ describe("the adapter a greeting selects", () => {
 
   it("installs nothing for a bridge above every adapter, and neither arms nor refetches", async () => {
     const refresh = vi.fn();
-    watchChanges({ refresh, intervalMs: 2000 });
+    watchChanges({ refresh });
     const install = vi.fn(() => null);
     const armed = await greetBridge(async () => ({ api_version: "2.0.0", push_events: true }), { install });
     expect(install).toHaveBeenCalledWith({ unsupported: "app", version: "2.0.0" });

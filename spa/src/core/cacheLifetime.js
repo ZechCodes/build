@@ -14,17 +14,15 @@
 // inbox until the feed stops naming it. Nothing here decides which workspaces
 // are active or recent — the caller knows that, and calls accordingly.
 
-import { cachedAddresses, cachedAddressesWrittenBefore, cachedRecords, deleteCached } from "./localCache.js";
+import { cachedAddresses, cachedAddressesWrittenBefore, cachedRecords, deleteCached, writeCached } from "./localCache.js";
 
 export const WORKSPACE_DATA_TTL_MS = 72 * 60 * 60 * 1000;
 
 /** File bodies kept per workspace, newest opened first. */
 export const RECENT_FILES = 5;
 
-/** The largest file body worth keeping. Nothing here enforces it — a cap on
- *  what goes in belongs to whoever writes the record, and this module only
- *  decides what comes out. It lives here so the writer has one place to read
- *  it from, beside the count it goes with. */
+/** The largest file body worth keeping. Applied by `cacheFileBody` below,
+ *  which is the only way a file body gets into the store. */
 export const FILE_MAX_BYTES = 1048576;
 
 export const FILE_RECORD_KIND = "file";
@@ -75,4 +73,38 @@ export async function trimRecentFiles(deviceId, entityId) {
   if (files.length <= RECENT_FILES) return [];
   const newestFirst = [...files].sort((one, other) => openedAt(other) - openedAt(one));
   return drop(newestFirst.slice(RECENT_FILES).map((record) => record.address));
+}
+
+/** How a body is measured against a cap: in bytes on the wire, never in
+ *  characters. A source file of Japanese is three bytes a character, so a
+ *  cap read off `length` lets three times the rule onto the disk. Nothing to
+ *  measure is within every cap.
+ *
+ *  A body whose character count alone is over the cap is answered without
+ *  encoding it: UTF-8 is never shorter than the UTF-16 length, so that
+ *  comparison is already decisive, and the encode it saves is the one that
+ *  would have allocated the oversized copy this check exists to refuse. */
+export function withinBytes(text, maxBytes) {
+  if (text === null || text === undefined) return true;
+  const body = String(text);
+  if (body.length > maxBytes) return false;
+  return new TextEncoder().encode(body).length <= maxBytes;
+}
+
+/** Put one file's body in the cache, under both of the owner's rules for it:
+ *  a body over `FILE_MAX_BYTES` is not stored at all, and a write leaves at
+ *  most `RECENT_FILES` bodies behind it. Answers whether the body was stored.
+ *
+ *  Every file body goes in through here. A writer that wrote the record
+ *  itself would be a second place the two rules have to be remembered, and
+ *  the one that forgot them would put a 40 MB body under a 1 MB row of the
+ *  Records table.
+ *
+ *  A refusal is not an error: the reader gets the file off the wire as they
+ *  always would, and the only thing lost is the instant second look. */
+export async function cacheFileBody({ deviceId, entityId, path, content, revision = null, openedAt = Date.now() }) {
+  if (!deviceId || !entityId || !withinBytes(content, FILE_MAX_BYTES)) return false;
+  await writeCached({ deviceId, entityId, kind: FILE_RECORD_KIND, sub: path || "" }, { content, revision, openedAt });
+  await trimRecentFiles(deviceId, entityId);
+  return true;
 }

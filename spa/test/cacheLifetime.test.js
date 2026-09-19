@@ -191,3 +191,66 @@ describe("the recent files", () => {
     expect(await held(address("ws-1", "tree", "src"))).toBe(true);
   });
 });
+
+// The two caps the Thresholds table names on the SPA side are the writer's to
+// apply, and nothing applied them: a file body is written straight through to
+// a record, so one 40 MB source file under a 1 MB row was the whole of the
+// difference between the rule and the code.
+describe("putting a file body in the cache", () => {
+  const bodyOf = async (path) => (await cache.readCached(address("ws-1", "file", path)))?.value;
+
+  it("stores the body, its revision and when it was opened", async () => {
+    expect(await lifetime.cacheFileBody({
+      deviceId: "dev-1",
+      entityId: "ws-1",
+      path: "src/a.js",
+      content: "hello",
+      revision: "r-1",
+      openedAt: NOW,
+    })).toBe(true);
+    expect(await bodyOf("src/a.js")).toEqual({ content: "hello", revision: "r-1", openedAt: NOW });
+  });
+
+  it("refuses a body over 1 MB, and leaves the one it holds alone", async () => {
+    await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "big.js", content: "small" });
+    const stored = await lifetime.cacheFileBody({
+      deviceId: "dev-1",
+      entityId: "ws-1",
+      path: "big.js",
+      content: "x".repeat(lifetime.FILE_MAX_BYTES + 1),
+    });
+    expect(stored).toBe(false);
+    expect((await bodyOf("big.js")).content).toBe("small");
+  });
+
+  it("measures the cap in bytes, not in characters", async () => {
+    // Three bytes each: a body of a third of the cap in characters is at it.
+    const content = "な".repeat(Math.ceil(lifetime.FILE_MAX_BYTES / 3));
+    expect(content.length).toBeLessThan(lifetime.FILE_MAX_BYTES);
+    expect(await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "jp.txt", content })).toBe(false);
+  });
+
+  it("leaves at most five bodies behind it", async () => {
+    for (let index = 0; index < 7; index += 1) {
+      await lifetime.cacheFileBody({
+        deviceId: "dev-1",
+        entityId: "ws-1",
+        path: `src/${index}.js`,
+        content: String(index),
+        openedAt: NOW + index,
+      });
+    }
+    expect((await cache.cachedSubKeys("dev-1", "ws-1", "file")).sort())
+      .toEqual(["src/2.js", "src/3.js", "src/4.js", "src/5.js", "src/6.js"]);
+  });
+});
+
+describe("measuring a body against a cap", () => {
+  it("counts bytes, and answers the empty and the absent as within", () => {
+    expect(lifetime.withinBytes("abc", 3)).toBe(true);
+    expect(lifetime.withinBytes("abcd", 3)).toBe(false);
+    expect(lifetime.withinBytes("なな", 5)).toBe(false); // six bytes, not two characters
+    expect(lifetime.withinBytes("", 0)).toBe(true);
+    expect(lifetime.withinBytes(null, 0)).toBe(true);
+  });
+});

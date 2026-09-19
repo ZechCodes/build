@@ -188,14 +188,35 @@ and one concise sentence saying what stopped you — the capture
 goes back to the user with a retry.";
 
 const PROJECT_AGENT: &str = "\
-You are the agent for the project {project_name}. You are about the project as a
-whole: the workspaces cut from it, what is happening in each one, and the agents
-working there.
+You are the agent for the project {project_name}, and you are its orchestrator.
+You are about the project as a whole: the workspaces cut from it, what is
+happening in each one, and the agents working there.
 
 You are not in the project's checkout and you have no checkout of your own. This
 directory is scratch space Build hands you. The project's files are the template
 its workspaces are cut from, so changing them is nobody's job here; the work
 happens inside the workspaces, each with its own agents.
+
+Work that touches files is not yours to do — it is yours to place. Anything that
+has to be read closely, written, built, tested or fixed gets a workspace of its
+own: cut one with `create_workspace`, put an agent on it with
+`add_workspace_agent`, and tell that agent what the work is with
+`message_workspace_agent`. The brief is the whole of what that agent gets, so
+say it in full rather than pointing at what you were told. Then coordinate:
+check what came of it, ask the agent what you still need to know, and report to
+the user. Work already in flight goes to the workspace and the agent that hold
+it rather than to a new one.
+
+Split what is independent. Two pieces of work that do not read each other's
+changes are two workspaces with an agent on each, started in the same turn,
+rather than one agent taking them in order. Two pieces that touch the same files
+are one workspace and one agent — two agents in one checkout overwrite each
+other. Size a workspace to a piece of work, never to a single file.
+
+Do not do the work in your own words. A plan written out here, a diff described
+from memory, a file discussed as though you had opened it — none of that is the
+work, and you have nothing to check any of it against. Place it, follow it, and
+report what actually happened.
 
 Your tools: `list_workspaces` (every workspace in this project — the project is
 the one you are the agent for, so there is nothing to name), `list_workspace_agents`
@@ -758,6 +779,57 @@ mod tests {
             "a project agent runs no phases: {project}"
         );
         assert!(project.contains("You are not in the project"), "{project}");
+    }
+
+    /// The project agent orchestrates: work that touches files is placed on a
+    /// workspace with an agent on it, independent pieces run side by side, and
+    /// the agent itself neither does the work nor narrates it.
+    #[test]
+    fn the_project_template_tells_the_agent_to_place_work_rather_than_do_it() {
+        let project = collapse_whitespace(&render(
+            &Templates::default().project_agent,
+            &Vars {
+                project_name: "Build",
+                ..Vars::default()
+            },
+        ));
+        assert!(
+            project.contains("you are its orchestrator"),
+            "the agent is told what it is for: {project}"
+        );
+        for sentence in [
+            "Work that touches files is not yours to do — it is yours to place.",
+            "Split what is independent.",
+            "Do not do the work in your own words.",
+        ] {
+            assert!(
+                project.contains(sentence),
+                "the orchestration rule no longer says, verbatim: {sentence}\n\nthe template says: {project}"
+            );
+        }
+        for tool in [
+            "`create_workspace`",
+            "`add_workspace_agent`",
+            "`message_workspace_agent`",
+        ] {
+            assert!(
+                project.contains(tool),
+                "{tool} is how work is placed: {project}"
+            );
+        }
+        // Every rule the surface had before orchestration arrived is still here.
+        for kept in [
+            "scratch space Build hands you",
+            "you cannot change a file",
+            "Say what you are about to remove before you remove it.",
+            "Call `set_topic` first",
+            "`Working`",
+            "`Waiting`",
+            "`Blocked`",
+            "`Complete`",
+        ] {
+            assert!(project.contains(kept), "{kept} was dropped from {project}");
+        }
     }
 
     /// A router has no checkout and no coding tools, and its terminal message reports the

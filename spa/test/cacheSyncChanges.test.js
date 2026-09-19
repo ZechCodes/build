@@ -276,7 +276,7 @@ describe("applying one item", () => {
       entity_id: "run-1",
       git: {
         status: { head: "def", status_key: "key-2", files: [] },
-        log: { commits: [{ hash: "c2" }], newest: "c2" },
+        log: { commits: [{ hash: "c2" }, { hash: "c1" }], newest: "c2", more: false },
         unpushed: { base: {}, commits: [], diff_key: "d9", patch: "megabytes" },
         diff: { patch: "pushed body", diff_key: "d9" },
       },
@@ -288,6 +288,48 @@ describe("applying one item", () => {
     expect(calls("git.status")).toEqual([]);
     expect(calls("git.log")).toEqual([]);
     expect(calls("run.diff")).toEqual([]);
+  });
+
+  it("replaces the commit record when a pushed history no longer reaches the hash it held", async () => {
+    // A `git` item's commits are the head of the history as it stands, never a
+    // delta: a push has no cursor to answer from. So a window that does not
+    // reach back to the hash the record was reading forward from is a history
+    // that moved under this cache — a rebase, a reset — and the commits it
+    // held are ones this checkout no longer has.
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "log" },
+      { commits: [{ hash: "c3" }, { hash: "c2" }, { hash: "c1" }], newest: "c3" },
+    );
+    // The pass reads forward from c3 and hears of nothing new.
+    script["git.log"] = () => ({ commits: [], newest: "c3" });
+    await boot([branchItem()]);
+
+    await deliver([{
+      entity_id: "run-1",
+      git: { log: { commits: [{ hash: "d3" }, { hash: "d2" }, { hash: "c1" }], newest: "d3", more: false } },
+    }]);
+
+    const record = (await read("run-1", "log")).value;
+    expect(record.commits.map((one) => one.hash)).toEqual(["d3", "d2", "c1"]);
+    expect(record.newest).toBe("d3");
+  });
+
+  it("keeps the commits behind a pushed history that still reaches them", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "log" },
+      { commits: [{ hash: "c2" }, { hash: "c1" }], newest: "c2" },
+    );
+    script["git.log"] = () => ({ commits: [], newest: "c2" });
+    await boot([branchItem()]);
+
+    await deliver([{
+      entity_id: "run-1",
+      git: { log: { commits: [{ hash: "c4" }, { hash: "c3" }, { hash: "c2" }], newest: "c4", more: true } },
+    }]);
+
+    const record = (await read("run-1", "log")).value;
+    expect(record.commits.map((one) => one.hash)).toEqual(["c4", "c3", "c2", "c1"]);
+    expect(record.newest).toBe("c4");
   });
 
   it("keeps the project and the triage beside a diff a git item replaces", async () => {

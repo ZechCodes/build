@@ -377,6 +377,22 @@ export function mergedLog(held, answer) {
   return { ...rest, commits, newest: newestAfter(held, answer, commits) };
 }
 
+/**
+ * The commit record after a pushed history.
+ *
+ * A push has no cursor to answer from: a `git` item carries the head of the
+ * history as it stands, never the commits since anything. So the record's own
+ * commits survive only where that window still reaches the hash the record was
+ * reading forward from. Where it does not — a rebase, a reset, or more commits
+ * than a window holds landing at once — the held commits cannot be shown to be
+ * behind the window's, and a whole recent history is worth more than an older
+ * one with a hole in it that nothing will ever come back for.
+ */
+export function windowedLog(held, window) {
+  const reaches = (window.commits || []).some((commit) => commit.hash === held?.newest);
+  return mergedLog(reaches ? held : null, window);
+}
+
 /** The cursor the record reads forward from next: what the answer named, else
  *  the newest commit the record is left holding, else the cursor it already
  *  had.
@@ -762,7 +778,7 @@ async function applyGit(context, entityId, git) {
   const row = await heldValue(context, entityId, "row");
   if (git.status) await writeCached(addressOf(context, entityId, "status"), git.status);
   if (git.log) {
-    await writeCached(addressOf(context, entityId, "log"), mergedLog(await heldValue(context, entityId, "log"), git.log));
+    await writeCached(addressOf(context, entityId, "log"), windowedLog(await heldValue(context, entityId, "log"), git.log));
   }
   if (git.unpushed) await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
   if (git.diff) await writePushedDiff(context, entityId, git.diff, row);

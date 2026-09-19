@@ -123,6 +123,26 @@ describe("the poll cadence", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
+  // A cache-first surface has no poll at all: it subscribes, it hears, it
+  // paints. Naming no interval used to mean `setInterval(fn, undefined)` —
+  // a timer firing as fast as the browser will run it — so the one way to
+  // register without a poll was to invent a cadence nobody wanted.
+  it("starts no timer at all for a watcher that names no interval", () => {
+    const refresh = vi.fn();
+    watchChanges({ refresh, entity: "run-1", kinds: ["git"] });
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("still delivers a push to a watcher that names no interval", () => {
+    const refresh = vi.fn();
+    armChangeEvents({ push_events: true }, "dev-a");
+    watchChanges({ refresh, entity: "run-1", deviceId: "dev-a", kinds: ["git"] });
+    dispatchChangeEvent({ type: "entity.changed", id: "run-1" }, "dev-a");
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("stops polling once disposed", () => {
     const refresh = vi.fn();
     const watcher = watchChanges({ refresh, intervalMs: 1000 });

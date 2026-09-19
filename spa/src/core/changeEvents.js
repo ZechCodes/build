@@ -373,6 +373,11 @@ export async function subscriptionsSettled() {
 
 function startTimer(watcher) {
   clearInterval(watcher.timer);
+  watcher.timer = null;
+  // A watcher that names no interval has no poll behind it: it is a
+  // cache-first surface, which subscribes and paints what it hears. Starting
+  // an interval of `undefined` would run it as fast as the browser will.
+  if (!Number.isFinite(watcher.intervalMs)) return;
   // `keepPolling` holds a watcher at its own cadence instead of standing it
   // down to the safety poll once a pushing bridge is armed.
   const interval = watcher.keepPolling ? watcher.intervalMs : pollIntervalMs(watcher.intervalMs, watcher.deviceId);

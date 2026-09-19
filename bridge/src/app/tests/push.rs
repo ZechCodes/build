@@ -574,6 +574,51 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
     );
 }
 
+/// An external checkout's row is found in whatever project holds it. A git
+/// project sitting earlier in the list whose checkout walk has not landed —
+/// a fresh daemon, or a repository the scan failed on — says nothing about
+/// the projects after it, and the checkouts in those still push their rows.
+#[tokio::test]
+async fn a_state_item_finds_a_checkout_past_a_project_nothing_has_scanned() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+    // The first project is deliberately left unscanned: this is the boot
+    // where its walk has not run yet.
+    let second = init_repo_named(dir.path(), "second-repo");
+    let added = call(
+        &handler,
+        "project.add",
+        json!({ "path": second.display().to_string(), "base_branch": "main" }),
+    );
+    assert_eq!(added["ok"], true, "{added:?}");
+    let second_id = added["result"]["project_id"]
+        .as_str()
+        .expect("the second project has an id")
+        .to_string();
+    super::filesystem::add_external_worktree(&second, dir.path(), "loose", "feature-loose");
+
+    let mut app = state.lock().unwrap();
+    let worktree_id = app
+        .scan_external_worktrees_now(&second_id)
+        .expect("the second project's checkouts are scanned")
+        .first()
+        .expect("the checkout was found")
+        .id
+        .clone();
+    let first_id = app.project_at(0).id.clone();
+    assert!(
+        app.external_scan_of(&first_id).is_none(),
+        "the fixture is a project nothing has scanned"
+    );
+
+    let item = app
+        .entity_state_item(&worktree_id)
+        .unwrap_or_else(|| panic!("no state row for {worktree_id}"));
+    assert_eq!(item["worktree_id"], worktree_id.as_str(), "{item:?}");
+    assert_eq!(item["project_id"], second_id.as_str(), "{item:?}");
+    assert_eq!(item["branch"], "feature-loose", "{item:?}");
+}
+
 /// The board item carries the project list whole when a project was added,
 /// and nothing but the revision when a row moved. A client caches the list
 /// and is told when it changed, rather than re-reading it on every tick.

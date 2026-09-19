@@ -344,7 +344,11 @@ impl AppState {
     pub(in crate::app) fn external_worktree_row_of(&self, worktree_id: &str) -> Option<Value> {
         let projects = self.projects.iter().filter(|project| project.is_git);
         for project in projects {
-            let scan = self.board.diff().external_scan_cache(&project.id)?;
+            // A project whose walk has not landed is not an answer about the
+            // board: keep looking in the ones that have.
+            let Some(scan) = self.board.diff().external_scan_cache(&project.id) else {
+                continue;
+            };
             let Some(w) = scan.worktrees.iter().find(|w| w.id == worktree_id) else {
                 continue;
             };

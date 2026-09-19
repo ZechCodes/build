@@ -716,11 +716,11 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    column is paid — the same line the toolbar's project name and the tab labels
    stand on. The right side keeps the rail's own tighter inset; nothing is
    aligned against it. */
-/* A section label is the type scale's bottom step — 11px mono, uppercase, dim —
-   and the room above it is what separates one section from the last. */
+/* The section label uses the surrounding panel's ground to separate the
+   commit list from the change views above it. */
 .crail .rhead { font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:650;
-  text-transform:uppercase; margin-top:18px; padding:0 13px 6px var(--pane-gutter); }
-.crail .rhead:first-child { margin-top:10px; }
+  text-transform:uppercase; background:var(--panel); padding:18px 13px 6px var(--pane-gutter); }
+.crail .rhead:first-child { padding-top:10px; }
 .crail .empty { padding:6px 13px 10px var(--pane-gutter); }
 /* No rule between rows: space separates them, the hover fill answers the
    pointer, and the selected one is a soft accent fill with an accent bar. */

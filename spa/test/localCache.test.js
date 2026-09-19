@@ -104,6 +104,35 @@ describe("a browser without IndexedDB", () => {
     expect(await bare.readCachedMany([{ deviceId: "d", entityId: "e", kind: "status" }])).toEqual([undefined]);
     await expect(bare.evictEntity("d", "e")).resolves.toBeUndefined();
   });
+
+  it("announces nothing, because nothing changed", async () => {
+    vi.resetModules();
+    delete globalThis.indexedDB;
+    const bare = await import("../src/core/localCache.js");
+    const heard = [];
+    bare.subscribeCache({ deviceId: "d" }, (changed) => heard.push(changed));
+    // A surface told its record changed re-reads it and finds nothing there,
+    // and blanks what it was correctly painting a frame earlier.
+    await bare.writeCached({ deviceId: "d", entityId: "e", kind: "status" }, { head: "abc" });
+    await bare.deleteCached([{ deviceId: "d", entityId: "e", kind: "status" }]);
+    await bare.evictEntity("d", "e");
+    await bare.wipeCache();
+    expect(heard).toEqual([]);
+  });
+});
+
+describe("a write that fails", () => {
+  it("says nothing changed, rather than sending a subscriber to re-read it", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "abc" });
+    const heard = [];
+    cache.subscribeCache({ deviceId: "dev-1" }, (changed) => heard.push(changed));
+    // A value IndexedDB cannot store: the put throws inside the transaction,
+    // and the cache stands down for the session.
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, () => "not storable");
+    expect(heard).toEqual([]);
+    // Degraded to "no cache", silently — never to "what you hold has changed".
+    await expect(cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).resolves.toBeUndefined();
+  });
 });
 
 describe("the format version", () => {

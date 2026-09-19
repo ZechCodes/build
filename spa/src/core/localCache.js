@@ -67,15 +67,16 @@ function standDown(error) {
   dbPromise = null;
 }
 
-/** One transaction, one operation, resolved when the transaction settles.
- *  `run` gets the store and returns an IDBRequest (or null for delete-ranges,
- *  where the transaction's own completion is the answer). */
-function inStore(mode, run) {
+/** One transaction, one operation, resolved when the transaction settles with
+ *  what it did: whether it committed, and the result of the request `run`
+ *  returned. `run` gets the store and returns an IDBRequest (or null for
+ *  delete-ranges, where the transaction's own completion is the answer). */
+function transact(mode, run) {
   return openDb().then(
     (db) =>
       new Promise((resolve) => {
         if (!db) {
-          resolve(undefined);
+          resolve({ committed: false });
           return;
         }
         let request;
@@ -84,16 +85,27 @@ function inStore(mode, run) {
           request = run(transaction.objectStore(STORE));
           transaction.onabort = () => {
             standDown(transaction.error);
-            resolve(undefined);
+            resolve({ committed: false });
           };
-          transaction.oncomplete = () => resolve(request ? request.result : undefined);
+          transaction.oncomplete = () =>
+            resolve({ committed: true, result: request ? request.result : undefined });
         } catch (error) {
           standDown(error);
-          resolve(undefined);
+          resolve({ committed: false });
         }
       }),
   );
 }
+
+/** A read: what was read, or undefined when there was nothing to read from. */
+const inStore = (mode, run) => transact(mode, run).then((done) => done.result);
+
+/** A write: whether the store actually changed. Only a transaction that
+ *  committed is announced — a private window that refuses IndexedDB, or a
+ *  session that has stood down, would otherwise send every subscriber to
+ *  re-read a record that was never written and blank a surface that was
+ *  painting the right thing a frame earlier. */
+const wroteStore = (run) => transact("readwrite", run).then((done) => done.committed);
 
 /** The record key. Every part is URI-encoded so a separator inside a branch
  *  name, path, or hash cannot make one record's key a prefix of another's. */
@@ -224,20 +236,27 @@ export function readCachedMany(addresses) {
 /** Write one record, stamped with when. Resolves to undefined always. */
 export function writeCached(address, value) {
   const record = { at: Date.now(), value };
-  return inStore("readwrite", (store) => {
-    store.put(record, recordKey(address));
+  const key = recordKey(address);
+  return wroteStore((store) => {
+    store.put(record, key);
     return null;
-  }).then(() => announce(addressParts({ ...address, sub: address.sub === undefined ? "" : address.sub })));
+  }).then((wrote) => {
+    // The key that was stored is the address announced, so a listener is
+    // never sent to re-read an address the record is not under.
+    if (wrote) announce(partsOfKey(key));
+  });
 }
 
 /** Drop every record one entity holds on one device — a single range delete,
  *  which is why the entity sits second in the key. */
 export function evictEntity(deviceId, entityId) {
   const prefix = `${encodeURIComponent(deviceId)}|${encodeURIComponent(entityId)}|`;
-  return inStore("readwrite", (store) => {
+  return wroteStore((store) => {
     store.delete(prefixRange(prefix));
     return null;
-  }).then(() => announce([encodeURIComponent(deviceId), encodeURIComponent(entityId)]));
+  }).then((wrote) => {
+    if (wrote) announce([encodeURIComponent(deviceId), encodeURIComponent(entityId)]);
+  });
 }
 
 /** Every entity id that holds at least one record on this device. What the
@@ -292,10 +311,11 @@ export async function cachedRecords(prefixAddress) {
 export function deleteCached(addresses) {
   const keys = addresses.map(recordKey);
   if (!keys.length) return Promise.resolve();
-  return inStore("readwrite", (store) => {
+  return wroteStore((store) => {
     for (const key of keys) store.delete(key);
     return null;
-  }).then(() => {
+  }).then((wrote) => {
+    if (!wrote) return;
     for (const key of keys) announce(partsOfKey(key));
   });
 }
@@ -304,8 +324,10 @@ export function deleteCached(addresses) {
  *  as the empty address, which every listener is under: nothing anyone holds
  *  is still there. */
 export function wipeCache() {
-  return inStore("readwrite", (store) => {
+  return wroteStore((store) => {
     store.clear();
     return null;
-  }).then(() => announce([]));
+  }).then((wrote) => {
+    if (wrote) announce([]);
+  });
 }

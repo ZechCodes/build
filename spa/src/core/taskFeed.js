@@ -11,7 +11,7 @@ import { App } from "../app.js";
 import { canAnswer, contextFor, liveContexts } from "./deviceContexts.js";
 import { watchChanges } from "./changeEvents.js";
 import { liveFeedSnapshot, mergeFeeds, withoutProject } from "./feedMerge.js";
-import { readCached } from "./localCache.js";
+import { DEVICES_ADDRESS, readCached, readCachedMany } from "./localCache.js";
 
 const subscribers = new Set();
 const byDevice = new Map(); // deviceId → that device's last snapshot
@@ -84,20 +84,39 @@ const onVisibilityChange = () => {
 /** The last snapshot the syncer persisted for a device, painted while that
  *  bridge is still being asked. Marked `cached: true` so the sync layer does not
  *  treat its own echo as news; a live answer that gets there first wins
- *  outright. */
+ *  outright.
+ *
+ *  The board's collections come from the `feed` record a whole pass wrote; the
+ *  two lists come from their own records, because a board push writes those
+ *  and not the feed. One transaction, so the paint is one read of the disk. */
 async function seedDeviceFromCache(deviceId) {
-  const record = await readCached({ deviceId, entityId: "", kind: "feed" });
-  if (!record || byDevice.has(deviceId)) return;
+  if (byDevice.has(deviceId)) return;
+  const [feed, projects, workspaces] = await readCachedMany(
+    ["feed", "projects", "workspaces"].map((kind) => ({ deviceId, entityId: "", kind })),
+  );
+  if (!feed || byDevice.has(deviceId)) return;
   // Nothing in flight survives a reload: the verbs the last session watched
   // settled long ago, and the live answer names whatever is running now.
-  byDevice.set(deviceId, { ...record.value, pending: [], cached: true });
+  byDevice.set(deviceId, {
+    ...feed.value,
+    ...(projects ? { projects: projects.value } : null),
+    ...(workspaces ? { workspaces: workspaces.value } : null),
+    pending: [],
+    cached: true,
+  });
   deliverFeed();
 }
 
 /** Every device the account knows paints from its own cache — the rail is the
- *  whole account's, so a device whose session is still opening is not a gap. */
-function seedFromCache() {
-  return Promise.all(App.devices.map((device) => device.id).filter(Boolean).map(seedDeviceFromCache));
+ *  whole account's, so a device whose session is still opening is not a gap.
+ *
+ *  Which machines those are is read off disk as well as off the app: the boot
+ *  paint runs before `GET /api/devices` has answered, so `App.devices` is
+ *  still empty while the list the last read left is not. */
+async function seedFromCache() {
+  const cached = (await readCached(DEVICES_ADDRESS))?.value || [];
+  const ids = [...new Set([...cached, ...App.devices].map((device) => device?.id).filter(Boolean))];
+  return Promise.all(ids.map(seedDeviceFromCache));
 }
 
 /**

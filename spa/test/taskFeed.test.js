@@ -350,6 +350,12 @@ describe("the feed's cached boot paint", () => {
     await writeCached({ deviceId, entityId: "", kind: "feed" }, value);
   };
 
+  /** The account's machines as the presence read last left them on disk. */
+  const writeDevices = async (ids) => {
+    const { writeCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js");
+    await writeCached(DEVICES_ADDRESS, ids.map((id) => ({ id, name: id, status: "online" })));
+  };
+
   const cachedFeed = (over = {}) => ({
     items: [],
     plans: [],
@@ -425,5 +431,41 @@ describe("the feed's cached boot paint", () => {
     startFeed();
     for (let i = 0; i < 15; i++) await settle();
     expect(seen).toHaveLength(0);
+  });
+
+  // The boot paint happens before `GET /api/devices` answers, so `App.devices`
+  // is still empty when the feed is asked for its first snapshot. Which
+  // machines the account has is on disk too, and that is the list the seed
+  // walks.
+  it("seeds from the cached device list before the account list has answered", async () => {
+    await writeDevices(["dev-a", "dev-b"]);
+    await writeFeed("dev-a", cachedFeed({ items: [{ kind: "branch", branch: "a" }] }));
+    await writeFeed("dev-b", cachedFeed({ items: [{ kind: "branch", branch: "b" }] }));
+    App.devices = [];
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    startFeed();
+    for (let i = 0; i < 15; i++) await settle();
+    const last = seen[seen.length - 1];
+    expect(last.items.map((item) => item.branch)).toEqual(["a", "b"]);
+  });
+
+  // The `feed` record is written by a whole pass; a board push writes the two
+  // lists and not that record. So the lists a boot paints are the records'
+  // own, not the ones the last pass happened to fold into the feed.
+  it("takes the project and workspace lists from their own records", async () => {
+    await writeDevices(["dev-1"]);
+    await writeFeed("dev-1", cachedFeed({ projects: [{ id: "stale", deviceId: "dev-1" }], workspaces: [] }));
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [{ id: "fresh", deviceId: "dev-1" }]);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [{ id: "ws-1", deviceId: "dev-1" }]);
+    App.devices = [];
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    startFeed();
+    for (let i = 0; i < 15; i++) await settle();
+    const last = seen[seen.length - 1];
+    expect(last.projects.map((project) => project.id)).toEqual(["fresh"]);
+    expect(last.workspaces.map((workspace) => workspace.id)).toEqual(["ws-1"]);
   });
 });

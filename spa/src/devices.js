@@ -20,15 +20,9 @@ import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { rememberDeviceFilter } from "./core/deviceFilter.js";
 import { deviceWentAway, openDeviceSessions, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
-import { writeCached } from "./core/localCache.js";
+import { DEVICES_ADDRESS, writeCached } from "./core/localCache.js";
 
 let presenceGeneration = 0;
-
-/** The account's device list in the cache. The one record that is nobody's
- *  device: it comes from skriftapp rather than from a bridge, so it is
- *  addressed under no device and no entity. It has no TTL — the list leaves
- *  only when the account stops naming it, which is this write replacing it. */
-const DEVICES_ADDRESS = { deviceId: "", entityId: "", kind: "devices" };
 
 export async function refreshDevices() {
   const generation = ++presenceGeneration;
@@ -37,8 +31,10 @@ export async function refreshDevices() {
   if (generation !== presenceGeneration || accountEpoch !== App.accountEpoch) throw new Error("stale device presence read");
   App.devices = devices;
   // The rail is the whole account's, so a reload paints every machine it knows
-  // before this read has answered. Awaited rather than let go of, so what the
-  // next paint reads off disk is what this read said.
+  // before this read has answered. It has no TTL — the list leaves only when
+  // the account stops naming it, which is this write replacing it. Awaited
+  // rather than let go of, so what the next paint reads off disk is what this
+  // read said.
   await writeCached(DEVICES_ADDRESS, devices);
   syncDeviceRecoveryPresence(devices);
   forgetFilterOnMissingDevice();

@@ -123,6 +123,12 @@ const recordKey = ({ deviceId, entityId, kind, sub = "" }) =>
 
 const prefixRange = (prefix) => IDBKeyRange.bound(prefix, `${prefix}￿`, false, true);
 
+/** The account's device list — the one record that is nobody's device. It
+ *  comes from skriftapp rather than from a bridge, so it is addressed under no
+ *  device and no entity. Named here because the presence read writes it and
+ *  the boot paint reads it, and the two must agree on where it lives. */
+export const DEVICES_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "devices" });
+
 // ─── Announcements ───────────────────────────────────────────────────────────
 //
 // Every writer says what it changed, and a surface that holds a record hears

@@ -10,7 +10,7 @@
 
 import { $ } from "../dom.js";
 import { App } from "../app.js";
-import { watchChanges } from "../core/changeEvents.js";
+import { subscribeCache } from "../core/localCache.js";
 import { liveContexts } from "../core/deviceContexts.js";
 import { deviceKey } from "../core/deviceKey.js";
 import { archiveDeviceNames, archiveListHtml, archiveRows, newestFirst } from "../core/archive.js";
@@ -26,8 +26,6 @@ const readDeviceArchive = (context) =>
       archiveRows(payload).map((row) => ({ ...row, deviceId: context.deviceId, key: deviceKey(context.deviceId, row.key) })),
     )
     .catch(() => null);
-
-const POLL_MS = 15000;
 
 export function renderArchive(options = {}) {
   const root = options.root || $("#root");
@@ -92,19 +90,24 @@ export function renderArchive(options = {}) {
     draw();
   };
 
-  let watcher = null;
+  let unwatch = null;
   const dispose = () => {
     disposed = true;
-    if (watcher) watcher.dispose();
-    watcher = null;
+    if (unwatch) unwatch();
+    unwatch = null;
   };
   if (options.registerDispose) options.registerDispose(dispose);
   else App.viewDispose = dispose;
   // The read is not awaited: the page (and the account nav above it) must be on
   // screen even when the device is unreachable and the read never lands.
   load();
-  // Archiving is a lifecycle move, which is feed state: the board's own event
-  // is what says this list changed.
-  watcher = watchChanges({ refresh: load, intervalMs: POLL_MS });
-  if (!options.registerDispose) App.poll = watcher;
+  // Archiving is a lifecycle move, which is feed state: a machine's board
+  // record moving is what says this list changed. The archive is not in the
+  // cache-first brief and holds no records of its own, so this is the whole of
+  // what wakes it — and a re-read that lands the same history repaints nothing
+  // (`draw` above).
+  unwatch = subscribeCache({}, (address) => {
+    if (address.kind === "feed") void load();
+  });
+  if (!options.registerDispose) App.poll = { dispose };
 }

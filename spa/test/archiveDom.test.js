@@ -4,8 +4,14 @@
 // above it.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+// The page reads again when a machine's board record moves, so the suite needs
+// a store for that record to move in.
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -83,7 +89,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  if (App.poll) clearInterval(App.poll);
+  vi.useRealTimers();
+  if (App.poll) App.poll.dispose?.();
   App.poll = null;
   if (App.viewDispose) App.viewDispose();
   App.viewDispose = null;
@@ -183,35 +190,37 @@ describe("the account archive page", () => {
     expect(location.hash).toBe("#/account/settings");
   });
 
-  // The archive is history: the 15s poll almost always reads exactly what is
+  // The archive is history: a re-read almost always lands exactly what is
   // already on the page. Rebuilding it anyway drops a selection someone is
   // copying a path out of, and the focus they reached a card with.
-  it("leaves the page alone on a tick that reads the same archive", async () => {
-    vi.useFakeTimers();
+  it("leaves the page alone on a read that lands the same archive", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
     await renderAccount();
-    await vi.advanceTimersByTimeAsync(0);
+    await flush();
     rows()[2].click(); // a record open under it
     const row = rows()[2];
     const record = document.querySelector(".archive-record");
 
-    await vi.advanceTimersByTimeAsync(15000 + 10);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
+    for (let index = 0; index < 20; index += 1) await flush();
 
-    expect(rows()[2], "the rows were rebuilt by a tick that changed nothing").toBe(row);
+    expect(rows()[2], "the rows were rebuilt by a read that changed nothing").toBe(row);
     expect(document.querySelector(".archive-record")).toBe(record);
-    vi.useRealTimers();
   });
 
-  it("redraws as soon as the archive itself moves", async () => {
-    vi.useFakeTimers();
+  it("redraws when a machine's board record moves", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
     await renderAccount();
-    await vi.advanceTimersByTimeAsync(0);
+    await flush();
     expect(rows()).toHaveLength(3);
     filed["dev-2"] = [];
 
-    await vi.advanceTimersByTimeAsync(15000 + 10);
+    // A pass wrote that machine's board. Nothing here polls; the announcement
+    // behind that write is what says the archive may have moved.
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
+    for (let index = 0; index < 20; index += 1) await flush();
 
     expect(rows()).toHaveLength(2);
-    vi.useRealTimers();
   });
 
   it("keeps the machines that did answer when one of them will not", async () => {

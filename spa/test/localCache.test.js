@@ -203,6 +203,19 @@ describe("announcements", () => {
     expect(seen).toEqual([["device", "tree"], ["tree", "src-two"]]);
   });
 
+  it("announces an address that reads the record back, whatever the writer passed", async () => {
+    const heard = [];
+    cache.subscribeCache({ deviceId: "dev-1" }, (changed) => heard.push(changed));
+    // A caller that names `sub` as null rather than leaving it out: whatever
+    // key that stores under, that is the key a listener must be sent to. An
+    // announcement of some other reading of the address sends every listener
+    // under it to re-read a record that is not there, and leaves the one that
+    // did change unannounced.
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: null }, ["x"]);
+    expect(heard).toHaveLength(1);
+    expect((await cache.readCached(heard[0])).value).toEqual(["x"]);
+  });
+
   it("announces an eviction to everyone holding any of that entity", async () => {
     const heard = announced({ deviceId: "dev-1", entityId: "run-1", kind: "status" });
     await cache.evictEntity("dev-1", "run-1");

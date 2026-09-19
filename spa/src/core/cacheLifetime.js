@@ -21,6 +21,12 @@ export const WORKSPACE_DATA_TTL_MS = 72 * 60 * 60 * 1000;
 /** File bodies kept per workspace, newest opened first. */
 export const RECENT_FILES = 5;
 
+/** The largest file body worth keeping. Nothing here enforces it — a cap on
+ *  what goes in belongs to whoever writes the record, and this module only
+ *  decides what comes out. It lives here so the writer has one place to read
+ *  it from, beside the count it goes with. */
+export const FILE_MAX_BYTES = 1048576;
+
 export const FILE_RECORD_KIND = "file";
 
 /** The kinds under a workspace that are not its data. Written as what is kept

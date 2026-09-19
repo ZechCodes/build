@@ -155,8 +155,9 @@ describe("what a sweep reads", () => {
 });
 
 describe("the recent files", () => {
-  it("keeps 5", () => {
+  it("keeps 5, of at most 1 MB each", () => {
     expect(lifetime.RECENT_FILES).toBe(5);
+    expect(lifetime.FILE_MAX_BYTES).toBe(1048576);
   });
 
   it("keeps the five most recently opened and drops the rest", async () => {

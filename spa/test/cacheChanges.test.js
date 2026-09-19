@@ -375,6 +375,28 @@ describe("a pane over a checkout nothing walks", () => {
     pane.dispose();
   });
 
+  // ...and the record it reads is the one this pane wrote: nothing else ever
+  // writes an unpushed record under a source. The sync pass files its own under
+  // the board's entities, which a workspace source is not one of.
+  it("keeps what the review is measured against where the next mount reads it", async () => {
+    await fill();
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.unpushed")
+        return { patch: "diff --git a/x b/x", base: { kind: "push_target", label: "origin/main" }, diff_key: "d1" };
+      return sourceRpc()(method, params);
+    });
+    const { pane } = await mountPane(callRpc, { scope: SOURCE });
+    await settle();
+
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: ENTITY, kind: "unpushed" });
+    expect(record.value.base).toEqual({ kind: "push_target", label: "origin/main" });
+    expect(record.value.diff_key).toBe("d1");
+    // The body is the diff record's, under its own cap. This record is the
+    // base, the commit list and the key, exactly as the sync pass writes one.
+    expect(Object.hasOwn(record.value, "patch")).toBe(false);
+    pane.dispose();
+  });
+
   it("says the review is against nothing yet where no record says otherwise", async () => {
     await fill();
     const callRpc = vi.fn(async (method, params) => {

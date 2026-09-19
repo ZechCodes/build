@@ -71,6 +71,23 @@ import { createReviewPlug } from "./changesReview.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
 import { loadDiffSort, saveDiffSort } from "./diffSort.js";
 
+/** The unpushed answer a source read for itself, kept where the next mount of
+ *  this source reads it — which is what puts the base on the rail on the first
+ *  frame rather than one round trip later.
+ *
+ *  Written here because nothing else writes one for a source: the sync pass
+ *  files its unpushed records under the board's entities, and a workspace
+ *  source is not one of them. The shape is the pass's own — the base, the
+ *  commit list and the diff key — with the body left out, which the diff
+ *  record holds under its own cap. */
+function keepUnpushed(cacheScope, scope, payload) {
+  const entityId = directoryCacheId(scope);
+  const address = entityId ? cacheScope?.address({ entityId, kind: "unpushed" }) || null : null;
+  if (!address) return;
+  const { patch, ...record } = payload;
+  writeCached(address, record); // fire and forget: a failed write is a cold mount
+}
+
 /** Workspace directories review everything not represented by their push
  * destination. The plug is created here so every workspace Git pane gets the
  * aggregate without each hosting view having to remember special wiring. */
@@ -98,6 +115,7 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
         base = payload.base;
         if (changed) onBaseChange();
       }
+      if (!payload.unchanged) keepUnpushed(cacheScope, scope, payload);
       return { ...payload, commentable: Boolean(submit) };
     },
   });

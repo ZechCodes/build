@@ -278,7 +278,20 @@ impl AppState {
     /// Read off the caches the board reads and never refreshed here. A flush
     /// answers with what the board already knows — the diffstat walk behind a
     /// row belongs to the board's own TTL, and a push must not start one per
-    /// entity that moved.
+    /// entity that moved. `board_list` also reconciles conversationless rows
+    /// and crossed dismissal lines before it builds its rows; this is a
+    /// `&self` read and does neither, so a pushed row's attention can lag the
+    /// board's by one `board.list`.
+    ///
+    /// Two rows can contest one branch key — an adopted worktree and a
+    /// Build-cut run on the same branch. The board folds those to one
+    /// ([`crate::branch::fold_work_items`]) and this does not, so both push a
+    /// row and a client painting every pushed row shows one the board would
+    /// have folded away. Deliberately left: the fold's tie-break between two
+    /// runs is their order in a `HashMap`, so there is no stable winner for a
+    /// push to agree with, and dropping both rows would leave the one that IS
+    /// painted with no live updates at all. The board's own tie-break has to
+    /// become stable first.
     fn board_row(&self, entity_id: &str) -> Option<Value> {
         let Some(active) = self.runs.get(entity_id) else {
             return self.external_worktree_row_of(entity_id);

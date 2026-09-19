@@ -1699,6 +1699,12 @@ impl Subscription {
 /// gets everything it is missing. A subscription further ahead is handed
 /// items it already holds, which a cache keyed by sequence writes twice and
 /// reads once.
+///
+/// One consequence worth naming: a merged window wider than
+/// [`THREAD_PUSH_MAX_ITEMS`] answers tip-only for everyone, so a tab that is
+/// far behind sends every tab that is close to `thread.page` too. Correct
+/// either way — the client pages — and the alternative is a lookup per
+/// subscription rather than per entity.
 fn merge_thread_after(into: &mut Vec<(String, u64)>, tips: &[(String, u64)]) {
     for (agent_id, sequence) in tips {
         match into.iter_mut().find(|(held, _)| held == agent_id) {

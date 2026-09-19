@@ -397,6 +397,33 @@ describe("a pane over a checkout nothing walks", () => {
     pane.dispose();
   });
 
+  // The record is where the paged-in history lives, so that the next mount
+  // opens on what the reader walked back to. A checkout this pane reads for
+  // itself reads its first page on every mount — and a first page put over the
+  // record wholesale would throw that history away every time.
+  it("keeps the older history the reader paged in when it reads the checkout again", async () => {
+    const older = { ...log().commits[0], hash: "b".repeat(40), short: "bbbbbbb", subject: "older still" };
+    await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "status" }, status());
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: ENTITY, kind: "log" },
+      { ...log(), commits: [log().commits[0], older], more: false },
+    );
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.log") return { ...log(), more: true }; // the latest page, and only it
+      return sourceRpc()(method, params);
+    });
+    const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
+    await settle();
+
+    expect(container.textContent).toContain("older still");
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: ENTITY, kind: "log" });
+    expect(record.value.commits.map((commit) => commit.subject)).toEqual(["earlier work", "older still"]);
+    // What the record says about there being more is about the history it
+    // holds, not about the window this read walked.
+    expect(record.value.more).toBe(false);
+    pane.dispose();
+  });
+
   it("says the review is against nothing yet where no record says otherwise", async () => {
     await fill();
     const callRpc = vi.fn(async (method, params) => {

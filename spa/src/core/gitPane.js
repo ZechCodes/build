@@ -346,6 +346,30 @@ export function olderLogPage(held, page) {
   return { ...(held || {}), commits: [...(held?.commits || []), ...older], more: Boolean(page.more) };
 }
 
+/** The commit record after a fresh first page — what a mount of a checkout
+ *  nobody else reads, and every mutation that answers with a log, comes back
+ *  with.
+ *
+ *  A first page is the newest commits, never the whole history, so putting it
+ *  over the record wholesale would throw away the older commits the reader
+ *  paged in and the record was written to keep. Where the page names a commit
+ *  the record already holds, the two histories are the same one and what the
+ *  record holds behind the page stays behind it. Where it names none — a
+ *  rebase, a reset, or more new commits than a page holds — the page is a
+ *  history this record's commits are not part of, and it replaces them.
+ *
+ *  What the record says about there being MORE is about the history it holds;
+ *  only where nothing is left behind the page does the page answer that. */
+export function freshLogPage(held, page) {
+  const arrived = new Set((page.commits || []).map((commit) => commit.hash));
+  const heldCommits = held?.commits || [];
+  const behind = heldCommits.filter((commit) => !arrived.has(commit.hash));
+  // Nothing behind the page to keep, or nothing in common with it: the page is
+  // the record either way.
+  if (!behind.length || behind.length === heldCommits.length) return page;
+  return { ...page, commits: [...(page.commits || []), ...behind], more: held.more ?? page.more };
+}
+
 /** The stash key for a scope's in-progress commit-message draft: drafts live in
  *  a module-level Map so tab switches and view-shell rebuilds (which remount the
  *  pane from scratch) restore them transparently. Keyed on the narrowest id the
@@ -1201,9 +1225,12 @@ export function mountGitPane(
     lastStatus = status;
     keep("status", status);
     if (log) {
-      lastLog = log;
-      lastHighlightKey = log.highlight_key ?? null;
-      keep("log", log);
+      lastLog = freshLogPage(lastLog, log);
+      lastHighlightKey = lastLog.highlight_key ?? null;
+      const address = cacheAddress("log");
+      // Merged rather than kept: another tab may hold more of this history
+      // than this one does, and a page put over it would lose that too.
+      if (address) void mergeCached(address, (current) => freshLogPage(current, log));
     }
     // A content refresh clears any stale armed confirm (the file/state it named
     // may be gone) — matching "any repaint resets the pending confirm".

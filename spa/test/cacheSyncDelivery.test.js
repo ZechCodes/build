@@ -82,20 +82,25 @@ const settle = async () => {
   }
 };
 
+/** The route that stands on the one branch the board lists. */
+const BRANCH_ROUTE = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" };
+
 /** The sync layer up, its subscriptions registered, and a bridge that pushes. */
-const boot = async (items = [branchItem()]) => {
+const boot = async (items = [branchItem()], route = { name: "inbox" }) => {
   board = items;
+  App.route = route;
   sync.startCacheSync();
   await settle();
   changeEvents.armChangeEvents({ push_events: true }, "dev-1");
 };
 
 /** One flush off the wire, at the device that sent it. */
-const flush = async (items) => {
-  changeEvents.dispatchChangeEvent({ type: "changes", subscription_id: "s-inbox", items }, "dev-1");
+const flush = async (items, subscriptionId = "s-inbox") => {
+  changeEvents.dispatchChangeEvent({ type: "changes", subscription_id: subscriptionId, items }, "dev-1");
   await settle();
 };
 
+const calls = (method) => bridge.call.mock.calls.filter(([name]) => name === method);
 const read = (entityId, kind, sub = "") => cache.readCached({ deviceId: "dev-1", entityId, kind, sub });
 
 beforeEach(async () => {
@@ -131,6 +136,27 @@ describe("a flush arriving at the real subscriptions", () => {
     expect(await read("run-1", "status")).toBeTruthy();
     await flush([{ entity_id: "board", state: { revision: 4, removed: ["run-1"] } }]);
     expect(await read("run-1", "status")).toBeUndefined();
+  });
+
+  it("applies it once, though all three subscriptions cover the workspace", async () => {
+    await boot([branchItem()], BRANCH_ROUTE);
+    bridge.call.mockClear();
+    await flush(
+      [{ entity_id: "run-1", git: { unpushed: { base: {}, commits: [{ hash: "h7" }], diff_key: "d1" } } }],
+      "s-active:run-1",
+    );
+    expect(calls("git.show")).toHaveLength(1);
+  });
+
+  it("re-lists a walked directory once for one flush", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" }, { path: "src", entries: [] });
+    await boot([branchItem()], BRANCH_ROUTE);
+    bridge.call.mockClear();
+    await flush(
+      [{ entity_id: "run-1", files: { paths: ["src/a.js"], truncated: false, root: { path: "", entries: [] } } }],
+      "s-background",
+    );
+    expect(calls("fs.tree").filter(([, params]) => params.path === "src")).toHaveLength(1);
   });
 
   it("writes the lists a board item carries", async () => {

@@ -308,6 +308,63 @@ describe("the changes event", () => {
     expect(seen).toEqual([{ entity_id: "board", state: { revision: 4 } }]);
   });
 
+  it("hands a flush to the subscription it names and to no other", async () => {
+    // Three subscriptions cover the routed workspace at once (the sync layer
+    // takes out exactly that shape), so a frame handed to everyone it covers
+    // is applied three times and pulls three times as much.
+    const background = [];
+    const active = [];
+    changeEvents.watchChanges({
+      refresh: () => {},
+      id: "s-background",
+      scope: "all",
+      kinds: ["git", "files"],
+      mode: { batch_ms: 30000 },
+      priority: "background",
+      onChanges: (items) => background.push(...items),
+    });
+    changeEvents.watchChanges({
+      refresh: () => {},
+      id: "s-active",
+      entity: "run-7",
+      kinds: ["git", "files"],
+      onChanges: (items) => active.push(...items),
+    });
+    await armed();
+
+    changeEvents.dispatchChangeEvent({
+      type: "changes",
+      subscription_id: "s-active:run-7",
+      items: [{ entity_id: "run-7", git: { status_key: "abc" } }],
+    });
+
+    expect(active).toEqual([{ entity_id: "run-7", git: { status_key: "abc" } }]);
+    expect(background).toEqual([]);
+  });
+
+  it("keeps the kinds a watcher never subscribed to out of what it is handed", async () => {
+    const seen = [];
+    changeEvents.watchChanges({
+      refresh: () => {},
+      scope: "all",
+      kinds: ["git"],
+      mode: { batch_ms: 30000 },
+      priority: "background",
+      onChanges: (items) => seen.push(...items),
+    });
+    await armed();
+
+    // A frame naming a subscription this client does not hold falls back to
+    // who covers it — and a whole-board git watcher covers every entity.
+    changeEvents.dispatchChangeEvent({
+      type: "changes",
+      subscription_id: "s-gone",
+      items: [{ entity_id: "run-7", state: { state: "merged" }, git: { status_key: "abc" } }],
+    });
+
+    expect(seen).toEqual([{ entity_id: "run-7", git: { status_key: "abc" } }]);
+  });
+
   it("runs the plain poll callback for a watcher that declared no onChanges", async () => {
     const refresh = vi.fn();
     changeEvents.watchChanges({ refresh, intervalMs: 1600, entity: "run-7", kinds: ["state", "git"] });

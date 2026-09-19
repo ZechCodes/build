@@ -508,11 +508,15 @@ const isBoardItem = (item) => String(item.entity_id) === BOARD_ITEM_ID;
  *  git and files over the whole board is not the feed and gets none of it. */
 const wantsBoardItem = (watcher) => watcher.kinds.includes("state");
 
-/** The items of one flush that belong to this watcher: the board item for the
- *  feed and for the whole-board watcher that reads state, every entity item
- *  for a whole-board watcher, and the ones naming an id a surface is showing
- *  for everyone else. */
-function itemsFor(watcher, items) {
+/** The item fields that carry a kind's body. Everything else on an item is
+ *  the envelope the bridge addressed it with. */
+const KIND_FIELDS = ["state", "thread", "git", "files", "terminals"];
+
+/** The items of one flush whose entity this watcher stands for: the board item
+ *  for the feed and for the whole-board watcher that reads state, every entity
+ *  item for a whole-board watcher, and the ones naming an id a surface is
+ *  showing for everyone else. */
+function coveredBy(watcher, items) {
   if (watcher.scope === "all") {
     return wantsBoardItem(watcher) ? items : items.filter((item) => !isBoardItem(item));
   }
@@ -520,6 +524,39 @@ function itemsFor(watcher, items) {
   const ids = entityIdsOf(watcher);
   return items.filter((item) => ids.includes(String(item.entity_id)));
 }
+
+/**
+ * One item narrowed to the kinds this watcher subscribed to, or null when it
+ * carries none of them.
+ *
+ * The bridge sends a subscription only the kinds it asked for
+ * (`Subscription::wants` is scope AND kind), so this is the half of that rule
+ * the client owes: a whole-board git watcher covers every entity, and handing
+ * it a `state` body would have it apply a row it never asked to hear about.
+ *
+ * A watcher that named no kinds asked the bridge for nothing and hears items
+ * whole; an item carrying no kind at all is the bare "something moved" a
+ * legacy event was, and is handed on as it arrived.
+ */
+function forKinds(watcher, item) {
+  if (!watcher.kinds.length) return item;
+  const carried = KIND_FIELDS.filter((kind) => kind in item);
+  const mine = carried.filter((kind) => watcher.kinds.includes(kind));
+  if (!carried.length || mine.length === carried.length) return item;
+  if (!mine.length) return null;
+  const narrowed = { ...item };
+  for (const kind of carried) {
+    if (!mine.includes(kind)) delete narrowed[kind];
+  }
+  return narrowed;
+}
+
+/** What this watcher is handed out of one flush: the items it stands for, each
+ *  cut down to the kinds it reads. */
+const itemsFor = (watcher, items) =>
+  coveredBy(watcher, items)
+    .map((item) => forKinds(watcher, item))
+    .filter(Boolean);
 
 /** Hand a watcher what moved. A surface with no `onChanges` has no key to
  *  compare, so the item is the same news `entity.changed` was: refetch. */
@@ -557,12 +594,44 @@ function boardItemIsNews(items, state) {
   return true;
 }
 
-function dispatchItems(items, deviceId) {
-  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+/** The ids a watcher's subscriptions are held under on the bridge — the ones
+ *  `specsOf` asks for, so a frame naming one is naming this watcher. */
+const subscriptionIdsOf = (watcher) => specsOf(watcher).map((spec) => spec.subscription_id);
+
+/**
+ * Who one flush is for.
+ *
+ * The bridge flushes per subscription and names which one, so the frame is
+ * that subscription's and nobody else's. A device holds three at once and all
+ * three cover the routed workspace — handing one flush to everyone it covers
+ * applies it three times and pulls three times what it should.
+ *
+ * Two watchers still hear a frame that names another: one holding no
+ * subscription of its own (a surface that named no kinds, which asked the
+ * bridge for nothing and lives on whatever arrives), and — for a frame naming
+ * a subscription this client does not hold, which is a bridge from before the
+ * id or one replaying a session that is gone — everyone the items cover, as
+ * it always was.
+ */
+function audienceFor(subscriptionId, deviceId) {
+  const heard = [...watchers].filter((watcher) => watcher.hears(deviceId));
+  const named = idText(subscriptionId);
+  if (!named) return heard;
+  const addressed = [];
+  const unsubscribed = [];
+  for (const watcher of heard) {
+    const ids = subscriptionIdsOf(watcher);
+    if (!ids.length) unsubscribed.push(watcher);
+    else if (ids.includes(named)) addressed.push(watcher);
+  }
+  return addressed.length ? [...addressed, ...unsubscribed] : heard;
+}
+
+function dispatchItems(payload, deviceId) {
+  const list = Array.isArray(payload.items) ? payload.items.filter(Boolean) : [];
   if (!list.length) return false;
   const boardIsNews = boardItemIsNews(list, bridgeFor(deviceId));
-  for (const watcher of [...watchers]) {
-    if (!watcher.hears(deviceId)) continue;
+  for (const watcher of audienceFor(payload.subscription_id, deviceId)) {
     const mine = itemsFor(watcher, list);
     if (!mine.length || (watcher.boardScoped && !boardIsNews)) continue;
     deliverChanges(watcher, mine);
@@ -590,7 +659,7 @@ const EVENT_DISPATCHERS = new Map([
       return id ? wake(watchersWhere((watcher) => entityIdsOf(watcher).includes(id))) : false;
     },
   ],
-  ["changes", (payload, deviceId) => dispatchItems(payload.items, deviceId)],
+  ["changes", dispatchItems],
 ]);
 
 /** A change event off one device's session. Ignored entirely while that device

@@ -107,11 +107,19 @@ pub enum Kind {
     Git,
     /// Working-tree paths.
     Files,
+    /// The tabs open in a checkout — the human's shells, coming and going.
+    Terminals,
 }
 
 impl Kind {
     /// Every kind, in wire order.
-    pub const ALL: [Kind; 4] = [Kind::State, Kind::Thread, Kind::Git, Kind::Files];
+    pub const ALL: [Kind; 5] = [
+        Kind::State,
+        Kind::Thread,
+        Kind::Git,
+        Kind::Files,
+        Kind::Terminals,
+    ];
 
     /// How the wire spells it.
     pub fn as_str(self) -> &'static str {
@@ -120,6 +128,7 @@ impl Kind {
             Kind::Thread => "thread",
             Kind::Git => "git",
             Kind::Files => "files",
+            Kind::Terminals => "terminals",
         }
     }
 
@@ -350,6 +359,8 @@ pub struct FactsRequest {
     pub thread: bool,
     /// The row's lifecycle, agents and attention.
     pub state: bool,
+    /// The checkout's open tabs.
+    pub terminals: bool,
 }
 
 /// One conversation's tail, as a `thread` item carries it.
@@ -371,6 +382,9 @@ pub struct EntityFacts {
     /// board has no row for) leaves the item's `state` an empty object, which
     /// still says "this moved, refetch".
     pub state: Option<Value>,
+    /// The checkout's tab list, as `term.list` reads it. `None` leaves the
+    /// item's `terminals` an empty object, which says the same.
+    pub terminals: Option<Value>,
 }
 
 /// How a flush answers a batch of [`FactsRequest`]s. Runs on the flusher's
@@ -666,6 +680,9 @@ fn item_payload(
             json!({ "paths": item.paths, "truncated": item.truncated }),
         );
     }
+    if item.kinds.contains(Kind::Terminals) {
+        out.insert("terminals".into(), terminals_payload(facts));
+    }
     Value::Object(out)
 }
 
@@ -678,6 +695,14 @@ fn state_payload(entity_id: &str, facts: Option<&EntityFacts>, board_revision: u
     }
     facts
         .and_then(|f| f.state.clone())
+        .unwrap_or_else(|| json!({}))
+}
+
+/// The tab list the facts source read, or an empty object where it read
+/// nothing — which still says "this moved".
+fn terminals_payload(facts: Option<&EntityFacts>) -> Value {
+    facts
+        .and_then(|f| f.terminals.clone())
         .unwrap_or_else(|| json!({}))
 }
 
@@ -959,6 +984,16 @@ impl ChangeBus {
     pub fn note_kind(&self, entity_id: &str, kind: Kind) {
         self.note_subscriptions(entity_id, kind, &[]);
         self.note_legacy_entity(entity_id, kind);
+    }
+
+    /// This checkout's tab list moved.
+    ///
+    /// The subscription path only. The legacy events say "the feed is stale"
+    /// and "this entity's detail is stale", and a shell opening in a checkout
+    /// is neither — a legacy client reads its tabs off `term.list` when the
+    /// human opens the console, never off the board.
+    pub fn note_terminals(&self, entity_id: &str) {
+        self.note_subscriptions(entity_id, Kind::Terminals, &[]);
     }
 
     /// These working-tree paths moved, relative to the worktree root.
@@ -1258,15 +1293,17 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
                 git: false,
                 thread: false,
                 state: false,
+                terminals: false,
             });
             entry.git |= item.kinds.contains(Kind::Git);
             entry.thread |= item.kinds.contains(Kind::Thread);
             entry.state |= item.kinds.contains(Kind::State);
+            entry.terminals |= item.kinds.contains(Kind::Terminals);
         }
     }
     wanted
         .into_values()
-        .filter(|request| request.git || request.thread || request.state)
+        .filter(|request| request.git || request.thread || request.state || request.terminals)
         .collect()
 }
 
@@ -2148,7 +2185,7 @@ mod subscriptions {
                             agent_id: "agent-3".into(),
                             last_sequence: 412,
                         }],
-                        state: None,
+                        ..EntityFacts::default()
                     })
                     .collect()
             }),
@@ -2185,7 +2222,7 @@ mod subscriptions {
         let wire = json!({
             "subscription_id": "s-focus",
             "scope": { "kind": "entity", "id": "run-7" },
-            "kinds": ["state", "thread", "git", "files"],
+            "kinds": ["state", "thread", "git", "files", "terminals"],
             "mode": "realtime",
             "priority": "foreground",
         });
@@ -2240,5 +2277,67 @@ mod subscriptions {
             .contains("missing required param: scope.id"));
         let mode: Result<Mode, _> = serde_json::from_value(json!("hourly"));
         assert!(mode.unwrap_err().to_string().contains("unknown mode"));
+    }
+
+    /// A `terminals` item carries the tab list the facts source read, so a
+    /// client repaints its tab row off the push rather than calling
+    /// `term.list` behind it.
+    #[test]
+    fn a_terminals_item_carries_the_tab_list() {
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(|requests: &[FactsRequest]| {
+                requests
+                    .iter()
+                    .map(|request| EntityFacts {
+                        entity_id: request.entity_id.clone(),
+                        terminals: request
+                            .terminals
+                            .then(|| json!({ "tabs": [{ "term_id": "term-1", "kind": "shell" }] })),
+                        ..EntityFacts::default()
+                    })
+                    .collect()
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::Terminals].into_iter().collect(),
+                ..spec(
+                    "s-tabs",
+                    Scope::Entity("run-7".into()),
+                    Mode::Realtime,
+                    Priority::Foreground,
+                )
+            },
+        );
+
+        bus.note_kind("run-7", Kind::Terminals);
+        bus.flush();
+
+        let sent = frames(drained(&mut rx, &key));
+        assert_eq!(
+            sent[0]["items"][0],
+            json!({
+                "entity_id": "run-7",
+                "terminals": { "tabs": [{ "term_id": "term-1", "kind": "shell" }] },
+            })
+        );
+    }
+
+    /// The new kind is one of the five the wire names, and it is not a
+    /// worktree kind: a tab list is not something a filesystem watcher sees,
+    /// and the settle floor under the git surfaces has nothing to say about
+    /// it.
+    #[test]
+    fn terminals_is_a_kind_the_wire_names_and_no_watcher_serves() {
+        assert!(Kind::ALL.contains(&Kind::Terminals));
+        assert_eq!(Kind::Terminals.as_str(), "terminals");
+        assert!(!Kind::Terminals.is_worktree());
+        let parsed: KindSet = serde_json::from_value(json!(["terminals"])).unwrap();
+        assert!(parsed.contains(Kind::Terminals));
+        assert!(!parsed.needs_worktree());
     }
 }

@@ -4,7 +4,7 @@
   "params": {
     "subscription_id": "s-focus",
     "scope": { "kind": "entity", "id": "run-7" },
-    "kinds": ["state", "thread", "git", "files"],
+    "kinds": ["state", "thread", "git", "files", "terminals"],
     "mode": "realtime",
     "priority": "foreground"
   },

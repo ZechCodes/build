@@ -44,6 +44,7 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
     };
     let (roots, mut facts) = {
         let app = state.lock().unwrap();
+        let roots = app.worktree_roots();
         let facts = requests
             .iter()
             .map(|request| EntityFacts {
@@ -57,10 +58,15 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
                     .state
                     .then(|| app.entity_state_item(&request.entity_id))
                     .flatten(),
+                terminals: request
+                    .terminals
+                    .then(|| roots.get(&request.entity_id))
+                    .flatten()
+                    .map(|root| json!({ "tabs": app.shell_tabs_at(root) })),
                 ..EntityFacts::default()
             })
             .collect::<Vec<_>>();
-        (app.worktree_roots(), facts)
+        (roots, facts)
     };
     for (request, fact) in requests.iter().zip(facts.iter_mut()) {
         let Some(root) = roots.get(&request.entity_id).filter(|_| request.git) else {

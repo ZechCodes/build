@@ -802,4 +802,18 @@ impl AppState {
     pub(in crate::app) fn note_entity_settled(&self, entity_id: &str) {
         self.changes.note_entity_settled(entity_id);
     }
+
+    /// A tab opened or closed in this checkout.
+    ///
+    /// Every board entity rooted there hears it: one directory can be both a
+    /// run's worktree and the external checkout it was adopted from, and a
+    /// client watching either is looking at the same tab row.
+    pub(in crate::app) fn note_terminals_at(&self, root: &std::path::Path) {
+        let root = Self::canonical_root(root);
+        for (entity_id, path) in self.worktree_roots() {
+            if Self::canonical_root(&path) == root {
+                self.changes.note_terminals(&entity_id);
+            }
+        }
+    }
 }

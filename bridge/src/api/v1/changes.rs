@@ -156,7 +156,7 @@ fn check(sub: &SubscriptionSpec) -> Result<(), ApiError> {
     }
     if sub.kinds.is_empty() {
         return Err(ApiError::invalid_params(
-            "changes.subscribe: name at least one kind — state, thread, git, or files",
+            "changes.subscribe: name at least one kind — state, thread, git, files, or terminals",
         ));
     }
     if sub.scope == Scope::Board && sub.kinds.iter().any(|kind| kind != Kind::State) {

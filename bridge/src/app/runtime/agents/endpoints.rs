@@ -779,7 +779,9 @@ impl AppState {
         let provider_thread_id = identity
             .as_ref()
             .and_then(|(owner, agent)| self.recorded_resume_id(owner, agent));
-        self.session_registry
+        let shell = self.session_registry.tab_is_shell(key);
+        let retired = self
+            .session_registry
             .retire_tab(
                 key,
                 reason,
@@ -792,7 +794,13 @@ impl AppState {
                     caller: Some(caller),
                 },
             )
-            .map(|retired| retired.retirement)
+            .map(|retired| retired.retirement);
+        // Only a shell: an agent tab is not one of the rows `term.list`
+        // carries, so its coming and going moves no tab list.
+        if retired.is_some() && shell {
+            self.note_terminals_at(&key.root);
+        }
+        retired
     }
 
     /// Remove one tab and retire its process, keeping its screen for the

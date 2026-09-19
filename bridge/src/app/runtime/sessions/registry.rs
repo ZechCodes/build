@@ -296,6 +296,14 @@ impl SessionRegistry {
         self.tabs.get(key)?.session_instance.clone()
     }
 
+    /// Whether this key holds one of the human's shells — a row `term.list`
+    /// carries — rather than a worktree's agent.
+    pub(in crate::app) fn tab_is_shell(&self, key: &TabKey) -> bool {
+        self.tabs
+            .get(key)
+            .is_some_and(|tab| tab.role == TabRole::Shell)
+    }
+
     pub(in crate::app) fn shell_tabs_at(&self, root: &Path) -> Vec<ShellTabFact> {
         self.tabs
             .iter()

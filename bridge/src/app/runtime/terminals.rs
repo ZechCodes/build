@@ -312,6 +312,7 @@ pub(in crate::app) fn term_create(
             terminal_size(cols, rows),
         )?;
         let pumps = s.session_registry.insert_shell(key.clone(), tab, rx);
+        s.note_terminals_at(&key.root);
         (key, pumps)
     };
     spawn_tab_pumps(state, key.clone(), pumps);
@@ -521,9 +522,15 @@ impl AppState {
     /// tab row at adoption while its process kept running.
     pub(in crate::app) fn term_list(&mut self, params: &Value) -> Result<Value, String> {
         let root = terminal_scope_root(self, params)?;
+        Ok(json!({ "terminals": self.shell_tabs_at(&root) }))
+    }
+
+    /// The same rows, for a root already resolved: what `term.list` answers
+    /// with, and what a `terminals` push item carries.
+    pub(in crate::app) fn shell_tabs_at(&self, root: &std::path::Path) -> Vec<Value> {
         let mut terminals: Vec<(u64, Value)> = self
             .session_registry
-            .shell_tabs_at(&root)
+            .shell_tabs_at(root)
             .into_iter()
             .filter_map(|tab| {
                 let (cols, rows) = tab.size?;
@@ -540,8 +547,7 @@ impl AppState {
             })
             .collect();
         terminals.sort_by_key(|(suffix, _)| *suffix);
-        let terminals: Vec<Value> = terminals.into_iter().map(|(_, entry)| entry).collect();
-        Ok(json!({ "terminals": terminals }))
+        terminals.into_iter().map(|(_, entry)| entry).collect()
     }
 
     /// Close a user terminal: remove it, kill AND reap its shell (the existing
@@ -622,6 +628,7 @@ impl AppState {
             let provider_thread_id = provider
                 .as_ref()
                 .and_then(|(owner, agent)| self.recorded_resume_id(owner, agent));
+            let shell = self.session_registry.tab_is_shell(&key);
             let Some(retired) = self.session_registry.retire_tab(
                 &key,
                 "reaped",
@@ -638,6 +645,9 @@ impl AppState {
             };
             if let Some(instance) = retired.instance {
                 killed_agents.push(instance);
+            }
+            if shell {
+                self.note_terminals_at(&key.root);
             }
             reaped.push(retired.wire_id);
         }

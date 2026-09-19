@@ -105,7 +105,7 @@ async fn the_greeting_announces_push_events() {
         json!({
             "subscriptions": true,
             "mode": "legacy",
-            "kinds": ["state", "thread", "git", "files"],
+            "kinds": ["state", "thread", "git", "files", "terminals"],
             "batch_ms": { "min": 1000, "max": 600_000 },
         }),
         "{hello:?}"
@@ -564,6 +564,56 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
         }),
         "{item:?} against {row:?}"
     );
+}
+
+/// A tab opening and a tab closing both move the `terminals` kind, and the
+/// item carries the list `term.list` would answer — so a client repaints its
+/// tab row off the push and asks nothing.
+#[tokio::test]
+async fn a_terminals_item_carries_the_tabs_a_checkout_holds() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-tabs",
+                "scope": { "kind": "entity", "id": project_id },
+                "kinds": ["terminals"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    let created = call(&handler, "term.create", json!({ "project_id": project_id }));
+    assert_eq!(created["ok"], true, "{created:?}");
+    let opened = terminals_item(&settled_pushes(&mut rx, &key).await, &project_id);
+    let listed = call(&handler, "term.list", json!({ "project_id": project_id }));
+    assert_eq!(opened["tabs"], listed["result"]["terminals"], "{opened:?}");
+    assert_eq!(
+        opened["tabs"].as_array().map(Vec::len),
+        Some(1),
+        "{opened:?}"
+    );
+
+    let closed = call(&handler, "term.close", json!({ "term_id": "term-1" }));
+    assert_eq!(closed["ok"], true, "{closed:?}");
+    let after = terminals_item(&settled_pushes(&mut rx, &key).await, &project_id);
+    assert_eq!(after["tabs"], json!([]), "{after:?}");
+}
+
+/// The `terminals` half of one entity's items out of a push history.
+fn terminals_item(pushes: &[Value], entity_id: &str) -> Value {
+    pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["entity_id"] == entity_id && item.get("terminals").is_some())
+        .map(|item| item["terminals"].clone())
+        .unwrap_or_else(|| panic!("no terminals item for {entity_id}: {pushes:?}"))
 }
 
 /// Step 1.5, the legacy default: a client that greets with NO `changes`

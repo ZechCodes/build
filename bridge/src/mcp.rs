@@ -653,7 +653,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "create_workspace",
-                "description": "Cut a new workspace in your project: its own checkout of every source, on a branch of its own. It is cut in your project — there is nothing to name — and nobody is working in it until you add an agent.",
+                "description": "Cut a new workspace in your project: its own checkout of every source, on a branch of its own. This is how a separate checkout is obtained in Build — never `git worktree add`, never a manual clone or copy of the folder you are standing in, because a checkout Build did not cut is one nobody can see, review or clean up. It is made the way the project is configured (a git worktree, or a copy-on-write clone) unless you say otherwise, cut in your project — there is nothing to name — and nobody is working in it until you add an agent.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -715,7 +715,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "add_workspace_directory",
-                "description": "Put one more directory into a workspace that is already standing. A Git source arrives as its own checkout on the workspace's branch; anything else is copied in. Name exactly one of source_id, path or remote.",
+                "description": "Put one more directory into a workspace that is already standing. A Git source arrives as its own checkout on the workspace's branch; anything else is copied in. This and create_workspace are how a separate checkout is obtained in Build — never `git worktree add`, never a manual clone or copy of the folder you are standing in. Name exactly one of source_id, path or remote.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1994,6 +1994,43 @@ mod tests {
                 !tool_names(&server()).contains(&project_only.to_string()),
                 "{project_only} is the project agent's alone"
             );
+        }
+    }
+
+    /// The two tools that hand out a checkout say, in the description itself,
+    /// that this is how a checkout is obtained in Build and that git's own
+    /// worktrees are not.
+    ///
+    /// The coding prompt says it too (`WORKSPACE_NOTE` in `templates.rs`), and
+    /// that is the point of saying it twice: a description is re-sent on every
+    /// tools/list, so it is still in front of the agent after the compaction
+    /// that ate the cold prompt — which is exactly when an agent reaches for
+    /// the worktree command it already knows.
+    #[test]
+    fn the_checkout_tools_forbid_git_worktree_in_the_description_itself() {
+        for surface in [&server(), &project()] {
+            let listed =
+                surface.handle_message(r#"{"jsonrpc":"2.0","id":74,"method":"tools/list"}"#);
+            let value = parse(&listed.reply.unwrap());
+            for tool in ["create_workspace", "add_workspace_directory"] {
+                let description = value["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|listed| listed["name"] == tool)
+                    .unwrap_or_else(|| panic!("{tool} is advertised"))["description"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                assert!(
+                    description.contains("how a separate checkout is obtained in Build"),
+                    "{tool} does not say where a checkout comes from: {description}"
+                );
+                assert!(
+                    description.contains("never `git worktree add`"),
+                    "{tool} does not forbid git's own worktrees: {description}"
+                );
+            }
         }
     }
 

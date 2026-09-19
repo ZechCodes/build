@@ -30,7 +30,7 @@ import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts
 import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
-import { liveFeedSnapshot, stampProject, stampRow, stampWorkspace } from "./feedMerge.js";
+import { liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { mergeActivityDigests } from "./activityDigest.js";
 import { THREAD_RECORD_KIND, threadItemKey, windowFromThreadPayload } from "./thread.js";
 import {
@@ -670,9 +670,13 @@ async function applyBoard(context, state) {
     );
   }
   if (state.workspaces) {
+    // The item's list carries no summaries — `board.list` is the only read
+    // that answers what a workspace has to show and whether it can be
+    // finished — so the verdicts the cache holds are stamped back on.
+    const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
     await writeCached(
       addressOf(context, "", "workspaces"),
-      state.workspaces.map((workspace) => stampWorkspace(workspace, context.deviceId)),
+      state.workspaces.map((workspace) => stampWorkspace(workspace, context.deviceId, summaries)),
     );
   }
 }

@@ -79,6 +79,23 @@ export function stampWorkspace(workspace, deviceId, summaries = []) {
   };
 }
 
+/** The board's verdicts, read back off workspaces already stamped with them —
+ *  the inverse of the summary half of `stampWorkspace`.
+ *
+ *  A board push carries the workspace list without the summaries (only
+ *  `board.list` answers those), so the layer re-stamping that list hands these
+ *  back in rather than letting every row lose its Done and its work summary
+ *  until the next whole read of the board. */
+export const workspaceSummaries = (workspaces = []) =>
+  workspaces
+    .filter((workspace) => workspace.work_summary !== undefined || workspace.can_finish !== undefined)
+    .map((workspace) => ({
+      workspace_id: workspace.id,
+      work_summary: workspace.work_summary,
+      can_finish: workspace.can_finish,
+      finish_blockers: workspace.finish_blockers,
+    }));
+
 /** One device's snapshot, read from its `board.list`, `project.list` and
  *  `workspace.list`. A bridge that does not serve workspaces answers none. */
 export function liveFeedSnapshot(board, projectList, workspaceList, deviceId) {

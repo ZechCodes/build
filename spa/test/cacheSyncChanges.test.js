@@ -410,6 +410,32 @@ describe("the board item", () => {
     expect((await read("", "workspaces")).value[0]).toMatchObject({ id: "ws-2", deviceId: "dev-1" });
   });
 
+  it("keeps the board's verdict on a workspace whose list it re-carries", async () => {
+    // Done is the board's to decide, and `board.list` is the only read that
+    // answers it: the item's workspace list carries none. Re-stamping that
+    // list over the record must not take the verdict off every row.
+    script["workspace.list"] = () => ({ workspaces: [{ id: "ws-2", project_id: "p1" }] });
+    script["board.list"] = () => ({
+      items: board,
+      workspace_summaries: [
+        { workspace_id: "ws-2", work_summary: "3 files changed", can_finish: true, finish_blockers: [] },
+      ],
+    });
+    await boot([branchItem()]);
+
+    await deliver([{
+      entity_id: "board",
+      state: { revision: 7, workspaces: [{ id: "ws-2", project_id: "p1" }] },
+    }]);
+
+    expect((await read("", "workspaces")).value[0]).toMatchObject({
+      id: "ws-2",
+      work_summary: "3 files changed",
+      can_finish: true,
+      finish_blockers: [],
+    });
+  });
+
   it("leaves the lists alone when the board item names neither", async () => {
     await boot([branchItem()]);
     const before = (await read("", "projects")).value;

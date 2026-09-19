@@ -72,6 +72,24 @@ import {
 
 const SYNC_LOCK = "build.cacheSync";
 
+/** How long this tab queues for the sync lock before doing the job anyway.
+ *
+ *  A phone freezes a backgrounded tab where it stands, and a frozen tab holding
+ *  this lock hands it back to nobody: waiting on it for ever is a tab that
+ *  never reads a thing. So the wait is bounded, and past it this tab syncs too.
+ *  Two tabs syncing costs a duplicate read of each shape — what two open tabs
+ *  always cost — and a tab that never syncs costs the reader the whole app. */
+export const LOCK_WAIT_MS = 4000;
+
+/** How long a pass waits for the bridge to say which API major it speaks.
+ *
+ *  A greeting settles when the bridge answers, when the session dies, or when a
+ *  newer session arms its own — but a session whose transport is up and whose
+ *  bridge never answers settles none of those, and a pass awaiting it would
+ *  hold this device's turn for the life of the tab. Past the wait the pass
+ *  stands down; the greeting landing announces the device, which asks again. */
+export const GREETING_WAIT_MS = 15000;
+
 // The thresholds this layer is written against live in core/cacheThresholds.js
 // — a module that imports nothing, so the surfaces can read the same bounds
 // without importing this one. Re-exported here because this is where a reader
@@ -89,22 +107,28 @@ export {
 
 let holdingLock = false;
 let releaseLock = null;
+let lockWait = null; // the bounded queue for the lock, while it is running
 let visibilityWired = false;
 let stopDeviceWatch = null;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
-const syncing = new Set(); // deviceIds mid-pass, so triggers never stack
+const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
 const subscriptions = new Map(); // deviceId → its three watchers
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
 
-/** What this layer needs of a device's context, captured once per pass. */
-const syncContext = (context) =>
+/** What this layer needs of a device's context, captured once per pass.
+ *
+ *  A pass is over the moment its own session is not the device's any more:
+ *  `superseded` is how a newer session's pass tells this one to stop, and it
+ *  rides `active()` so every step that already asks "is this still worth
+ *  doing" asks this too. */
+const syncContext = (context, turn = null) =>
   context && {
     deviceId: context.deviceId,
     call: context.rpc,
     requestScope: context.cacheScope,
-    active: () => context.active(),
+    active: () => context.active() && !turn?.superseded,
   };
 
 const addressOf = (context, entityId, kind, sub = "") => ({ deviceId: context.deviceId, entityId, kind, sub });
@@ -168,17 +192,48 @@ function dirsOf(paths) {
  * caller needs to know to decide whether this session has been read at all.
  */
 export async function syncDevice(deviceId) {
-  if (!holdingLock || syncing.has(deviceId)) return false;
-  syncing.add(deviceId);
-  try {
-    return await orderedSync(deviceId);
-  } finally {
-    syncing.delete(deviceId);
+  if (!holdingLock) return false;
+  const running = passes.get(deviceId);
+  if (running) {
+    // The same session asking twice is one pass: a tab coming back while its
+    // own pass is out has nothing to add.
+    if (running.session === sessionOf(deviceId)) return false;
+    // A newer session, though, is a different machine's answer — possibly a
+    // different bridge — and the pass out is reading a session that has gone.
+    // It is stood down and waited out rather than this ask being dropped: a
+    // dropped ask is a device that is never read again, because nothing but
+    // another announcement would ever ask, and the announcement that would
+    // have is the one being dropped.
+    running.superseded = true;
+    await running.done;
+    if (passes.has(deviceId)) return false; // another ask got in first; it owns this turn
   }
+  return startPass(deviceId);
 }
 
-async function orderedSync(deviceId) {
-  const context = await greetedContext(deviceId);
+/** The session this device is on right now, which is what a pass belongs to. */
+const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
+
+/** Run one pass and hold it where the next ask can find it. The promise never
+ *  rejects: a pass that threw is a pass that did not finish, and the caller's
+ *  question is only ever whether it got all the way through. */
+function startPass(deviceId) {
+  const turn = { session: sessionOf(deviceId), superseded: false, done: null };
+  turn.done = (async () => {
+    try {
+      return await orderedSync(deviceId, turn);
+    } catch {
+      return false;
+    } finally {
+      if (passes.get(deviceId) === turn) passes.delete(deviceId);
+    }
+  })();
+  passes.set(deviceId, turn);
+  return turn.done;
+}
+
+async function orderedSync(deviceId, turn) {
+  const context = await greetedContext(deviceId, turn);
   if (!context) return false;
   const view = await readLists(context);
   if (!view || !context.active()) return false;
@@ -195,12 +250,27 @@ async function orderedSync(deviceId) {
  *  API major it answers in in its greeting, and until that has settled,
  *  asking it anything is asking for an answer in a shape this tab may not be
  *  able to read. Null where a reconnect landed under the wait. */
-async function greetedContext(deviceId) {
+async function greetedContext(deviceId, turn) {
   const greeting = contextFor(deviceId)?.greeted;
-  await greeting;
+  if (!(await settledWithin(greeting, GREETING_WAIT_MS))) return null;
   if (greeting !== contextFor(deviceId)?.greeted) return null;
-  const context = syncContext(contextFor(deviceId));
+  const context = syncContext(contextFor(deviceId), turn);
   return context?.active() ? context : null;
+}
+
+/** Whether this promise settled inside the wait — however it settled. False is
+ *  "it is still out there", and the caller stands down rather than holding a
+ *  turn nothing will ever end. */
+function settledWithin(promise, waitMs) {
+  if (!promise) return Promise.resolve(true);
+  let timer = null;
+  const settled = Promise.resolve(promise).then(() => true, () => true);
+  return Promise.race([
+    settled,
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), waitMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 async function readWorkspaces(context, pass) {
@@ -1085,6 +1155,9 @@ function acquireLock() {
     takeLock();
     return;
   }
+  // Queued, but not for ever: a holder that has been frozen where it stands
+  // cannot do the job and cannot hand the lock back (see LOCK_WAIT_MS).
+  lockWait = setTimeout(takeLock, LOCK_WAIT_MS);
   locks
     .request(SYNC_LOCK, () => {
       takeLock();
@@ -1101,6 +1174,8 @@ function acquireLock() {
  *  arrive long after `startCacheSync` — another tab held it — so the devices
  *  are considered here rather than at start. */
 function takeLock() {
+  clearTimeout(lockWait);
+  lockWait = null;
   holdingLock = true;
   considerDevices();
 }
@@ -1155,7 +1230,12 @@ export function stopCacheSync() {
   }
   subscriptions.clear();
   syncedSessions.clear();
-  syncing.clear();
+  // Whatever is still out stands down where it stands: its writes are all
+  // behind `active()`, which this takes away with the lock.
+  for (const turn of passes.values()) turn.superseded = true;
+  passes.clear();
+  clearTimeout(lockWait);
+  lockWait = null;
   if (visibilityWired && typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", onVisibilityChange);
     visibilityWired = false;

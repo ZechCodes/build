@@ -576,7 +576,27 @@ const STANDS_ON = {
   workspace: (route) => (entry) =>
     entry.kind === "workspace" && entry.deviceId === route.deviceId && entry.workspaceId === route.workspaceId,
   capture: (route) => (entry) => entry.kind === "capture" && entry.captureId === route.id,
+  // A project's page stands on the conversation that project holds — the row
+  // the board keeps for the owner `project.list` names in `entity_id`. Without
+  // this the project page names no entity at all, which is a page the sync
+  // layer neither leads its pass with nor watches in realtime: the reader
+  // watching their project agent work would be the one reader on a page that
+  // hears nothing.
+  project: (route, view) => {
+    const conversation = projectConversationId(route, view);
+    return (entry) => Boolean(conversation) && entry.entityId === conversation;
+  },
 };
+
+/** The conversation a project holds on the machine the route names, as
+ *  `project.list` answers it. Null for a project nobody has talked to yet, and
+ *  wherever the snapshot has not caught up with the route. */
+function projectConversationId(route, view) {
+  const project = (view?.projects || []).find(
+    (candidate) => candidate.deviceId === route.deviceId && (candidate.id || candidate.project_id) === route.projectId,
+  );
+  return project?.entity_id || project?.run_id || null;
+}
 
 /** The entry the current route is standing on, so the list can mark it. Takes
  *  every row on screen — Recent included, since an open one is on screen. A
@@ -584,7 +604,7 @@ const STANDS_ON = {
 export function activeEntryKey(route, entries) {
   const standsOn = route && STANDS_ON[route.name];
   if (!standsOn) return null;
-  const match = entries.find(standsOn(route));
+  const match = entries.find(standsOn(route, null));
   return match ? match.key : null;
 }
 
@@ -614,7 +634,7 @@ export function routedEntry(route, view = {}) {
   if (!standsOn) return null;
   const items = view.items || [];
   const rows = [...items.filter(isListed).map(toEntry), ...workspaceEntries(view.workspaces, view.projects, items)];
-  return rows.find(standsOn(route)) || null;
+  return rows.find(standsOn(route, view)) || null;
 }
 
 /** The row's action cluster: one quiet ⋯, and behind it the row's menu — Done

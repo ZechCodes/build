@@ -398,6 +398,29 @@ describe("the cursors", () => {
     });
   });
 
+  // The project page is a conversation page like a workspace's, so it gets
+  // what one gets: the pass leads with it, and the realtime subscription
+  // follows the reader onto it. Without this the page names no entity at all —
+  // the one page in the app that heard nothing while its agent worked.
+  it("follows the project's conversation while the reader is standing on the project page", async () => {
+    script["project.list"] = () => ({ projects: [projectList] });
+    await boot([branchItem({ agents: [{ id: "ag-1" }] }), projectRow()], {
+      name: "project",
+      deviceId: "dev-1",
+      projectId: "p1",
+    });
+
+    const active = registeredWatchers.find((watcher) => watcher.id === "s-active");
+    expect(active).toBeDefined();
+    expect(active.entity).toBe("run-proj");
+    expect(active.mode).toBe("realtime");
+    // And it is read first, ahead of the foreground, like any open workspace.
+    const ahead = bridge.call.mock.calls
+      .filter(([, , envelope]) => envelope?.priority !== "background")
+      .map(([, params]) => params?.run_id || params?.entity_id);
+    expect([...new Set(ahead)]).toEqual(["run-proj"]);
+  });
+
   it("reads a quiet project conversation again on the pass a reconnect brings", async () => {
     script["project.list"] = () => ({ projects: [projectList] });
     script["thread.page"] = () => ({ items: [{ id: "m-1", data: { sequence: 4 } }], has_more: false });
@@ -626,6 +649,130 @@ describe("when a pass runs", () => {
     expect(bridge.call).not.toHaveBeenCalled();
     expect(await read("", "feed")).toBeUndefined();
     vi.unstubAllGlobals();
+  });
+
+  // A phone freezes a backgrounded tab where it stands. A frozen tab that
+  // holds this lock is doing none of the work and will never hand it back, so
+  // queueing behind it for ever is a tab that reads nothing all session.
+  it("does the job itself when the tab holding the lock never hands it back", async () => {
+    vi.stubGlobal("navigator", { locks: { request: vi.fn(async () => undefined) } }); // never granted
+    vi.resetModules();
+    cache = await import("../src/core/localCache.js");
+    sync = await import("../src/core/cacheSync.js");
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      board = [branchItem()];
+      sync.startCacheSync();
+      await settle();
+      expect(bridge.call).not.toHaveBeenCalled(); // still queueing
+
+      await vi.advanceTimersByTimeAsync(sync.LOCK_WAIT_MS);
+      await settle();
+      expect(calls("board.list")).toHaveLength(1);
+      expect(registeredWatchers.map((watcher) => watcher.id)).toEqual(["s-inbox", "s-background"]);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+// One machine, two sessions: the pass out belongs to the session that started
+// it, and a reconnect is a different machine's answer — possibly a different
+// bridge. The reader's whole app is behind this, because the subscriptions are
+// the last step of a pass: a device whose pass never finishes hears nothing
+// pushed and reads nothing until something else asks.
+describe("a pass that is still out when the next session lands", () => {
+  /** A pass that has reached the board and is waiting on a bridge that has
+   *  stopped answering — a radio that went away mid-read. */
+  const stallTheBoard = () => {
+    let release;
+    script["board.list"] = () => new Promise((resolve) => { release = () => resolve({ items: board }); });
+    return () => release?.();
+  };
+
+  it("runs for the new session once the stalled one is done, rather than dropping it", async () => {
+    const release = stallTheBoard();
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    expect(calls("board.list")).toHaveLength(1);
+
+    // The reconnect lands while the first pass is still waiting on the wire.
+    contexts.get("dev-1").session = { device: "dev-1", again: true };
+    stateListeners.forEach((fn) => fn());
+    await settle();
+
+    script = {};
+    release();
+    await settle();
+
+    // The new session got its own pass — and with it the subscriptions, which
+    // are what the reader hears everything through.
+    expect(calls("board.list")).toHaveLength(2);
+    expect(registeredWatchers.map((watcher) => watcher.id)).toEqual(["s-inbox", "s-background"]);
+    expect(paramsOf("thread.page")).toHaveLength(0); // the agentless row has no conversation
+  });
+
+  it("stands the stalled pass down rather than letting it write for a session that has gone", async () => {
+    const release = stallTheBoard();
+    board = [branchItem({ agents: [{ id: "ag-1" }] })];
+    sync.startCacheSync();
+    await settle();
+
+    contexts.get("dev-1").session = { device: "dev-1", again: true };
+    stateListeners.forEach((fn) => fn());
+    await settle();
+
+    script = {};
+    release();
+    await settle();
+
+    // The superseded pass answered its board and stopped there: every read
+    // past the lists belongs to the session that is actually on the wire.
+    expect(calls("board.list")).toHaveLength(2);
+    expect(calls("git.status")).toHaveLength(1);
+  });
+
+  it("is one pass, not two, when the same session asks again", async () => {
+    const release = stallTheBoard();
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(calls("board.list")).toHaveLength(1);
+
+    release();
+    await settle();
+  });
+
+  // The greeting settles when the bridge answers, when the session dies, or
+  // when a newer session arms its own. A session whose transport is up and
+  // whose bridge says nothing settles none of those.
+  it("stands down when the greeting never settles, leaving the device askable again", async () => {
+    contexts.get("dev-1").greeted = new Promise(() => {});
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      board = [branchItem()];
+      sync.startCacheSync();
+      await settle();
+      expect(bridge.call).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(sync.GREETING_WAIT_MS);
+      await settle();
+      expect(bridge.call).not.toHaveBeenCalled(); // it gave up rather than asking blind
+
+      // And the device is not poisoned: the greeting landing is an
+      // announcement, and the pass behind it reads the machine.
+      contexts.get("dev-1").greeted = Promise.resolve();
+      stateListeners.forEach((fn) => fn());
+      await settle();
+      expect(calls("board.list")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

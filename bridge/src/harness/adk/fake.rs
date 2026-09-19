@@ -168,6 +168,21 @@ pub(crate) fn stream_json_harness_that_leaves(per_turn: &[&str]) -> HarnessSpec 
     harness_replaying(INIT, &[per_turn], false, Acknowledged::TheOneAsked, None)
 }
 
+/// A child that announces itself and answers in the SAME write: the `init`
+/// line and a successful result reach the pipe together, before Build has
+/// read either of them.
+///
+/// What a real child leaves behind when Build kills it over what its `init`
+/// line said — an answer already in flight, which arrives after the killing
+/// blow and is not how the session ended. One `printf` rather than two
+/// because two would race the kill, and a test that raced would pass on the
+/// runs where the child lost.
+pub(crate) fn stream_json_harness_answering_in_the_same_breath() -> HarnessSpec {
+    HarnessSpec::new("sh").arg("-c").arg(format!(
+        "sleep 0.2\nprintf '%s\\n%s\\n' '{INIT}' '{RESULT}'\nwhile IFS= read -r turn; do :; done\n"
+    ))
+}
+
 /// A CLI that announces no interrupt. Build never sends it a
 /// `control_request`, because [`AdkSession::can_interrupt`] reads the same
 /// announcement the refusal does.

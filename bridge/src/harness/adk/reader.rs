@@ -196,6 +196,11 @@ impl ProtocolReader {
             };
             if let Some(reason) = &mismatch {
                 state.reported_error = Some(reason.clone());
+                // Build is ending this child over what it just said, so the
+                // session is closed from here: the words it was ended over
+                // are its last, and nothing it had already written clears
+                // them.
+                state.closed = true;
             }
             publish_status(&self.status_updates, state.live_status());
             mismatch
@@ -421,11 +426,16 @@ impl ProtocolReader {
             // The turn queued behind an interrupt is running the moment this
             // result lands, so the flag is handed to it rather than cleared.
             state.turn_open = stopped.as_ref().is_some_and(|pending| pending.steered);
-            state.reported_error =
-                match failed && !stopped.as_ref().is_some_and(|pending| pending.acked) {
-                    true => Some(result_error_text(event)),
-                    false => None,
-                };
+            // A result that succeeded clears the error a turn reported —
+            // unless Build has already ended this child over one. A killed
+            // child's last write is still in the pipe after the blow lands,
+            // and a session explained by the last thing that went right is a
+            // crash notice with no crash in it.
+            if failed && !stopped.as_ref().is_some_and(|pending| pending.acked) {
+                state.reported_error = Some(result_error_text(event));
+            } else if !state.closed {
+                state.reported_error = None;
+            }
             publish_status(&self.status_updates, state.live_status());
         }
         // Outside the lock, because emitting is the broadcast channel's

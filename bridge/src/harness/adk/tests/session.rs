@@ -1426,6 +1426,36 @@ fn a_child_running_another_model_than_asked_is_ended_with_that_as_its_epitaph() 
     session.end();
 }
 
+/// And the answer the dying child had already written does not talk Build
+/// out of it. A result that succeeded clears the error a turn reported —
+/// but a child Build ENDED keeps the words it was ended over, or the crash
+/// notice would explain a killed session with the last thing that went
+/// right. The fake writes both lines at once, so the result is always read
+/// after the mismatch rather than sometimes.
+#[test]
+fn a_result_already_in_flight_does_not_clear_the_epitaph_that_ended_the_child() {
+    let session = open_with(
+        &stream_json_harness_answering_in_the_same_breath(),
+        &choosing(Some("claude-opus-5"), None),
+    );
+    assert!(
+        becomes_true_within(Duration::from_secs(5), || matches!(
+            session.status(),
+            AgentStatus::Ended { .. }
+        )),
+        "the child announced claude-fable-5-1 and was asked for claude-opus-5: {:?}",
+        session.status()
+    );
+    let epitaph = session
+        .epitaph()
+        .expect("the mismatch is still the epitaph, result or no result");
+    assert!(
+        epitaph.contains("claude-fable-5-1") && epitaph.contains("claude-opus-5"),
+        "{epitaph}"
+    );
+    session.end();
+}
+
 /// The codex carrier's reconciliation timeout, for claude: a child handed a
 /// turn that never announces itself is ended at the deadline with that as
 /// its last words, instead of holding `Starting` until the idle sweep

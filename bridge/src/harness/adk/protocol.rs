@@ -90,8 +90,12 @@ pub(super) struct ProtocolState {
     /// `init` before the first user line), so the startup deadline counts
     /// from here rather than from the fork.
     pub(super) first_turn_at: Option<Instant>,
-    /// Set once Build has ended the session, so the startup watchdog stops
-    /// looking at a child that is already being reaped.
+    /// Set once Build has ended the session — by asking, by the startup
+    /// deadline, or over an `init` line that named another model.
+    ///
+    /// Two readers: the startup watchdog stops looking at a child that is
+    /// already being reaped, and a result still in flight when the blow
+    /// landed no longer clears the words the session was ended over.
     pub(super) closed: bool,
     /// What the child announced it can do, verbatim from its `init` line.
     pub(super) capabilities: Vec<String>,

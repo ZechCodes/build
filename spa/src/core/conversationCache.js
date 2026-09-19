@@ -10,12 +10,15 @@ import {
 
 const threadCacheAddress = ({ deviceId, entityId, agentId, conversationId }) => ({
   deviceId,
-  // A conversation is the transcript's canonical storage owner. Issue and run
-  // views may intentionally point at the same one; their route/entity ids must
-  // not fork that history into two browser caches.
-  entityId: conversationId || entityId,
+  // The workspace is the entity a transcript is stored under, always: that
+  // prefix is what Done, Delete and the 72 h expiry sweep, and a record
+  // addressed outside it would outlive the workspace it belongs to for ever.
+  entityId,
   kind: THREAD_RECORD_KIND,
-  sub: conversationId ? "" : agentId || "",
+  // A conversation is the transcript's canonical storage owner within the
+  // workspace. Issue and run views may intentionally point at the same one;
+  // their agent ids must not fork that history into two browser caches.
+  sub: conversationId || agentId || "",
 });
 
 export function createConversationCache({ addressOf, threadCache, onThreadSeeded, onSurfacesSeeded }) {

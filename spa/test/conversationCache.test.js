@@ -232,6 +232,45 @@ describe("writing a conversation back through", () => {
   });
 });
 
+// The Records table (plan stage 4) addresses a transcript `ws | thread | agent
+// or conversation id`: the workspace is the entity, the conversation id is the
+// sub-key. Addressing it the other way round — the conversation id AS the
+// entity — put the transcript outside the workspace's prefix, where
+// `evictWorkspaceData` and the 72 h expiry could never reach it, so a Done or
+// Deleted workspace left its conversations on disk for ever.
+describe("where a conversation's transcript is stored", () => {
+  const conversational = { ...identity, conversationId: "conv-9" };
+  const conversationAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "conv-9" };
+
+  it("keeps a conversation-keyed transcript under the workspace, keyed by the conversation", async () => {
+    standing = conversational;
+    const held = mountCache();
+    threadCache.window = savedWindow;
+
+    held.persistThread();
+    await settle();
+
+    expect((await cache.readCached(conversationAddress)).value).toEqual(savedWindow);
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "conv-9", kind: "thread", sub: "" })).toBeUndefined();
+  });
+
+  it("seeds that transcript back from under the workspace", async () => {
+    await cache.writeCached(conversationAddress, savedWindow);
+    standing = conversational;
+    const held = mountCache();
+
+    await held.seed();
+
+    expect(threadCache.seeded).toEqual(savedWindow);
+  });
+
+  it("leaves the whole transcript inside the workspace's eviction prefix", async () => {
+    await cache.writeCached(conversationAddress, savedWindow);
+    await cache.evictEntity("dev-1", "run-3");
+    expect(await cache.readCached(conversationAddress)).toBeUndefined();
+  });
+});
+
 describe("the conversation the reader switched away from", () => {
   it("forgets the seed, the window and what was on disk", async () => {
     await cache.writeCached(threadAddress, savedWindow);

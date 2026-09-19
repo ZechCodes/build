@@ -2823,7 +2823,7 @@ describe("the conversation's local cache", () => {
 
   it("seeds the saved window, so opening the chat asks for a delta, history in hand", async () => {
     await writeCached(
-      { deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" },
+      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
       { items: [threadItem(1, "what was said before")], olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: feedItems, projects: [] };
@@ -2841,7 +2841,7 @@ describe("the conversation's local cache", () => {
   // the seeded paint, not a count of the handful of rows the disk held.
   it("seeds the digests with the window, so the fold's count survives the visit", async () => {
     await writeCached(
-      { deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" },
+      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
       {
         items: [{
           id: "e-1530",
@@ -2872,7 +2872,7 @@ describe("the conversation's local cache", () => {
     await mount();
     bubbles()[0].click();
     await flush();
-    const record = await readCached({ deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" });
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
     expect(record.value.items).toHaveLength(1);
     expect(record.value.items[0].data.body).toBe("fresh words");
     expect(record.value.deliveredSequence).toBe(2);
@@ -2891,7 +2891,7 @@ describe("revisiting a conversation", () => {
 
   it("stands the strip and the saved conversation up before the first read answers", async () => {
     await writeCached(
-      { deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" },
+      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
       { items: historyThread().items, olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: [{ ...feedItems[0], agents: [agent()] }], projects: [] };
@@ -3098,7 +3098,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     it(`paints the conversation and no pill for a record holding ${JSON.stringify(shapeless)}`, async () => {
       await writeCached(surfacesAddress("ag-1"), shapeless);
       await writeCached(
-        { deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" },
+        { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
         {
           items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "the history", created_at: "2026-08-30T12:00:00Z" } }],
           olderItemsRemain: false,
@@ -3214,7 +3214,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
       },
     });
     await mount();
-    expect(await readCached({ deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" })).toBeTruthy();
+    expect(await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).toBeTruthy();
     expect(await savedSurfaces("ag-1")).toBeTruthy();
   });
 

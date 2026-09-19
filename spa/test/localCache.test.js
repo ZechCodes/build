@@ -193,9 +193,12 @@ describe("announcements", () => {
   });
 
   it("hears another tab's write over the channel and re-reads", async () => {
-    const heard = announced({ deviceId: "dev-1", entityId: "run-1" });
     // The other tab writes the record into the shared database, then says so.
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "elsewhere" });
+    // Only now does this tab listen. Subscribing before that write would let
+    // its own local announcement satisfy both assertions, and the test would
+    // pass with the inbound channel handler deleted.
+    const heard = announced({ deviceId: "dev-1", entityId: "run-1" });
     const otherTab = new BroadcastChannel("build-cache");
     otherTab.postMessage({ key: "dev-1|run-1|status|" });
     const changed = await heard;

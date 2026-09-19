@@ -392,6 +392,15 @@ impl BoardLists {
         self.projects |= other.projects;
         self.workspaces |= other.workspaces;
     }
+
+    /// The wire keys this set names — what a board item may carry, and the
+    /// filter a frame applies to a lookup answered for several frames at
+    /// once.
+    fn names(self) -> impl Iterator<Item = &'static str> {
+        [("projects", self.projects), ("workspaces", self.workspaces)]
+            .into_iter()
+            .filter_map(|(name, wanted)| wanted.then_some(name))
+    }
 }
 
 /// The board's current entity list, injected at construction so this module
@@ -588,6 +597,12 @@ struct Subscription {
     /// because two subscriptions over one conversation have heard different
     /// amounts of it; bounded by the agents on the device.
     emitted_tips: HashMap<String, u64>,
+    /// Which whole lists have moved since THIS subscription's last board
+    /// item. Per subscription, because two subscriptions watch the board at
+    /// two cadences: the one that flushes first must not swallow the news
+    /// for the one still waiting out its batch. A subscription that is
+    /// `off` holds its latch until it wakes.
+    pending_lists: BoardLists,
     /// Which entities the board listed the last time this subscription was
     /// sent a board item — what the next one's `removed` is measured against.
     /// `None` until the first board item goes out: a subscription with no
@@ -606,6 +621,7 @@ impl Subscription {
             last_flush: None,
             emitted_at: HashMap::new(),
             emitted_tips: HashMap::new(),
+            pending_lists: BoardLists::default(),
             covered_last: None,
         }
     }
@@ -729,6 +745,17 @@ impl Subscription {
         }
     }
 
+    /// The whole lists this flush's board item carries, taken off the
+    /// subscription's own latch — and only when a board item is actually
+    /// going out, so a list that moved while this subscription was `off` is
+    /// still carried by the flush that wakes it.
+    fn take_board_lists(&mut self, due: &BTreeMap<String, PendingItem>) -> BoardLists {
+        match due.contains_key(BOARD_ITEM_ID) {
+            true => std::mem::take(&mut self.pending_lists),
+            false => BoardLists::default(),
+        }
+    }
+
     fn held_by_settle(&self, entity_id: &str, now: Instant) -> bool {
         self.emitted_at
             .get(entity_id)
@@ -765,6 +792,10 @@ struct DueFrame {
     /// board item. Empty when nothing left, and when the frame carries no
     /// board item at all.
     removed: Vec<String>,
+    /// The whole lists THIS frame's board item is to carry, taken off the
+    /// subscription's own latch. The lookup answers the union across every
+    /// due frame; this says which of it is this one's.
+    lists: BoardLists,
 }
 
 impl DueFrame {
@@ -887,11 +918,13 @@ fn state_payload(
     if !frame.removed.is_empty() {
         state.insert("removed".into(), json!(frame.removed));
     }
-    let lists = facts
+    let looked_up = facts
         .and_then(|f| f.state.as_ref())
         .and_then(Value::as_object);
-    for (list, value) in lists.into_iter().flatten() {
-        state.insert(list.clone(), value.clone());
+    for list in frame.lists.names() {
+        if let Some(value) = looked_up.and_then(|answer| answer.get(list)) {
+            state.insert(list.into(), value.clone());
+        }
     }
     Value::Object(state)
 }
@@ -980,11 +1013,6 @@ pub struct ChangeBus {
     /// Worktrees whose watcher could not start; a subscription covering one
     /// answers `watch: "polled"`.
     polled: Mutex<BTreeSet<String>>,
-    /// Which whole lists the board notes since the last flush moved. Latched
-    /// rather than passed through, because the note that moves a list takes
-    /// the same leaf lock every other note takes and the flush that carries
-    /// it may be several notes later.
-    pending_lists: Mutex<BoardLists>,
     board_entities: BoardEntities,
     /// `None` on a bus built without one — the unit tests, and any caller
     /// that wants the kinds without the keys. A flush then costs no lookup
@@ -1028,7 +1056,6 @@ impl ChangeBus {
             window,
             board_revision: AtomicU64::new(0),
             polled: Mutex::new(BTreeSet::new()),
-            pending_lists: Mutex::new(BoardLists::default()),
             board_entities,
             facts,
             emitted_at: Mutex::new(HashMap::new()),
@@ -1248,7 +1275,15 @@ impl ChangeBus {
     /// The feed moved, and so did one of the lists a client caches whole:
     /// the next board item carries that list in full.
     pub fn note_board_lists(&self, lists: BoardLists) {
-        self.pending_lists.lock().unwrap().merge(lists);
+        for sub in self
+            .subscriptions
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .filter(|sub| sub.wants(BOARD_ITEM_ID, Kind::State))
+        {
+            sub.pending_lists.merge(lists);
+        }
         self.note_board();
     }
 
@@ -1376,6 +1411,7 @@ impl ChangeBus {
                 continue;
             };
             let removed = sub.board_departures(&items, &covered);
+            let lists = sub.take_board_lists(&items);
             let thread_after = match items.values().any(|item| item.kinds.contains(Kind::Thread)) {
                 true => sub
                     .emitted_tips
@@ -1391,36 +1427,16 @@ impl ChangeBus {
                 items,
                 thread_after,
                 removed,
+                lists,
             });
         }
         drop(subscriptions);
         due.frames.sort_by_key(|frame| frame.priority);
         due.requests = fact_requests(&due.frames);
-        if let Some(request) = self.take_board_lists(&due.frames) {
+        if let Some(request) = board_lists_request(&due.frames) {
             due.requests.push(request);
         }
         due
-    }
-
-    /// The lookup a board item's whole lists need, taken off the latch — and
-    /// only when a board item is actually going out, so a list noted while
-    /// every subscription was `off` still rides the flush that wakes.
-    fn take_board_lists(&self, frames: &[DueFrame]) -> Option<FactsRequest> {
-        if !frames
-            .iter()
-            .any(|frame| frame.items.contains_key(BOARD_ITEM_ID))
-        {
-            return None;
-        }
-        let lists = std::mem::take(&mut *self.pending_lists.lock().unwrap());
-        if lists.is_empty() {
-            return None;
-        }
-        Some(FactsRequest {
-            entity_id: BOARD_ITEM_ID.to_string(),
-            lists,
-            ..FactsRequest::default()
-        })
     }
 
     /// Encrypt and send. A subscription whose push fails takes every
@@ -1611,6 +1627,22 @@ fn merge_thread_after(into: &mut Vec<(String, u64)>, tips: &[(String, u64)]) {
             None => into.push((agent_id.clone(), *sequence)),
         }
     }
+}
+
+/// The one lookup every due board item's whole lists share: the union of
+/// what the frames asked for. Each frame then carries its own share of the
+/// answer, so a subscription that heard about the project list does not get
+/// the workspace list a different subscription was owed.
+fn board_lists_request(frames: &[DueFrame]) -> Option<FactsRequest> {
+    let mut lists = BoardLists::default();
+    for frame in frames {
+        lists.merge(frame.lists);
+    }
+    (!lists.is_empty()).then(|| FactsRequest {
+        entity_id: BOARD_ITEM_ID.to_string(),
+        lists,
+        ..FactsRequest::default()
+    })
 }
 
 /// What the frames due this turn need looked up, one request per entity.
@@ -3021,12 +3053,10 @@ mod subscriptions {
         );
     }
 
-    /// The project and workspace lists ride the board item only when the
-    /// change that noted it moved one of them — a row moving re-sends no
-    /// list at all.
-    #[tokio::test(start_paused = true)]
-    async fn a_board_item_carries_the_lists_only_when_they_moved() {
-        let bus = ChangeBus::with_sources(
+    /// A bus whose lookup answers the project list for any request that asks
+    /// for it — the shape every list-latch test measures against.
+    fn bus_listing_one_project() -> Arc<ChangeBus> {
+        ChangeBus::with_sources(
             DEFAULT_COALESCE_WINDOW,
             Arc::new(Vec::new),
             Arc::new(|requests: &[FactsRequest]| {
@@ -3042,7 +3072,66 @@ mod subscriptions {
                     })
                     .collect()
             }),
+        )
+    }
+
+    /// The list latch is per subscription. Two tabs watching the board at
+    /// different cadences both hear that the project list moved: the one
+    /// that flushes first does not swallow the news for the one still
+    /// waiting out its batch.
+    #[tokio::test(start_paused = true)]
+    async fn a_moved_list_rides_every_subscription_not_the_first_to_flush() {
+        let bus = bus_listing_one_project();
+        let (fast, mut fast_rx, fast_key) = SessionSender::observable("s-fast");
+        let (slow, mut slow_rx, slow_key) = SessionSender::observable("s-slow");
+        bus.subscribe(
+            &fast,
+            SubscriptionSpec {
+                kinds: [Kind::State].into_iter().collect(),
+                ..spec("s-inbox", Scope::All, Mode::Realtime, Priority::Foreground)
+            },
         );
+        bus.subscribe(
+            &slow,
+            SubscriptionSpec {
+                kinds: [Kind::State].into_iter().collect(),
+                ..spec(
+                    "s-background",
+                    Scope::All,
+                    Mode::Batch(Duration::from_secs(30)),
+                    Priority::Background,
+                )
+            },
+        );
+
+        bus.note_board_lists(BoardLists::PROJECTS);
+        bus.flush();
+        let listed = json!([{ "project_id": "proj-1" }]);
+        assert_eq!(
+            frames(drained(&mut fast_rx, &fast_key))[0]["items"][0]["state"]["projects"],
+            listed,
+            "the realtime tab is due now"
+        );
+        assert!(
+            frames(drained(&mut slow_rx, &slow_key)).is_empty(),
+            "the batch tab is not due for another half minute"
+        );
+
+        settle(Duration::from_secs(30)).await;
+        bus.flush();
+        let sent = frames(drained(&mut slow_rx, &slow_key));
+        assert_eq!(
+            sent[0]["items"][0]["state"]["projects"], listed,
+            "the batch tab is told the list moved too: {sent:?}"
+        );
+    }
+
+    /// The project and workspace lists ride the board item only when the
+    /// change that noted it moved one of them — a row moving re-sends no
+    /// list at all.
+    #[tokio::test(start_paused = true)]
+    async fn a_board_item_carries_the_lists_only_when_they_moved() {
+        let bus = bus_listing_one_project();
         let (sender, mut rx, key) = SessionSender::observable("s-1");
         bus.subscribe(
             &sender,

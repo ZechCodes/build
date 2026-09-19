@@ -458,8 +458,18 @@ export function mergedLog(held, answer) {
   const commits = arriving.every((commit) => kept.has(commit.hash))
     ? previous
     : [...arriving, ...previous.filter((commit) => !arrived.has(commit.hash))];
-  return { ...rest, commits, newest: newestAfter(held, answer, commits) };
+  return { ...rest, commits, more: moreAfter(held, answer, previous), newest: newestAfter(held, answer, commits) };
 }
+
+/** Whether history reaches back past the last commit the record holds.
+ *
+ *  A cursored read walks forward from the record's newest hash to HEAD, so
+ *  what it says about there being more is about the window it walked and not
+ *  about the end of a list it never reached — a caught-up checkout answers no
+ *  commits and `more: false`. Where the record's own commits are still the
+ *  tail of the list, the record's own answer stands; where they are gone — a
+ *  reset, or a pushed window that does not reach them — the answer's does. */
+const moreAfter = (held, answer, previous) => (previous.length ? (held.more ?? answer.more) : answer.more);
 
 /**
  * The commit record after a pushed history.

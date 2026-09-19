@@ -248,6 +248,31 @@ describe("the cursors", () => {
     expect((await read("run-1", "log")).value.commits.map((one) => one.hash)).toEqual(["c1", "c0"]);
   });
 
+  it("keeps how far back the history reaches when a forward page walks nothing", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "log" },
+      { commits: [{ hash: "c0" }], newest: "c0", more: true },
+    );
+    script["git.log"] = () => ({ commits: [], newest: "c0", more: false, reset: false });
+    await boot([branchItem()]);
+    const record = (await read("run-1", "log")).value;
+    expect(record.commits.map((one) => one.hash)).toEqual(["c0"]);
+    // How far back the history reaches is not what a forward page answers: it
+    // walked from the cursor to HEAD and never reached the end of the list the
+    // record is holding. Losing this is the "Load older commits\u2026" affordance.
+    expect(record.more).toBe(true);
+  });
+
+  it("takes the answer's own reach where the record's commits are gone", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "log" },
+      { commits: [{ hash: "c0" }], newest: "c0", more: false },
+    );
+    script["git.log"] = () => ({ commits: [{ hash: "r1" }], newest: "r1", more: true, reset: true });
+    await boot([branchItem()]);
+    expect((await read("run-1", "log")).value.more).toBe(true);
+  });
+
   it("asks for the latest twenty when it holds no cursor", async () => {
     await boot([branchItem()]);
     expect(paramsOf("git.log")).toEqual([{ run_id: "run-1", limit: sync.LATEST_COMMITS }]);

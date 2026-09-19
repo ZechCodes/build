@@ -11,7 +11,7 @@ use super::watchers::{WorktreeRoots, WorktreeWatchers};
 use super::AppState;
 use crate::changes::WORKING_TREE_DIFF_MAX_BYTES;
 use crate::changes::{ChangeBus, EntityFacts, FactsRequest, ThreadTip};
-use crate::gitgui::{log_page, status_shape, unpushed_summary, GIT_STATUS_MAX_FILES};
+use crate::gitgui::{counted_status_shape, log_page, unpushed_summary, GIT_STATUS_MAX_FILES};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -53,9 +53,9 @@ impl GitSubject {
 /// status walk, the latest commits, what is unpublished, and the working
 /// tree's diff.
 fn read_git(subject: &GitSubject, fact: &mut EntityFacts) {
-    if let Ok((shape, key)) = status_shape(&subject.root, GIT_STATUS_MAX_FILES) {
-        fact.head = shape["head"].as_str().map(str::to_string);
-        fact.status = Some(shape);
+    if let Ok((status, key)) = counted_status_shape(&subject.root, GIT_STATUS_MAX_FILES) {
+        fact.head = status["head"].as_str().map(str::to_string);
+        fact.status = Some(status);
         fact.status_key = Some(key);
     }
     fact.log = log_page(

@@ -767,26 +767,21 @@ async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
     })
     .await;
 
-    // The status walk the flush already ran, whole — the same branch, head
-    // and changed paths `git.status` answers with. The per-file line counts
-    // it adds are left to the diff riding beside it here, so the flush pays
-    // for one walk and not two.
+    // The `git.status` answer, whole: the walk AND the line census it joins
+    // on. The counts cannot be read off the patch riding beside it — a run's
+    // diff is against its baseline and an external checkout's against the
+    // branch it was cut from, neither of which is the working tree — so a
+    // client that reconstructed them would paint branch-wide numbers on a
+    // working-tree pane.
     let status = call(&handler, "git.status", json!({ "project_id": project_id }));
-    let paths = |shape: &Value| -> Vec<String> {
-        shape["files"]
-            .as_array()
-            .expect("a status names its files")
-            .iter()
-            .map(|file| file["path"].as_str().unwrap_or_default().to_string())
-            .collect()
-    };
     assert_eq!(
-        git["status"]["branch"], status["result"]["branch"],
-        "{git:?}"
+        git["status"], status["result"],
+        "the item carries what `git.status` answers: {git:?}"
     );
-    assert_eq!(git["status"]["head"], status["result"]["head"], "{git:?}");
-    assert_eq!(paths(&git["status"]), vec!["pushed.txt".to_string()]);
-    assert_eq!(paths(&git["status"]), paths(&status["result"]));
+    assert_eq!(git["status"]["files"][0]["path"], "pushed.txt", "{git:?}");
+    assert_eq!(git["status"]["files"][0]["added"], 1, "{git:?}");
+    assert_eq!(git["status"]["files"][0]["deleted"], 0, "{git:?}");
+    assert_eq!(git["status"]["stat"]["insertions"], 1, "{git:?}");
     assert_eq!(
         git["status_key"], status["result"]["status_key"],
         "the key still names the shape beside it"
@@ -864,6 +859,16 @@ async fn a_git_item_past_the_diff_cap_names_the_size_and_carries_no_diff() {
     assert!(
         git["status"]["files"][0]["path"].is_string(),
         "the rest of the item is unaffected: {git:?}"
+    );
+    // With no patch on the item there is nothing to count from, so the
+    // census the status carries is the only thing a client has.
+    assert!(
+        git["status"]["files"][0]["added"].as_u64().unwrap() > 0,
+        "{git:?}"
+    );
+    assert!(
+        git["status"]["stat"]["insertions"].as_u64().unwrap() > 0,
+        "{git:?}"
     );
 }
 

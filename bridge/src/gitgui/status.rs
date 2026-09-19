@@ -348,6 +348,24 @@ fn status_files(repo: &git2::Repository, max_files: usize) -> Result<(Vec<Value>
     Ok((files, files_truncated))
 }
 
+/// The walk AND the census, for a caller that needs the key beside them —
+/// the push bus, which carries `status_key` as its own field.
+///
+/// The census is a second diff over the working tree. When it cannot be
+/// taken the shape alone is answered, so a flush still carries the walk it
+/// already paid for rather than nothing at all.
+pub(crate) fn counted_status_shape(
+    repo_path: &Path,
+    max_files: usize,
+) -> Result<(Value, String), String> {
+    let (shape, key) = status_shape(repo_path, max_files)?;
+    let counted = match crate::diff::uncommitted_file_deltas(repo_path) {
+        Ok(deltas) => with_line_counts(shape, &deltas, key.clone()),
+        Err(_) => shape,
+    };
+    Ok((counted, key))
+}
+
 /// The shape with the working tree's line census joined in.
 fn counted_status(shape: Value, status_key: String, repo_path: &Path) -> Result<Value, String> {
     let deltas = crate::diff::uncommitted_file_deltas(repo_path).map_err(|e| e.to_string())?;

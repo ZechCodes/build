@@ -22,7 +22,6 @@ import {
   surfaceKindLabel,
   surfacePills,
   surfaceRows,
-  workflowChoicesWorthOffering,
   workflowPhases,
   writeOpenSurface,
 } from "./agentSurfacesModel.js";
@@ -100,29 +99,23 @@ const openNewlyRunningPhase = (opened, section, phase) => {
   section.open = true;
 };
 
+function workflowView(surfaces, reading, selectedKey, wasRunning) {
+  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces, reading);
+  const groups = runningAndCompletedRows(rows);
+  const workflow = rows.find((row) => row.key === selectedKey) || groups.running[0] || groups.completed[0];
+  const isCompleted = groups.completed.includes(workflow);
+  return {
+    rows, groups, workflow, isCompleted,
+    selectedIndex: rows.indexOf(workflow),
+    selectedKey: workflow?.key ?? null,
+    isRunning: !!workflow && !isCompleted,
+    justFinished: workflow?.key === selectedKey && wasRunning && isCompleted,
+  };
+}
+
 const VIEWER_PLANS = {
   [WORKFLOW_ENTRY_KIND]: {
     frameHtmlWithEmptyLists: () => workflowViewerHtml({}, []),
-    headSelector: WORKFLOW_HEAD_SELECTOR,
-    headHtml: ({ workflow }) => workflowHeadHtml(workflow || {}),
-    lists: ({ surfaces, selectedWorkflowIndex, reading, rowOptions, openedPhases }) => [
-      {
-        selector: SURFACE_SELECTOR.workflowChoices,
-        rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex, reading),
-        render: workflowChoiceHtml,
-      },
-      {
-        selector: SURFACE_SELECTOR.workflowPhases,
-        rows: workflowPhases(surfaces, selectedWorkflowIndex, reading),
-        render: phaseSectionHtml,
-        onPainted: (section, phase) => openNewlyRunningPhase(openedPhases, section, phase),
-        nested: (phase) => ({
-          selector: SURFACE_SELECTOR.workflowAgents,
-          rows: phase.rows,
-          render: (row) => agentRowHtml(row, rowOptions),
-        }),
-      },
-    ],
   },
   [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
   [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
@@ -156,7 +149,8 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   const rowOptions = { compact, openedAgentKeys };
   const openedPhases = new Set();
   let surfaces = null;
-  let selectedWorkflowIndex = 0;
+  let selectedWorkflowKey = null;
+  let selectedWorkflowWasRunning = false;
   let ticker = null;
   let completedCount = 0;
   let historyOpen = false;
@@ -235,23 +229,65 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
     }
   };
 
+  const paintWorkflow = (reading) => {
+    const view = workflowView(surfaces, reading, selectedWorkflowKey, selectedWorkflowWasRunning);
+    const { rows, groups, workflow, isCompleted, selectedIndex, justFinished } = view;
+    selectedWorkflowKey = view.selectedKey;
+    selectedWorkflowWasRunning = view.isRunning;
+
+    const detail = host.querySelector(SURFACE_SELECTOR.workflowDetail);
+    const viewer = host.querySelector(SURFACE_SELECTOR.viewer);
+    // Rescue restarted or removed workflow details before removing an empty history fold.
+    if (!isCompleted && detail.parentElement !== viewer) {
+      viewer.insertBefore(detail, host.querySelector(COMPLETED_FOLD_SELECTOR));
+    }
+    const completed = completedFoldContainer(groups.completed.length);
+    const choices = (group) => group.map((row) => ({
+      ...row,
+      index: rows.indexOf(row),
+      selected: row === workflow,
+    }));
+    paintList(host.querySelector(SURFACE_SELECTOR.workflowChoices), {
+      rows: rows.length > 1 ? choices(groups.running) : [],
+      render: workflowChoiceHtml,
+    });
+    if (completed) paintList(completed, { rows: choices(groups.completed), render: workflowChoiceHtml });
+
+    const container = isCompleted ? completed.parentElement : viewer;
+    if (detail.parentElement !== container) container.appendChild(detail);
+    detail.hidden = !workflow;
+    patchElement(detail.querySelector(WORKFLOW_HEAD_SELECTOR), el(workflowHeadHtml(workflow || {})));
+    paintList(detail.querySelector(SURFACE_SELECTOR.workflowPhases), {
+      rows: workflow ? workflowPhases(surfaces, selectedIndex, reading)
+        .map((phase) => ({ ...phase, key: `${workflow.key}:${phase.key}` })) : [],
+      render: phaseSectionHtml,
+      onPainted: (section, phase) => openNewlyRunningPhase(openedPhases, section, phase),
+      nested: (phase) => ({
+        selector: SURFACE_SELECTOR.workflowAgents,
+        rows: phase.rows,
+        render: (row) => agentRowHtml(row, rowOptions),
+      }),
+    });
+    if (justFinished) {
+      historyOpen = true;
+      completed.parentElement.open = true;
+    }
+  };
+
   const paint = () => {
     const reading = { nowMs: Date.now(), modelLabel };
-    const paintContext = {
-      surfaces,
-      workflow: openWorkflow(surfaces, selectedWorkflowIndex, reading),
-      selectedWorkflowIndex,
-      reading,
-      rowOptions,
-      openedPhases,
-    };
-    if (plan.headSelector) {
-      patchElement(host.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
-    }
-    for (const list of plan.lists(paintContext)) {
-      const container = list.folded ? completedFoldContainer(list.rows.length) : host.querySelector(list.selector);
-      if (!container) continue;
-      paintList(container, list);
+    const paintContext = { surfaces, reading, rowOptions, openedPhases };
+    if (kind === WORKFLOW_ENTRY_KIND) {
+      paintWorkflow(reading);
+    } else {
+      if (plan.headSelector) {
+        patchElement(host.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
+      }
+      for (const list of plan.lists(paintContext)) {
+        const container = list.folded ? completedFoldContainer(list.rows.length) : host.querySelector(list.selector);
+        if (!container) continue;
+        paintList(container, list);
+      }
     }
     syncHistoryControl();
     tickWhileAnyRowIsRunning();
@@ -283,7 +319,8 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
     if (expandClippedText(event)) return;
     const workflow = event.target.closest("[data-workflow-index]");
     if (workflow) {
-      selectedWorkflowIndex = Number(workflow.dataset.workflowIndex);
+      selectedWorkflowKey = openWorkflow(surfaces, Number(workflow.dataset.workflowIndex))?.key ?? null;
+      selectedWorkflowWasRunning = false;
       paint();
       return;
     }

@@ -785,7 +785,14 @@ impl AppState {
     /// The feed moved: task lifecycle, inbox/attention, capture, agent
     /// liveness. Queues only — the send happens with this mutex released.
     pub(in crate::app) fn note_board_changed(&self) {
-        self.changes.note_board();
+        self.note_board_lists_changed(crate::changes::BoardLists::default());
+    }
+
+    /// The feed moved, and so did one of the lists a client caches whole: the
+    /// next board item carries that list in full. Every other board note
+    /// moves rows, which ride their own items.
+    pub(in crate::app) fn note_board_lists_changed(&self, lists: crate::changes::BoardLists) {
+        self.changes.note_board_lists(lists);
         // An entity may have arrived with a checkout or left with one: the
         // watchers follow the board, off this mutex.
         self.watchers.board_moved(self.worktree_roots());

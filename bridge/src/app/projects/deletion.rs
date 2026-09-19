@@ -245,6 +245,12 @@ impl AppState {
         self.workspaces.forget_project(project_id);
         self.projects.remove(project_id);
         self.board.diff_mut().remove_project(project_id);
+        // Both lists: the project is gone from one, and every workspace that
+        // stood in it from the other.
+        self.note_board_lists_changed(crate::changes::BoardLists {
+            projects: true,
+            workspaces: true,
+        });
         Ok(())
     }
 }

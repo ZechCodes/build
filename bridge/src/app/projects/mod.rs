@@ -386,8 +386,9 @@ impl AppState {
             self.board.diff_mut().register_project(id.clone());
         }
         // A project is a section of the feed; registering one adds every row
-        // its checkouts stand behind.
-        self.note_board_changed();
+        // its checkouts stand behind, and the project list a client holds has
+        // a name on it that was not there.
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         id
     }
 

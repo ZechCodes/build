@@ -271,6 +271,7 @@ impl AppState {
             self.forget_run(run_id);
         }
         self.workspaces.forget(workspace_id);
+        self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
         Ok(())
     }
 }

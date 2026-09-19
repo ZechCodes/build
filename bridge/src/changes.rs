@@ -359,13 +359,48 @@ pub struct SubscribeOutcome {
 
 // ------------------------------------------------------- injected reads ---
 
+/// Which of the lists a client caches whole a board change moved.
+///
+/// A row moving moves neither: the row rides its own `state` item, and the
+/// board item says only that the feed's revision advanced. A project added
+/// or a workspace created moves one of them, and the board item then carries
+/// that list in full — the same answer `project.list` and `workspace.list`
+/// give, because a list small enough to re-send whole is not worth a delta.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BoardLists {
+    pub projects: bool,
+    pub workspaces: bool,
+}
+
+impl BoardLists {
+    /// The project list moved: one was added, hidden, deleted, or renamed.
+    pub const PROJECTS: BoardLists = BoardLists {
+        projects: true,
+        workspaces: false,
+    };
+    /// The workspace list moved: one was created, renamed, or deleted.
+    pub const WORKSPACES: BoardLists = BoardLists {
+        projects: false,
+        workspaces: true,
+    };
+
+    pub fn is_empty(self) -> bool {
+        !self.projects && !self.workspaces
+    }
+
+    fn merge(&mut self, other: BoardLists) {
+        self.projects |= other.projects;
+        self.workspaces |= other.workspaces;
+    }
+}
+
 /// The board's current entity list, injected at construction so this module
 /// never reaches into `AppState`. Only [`ChangeBus::covered_worktrees`] calls
 /// it — the note path must stay a leaf-lock insert.
 pub type BoardEntities = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
 /// What one flush needs looked up for one entity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FactsRequest {
     pub entity_id: String,
     /// `status_key` and `head`.
@@ -378,6 +413,9 @@ pub struct FactsRequest {
     pub terminals: bool,
     /// The worktree's root listing.
     pub files: bool,
+    /// Which whole lists the board item is to carry. Only ever set on a
+    /// request for [`BOARD_ITEM_ID`].
+    pub lists: BoardLists,
     /// The last sequence already sent for each agent, so a thread item
     /// carries what was said after it. An agent named here is one some
     /// subscription has heard about; one that is not gets its tip alone.
@@ -550,6 +588,11 @@ struct Subscription {
     /// because two subscriptions over one conversation have heard different
     /// amounts of it; bounded by the agents on the device.
     emitted_tips: HashMap<String, u64>,
+    /// Which entities the board listed the last time this subscription was
+    /// sent a board item — what the next one's `removed` is measured against.
+    /// `None` until the first board item goes out: a subscription with no
+    /// before has nothing to say about what left.
+    covered_last: Option<BTreeSet<String>>,
 }
 
 impl Subscription {
@@ -563,6 +606,7 @@ impl Subscription {
             last_flush: None,
             emitted_at: HashMap::new(),
             emitted_tips: HashMap::new(),
+            covered_last: None,
         }
     }
 
@@ -664,6 +708,28 @@ impl Subscription {
         Some(due)
     }
 
+    /// Which entities have left the board since this subscription's last
+    /// board item — and the note of what it covers now.
+    ///
+    /// `all` scope only: it is the only scope that hears every row, so it is
+    /// the only one whose client holds rows that can go stale without a word.
+    /// Empty until a first board item has gone out, because a subscription
+    /// with no before cannot say what left.
+    fn board_departures(
+        &mut self,
+        due: &BTreeMap<String, PendingItem>,
+        covered: &BTreeSet<String>,
+    ) -> Vec<String> {
+        if self.spec.scope != Scope::All || !due.contains_key(BOARD_ITEM_ID) {
+            return Vec::new();
+        }
+        let departed = match self.covered_last.replace(covered.clone()) {
+            Some(before) => before.difference(covered).cloned().collect(),
+            None => Vec::new(),
+        };
+        departed
+    }
+
     fn held_by_settle(&self, entity_id: &str, now: Instant) -> bool {
         self.emitted_at
             .get(entity_id)
@@ -696,6 +762,10 @@ struct DueFrame {
     /// What this subscription has already sent for each agent, empty when no
     /// item in the frame carries the `thread` kind.
     thread_after: Vec<(String, u64)>,
+    /// The entities that have left the board since this subscription's last
+    /// board item. Empty when nothing left, and when the frame carries no
+    /// board item at all.
+    removed: Vec<String>,
 }
 
 impl DueFrame {
@@ -709,7 +779,7 @@ impl DueFrame {
                     item,
                     facts.get(id.as_str()).copied(),
                     board_revision,
-                    &self.thread_after,
+                    self,
                 )
             })
             .collect();
@@ -727,18 +797,18 @@ fn item_payload(
     item: &PendingItem,
     facts: Option<&EntityFacts>,
     board_revision: u64,
-    thread_after: &[(String, u64)],
+    frame: &DueFrame,
 ) -> Value {
     let mut out = Map::new();
     out.insert("entity_id".into(), json!(entity_id));
     if item.kinds.contains(Kind::State) {
         out.insert(
             "state".into(),
-            state_payload(entity_id, facts, board_revision),
+            state_payload(entity_id, facts, board_revision, frame),
         );
     }
     if item.kinds.contains(Kind::Thread) {
-        out.insert("thread".into(), thread_payload(facts, thread_after));
+        out.insert("thread".into(), thread_payload(facts, &frame.thread_after));
     }
     if item.kinds.contains(Kind::Git) {
         out.insert("git".into(), git_payload(facts));
@@ -797,16 +867,34 @@ fn sent(item: &Value, since: u64) -> bool {
         .is_some_and(|sequence| sequence <= since)
 }
 
-/// The board item carries the revision a client compares against; an entity
-/// carries whatever the facts source knew, and an empty object where it knew
-/// nothing — which still says "this moved".
-fn state_payload(entity_id: &str, facts: Option<&EntityFacts>, board_revision: u64) -> Value {
-    if entity_id == BOARD_ITEM_ID {
-        return json!({ "revision": board_revision });
+/// The board item carries the revision a client compares against, which
+/// entities have left the board since this subscription's last one, and the
+/// whole lists when the change that noted it moved one. An entity carries
+/// whatever the facts source knew, and an empty object where it knew nothing
+/// — which still says "this moved".
+fn state_payload(
+    entity_id: &str,
+    facts: Option<&EntityFacts>,
+    board_revision: u64,
+    frame: &DueFrame,
+) -> Value {
+    if entity_id != BOARD_ITEM_ID {
+        return facts
+            .and_then(|f| f.state.clone())
+            .unwrap_or_else(|| json!({}));
     }
-    facts
-        .and_then(|f| f.state.clone())
-        .unwrap_or_else(|| json!({}))
+    let mut state = Map::new();
+    state.insert("revision".into(), json!(board_revision));
+    if !frame.removed.is_empty() {
+        state.insert("removed".into(), json!(frame.removed));
+    }
+    let lists = facts
+        .and_then(|f| f.state.as_ref())
+        .and_then(Value::as_object);
+    for (list, value) in lists.into_iter().flatten() {
+        state.insert(list.clone(), value.clone());
+    }
+    Value::Object(state)
 }
 
 /// The paths that moved, and the worktree's top level as the lookup listed
@@ -893,6 +981,11 @@ pub struct ChangeBus {
     /// Worktrees whose watcher could not start; a subscription covering one
     /// answers `watch: "polled"`.
     polled: Mutex<BTreeSet<String>>,
+    /// Which whole lists the board notes since the last flush moved. Latched
+    /// rather than passed through, because the note that moves a list takes
+    /// the same leaf lock every other note takes and the flush that carries
+    /// it may be several notes later.
+    pending_lists: Mutex<BoardLists>,
     board_entities: BoardEntities,
     /// `None` on a bus built without one — the unit tests, and any caller
     /// that wants the kinds without the keys. A flush then costs no lookup
@@ -936,6 +1029,7 @@ impl ChangeBus {
             window,
             board_revision: AtomicU64::new(0),
             polled: Mutex::new(BTreeSet::new()),
+            pending_lists: Mutex::new(BoardLists::default()),
             board_entities,
             facts,
             emitted_at: Mutex::new(HashMap::new()),
@@ -1152,6 +1246,13 @@ impl ChangeBus {
         self.note(ChangeKey::Board);
     }
 
+    /// The feed moved, and so did one of the lists a client caches whole:
+    /// the next board item carries that list in full.
+    pub fn note_board_lists(&self, lists: BoardLists) {
+        self.pending_lists.lock().unwrap().merge(lists);
+        self.note_board();
+    }
+
     /// This entity is stale — and so is the feed, which shows a row for it.
     ///
     /// Both the kinds an entity's own detail is made of: its row, and its
@@ -1267,11 +1368,15 @@ impl ChangeBus {
             legacy: self.take_due_keys(),
             ..Due::default()
         };
+        // Read before the subscriptions lock: the board's list is somebody
+        // else's leaf lock, and this module nests none.
+        let covered: BTreeSet<String> = (self.board_entities)().into_iter().collect();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         for sub in subscriptions.iter_mut() {
             let Some(items) = sub.take_due(self.window, now) else {
                 continue;
             };
+            let removed = sub.board_departures(&items, &covered);
             let thread_after = match items.values().any(|item| item.kinds.contains(Kind::Thread)) {
                 true => sub
                     .emitted_tips
@@ -1286,12 +1391,37 @@ impl ChangeBus {
                 priority: sub.spec.priority,
                 items,
                 thread_after,
+                removed,
             });
         }
         drop(subscriptions);
         due.frames.sort_by_key(|frame| frame.priority);
         due.requests = fact_requests(&due.frames);
+        if let Some(request) = self.take_board_lists(&due.frames) {
+            due.requests.push(request);
+        }
         due
+    }
+
+    /// The lookup a board item's whole lists need, taken off the latch — and
+    /// only when a board item is actually going out, so a list noted while
+    /// every subscription was `off` still rides the flush that wakes.
+    fn take_board_lists(&self, frames: &[DueFrame]) -> Option<FactsRequest> {
+        if !frames
+            .iter()
+            .any(|frame| frame.items.contains_key(BOARD_ITEM_ID))
+        {
+            return None;
+        }
+        let lists = std::mem::take(&mut *self.pending_lists.lock().unwrap());
+        if lists.is_empty() {
+            return None;
+        }
+        Some(FactsRequest {
+            entity_id: BOARD_ITEM_ID.to_string(),
+            lists,
+            ..FactsRequest::default()
+        })
     }
 
     /// Encrypt and send. A subscription whose push fails takes every
@@ -1494,12 +1624,7 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
             }
             let entry = wanted.entry(id.as_str()).or_insert_with(|| FactsRequest {
                 entity_id: id.clone(),
-                git: false,
-                thread: false,
-                state: false,
-                terminals: false,
-                files: false,
-                thread_after: Vec::new(),
+                ..FactsRequest::default()
             });
             entry.git |= item.kinds.contains(Kind::Git);
             entry.thread |= item.kinds.contains(Kind::Thread);
@@ -2844,6 +2969,106 @@ mod subscriptions {
                 "truncated": false,
                 "root": { "path": "", "entries": [{ "name": "src", "kind": "dir" }] },
             })
+        );
+    }
+
+    /// The board item says which entities left the board, so a client that
+    /// paints from its cache knows which rows to drop without diffing a list
+    /// it did not fetch.
+    #[tokio::test(start_paused = true)]
+    async fn a_board_item_names_the_entities_that_left() {
+        let listed: Arc<Mutex<Vec<String>>> =
+            Arc::new(Mutex::new(vec!["run-7".into(), "run-8".into()]));
+        let board = Arc::clone(&listed);
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(move || board.lock().unwrap().clone()),
+            Arc::new(|_: &[FactsRequest]| Vec::new()),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::State].into_iter().collect(),
+                ..spec("s-all", Scope::All, Mode::Realtime, Priority::Foreground)
+            },
+        );
+
+        bus.note_board();
+        bus.flush();
+        let first = frames(drained(&mut rx, &key));
+        assert_eq!(
+            first[0]["items"][0]["state"]["removed"],
+            Value::Null,
+            "the first board item has no before to compare with: {first:?}"
+        );
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        listed.lock().unwrap().retain(|id| id != "run-8");
+        bus.note_board();
+        bus.flush();
+
+        let sent = frames(drained(&mut rx, &key));
+        assert_eq!(sent[0]["items"][0]["state"]["removed"], json!(["run-8"]));
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        bus.note_board();
+        bus.flush();
+        let again = frames(drained(&mut rx, &key));
+        assert_eq!(
+            again[0]["items"][0]["state"]["removed"],
+            Value::Null,
+            "it left once: {again:?}"
+        );
+    }
+
+    /// The project and workspace lists ride the board item only when the
+    /// change that noted it moved one of them — a row moving re-sends no
+    /// list at all.
+    #[tokio::test(start_paused = true)]
+    async fn a_board_item_carries_the_lists_only_when_they_moved() {
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(|requests: &[FactsRequest]| {
+                requests
+                    .iter()
+                    .map(|request| EntityFacts {
+                        entity_id: request.entity_id.clone(),
+                        state: request
+                            .lists
+                            .projects
+                            .then(|| json!({ "projects": [{ "project_id": "proj-1" }] })),
+                        ..EntityFacts::default()
+                    })
+                    .collect()
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::State].into_iter().collect(),
+                ..spec("s-all", Scope::All, Mode::Realtime, Priority::Foreground)
+            },
+        );
+
+        bus.note_board();
+        bus.flush();
+        let rows_only = frames(drained(&mut rx, &key));
+        assert_eq!(
+            rows_only[0]["items"][0]["state"],
+            json!({ "revision": 1 }),
+            "a row moved, not a list"
+        );
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        bus.note_board_lists(BoardLists::PROJECTS);
+        bus.flush();
+
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["state"],
+            json!({ "revision": 2, "projects": [{ "project_id": "proj-1" }] })
         );
     }
 }

@@ -140,7 +140,24 @@
     {
       "type": "changes",
       "subscription_id": "s-board",
-      "items": [{ "entity_id": "board", "state": { "revision": 1183 } }]
+      "items": [
+        {
+          "entity_id": "board",
+          "state": {
+            "revision": 1183,
+            "removed": ["run-3"],
+            "projects": [
+              {
+                "project_id": "proj-1",
+                "name": "build",
+                "path": "/home/ada/code/build",
+                "base_branch": "main",
+                "is_git": true
+              }
+            ]
+          }
+        }
+      ]
     },
     { "type": "board.changed" },
     { "type": "entity.changed", "id": "run-7" },

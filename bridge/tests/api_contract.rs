@@ -244,8 +244,20 @@ fn check_files(entity_id: &str, files: &Value) {
 /// revision a client compares against.
 fn check_state(entity_id: &str, state: &Value) {
     assert!(state.is_object(), "{entity_id}: state is an object");
-    if entity_id == changes::BOARD_ITEM_ID {
-        assert!(state["revision"].is_u64(), "board: state.revision");
+    if entity_id != changes::BOARD_ITEM_ID {
+        return;
+    }
+    assert!(state["revision"].is_u64(), "board: state.revision");
+    for (key, value) in state.as_object().expect("state is an object") {
+        let stated = match key.as_str() {
+            "revision" => value.is_u64(),
+            // Which entities left the board, and the two lists a client caches
+            // whole — each present only when the change that noted it moved
+            // one.
+            "removed" | "projects" | "workspaces" => value.is_array(),
+            _ => panic!("board: state.{key} is not part of the board item"),
+        };
+        assert!(stated, "board: state.{key} is the wrong shape");
     }
 }
 

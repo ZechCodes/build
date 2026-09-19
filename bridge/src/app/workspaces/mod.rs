@@ -409,6 +409,8 @@ impl AppState {
             #[cfg(test)]
             gate: None,
         })));
+        // The record exists from here, provisioning, and the list names it.
+        self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
 
@@ -492,8 +494,8 @@ impl AppState {
         }
         self.workspaces.rename(&workspace_id, &name)?;
         // The feed names workspaces, so every browser standing in one is
-        // showing the name that just changed.
-        self.note_board_changed();
+        // showing the name that just changed — and so is the list.
+        self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
         self.workspace_get(&json!({ "workspace_id": workspace_id }))
     }
 

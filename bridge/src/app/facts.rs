@@ -104,6 +104,37 @@ pub(in crate::app) fn bus_with_sources(
     )
 }
 
+/// What one request needs read under the app mutex: the conversation tails,
+/// the row, the tab list, and — for the board's own item — the whole lists a
+/// change said moved.
+fn locked_facts(
+    app: &mut AppState,
+    request: &FactsRequest,
+    subjects: &BTreeMap<String, GitSubject>,
+) -> EntityFacts {
+    EntityFacts {
+        entity_id: request.entity_id.clone(),
+        threads: if request.thread {
+            app.thread_tips(&request.entity_id, &request.thread_after)
+        } else {
+            Vec::new()
+        },
+        state: match request.lists.is_empty() {
+            true => request
+                .state
+                .then(|| app.entity_state_item(&request.entity_id))
+                .flatten(),
+            false => Some(app.board_lists(request.lists)),
+        },
+        terminals: request
+            .terminals
+            .then(|| subjects.get(&request.entity_id))
+            .flatten()
+            .map(|subject| json!({ "tabs": app.shell_tabs_at(&subject.root) })),
+        ..EntityFacts::default()
+    }
+}
+
 /// Answer a flush's lookups. The mutex is held for the thread tails and the
 /// roots only; every status walk runs with it released.
 fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFacts> {
@@ -111,28 +142,11 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
         return Vec::new();
     };
     let (subjects, mut facts) = {
-        let app = state.lock().unwrap();
+        let mut app = state.lock().unwrap();
         let subjects = app.git_subjects();
         let facts = requests
             .iter()
-            .map(|request| EntityFacts {
-                entity_id: request.entity_id.clone(),
-                threads: if request.thread {
-                    app.thread_tips(&request.entity_id, &request.thread_after)
-                } else {
-                    Vec::new()
-                },
-                state: request
-                    .state
-                    .then(|| app.entity_state_item(&request.entity_id))
-                    .flatten(),
-                terminals: request
-                    .terminals
-                    .then(|| subjects.get(&request.entity_id))
-                    .flatten()
-                    .map(|subject| json!({ "tabs": app.shell_tabs_at(&subject.root) })),
-                ..EntityFacts::default()
-            })
+            .map(|request| locked_facts(&mut app, request, &subjects))
             .collect::<Vec<_>>();
         (subjects, facts)
     };
@@ -256,6 +270,21 @@ impl AppState {
             "agents": agents,
             "attention": self.unread_for(entity_id, None).reason.unwrap_or("none"),
         }))
+    }
+
+    /// The whole lists a board item carries when the change that noted it
+    /// moved one: the same answers `project.list` and `workspace.list` give,
+    /// under the keys they give them under.
+    pub(in crate::app) fn board_lists(&mut self, lists: crate::changes::BoardLists) -> Value {
+        let mut state = serde_json::Map::new();
+        if lists.projects {
+            state.insert("projects".into(), self.project_list()["projects"].take());
+        }
+        if lists.workspaces {
+            let listed = self.workspace_list(&json!({})).unwrap_or_default();
+            state.insert("workspaces".into(), json!(listed["workspaces"]));
+        }
+        Value::Object(state)
     }
 
     /// Where each of an entity's conversations stands, and what was said to

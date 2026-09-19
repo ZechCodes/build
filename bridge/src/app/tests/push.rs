@@ -574,6 +574,67 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
     );
 }
 
+/// The board item carries the project list whole when a project was added,
+/// and nothing but the revision when a row moved. A client caches the list
+/// and is told when it changed, rather than re-reading it on every tick.
+#[tokio::test]
+async fn a_board_item_carries_the_project_list_when_a_project_arrives() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-inbox",
+                "scope": { "kind": "all" },
+                "kinds": ["state"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    state.lock().unwrap().note_board_changed();
+    let moved = board_item(&settled_pushes(&mut rx, &key).await);
+    assert!(moved["revision"].is_u64(), "{moved:?}");
+    assert!(
+        moved.get("projects").is_none(),
+        "a row moved, not the list: {moved:?}"
+    );
+
+    let second = crate::git_fixture::init_repo_named(dir.path(), "second-repo");
+    let added = call(
+        &handler,
+        "project.add",
+        json!({ "path": second.display().to_string(), "base_branch": "main" }),
+    );
+    assert_eq!(added["ok"], true, "{added:?}");
+
+    let item = board_item(&settled_pushes(&mut rx, &key).await);
+    let listed = item["projects"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the board item carries the list: {item:?}"));
+    assert_eq!(listed.len(), 2, "{item:?}");
+    assert!(
+        listed
+            .iter()
+            .any(|project| project["project_id"] == added["result"]["project_id"]),
+        "{item:?}"
+    );
+}
+
+/// The board's own item out of a push history.
+fn board_item(pushes: &[Value]) -> Value {
+    pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["entity_id"] == crate::changes::BOARD_ITEM_ID)
+        .map(|item| item["state"].clone())
+        .unwrap_or_else(|| panic!("no board item: {pushes:?}"))
+}
+
 /// A `files` item carries the worktree's root listing beside the paths that
 /// moved — the same body `fs.tree` answers for `path: ""` — so a client
 /// repaints its file tree's top level off the push and re-lists only the

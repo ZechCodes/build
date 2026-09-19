@@ -181,6 +181,18 @@ export function mergeFeeds(byDevice, deviceOrder = []) {
   return merged;
 }
 
+/** Whether a merge carries this device's own view at all.
+ *
+ *  What `deviceView` cannot say: it answers the empty view both for a machine
+ *  that has listed nothing and for a machine that has not answered yet, and
+ *  only the first of those is an answer. A snapshot that names no devices is
+ *  already one device's view, so it carries whichever device is asked of it. */
+export function feedHoldsDevice(feed, deviceId) {
+  if (!feed) return false;
+  if (!feed.devices) return true;
+  return Boolean(feed.devices[deviceId]);
+}
+
 /** One device's view of a snapshot. A snapshot that names no devices is already
  *  one device's view (a test's fixture, a single-device mock), so it is its own
  *  answer. */

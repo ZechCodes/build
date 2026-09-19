@@ -462,6 +462,14 @@ export async function renderBranch() {
     return snapshot ? { held: true, row: branchStateIn(snapshot, projectId, branch).row } : { held: false, row: null };
   };
 
+  /** What a delivery has to change before the surface reads it again.
+   *
+   *  The row alone is not enough. A machine with no records answers no row and
+   *  so does a machine that has answered and carries no such branch — and the
+   *  step between those two IS the empty state, the one paint a cold mount is
+   *  otherwise never given. */
+  const deliverySignature = (answer) => JSON.stringify([answer.held, answer.row]);
+
   const refresh = (force = false) => {
     if (disposed) return;
     if (row && row.is_git === false) {
@@ -515,14 +523,19 @@ export async function renderBranch() {
   }
   refresh();
   if (disposed) return;
+  // A deep link can land before this machine has any records — a reload, a
+  // link opened in a new tab. Ask for the pass that settles whether the branch
+  // is there at all; what it writes comes back as a delivery, the same way a
+  // push does. views/workspaceView.js asks the same question of a workspace.
+  if (!rowNow().held) void refreshFeed(deviceId);
   // Every later frame is the cache's: a `state` push rewrites this row's
   // record, the feed re-reads it, and the delivery is what repaints. There is
   // nothing behind this to poll.
-  let painted = JSON.stringify(row);
+  let painted = deliverySignature(rowNow());
   unwatch = subscribeFeed(() => {
     if (disposed) return;
     const answer = rowNow();
-    const signature = JSON.stringify(answer.row);
+    const signature = deliverySignature(answer);
     if (signature === painted) return;
     painted = signature;
     refresh();

@@ -11,7 +11,7 @@ import { App } from "../app.js";
 import { releaseScope, scopeFor } from "./cacheScope.js";
 import { homeDeviceId } from "./devicePolicy.js";
 import { createChatRepository } from "./chatRepository.js";
-import { deviceView } from "./feedMerge.js";
+import { deviceView, feedHoldsDevice } from "./feedMerge.js";
 import { createModelCatalog } from "./modelCatalog.js";
 import { disarmChangeEvents } from "./changeEvents.js";
 import { deviceAwayMark } from "./deviceAway.js";
@@ -376,6 +376,17 @@ export function deviceFeedView(snapshot, deviceId = null) {
     externalWorktrees: view.externalWorktrees || [],
     workspaces: view.workspaces || [],
   };
+}
+
+/** Whether that snapshot carries this machine's own records at all.
+ *
+ *  False while the merge names other machines and not this one — a deep link
+ *  that landed before this machine's first pass wrote anything. `deviceFeedView`
+ *  answers the empty view for that machine and for one that listed nothing
+ *  alike, and a surface that has to tell "not loaded" from "not there" asks
+ *  this first. Naming no device means the home device, as everywhere else. */
+export function deviceFeedHeld(snapshot, deviceId = null) {
+  return feedHoldsDevice(snapshot, deviceId || homeContext()?.deviceId);
 }
 
 export function resetDeviceContexts() {

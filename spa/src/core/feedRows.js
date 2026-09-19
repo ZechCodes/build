@@ -7,14 +7,17 @@
 // named. Both halves of that read live here so no surface writes them again.
 
 import { subscribeFeed } from "./taskFeed.js";
-import { deviceFeedView } from "./deviceContexts.js";
+import { deviceFeedHeld, deviceFeedView } from "./deviceContexts.js";
 
 /** One machine's slice of the feed as it stands right now, or null while the
- *  feed has nothing to replay. */
+ *  feed holds nothing FOR THAT MACHINE — it has nothing to replay at all, or
+ *  what it replays is other machines'. Null is "not loaded", never "listed
+ *  nothing": the merge is the whole account's, and a machine whose first pass
+ *  has not landed is simply absent from it. */
 export function deviceFeedNow(deviceId) {
   let snapshot = null;
   const unsubscribe = subscribeFeed((feed) => {
-    snapshot = deviceFeedView(feed, deviceId);
+    snapshot = deviceFeedHeld(feed, deviceId) ? deviceFeedView(feed, deviceId) : null;
   });
   unsubscribe();
   return snapshot;

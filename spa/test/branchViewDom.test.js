@@ -954,4 +954,43 @@ describe("the branch surface on the cache alone", () => {
     expect(document.querySelector("#tabbody .empty.gone")).toBeTruthy();
     expect(branchGets()).toHaveLength(0);
   });
+
+  // A deep link can land on a cold cache — a reload, a link opened in a new
+  // tab — and "this machine's records are not loaded" is not "no such branch".
+  // The empty state is the pass's answer, so it has to survive the pass
+  // landing: the surface mounted with nothing and the pass names nothing, and
+  // a row that was null before and is null after still has to paint.
+  it("says so on the first pass, having mounted with nothing on disk", async () => {
+    bridge.call = boardWith([]);
+
+    await renderBranch();
+    for (let index = 0; index < 8; index += 1) await flush();
+    // Early is not wrong: nothing has been read, so nothing is claimed.
+    expect(document.querySelector("#tabbody .empty.gone")).toBeNull();
+
+    await readTheBoard();
+    for (let index = 0; index < 20; index += 1) await flush();
+
+    expect(document.querySelector("#tabbody .empty.gone")).toBeTruthy();
+    expect(branchGets()).toHaveLength(0);
+  });
+
+  // The merge is the whole account's. A machine whose pass has not landed is
+  // absent from it, and reading that absence as "that machine lists nothing"
+  // is how a deep link to a branch on the laptop paints the laptop's branch
+  // gone from the desktop's records.
+  it("holds its tongue while this machine's own records are still to come", async () => {
+    App.devices = [
+      { id: "dev-1", name: "This device", status: "online" },
+      { id: "dev-2", name: "The laptop", status: "online" },
+    ];
+    // The machine the link names never answers; the other one already has.
+    bridge.call = vi.fn(() => new Promise(() => {}));
+    await cacheBoard({ deviceId: "dev-2", items: [finishableRow({ run_id: "run-2" })] });
+
+    await renderBranch();
+    for (let index = 0; index < 20; index += 1) await flush();
+
+    expect(document.querySelector("#tabbody .empty.gone")).toBeNull();
+  });
 });

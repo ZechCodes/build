@@ -148,14 +148,18 @@ export function joinFeed(context) {
   tick(context);
 }
 
+/** Start reading. Answers when the cache has been read, so a caller painting
+ *  a shell off disk can put the rail's rows in the same frame as the shell;
+ *  the live reads below it are not waited for by anybody. */
 export function startFeed(intervalMs = 2000) {
   stopFeed();
   cadenceMs = intervalMs;
-  seedFromCache();
+  const seeded = seedFromCache();
   liveContexts().forEach((context) => joinFeed(context));
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", onVisibilityChange);
   }
+  return seeded;
 }
 
 export function stopFeed() {

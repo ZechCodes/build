@@ -21,7 +21,7 @@ import { connectDevice, openDeviceSessions, securityStopText } from "../connecti
 import { deviceAwayText, deviceAwayWord } from "../core/deviceAway.js";
 import { contextFor, existingDeviceLifecycle, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
-import { paintDevicePicker, readPresence, refreshDevices, stopWatchingPresence, watchPresence } from "../devices.js";
+import { markNothingAnswers, paintDevicePicker, readPresence, refreshDevices, stopWatchingPresence, watchPresence } from "../devices.js";
 import { renderAppBehindBridgeGate, renderBridgeBehindAppGate } from "./versionGate.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -31,6 +31,7 @@ import { startFeed, stopFeed } from "../core/taskFeed.js";
 import { startCacheSync } from "../core/cacheSync.js";
 import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
+import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 
 // The gate screens are self-contained — body.gated hides the inbox rail (and
 // its reopen toggle), the toolbar, the agent rail and the console via CSS while
@@ -40,11 +41,72 @@ function setGate(on) {
   document.body.classList.toggle("gated", on);
   if (on) {
     $("#devpick").hidden = true;
+    cacheReadersUp = false;
     stopFeed(); // no session to poll — the inbox is hidden while gated
     // The account's presence is the app's cadence (spec rule 6); a gated page
     // has its own, quicker one below, and two of them would read twice.
     stopWatchingPresence();
   }
+}
+
+/** Whether the cache's two readers are up. They are started once, before any
+ *  session answers, and stood down when a gate screen takes the page (which is
+ *  what stops the feed). Without this the three-second watch below would stop
+ *  and restart both of them on every tick it spends waiting for a machine. */
+let cacheReadersUp = false;
+
+/** Start reading the cache: the sync layer, and the feed's seed. Neither says
+ *  anything on the wire until a context is live. Answers when the feed has
+ *  read the disk, so a caller painting a shell can put the rows in with it. */
+function startCacheReaders() {
+  if (cacheReadersUp) return undefined;
+  cacheReadersUp = true;
+  startCacheSync();
+  return startFeed();
+}
+
+/** Whether the reader is standing in the app rather than on a gate screen.
+ *  A shell the cache painted is as real as one a session painted, so the gate
+ *  screens below never take it away: an account with nothing that can answer
+ *  is the mark on the device picker, not a page with the app removed from it.
+ *  (Both version gates still take the page — a bridge answering in a shape
+ *  this tab cannot read is not something the cache can stand in for.) */
+const shellIsPainted = () => App.gated === false;
+
+/** A gate screen with a painted shell under it does not paint. It says what it
+ *  would have said on the one control that is about the account's machines,
+ *  and answers that the reader keeps their page. */
+function keepPaintedShell() {
+  if (!shellIsPainted()) return false;
+  markNothingAnswers(true);
+  return true;
+}
+
+/**
+ * The whole app, off the disk, before anything is asked of the network.
+ *
+ * Everything the first screen shows was written by the last session: which
+ * machines the account has, and each machine's board with its two lists. So
+ * the gate reads them and hands the page straight to the reader — the device
+ * GET and the E2EE handshake that follow are catching up, not loading.
+ *
+ * Answers whether it painted. An empty cache has nothing to stand on, and the
+ * gate screens are what a first run sees, exactly as before.
+ */
+async function paintFromCache() {
+  if (shellIsPainted()) return true;
+  const devices = (await readCached(DEVICES_ADDRESS))?.value || [];
+  if (!devices.length) return false;
+  App.devices = devices;
+  setGate(false);
+  // The rail's rows, read off disk for every machine the list names — awaited,
+  // so the shell and what is in it land in the same frame.
+  await startCacheReaders();
+  paintDevicePicker();
+  initInboxRail();
+  initToolbar();
+  render(); // the hash route survives a reload, so deep links paint from disk too
+  return true;
 }
 
 // Whether the gate is holding the app for want of a machine that can answer,
@@ -57,6 +119,9 @@ let gateGeneration = 0;
 let connectingPromise = null;
 
 async function connectToApp(asked) {
+  // The two readers of the cache come up first, so the inbox has its rows
+  // while the handshake is still happening rather than after it.
+  startCacheReaders();
   // Every online device is opened at once; the app comes up on whichever
   // answers first rather than waiting out the slowest one. The gate names no
   // home: which device that is, the account list and the user's pick already
@@ -65,7 +130,6 @@ async function connectToApp(asked) {
   gateGeneration += 1;
   stopWatchingForOnline();
   handBackToReader();
-  startCacheSync();
   initInboxRail();
   initToolbar();
   render(); // the hash route survives the gate, so deep links land where they point
@@ -87,6 +151,7 @@ function handBackToReader() {
   holding = false;
   gatedDeviceId = null;
   setGate(false);
+  markNothingAnswers(false); // something answered; the picker stops saying nothing does
   paintDevicePicker();
   startFeed();
   // Which machines the account has, and which of them are up, is read from the
@@ -148,18 +213,22 @@ function holdForDevices() {
   if (holding && holdIsOnScreen()) {
     // The screen is up and what the machines say has changed under it: one of
     // them is blocked now, with a reason on its row and a retry to press (rule
-    // 3). A version gate has no list to repaint and paints nothing.
+    // 3). A version gate has no list to repaint and paints nothing, and a
+    // shell that kept the page is already wearing its mark.
     paintWaiting(App.devices);
     return;
   }
   holding = true;
-  unmountView();
   const behind = gatedContext();
   if (behind) {
+    unmountView();
     showVersionGate(behind);
     return;
   }
   renderWaiting(App.devices);
+  // Whatever the screen is, the account is watched at the gate's own cadence:
+  // a machine coming back is what hands the app — or the wire under a painted
+  // shell — back to the reader.
   watchForOnline();
 }
 
@@ -167,8 +236,9 @@ const allDevicesOffline = () => App.devices.length > 0 && App.devices.every((dev
 
 /** Whether the screen this hold stands on is still on the page. A hold is only
  *  as good as what it put there: one whose screen has been taken down leaves a
- *  page with nothing on it, so it is stood up again rather than trusted. */
-const holdIsOnScreen = () => Boolean($("#waitlist") || gatedDeviceId);
+ *  page with nothing on it, so it is stood up again rather than trusted. A
+ *  hold over a painted shell put the app itself there, which is still up. */
+const holdIsOnScreen = () => Boolean($("#waitlist") || gatedDeviceId || shellIsPainted());
 
 /** A machine answered: the reader gets the route they were standing on back,
  *  with the feed reading that machine again. The hold stopped the feed, so this
@@ -385,6 +455,8 @@ const waitingSituation = (devices) => {
 const waitingText = (devices) => WAITING_TEXT[waitingSituation(devices)](devices);
 
 function renderWaiting(devices) {
+  if (keepPaintedShell()) return;
+  unmountView();
   setGate(true);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
@@ -433,6 +505,7 @@ function renderDirectConnectionUnavailable(context) {
 }
 
 function renderPresenceUnavailable() {
+  if (keepPaintedShell()) return watchForBoot();
   setGate(true);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
@@ -441,6 +514,12 @@ function renderPresenceUnavailable() {
       <div class="wait-row"><button class="btn" id="retrybtn">Retry now</button></div>
     </div>`;
   $("#retrybtn").onclick = () => boot();
+  watchForBoot();
+}
+
+/** Ask the whole account again on the gate's cadence, for as long as this boot
+ *  is the one the page belongs to. */
+function watchForBoot() {
   const generation = gateGeneration;
   App._watch = setInterval(() => {
     if (generation === gateGeneration) boot();
@@ -449,7 +528,7 @@ function renderPresenceUnavailable() {
 
 function enterShellWhileRecovering() {
   handBackToReader();
-  startCacheSync();
+  startCacheReaders();
   initInboxRail();
   initToolbar();
   render();
@@ -571,6 +650,9 @@ function hasOnlineRecoveryCandidate() {
 export async function boot({ retry = false } = {}) {
   const generation = ++gateGeneration;
   stopWatchingForOnline();
+  // Before the network: the page the reader had is the page they get back.
+  await paintFromCache();
+  if (generation !== gateGeneration) return;
   const devices = await readDevicesForBoot(generation);
   if (!devices) return;
   if (generation !== gateGeneration) return;

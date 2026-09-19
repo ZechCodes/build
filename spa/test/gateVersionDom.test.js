@@ -33,6 +33,8 @@ vi.mock("../src/api.js", () => ({
 }));
 vi.mock("../src/devices.js", () => ({
   refreshDevices: async () => App.devices,
+  // The mark the picker wears while nothing can answer (devicePickerDom.test.js).
+  markNothingAnswers: () => {},
   paintDevicePicker: (...args) => paintDevicePicker(...args),
   // The account's presence cadence is its own file's subject
   // (devicePresence.test.js); here it is the gate's to start and stop.

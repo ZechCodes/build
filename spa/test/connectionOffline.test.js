@@ -266,8 +266,23 @@ function projectsOffered() {
 }
 
 /** Whether the gate is holding the app: nothing can answer, so there is no
- *  route to stand on and the waiting screen owns the page. */
+ *  route to stand on and the waiting screen owns the page. An app that has
+ *  been painted is never held — it stands on its cache and wears the mark
+ *  below instead (plan stage 6). */
 const held = () => document.body.classList.contains("gated");
+
+/** What the picker says while nothing the account has can answer. */
+const nothingAnswersOnPicker = () => Boolean(document.querySelector(".device-picker-unreachable"));
+
+/** The account with nothing that can answer and no shell painted yet: a cold
+ *  boot whose cache had nothing in it, which is the one state the whole-page
+ *  waiting screen is still for. */
+async function holdWithNothingPainted() {
+  App.gated = true;
+  holdAppWhileNoDeviceAnswers();
+  await flush();
+}
+
 const waitingNote = () => document.getElementById("waitintro")?.textContent || "";
 const waitingHeading = () => document.querySelector("#root h1")?.textContent || "";
 const liveIds = () => liveContexts().map((context) => context.deviceId);
@@ -443,7 +458,12 @@ describe("per-device connections", () => {
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
   });
 
-  it("says every device is offline once the last one goes", async () => {
+  // The reader keeps their page when the last machine goes. Everything on it
+  // came off the cache and is still true of the last thing Build saw, so the
+  // account running out of machines is said on the picker rather than by
+  // taking the app away (plan stage 6).
+  it("keeps the painted app when the last device goes, and says so on the picker", async () => {
+    initDevicePicker();
     await connectEveryDevice();
     // The bridges went, so the account stopped calling them online — which is
     // what "offline" on this screen means.
@@ -455,8 +475,9 @@ describe("per-device connections", () => {
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
 
-    expect(held()).toBe(true);
-    expect(waitingNote()).toContain(allDevicesOfflineText());
+    expect(held()).toBe(false);
+    expect(document.getElementById("waitlist")).toBeNull();
+    expect(nothingAnswersOnPicker()).toBe(true);
   });
 
   it("keeps the shell mounted and schedules recovery when every online machine is unreachable", async () => {
@@ -538,8 +559,7 @@ describe("per-device connections", () => {
     unreachable.delete("dev-b");
     unlinkable.add("dev-a");
     unreachable.delete("dev-a");
-    document.getElementById("retrybtn").click();
-    await flush();
+    await openDeviceSessions({ retry: true }).settled;
     await flush();
 
     expect(contextFor("dev-a").blocked).toBe("timeout");
@@ -555,8 +575,7 @@ describe("per-device connections", () => {
     unlinkable.delete("dev-b");
     unreachable.add("dev-b");
 
-    document.getElementById("retrybtn").click();
-    await flush();
+    await openDeviceSessions({ retry: true }).settled;
     await flush();
 
     expect(held()).toBe(false);
@@ -593,6 +612,7 @@ describe("per-device connections", () => {
     syncDeviceRecoveryPresence(devices);
 
     await loseTheLink("dev-a");
+    await holdWithNothingPainted();
 
     expect(held()).toBe(true);
     expect(waitingNote()).toContain(allDevicesOfflineText());
@@ -607,6 +627,7 @@ describe("per-device connections", () => {
     syncDeviceRecoveryPresence(devices);
 
     await loseTheLink("dev-a");
+    await holdWithNothingPainted();
 
     expect(held()).toBe(true);
     expect(waitingHeading()).toBe("Waiting for your device");
@@ -643,6 +664,7 @@ describe("per-device connections", () => {
     syncDeviceRecoveryPresence(devices);
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
+    await holdWithNothingPainted();
     expect(held()).toBe(true);
 
     const foot = document.getElementById("watchmsg").parentElement;
@@ -652,31 +674,25 @@ describe("per-device connections", () => {
     expect(document.getElementById("retrybtn").getAttribute("style")).toBe(null);
   });
 
-  // "Retry now" starts the waiting screen polling for a device. A machine that
-  // comes back some other way — a retry landing through the hold listener —
-  // hands the app straight back, and the poll left armed would re-enter the app
-  // over a reader already standing in it.
-  it("stops the waiting screen's poll when a device lands another way", async () => {
+  // An account with nothing that can answer is watched at the gate's own
+  // cadence, whatever is on screen. A machine that comes back some other way —
+  // a retry landing through the hold listener — hands the app straight back,
+  // and the watch left armed would re-enter the app over a reader already
+  // standing in it.
+  it("stops the gate's watch when a device lands another way", async () => {
     await connectEveryDevice();
     startFeed(60000);
     await flush();
     devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     syncDeviceRecoveryPresence(devices);
-    await loseTheLink("dev-a");
-    await loseTheLink("dev-b");
-    expect(held()).toBe(true);
-
-    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
-    App.devices = devices;
-    // Neither bridge is back yet, so the Retry's own dials find nothing and the
-    // screen stays up with its poll armed — which is the state this is about.
+    // Neither bridge is back yet, so nothing can answer and the watch is armed
+    // over the page the reader keeps — which is the state this is about.
     unreachable.add("dev-a");
     unreachable.add("dev-b");
-    document.getElementById("retrybtn").click();
-    await flush();
-    await flush();
-    expect(held()).toBe(true);
+    await loseTheLink("dev-a");
+    await loseTheLink("dev-b");
+    expect(App._watch).not.toBe(null);
     routes.renderInbox.mockClear();
 
     // The bridge comes back, and a retry on that machine is what lands it.
@@ -685,7 +701,7 @@ describe("per-device connections", () => {
     App.devices = devices;
     await connectDevice("dev-a");
     await flush();
-    expect(held()).toBe(false);
+    expect(App._watch).toBe(null);
     expect(routes.renderInbox).toHaveBeenCalledTimes(1);
     account.fetchDevices.mockClear();
 
@@ -698,6 +714,7 @@ describe("per-device connections", () => {
   // And the way back is the same signal: the machine that answers hands the
   // reader their route back, with the feed reading it again — no reload.
   it("hands the app back the moment one device answers again", async () => {
+    initDevicePicker();
     await connectEveryDevice();
     startFeed(60000);
     await flush();
@@ -706,13 +723,14 @@ describe("per-device connections", () => {
     syncDeviceRecoveryPresence(devices);
     await loseTheLink("dev-a");
     await loseTheLink("dev-b");
-    expect(held()).toBe(true);
+    expect(nothingAnswersOnPicker()).toBe(true);
     routes.renderInbox.mockClear();
 
     await connectDevice("dev-a");
     await flush();
 
     expect(held()).toBe(false);
+    expect(nothingAnswersOnPicker()).toBe(false);
     expect(routes.renderInbox).toHaveBeenCalledTimes(1); // the route is rendered once, not once per device state
 
     expect(document.getElementById("devpick").hidden).toBe(false);

@@ -49,6 +49,8 @@ vi.mock("../src/api.js", () => ({
 }));
 vi.mock("../src/devices.js", () => ({
   refreshDevices: (...args) => refreshDevices(...args),
+  // The mark the picker wears while nothing can answer (devicePickerDom.test.js).
+  markNothingAnswers: () => {},
   readPresence: () => presence(),
   paintDevicePicker: () => {},
   // The account's presence cadence is its own file's subject
@@ -122,7 +124,9 @@ beforeEach(async () => {
   presence = async () => devices;
   document.body.innerHTML = bodyHtml;
   const { App } = await import("../src/app.js");
-  Object.assign(App, { devices: [], selectedDeviceId: null, _connecting: false, _watch: null });
+  // `gated` starts true, as it does on a fresh page load: a boot that has not
+  // painted anything yet is what every case in this file is about.
+  Object.assign(App, { devices: [], gated: true, selectedDeviceId: null, _connecting: false, _watch: null });
   ({ boot } = await import("../src/views/gate.js"));
 });
 

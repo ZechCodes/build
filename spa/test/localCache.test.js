@@ -5,12 +5,37 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
+const DB_NAME = "build-cache";
+const STORE = "records";
+
 let cache;
+
+const freshFactory = () => {
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+};
+
+/** A database in the v1 format, holding one record, closed again — what a
+ *  browser that ran the previous build has on disk. */
+const seedVersionOne = (key, record) =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction(STORE, "readwrite");
+      transaction.objectStore(STORE).put(record, key);
+      transaction.oncomplete = () => {
+        db.close(); // an open v1 connection would block the upgrade
+        resolve();
+      };
+    };
+  });
 
 beforeEach(async () => {
   vi.resetModules();
-  globalThis.indexedDB = new IDBFactory();
-  globalThis.IDBKeyRange = IDBKeyRange;
+  freshFactory();
   cache = await import("../src/core/localCache.js");
 });
 
@@ -68,36 +93,45 @@ describe("eviction", () => {
 });
 
 describe("a browser without IndexedDB", () => {
-  it("stays silent: unknown reads answer undefined, writes and evictions do not throw", async () => {
+  it("stays silent: reads answer undefined, writes and evictions do not throw", async () => {
     vi.resetModules();
     delete globalThis.indexedDB;
     const bare = await import("../src/core/localCache.js");
     await expect(bare.writeCached({ deviceId: "d", entityId: "e", kind: "status" }, {})).resolves.toBeUndefined();
-    // The session-hot mirror still serves this session's own write; only what
-    // was never written answers undefined.
-    expect(await bare.readCached({ deviceId: "d", entityId: "never", kind: "status" })).toBeUndefined();
+    // Nothing is held in memory: with no store there is no cache, and every
+    // read answers "never seen" rather than this session's own writes.
+    expect(await bare.readCached({ deviceId: "d", entityId: "e", kind: "status" })).toBeUndefined();
+    expect(await bare.readCachedMany([{ deviceId: "d", entityId: "e", kind: "status" }])).toEqual([undefined]);
     await expect(bare.evictEntity("d", "e")).resolves.toBeUndefined();
   });
 });
 
-describe("the session-hot mirror", () => {
-  it("keeps the session's own writes readable even without IndexedDB", async () => {
+describe("the format version", () => {
+  it("clears a database the previous format wrote, rather than reading its shapes", async () => {
     vi.resetModules();
-    delete globalThis.indexedDB;
-    const bare = await import("../src/core/localCache.js");
-    await bare.writeCached({ deviceId: "d", entityId: "e", kind: "status" }, { head: "hot" });
-    expect((await bare.readCached({ deviceId: "d", entityId: "e", kind: "status" })).value.head).toBe("hot");
+    freshFactory();
+    await seedVersionOne("dev-1|run-1|status|", { at: 1, value: { head: "from v1" } });
+    const upgraded = await import("../src/core/localCache.js");
+    expect(await upgraded.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).toBeUndefined();
+    // And the store is usable afterwards: a cold start, not a broken cache.
+    await upgraded.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "v2" });
+    expect((await upgraded.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.head).toBe("v2");
+  });
+});
+
+describe("readCachedMany", () => {
+  it("answers one record per address, in the order asked, undefined for what is missing", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "abc" });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" }, ["a.js"]);
+    const records = await cache.readCachedMany([
+      { deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" },
+      { deviceId: "dev-1", entityId: "run-1", kind: "log" },
+      { deviceId: "dev-1", entityId: "run-1", kind: "status" },
+    ]);
+    expect(records.map((record) => record?.value)).toEqual([["a.js"], undefined, { head: "abc" }]);
   });
 
-  it("lets eviction and wipe clear the mirror too", async () => {
-    vi.resetModules();
-    delete globalThis.indexedDB;
-    const bare = await import("../src/core/localCache.js");
-    await bare.writeCached({ deviceId: "d", entityId: "e", kind: "status" }, {});
-    await bare.evictEntity("d", "e");
-    expect(await bare.readCached({ deviceId: "d", entityId: "e", kind: "status" })).toBeUndefined();
-    await bare.writeCached({ deviceId: "d", entityId: "e2", kind: "status" }, {});
-    await bare.wipeCache();
-    expect(await bare.readCached({ deviceId: "d", entityId: "e2", kind: "status" })).toBeUndefined();
+  it("answers nothing for no addresses", async () => {
+    expect(await cache.readCachedMany([])).toEqual([]);
   });
 });

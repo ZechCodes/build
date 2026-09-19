@@ -195,18 +195,22 @@ describe("a pane over a filled cache", () => {
   });
 
   it("asks nothing of the machine for an hour of sitting there", async () => {
-    await fill();
-    const callRpc = liveRpc();
-    const { pane } = await mountPane(callRpc);
-    callRpc.mockClear();
-    vi.useFakeTimers();
+    // The clock is faked BEFORE the mount, so an interval the pane started
+    // would be a fake one and the hour below would run it. Faking afterwards
+    // leaves a real interval real, and an hour of fake time costs a
+    // millisecond of the wall clock — which no poll would tick in.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
+      await fill();
+      const callRpc = liveRpc();
+      const { pane } = await mountPane(callRpc);
+      callRpc.mockClear();
       await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(callRpc.mock.calls.filter(([method]) => method !== "git.diff")).toEqual([]);
+      pane.dispose();
     } finally {
       vi.useRealTimers();
     }
-    expect(callRpc.mock.calls.filter(([method]) => method !== "git.diff")).toEqual([]);
-    pane.dispose();
   });
 });
 

@@ -128,6 +128,43 @@ fn git_log_since_a_hash_off_the_history_answers_the_latest_commits_and_says_rese
     }
 }
 
+/// A cursored page that cannot carry the whole gap is a reset too. The page
+/// is the commits nearest HEAD, so prepending it to a log whose newest is
+/// the cursor would leave a hole between them — one the client cannot see,
+/// because the cursor it stores next is HEAD.
+#[test]
+fn git_log_since_a_hash_too_far_back_to_page_says_reset() {
+    let (dir, repo) = repo_with_history(30);
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+    let hashes = history(&mut state, &project_id);
+
+    // 29 commits landed since the cursor; the cursored default carries 20.
+    let log = state.handle(req(
+        "git.log",
+        json!({ "project_id": project_id, "since": hashes[0] }),
+    ));
+    assert_eq!(log["ok"], true, "{log:?}");
+    assert_eq!(
+        log["result"]["commits"].as_array().unwrap().len(),
+        crate::api::v1::git::LATEST_COMMITS as usize,
+        "{log:?}"
+    );
+    assert_eq!(subjects(&log)[0], "commit 30", "{log:?}");
+    assert_eq!(log["result"]["more"], true, "{log:?}");
+    assert_eq!(log["result"]["reset"], true, "{log:?}");
+    assert_eq!(log["result"]["newest"], hashes[29].as_str(), "{log:?}");
+
+    // A limit wide enough for the gap reaches the cursor, so the answer is
+    // one the client may prepend.
+    let whole = state.handle(req(
+        "git.log",
+        json!({ "project_id": project_id, "since": hashes[0], "limit": 29 }),
+    ));
+    assert_eq!(whole["result"]["more"], false, "{whole:?}");
+    assert_eq!(whole["result"]["reset"], false, "{whole:?}");
+}
+
 /// `since` is an object-id prefix like `git.show`'s hash, never a revspec: a
 /// branch named like hex must not be able to shadow one.
 #[test]

@@ -169,7 +169,9 @@ pub struct GitLogParams {
     ///
     /// The answer is then `since..HEAD`, newest first. A cursor HEAD cannot
     /// reach — a rebase, a reset, a hash from another checkout — is not a
-    /// refusal: the answer is the latest page with `reset` set.
+    /// refusal: the answer is the latest page with `reset` set. So is a gap
+    /// wider than the page, which comes back as the latest commits rather
+    /// than as a fragment with nothing holding it to the cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
 }
@@ -478,9 +480,12 @@ pub struct GitLogResult {
     pub commits: Vec<CommitSummary>,
     /// Another page follows.
     pub more: bool,
-    /// The `since` cursor named no ancestor of HEAD, so these commits are the
-    /// latest page rather than what landed after the cursor: the client
-    /// replaces its log instead of prepending to it.
+    /// This page cannot be prepended: the client replaces its log with it.
+    ///
+    /// Either the `since` cursor named no ancestor of HEAD, so these commits
+    /// are the latest page rather than what landed after it, or the page ran
+    /// out before it reached the cursor (`more` beside a cursored read) and
+    /// prepending it would leave a hole the client could never ask for.
     #[serde(default)]
     pub reset: bool,
     /// HEAD, as the client's next `since`. Absent only on an unborn HEAD,

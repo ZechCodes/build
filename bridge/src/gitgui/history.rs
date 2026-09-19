@@ -234,7 +234,9 @@ fn commit_marker(
 /// `since` makes the read cursored: the page is then `since..HEAD` rather
 /// than the latest commits, and `newest` is the cursor the client stores for
 /// next time. Both extra fields ride every answer, cursored or not, so a
-/// client can start holding a cursor from any page it has.
+/// client can start holding a cursor from any page it has. `reset` says the
+/// page is a replacement rather than something to prepend — see
+/// [`is_reset`].
 pub fn log_page(
     repo_path: &Path,
     highlight: Option<LogHighlight<'_>>,
@@ -282,13 +284,31 @@ pub fn log_page(
         "branch": branch,
         "commits": commits,
         "more": more,
-        "reset": cursor == LogCursor::Reset,
+        "reset": is_reset(cursor, more),
         "newest": head.to_string(),
     });
     if let Some(marker) = marker {
         payload["highlight_key"] = json!(marker.key);
     }
     Ok(payload)
+}
+
+/// Whether the client must replace its log rather than prepend this page to
+/// it.
+///
+/// Two ways that happens. The cursor may name no ancestor of HEAD, so the
+/// page is the latest commits and not what landed after it. Or the gap may
+/// be wider than the page: a cursored walk yields newest first, so a page
+/// that stops short leaves commits between it and the cursor — and the
+/// client cannot come back for them, because the cursor it stores next is
+/// HEAD. A whole recent log is worth more to it than an older one with a
+/// hole it cannot see.
+fn is_reset(cursor: LogCursor, more: bool) -> bool {
+    match cursor {
+        LogCursor::Reset => true,
+        LogCursor::Behind(_) => more,
+        LogCursor::Unnamed => false,
+    }
 }
 
 /// Whether `hash` is an acceptable `git.show` argument: 4–40 lowercase hex

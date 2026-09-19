@@ -287,8 +287,12 @@ async function dropWhatTheBoardStoppedNaming(context, view) {
 // ─── Step 3: one workspace ───────────────────────────────────────────────────
 
 /** Everything one workspace holds, in the order a reader opening it wants it:
- *  what changed, where the files are, the shells, the commits, the
- *  conversations, and last the two big bodies. */
+ *  what changed, where the files are, the shells, the commit lists, the
+ *  conversations, and last the big bodies — the patch behind each unpushed
+ *  commit and the working tree's diff. Those last are a quarter of a megabyte
+ *  each and up to twenty of them; nothing is looking at them until a reviewer
+ *  opens the changes, and the thread is on screen the moment the workspace
+ *  is. */
 async function syncWorkspace(context, entityId, row, routed) {
   const priority = routed ? "foreground" : "background";
   const scope = gitScopeOf(row);
@@ -297,9 +301,11 @@ async function syncWorkspace(context, entityId, row, routed) {
     await syncTrees(context, entityId, scope, priority);
   }
   await syncTerminals(context, entityId, row, priority);
-  if (scope) await syncCommits(context, entityId, scope, priority);
+  const unpushed = scope ? await syncCommits(context, entityId, scope, priority) : null;
   await syncThreads(context, entityId, row, priority);
-  if (scope) await syncWorkingDiff(context, entityId, row, priority);
+  if (!scope) return;
+  await syncPatches(context, entityId, scope, unpushed, priority);
+  await syncWorkingDiff(context, entityId, row, priority);
 }
 
 /** The status, asked conditionally: the `status_key` the cache holds is the
@@ -341,10 +347,12 @@ async function syncTerminals(context, entityId, row, priority) {
   await writeCached(addressOf(context, entityId, "terminals"), { tabs: answer.terminals || [] });
 }
 
+/** The two commit lists, answered whole. What the unpushed one said is handed
+ *  back: the patches behind those commits are read later in the pass, once
+ *  the conversations are in. */
 async function syncCommits(context, entityId, scope, priority) {
   await syncLog(context, entityId, scope, priority);
-  const unpushed = await syncUnpushed(context, entityId, scope, priority);
-  await syncPatches(context, entityId, scope, unpushed, priority);
+  return syncUnpushed(context, entityId, scope, priority);
 }
 
 /** The commit list, read forward from the newest hash the cache holds — or the

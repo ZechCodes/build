@@ -164,6 +164,24 @@ describe("the order a pass reads in", () => {
     expect(entities.lastIndexOf("run-2")).toBeLessThan(entities.indexOf("run-1"));
   });
 
+  it("reads one workspace's shapes in the order a reader opening it wants them", async () => {
+    // What is on screen first is read first. The conversation comes before the
+    // patches behind the unpushed commits, which are twenty reads of a quarter
+    // of a megabyte and nothing anybody is looking at yet.
+    script["git.unpushed"] = () => ({ base: {}, commits: [{ hash: "h1" }], diff_key: "d1" });
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })], routeTo("build/login"));
+    expect(bridge.call.mock.calls.map(([method]) => method).slice(3)).toEqual([
+      "git.status",
+      "fs.tree",
+      "term.list",
+      "git.log",
+      "git.unpushed",
+      "thread.page",
+      "git.show",
+      "run.diff",
+    ]);
+  });
+
   it("reads only the routed workspace ahead of the foreground", async () => {
     await boot(two, routeTo("build/search"));
     const ahead = bridge.call.mock.calls

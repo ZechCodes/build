@@ -1807,6 +1807,19 @@ export function mountGitPane(
    */
   const readsForItself = !cacheScope || Boolean(scope.workspace_id) || !(scope.run_id || scope.worktree_id);
 
+  /**
+   * What the bridge would name this checkout on an item.
+   *
+   * A run and an external worktree are entities it pushes under. A workspace
+   * source is not: its git subjects are runs, projects and external
+   * worktrees, a durable workspace id is never one of them, and a write into
+   * a workspace source notes no entity at all. Watching that id would be
+   * watching for a word that never comes, so this checkout watches the board
+   * instead — which the workspace's own agent moves on every turn, and which
+   * is what a project's own directory has always watched for the same reason.
+   */
+  const watchedEntity = scope.workspace_id ? null : scope.run_id || scope.worktree_id || null;
+
   const refreshCheckout = () => {
     void forceRefresh();
     // The plug over a workspace source reads the same uncovered checkout.
@@ -1818,10 +1831,10 @@ export function mountGitPane(
   const checkoutWatcher = readsForItself
     ? watchChanges({
         refresh: refreshCheckout,
-        entity: scope.workspace_id || scope.run_id || scope.worktree_id || null,
-        // Focus tier. A project's own checkout is no entity the bridge names,
-        // so that scope watches the board — where `state` is all there is, and
-        // the manager trims the ask to it.
+        entity: watchedEntity,
+        // Focus tier. A checkout the bridge names no entity for watches the
+        // board — where `state` is all there is, and the manager trims the ask
+        // to it.
         kinds: ["state", "git", "files"],
         mode: "realtime",
       })

@@ -116,6 +116,22 @@ describe("a surface against a bridge that pushes", () => {
     pane.dispose();
   });
 
+  it("watches the board when its scope is a workspace source, which the bridge names no entity for", async () => {
+    // A durable workspace id is not an id the bridge ever puts on an item:
+    // its git subjects are runs, projects and external worktrees, and a
+    // workspace source's file writes note no entity at all. The board is the
+    // only word about this checkout that ever arrives — and the workspace's
+    // own agent moves it on every turn.
+    armChangeEvents({ push_events: true }, "dev-a");
+    const { pane, reads } = await mountPane({ workspace_id: "ws-1", source_id: "src-1" });
+    const before = reads();
+
+    dispatchChangeEvent({ type: "board.changed" }, "dev-a");
+    await settle();
+    expect(reads()).toBe(before + 1);
+    pane.dispose();
+  });
+
   it("has no clock at all, not even the safety poll's", async () => {
     // Before the mount: an interval, if there were one, would be the fake one
     // from the start.

@@ -85,7 +85,9 @@ describe("workspace All Changes live refresh", () => {
     expect(liveWatchers).toHaveLength(1);
     const watcher = liveWatchers[0];
     expect(watcher).toMatchObject({
-      entity: "workspace-1",
+      // The board, not the workspace id: the bridge names no entity for a
+      // workspace source, so its id on an item is a word that never comes.
+      entity: null,
       kinds: ["state", "git", "files"],
       mode: "realtime",
     });

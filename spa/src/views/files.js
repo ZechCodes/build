@@ -9,13 +9,17 @@
 // reads are left on the wire and both write through: `fs.tree` for a directory
 // nothing has ever been written for, and `fs.read` for a file nothing holds.
 //
+// Over a checkout the sync layer does not walk (a workspace source, a project's
+// own directory) nothing keeps those records true but this tab, so there they
+// are a seed: painted at once, then read through anyway.
+//
 // SECURITY: every name/path is escaped. HTML previews render in a
 // `sandbox=""` iframe over a `data:` URL (no scripts, no same-origin); SVG and
 // images render via `<img src="data:...">` — never inlined into the DOM. The
 // server fences the scope root and every path; this view never sends host paths.
 
 import { esc, pickAFileText } from "../core/text.js";
-import { directoryCacheId } from "../core/directoryScope.js";
+import { directoryCacheId, syncWalksCheckout } from "../core/directoryScope.js";
 import { deleteCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
 import { FILE_RECORD_KIND, cacheFileBody } from "../core/cacheLifetime.js";
 import { renderMarkdown } from "../core/markdown.js";
@@ -273,6 +277,13 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   // The local cache's address for one directory's listing. A project-scoped
   // one names no entity and takes no part.
   const cacheEntityId = () => directoryCacheId(scope);
+
+  /** Whether this tab is the only reader of its checkout. A run's or an
+   *  external worktree's records are kept true by the sync layer, so what they
+   *  hold is the answer. A workspace source's and a project's are not walked by
+   *  anybody, so what they hold is the last visit's own work: a seed to paint
+   *  at once, and never a reason to skip the read. */
+  const readsForItself = !syncWalksCheckout(scope);
   const treeAddress = (path) =>
     cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "tree", sub: path }) || null : null;
 
@@ -336,7 +347,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     if (!stillListing(request)) return;
     if (held) {
       paintListing(held);
-      return;
+      if (!readsForItself) return;
     }
     await listTree(nextDir, request);
   };
@@ -361,9 +372,10 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
 
   /** One file's body: the record where there is one, else the one read off the
    *  wire, written through. `fresh` is the reload verb, which exists to go
-   *  past whatever is held. */
+   *  past whatever is held — as does a checkout nothing but this tab reads,
+   *  where the record is one visit old and no push has moved it since. */
   const readFile = async (path, { fresh = false } = {}) => {
-    const held = fresh ? undefined : (await heldValue(fileAddress(path)))?.file;
+    const held = fresh || readsForItself ? undefined : (await heldValue(fileAddress(path)))?.file;
     if (held) {
       // Opening it is what makes it recent — the five kept are the five last
       // read, not the five first read, or the file the reader keeps coming

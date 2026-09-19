@@ -197,3 +197,63 @@ describe("a file body", () => {
     expect((await cachedSubKeys("dev-1", "run-1", "file")).sort()).toEqual(["c.md", "d.md", "e.md", "f.md", "g.md"]);
   });
 });
+
+// A workspace source is filed under an id no sync pass ever writes: its git
+// subjects are runs, projects and external worktrees, never a durable
+// workspace id, so `listTrees` and `rereadHeldFiles` never reach it. There the
+// record is the last paint's own work, and this tab is the only reader — so it
+// is a seed, and every walk and every open still goes to the machine.
+describe("a checkout nothing walks", () => {
+  const SOURCE = { workspace_id: "w-1", source_id: "s-1" };
+  const SOURCE_ENTITY = `workspace:${JSON.stringify(["w-1", "s-1"])}`;
+
+  const seedSourceTree = (path, entries) =>
+    writeCached({ deviceId: "dev-1", entityId: SOURCE_ENTITY, kind: "tree", sub: path }, { path, entries });
+
+  it("re-lists a directory it already holds, because nothing else keeps it true", async () => {
+    await seedSourceTree("", [{ name: "a.js", kind: "file", size: 1 }]);
+    const call = vi.fn(async (method, params) => ({
+      path: params.path,
+      entries: [{ name: "a.js", kind: "file", size: 1 }, { name: "new.js", kind: "file", size: 1 }],
+    }));
+    const { host } = mountFiles(call, { scope: SOURCE });
+    await settle();
+
+    expect(call.mock.calls.filter(([method]) => method === "fs.tree")).toHaveLength(1);
+    expect(treeNames(host)).toEqual(["a.js", "new.js"]);
+  });
+
+  it("re-reads a body it already holds, so an edited file is not the one it was", async () => {
+    await seedSourceTree("", [{ name: "README.md", kind: "file", size: 5 }]);
+    await writeCached(
+      { deviceId: "dev-1", entityId: SOURCE_ENTITY, kind: "file", sub: "README.md" },
+      { file: fileAnswer({ content_b64: b64("before the edit") }), openedAt: Date.now() },
+    );
+    const call = vi.fn(async (method, params) =>
+      method === "fs.read"
+        ? fileAnswer({ content_b64: b64("after the edit") })
+        : { path: params.path, entries: [{ name: "README.md", kind: "file", size: 5 }] },
+    );
+    const { host } = mountFiles(call, { scope: SOURCE });
+    await settle();
+    host.querySelector(".ffile").click();
+    await settle();
+
+    expect(host.textContent).toContain("after the edit");
+    expect(call.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(1);
+  });
+
+  it("paints what it holds before the machine answers", async () => {
+    await seedSourceTree("", [{ name: "held.js", kind: "file", size: 1 }]);
+    let answer = null;
+    const call = vi.fn(
+      (method, params) => new Promise((resolve) => (answer = () => resolve({ path: params.path, entries: [] }))),
+    );
+    const { host } = mountFiles(call, { scope: SOURCE });
+    await settle();
+    expect(treeNames(host)).toEqual(["held.js"]);
+    answer();
+    await settle();
+    expect(treeNames(host)).toEqual([]);
+  });
+});

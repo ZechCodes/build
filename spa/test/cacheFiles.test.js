@@ -158,6 +158,23 @@ describe("a file body", () => {
     expect(call.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(0);
   });
 
+  it("re-stamps what it opened off the disk, so the five kept are the five last read", async () => {
+    const longAgo = Date.now() - 3600 * 1000;
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" },
+      { file: fileAnswer({ content_b64: b64("from the disk") }), openedAt: longAgo },
+    );
+    const call = withReadme();
+    const { host } = await openReadme(call);
+    expect(host.textContent).toContain("from the disk");
+    expect(call.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(0);
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" });
+    // Opening a file is what makes it recent, whichever side it came from —
+    // otherwise the one the reader keeps coming back to is the one evicted.
+    expect(record.value.openedAt).toBeGreaterThan(longAgo);
+    expect(record.value.file.content_b64).toBe(b64("from the disk"));
+  });
+
   it("leaves a body over a megabyte on screen and off the disk", async () => {
     const twoMegabytes = fileAnswer({ size: 2 * 1024 * 1024, truncated: true, content_b64: b64("hello") });
     const { host } = await openReadme(withReadme(twoMegabytes));

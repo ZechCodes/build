@@ -364,7 +364,13 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
    *  past whatever is held. */
   const readFile = async (path, { fresh = false } = {}) => {
     const held = fresh ? undefined : (await heldValue(fileAddress(path)))?.file;
-    if (held) return { file: held };
+    if (held) {
+      // Opening it is what makes it recent — the five kept are the five last
+      // read, not the five first read, or the file the reader keeps coming
+      // back to is the one the trim drops.
+      keepFileBody(path, held);
+      return { file: held };
+    }
     try {
       const file = await callRpc("fs.read", { ...scope, path });
       keepFileBody(path, file);

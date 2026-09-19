@@ -177,6 +177,24 @@ describe("booting from the cache", () => {
     expect(unreachableMark()).not.toBeNull();
   });
 
+  // The reload the whole stage is about: the machine is down, so skriftapp
+  // cannot be reached either and the cached rows still say what the last
+  // successful read said — online. The shell stays, but a shell with nothing
+  // saying so and nothing that will ever reconnect is the screenshot again.
+  it("marks the picker and keeps watching when the account list fails and the cache says online", async () => {
+    await warmCache([device("dev-1", "online")]);
+    account.fetchDevices.mockRejectedValue(new Error("api unreachable"));
+
+    await boot();
+
+    expect(App.gated).toBe(false);
+    expect(railEntries()).toEqual(["workspace:dev-1/ws-1"]);
+    expect(unreachableMark()).not.toBeNull();
+    // The gate's own three seconds: the one thing that re-enters the app when
+    // a machine comes back, now that the painted app has no Retry button.
+    expect(App._watch).not.toBeNull();
+  });
+
   it("starts the sync layer before the first session answers", async () => {
     account.fetchDevices.mockResolvedValue([device("dev-1")]);
 

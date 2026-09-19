@@ -592,16 +592,23 @@ async function showBridgeBehindGate(context) {
   }
 }
 
+/** The account's machines, or nothing and a page that says so.
+ *
+ *  A failed read is the one case where what the app holds is all it has: the
+ *  statuses are whatever the last successful read left, which after a paint
+ *  from the cache is as old as the cache. So the state of the page decides
+ *  what that costs. A gate screen with a machine the account last called
+ *  online is handed the shell to stand in while the read recovers; anything
+ *  else — including a shell the cache already painted — goes to the screen
+ *  that says the account could not be read, which over a painted shell is the
+ *  mark on the picker and the gate's own watch rather than a page. */
 async function readDevicesForBoot(generation) {
   try {
     return await refreshDevices();
   } catch {
     if (generation !== gateGeneration) return null;
-    if (App.devices.some((device) => device.status === "online")) {
-      if (App.gated) enterShellWhileRecovering();
-    } else {
-      renderPresenceUnavailable();
-    }
+    if (App.gated && App.devices.some((device) => device.status === "online")) enterShellWhileRecovering();
+    else renderPresenceUnavailable();
     return null;
   }
 }

@@ -289,3 +289,82 @@ fn the_json_import_runs_once_and_leaves_the_records_it_read() {
     assert_eq!(rebuilt.import_json_store().expect("the rebuild imports"), 4);
     assert_eq!(rebuilt.load_all_runs().expect("runs load").len(), 2);
 }
+
+/// A store written before the tracker existed gains its three tables on the
+/// next open, keeps everything it already held, and can be written to at once.
+/// Nothing is backfilled because there is nothing to backfill: a v7 store has
+/// no issues.
+#[test]
+fn a_v7_store_gains_the_tracker_and_loses_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut run = run_record("run-kept", None, NOW);
+    run.agents[0]
+        .thread
+        .post_user("words from before", None, NOW);
+    store.save_run(&run).unwrap();
+    store.pretend_to_be_v7();
+    drop(store);
+
+    let upgraded = Store::new(dir.path()).unwrap();
+    let kept = reload_run(&upgraded, "run-kept");
+    assert_eq!(
+        kept.agents[0].thread.items.len(),
+        1,
+        "the conversation kept"
+    );
+
+    let draft = crate::tracker::Issue::drafted(
+        "/repo",
+        "first after the upgrade",
+        crate::tracker::Actor::User,
+        NOW,
+    );
+    let filed = upgraded
+        .create_tracker_issue(draft, &[])
+        .expect("the upgraded store takes an issue");
+    assert_eq!(filed.number, 1);
+    assert_eq!(
+        upgraded.load_tracker_issue(&filed.id).unwrap().unwrap().id,
+        filed.id
+    );
+}
+
+/// The classifier is gated on the newest HOISTED column's version, not on the
+/// schema's: a bump that only adds tables must not rewrite every conversation
+/// row on the device to change nothing.
+#[test]
+fn adding_a_table_does_not_reclassify_every_conversation_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut run = run_record("run-1", None, NOW);
+    run.agents[0].thread.post_user("a message", None, NOW);
+    store.save_run(&run).unwrap();
+    let agent_id = run.agents[0].id.clone();
+    // Stage a classification the backfill WOULD correct, then step back to v7.
+    // A v7 → v8 open leaves it alone; only a store missing a hoisted column
+    // has anything to reclassify.
+    store
+        .connection()
+        .execute(
+            "UPDATE thread_items SET message = 0 WHERE agent_id = ?1",
+            [&agent_id],
+        )
+        .unwrap();
+    store.pretend_to_be_v7();
+    drop(store);
+
+    let upgraded = Store::new(dir.path()).unwrap();
+    let still_zero: i64 = upgraded
+        .connection()
+        .query_row(
+            "SELECT COALESCE(SUM(message), 0) FROM thread_items WHERE agent_id = ?1",
+            [&agent_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        still_zero, 0,
+        "a table-only bump ran the classifier over rows it had no business touching"
+    );
+}

@@ -1,0 +1,550 @@
+//! The per-project issue tracker's records (spec: Issues).
+//!
+//! An issue, a comment on one, and an event about one. Small, bounded values
+//! that are read and written whole — which is why the store keeps each one's
+//! serde shape in a `record` column rather than normalizing it into a table.
+//!
+//! NOT the plan flow. Build's `issues` table and its `issue.*` / `plan.*` verbs
+//! are the retired plan-and-stages document flow, which shares the English word
+//! and nothing else. Everything here is namespaced `tracker_*` in the store and
+//! `issues.*` on the wire so the two can never be reached for each other.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// A tracker issue's id. Free of the plan flow, whose ids are `plan-`.
+pub const ISSUE_ID_PREFIX: &str = "issue-";
+/// A comment's.
+pub const COMMENT_ID_PREFIX: &str = "ic-";
+/// An event's.
+pub const EVENT_ID_PREFIX: &str = "ie-";
+
+/// The longest title an issue may carry. A title is a line; a paragraph belongs
+/// in the body.
+pub const MAX_TITLE_BYTES: usize = 200;
+/// The longest body or comment. The bound a thread message already carries, so
+/// an issue delivered into a conversation cannot be longer than the message
+/// that carries it.
+pub const MAX_BODY_BYTES: usize = 32_000;
+/// How many labels one issue holds, and how long each may be.
+pub const MAX_LABELS: usize = 20;
+pub const MAX_LABEL_BYTES: usize = 40;
+/// How many entries one of an issue's four link lists holds.
+pub const MAX_LINKS_PER_KIND: usize = 20;
+
+/// A fresh, time-ordered issue id: the ULID rule every other Build id uses,
+/// under this record's own prefix. Ids minted later sort later, which is what
+/// makes them a stable tie-break for two things stamped in the same second.
+pub fn new_issue_id() -> String {
+    format!("{ISSUE_ID_PREFIX}{}", crate::agent::new_ulid_body())
+}
+
+pub fn new_comment_id() -> String {
+    format!("{COMMENT_ID_PREFIX}{}", crate::agent::new_ulid_body())
+}
+
+pub fn new_event_id() -> String {
+    format!("{EVENT_ID_PREFIX}{}", crate::agent::new_ulid_body())
+}
+
+/// Whether an issue is still open. Independent of [`Issue::status`]: one says
+/// where the card is on the board, the other whether anyone is still expected
+/// to do something about it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueState {
+    #[default]
+    Open,
+    Closed,
+}
+
+impl IssueState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IssueState::Open => "open",
+            IssueState::Closed => "closed",
+        }
+    }
+
+    /// The state a wire word names, or `None` for a word that is neither.
+    pub fn parse(word: &str) -> Option<IssueState> {
+        match word {
+            "open" => Some(IssueState::Open),
+            "closed" => Some(IssueState::Closed),
+            _ => None,
+        }
+    }
+}
+
+/// How much this issue matters. `None` is a value and not an absence: an issue
+/// nobody has prioritized says so.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssuePriority {
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+    Urgent,
+}
+
+impl IssuePriority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IssuePriority::None => "none",
+            IssuePriority::Low => "low",
+            IssuePriority::Medium => "medium",
+            IssuePriority::High => "high",
+            IssuePriority::Urgent => "urgent",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<IssuePriority> {
+        [
+            IssuePriority::None,
+            IssuePriority::Low,
+            IssuePriority::Medium,
+            IssuePriority::High,
+            IssuePriority::Urgent,
+        ]
+        .into_iter()
+        .find(|priority| priority.as_str() == word)
+    }
+}
+
+/// Who did something: the human, or one agent by id.
+///
+/// A project agent is an `Agent` here like any other — its id already says what
+/// it is (the `project-` prefix), so there is no second spelling for a reader to
+/// have to reconcile. [`Assignee`] is the shape that has a third arm, because
+/// "this project's agent" is a destination that may not exist yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Actor {
+    User,
+    Agent { agent_id: String },
+}
+
+impl Actor {
+    /// The agent that acted, when one did rather than the human.
+    pub fn agent_id(&self) -> Option<&str> {
+        match self {
+            Actor::User => None,
+            Actor::Agent { agent_id } => Some(agent_id),
+        }
+    }
+}
+
+/// Who holds an issue. Assignment is dispatch, so this is also where the work
+/// runs — see the spec's "Assignment is dispatch".
+///
+/// `ProjectAgent` is a destination rather than an identity: a project may not
+/// have a conversation, let alone an agent on it, when the issue is handed to
+/// it. The two creating kinds (`new_workspace`, `new_agent`) are not here at
+/// all — they are how `issues.assign` is ASKED, and they resolve to `Agent`
+/// before anything is stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Assignee {
+    User,
+    ProjectAgent,
+    Agent { agent_id: String },
+}
+
+impl Assignee {
+    pub fn agent_id(&self) -> Option<&str> {
+        match self {
+            Assignee::Agent { agent_id } => Some(agent_id),
+            _ => None,
+        }
+    }
+}
+
+/// What an issue is about, in the repository and in Build.
+///
+/// Every list is ordered by when its entry was added, deduped, and capped at
+/// [`MAX_LINKS_PER_KIND`]. `conversation_ids` holds conversation OWNER ids
+/// (`run-…`), which is what `agent.list` and `thread.page` are addressed by, so
+/// an issue page can open the conversation working it without a second lookup.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueLinks {
+    #[serde(default)]
+    pub workspace_ids: Vec<String>,
+    #[serde(default)]
+    pub branches: Vec<String>,
+    #[serde(default)]
+    pub commits: Vec<String>,
+    #[serde(default)]
+    pub conversation_ids: Vec<String>,
+    #[serde(default)]
+    pub parent_issue_id: Option<String>,
+}
+
+impl IssueLinks {
+    /// Add one entry to one list, answering whether it was not already there.
+    /// Full is not an error: a link list is a convenience, and refusing the
+    /// twenty-first would refuse the whole call that carried it.
+    pub fn add(list: &mut Vec<String>, value: &str) -> bool {
+        if list.iter().any(|existing| existing == value) || list.len() >= MAX_LINKS_PER_KIND {
+            return false;
+        }
+        list.push(value.to_string());
+        true
+    }
+
+    pub fn links_workspace(&self, workspace_id: &str) -> bool {
+        self.workspace_ids.iter().any(|id| id == workspace_id)
+    }
+
+    pub fn links_conversation(&self, entity_id: &str) -> bool {
+        self.conversation_ids.iter().any(|id| id == entity_id)
+    }
+
+    pub fn links_commit(&self, sha: &str) -> bool {
+        self.commits.iter().any(|commit| commit == sha)
+    }
+}
+
+/// One tracker issue.
+///
+/// `project_path` and not a `proj-N` id, for the reason [`PersistedPlan`] and
+/// [`PersistedRun`] carry a path too: an id is minted per boot from the config
+/// that restored it, and the same repository can come back wearing another one.
+/// The wire only ever carries `project_id`; the boundary resolves it both ways.
+///
+/// [`PersistedPlan`]: crate::store::PersistedPlan
+/// [`PersistedRun`]: crate::store::PersistedRun
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Issue {
+    pub id: String,
+    pub project_path: String,
+    /// Per-project, sequential from 1, minted inside the insert's own
+    /// transaction. Never reused: nothing deletes an issue.
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub state: IssueState,
+    /// The kanban column, as a slug — see [`COLUMNS`]. A string and not an
+    /// enum, so a per-project column set later is a record change rather than a
+    /// migration.
+    pub status: String,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub priority: IssuePriority,
+    #[serde(default)]
+    pub assignee: Option<Assignee>,
+    #[serde(default)]
+    pub links: IssueLinks,
+    pub created_by: Actor,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub closed_at: Option<String>,
+}
+
+impl Issue {
+    /// A newly filed issue, before the store mints its number.
+    pub fn drafted(project_path: &str, title: &str, created_by: Actor, now: &str) -> Issue {
+        Issue {
+            id: new_issue_id(),
+            project_path: project_path.to_string(),
+            number: 0,
+            title: title.to_string(),
+            body: String::new(),
+            state: IssueState::Open,
+            status: DEFAULT_STATUS.to_string(),
+            labels: Vec::new(),
+            priority: IssuePriority::None,
+            assignee: None,
+            links: IssueLinks::default(),
+            created_by,
+            created_at: now.to_string(),
+            updated_at: now.to_string(),
+            closed_at: None,
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.state == IssueState::Open
+    }
+}
+
+/// One comment on one issue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueComment {
+    pub id: String,
+    pub issue_id: String,
+    pub author: Actor,
+    pub body: String,
+    /// Typed references, fenced twice: shape by `validate_thread_links`, then
+    /// ownership by the issue. See the spec's "Typed references".
+    #[serde(default)]
+    pub refs: Vec<crate::thread::ThreadLink>,
+    pub created_at: String,
+}
+
+/// What happened to an issue. Comments and events interleave into the one
+/// timeline `issues.get` answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueEventKind {
+    Created,
+    Assigned,
+    Unassigned,
+    Moved,
+    Labelled,
+    Linked,
+    Closed,
+    Reopened,
+    Dispatched,
+}
+
+impl IssueEventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IssueEventKind::Created => "created",
+            IssueEventKind::Assigned => "assigned",
+            IssueEventKind::Unassigned => "unassigned",
+            IssueEventKind::Moved => "moved",
+            IssueEventKind::Labelled => "labelled",
+            IssueEventKind::Linked => "linked",
+            IssueEventKind::Closed => "closed",
+            IssueEventKind::Reopened => "reopened",
+            IssueEventKind::Dispatched => "dispatched",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueEvent {
+    pub id: String,
+    pub issue_id: String,
+    pub at: String,
+    pub actor: Actor,
+    pub kind: IssueEventKind,
+    /// What this kind needs said. An empty object where the kind is the whole
+    /// fact.
+    #[serde(default)]
+    pub payload: Value,
+}
+
+impl IssueEvent {
+    pub fn new(
+        issue_id: &str,
+        actor: Actor,
+        kind: IssueEventKind,
+        payload: Value,
+        now: &str,
+    ) -> IssueEvent {
+        IssueEvent {
+            id: new_event_id(),
+            issue_id: issue_id.to_string(),
+            at: now.to_string(),
+            actor,
+            kind,
+            payload,
+        }
+    }
+}
+
+/// One entry of an issue's timeline: something said, or something that
+/// happened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TimelineEntry {
+    Comment(IssueComment),
+    Event(IssueEvent),
+}
+
+impl TimelineEntry {
+    /// What a timeline is ordered by: when it happened, then the id — which is
+    /// time-ordered itself, so two things stamped in the same second still have
+    /// one order every reader agrees on.
+    pub fn ordering_key(&self) -> (&str, &str) {
+        match self {
+            TimelineEntry::Comment(comment) => (&comment.created_at, &comment.id),
+            TimelineEntry::Event(event) => (&event.at, &event.id),
+        }
+    }
+}
+
+/// One kanban column: the slug that is stored, and the name that is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Column {
+    pub id: &'static str,
+    pub name: &'static str,
+}
+
+/// Phase 1's fixed columns, in board order.
+pub const COLUMNS: [Column; 5] = [
+    Column {
+        id: "backlog",
+        name: "Backlog",
+    },
+    Column {
+        id: "ready",
+        name: "Ready",
+    },
+    Column {
+        id: "in_progress",
+        name: "In progress",
+    },
+    Column {
+        id: "in_review",
+        name: "In review",
+    },
+    Column {
+        id: "done",
+        name: "Done",
+    },
+];
+
+/// Where a new issue starts.
+pub const DEFAULT_STATUS: &str = "backlog";
+/// Where an agent's Complete moves the issue it holds.
+pub const IN_REVIEW_STATUS: &str = "in_review";
+/// Where a dispatch moves an issue that has not started.
+pub const IN_PROGRESS_STATUS: &str = "in_progress";
+
+/// The columns a dispatch may move an issue out of. Anywhere further along was
+/// set deliberately, and a reassignment is not a reason to rewind it.
+pub const DISPATCH_MOVES_FROM: [&str; 2] = [DEFAULT_STATUS, "ready"];
+
+/// The column a word names, by slug or by display name, case-insensitively.
+/// `None` is a word that names no column this project has.
+pub fn normalize_status(word: &str) -> Option<&'static str> {
+    let word = word.trim();
+    COLUMNS
+        .iter()
+        .find(|column| {
+            column.id.eq_ignore_ascii_case(word) || column.name.eq_ignore_ascii_case(word)
+        })
+        .map(|column| column.id)
+}
+
+/// Every column's name, for a refusal that has to say what there was to choose
+/// from.
+pub fn column_names() -> String {
+    COLUMNS
+        .iter()
+        .map(|column| column.id)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Labels as they are stored: trimmed, empties dropped, deduped
+/// case-insensitively keeping the first spelling, and refused past the caps.
+pub fn normalize_labels(labels: &[String]) -> Result<Vec<String>, String> {
+    let mut kept: Vec<String> = Vec::new();
+    for label in labels {
+        let label = label.trim();
+        if label.is_empty() {
+            continue;
+        }
+        if label.len() > MAX_LABEL_BYTES {
+            return Err(format!("label exceeds {MAX_LABEL_BYTES} bytes: {label}"));
+        }
+        if kept.iter().any(|seen| seen.eq_ignore_ascii_case(label)) {
+            continue;
+        }
+        kept.push(label.to_string());
+    }
+    if kept.len() > MAX_LABELS {
+        return Err(format!("an issue carries at most {MAX_LABELS} labels"));
+    }
+    Ok(kept)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_issue_id_is_time_ordered_and_cannot_be_read_as_a_plan() {
+        let first = new_issue_id();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = new_issue_id();
+        assert!(first.starts_with(ISSUE_ID_PREFIX));
+        assert!(!first.starts_with("plan-"), "{first}");
+        assert!(first < second, "{first} then {second}");
+        assert_ne!(new_comment_id()[..3].to_string(), new_event_id()[..3]);
+    }
+
+    #[test]
+    fn a_column_is_named_by_its_slug_or_by_what_it_says() {
+        assert_eq!(normalize_status("in_progress"), Some("in_progress"));
+        assert_eq!(normalize_status("In progress"), Some("in_progress"));
+        assert_eq!(normalize_status("  IN PROGRESS "), Some("in_progress"));
+        assert_eq!(normalize_status("Backlog"), Some("backlog"));
+        assert_eq!(normalize_status("icebox"), None);
+        assert_eq!(normalize_status(""), None);
+    }
+
+    #[test]
+    fn labels_keep_the_first_spelling_and_refuse_past_their_caps() {
+        let kept = normalize_labels(&[
+            "  bug ".into(),
+            "".into(),
+            "Bug".into(),
+            "ui".into(),
+            "   ".into(),
+        ])
+        .expect("ordinary labels normalize");
+        assert_eq!(kept, vec!["bug".to_string(), "ui".to_string()]);
+
+        let too_long = vec!["x".repeat(MAX_LABEL_BYTES + 1)];
+        assert!(normalize_labels(&too_long).is_err());
+
+        let too_many: Vec<String> = (0..MAX_LABELS + 1).map(|n| format!("label-{n}")).collect();
+        assert!(normalize_labels(&too_many).is_err());
+    }
+
+    #[test]
+    fn a_link_list_takes_each_entry_once_and_stops_at_its_cap() {
+        let mut list = Vec::new();
+        assert!(IssueLinks::add(&mut list, "ws-1"));
+        assert!(!IssueLinks::add(&mut list, "ws-1"), "added twice");
+        for n in 0..MAX_LINKS_PER_KIND {
+            IssueLinks::add(&mut list, &format!("ws-fill-{n}"));
+        }
+        assert_eq!(list.len(), MAX_LINKS_PER_KIND);
+        assert!(!IssueLinks::add(&mut list, "ws-over"), "past the cap");
+    }
+
+    /// An actor and an assignee are two shapes on purpose: only a destination
+    /// can be a project's agent, because the project may have no agent yet.
+    #[test]
+    fn an_assignee_may_be_the_projects_agent_and_an_actor_may_not() {
+        let assigned = serde_json::to_value(Assignee::ProjectAgent).unwrap();
+        assert_eq!(assigned, serde_json::json!({ "kind": "project_agent" }));
+        let actor: Result<Actor, _> =
+            serde_json::from_value(serde_json::json!({ "kind": "project_agent" }));
+        assert!(actor.is_err(), "{actor:?}");
+        assert_eq!(
+            serde_json::to_value(Actor::Agent {
+                agent_id: "agent-1".into()
+            })
+            .unwrap(),
+            serde_json::json!({ "kind": "agent", "agent_id": "agent-1" })
+        );
+    }
+
+    /// A timeline entry says which of the two it is on the wire, so a client
+    /// reading one list never has to guess by looking for a field.
+    #[test]
+    fn a_timeline_entry_names_its_own_kind() {
+        let event = TimelineEntry::Event(IssueEvent::new(
+            "issue-1",
+            Actor::User,
+            IssueEventKind::Created,
+            Value::Null,
+            "2026-09-19T10:00:00Z",
+        ));
+        let wire = serde_json::to_value(&event).unwrap();
+        assert_eq!(wire["type"], "event");
+        assert_eq!(wire["kind"], "created");
+        assert_eq!(event.ordering_key().0, "2026-09-19T10:00:00Z");
+    }
+}

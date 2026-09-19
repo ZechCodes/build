@@ -146,6 +146,63 @@ CREATE TABLE IF NOT EXISTS operations (
 );
 CREATE INDEX IF NOT EXISTS operations_by_status ON operations(status, created_at);
 
+-- The per-project issue tracker (spec: Issues). NOT the `issues` table above:
+-- that one is the retired plan-and-stages flow, which shares the English word
+-- and nothing else, so these are namespaced apart and neither reads the other.
+--
+-- A record is a record: an issue, a comment and an event are each small,
+-- bounded and read and written whole, so each keeps its serde shape in
+-- `record`. Only what is QUERIED is hoisted into a column — the project key
+-- and number (the list read and the number mint), the state and status (the
+-- two filters answered in SQL), and the timestamps (the ordering). An
+-- assignee and a label filter are read out of the record: hoisting a label
+-- list would mean a join table, which phase 1 does not need.
+--
+-- `project_key` is the project's canonical repository PATH, not its `proj-N`
+-- id: an id is minted per boot from the config that restored it, so an
+-- id-keyed row would strand its issues when the same repository comes back
+-- wearing another one. `PersistedPlan` and `PersistedRun` carry a path for
+-- exactly this reason.
+CREATE TABLE IF NOT EXISTS tracker_issues (
+    id          TEXT PRIMARY KEY,
+    project_key TEXT NOT NULL,
+    number      INTEGER NOT NULL,
+    state       TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    record      TEXT NOT NULL
+);
+-- The number mint's backstop. Numbers are per project and never reused, so a
+-- second writer that read the same maximum fails here rather than handing two
+-- issues one number.
+CREATE UNIQUE INDEX IF NOT EXISTS tracker_issues_number
+    ON tracker_issues(project_key, number);
+-- The list read: one project's issues, newest first, as a seek down the index
+-- rather than a scan and a sort.
+CREATE INDEX IF NOT EXISTS tracker_issues_by_project
+    ON tracker_issues(project_key, number DESC);
+
+CREATE TABLE IF NOT EXISTS tracker_comments (
+    id         TEXT PRIMARY KEY,
+    issue_id   TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    record     TEXT NOT NULL
+);
+-- Half of a timeline read, ordered as the timeline is: when it happened, then
+-- the id, which is time-ordered itself.
+CREATE INDEX IF NOT EXISTS tracker_comments_by_issue
+    ON tracker_comments(issue_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS tracker_events (
+    id       TEXT PRIMARY KEY,
+    issue_id TEXT NOT NULL,
+    at       TEXT NOT NULL,
+    record   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tracker_events_by_issue
+    ON tracker_events(issue_id, at, id);
+
 -- One bounded copy of each pre-v6 agent skeleton. The migration materializes
 -- formerly inherited settings and implicit conversation aliases; retaining the
 -- source makes that one-way interpretation auditable without copying any

@@ -91,6 +91,7 @@ pub(crate) mod terminal_environment;
 mod test_support;
 pub mod thread;
 pub mod timing;
+pub mod tracker;
 pub mod transport;
 pub mod transport_ledger;
 pub mod transport_report;

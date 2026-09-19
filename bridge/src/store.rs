@@ -61,6 +61,7 @@ mod legacy;
 mod migrations;
 mod operations;
 mod schema;
+mod tracker;
 
 #[cfg(test)]
 pub use conversations::items_decoded;
@@ -83,6 +84,7 @@ use schema::{
     THREAD_LAST_MESSAGE_SQL, THREAD_LAST_OWN_MESSAGE_SQL, THREAD_LAST_SEQUENCE_SQL,
     THREAD_MESSAGE_PAGE_SQL, THREAD_PAGE_SQL, THREAD_TOOL_CALL_COUNT_SQL,
 };
+pub use tracker::IssueFilter;
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
@@ -155,7 +157,11 @@ pub enum StoreError {
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
-pub const SCHEMA_VERSION: i64 = 7;
+///
+/// 8 added the tracker's three tables. They are `CREATE TABLE IF NOT EXISTS`
+/// with nothing to backfill, so a v7 store gains them on its next open and
+/// reads exactly as it did.
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -244,7 +250,16 @@ impl Store {
         }
         conn.execute_batch(SCHEMA)?;
         ensure_operation_receipt_columns(&conn)?;
-        if stored.is_some_and(|found| found < SCHEMA_VERSION) {
+        // Against the newest HOISTED column's version rather than against the
+        // schema's: a bump that adds a table has nothing for the classifier to
+        // do, and running it anyway would rewrite every conversation row on
+        // this device once for no change at all.
+        let newest_hoisted = HOISTED_ITEM_COLUMNS
+            .iter()
+            .map(|(arrived_in, _)| *arrived_in)
+            .max()
+            .unwrap_or(SCHEMA_VERSION);
+        if stored.is_some_and(|found| found < newest_hoisted) {
             Store::classify_stored_items(&conn)?;
         }
         if stored.unwrap_or(0) < 6 {

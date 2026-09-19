@@ -565,10 +565,18 @@ pub fn new_agent_id() -> String {
 /// A fresh project-agent id: the same time-ordered body under the prefix that
 /// names the project surface.
 pub fn new_project_agent_id() -> String {
-    format!(
-        "{PROJECT_AGENT_ID_PREFIX}{}",
-        ulid_body(now_ms(), uuid::Uuid::new_v4().as_u128())
-    )
+    format!("{PROJECT_AGENT_ID_PREFIX}{}", new_ulid_body())
+}
+
+/// A fresh time-ordered id body, prefix-free: 48 bits of milliseconds then 80
+/// bits of randomness, Crockford base32.
+///
+/// Exposed because the ULID rule is the house rule for every minted id, and a
+/// record that is not an agent — a tracker issue, its comments, its events —
+/// wants the same sortable body under its own prefix rather than a second
+/// spelling of the same idea.
+pub fn new_ulid_body() -> String {
+    ulid_body(now_ms(), uuid::Uuid::new_v4().as_u128())
 }
 
 fn now_ms() -> u128 {

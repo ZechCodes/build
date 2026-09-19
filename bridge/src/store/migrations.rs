@@ -111,6 +111,23 @@ impl Store {
             )
             .expect("the v6 shape is staged");
     }
+    /// Test-only: the v7 shape — everything but the tracker's three tables.
+    #[cfg(test)]
+    pub fn pretend_to_be_v7(&self) {
+        self.connection()
+            .execute_batch(
+                "DROP INDEX IF EXISTS tracker_issues_number;
+                 DROP INDEX IF EXISTS tracker_issues_by_project;
+                 DROP INDEX IF EXISTS tracker_comments_by_issue;
+                 DROP INDEX IF EXISTS tracker_events_by_issue;
+                 DROP TABLE IF EXISTS tracker_comments;
+                 DROP TABLE IF EXISTS tracker_events;
+                 DROP TABLE IF EXISTS tracker_issues;
+                 UPDATE meta SET value = '7' WHERE key = 'schema_version';",
+            )
+            .expect("the v7 shape is staged");
+    }
+
     /// Test-only: the v5 shape, before durable operation receipts.
     #[cfg(test)]
     pub fn pretend_to_be_v5(&self) {

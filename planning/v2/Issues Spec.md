@@ -183,11 +183,27 @@ Notes on each:
 
 - **`issues.list`** answers newest first (`number` descending). Every filter is
   optional and they are ANDed. `state` absent means both; `assignee` takes the
-  actor shape, plus the two words `"none"` (unassigned) and `"any"`.
+  actor shape, plus the two words `"none"` (unassigned) and `"any"`. `state` and
+  `status` are answered in SQL off the hoisted columns; `assignee` and `label`
+  live inside the record and are applied to what that read answers. All four are
+  params of the verb either way — a client sends them rather than filtering what
+  it was given.
 - **`issues.get`** answers the issue and its whole timeline. Comments and events
   interleave into one ascending list ordered by `(created_at|at, id)` — ids are
-  time-ordered, so equal timestamps still have one stable order. Each entry is
-  `{"type": "comment", …}` or `{"type": "event", …}`.
+  time-ordered, so equal timestamps still have one stable order. An entry is the
+  record itself with one more key naming which it is — the **spread** form, not a
+  nested one:
+
+  ```json
+  {"type":"comment","id":"ic-…","issue_id":"issue-…","author":{"kind":"agent","agent_id":"agent-1"},
+   "body":"starting on this","refs":[],"created_at":"2026-08-21T10:01:00Z"}
+  {"type":"event","id":"ie-…","issue_id":"issue-…","at":"2026-08-21T10:01:00Z",
+   "actor":{"kind":"user"},"kind":"moved","payload":{"from":"backlog","to":"in_progress"}}
+  ```
+
+  A comment stamps `created_at` and an event stamps `at`: one was written, the
+  other happened. An event's `kind` is the event kind and has nothing to do with
+  the `kind` discriminator inside an actor or an assignee.
 - **`issues.create`** mints the number inside the same transaction as the insert,
   writes a `created` event, and — when it was given an `assignee` — runs the
   whole of `issues.assign` before answering. So `dispatch` on the result is the
@@ -218,12 +234,27 @@ second `dispatch` object for the two to disagree in. The five kinds:
 | `{"kind":"user"}` | Nothing is dispatched. | `{"kind":"user"}` |
 | `{"kind":"project_agent"}` | `project.ensure_conversation` on the issue's project, an agent on it if it has none, then deliver. | `{"kind":"project_agent"}` |
 | `{"kind":"agent","agent_id":…}` | Deliver into that agent's conversation. The agent must be on this issue's project. | `{"kind":"agent","agent_id":…}` |
-| `{"kind":"new_workspace","name"?,"isolation"?,"harness"?,"model"?,"effort"?}` | `workspace.create` in the issue's project, `agent.add` on the workspace's conversation owner, deliver. | `{"kind":"agent","agent_id":…}` — the agent that was made |
-| `{"kind":"new_agent","workspace_id","harness"?,"model"?,"effort"?}` | `agent.add` on that workspace's conversation owner, deliver. | `{"kind":"agent","agent_id":…}` |
+| `{"kind":"new_workspace","name"?,"isolation"?,"provider"?,"model"?,"effort"?}` | `workspace.create` in the issue's project, `agent.add` on the workspace's conversation owner, deliver. | `{"kind":"agent","agent_id":…}` — the agent that was made |
+| `{"kind":"new_agent","workspace_id","provider"?,"model"?,"effort"?}` | `agent.add` on that workspace's conversation owner, deliver. | `{"kind":"agent","agent_id":…}` |
 
 `new_workspace` defaults its `name` to the issue's title and its `isolation` to
 the project's own setting — it passes no `isolation` at all when none was asked
 for, which is how `workspace.create` reads "the project's".
+
+**The agent's choice is spelled `provider` on the wire and `harness` in a
+tool**, which is the rule this codebase already follows rather than a new one:
+`agent.add` takes `provider`, and the project surface's `add_workspace_agent`
+takes `harness` and maps it (`AgentChoiceArgs`, `app/projects/agent_writes.rs`,
+which says so in as many words — the model is told what it is choosing between,
+the daemon is told which field it is). So `issues.assign` takes `provider` and
+the SPA passes its `agentChoiceParams` straight through, while `assign_issue`
+takes `harness` and the bridge maps it before `agent.add`. Neither surface
+accepts the other's spelling: one word per surface, decided here, is what keeps
+the two from drifting into both.
+
+Absent is absent, not null. A choice key that was not asked for is left OUT of
+the params `agent.add` is called with, because that verb reads the PRESENCE of a
+key to tell "run it on this" from "run it on whatever the workspace runs on".
 
 An optional `note` on `issues.assign` is extra instruction text delivered under
 the issue. It is not stored on the issue: the issue's body is the issue, and a
@@ -345,7 +376,10 @@ calling, so:
 
 `assign_issue` takes the same five assignee kinds the verb does, so an agent can
 hand work to a named agent, to the project's agent, back to the user, or to a
-workspace and agent it asks Build to create.
+workspace and agent it asks Build to create. On the two creating kinds it spells
+the agent's choice `harness`, the way every other tool on these surfaces does,
+where the wire verb spells it `provider` — see
+[Assignment is dispatch](#assignment-is-dispatch).
 
 `move_issue {issue_id, status}` is `issues.update` narrowed to one field,
 because moving a card is what an agent does and offering it the whole update
@@ -394,6 +428,17 @@ means "refetch the list", exactly as a `files` item's truncation does.
 
 `issues` is not a worktree kind: it is not paced by the settle window, it needs
 no filesystem watcher, and it never makes a subscription answer `polled`.
+
+A subscription scoped `{"kind":"all"}` that names `issues` receives every
+project's items, each with `entity_id` set to that project's `proj-N` id — `all`
+covers whatever is noted, and nothing about the project-scoped spelling above is
+a restriction. Under `all` an `issues` item is therefore the one item whose
+`entity_id` is a project rather than a work entity.
+
+An `issues` note fires the **subscription path only**. It emits no legacy
+`entity.changed` and does not bump the board revision: a client in legacy mode
+has no issues surface to refetch, and bumping the board on every comment would
+repaint the feed for something the feed does not show.
 
 Every mutation — create, update, assign, comment, link, move, close, reopen, and
 each automatic activity below — notes its project once, after the write lands.
@@ -473,7 +518,9 @@ The design rules the rest of the store follows, applied here:
   bounded, and read and written whole, so each keeps its serde shape in a
   `record` column. Only what is queried is hoisted into a column of its own:
   the project key and number (the list read and the number mint), the state and
-  status (the filters), and the timestamps (the ordering).
+  status (the two filters answered in SQL), and the timestamps (the ordering).
+  An assignee and a label are read out of the record: hoisting a label list
+  would mean a join table, which phase 1 does not need.
 - **Scoped by project path, answered by project id.** `project_key` is the
   project's canonical repository path, not its `proj-N` id — the same choice
   `PersistedPlan` and `PersistedRun` make and for the same reason: a `proj-N` id
@@ -489,13 +536,23 @@ The design rules the rest of the store follows, applied here:
 
 ### A different backing store later
 
-The store surface is eight methods, all of them whole-record:
-`create_tracker_issue`, `save_tracker_issue`, `load_tracker_issue`,
-`list_tracker_issues`, `append_tracker_comment`, `append_tracker_event`,
-`load_tracker_timeline`, `delete_tracker_issues_of_project`. None of them takes
-SQL, a connection, or a row. Replacing SQLite with something else — a service,
-a file per issue, a git-backed store — is implementing those eight against
-something else; nothing above this line knows what is underneath it.
+The store surface is six methods, all of them whole-record:
+
+| Method | What it is for |
+| --- | --- |
+| `create_tracker_issue(draft, events)` | Mints the number inside the insert's own transaction and answers the issue as stored. |
+| `save_tracker_issue_activity(issue, comments, events)` | The record moved and the timeline says why, in one transaction. Empty slices are a plain save. |
+| `load_tracker_issue(issue_id)` | One issue, or `None`. |
+| `list_tracker_issues(project_path, filter)` | One project's, newest first, narrowed by state and status. |
+| `load_tracker_timeline(issue_id)` | Comments and events merged into one ascending list. |
+| `delete_tracker_issues_of_project(project_path)` | Only reached by project deletion. |
+
+None of them takes SQL, a connection, or a row. Replacing SQLite with something
+else — a service, a file per issue, a git-backed store — is implementing those
+six against something else; nothing above this line knows what is underneath it.
+
+An append is idempotent by id (`INSERT OR IGNORE`), so a retry of a write whose
+answer was lost adds nothing a second time.
 
 ## Scope rules, in one place
 

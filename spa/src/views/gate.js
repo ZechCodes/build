@@ -33,6 +33,12 @@ import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 
+/** Whether the cache's two readers are up. They are started once, before any
+ *  session answers, and stood down when a gate screen takes the page (which is
+ *  what stops the feed). Without this the three-second watch below would stop
+ *  and restart both of them on every tick it spends waiting for a machine. */
+let cacheReadersUp = false;
+
 // The gate screens are self-contained — body.gated hides the inbox rail (and
 // its reopen toggle), the toolbar, the agent rail and the console via CSS while
 // they own #root.
@@ -48,12 +54,6 @@ function setGate(on) {
     stopWatchingPresence();
   }
 }
-
-/** Whether the cache's two readers are up. They are started once, before any
- *  session answers, and stood down when a gate screen takes the page (which is
- *  what stops the feed). Without this the three-second watch below would stop
- *  and restart both of them on every tick it spends waiting for a machine. */
-let cacheReadersUp = false;
 
 /** Start reading the cache: the sync layer, and the feed's seed. Neither says
  *  anything on the wire until a context is live. Answers when the feed has

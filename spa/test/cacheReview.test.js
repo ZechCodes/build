@@ -86,25 +86,70 @@ describe("the saved aggregate diff", () => {
   it("draws the pass the record names", async () => {
     const triage = { based_on: "old-revision", hunks: [] };
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "diff" };
-    await writeCached(address, { patch: PATCH, triageEnabled: true, triage });
-    plug = plugOn("dev-1", { fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1" });
+    await writeCached(address, { patch: PATCH, commentable: true, triageEnabled: true, triage });
+    const fetchDiff = vi.fn(() => new Promise(() => {}));
+    plug = plugOn("dev-1", { fetchDiff, entity: "run-1" });
     plug.mount(host);
     await settle();
 
     expect(host.textContent).toContain("cached line");
     expect(host.querySelector(".triagebar")).toBeTruthy();
+    expect(fetchDiff).not.toHaveBeenCalled();
     expect((await readCached(address)).value.triage).toEqual(triage);
     plug.unmount();
   });
 
   it("asks the surface for nothing while the cache holds the diff", async () => {
-    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
+    // What a live paint leaves behind: the body, and the two things about the
+    // changeset that ride no push — whether comments are open on it, and
+    // whether it is triaged. A record saying all three is the whole answer.
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "diff" },
+      { patch: PATCH, commentable: true, triageEnabled: false, triage: null },
+    );
     const fetchDiff = vi.fn(async () => ({ patch: PATCH.replace("cached line", "live line") }));
     plug = plugOn("dev-1", { fetchDiff, entity: "run-1" });
     plug.mount(host);
     await settle();
     expect(host.textContent).toContain("cached line");
     expect(fetchDiff).not.toHaveBeenCalled();
+    plug.unmount();
+  });
+
+  // A record the sync layer wrote is a BODY and nothing else: `commentable`
+  // and the triage pass are read off the entity, and no push carries either.
+  // Such a record is what a cold boot leaves on disk, so a surface that read
+  // it as the whole answer would never draw the pass and never learn the
+  // changeset was closed to comments.
+  it("reads the surface once for a record that carries the body alone", async () => {
+    const triage = { based_on: "old-revision", hunks: [] };
+    // Byte for byte what core/cacheSync.js `diffRecord` writes on a cold pass.
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "diff" },
+      { patch: PATCH, diff_key: "k1", stale: false, projectId: "proj-1" },
+    );
+    const fetchDiff = vi.fn(async () => ({ patch: PATCH, triageEnabled: true, triage, commentable: true, projectId: "proj-1" }));
+    plug = plugOn("dev-1", { fetchDiff, entity: "run-1", submit: vi.fn() });
+    plug.mount(host);
+    await settle();
+
+    expect(fetchDiff).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".triagebar")).toBeTruthy();
+    plug.unmount();
+  });
+
+  it("offers no comment box over a body-only record the surface calls closed", async () => {
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "diff" },
+      { patch: PATCH, diff_key: "k1", stale: false, projectId: "proj-1" },
+    );
+    const fetchDiff = vi.fn(async () => ({ patch: PATCH, commentable: false, projectId: "proj-1" }));
+    plug = plugOn("dev-1", { fetchDiff, entity: "run-1", submit: vi.fn() });
+    plug.mount(host);
+    await settle();
+
+    expect(fetchDiff).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".fcmt")).toBeNull();
     plug.unmount();
   });
 

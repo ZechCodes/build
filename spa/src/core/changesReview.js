@@ -452,10 +452,23 @@ export function createReviewPlug({
    *  is left to read it. */
   const triageUnread = (record) => record.triageEnabled === true && !Object.hasOwn(record, "triage");
 
+  /** Whether the record is a body and nothing more.
+   *
+   *  Two of the things this surface draws are not fields of the diff at all:
+   *  whether comments are open on the changeset is the entity's own state,
+   *  and the triage pass is read off the run. No push carries either, so the
+   *  record the sync layer writes for a workspace nobody has opened yet — the
+   *  one a cold boot finds on disk — says neither. Read as the whole answer it
+   *  would hide the pass for good and offer a comment box on a changeset that
+   *  is closed to them, so a record that has never been through a live read is
+   *  painted and then read behind, once. A record a paint here wrote says all
+   *  three, and is asked nothing further until its body moves under it. */
+  const bodyOnly = (record) => !Object.hasOwn(record, "commentable") || triageUnread(record);
+
   /** What the plug draws on mount: the record, and one read of the wire only
    *  where there is no record to draw, where the push that wrote it said it
-   *  could not carry the body, or where nothing but this plug reads the
-   *  checkout the record came off. */
+   *  could not carry the body, where the record carries the body alone, or
+   *  where nothing but this plug reads the checkout the record came off. */
   const standUp = async () => {
     const mounted = host;
     const record = await heldDiff();
@@ -464,7 +477,7 @@ export function createReviewPlug({
       applyCachedDiff(record);
       render();
     }
-    if (!record || record.stale || readsForItself || triageUnread(record)) paint();
+    if (!record || record.stale || readsForItself || bodyOnly(record)) paint();
   };
 
   /** The record moved — a `git` push carried a new working tree, or another
@@ -484,7 +497,7 @@ export function createReviewPlug({
     applyCachedDiff(record);
     diffKey = null; // the stack is being rebuilt from a body that moved
     render();
-    if (triageUnread(record)) paint();
+    if (bodyOnly(record)) paint();
   };
 
   const watchDiffRecord = () => {

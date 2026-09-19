@@ -74,13 +74,14 @@ import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { deviceFeedView } from "./deviceContexts.js";
 import { deviceCatalog } from "./inboxDevices.js";
+import { createConversationCache, withdrawProvisionalMessage, writeProvisionalMessage } from "./conversationCache.js";
 import {
-  acknowledgeProvisionalMessage,
-  createConversationCache,
-  threadCacheAddress,
-  withdrawProvisionalMessage,
-  writeProvisionalMessage,
-} from "./conversationCache.js";
+  conversationRecordAddress,
+  postSubmission,
+  provisionalMessageEntry,
+  rekeyPostedMessage,
+  settleProvisional,
+} from "./threadSend.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { fileLinkRoute } from "./threadLinks.js";
@@ -94,7 +95,6 @@ import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
-  MUTATION_THREAD_PAGE,
   activityRunKeyAt,
   activityRunThroughAt,
   chatPaintFingerprint,
@@ -2457,77 +2457,6 @@ function mountRailOnContext(host, context, swap) {
     adoptPanelBody(renamedAgentIsSelected ? controller : null);
   };
 
-  /** The agent that does not exist yet has no record to write to: its first
-   *  message is drawn over the window until `agent.add` answers and the
-   *  conversation it is in is a real one. */
-  const provisionalMessageEntry = (messageKey, message) => ({
-    type: "message",
-    data: {
-      role: "user",
-      sequence: messageKey,
-      body: message.body || "",
-      attachments: message.attachments || [],
-      created_at: new Date().toISOString(),
-      delivery_status: "queued",
-    },
-  });
-
-  const provisionalDeliveryStatus = (submission, posted) => {
-    if (posted?.operation_status === "uncertain") return "uncertain";
-    return submission.threadPostOperations ? "queued" : "sent";
-  };
-
-  const rekeyPostedMessage = (handle, messageKey, provisional, posted, submission) => {
-    const sequence = (posted && posted.posted_sequence) ?? null;
-    if (sequence === null) handle.drop(messageKey);
-    else handle.rekey(messageKey, String(sequence), {
-      ...provisional,
-      data: { ...provisional.data, sequence, delivery_status: provisionalDeliveryStatus(submission, posted) },
-    });
-  };
-
-  /** Where a submission's conversation is held on disk, or null while there is
-   *  no conversation yet — the first message on a work item is the one that
-   *  makes it. */
-  const conversationRecordAddress = (address) => {
-    const scoped = address?.entityId ? cacheScope?.address({ entityId: address.entityId }) : null;
-    if (!scoped) return null;
-    return threadCacheAddress({ ...scoped, agentId: address.agentId, conversationId: address.conversationId });
-  };
-
-  /** The post was taken: the message the reader is looking at gets the sequence
-   *  it was written at, so the item that arrives carrying it replaces the
-   *  stand-in rather than joining it. No receipt at all means nothing was
-   *  written, and the stand-in goes. */
-  const settleProvisional = (address, submission, posted) => {
-    const sequence = (posted && posted.posted_sequence) ?? null;
-    if (sequence === null) return withdrawProvisionalMessage(address, submission.operationId);
-    return acknowledgeProvisionalMessage(
-      address,
-      submission.operationId,
-      sequence,
-      provisionalDeliveryStatus(submission, posted),
-    );
-  };
-
-  /** Put the message on the conversation, and settle the stand-in under the
-   *  sequence the daemon gave it.
-   *
-   *  A post the browser stopped waiting for is not a refusal: the turn is
-   *  durable on the daemon's side, and reverting it here would hand the draft
-   *  back and have the human send the same turn twice. The stand-in holds
-   *  instead, and the push that carries the real message replaces it. */
-  const postMessage = async (controller, submission, settle) => {
-    let posted;
-    try {
-      posted = await replyOrNothing(controller.post(submission, MUTATION_THREAD_PAGE));
-    } catch (error) {
-      if (!error.uncertain) throw error;
-      posted = null;
-    }
-    if (posted) settle(posted);
-  };
-
   /** Put an agent on this entity's message, and say which agent got it.
    *
    *  The daemon answers a start before the harness exists and need not name the
@@ -2596,7 +2525,7 @@ function mountRailOnContext(host, context, swap) {
       renameAgentIdentity(provisionalAgentId, createdAgent.id, controller);
       handle.rekey(provisionalAgentId, createdAgent.id, { ...provisionalAgent, ...createdAgent, id: createdAgent.id });
       const addressedSubmission = controller.addressSubmission(submission, creationCall);
-      await postMessage(controller, addressedSubmission, (posted) =>
+      await postSubmission(controller, addressedSubmission, (posted) =>
         rekeyPostedMessage(handle, provisionalMessageKey, provisionalMessage, posted, addressedSubmission));
       messageDelivered = true;
       await wakeAgent(addressedSubmission);
@@ -2658,7 +2587,7 @@ function mountRailOnContext(host, context, swap) {
    *  where it is kept rather than in a second store beside the panel. What the
    *  post answers stamps the sequence onto it; a refusal takes it back out. */
   const deliverSubmission = (controller, submission) => {
-    const address = conversationRecordAddress(submission.address);
+    const address = conversationRecordAddress(cacheScope, submission.address);
     const agent = agentOf(submission.address.agentId);
     const wakesAgent = (entity.kind === "branch" || entity.kind === "workspace") && !agentIsUp(agent);
 
@@ -2666,7 +2595,7 @@ function mountRailOnContext(host, context, swap) {
     if (address) void writeProvisionalMessage(address, submission.operationId, submission.message);
 
     const call = async () => {
-      await postMessage(controller, submission, (posted) => {
+      await postSubmission(controller, submission, (posted) => {
         if (address) void settleProvisional(address, submission, posted);
       });
       messageDelivered = true;

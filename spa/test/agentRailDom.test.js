@@ -3728,6 +3728,37 @@ describe("sending to an agent that is already there", () => {
     expect(notifyError).not.toHaveBeenCalled();
   });
 
+  // ...and the conversation carrying it is what takes the stand-in away. The
+  // item names the operation that made it (bridge `ThreadMessage.operation_id`,
+  // on the page and on the push alike), which is the only thing that can say
+  // so: the browser never heard a sequence to wait under.
+  it("takes the stand-in away when the conversation carries a timed-out post's message", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      const timedOut = new Error("thread.post timed out");
+      timedOut.timedOut = true;
+      timedOut.uncertain = true;
+      throw timedOut;
+    });
+
+    await press("look at the login flow");
+    expect(copiesOf("look at the login flow")).toBe(1);
+
+    const operationId = callsTo("thread.post")[0].params.operation_id;
+    expect(operationId).toBeTruthy();
+    await pushRailThreadItems("run-3", "ag-1", [{
+      type: "message",
+      data: { sequence: 7, role: "user", body: "look at the login flow", operation_id: operationId },
+    }]);
+    await flush();
+
+    expect(copiesOf("look at the login flow")).toBe(1);
+  });
+
   it("puts the words back in the box and says why when thread.post is refused", async () => {
     payload = branchRow({ agents: [agent({ state: "live" })] });
     await mount();

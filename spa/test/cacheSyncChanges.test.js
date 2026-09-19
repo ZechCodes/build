@@ -482,6 +482,32 @@ describe("applying one item", () => {
     expect(record.value.items.map((one) => one.id)).toEqual(["m-1", "m-2"]);
   });
 
+  // The first word on a conversation makes the record: there was nothing on
+  // disk to merge into, so the record IS the stand-in until the wire says
+  // otherwise. The item that arrives names the operation that made it, which
+  // is the only thing that can say so — the send never heard a sequence.
+  it("takes a stand-in out of a record the send itself created", async () => {
+    const conversations = await import("../src/core/conversationCache.js");
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" };
+    await conversations.writeProvisionalMessage(address, "op-1", { body: "ship it" });
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    bridge.call.mockClear();
+
+    await deliver([{
+      entity_id: "run-1",
+      thread: [{
+        agent_id: "ag-1",
+        last_sequence: 1,
+        since_sequence: 0,
+        items: [{ data: { sequence: 1, role: "user", body: "ship it", operation_id: "op-1" } }],
+      }],
+    }]);
+
+    const record = await read("run-1", "thread", "ag-1");
+    expect(record.value.items.map((one) => one.data.sequence)).toEqual([1]);
+    expect(record.value.items.map((one) => one.data.provisional)).toEqual([undefined]);
+  });
+
   it("reads one cursored page for a tip that outran the push cap", async () => {
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },

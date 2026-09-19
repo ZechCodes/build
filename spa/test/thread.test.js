@@ -471,6 +471,11 @@ describe("provisional items in the thread record", () => {
     expect(merged.map(threadItemKey)).toEqual(["1", "3", "provisional:op-1"]);
   });
 
+  // The first rule, and the one the conversation normally arrives under: a
+  // message posted under an operation wears it on the item itself, on a page
+  // and on a push alike (bridge `ThreadMessage.operation_id` — see
+  // `a_message_posted_under_an_operation_carries_it_on_the_item`). Nothing
+  // else can say the item is this tab's own message coming back.
   it("replaces a provisional item with the real item carrying its operation", () => {
     const held = [item(1, "a"), sent("op-1", "ship it")];
     const arrived = { type: "message", data: { sequence: 4, role: "user", body: "ship it", operation_id: "op-1" } };
@@ -481,10 +486,10 @@ describe("provisional items in the thread record", () => {
     expect(merged[1].data.body).toBe("ship it");
   });
 
-  // Nothing on the wire carries an operation id on the item itself. What the
-  // post answers with is the sequence it was written at, so a provisional item
-  // that has been acknowledged knows which arrival is its own — and the
-  // arrival takes its place in sequence order rather than at the end.
+  // The second rule, for a daemon that took the post without binding it to an
+  // operation: the item then says nothing about where it came from, and the
+  // sequence the post was acknowledged at is all there is to match on — with
+  // the arrival taking its place in sequence order rather than at the end.
   it("replaces an acknowledged provisional item with the item at its sequence", () => {
     const held = [item(1, "a"), item(5, "e"), sent("op-1", "ship it", 6)];
     const merged = mergeThreadItems(held, [item(6, "ship it"), item(7, "reply")]);

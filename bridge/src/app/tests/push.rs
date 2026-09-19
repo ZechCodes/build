@@ -1079,6 +1079,75 @@ async fn a_thread_item_carries_what_was_said_since_the_last_flush() {
     );
 }
 
+/// A message the client sent under an operation says so on the item itself,
+/// on the push and on the page alike.
+///
+/// This is what lets a client draw a message the moment it presses send and
+/// have the conversation take that stand-in away when it arrives: the item is
+/// the reader's own words coming back, and the operation is the only thing
+/// that says so — the sequence belongs to the bridge and the client had none
+/// to wait under.
+#[tokio::test]
+async fn a_message_posted_under_an_operation_carries_it_on_the_item() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let run_id = {
+        let mut app = state.lock().unwrap();
+        planned_run_in_review(&mut app, "the operation rides the item").1
+    };
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-operation",
+                "scope": { "kind": "entity", "id": run_id },
+                "kinds": ["thread"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+    // The first flush is the tip alone; the cursor it leaves is what the next
+    // one carries items against.
+    state.lock().unwrap().note_entity_changed(&run_id);
+    settled_pushes(&mut rx, &key).await;
+
+    let posted = call(
+        &handler,
+        "thread.post",
+        json!({
+            "entity_id": run_id,
+            "operation_id": "op-1",
+            "body": "ship it"
+        }),
+    );
+    assert_eq!(posted["ok"], true, "{posted:?}");
+
+    let pushed = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    let sent = pushed["items"]
+        .as_array()
+        .expect("the item carries items")
+        .iter()
+        .find(|item| item["data"]["body"] == json!("ship it"))
+        .unwrap_or_else(|| panic!("no message on the push: {pushed:?}"));
+    assert_eq!(sent["data"]["operation_id"], json!("op-1"), "{sent:?}");
+
+    let page = call(
+        &handler,
+        "thread.page",
+        json!({ "entity_id": run_id, "limit": 20 }),
+    );
+    assert_eq!(page["ok"], true, "{page:?}");
+    let paged = page["result"]["items"]
+        .as_array()
+        .expect("a page carries items")
+        .iter()
+        .find(|item| item["data"]["body"] == json!("ship it"))
+        .unwrap_or_else(|| panic!("no message on the page: {page:?}"));
+    assert_eq!(paged["data"]["operation_id"], json!("op-1"), "{paged:?}");
+}
+
 /// The first `thread` tip one entity's items carry, out of a push history.
 fn thread_tip(pushes: &[Value], entity_id: &str) -> Value {
     pushes

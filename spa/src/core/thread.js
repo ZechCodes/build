@@ -130,8 +130,8 @@ const PROVISIONAL_KEY_PREFIX = "provisional:";
 export const provisionalItemKey = (operationId) => `${PROVISIONAL_KEY_PREFIX}${operationId}`;
 
 /** Whether an item is this tab's own stand-in rather than the conversation's.
- *  An item off the wire may one day carry the operation that made it; what
- *  makes this one provisional is that nothing has confirmed it yet. */
+ *  An item off the wire names the operation that made it too; what makes this
+ *  one provisional is that nothing has confirmed it yet. */
 const isProvisionalItem = (item) => item?.data?.provisional === true && !!item?.data?.operation_id;
 
 /** The key an item is held under: its sequence, or the operation standing in
@@ -164,9 +164,17 @@ const orderingSequence = (item) => {
   return Number.isFinite(sequence) ? sequence : Number.MAX_SAFE_INTEGER;
 };
 
-/** Whether an arriving item is the real one behind a stand-in: the operation
- *  it names where the wire names one, else the sequence the post was
- *  acknowledged at. */
+/** Whether an arriving item is the real one behind a stand-in.
+ *
+ *  The operation it names, first and normally: a message posted under one
+ *  wears it on the item, on a page and on a push alike (bridge
+ *  `ThreadMessage.operation_id`), which is the only thing that can say "these
+ *  are your own words coming back" — the sequence belongs to the bridge and
+ *  the browser had none to wait under.
+ *
+ *  The sequence the post was acknowledged at, second: a daemon that took the
+ *  post without binding it to an operation says nothing on the item, and the
+ *  receipt is then all there is to match on. */
 const standsInFor = (provisional, arrived) => {
   const operationId = arrived?.data?.operation_id;
   if (operationId && operationId === provisional.data.operation_id) return true;

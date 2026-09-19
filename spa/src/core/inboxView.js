@@ -34,7 +34,7 @@ import {
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
-import { isPending, projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
+import { projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
 import { patchFeedRow, removeFeedRow } from "./cachedRows.js";
 import { notifyError } from "./notify.js";
 import { patchElement } from "./domPatch.js";

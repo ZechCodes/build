@@ -291,7 +291,12 @@ pub enum Mode {
     /// subscription goes at once.
     #[default]
     Realtime,
-    /// Once per interval, clamped to [`MIN_BATCH_MS`]..=[`MAX_BATCH_MS`].
+    /// A cooldown, not an interval clock: what moves is pushed at once, and
+    /// that push holds the next one back for the interval. Anything noted
+    /// inside the cooldown rides the push that ends it, so a subscription
+    /// quiet for an hour hears the next change on the bus's own window
+    /// rather than an interval later. Clamped to
+    /// [`MIN_BATCH_MS`]..=[`MAX_BATCH_MS`].
     Batch(Duration),
     /// Kept, delivers nothing. Still accumulates, so the upsert that turns it
     /// back on has no gap in what it will report.
@@ -614,6 +619,12 @@ struct Subscription {
     collapsed: bool,
     created: Instant,
     last_flush: Option<Instant>,
+    /// When `pending` last went from empty to holding something — the
+    /// leading edge of a batch window, and `None` while it holds nothing.
+    /// A batch subscription that has been quiet longer than its interval is
+    /// pushed from here, so the first change after the quiet costs the
+    /// coalesce window rather than another whole interval.
+    first_pending_at: Option<Instant>,
     /// When each entity's worktree kinds last went out on THIS subscription —
     /// the settle floor, pruned on every flush so it never grows with the
     /// entities a bridge has seen.
@@ -648,6 +659,7 @@ impl Subscription {
             collapsed: false,
             created: now,
             last_flush: None,
+            first_pending_at: None,
             emitted_at: HashMap::new(),
             emitted_tips: HashMap::new(),
             pending_lists: BoardLists::default(),
@@ -662,9 +674,12 @@ impl Subscription {
     /// Insert into this subscription's own pending map. Coalescing is per
     /// subscription: a thousand notes of one entity are one item, and an
     /// hour spent `off` holds one item per entity, not an hour of history.
-    fn note(&mut self, entity_id: &str, kind: Kind, paths: &[String]) {
+    fn note(&mut self, entity_id: &str, kind: Kind, paths: &[String], now: Instant) {
         if self.collapsed {
             return;
+        }
+        if self.pending.is_empty() {
+            self.first_pending_at = Some(now);
         }
         if self.pending.len() >= PENDING_KEY_CAP && !self.pending.contains_key(entity_id) {
             self.collapse();
@@ -688,18 +703,39 @@ impl Subscription {
 
     /// The earliest instant this subscription may send what it holds; `None`
     /// when it holds nothing or is `off`.
+    ///
+    /// A batch subscription is a cooldown, not an interval clock: what it
+    /// holds goes out as soon as it arrives unless the last push is still
+    /// inside the window, in which case it goes out when that window ends —
+    /// never an interval after the note itself.
     fn due_at(&self, window: Duration, now: Instant) -> Option<Instant> {
         if self.pending.is_empty() {
             return None;
         }
         match self.spec.mode {
             Mode::Off => None,
-            Mode::Batch(every) => Some(self.last_flush.unwrap_or(self.created) + every),
+            Mode::Batch(every) => Some(self.cooldown_ends(every).max(self.leading_edge(now))),
             Mode::Realtime => {
                 let cadence = self.last_flush.map_or(now, |at| at + window);
                 Some(cadence.max(self.earliest_release(now)))
             }
         }
+    }
+
+    /// When the cooldown this subscription's last push started ends. A
+    /// subscription that has pushed nothing yet is in no cooldown, so its
+    /// first item is bounded by the leading edge alone.
+    fn cooldown_ends(&self, every: Duration) -> Instant {
+        match self.last_flush {
+            Some(at) => at + every,
+            None => self.created,
+        }
+    }
+
+    /// When what this subscription holds first arrived — `now` for a map
+    /// that somehow holds something nothing noted, which is due at once.
+    fn leading_edge(&self, now: Instant) -> Instant {
+        self.first_pending_at.unwrap_or(now)
     }
 
     /// When the settle floor stops holding every pending item back.
@@ -860,6 +896,7 @@ impl Subscription {
             .retain(|_, at| now.duration_since(*at) < ENTITY_SETTLE_WINDOW);
         if self.pending.is_empty() {
             self.collapsed = false;
+            self.first_pending_at = None;
         }
     }
 }
@@ -1443,13 +1480,14 @@ impl ChangeBus {
 
     /// Resolve one note to every subscription that asked for it.
     fn note_subscriptions(&self, entity_id: &str, kind: Kind, paths: &[String]) {
+        let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         let mut noted = false;
         for sub in subscriptions
             .iter_mut()
             .filter(|s| s.wants(entity_id, kind))
         {
-            sub.note(entity_id, kind, paths);
+            sub.note(entity_id, kind, paths, now);
             noted = true;
         }
         drop(subscriptions);
@@ -2175,8 +2213,10 @@ mod subscriptions {
         );
     }
 
-    /// The batch half: the same burst, on a subscription that asked for
-    /// thirty seconds, is one item thirty seconds later — and nothing before.
+    /// The batch half: the same burst is one item on a subscription that
+    /// asked for thirty seconds — pushed at once, because nothing has been
+    /// pushed to it yet — and the storm that follows inside the cooldown it
+    /// started is one more item at the cooldown's end.
     #[tokio::test(start_paused = true)]
     async fn a_batch_subscription_hears_the_same_burst_once_an_interval() {
         let (bus, sender, mut rx, key) = bench();
@@ -2194,19 +2234,108 @@ mod subscriptions {
             bus.note_kind("run-7", Kind::Git);
         }
         settle(Duration::from_millis(400)).await;
-        assert!(
-            frames(drained(&mut rx, &key)).is_empty(),
-            "the interval has not passed"
-        );
-
-        settle(Duration::from_secs(30)).await;
         assert_eq!(
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
                 "subscription_id": "s-bg",
                 "items": [{ "entity_id": "run-7", "git": {} }],
-            })]
+            })],
+            "a hundred notes, one item, on the leading edge"
+        );
+
+        for _ in 0..100 {
+            bus.note_kind("run-7", Kind::Git);
+            settle(Duration::from_millis(100)).await;
+        }
+        assert!(
+            frames(drained(&mut rx, &key)).is_empty(),
+            "ten seconds of notes, all inside the cooldown"
+        );
+
+        settle(Duration::from_secs(21)).await;
+        assert_eq!(
+            frames(drained(&mut rx, &key)),
+            vec![json!({
+                "type": "changes",
+                "subscription_id": "s-bg",
+                "items": [{ "entity_id": "run-7", "git": {} }],
+            })],
+            "a hundred more, one item, at the cooldown's end"
+        );
+    }
+
+    /// The cooldown's leading edge: a batch subscription that has been quiet
+    /// long past its interval owes nothing to a clock it already outlived, so
+    /// the first note after the quiet goes out on the bus's own window rather
+    /// than waiting out another interval.
+    #[tokio::test(start_paused = true)]
+    async fn a_batch_subscription_quiet_for_an_hour_pushes_the_next_note_at_once() {
+        let (bus, sender, mut rx, key) = bench();
+        bus.subscribe(
+            &sender,
+            spec(
+                "s-bg",
+                Scope::All,
+                Mode::Batch(Duration::from_secs(30)),
+                Priority::Background,
+            ),
+        );
+
+        settle(Duration::from_secs(3600)).await;
+        assert!(frames(drained(&mut rx, &key)).is_empty(), "nothing moved");
+
+        bus.note_kind("run-7", Kind::Git);
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        assert_eq!(
+            frames(drained(&mut rx, &key)),
+            vec![json!({
+                "type": "changes",
+                "subscription_id": "s-bg",
+                "items": [{ "entity_id": "run-7", "git": {} }],
+            })],
+            "the first note after the quiet, on the coalesce window"
+        );
+    }
+
+    /// The cooldown's trailing edge: what arrives inside the cooldown waits
+    /// for the cooldown to end — measured from the push that started it, not
+    /// from the note that is waiting it out.
+    #[tokio::test(start_paused = true)]
+    async fn a_note_inside_the_cooldown_goes_out_when_the_cooldown_ends() {
+        let (bus, sender, mut rx, key) = bench();
+        bus.subscribe(
+            &sender,
+            spec(
+                "s-bg",
+                Scope::All,
+                Mode::Batch(Duration::from_secs(30)),
+                Priority::Background,
+            ),
+        );
+        settle(Duration::from_secs(3600)).await;
+
+        bus.note_kind("run-7", Kind::Git);
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        assert_eq!(frames(drained(&mut rx, &key)).len(), 1, "the leading edge");
+
+        settle(Duration::from_secs(5)).await;
+        bus.note_kind("run-9", Kind::Git);
+        settle(Duration::from_secs(24)).await;
+        assert!(
+            frames(drained(&mut rx, &key)).is_empty(),
+            "the cooldown the first push started has not ended"
+        );
+
+        settle(Duration::from_secs(2)).await;
+        assert_eq!(
+            frames(drained(&mut rx, &key)),
+            vec![json!({
+                "type": "changes",
+                "subscription_id": "s-bg",
+                "items": [{ "entity_id": "run-9", "git": {} }],
+            })],
+            "thirty seconds after the push, not thirty-five after the note"
         );
     }
 
@@ -3440,6 +3569,14 @@ mod subscriptions {
                 )
             },
         );
+
+        // A board item first, so the batch tab is inside the cooldown that
+        // item's push started rather than at its leading edge.
+        bus.note_board();
+        bus.flush();
+        drained(&mut fast_rx, &fast_key);
+        drained(&mut slow_rx, &slow_key);
+        settle(DEFAULT_COALESCE_WINDOW).await;
 
         bus.note_board_lists(BoardLists::PROJECTS);
         bus.flush();

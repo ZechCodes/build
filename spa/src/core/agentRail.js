@@ -13,9 +13,11 @@
 // to the panel. There are no Conversation and Agent tabs any more: this is both
 // of them, beside the work instead of instead of it.
 //
-// One work item, one rail: `mountAgentRail` is given the branch or the issue,
-// polls the bridge for it (branch.get / issue.get), and every agent it renders
-// comes off that payload's agents[].
+// One work item, one rail: `mountAgentRail` is given the route, resolves it
+// against this device's cached rows (core/railWorkItem.js), and every agent it
+// renders comes off that row's agents[]. It asks the machine nothing to paint:
+// the strip and the conversation are on the first frame, out of the cache, and
+// move when the record moves.
 //
 // With one exception, and it is the project's agent. A project's agent is
 // reachable from every workspace in the project — that is what makes it the
@@ -83,7 +85,8 @@ import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { fileLinkRoute } from "./threadLinks.js";
 import { hashFromRoute } from "./router.js";
-import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
+import { createRailWorkItem } from "./railWorkItem.js";
+import { forgetRevisionBodies, revisionContents } from "./revisionBodies.js";
 import { readCached, subscribeCache } from "./localCache.js";
 import { scopeFor } from "./cacheScope.js";
 import { replyOrNothing } from "./session.js";
@@ -235,35 +238,6 @@ const chatRecoveryHtml = (controller) => controller.recoveries().map((recovery) 
 
 const conversationIdOf = (agent) => agent?.conversation_id || agent?.id || "";
 
-/**
- * The two bodies a conversation points at rather than carries — an
- * attachment's bytes, and the contents of a diff revision — are content-
- * addressed and immutable, and both are far too big to be worth a record: the
- * cache is what a reader opening a workspace paints from, and nobody opens a
- * workspace to look at a revision they last read a week ago.
- *
- * So they are fetched when the reader asks for them and held in memory for the
- * session. An attachment's bytes live on the conversation's own state
- * (core/thread.js `createThreadState`, which the repository keeps across
- * remounts); a revision has nowhere of its own, so it lives here, keyed by the
- * entity it belongs to.
- */
-const revisions = new Map();
-
-const revisionContents = (entityId, revisionId, call) => {
-  const key = `${entityId || ""}|${revisionId}`;
-  const held = revisions.get(key);
-  if (held) return held;
-  const reading = Promise.resolve(call("thread.revision", { entity_id: entityId, revision_id: revisionId }))
-    .catch((error) => {
-      // A failure is not a fact about the revision: the next press asks again.
-      if (revisions.get(key) === reading) revisions.delete(key);
-      throw error;
-    });
-  revisions.set(key, reading);
-  return reading;
-};
-
 /** What the rail talks through: the cache and the conversations of the machine
  *  the surface above it is standing on, both handed down by that surface. A
  *  standalone mount (the pane suites) brings only a caller, and the rail makes
@@ -364,12 +338,10 @@ function createRailChatOwnership(repository, key, entityOf) {
   };
 }
 
-/** The other record kinds the rail reads, beside a work item's row: the
- *  machine's project list, and — on a workspace — its workspace list, which is
- *  the only thing that says what a workspace is mounted out of. All three are
- *  the sync layer's to write. */
+/** The other record kind the rail reads itself, beside the work item
+ *  core/railWorkItem.js resolves: the machine's project list. Both are the
+ *  sync layer's to write. */
 const PROJECTS_RECORD_KIND = "projects";
-const WORKSPACES_RECORD_KIND = "workspaces";
 
 /** One conversation record, named, so a watcher can tell whether the panel has
  *  moved to another one. */
@@ -437,7 +409,7 @@ export function resetAgentRailMemory() {
   // Chat/view memory belongs to the injected application repository and is
   // retired with its account/device scope. What is left here is the session's
   // memo of the bodies a conversation points at.
-  revisions.clear();
+  forgetRevisionBodies();
 }
 
 /** The width the panel stops sitting beside the work and is laid over it
@@ -851,14 +823,6 @@ function mountRailOnContext(host, context, swap) {
   // row of the conversation beside it, and the conversation in the panel.
   // Undefined until the rail has looked: `null` is an answer — this machine
   // holds no row for what the route names — and one the watch has to act on.
-  let unwatchRow = null;
-  let watchedRowId;
-  let unwatchSources = null;
-  // What the workspace this rail is on is mounted out of. It lives on the
-  // workspace list entry and nowhere else — a board row is a work item and
-  // says nothing about sources — and the file references in the conversation
-  // are addressed against it (core/threadLinks.js).
-  let mountedSources = [];
   let unwatchAlongsideRow = null;
   let watchedAlongsideId;
   let unwatchThread = null;
@@ -894,7 +858,7 @@ function mountRailOnContext(host, context, swap) {
     const addressed = addressedCacheIdentity({
       cacheScope,
       context,
-      railEntityId: entity.entityId || watchedRowId,
+      railEntityId: entity.entityId || records.entityId(),
       selectedId,
       controller: controllerForAgent(agentOf(selectedId)),
     });
@@ -1139,59 +1103,30 @@ function mountRailOnContext(host, context, swap) {
 
   // ---- reading the work item ------------------------------------------------
   //
-  // From the cache and nothing else. The row this rail is the rail of carries
-  // its agents — who they are, what they are doing, what they have observed —
-  // and the sync layer keeps that row current from the board's pushes. So the
-  // strip and the panel paint on the first frame, from disk, and move when the
-  // record moves rather than when a poll comes back.
+  // From the cache and nothing else, for every kind of work item the board
+  // writes a row for. The row this rail is the rail of carries its agents — who
+  // they are, what they are doing, what they have observed — and the sync layer
+  // keeps that row current from the board's pushes. So the strip and the panel
+  // paint on the first frame, from disk, and move when the record moves rather
+  // than when a poll comes back. Which record that is, and hearing it move, is
+  // core/railWorkItem.js.
 
-  /// Which row in this device's cache is this rail's.
-  ///
-  /// A context handed its entity knows outright — a project's conversation is
-  /// minted by the page, and an issue IS its own entity. Everything else is
-  /// named by a route and resolved against the device's own rows: a branch by
-  /// its project and name, a workspace by the conversation it holds, which is
-  /// not the workspace's id (core/cachedRows.js).
-  const entityIdFor = async (standing) => {
-    if (standing.entityId) return standing.entityId;
-    if (standing.kind === "issue") return standing.issueId || null;
-    const entry = await cachedRouteEntry(context.deviceId, standing.feedRoute());
-    learnWorkspaceFacts(standing, entry);
-    return entry?.entityId || null;
-  };
-
-  /// What the workspace list says about the workspace this rail is standing on:
-  /// the name a message sent from here wears, and the sources its conversation's
-  /// paths are written against. Neither is on the row — the row belongs to the
-  /// conversation the workspace holds — so both come off the entry that
-  /// resolved it.
-  const learnWorkspaceFacts = (standing, entry) => {
-    if (standing !== railContext || standing.kind !== "workspace") return;
-    swap?.named(entry?.name);
-    mountedSources = entry?.directories || [];
-  };
-
-  const rowAddressOf = (entityId) =>
-    (entityId && cacheScope?.address({ entityId, kind: ROW_RECORD_KIND })) || null;
-
-  /// The row itself, or nothing where this device holds none — a checkout
-  /// nobody has claimed has no row anywhere, and the rail on it is the one that
-  /// adopts on its first message.
-  const cachedRow = async (entityId) => {
-    const address = rowAddressOf(entityId);
-    if (!address) return null;
-    return (await readCached(address))?.value || null;
-  };
-
-  /// The work item this rail stands on: the cached row, for every kind the
-  /// board writes one for. An issue is the exception — nothing on either side
-  /// writes an issue a row — and its context reads its own
-  /// (core/agentRailContext.js). A read that is refused leaves the rail as it
-  /// was rather than blanking the conversation under the reader.
-  const workItem = async (entityId) => {
-    if (!railContext.workItem) return cachedRow(entityId);
-    return railContext.workItem(chatRepository.currentCall()).catch(() => null);
-  };
+  const records = createRailWorkItem({
+    context,
+    railContext,
+    cacheScope,
+    callFor: () => chatRepository.currentCall(),
+    named: (name) => swap?.named(name),
+    standOn: (row) => standOnRow(row),
+    reread: () => refresh(),
+    // The paint fingerprint is over the conversation, and the conversation did
+    // not move — only what its file chips are addressed against did.
+    redrawConversation: () => {
+      paintedChat = null;
+      paintChat();
+    },
+    alive: () => !disposed,
+  });
 
   const answerLostTheAgents = (answered) => {
     if (answered.agents.length || !visibleAgents().length || agentlessOnce) return false;
@@ -1207,14 +1142,16 @@ function mountRailOnContext(host, context, swap) {
     }
   };
 
-  /// What the row says, taken up by the rail: the agents on the strip, whose
-  /// conversation is open, and the controllers behind them.
   /// The row as the rail reads it: the work item the board pushed, widened by
   /// what only the workspace list knows — the sources the workspace is mounted
   /// out of, and so the branch it is on.
-  const rowAsRead = (row) =>
-    (context.kind === "workspace" && mountedSources.length ? { ...row, directories: mountedSources } : row);
+  const rowAsRead = (row) => {
+    const sources = records.sources();
+    return context.kind === "workspace" && sources.length ? { ...row, directories: sources } : row;
+  };
 
+  /// What the row says, taken up by the rail: the agents on the strip, whose
+  /// conversation is open, and the controllers behind them.
   const standOnRow = (pushed) => {
     const row = rowAsRead(pushed);
     const answered = railEntity(row, context.kind);
@@ -1236,89 +1173,27 @@ function mountRailOnContext(host, context, swap) {
     showTaskCompletions(answered.agents);
   };
 
-  /// The rail's own row, read again. Called on mount, whenever the record moves,
-  /// and after a mutation this rail made — a verb answers before the push that
-  /// says what it did, and the record is where that lands.
+  /// The rail's own work item, read again. Called on mount, whenever the record
+  /// moves, and after a mutation this rail made — a verb answers before the push
+  /// that says what it did, and the record is where that lands.
   const refresh = async () => {
-    const entityId = await entityIdFor(railContext);
+    const entityId = await records.entityIdFor(railContext);
     if (disposed) return;
-    watchRow(entityId);
-    watchMountedSources();
-    const row = await workItem(entityId);
+    records.watch(entityId);
+    const row = await records.read(entityId);
     if (disposed) return;
     if (row) standOnRow(row);
     await refreshAlongside();
   };
 
-  /// Hear this row move. One watcher, re-pointed when the rail learns which row
-  /// it is on — a branch adopted by its first message gains a row it did not
-  /// have when it mounted.
-  const watchRow = (entityId) => {
-    if (watchedRowId === entityId) return;
-    unwatchRow?.();
-    unwatchRow = null;
-    watchedRowId = entityId;
-    const address = rowAddressOf(entityId);
-    unwatchRow = address
-      ? subscribeCache(address, () => void takeUpRow(entityId))
-      : watchForARowOfOurOwn();
-  };
-
-  const takeUpRow = async (entityId) => {
-    const row = await cachedRow(entityId);
-    if (!disposed && row) standOnRow(row);
-  };
-
-  /// Stop listening to the cache: this rail's row, the workspace list under it,
-  /// the row of the conversation beside it, and the conversation in the panel.
+  /// Stop listening to the cache: this rail's row and the list under it, the
+  /// row of the conversation beside it, and the conversation in the panel.
   const unwatchCache = () => {
-    unwatchRow?.();
-    unwatchRow = null;
-    unwatchSources?.();
-    unwatchSources = null;
+    records.unwatch();
     unwatchAlongsideRow?.();
     unwatchAlongsideRow = null;
     unwatchThread?.();
     unwatchThread = null;
-  };
-
-  /// Hear the workspace list move. A source mounted or unmounted while the rail
-  /// is open moves no row — the row is the conversation's — so the list is
-  /// watched on its own, and only where there is a workspace to be mounted out
-  /// of.
-  const watchMountedSources = () => {
-    if (context.kind !== "workspace" || unwatchSources) return;
-    const address = cacheScope?.address({ entityId: "", kind: WORKSPACES_RECORD_KIND });
-    if (!address) return;
-    unwatchSources = subscribeCache(address, () => void takeUpSources());
-  };
-
-  /// The list moved. Stand on the row again, and where the sources moved with
-  /// it repaint the conversation too: the file chip under a message is
-  /// addressed against them (core/threadLinks.js), and nothing else would
-  /// re-draw one.
-  const takeUpSources = async () => {
-    const held = JSON.stringify(mountedSources);
-    await refresh();
-    if (disposed || JSON.stringify(mountedSources) === held) return;
-    // Drawn from scratch: the paint fingerprint is over the conversation, and
-    // the conversation did not move — only what its file chips are addressed
-    // against did.
-    paintedChat = null;
-    paintChat();
-  };
-
-  /// No row on this device answers to this route yet — a checkout nobody has
-  /// claimed, or a boot whose first pass has not written the rows. Hear the
-  /// rows as a whole until one of them is this rail's, and stop as soon as one
-  /// is: this is the wide watch, and the narrow one is better.
-  const watchForARowOfOurOwn = () => {
-    const deviceAddress = cacheScope?.address({});
-    if (!deviceAddress) return null;
-    return subscribeCache(deviceAddress, (changed) => {
-      if (changed.kind && changed.kind !== ROW_RECORD_KIND) return;
-      void refresh();
-    });
   };
 
   // ---- the conversation beside this one -------------------------------------
@@ -1384,12 +1259,12 @@ function mountRailOnContext(host, context, swap) {
   /// how to start one instead, which is not a read.
   const refreshAlongside = async () => {
     if (!alongside || (alongside.kind === "project" && !projectOwner)) return;
-    const entityId = await entityIdFor(alongside);
+    const entityId = await records.entityIdFor(alongside);
     if (disposed) return;
     watchAlongsideRow(entityId);
     // A row this device does not hold leaves the strip saying what it said: a
     // bubble that blanks because one record is cold is worse than one behind.
-    const row = await cachedRow(entityId);
+    const row = await records.cachedRow(entityId);
     if (disposed || !row) return;
     alongsideEntity = railEntity(row, alongside.kind);
     keepForSwap(alongside.kind, row);
@@ -1404,7 +1279,7 @@ function mountRailOnContext(host, context, swap) {
     unwatchAlongsideRow?.();
     unwatchAlongsideRow = null;
     watchedAlongsideId = entityId;
-    const address = rowAddressOf(entityId);
+    const address = records.rowAddress(entityId);
     if (!address) return;
     unwatchAlongsideRow = subscribeCache(address, () => void refreshAlongside());
   };

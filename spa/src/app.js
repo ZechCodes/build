@@ -15,6 +15,7 @@ import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
 import { clearCacheScope } from "./core/cacheScope.js";
+import { wipeCache } from "./core/localCache.js";
 import { resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
 import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "./connection.js";
@@ -60,7 +61,8 @@ export const App = {
 /**
  * Put the application back to its just-loaded state: no route guard, no route
  * attempt in flight, nobody being read, no device open, no terminals on any
- * machine and no cache addressed.
+ * machine, no cache addressed and nothing left on disk from the account that
+ * was here.
  *
  * The current product signs out by leaving this document, so nothing in the
  * running app calls this — it is what an embedder or future in-place auth
@@ -85,6 +87,10 @@ export function resetApplication() {
   forgetHomeFollow();
   forgetSecurityStops();
   clearCacheScope();
+  // The cache is what the app paints from, so the previous account's board,
+  // conversations and diffs go with its devices. Not awaited: the reset is
+  // synchronous, and every address it could be read through is already dead.
+  void wipeCache();
 }
 
 export function rememberSelectedDevice(deviceId) {

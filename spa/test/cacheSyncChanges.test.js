@@ -768,6 +768,34 @@ describe("the board item", () => {
     });
   });
 
+  // A list a git flush re-sent carries the summary that flush re-read: a
+  // row that names its own verdict is the fresh word, and the held one is
+  // only for rows the item said nothing about.
+  it("takes a pushed row's own summary over the one it was holding", async () => {
+    bridge.board = () => ({
+      items: board,
+      workspace_summaries: [
+        { workspace_id: "ws-2", work_summary: "3 files changed", can_finish: true, finish_blockers: [] },
+      ],
+    });
+    await boot([branchItem()]);
+
+    await deliver([{
+      entity_id: "board",
+      state: {
+        revision: 7,
+        workspaces: [{ id: "ws-2", project_id: "p1", work_summary: "4 files changed", can_finish: false, finish_blockers: ["uncommitted"] }],
+      },
+    }]);
+
+    expect((await read("", "workspaces")).value[0]).toMatchObject({
+      id: "ws-2",
+      work_summary: "4 files changed",
+      can_finish: false,
+      finish_blockers: ["uncommitted"],
+    });
+  });
+
   it("leaves the lists alone when the board item names neither", async () => {
     await boot([branchItem()]);
     const before = (await read("", "projects")).value;

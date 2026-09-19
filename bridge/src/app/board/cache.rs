@@ -175,7 +175,7 @@ pub(in crate::app) enum DiffCacheRefresh {
     },
 }
 
-fn workspace_work_summary(repositories: &[std::path::PathBuf]) -> Value {
+pub(in crate::app) fn workspace_work_summary(repositories: &[std::path::PathBuf]) -> Value {
     if repositories.is_empty() {
         return Value::Null;
     }
@@ -537,7 +537,8 @@ impl AppState {
     /// kind of entry names the cache it settles in; each arm below is that
     /// cache's own write, and an entry whose run or project has since gone is
     /// dropped by it.
-    #[cfg(test)]
+    /// A computed entry, stored as if its refresh had just landed — for a
+    /// flush that walked the checkout itself.
     pub(in crate::app) fn store_diff_entry(&mut self, entry: DiffCacheEntry) {
         match entry {
             DiffCacheEntry::RunStat { run_id, stat } => {

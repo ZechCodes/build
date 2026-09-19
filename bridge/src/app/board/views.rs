@@ -384,7 +384,7 @@ impl AppState {
     /// Each row also carries Done: whether it is offered, and what is standing
     /// in the way while it is not. Done removes the workspace, so it appears
     /// only once every Git directory has put its work somewhere else.
-    fn workspace_summaries_json(&mut self) -> Vec<Value> {
+    pub(in crate::app) fn workspace_summaries_json(&mut self) -> Vec<Value> {
         let workspaces = self
             .workspaces
             .list(None)

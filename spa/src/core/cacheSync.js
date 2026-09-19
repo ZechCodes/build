@@ -843,13 +843,15 @@ async function applyBoard(context, state) {
     );
   }
   if (state.workspaces) {
-    // The item's list carries no summaries — `board.list` is the only read
-    // that answers what a workspace has to show and whether it can be
-    // finished — so the verdicts the cache holds are stamped back on.
+    // A row that names its own verdict — a list a git flush re-sent, with the
+    // summary that flush re-read — is the fresh word. A row that names none
+    // (a list that moved because a workspace came or went) keeps the verdict
+    // the cache holds rather than losing its Done until the next whole read.
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
     await writeCached(
       addressOf(context, "", "workspaces"),
-      state.workspaces.map((workspace) => stampWorkspace(workspace, context.deviceId, summaries)),
+      state.workspaces.map((workspace) =>
+        stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])),
     );
   }
 }

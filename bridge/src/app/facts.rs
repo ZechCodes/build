@@ -164,9 +164,14 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
     let Some(state) = handle.get().and_then(Weak::upgrade) else {
         return Vec::new();
     };
-    let (subjects, mut facts, board_lists) = {
+    let (subjects, summary_subjects, mut facts, board_lists) = {
         let mut app = state.lock().unwrap();
         let subjects = app.git_subjects();
+        let summary_subjects = requests
+            .iter()
+            .filter(|request| request.git)
+            .filter_map(|request| app.workspace_summary_subject_of_run(&request.entity_id))
+            .collect::<Vec<_>>();
         let facts = requests
             .iter()
             .map(|request| locked_facts(&mut app, request, &subjects))
@@ -175,7 +180,7 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
             .iter()
             .find(|request| !request.lists.is_empty())
             .map(|request| app.board_lists(request.lists));
-        (subjects, facts, board_lists)
+        (subjects, summary_subjects, facts, board_lists)
     };
     if let Some(lists) = board_lists {
         let board = facts
@@ -201,15 +206,42 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
             fact.root_listing = super::fs::directory_listing(&subject.root, "").ok();
         }
     }
-    // A run whose git moved has a row whose stat moved with it. The walk ran
-    // above with the mutex released; what it found is stored here so the
-    // `state` item the bus notes after this flush carries the checkout as it
-    // is, not as the board's last TTL read left it.
-    if !fresh_stats.is_empty() {
+    // A run whose git moved has a row whose stat moved with it, and a
+    // workspace conversation's workspace has a work summary that moved too.
+    // Both walks ran with the mutex released; what they found is stored here
+    // so the `state` item the bus notes after this flush — and the workspace
+    // list the board item carries — say what the checkout is, not what the
+    // board's last TTL read left it as.
+    let summaries = summary_subjects
+        .into_iter()
+        .map(|(workspace_id, repositories)| {
+            let summary = super::board::cache::workspace_work_summary(&repositories);
+            (workspace_id, repositories, summary)
+        })
+        .collect::<Vec<_>>();
+    if !fresh_stats.is_empty() || !summaries.is_empty() {
         let mut app = state.lock().unwrap();
         let now = std::time::Instant::now();
         for (run_id, stat) in fresh_stats {
             app.store_run_stat(run_id, stat, now);
+        }
+        let lists_moved = !summaries.is_empty();
+        if lists_moved {
+            // The cache keeps a summary only under a membership it knows, and
+            // a workspace made since the last board read has none yet.
+            let memberships = app.workspace_summary_memberships();
+            app.sync_workspace_summaries(&memberships);
+        }
+        for (workspace_id, repositories, summary) in summaries {
+            app.store_diff_entry(super::board::cache::DiffCacheEntry::WorkspaceSummary {
+                workspace_id,
+                repositories,
+                summary,
+            });
+        }
+        if lists_moved {
+            app.changes
+                .note_board_lists(crate::changes::BoardLists::WORKSPACES);
         }
     }
     facts
@@ -378,6 +410,34 @@ impl AppState {
     /// The workspace list is read here whole: it is what `workspace.list`
     /// answers, and that verb runs under this lock for every client read
     /// too. The project rows are only captured; see [`BoardListFacts`].
+    /// The workspace rows with the board's verdict on each: its work summary,
+    /// whether Done is on it, and what blocks Done. `workspace.list` answers
+    /// the rows alone; a board item carries them the way `board.list` does, so
+    /// a client re-stamping the list has the summary this flush re-read rather
+    /// than the one it was holding.
+    fn with_work_summaries(&mut self, workspaces: Value) -> Value {
+        let summaries = self.workspace_summaries_json();
+        let Some(rows) = workspaces.as_array() else {
+            return workspaces;
+        };
+        Value::Array(
+            rows.iter()
+                .map(|row| {
+                    let mut row = row.clone();
+                    let verdict = summaries
+                        .iter()
+                        .find(|summary| summary["workspace_id"] == row["workspace_id"]);
+                    if let Some(verdict) = verdict {
+                        for key in ["work_summary", "can_finish", "finish_blockers"] {
+                            row[key] = verdict[key].clone();
+                        }
+                    }
+                    row
+                })
+                .collect(),
+        )
+    }
+
     pub(in crate::app) fn board_lists(
         &mut self,
         lists: crate::changes::BoardLists,
@@ -388,7 +448,7 @@ impl AppState {
                 .workspaces
                 .then(|| self.workspace_list(&json!({})).ok())
                 .flatten()
-                .map(|listed| listed["workspaces"].clone())
+                .map(|listed| self.with_work_summaries(listed["workspaces"].clone()))
                 // A list this could not read is left UNSAID rather than said
                 // to be null: the board item's lists are arrays by contract,
                 // and the bus keeps the subscription's latch up for a list

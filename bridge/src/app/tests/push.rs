@@ -1378,3 +1378,100 @@ async fn a_git_flush_re_sends_the_rows_of_the_entities_that_moved() {
         "{row:?}"
     );
 }
+
+/// The inbox line under a workspace's row is its work summary, which rides
+/// the workspace list. A write in the workspace moves that too: a git flush
+/// for its conversation re-reads the summary and the board item that follows
+/// carries the list with it.
+#[tokio::test]
+async fn a_git_flush_re_sends_the_workspace_list_with_its_summary() {
+    let (dir, repo) = init_repo();
+    let (_state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let board = handler.call(sender.clone(), req("board.list", json!({})));
+    let project_id = board["result"]["projects"][0]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace = handler.call(
+        sender.clone(),
+        req(
+            "workspace.create",
+            json!({"project_id": project_id, "name": "spoken", "isolation": "worktree"}),
+        ),
+    );
+    let workspace_id = workspace["result"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let git_dir = std::path::PathBuf::from(
+        workspace["result"]["directories"][0]["path"]
+            .as_str()
+            .unwrap(),
+    );
+    let conversation = handler.call(
+        sender.clone(),
+        req(
+            "workspace.ensure_conversation",
+            json!({"workspace_id": workspace_id}),
+        ),
+    );
+    let run_id = conversation["result"]["entity_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (id, scope, kinds) in [
+        ("s-inbox", json!({"kind": "all"}), json!(["state"])),
+        (
+            "s-active",
+            json!({"kind": "entity", "id": run_id}),
+            json!(["git", "files"]),
+        ),
+    ] {
+        let subscribed = handler.call(
+            sender.clone(),
+            req(
+                "changes.subscribe",
+                json!({"subscription_id": id, "scope": scope, "kinds": kinds, "mode": "realtime"}),
+            ),
+        );
+        assert_eq!(subscribed["result"]["watch"], "live", "{subscribed:?}");
+    }
+    settled_pushes(&mut rx, &key).await;
+
+    std::fs::write(git_dir.join("noted.txt"), "hello\n").unwrap();
+    let mut listed = None;
+    let mut heard = Vec::new();
+    for _ in 0..60 {
+        let pushes = settled_pushes(&mut rx, &key).await;
+        heard.extend(
+            pushes
+                .iter()
+                .filter(|push| push["subscription_id"] == "s-inbox")
+                .cloned(),
+        );
+        listed = pushes
+            .iter()
+            .filter(|push| push["type"] == "changes" && push["subscription_id"] == "s-inbox")
+            .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+            .filter(|item| item["entity_id"] == crate::changes::BOARD_ITEM_ID)
+            .filter_map(|item| item["state"]["workspaces"].as_array().cloned())
+            .flatten()
+            .find(|row| row["workspace_id"] == json!(workspace_id));
+        if listed
+            .as_ref()
+            .is_some_and(|row| row["work_summary"]["dirty"] == json!(true))
+        {
+            break;
+        }
+    }
+    let listed = listed
+        .unwrap_or_else(|| panic!("no workspace list on the board item; inbox heard {heard:?}"));
+    // The summary counts the unpushed commit's lines beside the uncommitted
+    // ones, so the write is read off the dirty flag it flipped and the
+    // addition it brought, not off an exact total.
+    assert_eq!(listed["work_summary"]["dirty"], json!(true), "{listed:?}");
+    assert!(
+        listed["work_summary"]["additions"].as_u64().unwrap_or(0) >= 1,
+        "{listed:?}"
+    );
+}

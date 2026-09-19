@@ -50,6 +50,18 @@ const sampleUntil = (specs, budgetMs) => page.evaluate(({ specs, budgetMs }) => 
   tick();
 }), { specs, budgetMs });
 
+
+/** Poll the page's text from Node every 50 ms until it holds `text`, up to
+ *  `budgetMs`. Answers the ms it took, or null. (An in-page rAF sampler was
+ *  observed to miss text the page demonstrably showed; this is the plain way.) */
+const pollText = async (text, budgetMs) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < budgetMs) {
+    if ((await page.evaluate(() => document.body.textContent)).includes(text)) return Date.now() - t0;
+    await page.waitForTimeout(50);
+  }
+  return null;
+};
 try {
   // ---- login + first live paint (this is also what warms the cache) ----
   await page.goto(`${APP}/auth/dummy/login`, { waitUntil: "load" });
@@ -108,8 +120,11 @@ try {
   await page.waitForTimeout(1000);
   const markerA = `live-active-${Date.now().toString(36)}.txt`;
   docker(`docker exec deploy-bridge-1 sh -c "echo hello > ${A.gitDir}/${markerA}"`);
-  const ra = await sampleUntil({ file: { text: markerA } }, 15000);
-  note("active workspace: a new file shows in the git surface within ~1 s", Boolean(ra.file) && ra.file.ms <= 2500, ra.file ? `${ra.file.ms} ms` : "never within 15 s");
+  const raMs = await pollText(markerA, 15000);
+  const ra = { file: raMs === null ? null : { ms: raMs } };
+  const statusHasA = await page.evaluate(({ entity, name }) => new Promise((resolve) => { const req = indexedDB.open("build-cache"); req.onsuccess = () => { const store = req.result.transaction("records", "readonly").objectStore("records"); const all = store.getAll(); const keys = store.getAllKeys(); all.onsuccess = () => { keys.onsuccess = () => { let hit = false; keys.result.forEach((k, i) => { const key = String(k); if (key.includes(entity) && key.split("|")[2] === "status" && (all.result[i]?.value?.files || []).some((f) => f.path === name)) hit = true; }); resolve(hit); }; }; }; }), { entity: A.entityId.slice(0, 16), name: markerA });
+  const bodyHasA = (await page.textContent("body")).includes(markerA);
+  note("active workspace: a new file shows in the git surface within ~1 s", Boolean(ra.file) && ra.file.ms <= 2500, ra.file ? `${ra.file.ms} ms` : `never within 15 s (record has it: ${statusHasA}, body text has it now: ${bodyHasA}, hash ${await page.evaluate(() => location.hash)})`);
   await page.screenshot({ path: "/tmp/live-3a-active-write.png" });
 
   // ---- check 3b: a write in a BACKGROUND workspace moves its inbox row within 30 s ----
@@ -132,8 +147,8 @@ try {
   note("background workspace: its inbox row moves within 30 s of a write", moved && Date.now() - tB <= 32000, moved ? `${Date.now() - tB} ms: "${before}" → "${after}"` : `no change in 40 s: "${before}"`);
   // Then open it: the git surface must already hold the file, no wait.
   await page.evaluate((h) => { location.hash = h; }, route(B, "changes"));
-  const rb = await sampleUntil({ file: { text: markerB } }, 5000);
-  note("opening the background workspace shows the file from cache", Boolean(rb.file), rb.file ? `${rb.file.ms} ms / frame ${rb.file.frame}` : "never within 5 s");
+  const rbMs = await pollText(markerB, 5000);
+  note("opening the background workspace shows the file from cache", rbMs !== null, rbMs !== null ? `${rbMs} ms` : "never within 5 s");
   await page.screenshot({ path: "/tmp/live-3b-background-write.png" });
 } catch (e) {
   note("live check threw", false, e.message);

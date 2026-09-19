@@ -393,6 +393,49 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// The workspace a conversation's run stands on, as its work summary is
+    /// keyed: the workspace id and its repositories, in the order the board
+    /// reads them. `None` for a run that is no workspace conversation.
+    pub(in crate::app) fn workspace_summary_subject_of_run(
+        &self,
+        run_id: &str,
+    ) -> Option<(String, Vec<PathBuf>)> {
+        self.workspaces
+            .list(None)
+            .into_iter()
+            .find(|workspace| {
+                self.workspace_conversation_owner(workspace).as_deref() == Some(run_id)
+            })
+            .map(|workspace| {
+                let repositories = workspace
+                    .directories
+                    .iter()
+                    .filter(|directory| directory.is_git)
+                    .map(|directory| directory.path.clone())
+                    .collect();
+                (workspace.id.clone(), repositories)
+            })
+    }
+
+    /// Every workspace's summary membership — its id and repositories, as the
+    /// board keys summaries — so a summary stored outside a board read lands
+    /// under a membership the cache recognises.
+    pub(in crate::app) fn workspace_summary_memberships(&self) -> Vec<(String, Vec<PathBuf>)> {
+        self.workspaces
+            .list(None)
+            .into_iter()
+            .map(|workspace| {
+                let repositories = workspace
+                    .directories
+                    .iter()
+                    .filter(|directory| directory.is_git)
+                    .map(|directory| directory.path.clone())
+                    .collect();
+                (workspace.id.clone(), repositories)
+            })
+            .collect()
+    }
+
     pub(crate) fn workspace_create(&mut self, params: &Value) -> Result<Value, String> {
         if self.deferred_work.is_some() {
             return Err("another filesystem operation is still running".to_string());

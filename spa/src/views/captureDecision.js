@@ -6,7 +6,7 @@
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
-import { subscribeCache } from "../core/localCache.js";
+import { subscribeBoardWrites } from "../core/feedRows.js";
 import { mountCaptureDecision } from "../core/captureDecisionView.js";
 import "../styles/shell.css";
 
@@ -23,13 +23,12 @@ export function renderCaptureDecision() {
   // and the read never lands.
   surface.load();
   // A capture IS a feed row, so the page reads again when a machine's board
-  // record moves. Captures were not in the cache-first brief and carry no
-  // record of their own, so this is the whole of what wakes the page: a pass
-  // writing that record. If it proves too little it is a follow-up here, not a
-  // poll back.
-  const unwatch = subscribeCache({}, (address) => {
-    if (address.kind === "feed") void surface.load();
-  });
+  // moves — the whole list a pass writes, and the single row a `state` push
+  // writes, which is what a capture moving from routing to awaiting-answer
+  // actually is. Captures were not in the cache-first brief and carry no
+  // record of their own, so this is the whole of what wakes the page. If it
+  // proves too little it is a follow-up here, not a poll back.
+  const unwatch = subscribeBoardWrites(() => void surface.load());
   App.poll = { dispose: unwatch };
   App.viewDispose = () => {
     unwatch();

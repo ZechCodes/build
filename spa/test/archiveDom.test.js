@@ -223,6 +223,26 @@ describe("the account archive page", () => {
     expect(rows()).toHaveLength(2);
   });
 
+  // A `state` push is what moves one row, and it writes that row's OWN record —
+  // the whole board's record is written by a pass and by a removal, and by
+  // nothing else. Archiving is exactly a row moving, so hearing only the board
+  // would leave this page on the last pass's history until the next one.
+  it("redraws when one row's own record moves", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    await renderAccount();
+    await flush();
+    expect(rows()).toHaveLength(3);
+    filed["dev-2"] = [];
+
+    await writeCached(
+      { deviceId: "dev-1", entityId: "workspace-1", kind: "row" },
+      { ...workspaceItem, state: "finished" },
+    );
+    for (let index = 0; index < 20; index += 1) await flush();
+
+    expect(rows()).toHaveLength(2);
+  });
+
   it("keeps the machines that did answer when one of them will not", async () => {
     resetDeviceContexts();
     adoptDeviceSession(answering("dev-1"));

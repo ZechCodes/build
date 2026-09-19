@@ -69,6 +69,15 @@ export const App = {
  * running app calls this — it is what an embedder or future in-place auth
  * would call before replacing the account, and what a suite calls between
  * cases so one test's devices cannot answer the next one's reads.
+ *
+ * THIS IS THE ONLY CALLER OF `wipeCache`, and there is deliberately no second
+ * one for signing out. Signing out navigates away from this document: the tab
+ * that would have to do the wiping is gone before it could, and the next
+ * account arrives in a new document that calls this on its way in. A wipe
+ * wired to a sign-out button would be a promise the product cannot keep —
+ * a closed tab makes none of its calls — so the guarantee is made where it can
+ * be: nothing of the previous account survives the reset that precedes the
+ * next one.
  */
 export function resetApplication() {
   App.accountEpoch += 1;

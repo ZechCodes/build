@@ -225,6 +225,17 @@ subscription and collapses to a bare board item as today.
 The flusher's next deadline is the earliest over all subscriptions:
 `first_pending + 250 ms` for realtime, `last_flush + batch_ms` for batch.
 Foreground subscriptions flush before background ones in the same turn.
+
+**Amended (stage 3): batch mode is leading-edge with a cooldown.** As
+written above a batch subscription made the reader wait out the whole
+window before its first word — thirty seconds of nothing on a workspace
+that had just moved. A batch subscription that has not flushed inside
+`batch_ms` flushes AT ONCE, and the window is the floor under the next
+flush rather than the delay before the first: the first change after a
+quiet spell goes immediately, and a burst behind it is held back and
+coalesced until the cooldown is up. The greeting reports the semantics
+(`changes: { batch: "cooldown" }`) so a client can tell a bridge that
+leads from one that lags.
 `ENTITY_SETTLE_WINDOW` stays as the floor for realtime `git` and `files`
 items: an agent writing a file a second costs one item a second, not one per
 write.
@@ -275,50 +286,122 @@ legacy subscription is dropped.
 
 #### Step 1.6: SPA
 
-`core/changeEvents.js` grows a subscription manager beside the watcher set.
-A surface registers what it wants, not what to run:
+Rewritten after the fact (the cache-first overhaul). What this step
+originally described — a subscription manager beside a set of poll
+callbacks, a 60 s safety poll under every mounted surface, and a cacheSync
+that pulled on a miss — is not what shipped. What shipped is stronger: the
+client has no polls to stand down, because it has no views that read the
+wire.
 
-```js
-watchChanges({
-  entity: () => [row.run_id, row.worktree_id],
-  kinds: ["state", "thread", "git", "files"],
-  mode: "realtime",           // mounted surfaces
-  onChanges: (items) => …,    // key comparison, then the existing refresh
-});
-```
+**The cache is the only thing a view reads.** Every surface subscribes to
+cache addresses and repaints when one changes. No view calls the bridge for
+a read. The sync layer is the only reader of the wire, and it writes what it
+reads.
 
-The manager keeps desired subscriptions as a map, diffs against what the
-session has, and issues `changes.subscribe` / `changes.unsubscribe` on
-mount, unmount, greet, and reconnect (`greetBridge` already re-greets on
-every live session; it now also replays the desired map). The poll callback
-survives as the 60 s safety poll for mounted surfaces and as the fallback
-for a bridge whose greeting lacks `changes.subscriptions`.
+**Three subscriptions per device**, on `changes.subscribe`:
 
-Three tiers, and the whole of the client's policy:
+| id | scope | kinds | mode | what it feeds |
+| --- | --- | --- | --- | --- |
+| `s-inbox` | `all` | `state`, `thread` | realtime | inbox rows, every conversation in every workspace |
+| `s-background` | `all` | `git`, `files`, `terminals` | `{batch_ms: 30000}` | background workspaces' git and file surfaces |
+| `s-active` | `entity` = the routed workspace | `git`, `files`, `terminals` | realtime | the workspace the reader is standing in |
 
-| tier | who | subscription |
+`s-active` is re-issued on every route change. The project page has no
+entity subscription: it is a filtered inbox.
+
+**Sync is ordered and bounded, never full.** On boot, on reconnect and on
+tab return the sync layer reads, in this order: device list, project list,
+workspace list, board; then for the active workspace and then every other
+active-or-recent one: status, tree root, terminals, conversation list, and
+last the two cursored reads (step 1.8) — commits since the newest cached
+hash, and per conversation the items after the cached sequence. Everything
+not cursored is a wholesale replacement of a small shape.
+
+**No client poll.** There is no safety poll and no 60 s loop. A
+registration that names a cadence is refused
+(`core/changeEvents.js` `watchChanges`). The one remaining timer in the
+client is the account's device-presence read against the skriftapp API,
+which is not this bridge and has no push path.
+
+**Cache lifetime.** Device, project and workspace list entries have no TTL
+and leave only when the list stops naming them. Per-workspace data is
+dropped at once on Done or Delete, and `WORKSPACE_DATA_TTL_MS` after its
+last write once the workspace is only Recent. Active workspaces never
+expire.
+
+**Deeper file listings are re-listed, not pushed.** The bridge cannot know
+which directories a reader has walked into. The `files` item carries the
+changed paths and the root listing; the client re-lists only the held
+directories a changed path sits in.
+
+**Optimistic writes go into the cache.** A sent message is written under a
+provisional key and replaced when the push carries the real item with its
+sequence; a row a press moved is written into the row's record and the
+board's list, and the `state` push confirms it. Views never hold a second
+store.
+
+Legacy `board.changed` / `entity.changed` are still sent by the bridge and
+no longer read by this client: a hint is news a view would have to go to the
+wire to act on. Removing them from the bridge is its own commit, later.
+
+#### Step 1.7: items carry bodies (stage 2)
+
+Written after the fact: what step 1.1 designed as a hint — "this entity
+moved, go and read it" — ships as a body. A hint is a read a view has to
+make, and the client this protocol serves has no view that reads the wire.
+So every item carries what the surfaces showing that entity paint from, and
+the client writes it into its cache and repaints.
+
+| kind | what the item carries |
+| --- | --- |
+| `state` | the whole feed row, exactly as `board.list` lists it |
+| `thread` | one tip per conversation: the items since this subscription's last flush, the sequence they run from, and the conversation's total |
+| `git` | `status`, the latest commits, the unpushed commit list, and the working-tree diff |
+| `files` | the changed paths and the root listing |
+| `terminals` | the tab list (a new kind; a console is a surface like any other) |
+| the board item | the entity ids that left the board, and the project and workspace lists when they moved |
+
+Two things never ride an item: a file's contents, and the patch behind one
+commit. Both are read on demand by the reader who opened them.
+
+The board item carries deltas, not the board: each moved entity's row rides
+its own `state` item, and the board item says which entities left. Pushing
+the whole `board.list` on every change was rejected — it re-sends every
+row's stat for one row's move.
+
+Thread items are per-subscription deltas. The bus already holds
+`last_flush` and `pending` per subscription; it gains, per subscription, the
+last sequence emitted per agent, so a flush carries the items after it. No
+client state on the bridge, and no durable log.
+
+The thresholds both sides are written against:
+
+| name | value | where |
 | --- | --- | --- |
-| focus | the mounted work surface and the rail | `entity` scope, all kinds, `realtime`, `foreground` |
-| board | the feed | `board` scope, `state`, `realtime`, `foreground` |
-| background | everything in the feed's active set | `all` scope, `state`+`thread`+`git` at `batch_ms: 30000`; `all` scope, `files` at `batch_ms: 180000`; both `background` |
+| `LATEST_COMMITS` | 20 | `git.log` default when `since` is unknown |
+| `LATEST_THREAD_ITEMS` | 100 | `thread.page` forward read cap |
+| `THREAD_PUSH_MAX_ITEMS` | 100 | a thread item past this carries the tip only |
+| `WORKING_TREE_DIFF_MAX_BYTES` | 262144 | past this the git item carries `diff_key` only |
+| `UNPUSHED_COMMITS_MAX` | 20 | commits whose patches the client syncs |
+| `COMMIT_PATCH_MAX_BYTES` | 262144 | `git.show` `max_bytes` |
+| `RECENT_FILES` | 5 | file contents the client keeps per workspace |
+| `FILE_MAX_BYTES` | 1048576 | larger files are not cached |
+| `BACKGROUND_COOLDOWN_MS` | 30000 | the background tier's cooldown |
+| `WORKSPACE_DATA_TTL_MS` | 259200000 | client-side eviction |
 
-`core/cacheSync.js` stops looping. It becomes the background tier's
-`onChanges` handler: for each item, compare against the IndexedDB record and
-pull only on a miss, at `priority: "background"` through `readRequests`,
-which now also stamps the request envelope.
+#### Step 1.8: cursored reads (stage 1)
 
-- `state`: board `revision` differs → `board.list`; entity state differs →
-  `run.get` / `issue.get` / `branch.get`.
-- `thread`: `last_sequence` above the cached window's `deliveredSequence` →
-  `thread.activity` from the cached sequence, write-through.
-- `git`: `status_key` differs from the cached `status` record → `git.status`
-  with `if_status_key` (still cheap on a race), then `git.log`.
-- `files`: delete the cached `tree` record for each path's parent chain and
-  the `filediff` record for the path; refetch only if a surface has it open.
-  `truncated` deletes every `tree` record for the entity.
+The reads the client makes past its first are deltas, so coming back to a
+workspace costs what moved rather than what exists:
 
-The safety sweep for the background tier is one full `cacheSync` pass every
-10 minutes and on `visibilitychange`, replacing the 60 s loop.
+- `git.log` takes `since` — a hash the client already holds — and answers
+  the commits after it, or the latest `LATEST_COMMITS` when the hash is not
+  in this history (a rebase, a reset) with `reset: true` saying so.
+- `thread.page` takes `after_sequence` and answers forward from it, capped
+  at `LATEST_THREAD_ITEMS`. A forward read says nothing about the end of the
+  list: `has_more` on such a page is about the window it walked.
+- `git.show` takes `max_bytes` and answers `truncated: true` rather than a
+  quarter of a megabyte the reader did not ask for.
 
 ### Part 2: API versioning
 
@@ -630,9 +713,16 @@ and an item this bridge has never heard of is refused by kind alone.
   for a greeting with no `api_version`.
 - Manual: two workspaces, an agent writing in the background one. The
   focused workspace's git pane updates within a second of a write; the
-  background row's stat updates within 30 s; the background files tree
-  refreshes within 3 minutes; `bridge.stats` shows the background queue
-  never starving the foreground one.
+  background row's stat updates within 30 s; `bridge.stats` shows the
+  background queue never starving the foreground one.
+- Manual, the cache-first client's three: (1) a reload paints the full app
+  from cache with no gate frame; (2) switching workspaces shows the agent
+  bubbles and the thread on the first frame; (3) an agent writing in a
+  background workspace moves that row's git surfaces within 30 s and the
+  active workspace's within a second.
+- `grep -rn "intervalMs\|setInterval" spa/src` names only the presence
+  poll, the served-version check, the gate's own boot retry and the
+  cosmetic clocks.
 
 ## Out of scope
 

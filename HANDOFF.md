@@ -848,6 +848,25 @@ main, each measured in the two-bridge browser stack before it was called done.
 - **A greyed row keeps its whole offline word** beside a Done button: the
   room the row reserves for its edge control is the control's real width.
 
+### The cache-first client
+
+The SPA paints from its own IndexedDB cache and never waits on the wire to
+show what it already knows. Every surface subscribes to cache addresses and
+repaints when one moves; no view calls a bridge for a read. One layer
+(`spa/src/core/cacheSync.js`) is the only reader of the wire: on a greeting,
+a reconnect and a tab return it makes one ordered, bounded pass per device —
+the lists, then the workspace the reader is standing in, then the rest, with
+commits and conversation items read as cursored deltas — and it holds three
+subscriptions per device (the inbox in realtime, the whole board's git and
+files on a 30 s cooldown, and the routed workspace in realtime). Pushes
+carry bodies rather than hints, so a flush is written straight into the
+cache and the surfaces holding those records repaint. Optimistic writes go
+into the cache too, and the push that follows confirms them. There is no
+client poll left: the only timers in `spa/src` are the account's device
+presence read against the skriftapp API, the served-version check, the
+gate's own boot retry and the cosmetic clocks. The wire side is
+`planning/v2/Bridge Wire Protocol Spec.md`, steps 1.3 and 1.6 to 1.8.
+
 ### Suites
 
 247 files / 4297 tests; lint, build, semgrep and gitleaks green; ratchet 62.

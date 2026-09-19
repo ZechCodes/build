@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use build_bridge::presence::{heartbeat_challenge, HeartbeatRequest, PresenceReporter};
+use build_bridge::reachability::Reachability;
 use build_bridge::relay::DeviceIdentity;
 use build_bridge::transport;
 use wiremock::matchers::{method, path};
@@ -48,6 +49,14 @@ async fn received(server: &MockServer, at_least: usize) -> Vec<HeartbeatRequest>
     }
 }
 
+/// A device a relay has authenticated: the beat only goes out for one of
+/// those, so every test about the posting itself starts from one.
+fn reached() -> Reachability {
+    let reachable = Reachability::unreachable();
+    reachable.reached();
+    reachable
+}
+
 fn identity_for(device_id: &str) -> (DeviceIdentity, String) {
     let keypair = transport::generate_identity_keypair();
     (
@@ -81,7 +90,8 @@ async fn a_beat_goes_out_at_once_and_keeps_going() {
         .await;
     let (identity, public_key_b64) = identity_for("dev-1");
 
-    let beating = PresenceReporter::start_every(&api.uri(), &identity, Duration::from_millis(40));
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reached(), Duration::from_millis(40));
     let beats = received(&api, 3).await;
     beating.abort();
 
@@ -119,7 +129,8 @@ async fn a_refused_beat_does_not_end_the_loop() {
         .await;
     let (identity, _) = identity_for("dev-1");
 
-    let beating = PresenceReporter::start_every(&api.uri(), &identity, Duration::from_millis(40));
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reached(), Duration::from_millis(40));
     let beats = received(&api, 3).await;
     beating.abort();
 
@@ -133,8 +144,12 @@ async fn a_refused_beat_does_not_end_the_loop() {
 async fn an_unreachable_api_does_not_end_the_loop() {
     // Port 1 on loopback: nothing listens, so every post is a connection error.
     let (identity, _) = identity_for("dev-1");
-    let beating =
-        PresenceReporter::start_every("http://127.0.0.1:1", &identity, Duration::from_millis(20));
+    let beating = PresenceReporter::start_every(
+        "http://127.0.0.1:1",
+        &identity,
+        &reached(),
+        Duration::from_millis(20),
+    );
     tokio::time::sleep(Duration::from_millis(120)).await;
     assert!(
         !beating.is_finished(),
@@ -165,12 +180,83 @@ async fn a_hung_api_does_not_stop_the_beats() {
         .await;
     let (identity, _) = identity_for("dev-1");
 
-    let beating = PresenceReporter::start_every(&api.uri(), &identity, Duration::from_millis(40));
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reached(), Duration::from_millis(40));
     let beats = received(&api, 3).await;
     beating.abort();
 
     assert!(
         beats.len() >= 3,
         "a beat that hangs past the interval is dropped and the next one goes: {beats:?}"
+    );
+}
+
+/// The beat says this device can be REACHED, not that its process is running.
+/// A daemon that can still reach the api but holds no relay socket has no way
+/// in, so it says nothing and the api lets it go a window later — the
+/// forty-three minutes b02b5ba1 spent listed online with no socket on
+/// 2026-09-19 is what a beat that ignored this cost.
+#[tokio::test]
+async fn a_device_no_relay_has_authenticated_does_not_beat() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&api)
+        .await;
+    let (identity, _) = identity_for("dev-1");
+
+    let beating = PresenceReporter::start_every(
+        &api.uri(),
+        &identity,
+        &Reachability::unreachable(),
+        Duration::from_millis(40),
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let beats = received(&api, 0).await;
+    beating.abort();
+
+    assert!(
+        beats.is_empty(),
+        "a device nothing can route to must not report itself online: {beats:?}"
+    );
+}
+
+/// And the two follow each other: the socket going takes the beats with it, and
+/// the socket coming back brings them straight back, with no restart in
+/// between.
+#[tokio::test]
+async fn the_beats_follow_the_relay_socket_away_and_back() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&api)
+        .await;
+    let (identity, _) = identity_for("dev-1");
+    let reachable = reached();
+
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reachable, Duration::from_millis(40));
+    let while_connected = received(&api, 2).await.len();
+    assert!(while_connected >= 2, "the device was beating to begin with");
+
+    reachable.lost();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after_the_socket_went = received(&api, 0).await.len();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        received(&api, 0).await.len(),
+        after_the_socket_went,
+        "nothing is posted while the device cannot be reached"
+    );
+
+    reachable.reached();
+    let back = received(&api, after_the_socket_went + 2).await.len();
+    beating.abort();
+
+    assert!(
+        back > after_the_socket_went,
+        "the socket coming back is the device coming back, with no restart in between"
     );
 }

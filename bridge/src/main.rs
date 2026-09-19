@@ -60,6 +60,7 @@ use build_bridge::config::BridgeConfig;
 use build_bridge::harness::HarnessContext;
 use build_bridge::notify::Notifier;
 use build_bridge::presence::PresenceReporter;
+use build_bridge::reachability::Reachability;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
@@ -466,11 +467,16 @@ async fn run_daemon(
         ),
     ]);
     // Presence is the api's (`planning/v2/Strict P2P Transport Spec.md` rule 6):
-    // this daemon says it is alive, signed, every 30 s. Liveness is a property
-    // of the device, not of a socket the relay happens to hold, so it outlives
-    // the relay socket a browser closes once its channels are open. Started
-    // beside the transport reporter and against the same configured api.
-    let _presence_beats = PresenceReporter::start(&runtime.config.api_url, &identity);
+    // this daemon says so itself, signed, every 30 s, and the relay reports
+    // nothing about any device. What it says is that this device can be
+    // REACHED, which is the question `online` is read as answering: the beat
+    // goes out only while the relay loop below holds an authenticated socket,
+    // because that socket is the only way in. A bridge that is running, and can
+    // still reach the api, and has no relay socket is a bridge no browser can
+    // open a session to — and saying "online" for it is what had this account
+    // dialling two machines that were never going to answer.
+    let reachable = Reachability::unreachable();
+    let _presence_beats = PresenceReporter::start(&runtime.config.api_url, &identity, &reachable);
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
     // on. The peer's channels deliver through this same intake, so a session
@@ -490,7 +496,7 @@ async fn run_daemon(
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
     loop {
         let connected_at = std::time::Instant::now();
-        match relay::run(&runtime.device_url, &identity, intake.clone()).await {
+        match relay::run(&runtime.device_url, &identity, intake.clone(), &reachable).await {
             Ok(()) => eprintln!(
                 "relay disconnected; reconnecting in {}s",
                 backoff.current().as_secs()

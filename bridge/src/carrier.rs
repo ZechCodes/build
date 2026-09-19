@@ -572,6 +572,25 @@ impl FrameIntake {
         Self::with_ledger(handler, transport, Arc::new(StderrLedger))
     }
 
+    /// An intake whose worker pool is as small as the caller says, so a test
+    /// can fill it with a handful of frames rather than the several hundred the
+    /// daemon's own pool would need. Test builds only — the sizes the daemon
+    /// runs are `dispatch.rs`'s.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_pool(
+        handler: FrameHandler,
+        transport: KeyPairB64,
+        queue_depth: usize,
+        workers: usize,
+    ) -> Arc<Self> {
+        Arc::new(FrameIntake {
+            registry: Arc::new(SessionRegistry::with_ledger(Arc::new(StderrLedger))),
+            dispatcher: Dispatcher::with_capacity(handler, queue_depth, workers),
+            transport,
+            refused: Mutex::new(HashSet::new()),
+        })
+    }
+
     /// An intake writing every session's transport events to `ledger`.
     pub fn with_ledger(
         handler: FrameHandler,

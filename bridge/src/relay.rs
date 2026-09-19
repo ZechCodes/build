@@ -9,7 +9,9 @@
 //! It is a rendezvous, not a connection: the device's transport public key is
 //! pinned at the api by pairing and read from there, never uploaded here, and
 //! the device's liveness is a heartbeat posted to the api (`presence.rs`), not
-//! anything this socket reports.
+//! anything this socket reports. This socket does decide *whether* that beat
+//! goes out, though — it is the way in, so while it is down there is nothing
+//! for the api to call online (`reachability.rs`).
 //!
 //! Frame flow, per the relay's `/ws/device` protocol:
 //! - relay → `{"type":"authenticated","heartbeat_interval_s":N}`
@@ -29,6 +31,7 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::carrier::{self, CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope};
+use crate::reachability::Reachability;
 use crate::transport::{self, Envelope, SessionInit};
 
 /// Install the process-level rustls crypto provider, once, before anything
@@ -57,6 +60,8 @@ pub enum RelayError {
     Protocol(String),
     #[error("relay silent for {}s", .0.as_secs())]
     Silent(Duration),
+    #[error("a frame waited {}s to be handed over; this socket is wedged", .0.as_secs())]
+    Wedged(Duration),
     #[error("carrier error: {0}")]
     Carrier(#[from] CarrierError),
 }
@@ -66,6 +71,27 @@ const MISSED_HEARTBEATS_BEFORE_SILENT: u32 = 3;
 
 pub fn silence_deadline(heartbeat_interval_s: u64) -> Duration {
     Duration::from_secs(heartbeat_interval_s.max(1)) * MISSED_HEARTBEATS_BEFORE_SILENT
+}
+
+/// How long the read loop may spend handing one frame over before this socket
+/// is given up as wedged.
+///
+/// The loop reads and hands over, but the hand-over is backpressured: the
+/// dispatcher's queues are bounded, and a full queue makes the caller wait
+/// (`carrier/dispatch.rs`). Waiting there is waiting *inside* the read half, so
+/// no pong goes out while it lasts and the relay severs the device for silence
+/// — on 2026-09-19 at 15:00:57Z it logged exactly that against Zech's
+/// workstation, mid-workflow with a dozen agents on it, and refused the next
+/// three sessions a browser asked for. The sever does not end the wait either:
+/// this loop is parked in `accept`, not in the read, so it learns nothing until
+/// the pool drains, however long that takes, and until it returns the reconnect
+/// loop in `main.rs` cannot run.
+///
+/// One heartbeat interval, so the socket is given up and redialled a clear
+/// margin inside the relay's own `MISSED_HEARTBEATS_BEFORE_SILENT` window
+/// rather than after the relay has already written the device off.
+pub fn handoff_deadline(heartbeat_interval_s: u64) -> Duration {
+    Duration::from_secs(heartbeat_interval_s.max(1))
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for RelayError {
@@ -130,8 +156,9 @@ pub async fn run(
     url: &str,
     identity: &DeviceIdentity,
     intake: Arc<FrameIntake>,
+    reachable: &Reachability,
 ) -> Result<(), RelayError> {
-    run_with_connector(url, identity, intake, None).await
+    run_with_connector(url, identity, intake, None, reachable).await
 }
 
 /// [`run`], with an explicit TLS connector. `None` uses the default (rustls +
@@ -142,6 +169,7 @@ pub async fn run_with_connector(
     identity: &DeviceIdentity,
     intake: Arc<FrameIntake>,
     tls_connector: Option<tokio_tungstenite::Connector>,
+    reachable: &Reachability,
 ) -> Result<(), RelayError> {
     let request = auth_request(url, identity)?;
     let (stream, _resp) =
@@ -153,10 +181,12 @@ pub async fn run_with_connector(
     let (control_tx, control_rx) = mpsc::unbounded_channel::<Message>();
     let (carrier, envelopes_rx) = CarrierHandle::open();
     let writer = spawn_writer(sink, control_rx, envelopes_rx);
-    let mut connection = RelayConnection::new(control_tx.clone(), &intake, carrier);
+    let mut connection = RelayConnection::new(control_tx.clone(), &intake, carrier, reachable);
 
     // Handlers run in the intake, not on this task: below, the loop only reads
-    // and hands over, so no handler can stop the socket from being drained.
+    // and hands over. Handing over can still block — the intake's queues are
+    // bounded — so it is done on a deadline, and a hand-over that outlasts it
+    // ends this socket rather than leaving it undrained.
     let outcome: Result<(), RelayError> = async {
         loop {
             let Ok(next) = tokio::time::timeout(connection.deadline, source.next()).await else {
@@ -171,7 +201,16 @@ pub async fn run_with_connector(
             let Ok(msg) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
-            connection.accept(&msg).await;
+            // Bounded, because handing over can block (see `handoff_deadline`):
+            // a socket this loop cannot drain is one no browser can reach, and
+            // it is worth more redialled than held.
+            let handoff = connection.handoff;
+            if tokio::time::timeout(handoff, connection.accept(&msg))
+                .await
+                .is_err()
+            {
+                return Err(RelayError::Wedged(handoff));
+            }
         }
         Ok(())
     }
@@ -227,6 +266,13 @@ struct RelayConnection<'a> {
     /// How long the relay may stay silent before this socket is given up on;
     /// the interval `authenticated` carries sets it.
     deadline: Duration,
+    /// How long one frame may take to hand over before this socket is given up
+    /// on. Same source, same greeting (see [`handoff_deadline`]).
+    handoff: Duration,
+    /// Raised while this socket is the device's way in, dropped when it ends.
+    /// The heartbeat reads it, so presence says "reachable" and not merely
+    /// "running" (`reachability.rs`).
+    reachable: Reachability,
 }
 
 impl<'a> RelayConnection<'a> {
@@ -234,6 +280,7 @@ impl<'a> RelayConnection<'a> {
         control_tx: mpsc::UnboundedSender<Message>,
         intake: &'a FrameIntake,
         carrier: CarrierHandle,
+        reachable: &Reachability,
     ) -> Self {
         RelayConnection {
             control_tx,
@@ -241,6 +288,8 @@ impl<'a> RelayConnection<'a> {
             carrier,
             heartbeat: None,
             deadline: silence_deadline(DEFAULT_HEARTBEAT_INTERVAL_S),
+            handoff: handoff_deadline(DEFAULT_HEARTBEAT_INTERVAL_S),
+            reachable: reachable.clone(),
         }
     }
 
@@ -269,8 +318,10 @@ impl<'a> RelayConnection<'a> {
     }
 
     /// The relay took the signed challenge: start heartbeating at its interval.
-    /// Nothing else is said — this socket keeps the device findable and carries
-    /// the sessions a browser mints on it, and that is all.
+    /// Nothing else is said to the relay — this socket keeps the device
+    /// findable and carries the sessions a browser mints on it, and that is
+    /// all. It is also the moment the device becomes reachable, which is what
+    /// the api's presence is about, so the beat to the api starts here.
     fn authenticated(&mut self, msg: &Value) {
         let interval = msg
             .get("heartbeat_interval_s")
@@ -278,6 +329,8 @@ impl<'a> RelayConnection<'a> {
             .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_S);
         self.heartbeat = Some(spawn_heartbeat(self.control_tx.clone(), interval));
         self.deadline = silence_deadline(interval);
+        self.handoff = handoff_deadline(interval);
+        self.reachable.reached();
     }
 
     /// A client opened a session: parse its `session_init` off the relay wire
@@ -316,8 +369,11 @@ impl<'a> RelayConnection<'a> {
 impl Drop for RelayConnection<'_> {
     /// The socket is gone: the carrier is released (see `SessionRegistry`) and
     /// the heartbeat that fed it stops, so its hold on the writer's queue goes
-    /// with it.
+    /// with it. The device is no longer reachable either, so the beat to the
+    /// api stops until a socket is back — every way this future can end,
+    /// including being dropped mid-session, passes through here.
     fn drop(&mut self) {
+        self.reachable.lost();
         self.intake.close_carrier(&self.carrier);
         if let Some(task) = self.heartbeat.take() {
             task.abort();

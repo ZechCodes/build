@@ -74,6 +74,7 @@ pub mod pairing;
 pub mod plan;
 pub mod presence;
 pub mod pty;
+pub mod reachability;
 pub mod reaper;
 pub mod relay;
 pub mod relay_server;

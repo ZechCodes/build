@@ -31,6 +31,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
 use build_bridge::carrier::FrameHandler;
+use build_bridge::reachability::Reachability;
 use build_bridge::relay;
 use common::{device_identity, test_intake};
 
@@ -139,7 +140,13 @@ async fn wss_connects_to_tls_server_with_injected_root() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run_with_connector(&url, &identity, test_intake(handler), Some(connector)),
+        relay::run_with_connector(
+            &url,
+            &identity,
+            test_intake(handler),
+            Some(connector),
+            &Reachability::unreachable(),
+        ),
     )
     .await
     .expect("no timeout");
@@ -169,7 +176,12 @@ async fn wss_scheme_is_supported_without_injected_connector() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run(&url, &identity, test_intake(handler)),
+        relay::run(
+            &url,
+            &identity,
+            test_intake(handler),
+            &Reachability::unreachable(),
+        ),
     )
     .await
     .expect("no timeout")

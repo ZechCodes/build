@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use build_bridge::carrier::testing;
 use build_bridge::carrier::{FrameHandler, FrameIntake};
+use build_bridge::reachability::Reachability;
 use build_bridge::relay::{self, DeviceIdentity, RelayError};
 use build_bridge::transport::{self, DATA_FRAME_TYPE};
 use futures_util::{SinkExt, StreamExt};
@@ -146,6 +147,9 @@ pub struct ConnectedDevice {
     pub transport_public_key: String,
     pub bridge: JoinHandle<Result<(), RelayError>>,
     pub relay_socket: JoinHandle<()>,
+    /// What this socket says about the device being findable — the same flag
+    /// the daemon's heartbeat reads (`reachability.rs`).
+    pub reachable: Reachability,
 }
 
 /// Bind a mock relay and run the real bridge relay-client against it with
@@ -161,9 +165,11 @@ pub async fn connected_device(
     let (from_device_tx, from_device) = mpsc::channel::<Value>(64);
     let transport_public_key = intake.transport_public_key().to_string();
     let relay_socket = tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx));
+    let reachable = Reachability::unreachable();
     let bridge = {
         let identity = identity.clone();
-        tokio::spawn(async move { relay::run(&url, &identity, intake).await })
+        let reachable = reachable.clone();
+        tokio::spawn(async move { relay::run(&url, &identity, intake, &reachable).await })
     };
     ConnectedDevice {
         to_device,
@@ -171,5 +177,6 @@ pub async fn connected_device(
         transport_public_key,
         bridge,
         relay_socket,
+        reachable,
     }
 }

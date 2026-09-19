@@ -56,7 +56,10 @@ async fn main() {
                 |_sender, frame, _timer| json!({ "echo": frame.payload, "from": "bridge" }),
             );
             let intake = FrameIntake::new(handler, transport::generate_transport_keypair());
-            if let Err(e) = relay::run(&device_url, &identity, intake).await {
+            // Nothing in this example reads presence; the flag is the one the
+            // daemon shares with its heartbeat (`reachability.rs`).
+            let reachable = build_bridge::reachability::Reachability::unreachable();
+            if let Err(e) = relay::run(&device_url, &identity, intake, &reachable).await {
                 eprintln!("device exited: {e}");
             }
         });

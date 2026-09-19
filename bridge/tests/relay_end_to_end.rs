@@ -35,7 +35,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
         mut from_device,
         transport_public_key,
         bridge,
-        relay_socket: _,
+        ..
     } = connected_device(intake.clone(), &identity).await;
 
     // 1. The device uploaded the intake's transport key; the browser learns it.
@@ -108,7 +108,7 @@ async fn a_slow_handler_does_not_stall_the_socket() {
         mut from_device,
         transport_public_key,
         bridge,
-        relay_socket: _,
+        ..
     } = connected_device(test_intake(handler), &identity).await;
 
     let session_id = "sess-slow";
@@ -179,6 +179,7 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
         transport_public_key,
         bridge,
         relay_socket,
+        ..
     } = connected_device(intake.clone(), &identity).await;
     let session_id = "sess-carried";
     let session_key = transport::generate_session_key();
@@ -220,7 +221,7 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
         mut from_device,
         transport_public_key: _,
         bridge,
-        relay_socket: _,
+        ..
     } = connected_device(intake, &identity).await;
 
     to_device
@@ -256,7 +257,7 @@ async fn a_session_init_under_a_different_key_is_refused() {
         mut from_device,
         transport_public_key,
         bridge,
-        relay_socket: _,
+        ..
     } = connected_device(test_intake(handler), &identity).await;
     let session_id = "sess-minted";
     let session_key = transport::generate_session_key();
@@ -316,7 +317,7 @@ async fn a_cancelled_run_ends_the_sessions_that_rode_its_socket() {
         mut from_device,
         transport_public_key,
         bridge,
-        relay_socket: _,
+        ..
     } = connected_device(test_intake(handler), &identity).await;
     let session_id = "sess-cut";
     let session_key = transport::generate_session_key();
@@ -366,7 +367,7 @@ async fn an_app_verb_over_the_relay_is_refused_and_reaches_no_handler() {
         mut from_device,
         transport_public_key,
         bridge,
-        relay_socket: _,
+        ..
     } = connected_device(test_intake(handler), &identity).await;
     let session_id = "sess-refused";
     let session_key = transport::generate_session_key();

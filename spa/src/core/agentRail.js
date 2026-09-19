@@ -114,6 +114,7 @@ import {
   wireThreadLinks,
   wireThreadRevisionLinks,
   wireThreadSentMessages,
+  wireThreadArrivals,
 } from "./thread.js";
 import { createActivityRuns } from "./activityRuns.js";
 import { createUnreadMarker } from "./unreadAnchor.js";
@@ -2179,6 +2180,7 @@ function mountRailOnContext(host, context, swap) {
       revisionContents(controller.identity.entityId, revisionId, chatRepository.currentCall()));
     wireThreadLinks(body, openLink);
     wireThreadSentMessages(body, controller.threadState);
+    wireThreadArrivals(body, controller.threadState);
     wireThreadOptions(body, (choice) => choose(choice).catch((error) => {
       notifyError("Choice failed", error.message);
       throw error;

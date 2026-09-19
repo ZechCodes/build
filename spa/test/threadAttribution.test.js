@@ -6,7 +6,7 @@
 // words arrive on the left, in green, under the conversation they came from;
 // and a message this agent sent out is two lines that open onto what was said.
 import { describe, expect, it } from "vitest";
-import { createThreadState, threadHtml, wireThreadSentMessages } from "../src/core/thread.js";
+import { createThreadState, threadHtml, wireThreadArrivals, wireThreadSentMessages } from "../src/core/thread.js";
 
 /// Where the rail drawing the conversation is standing: the machine, and the
 /// project whose page it is on. A workspace's routes are written from both.
@@ -101,6 +101,93 @@ describe("a message another agent sent into this conversation", () => {
     });
     expect(document.querySelector(".thread-message-footer time")).not.toBeNull();
     expect(document.querySelector(".thread-status")).toBeNull();
+  });
+});
+
+/// What another agent sends is usually a report, and a report is long: the
+/// whole of one laid into the conversation buries everything said around it.
+/// So an arrival that runs past five lines is folded to five, with the press
+/// that opens it underneath — and one that already fits is left alone, press
+/// included, because there is nothing to open.
+describe("a long arrival", () => {
+  const REPORT = Array.from({ length: 12 }, (_, line) => `line ${line + 1} of the report`).join("\n");
+  const SHORT = "took the retry path\nand the rail is quiet again";
+
+  const report = (body = REPORT, options = {}) =>
+    threadWith({ id: "message-15", role: "user", body, from_agent: PROJECT_SENDER }, options);
+
+  const press = () => document.querySelector(".thread-arrival-press");
+  const card = () => document.querySelector(".thread-comment-card");
+
+  it("is folded to its first lines, with a press to open it", () => {
+    document.body.innerHTML = report();
+
+    expect(card().classList.contains("thread-arrival-folded")).toBe(true);
+    expect(press().tagName).toBe("BUTTON");
+    expect(press().getAttribute("aria-expanded")).toBe("false");
+    expect(press().getAttribute("aria-controls")).toBe(card().id);
+    // Folded, not truncated: the whole report is in the markup, and the reader
+    // scrolls it the moment they open it.
+    expect(document.querySelector(".thread-body").textContent).toContain("line 12 of the report");
+  });
+
+  it("leaves an arrival that already fits alone, press included", () => {
+    document.body.innerHTML = report(SHORT);
+
+    expect(card().classList.contains("thread-arrival-folded")).toBe(false);
+    expect(press()).toBeNull();
+  });
+
+  it("counts what a line of the panel holds, not what the sender typed", () => {
+    // One source line of five lines' worth of words still buries the
+    // conversation, and a message of five short lines does not.
+    document.body.innerHTML = report(`${"a fairly long sentence about the retry path. ".repeat(20)}`);
+    expect(press()).not.toBeNull();
+
+    document.body.innerHTML = report("one\ntwo\nthree\nfour\nfive");
+    expect(press()).toBeNull();
+  });
+
+  it("opens and shuts on a press", () => {
+    document.body.innerHTML = report();
+    wireThreadArrivals(document.body, createThreadState());
+
+    press().click();
+    expect(press().getAttribute("aria-expanded")).toBe("true");
+    expect(card().classList.contains("thread-arrival-folded")).toBe(false);
+    expect(press().querySelector(".thread-arrival-less").textContent).toBe("Show less");
+
+    press().click();
+    expect(press().getAttribute("aria-expanded")).toBe("false");
+    expect(card().classList.contains("thread-arrival-folded")).toBe(true);
+  });
+
+  it("opens on the keyboard too", () => {
+    document.body.innerHTML = report();
+    wireThreadArrivals(document.body, createThreadState());
+
+    press().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+    expect(press().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("stays open through a repaint of the conversation", () => {
+    const threadState = createThreadState({ ownerId: "conversation-3" });
+    document.body.innerHTML = report();
+    wireThreadArrivals(document.body, threadState);
+    press().click();
+
+    document.body.innerHTML = report(REPORT, { threadState });
+
+    expect(press().getAttribute("aria-expanded")).toBe("true");
+    expect(card().classList.contains("thread-arrival-folded")).toBe(false);
+  });
+
+  it("keeps the from line above it and the sequence on the row", () => {
+    document.body.innerHTML = report();
+
+    expect(document.querySelector(".thread-from-topic").textContent).toBe("Staffing the rail");
+    expect(document.querySelector(".thread-message").dataset.sequence).toBe("1");
   });
 });
 

@@ -446,6 +446,7 @@ export function createThreadState({ ownerId = "" } = {}) {
   const pendingChoices = new Map();
   const sendingChoices = new Set();
   const openSentMessages = new Set();
+  const openArrivals = new Set();
   let live = true;
 
   return Object.freeze({
@@ -481,6 +482,12 @@ export function createThreadState({ ownerId = "" } = {}) {
       if (!live) return;
       if (open) openSentMessages.add(key);
       else openSentMessages.delete(key);
+    },
+    arrivalIsOpen: (key) => openArrivals.has(key),
+    openArrival(key, open) {
+      if (!live) return;
+      if (open) openArrivals.add(key);
+      else openArrivals.delete(key);
     },
     choice: (key) => pendingChoices.get(key) || new Set(),
     choose(key, optionIds) {
@@ -763,6 +770,36 @@ function messageCardHtml(message, agentLabel, { live, offer, threadState }) {
     `;
 }
 
+/// How far an arrival is let down the page before it is folded, and roughly
+/// how many characters one of those lines holds in the panel.
+///
+/// The width is an estimate on purpose: what is being answered is "does this
+/// bury the conversation", and that question does not get a better answer from
+/// measuring the glyphs. The fold itself is the stylesheet's, over the markdown
+/// as rendered, so a message that estimates just over the line is folded at its
+/// true fifth line and not at a guess.
+const ARRIVAL_LINES = 5;
+const ARRIVAL_LINE_CHARS = 72;
+
+/// Roughly how many lines of the panel a body will take: every line of the
+/// source, plus what each of them wraps into. A blank line counts nothing — it
+/// is the space between paragraphs, not a line of words.
+const arrivalLineCount = (body) =>
+  String(body || "")
+    .split("\n")
+    .reduce((lines, line) => lines + Math.ceil(line.trim().length / ARRIVAL_LINE_CHARS), 0);
+
+/// Whether this arrival is long enough to be worth folding. A message that
+/// already fits is left whole, and is given no press: there would be nothing
+/// behind it.
+const arrivalRunsLong = (message) => arrivalLineCount(message.body) > ARRIVAL_LINES;
+
+/// The press under a folded arrival, which is the whole of the affordance: the
+/// two words are swapped by the stylesheet off `aria-expanded`, so the button
+/// says one thing at a time and the state is read from one place.
+const arrivalPressHtml = (key, cardId, open) =>
+  `<button type="button" class="thread-arrival-press" data-arrival-message="${esc(key)}" aria-controls="${cardId}" aria-expanded="${open ? "true" : "false"}"><span class="thread-arrival-more">Show more</span><span class="thread-arrival-less">Show less</span></button>`;
+
 /// A message another agent sent into this conversation.
 ///
 /// It is somebody else speaking, so it takes the side of the thread everything
@@ -770,17 +807,28 @@ function messageCardHtml(message, agentLabel, { live, offer, threadState }) {
 /// own bubble is the reader's voice, and these are not their words. Above it
 /// stands the only thing that makes it readable at all, which is where it came
 /// from: the workspace or project, and the conversation it was said in.
+///
+/// What arrives is usually a report, and a report is long: laid into the
+/// conversation whole it buries everything said around it. So a long one is
+/// folded to its first lines with a press underneath, and what the reader has
+/// opened is remembered outside the markup — the same way a sent message
+/// remembers it — so a repaint does not shut it under them.
 function arrivedMessageHtml(message, agentLabel, context) {
+  const key = messageKey(message);
+  const cardId = `thread-arrival-${esc(key)}`;
+  const long = arrivalRunsLong(message);
+  const open = !long || context.threadState.arrivalIsOpen(key);
   return `<article class="thread-message thread-comment from-agent"${sequenceAttribute(message)}>
     <div class="thread-from">${conversationLinksHtml(message.from_agent, context.place, "thread-from")}</div>
-    <div class="thread-comment-card">${messageCardHtml(message, agentLabel, context)}</div>
+    <div class="thread-comment-card${open ? "" : " thread-arrival-folded"}" id="${cardId}">${messageCardHtml(message, agentLabel, context)}</div>
+    ${long ? arrivalPressHtml(key, cardId, open) : ""}
   </article>`;
 }
 
-/// How a sent message is remembered while the reader has it open. The id, which
-/// is stable across every repaint; the sequence for a conversation rendered
-/// without one.
-const sentKey = (message) => String(message.id || message.sequence || "");
+/// How a message is remembered while the reader has it open — a sent one, an
+/// arrival, anything else that folds. The id, which is stable across every
+/// repaint; the sequence for a conversation rendered without one.
+const messageKey = (message) => String(message.id || message.sequence || "");
 
 /// The second line of a sent message, which is the press that opens it: the
 /// first line of what was sent, or — once it is open — the way to shut it
@@ -798,7 +846,7 @@ const sentPressHtml = (key, bodyId, open, preview) =>
 /// Open, the second line is the press that shuts it again rather than the first
 /// line a second time: the body underneath already starts with those words.
 function sentMessageHtml(message, { place, threadState }) {
-  const key = sentKey(message);
+  const key = messageKey(message);
   const bodyId = `thread-sent-${esc(key)}`;
   const open = threadState.sentIsOpen(key);
   const body = String(message.body || "");
@@ -1725,6 +1773,32 @@ export function wireThreadSentMessages(root, threadState = createThreadState()) 
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       show(shut());
+    };
+  });
+}
+
+/// Wire the press under a folded arrival: one press unfolds the report, a
+/// second folds it back.
+///
+/// The fold itself is a class on the card, so opening one costs no reflow of
+/// anything else and the whole report was in the markup all along. What is
+/// open is remembered outside the markup, so the next repaint draws it open
+/// rather than shutting it under the reader mid-read.
+export function wireThreadArrivals(root, threadState = createThreadState()) {
+  if (!root) return;
+  root.querySelectorAll(".thread-arrival-press").forEach((press) => {
+    const card = press.closest(".thread-message")?.querySelector(".thread-comment-card");
+    const show = (open) => {
+      press.setAttribute("aria-expanded", open ? "true" : "false");
+      card?.classList.toggle("thread-arrival-folded", !open);
+      threadState.openArrival(press.dataset.arrivalMessage, open);
+    };
+    const folded = () => press.getAttribute("aria-expanded") !== "true";
+    press.onclick = () => show(folded());
+    press.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      show(folded());
     };
   });
 }

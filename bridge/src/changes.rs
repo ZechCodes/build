@@ -68,6 +68,14 @@ pub const ENTITY_SETTLE_WINDOW: Duration = Duration::from_secs(1);
 /// refetch everything.
 const PENDING_KEY_CAP: usize = 512;
 
+/// How many entities one subscription remembers conversation cursors for.
+///
+/// The same ceiling [`PENDING_KEY_CAP`] puts on the entities one flush can
+/// name, so the table can never outgrow what a flush could fill it with.
+/// Past it the coldest entity is dropped, which costs that conversation one
+/// tip-only item and the `thread.page` a client answers that with.
+const THREAD_CURSOR_ENTITIES: usize = PENDING_KEY_CAP;
+
 /// The most paths one `files` item names before it stops naming them. Past
 /// this the item is `truncated`, which means "refetch the tree", not "these
 /// paths".
@@ -580,6 +588,14 @@ impl PendingItem {
     }
 }
 
+/// What one subscription has already sent for one entity's conversations,
+/// and when it last sent any of it — the order the table is evicted in when
+/// it is full.
+struct ThreadCursors {
+    sent: Vec<(String, u64)>,
+    at: Instant,
+}
+
 /// One live subscription: what it asked for, and what is waiting for it.
 struct Subscription {
     spec: SubscriptionSpec,
@@ -592,11 +608,14 @@ struct Subscription {
     /// the settle floor, pruned on every flush so it never grows with the
     /// entities a bridge has seen.
     emitted_at: HashMap<String, Instant>,
-    /// The last sequence this subscription has sent for each agent, so its
-    /// next thread item carries what was said after it. Per subscription,
-    /// because two subscriptions over one conversation have heard different
-    /// amounts of it; bounded by the agents on the device.
-    emitted_tips: HashMap<String, u64>,
+    /// What this subscription has sent of each entity's conversations, so
+    /// its next thread item carries what was said after it. Per
+    /// subscription, because two subscriptions over one conversation have
+    /// heard different amounts of it; keyed by entity, so a flush reads the
+    /// cursors of what moved and not of the whole device. An entity that
+    /// leaves the board takes its cursors with it, and
+    /// [`THREAD_CURSOR_ENTITIES`] caps the rest.
+    emitted_tips: HashMap<String, ThreadCursors>,
     /// Which whole lists have moved since THIS subscription's last board
     /// item. Per subscription, because two subscriptions watch the board at
     /// two cadences: the one that flushes first must not swallow the news
@@ -739,9 +758,65 @@ impl Subscription {
         if self.spec.scope != Scope::All || !due.contains_key(BOARD_ITEM_ID) {
             return Vec::new();
         }
-        match self.covered_last.replace(covered.clone()) {
-            Some(before) => before.difference(covered).cloned().collect(),
-            None => Vec::new(),
+        let Some(before) = self.covered_last.replace(covered.clone()) else {
+            return Vec::new();
+        };
+        let removed: Vec<String> = before.difference(covered).cloned().collect();
+        // The client drops a departed entity's conversation, so what this
+        // subscription remembered having sent for it is worth nothing.
+        for entity_id in &removed {
+            self.emitted_tips.remove(entity_id);
+        }
+        removed
+    }
+
+    /// What this subscription has already been sent for each entity whose
+    /// conversation is going out — its own cursors and nobody else's, so a
+    /// flush costs the entities that moved rather than every entity the
+    /// subscription has ever carried.
+    fn thread_cursors(
+        &self,
+        due: &BTreeMap<String, PendingItem>,
+    ) -> BTreeMap<String, Vec<(String, u64)>> {
+        due.iter()
+            .filter(|(_, item)| item.kinds.contains(Kind::Thread))
+            .filter_map(|(id, _)| Some((id.clone(), self.emitted_tips.get(id)?.sent.clone())))
+            .collect()
+    }
+
+    /// Record what one entity's item just carried.
+    fn record_thread_tips(&mut self, entity_id: &str, tips: &[ThreadTip], now: Instant) {
+        let cursors = self
+            .emitted_tips
+            .entry(entity_id.to_string())
+            .or_insert_with(|| ThreadCursors {
+                sent: Vec::new(),
+                at: now,
+            });
+        cursors.at = now;
+        for tip in tips {
+            match cursors.sent.iter_mut().find(|(id, _)| *id == tip.agent_id) {
+                Some((_, sequence)) => *sequence = tip.last_sequence,
+                None => cursors.sent.push((tip.agent_id.clone(), tip.last_sequence)),
+            }
+        }
+        self.evict_cold_cursors();
+    }
+
+    /// Hold the cursor table to [`THREAD_CURSOR_ENTITIES`], coldest entity
+    /// first. One dropped entity costs its conversation a tip-only item and
+    /// the `thread.page` the client answers that with.
+    fn evict_cold_cursors(&mut self) {
+        while self.emitted_tips.len() > THREAD_CURSOR_ENTITIES {
+            let coldest = self
+                .emitted_tips
+                .iter()
+                .min_by_key(|(_, cursors)| cursors.at)
+                .map(|(entity_id, _)| entity_id.clone());
+            match coldest {
+                Some(entity_id) => self.emitted_tips.remove(&entity_id),
+                None => return,
+            };
         }
     }
 
@@ -785,9 +860,10 @@ struct DueFrame {
     subscription_id: String,
     priority: Priority,
     items: BTreeMap<String, PendingItem>,
-    /// What this subscription has already sent for each agent, empty when no
-    /// item in the frame carries the `thread` kind.
-    thread_after: Vec<(String, u64)>,
+    /// What this subscription has already sent for each agent of each entity
+    /// whose conversation is in the frame. Empty when no item carries the
+    /// `thread` kind.
+    thread_after: BTreeMap<String, Vec<(String, u64)>>,
     /// The entities that have left the board since this subscription's last
     /// board item. Empty when nothing left, and when the frame carries no
     /// board item at all.
@@ -799,6 +875,13 @@ struct DueFrame {
 }
 
 impl DueFrame {
+    /// What this frame has already sent for ONE entity's conversations.
+    fn cursors_for(&self, entity_id: &str) -> &[(String, u64)] {
+        self.thread_after
+            .get(entity_id)
+            .map_or(&[][..], Vec::as_slice)
+    }
+
     fn payload(&self, facts: &BTreeMap<&str, &EntityFacts>, board_revision: u64) -> Value {
         let items: Vec<Value> = self
             .items
@@ -838,7 +921,10 @@ fn item_payload(
         );
     }
     if item.kinds.contains(Kind::Thread) {
-        out.insert("thread".into(), thread_payload(facts, &frame.thread_after));
+        out.insert(
+            "thread".into(),
+            thread_payload(facts, frame.cursors_for(entity_id)),
+        );
     }
     if item.kinds.contains(Kind::Git) {
         out.insert("git".into(), git_payload(facts));
@@ -1412,14 +1498,7 @@ impl ChangeBus {
             };
             let removed = sub.board_departures(&items, &covered);
             let lists = sub.take_board_lists(&items);
-            let thread_after = match items.values().any(|item| item.kinds.contains(Kind::Thread)) {
-                true => sub
-                    .emitted_tips
-                    .iter()
-                    .map(|(a, s)| (a.clone(), *s))
-                    .collect(),
-                false => Vec::new(),
-            };
+            let thread_after = sub.thread_cursors(&items);
             due.frames.push(DueFrame {
                 session: sub.session.clone(),
                 subscription_id: sub.spec.id.clone(),
@@ -1472,16 +1551,17 @@ impl ChangeBus {
     /// source answered, which is looked up after the items are taken and
     /// known only once the frame has gone out.
     fn stamp_thread_tips(&self, frame: &DueFrame, facts: &BTreeMap<&str, &EntityFacts>) {
-        let sent: Vec<&ThreadTip> = frame
+        let sent: Vec<(&String, &[ThreadTip])> = frame
             .items
             .iter()
             .filter(|(_, item)| item.kinds.contains(Kind::Thread))
-            .filter_map(|(id, _)| facts.get(id.as_str()))
-            .flat_map(|fact| fact.threads.iter())
+            .filter_map(|(id, _)| Some((id, facts.get(id.as_str())?.threads.as_slice())))
+            .filter(|(_, tips)| !tips.is_empty())
             .collect();
         if sent.is_empty() {
             return;
         }
+        let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         let Some(sub) = subscriptions
             .iter_mut()
@@ -1489,9 +1569,8 @@ impl ChangeBus {
         else {
             return;
         };
-        for tip in sent {
-            sub.emitted_tips
-                .insert(tip.agent_id.clone(), tip.last_sequence);
+        for (entity_id, tips) in sent {
+            sub.record_thread_tips(entity_id, tips, now);
         }
     }
 
@@ -1663,7 +1742,7 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
             entry.terminals |= item.kinds.contains(Kind::Terminals);
             entry.files |= item.kinds.contains(Kind::Files);
             if item.kinds.contains(Kind::Thread) {
-                merge_thread_after(&mut entry.thread_after, &frame.thread_after);
+                merge_thread_after(&mut entry.thread_after, frame.cursors_for(id));
             }
         }
     }
@@ -2794,6 +2873,200 @@ mod subscriptions {
         assert_eq!(
             seen.lock().unwrap().clone(),
             vec![Vec::new(), vec![("a1".to_string(), 812)]]
+        );
+    }
+
+    /// Every entity a lookup was asked about, and the cursors it was asked
+    /// with — what the cursor-table tests read back.
+    type AskedCursors = Arc<Mutex<Vec<(String, Vec<(String, u64)>)>>>;
+
+    /// One conversation per entity — `run-7` holds `a7` — standing at
+    /// sequence 5, echoing back the cursor it was asked with and recording
+    /// it.
+    fn thread_cursor_source(seen: AskedCursors) -> FactsSource {
+        Arc::new(move |requests: &[FactsRequest]| {
+            requests
+                .iter()
+                .map(|request| {
+                    seen.lock()
+                        .unwrap()
+                        .push((request.entity_id.clone(), request.thread_after.clone()));
+                    let agent = request.entity_id.replace("run-", "a");
+                    let since = request
+                        .thread_after
+                        .iter()
+                        .find(|(id, _)| *id == agent)
+                        .map(|(_, sequence)| *sequence);
+                    EntityFacts {
+                        entity_id: request.entity_id.clone(),
+                        threads: vec![ThreadTip {
+                            agent_id: agent,
+                            last_sequence: 5,
+                            items: Vec::new(),
+                            since_sequence: since,
+                        }],
+                        ..EntityFacts::default()
+                    }
+                })
+                .collect()
+        })
+    }
+
+    /// One entity's `thread` item out of a frame history.
+    fn thread_of(sent: &[Value], entity_id: &str) -> Value {
+        sent.iter()
+            .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+            .find(|item| item["entity_id"] == entity_id)
+            .map(|item| item["thread"].clone())
+            .unwrap_or_else(|| panic!("no item for {entity_id}: {sent:?}"))
+    }
+
+    /// A lookup is asked what ONE entity's conversations have already been
+    /// sent, not every cursor the subscription holds. An inbox subscription
+    /// covers every entity on the device, and handing all of their cursors
+    /// to each entity's lookup makes a flush cost the whole device.
+    #[tokio::test(start_paused = true)]
+    async fn a_lookup_is_asked_only_for_the_conversations_of_the_entity_it_names() {
+        let seen: AskedCursors = Arc::new(Mutex::new(Vec::new()));
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(|| vec!["run-7".into(), "run-8".into()]),
+            thread_cursor_source(Arc::clone(&seen)),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::Thread].into_iter().collect(),
+                ..spec("s-inbox", Scope::All, Mode::Realtime, Priority::Foreground)
+            },
+        );
+
+        bus.note_kind("run-7", Kind::Thread);
+        bus.note_kind("run-8", Kind::Thread);
+        bus.flush();
+        drained(&mut rx, &key);
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        seen.lock().unwrap().clear();
+
+        bus.note_kind("run-7", Kind::Thread);
+        bus.note_kind("run-8", Kind::Thread);
+        bus.flush();
+        drained(&mut rx, &key);
+
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            vec![
+                ("run-7".to_string(), vec![("a7".to_string(), 5)]),
+                ("run-8".to_string(), vec![("a8".to_string(), 5)]),
+            ]
+        );
+    }
+
+    /// A cursor leaves with the entity it belonged to. A run that finished
+    /// or was deleted is named in the board item's `removed`, the client
+    /// drops its conversation, and the bridge drops what it remembered
+    /// having sent for it.
+    #[tokio::test(start_paused = true)]
+    async fn a_cursor_leaves_with_the_entity_that_left_the_board() {
+        let listed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec!["run-7".into()]));
+        let board = Arc::clone(&listed);
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(move || board.lock().unwrap().clone()),
+            thread_cursor_source(Arc::new(Mutex::new(Vec::new()))),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::State, Kind::Thread].into_iter().collect(),
+                ..spec("s-inbox", Scope::All, Mode::Realtime, Priority::Foreground)
+            },
+        );
+
+        bus.note_board();
+        bus.note_kind("run-7", Kind::Thread);
+        bus.flush();
+        drained(&mut rx, &key);
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        bus.note_kind("run-7", Kind::Thread);
+        bus.flush();
+        let held = frames(drained(&mut rx, &key));
+        assert_eq!(
+            thread_of(&held, "run-7")[0]["since_sequence"],
+            json!(5),
+            "the cursor is held while the run is on the board: {held:?}"
+        );
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        listed.lock().unwrap().clear();
+        bus.note_board();
+        bus.flush();
+        let left = frames(drained(&mut rx, &key));
+        assert_eq!(
+            left[0]["items"][0]["state"]["removed"],
+            json!(["run-7"]),
+            "{left:?}"
+        );
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        bus.note_kind("run-7", Kind::Thread);
+        bus.flush();
+        let again = frames(drained(&mut rx, &key));
+        assert_eq!(
+            thread_of(&again, "run-7")[0]["since_sequence"],
+            Value::Null,
+            "the cursor left with the run: {again:?}"
+        );
+    }
+
+    /// The cursor table is bounded whatever the board does. Past
+    /// [`THREAD_CURSOR_ENTITIES`] the coldest entity is dropped, and the
+    /// next item for it is the tip alone — the client pages forward once
+    /// rather than the bridge growing a cursor per entity it has ever seen.
+    #[tokio::test(start_paused = true)]
+    async fn the_cursor_table_drops_the_coldest_entity_past_its_cap() {
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            thread_cursor_source(Arc::new(Mutex::new(Vec::new()))),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::Thread].into_iter().collect(),
+                ..spec("s-inbox", Scope::All, Mode::Realtime, Priority::Foreground)
+            },
+        );
+
+        bus.note_kind("run-0", Kind::Thread);
+        bus.flush();
+        drained(&mut rx, &key);
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        for n in 1..=THREAD_CURSOR_ENTITIES {
+            bus.note_kind(&format!("run-{n}"), Kind::Thread);
+        }
+        bus.flush();
+        drained(&mut rx, &key);
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        bus.note_kind("run-0", Kind::Thread);
+        bus.note_kind("run-1", Kind::Thread);
+        bus.flush();
+        let sent = frames(drained(&mut rx, &key));
+        assert_eq!(
+            thread_of(&sent, "run-1")[0]["since_sequence"],
+            json!(5),
+            "the warm entity kept its cursor: {sent:?}"
+        );
+        assert_eq!(
+            thread_of(&sent, "run-0")[0]["since_sequence"],
+            Value::Null,
+            "the coldest one was dropped to keep the table bounded: {sent:?}"
         );
     }
 

@@ -2651,9 +2651,11 @@ function mountRailOnContext(host, context, swap) {
   /** Send a message to an agent that exists.
    *
    *  The message goes into the conversation's own record before the post
-   *  leaves, so it is on screen in the frame the reader pressed send in — and
-   *  it is on screen in every tab and every surface reading that conversation,
-   *  because there is one conversation and this is where it is kept. What the
+   *  leaves, and the record is what every reader of that conversation paints
+   *  from — so the announcement that write makes is what puts it on screen,
+   *  here and in every other tab and surface on it alike. One cache round trip,
+   *  not the frame send was pressed in: there is one conversation, and this is
+   *  where it is kept rather than in a second store beside the panel. What the
    *  post answers stamps the sequence onto it; a refusal takes it back out. */
   const deliverSubmission = (controller, submission) => {
     const address = conversationRecordAddress(submission.address);

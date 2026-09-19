@@ -42,6 +42,8 @@ export function createRailWorkItem({
   let unwatchRow = null;
   let unwatchSources = null;
   let watchedRowId;
+  let rereading = null;
+  let rereadAgain = false;
 
   const rowAddress = (entityId) =>
     (entityId && cacheScope?.address({ entityId, kind: ROW_RECORD_KIND })) || null;
@@ -97,6 +99,28 @@ export function createRailWorkItem({
     if (alive() && row) standOn(row);
   };
 
+  /// One re-read at a time, and one more where something moved while it ran.
+  ///
+  /// Resolving a route walks every row the device holds, so a re-read per row
+  /// written would cost N of those walks for the N rows one sync pass writes —
+  /// on exactly the path the cache exists to make fast. Collapsing them loses
+  /// nothing: the read that follows the burst sees every row in it.
+  const rereadOnce = async () => {
+    if (rereading) {
+      rereadAgain = true;
+      return rereading;
+    }
+    rereading = (async () => {
+      do {
+        rereadAgain = false;
+        await reread();
+      } while (rereadAgain && alive());
+    })().finally(() => {
+      rereading = null;
+    });
+    return rereading;
+  };
+
   /// No row on this device answers to this route yet — a checkout nobody has
   /// claimed, or a boot whose first pass has not written the rows. Hear the
   /// rows as a whole until one of them is this rail's, and stop as soon as one
@@ -106,7 +130,7 @@ export function createRailWorkItem({
     if (!deviceAddress) return null;
     return subscribeCache(deviceAddress, (changed) => {
       if (changed.kind && changed.kind !== ROW_RECORD_KIND) return;
-      void reread();
+      void rereadOnce();
     });
   };
 

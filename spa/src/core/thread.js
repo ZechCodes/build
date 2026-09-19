@@ -202,16 +202,24 @@ export function withoutProvisionalItem(items = [], operationId) {
 }
 
 /** The items with the sequence a post was acknowledged at stamped onto the
- *  stand-in waiting for it, so it sits where the message will. The list itself
- *  where it holds no such stand-in, so a caller can tell nothing happened. */
+ *  stand-in waiting for it, and re-seated where that sequence puts it. The list
+ *  itself where it holds no such stand-in, so a caller can tell nothing
+ *  happened.
+ *
+ *  Re-seated rather than left in place, because until the receipt lands the
+ *  stand-in is ordered LAST: an agent's reply arriving in between takes a
+ *  higher sequence than the message it is a reply to, and leaving the stand-in
+ *  where it stood would draw the reader's own words under the answer to them. */
 export function acknowledgeProvisionalItem(items = [], operationId, sequence, deliveryStatus = "sent") {
   const key = provisionalItemKey(operationId);
   if (!items.some((item) => threadItemKey(item) === key)) return items;
-  return items.map((item) =>
-    threadItemKey(item) === key
-      ? { ...item, data: { ...item.data, sequence, delivery_status: deliveryStatus } }
-      : item,
-  );
+  return items
+    .map((item) =>
+      threadItemKey(item) === key
+        ? { ...item, data: { ...item.data, sequence, delivery_status: deliveryStatus } }
+        : item,
+    )
+    .sort((one, other) => orderingSequence(one) - orderingSequence(other));
 }
 
 /**

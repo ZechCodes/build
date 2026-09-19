@@ -517,6 +517,19 @@ describe("provisional items in the thread record", () => {
     expect(acknowledged[1].data.sequence).toBe(6);
     expect(acknowledged[1].data.delivery_status).toBe("sent");
   });
+
+  // The stand-in is ordered last while it has no sequence. A reply that arrives
+  // before the receipt does takes a HIGHER sequence than the message it is a
+  // reply to, so stamping alone would leave the reader's own words drawn under
+  // an answer to them until the real item arrives and a merge re-sorts.
+  it("seats the item it stamped where its sequence says, not where it was", () => {
+    const held = mergeThreadItems([item(1, "a"), sent("op-1", "ship it")], [item(8, "on it")]);
+    expect(held.map(threadItemKey)).toEqual(["1", "8", "provisional:op-1"]);
+
+    const acknowledged = acknowledgeProvisionalItem(held, "op-1", 7);
+
+    expect(acknowledged.map(threadItemKey)).toEqual(["1", "provisional:op-1", "8"]);
+  });
 });
 
 describe("structured review messages", () => {

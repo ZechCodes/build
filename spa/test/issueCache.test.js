@@ -3,20 +3,21 @@
 //
 // Issues left the board, so no pass fills them and no push carries their
 // bodies: the surface reads on demand and writes what it read, and every paint
-// after that is the record's. A `state` push naming the issue is what says the
-// record is behind, and only then is it read again.
+// after that is the record's. What says a record is behind is a `state` push
+// naming the issue — or the mount, which is the only other moment anything
+// could tell this surface that the issue moved while the tab was shut.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-let issueAddress, readIssueRecord, forgetIssueRecords;
+let issueAddress, readIssueRecord, forgetIssueRecords, issueRecordsHeld;
 let readCached, writeCached;
 
 beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
-  ({ issueAddress, readIssueRecord, forgetIssueRecords } = await import("../src/core/issueCache.js"));
+  ({ issueAddress, readIssueRecord, forgetIssueRecords, issueRecordsHeld } = await import("../src/core/issueCache.js"));
   ({ readCached, writeCached } = await import("../src/core/localCache.js"));
 });
 
@@ -70,6 +71,18 @@ describe("reading an issue record", () => {
 
     expect(await held("stages")).toEqual({ stages: [] });
     expect((await held("stage:s1")).contents).toBe("# Wire");
+  });
+
+  // The mount asks this to know which frame it is about to paint: the
+  // records', with the machine read behind it, or the machine's.
+  it("says whether the records a mount paints from are all there", async () => {
+    expect(await issueRecordsHeld("dev-1", "issue-1", ["get", "stages"])).toBe(false);
+
+    await readThrough("get", async () => ({ goal: "ship it" }));
+    expect(await issueRecordsHeld("dev-1", "issue-1", ["get", "stages"])).toBe(false);
+
+    await readThrough("stages", async () => ({ stages: [] }));
+    expect(await issueRecordsHeld("dev-1", "issue-1", ["get", "stages"])).toBe(true);
   });
 
   it("lets go of everything one issue holds", async () => {

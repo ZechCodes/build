@@ -8,7 +8,9 @@
 // cold one is filled from the wire on the way, and every paint after that is
 // the record's.
 //
-// What says a record is behind is the `state` push naming the issue. That is
+// What says a record is behind is the `state` push naming the issue, or the
+// mount: nothing else fills these records, so an approval given from another
+// device while the tab was shut is news no later word will ever carry. That is
 // when a read is forced; nothing here runs on a timer.
 //
 // One kind, `issue`, with a sub-key per thing the surface holds:
@@ -24,7 +26,7 @@
 // read that fails has nothing behind it, so it is raised — the surface has an
 // empty state for exactly that.
 
-import { cachedAddresses, deleteCached, readCached, writeCached } from "./localCache.js";
+import { cachedAddresses, deleteCached, readCached, readCachedMany, writeCached } from "./localCache.js";
 
 export const ISSUE_RECORD_KIND = "issue";
 
@@ -58,6 +60,21 @@ export async function readIssueRecord({ deviceId, issueId, sub, read, force = fa
   }
   await writeCached(address, answer);
   return answer;
+}
+
+/** Whether all of these records are already on disk.
+ *
+ *  What a mount asks to know which frame it is about to paint. A cold surface
+ *  has to read the machine to paint at all, and what it paints is that read. A
+ *  warm one paints the records first and reads behind them — the round trip is
+ *  what this stage took out of the first frame, and the catch-up is what keeps
+ *  the frame from being last week's. */
+export async function issueRecordsHeld(deviceId, issueId, subs) {
+  const records = await readCachedMany(subs.map((sub) => issueAddress(deviceId, issueId, sub)));
+  // Indexed off `subs`, never walked off `records`: a cache that answered
+  // nothing hands back an array of holes, and `every` walks past a hole as
+  // though it had agreed.
+  return subs.every((sub, index) => records[index]?.value !== undefined);
 }
 
 /** Everything one issue holds, gone: it was deleted, or the reader asked for

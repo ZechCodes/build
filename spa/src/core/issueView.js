@@ -10,8 +10,9 @@
 // Paints from the issue's own records with a keyed freeze; the freeze also
 // holds while the reviewer is mid-comment or an action is in flight. Issues
 // left the board, so nothing fills those records but this surface: it reads
-// through them (core/issueCache.js) on mount, when a `state` push says the
-// issue moved, and when a verb it sent changed something. There is no poll.
+// through them (core/issueCache.js) on mount — the records paint the frame and
+// the machine is asked behind them — when a `state` push says the issue moved,
+// and when a verb it sent changed something. There is no poll.
 // The pure pieces live in issueModel.js (decisions) and issueRender.js
 // (markup); this file is the wiring.
 
@@ -63,7 +64,7 @@ import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { removeRecord, runOptimistic } from "./optimistic.js";
 import { replyOrNothing } from "./session.js";
-import { forgetIssueRecords, readIssueRecord } from "./issueCache.js";
+import { forgetIssueRecords, issueRecordsHeld, readIssueRecord } from "./issueCache.js";
 
 /** Bind an async RPC to a button: disable + label while in flight, restore and
  *  raise a persistent expandable error notification on failure. */
@@ -840,7 +841,22 @@ export function mountIssueView(
    *  surface sent moved something, and the records it paints from are behind. */
   const refresh = () => load({ reread: true, repaint: true });
 
-  load();
+  /**
+   * The first paint, and the catch-up behind it.
+   *
+   * Warm, the records paint the frame this mounted in and the machine is read
+   * straight after: the mount is the one moment this surface can catch up on
+   * what happened while it was closed — an approval given from another device
+   * has already happened, so no push will ever name it, and no pass fills
+   * these records either. Cold, the first read IS the machine's, and asking
+   * again would be the same answer twice.
+   */
+  const mountRead = async () => {
+    const held = await issueRecordsHeld(deviceId, issueId, ["get", "stages"]);
+    await load();
+    if (held) await load({ reread: true });
+  };
+  void mountRead();
   // The issue is the entity: its own plan/stage/thread mutations are what stale
   // this surface, and the push naming it is what says so. There is nothing
   // behind this to poll. `pausesWhileHidden: false` because this is the one

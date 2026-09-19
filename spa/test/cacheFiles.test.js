@@ -182,6 +182,17 @@ describe("a file body", () => {
     expect(await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" })).toBeUndefined();
   });
 
+  // The cap is the file's own size, not the weight of the body on the wire:
+  // base64 is a third bigger than the bytes it carries, and a rule read off it
+  // would refuse files well under a megabyte. So an answer that came back
+  // whole is still refused on the size it names.
+  it("refuses a whole body the file's own size puts over the cap", async () => {
+    const wholeAndHuge = fileAnswer({ size: 2 * 1024 * 1024, content_b64: b64("hello") });
+    const { host } = await openReadme(withReadme(wholeAndHuge));
+    expect(host.textContent).toContain("hello");
+    expect(await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" })).toBeUndefined();
+  });
+
   it("keeps the five most recently opened and no more", async () => {
     const names = ["a", "b", "c", "d", "e", "f", "g"];
     await seedTree("", names.map((name) => ({ name: `${name}.md`, kind: "file", size: 5 })));

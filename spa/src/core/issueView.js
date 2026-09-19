@@ -602,7 +602,7 @@ export function mountIssueView(
       }
     }
     bindAction(viewerHost.querySelector("#stagediff"), "loading…", async () => {
-      const diff = await issueRecord(`stagediff:${stage.id}`, () =>
+      const diff = await onDemandRecord(`stagediff:${stage.id}`, () =>
         callRpc("issue.stage_diff", { issue_id: issueId, stage_id: stage.id }),
       );
       let pane = viewerHost.querySelector("#stagediffpane");
@@ -728,6 +728,32 @@ export function mountIssueView(
   const issueRecord = (sub, read, force = false) =>
     readIssueRecord({ deviceId, issueId, sub, read, force });
 
+  // What a word that the issue moved leaves behind for the records this surface
+  // fills on demand — the open stage's doc, a single-doc issue's plan, a
+  // stage's stable diff. The issue and its manifest are re-read as that word
+  // arrives; these are read when the reader asks for them, which can be long
+  // after, so the word is kept as a count and spent the next time each is read.
+  //
+  // It has to be kept, because nothing else ever fills these records: a plan
+  // revised while the reader has it open (the daemon's `StageDocEvent::Revised`,
+  // legal from both planned and approved) is news no later word carries. A doc
+  // not read again on this word is never read again at all.
+  let wordCount = 0;
+  const readAt = new Map(); // sub → the word count its record was last read at
+
+  /** Whether a word has landed since this record was last read. A record this
+   *  session has never read is not behind — it is the frame the surface is
+   *  about to paint, and it comes off the disk. */
+  const behind = (sub) => readAt.has(sub) && readAt.get(sub) < wordCount;
+
+  /** One of the on-demand records, read through the cache and past it once a
+   *  word says so. */
+  const onDemandRecord = async (sub, read) => {
+    const answer = await issueRecord(sub, read, behind(sub));
+    readAt.set(sub, wordCount);
+    return answer;
+  };
+
   /** The issue itself and its stage manifest. Cold, both are read; warm, both
    *  are answered off disk and the surface paints on the frame it mounted in. */
   const readIssueAndStages = (force) =>
@@ -812,11 +838,11 @@ export function mountIssueView(
    *  and never again while the held doc is the open stage's. */
   const loadStageDoc = async () => {
     if (!selectedStageId) return;
-    if (stageDoc && stageDoc.stage_id === selectedStageId) return;
-    if (!shouldFetchPlanDoc({ docsAvailable: issue && issue.docs_available, errorLatched: docErrors.has(selectedStageId) })) return;
     const wanted = selectedStageId;
+    if (stageDoc && stageDoc.stage_id === wanted && !behind(`stage:${wanted}`)) return;
+    if (!shouldFetchPlanDoc({ docsAvailable: issue && issue.docs_available, errorLatched: docErrors.has(wanted) })) return;
     try {
-      const doc = await issueRecord(`stage:${wanted}`, () =>
+      const doc = await onDemandRecord(`stage:${wanted}`, () =>
         callRpc("issue.stage_doc", { issue_id: issueId, stage_id: wanted }),
       );
       if (!disposed && selectedStageId === wanted) stageDoc = doc;
@@ -828,10 +854,11 @@ export function mountIssueView(
   /** The single-doc issue's plan, fetched once and latched off on error — the
    *  same discipline the stage docs get. */
   const loadSingleDoc = async () => {
-    if (stages().length || singleDoc !== null) return;
+    if (stages().length) return;
+    if (singleDoc !== null && !behind("doc")) return;
     if (!shouldFetchPlanDoc({ docsAvailable: issue && issue.docs_available, errorLatched: singleDocError })) return;
     try {
-      singleDoc = (await issueRecord("doc", () => callRpc("issue.doc", { issue_id: issueId }))).contents || "";
+      singleDoc = (await onDemandRecord("doc", () => callRpc("issue.doc", { issue_id: issueId }))).contents || "";
     } catch {
       singleDocError = true;
     }
@@ -840,6 +867,20 @@ export function mountIssueView(
   /** Read the issue again from its machine and draw the answer: a verb this
    *  surface sent moved something, and the records it paints from are behind. */
   const refresh = () => load({ reread: true, repaint: true });
+
+  /** A word from outside: a push naming the issue, or the mount catching up on
+   *  what happened while the tab was shut.
+   *
+   *  It is the one thing that says the plan itself may have been rewritten
+   *  under the reader — the daemon revises a stage doc from planned and from
+   *  approved alike — so it puts the records this surface fills on demand
+   *  behind as well as the two it always reads. A verb this surface sent is
+   *  not such a word: it moved what it named, and the answer to it is what
+   *  `refresh` already reads. */
+  const readOnWord = () => {
+    wordCount += 1;
+    return load({ reread: true });
+  };
 
   /**
    * The first paint, and the catch-up behind it.
@@ -854,7 +895,7 @@ export function mountIssueView(
   const mountRead = async () => {
     const held = await issueRecordsHeld(deviceId, issueId, ["get", "stages"]);
     await load();
-    if (held) await load({ reread: true });
+    if (held) await readOnWord();
   };
   void mountRead();
   // The issue is the entity: its own plan/stage/thread mutations are what stale
@@ -862,7 +903,7 @@ export function mountIssueView(
   // behind this to poll. `pausesWhileHidden: false` because this is the one
   // detail surface that keeps up while the tab is away.
   const watcher = watchChanges({
-    refresh: () => load({ reread: true }),
+    refresh: readOnWord,
     entity: issueId,
     pausesWhileHidden: false,
     // Focus tier: an issue is plan, stage and conversation — no checkout.

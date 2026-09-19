@@ -129,3 +129,64 @@ describe("mounting over records the last session left", () => {
     expect(calls.filter((method) => method === "issue.stages")).toHaveLength(1);
   });
 });
+
+// A stage doc is not written once and kept forever. A plan is revised while the
+// reader has it open (bridge `plan.rs`: `StageDocEvent::Revised` is legal from
+// both Planned and Approved), and the word that says so is the same one the
+// issue itself is re-read on — a `state` push naming the issue, or the mount.
+// Nothing else ever fills these records, so a doc that is not read again on
+// that word is never read again at all.
+describe("the records the surface fills on demand", () => {
+  const revisable = () => {
+    const stages = [stage({ id: "s2" })];
+    return { stages, issue: issuePayload({ docs_available: true, stages }) };
+  };
+
+  it("reads the open stage's doc again when a word says the issue moved", async () => {
+    const { stages, issue } = revisable();
+    await seed(issue, stages);
+    await writeCached(issueAddress("dev-1", "issue-1", "stage:s2"), { stage_id: "s2", contents: "the first cut" });
+    const calls = [];
+    view = mountIssueView(host, {
+      issueId: "issue-1",
+      projectId: "proj-1",
+      deviceId: "dev-1",
+      callRpc: async (method) => {
+        calls.push(method);
+        if (method === "issue.get") return issue;
+        if (method === "issue.stages") return { stages };
+        if (method === "issue.stage_doc") return { stage_id: "s2", contents: "what the planner rewrote" };
+        return {};
+      },
+    });
+    await settle();
+
+    expect(calls.filter((method) => method === "issue.stage_doc")).toHaveLength(1);
+    expect(host.textContent).toContain("what the planner rewrote");
+    expect(host.textContent).not.toContain("the first cut");
+  });
+
+  it("leaves the doc alone on a paint no word came with", async () => {
+    const { stages, issue } = revisable();
+    await seed(issue, stages);
+    await writeCached(issueAddress("dev-1", "issue-1", "stage:s2"), { stage_id: "s2", contents: "the first cut" });
+    const calls = [];
+    view = mountIssueView(host, {
+      issueId: "issue-1",
+      projectId: "proj-1",
+      deviceId: "dev-1",
+      callRpc: async (method) => {
+        calls.push(method);
+        if (method === "issue.get") return issue;
+        if (method === "issue.stages") return { stages };
+        if (method === "issue.stage_doc") return { stage_id: "s2", contents: "the first cut" };
+        return {};
+      },
+    });
+    await settle();
+    await settle();
+
+    // One read: the mount's catch-up. Every frame after it is the record's.
+    expect(calls.filter((method) => method === "issue.stage_doc")).toHaveLength(1);
+  });
+});

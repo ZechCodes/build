@@ -372,6 +372,23 @@ describe("the issue view", () => {
     });
   });
 
+  // The daemon revises a stage doc from planned and from approved alike
+  // (`StageDocEvent::Revised`), and the push naming the issue is the only word
+  // that ever says so: nothing fills an issue's records but this surface.
+  it("reads the open stage's doc again when a push says the issue moved", async () => {
+    const doc = { stage_id: "s1", contents: "# Wire\n\nthe first cut of the plan." };
+    const { host, view, calls } = await mount({ doc });
+    expect(host.textContent).toContain("the first cut of the plan.");
+
+    doc.contents = "# Wire\n\nwhat the planner rewrote.";
+    await pushMoved();
+
+    expect(calls.filter(([method]) => method === "issue.stage_doc")).toHaveLength(2);
+    expect(host.textContent).toContain("what the planner rewrote.");
+    expect(host.textContent).not.toContain("the first cut of the plan.");
+    view.dispose();
+  });
+
   it("approves every planned stage from the list, one call per stage", async () => {
     const { host, view, calls } = await mount({ stages: [stage(), stage({ id: "s2" })] });
     host.querySelector("#approveall").click();

@@ -95,6 +95,37 @@ const addressOf = (context, entityId, kind, sub = "") => ({ deviceId: context.de
 const heldValue = async (context, entityId, kind, sub = "") =>
   (await readCached(addressOf(context, entityId, kind, sub)))?.value;
 
+/** The merges in flight, one queue per address. */
+const recordWrites = new Map();
+
+const recordKey = (address) =>
+  [address.deviceId, address.entityId, address.kind, address.sub || ""].join("\u0000");
+
+/**
+ * A record two writers meet on, merged one writer at a time.
+ *
+ * The pass and the pushes both read a record, merge what they are carrying
+ * into it and write it back, and neither waits for the other: a pass holding
+ * a commit list it read before a push landed would write the push's commits
+ * back out of existence. So the merge itself runs under the address, and it
+ * is handed the record as it stands at that moment rather than one read
+ * earlier. `null` from the merge leaves the record alone.
+ */
+function mergeRecord(address, merge) {
+  const key = recordKey(address);
+  const run = async () => {
+    const next = merge((await readCached(address))?.value);
+    if (next) await writeCached(address, next);
+  };
+  const ran = (recordWrites.get(key) || Promise.resolve()).then(run, run);
+  const settled = ran.catch(NOTHING);
+  recordWrites.set(key, settled);
+  void settled.then(() => {
+    if (recordWrites.get(key) === settled) recordWrites.delete(key);
+  });
+  return ran;
+}
+
 /** One read, written through by the caller. A failure is a cold record: the
  *  machine is offline, the checkout moved under the read, or this bridge does
  *  not serve the verb. The next trigger or push asks again. */
@@ -362,7 +393,7 @@ async function syncLog(context, entityId, scope, priority) {
   const params = held?.newest ? { ...scope, since: held.newest } : { ...scope, limit: LATEST_COMMITS };
   const answer = await ask(context, "git.log", params, priority);
   if (!answer || !context.active()) return;
-  await writeCached(addressOf(context, entityId, "log"), mergedLog(held, answer));
+  await mergeRecord(addressOf(context, entityId, "log"), (current) => mergedLog(current, answer));
 }
 
 /**
@@ -381,7 +412,14 @@ export function mergedLog(held, answer) {
   const arriving = answer.commits || [];
   const previous = reset ? [] : (held?.commits || []);
   const arrived = new Set(arriving.map((commit) => commit.hash));
-  const commits = [...arriving, ...previous.filter((commit) => !arrived.has(commit.hash))];
+  const kept = new Set(previous.map((commit) => commit.hash));
+  // An answer carrying nothing the record does not already hold leaves the
+  // record's own order alone. Another writer reached it first with more of
+  // this history than this answer walked, and putting these commits back in
+  // front of it would stand an older commit at the head of the list.
+  const commits = arriving.every((commit) => kept.has(commit.hash))
+    ? previous
+    : [...arriving, ...previous.filter((commit) => !arrived.has(commit.hash))];
   return { ...rest, commits, newest: newestAfter(held, answer, commits) };
 }
 
@@ -401,17 +439,22 @@ export function windowedLog(held, window) {
   return mergedLog(reaches ? held : null, window);
 }
 
-/** The cursor the record reads forward from next: what the answer named, else
- *  the newest commit the record is left holding, else the cursor it already
+/** The cursor the record reads forward from next: the newest commit the record
+ *  is left holding, else what the answer named, else the cursor it already
  *  had.
  *
- *  A reset takes that last one with it. The hash this cache was reading from
- *  is one the checkout no longer has, so keeping it would have the next read
- *  ask after it again and be answered `reset` again, for ever. With no cursor
- *  the next read asks for the latest commits, which is what a cache that
- *  knows nothing of a history asks for. */
+ *  The record's own head leads because a walk is answered newest first from
+ *  HEAD — so the two agree, except where another writer got to the record
+ *  with more of the history than this answer walked. There the record is what
+ *  the next read must read forward from.
+ *
+ *  A reset takes the last of the three with it. The hash this cache was
+ *  reading from is one the checkout no longer has, so keeping it would have
+ *  the next read ask after it again and be answered `reset` again, for ever.
+ *  With no cursor the next read asks for the latest commits, which is what a
+ *  cache that knows nothing of a history asks for. */
 const newestAfter = (held, answer, commits) =>
-  answer.newest || commits[0]?.hash || (answer.reset ? null : held?.newest || null);
+  commits[0]?.hash || answer.newest || (answer.reset ? null : held?.newest || null);
 
 /** The unpushed commits, without the patch that rides with them: the Records
  *  table holds the base, the commit list and the diff key, and the patch
@@ -491,7 +534,7 @@ async function pullWorkingDiff(context, entityId, row, priority) {
     load: (envelope) => context.call(method, params, envelope),
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
-  await writeCached(address, diffRecord(held, diff, row));
+  await mergeRecord(address, (current) => diffRecord(current, diff, row));
 }
 
 /** The diff record after a new body, wherever the body came from. The body
@@ -525,8 +568,7 @@ async function syncThread(context, entityId, agent, priority) {
   const after = Number(held?.deliveredSequence || 0);
   const page = await ask(context, "thread.page", threadPageParams(entityId, agent, after), priority);
   if (!page || !context.active()) return;
-  const window = threadWindow(held, page);
-  if (window) await writeCached(address, window);
+  await mergeRecord(address, (current) => threadWindow(current, page));
 }
 
 const threadPageParams = (entityId, agent, after) => ({
@@ -775,8 +817,7 @@ async function applyThreadTip(context, entityId, tip) {
     await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }, "background");
     return;
   }
-  const window = threadWindow(held, { items, thread_total: tip.thread_total });
-  if (window) await writeCached(address, window);
+  await mergeRecord(address, (current) => threadWindow(current, { items, thread_total: tip.thread_total }));
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things
@@ -786,7 +827,7 @@ async function applyGit(context, entityId, git) {
   const row = await heldValue(context, entityId, "row");
   if (git.status) await writeCached(addressOf(context, entityId, "status"), git.status);
   if (git.log) {
-    await writeCached(addressOf(context, entityId, "log"), windowedLog(await heldValue(context, entityId, "log"), git.log));
+    await mergeRecord(addressOf(context, entityId, "log"), (current) => windowedLog(current, git.log));
   }
   if (git.unpushed) await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
   if (git.diff) await writePushedDiff(context, entityId, git.diff, row);
@@ -795,7 +836,7 @@ async function applyGit(context, entityId, git) {
 
 async function writePushedDiff(context, entityId, diff, row) {
   const address = addressOf(context, entityId, "diff");
-  await writeCached(address, diffRecord((await readCached(address))?.value, diff, row));
+  await mergeRecord(address, (current) => diffRecord(current, diff, row));
 }
 
 async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {

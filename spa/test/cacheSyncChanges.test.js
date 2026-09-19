@@ -464,6 +464,66 @@ describe("applying one item", () => {
   });
 });
 
+describe("a push and a pass landing on the same record", () => {
+  // Both are read-then-merge-then-write and neither waits for the other. A
+  // record whose merge saw the store as it was before the other writer got
+  // there would put that writer's arrival back the way it was.
+
+  /** A pass held at one verb: the answer resolves when the case says so. */
+  const heldAnswer = (method) => {
+    let release = null;
+    script[method] = () => new Promise((resolve) => {
+      release = resolve;
+    });
+    return (answered) => release(answered);
+  };
+
+  it("keeps a commit a push carried while the pass was reading the log", async () => {
+    await boot([branchItem()]);
+    const answerLog = heldAnswer("git.log");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+
+    await deliver([{
+      entity_id: "run-1",
+      git: { log: { commits: [{ hash: "c2" }, { hash: "c1" }], newest: "c2", more: false } },
+    }]);
+    answerLog({ commits: [], newest: "c1" });
+    await settle();
+
+    const record = (await read("run-1", "log")).value;
+    expect(record.commits.map((one) => one.hash)).toEqual(["c2", "c1"]);
+    expect(record.newest).toBe("c2");
+  });
+
+  it("keeps the items a push carried while the pass was reading the conversation", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 7 } }], deliveredSequence: 7 },
+    );
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    const answerPage = heldAnswer("thread.page");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+
+    await deliver([{
+      entity_id: "run-1",
+      thread: [{
+        agent_id: "ag-1",
+        since_sequence: 7,
+        last_sequence: 9,
+        items: [{ id: "m-8", data: { sequence: 8 } }, { id: "m-9", data: { sequence: 9 } }],
+      }],
+    }]);
+    answerPage({ items: [{ id: "m-8", data: { sequence: 8 } }], has_more: false });
+    await settle();
+
+    const record = (await read("run-1", "thread", "ag-1")).value;
+    expect(record.items.map((one) => one.id)).toEqual(["m-1", "m-8", "m-9"]);
+    expect(record.deliveredSequence).toBe(9);
+  });
+});
+
 describe("the board item", () => {
   it("lets go of the data of every entity that left the board", async () => {
     await boot([branchItem()]);

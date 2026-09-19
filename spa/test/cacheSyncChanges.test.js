@@ -178,6 +178,23 @@ describe("the three subscriptions", () => {
     expect(live()).toHaveLength(3);
   });
 
+  it("issues the active one for a workspace whose row arrived on a push", async () => {
+    // The commonest way onto a new workspace: the reader makes a branch and
+    // walks into it. Its row rides a `state` item — the last pass never saw
+    // it — and the workspace on screen still owes realtime git and files.
+    await boot([branchItem()]);
+    await deliver([{
+      entity_id: "run-7",
+      state: branchItem({ branch: "build/search", run_id: "run-7", worktree_id: "wt-7" }),
+    }]);
+
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/search" };
+    sync.routeChanged();
+    await settle();
+
+    expect(subscription("s-active")?.entity).toBe("run-7");
+  });
+
   it("lets the active one go when the reader leaves the workspace", async () => {
     await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
     App.route = { name: "inbox" };

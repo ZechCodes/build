@@ -40,6 +40,7 @@ import {
   deleteCached,
   evictEntity,
   readCached,
+  readCachedMany,
   writeCached,
 } from "./localCache.js";
 import { evictWorkspaceData, expireWorkspaceData, isWorkspaceDataKind, withinBytes } from "./cacheLifetime.js";
@@ -599,9 +600,32 @@ export function routeChanged() {
 }
 
 async function refollowRoute(deviceId) {
-  const view = contextFor(deviceId) && (await readCached({ deviceId, entityId: "", kind: "feed" }))?.value;
-  if (!view || !subscriptions.has(deviceId)) return;
+  if (!contextFor(deviceId) || !subscriptions.has(deviceId)) return;
+  const view = await routeView(deviceId);
+  if (!subscriptions.has(deviceId)) return;
   followRoutedEntity(deviceId, routedEntityId(App.route, view));
+}
+
+/** The snapshot a route is resolved against: every row this device holds right
+ *  now, and the two lists a workspace route is named by.
+ *
+ *  Off the records rather than off the `feed` the last pass wrote, because a
+ *  workspace created since that pass rode in on its own `state` item — the
+ *  board pushes deltas, not the whole board — and lives in the cache as a row
+ *  and nowhere else. That workspace is the likeliest of all to be the one
+ *  being stood on: the reader just made it and walked in. */
+async function routeView(deviceId) {
+  const rowAddresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === "row");
+  const [rows, projects, workspaces] = await Promise.all([
+    readCachedMany(rowAddresses),
+    readCached({ deviceId, entityId: "", kind: "projects" }),
+    readCached({ deviceId, entityId: "", kind: "workspaces" }),
+  ]);
+  return {
+    items: rows.map((record) => record?.value).filter(Boolean),
+    projects: projects?.value || [],
+    workspaces: workspaces?.value || [],
+  };
 }
 
 // ─── Applying a push ─────────────────────────────────────────────────────────

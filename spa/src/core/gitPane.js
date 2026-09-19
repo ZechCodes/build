@@ -289,8 +289,12 @@ export function repoStateBanner(repoState) {
  *  through the shape rather than through a megabyte of diff. */
 export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
   const commits = ((log && log.commits) || []).map((c) => c.hash).join(",");
-  // A coarse minute bucket: relative commit ages re-render at most once a
-  // minute even when the repo itself is untouched.
+  // A coarse minute bucket. With no poll behind it, this no longer forces a
+  // repaint of its own: nothing re-reads the key on a quiet checkout, so
+  // relative commit ages hold whatever they said until something moves. What
+  // it does is keep a reading of records that are byte-for-byte what they
+  // were from being frozen as unchanged once the minute has turned, so the
+  // ages come forward with the next thing that does move.
   const minuteBucket = Math.floor(nowSeconds / 60);
   return [status.status_key, commits, Boolean(log && log.more), String(log?.highlight_key || ""), minuteBucket].join("\x03");
 }

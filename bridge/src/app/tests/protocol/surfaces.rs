@@ -135,21 +135,54 @@ fn an_entity_no_roster_knows_answers_with_no_digests_at_all() {
     drop(dir);
 }
 
+/// The board row is the only thing a cache-first client reads an agent off, so
+/// it is where the surface snapshot has to ride: the client never asks a detail
+/// verb again, and a row that left the snapshot off would leave every goal,
+/// checklist and workflow pill dark for ever.
 #[test]
-fn no_list_shaped_answer_carries_surfaces() {
+fn the_board_row_carries_the_open_agents_surfaces() {
+    let (dir, mut state, run_id) = a_branch_whose_agent_runs(
+        "feature-rowed",
+        DictatedSession::reporting(AgentStatus::Working)
+            .showing_surfaces(recorded_workflow_surfaces()),
+    );
+
+    let listed = state.handle(req("board.list", json!({})));
+    assert_eq!(listed["ok"], true, "{listed:?}");
+    let row = listed["result"]["items"]
+        .as_array()
+        .expect("board.list answers with items")
+        .iter()
+        .find(|item| item["run_id"] == run_id.as_str())
+        .cloned()
+        .expect("the adopted run has a row");
+    assert_eq!(
+        row["agents"][0]["surfaces"]["workflows"][0]["id"], WORKFLOW_TASK_ID,
+        "{row:?}"
+    );
+
+    // And the `state` push carries that same row, so a surface revision reaches
+    // the client without it asking anything back.
+    let pushed = state
+        .entity_state_item(&run_id)
+        .expect("a live run pushes a row");
+    assert_eq!(
+        pushed["agents"][0]["surfaces"]["workflows"][0]["id"], WORKFLOW_TASK_ID,
+        "{pushed:?}"
+    );
+    drop(dir);
+}
+
+#[test]
+fn no_digest_answering_a_mutation_carries_surfaces() {
     let (dir, mut state, run_id) = a_branch_whose_agent_runs(
         "feature-listed",
         DictatedSession::reporting(AgentStatus::Working)
             .showing_surfaces(recorded_workflow_surfaces()),
     );
-    for (verb, params) in [
-        ("board.list", json!({})),
-        ("agent.list", json!({ "entity_id": run_id })),
-    ] {
-        let answered = state.handle(req(verb, params));
-        assert_eq!(answered["ok"], true, "{verb}: {answered:?}");
-        assert_no_digest_carries_surfaces(verb, &answered["result"]);
-    }
+    let answered = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+    assert_eq!(answered["ok"], true, "agent.list: {answered:?}");
+    assert_no_digest_carries_surfaces("agent.list", &answered["result"]);
 
     let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
     assert_eq!(added["ok"], true, "{added:?}");

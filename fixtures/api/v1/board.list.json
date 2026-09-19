@@ -23,7 +23,52 @@
         "issue_id": "plan-6f1c",
         "worktree_id": "wt-d8b221956672",
         "worktree_path": "/home/ada/.build/worktrees/build/fix-flaky-login",
-        "agents": [],
+        "agents": [
+          {
+            "id": "agent-1",
+            "conversation_id": "conv-1",
+            "ordinal": 1,
+            "provider": "claude_code",
+            "model": "opus",
+            "effort": "high",
+            "active_model": "opus",
+            "state": "live",
+            "unread_count": 0,
+            "unread_reason": null,
+            "read_through_sequence": 4,
+            "working": true,
+            "working_time": {
+              "since": "2026-09-13T09:30:00Z",
+              "seconds": 62
+            },
+            "choice_revision": 1,
+            "has_terminal": true,
+            "can_interrupt": true,
+            "surface_session_generation": "session-9a1f",
+            "surfaces": {
+              "goal": {
+                "objective": "Make the login test deterministic",
+                "state": "active"
+              },
+              "checklist": [
+                {
+                  "id": "step-1",
+                  "subject": "Reproduce the flake",
+                  "state": "completed"
+                },
+                {
+                  "id": "step-2",
+                  "subject": "Pin the clock",
+                  "state": "in_progress"
+                }
+              ]
+            },
+            "start_error": null,
+            "created_at": "2026-09-13T09:00:00Z",
+            "topic": "Fix the flaky login test",
+            "title": "Fix the flaky login test"
+          }
+        ],
         "working": false,
         "working_time": null,
         "can_finish": true,

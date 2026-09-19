@@ -666,7 +666,11 @@ impl AppState {
             "unread_reason": unread.reason,
             "working": working,
             "working_time": working_time_json(working_since.as_deref()),
-            "agents": self.agent_digests(run_id, DigestScope::List),
+            // `Detail`, on a row: a cache-first client reads its agents off
+            // this row and asks no detail verb after it, so the surface
+            // snapshot has to ride here or the reader never sees a goal, a
+            // checklist or a workflow again. The scope is what carries it.
+            "agents": self.agent_digests(run_id, DigestScope::Detail),
             "stat": sync.to_json(),
             "resume_at": self.attention_json(run_id)["resume_at"],
             // Where this row sits in the inbox, and how long it has been quiet.

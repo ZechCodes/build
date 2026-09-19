@@ -6,7 +6,14 @@
 // of the snapshots and the device order, so it is tested as one.
 
 import { describe, it, expect } from "vitest";
-import { deviceView, liveFeedSnapshot, mergeFeeds, projectEntityIds, withoutProject } from "../src/core/feedMerge.js";
+import {
+  deviceView,
+  feedHoldsDevice,
+  liveFeedSnapshot,
+  mergeFeeds,
+  projectEntityIds,
+  withoutProject,
+} from "../src/core/feedMerge.js";
 import { deviceKey } from "../src/core/deviceKey.js";
 
 const board = (over = {}) => ({
@@ -153,6 +160,21 @@ describe("one device's view of a merge", () => {
     const merged = mergeFeeds(new Map(), []);
     expect(deviceView(merged, "dev-a").items).toEqual([]);
     expect(deviceView(null, "dev-a").projects).toEqual([]);
+  });
+
+  // The empty view is the same answer for a machine that listed nothing and a
+  // machine that has not answered, and a surface deciding whether to say "no
+  // such branch" has to tell them apart.
+  it("says whether the merge carries that machine at all", () => {
+    const a = liveFeedSnapshot(board(), projectList, workspaceList, "dev-a");
+    const merged = mergeFeeds(new Map([["dev-a", a]]), ["dev-a", "dev-b"]);
+    expect(feedHoldsDevice(merged, "dev-a")).toBe(true);
+    expect(feedHoldsDevice(merged, "dev-b")).toBe(false);
+    expect(feedHoldsDevice(null, "dev-a")).toBe(false);
+  });
+
+  it("takes a snapshot that names no devices as holding whichever is asked", () => {
+    expect(feedHoldsDevice({ items: [], projects: [] }, "dev-a")).toBe(true);
   });
 });
 

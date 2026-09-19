@@ -125,6 +125,13 @@ function rememberScope(projectKey) {
  *  are already stamped with the machine they are on (core/feedMerge.js), so a
  *  row the bar lists and a row the rail lists are the same row.
  *
+ *  Whole rows, directory tabs and all: the daemon writes one workspace shape
+ *  (`workspace_json`) and `workspace.list` and `workspace.get` both answer in
+ *  it, so the list is not a summary of the read this used to make beside it.
+ *  A bridge that ever summarized its list would have to say so in its greeting
+ *  — a tab strip quietly emptying is not something to read a workspace back
+ *  one at a time against.
+ *
  *  The project's own checkout is never a place to go
  *  (core/workspaceModel.js), whatever an older bridge on that machine listed. */
 function workspaceRows(deviceId, projectId) {

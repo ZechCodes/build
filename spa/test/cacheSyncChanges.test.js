@@ -402,6 +402,23 @@ describe("applying one item", () => {
     expect((await read("run-1", "surfaces", "ag-1")).at).toBe(first.at);
   });
 
+  // A session that has stopped observing anything says so by carrying nothing,
+  // and the record has to hear it: a reader coming back to that agent would
+  // otherwise be painted the last snapshot as though it still stood.
+  it("clears the record when a live session observes nothing at all", async () => {
+    const observing = [{ id: "ag-1", surface_session_generation: "gen-1", surfaces: { goal: { text: "land it" } } }];
+    await boot([branchItem({ agents: observing })]);
+    await deliver([{ entity_id: "run-1", state: branchItem({ agents: observing }) }]);
+    expect((await read("run-1", "surfaces", "ag-1")).value.surfaces).toEqual({ goal: { text: "land it" } });
+
+    await deliver([{
+      entity_id: "run-1",
+      state: branchItem({ agents: [{ id: "ag-1", surface_session_generation: "gen-1" }] }),
+    }]);
+
+    expect((await read("run-1", "surfaces", "ag-1")).value).toEqual({ surfaces: null, generation: "gen-1" });
+  });
+
   it("keeps no surface record for an agent with no session to have observed one", async () => {
     await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
     await deliver([{ entity_id: "run-1", state: branchItem({ agents: [{ id: "ag-1" }] }) }]);

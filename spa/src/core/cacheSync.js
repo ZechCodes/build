@@ -249,22 +249,27 @@ async function writeSurfaces(context, entityId, agents) {
 }
 
 /** What the digest observed, as a fingerprint — or null for an agent with no
- *  live session, which has observed nothing this record could be about. */
+ *  live session, which has observed nothing this record could be about.
+ *
+ *  A live session carrying no surfaces HAS observed something: that there is
+ *  nothing to show. That is written down as such, so a reader coming back is
+ *  not painted a snapshot the session has since let go of. */
 const observedSurfaces = (agent) => {
   const generation = surfaceSessionGeneration(agent?.surface_session_generation);
-  if (!generation || agent.surfaces === undefined) return null;
-  return { generation, fingerprint: surfacesFingerprint(agent.surfaces, generation) };
+  if (!generation) return null;
+  const observed = agent.surfaces ?? null;
+  return { generation, fingerprint: surfacesFingerprint(observed, generation), observed };
 };
 
 const heldSurfaces = (held) => surfacesFingerprint(held?.surfaces, surfaceSessionGeneration(held?.generation));
 
 async function writeAgentSurfaces(context, entityId, agent) {
-  const observed = observedSurfaces(agent);
-  if (!observed?.fingerprint) return;
+  const seen = observedSurfaces(agent);
+  if (!seen?.fingerprint) return;
   const address = surfacesCacheAddress({ deviceId: context.deviceId, entityId, agentId: agent.id });
   const held = (await readCached(address))?.value;
-  if (observed.fingerprint === heldSurfaces(held)) return;
-  await writeCached(address, surfacesRecord(agent.surfaces, observed.generation));
+  if (seen.fingerprint === heldSurfaces(held)) return;
+  await writeCached(address, surfacesRecord(seen.observed, seen.generation));
 }
 
 /**

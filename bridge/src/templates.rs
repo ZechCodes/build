@@ -301,14 +301,52 @@ with `message_agent` first, then report to the user briefly — what you did, no
 a second copy of what you already sent. Nothing you send with `message_agent`
 reaches the user, and `post_thread_message` is the only thing they see.";
 
+/// What every coding phase adds about getting a second checkout.
+///
+/// Appended rather than written into each template for the same reason
+/// [`MESSAGE_AGENT_NOTE`] is: an agent that reaches for a worktree does it in
+/// whichever phase it happens to be in, so the sentence cannot be allowed to
+/// live in some of them and not others.
+///
+/// It has to name `git worktree add` to forbid it. A model that has been told
+/// only what to use instead reads `create_workspace` as the Build-flavoured way
+/// and its own `git worktree add` as the quick one — and a checkout Build did
+/// not cut is one nobody can see, review or clean up. The tool descriptions say
+/// this too (`mcp.rs`), because they are re-sent on every tools/list and so
+/// outlive this prompt's compaction.
+const WORKSPACE_NOTE: &str = "\
+A separate checkout is a Build workspace, and `create_workspace` is how you get
+one. It cuts every source of this project afresh, on a branch of its own, the
+way the project is configured to cut them — a git worktree, or a copy-on-write
+clone. Never `git worktree add`, never `git clone`, never a copy of the folder
+you are standing in: a checkout Build did not cut is one nobody can see, nobody
+can review, and nothing cleans up. `add_workspace_directory` brings one more
+source or folder into a workspace that is already standing, and
+`list_workspaces` and `list_workspace_agents` say what exists already and who
+is on it.
+
+A workspace you cut is where a sub-agent goes. When a piece of this work is
+independent enough to run beside yours — it needs none of your uncommitted
+changes and touches none of the same files — cut a workspace for it, put an
+agent on it with `add_workspace_agent`, and brief that agent with
+`message_workspace_agent`. Say the whole of what it needs; it has none of your
+conversation.
+
+`delete_workspace` takes a workspace away and `remove_workspace_directory`
+takes one directory out of one. Both take whatever is in them that is not
+committed and pushed, so say what you are about to remove before you remove it
+— including when what you would be removing is the workspace you are standing
+in.";
+
 fn phase_template(base: &str) -> String {
     base.to_string()
 }
 
-/// A template for an agent that works in a checkout and can reach the other
-/// agents on its project.
+/// A template for an agent that works in a checkout: it can reach the other
+/// agents on its project, and it can cut a checkout of its own to put one of
+/// them on.
 fn coding_template(base: &str) -> String {
-    format!("{base}\n\n{MESSAGE_AGENT_NOTE}")
+    format!("{base}\n\n{MESSAGE_AGENT_NOTE}\n\n{WORKSPACE_NOTE}")
 }
 
 /// A template whose phase ends in changed code, so its terminal message body is the
@@ -954,6 +992,74 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every agent that works in a checkout is told that a second checkout is
+    /// a Build workspace and that git's own worktrees are not an option. One
+    /// note, appended by `coding_template`, so no phase can be missing it and
+    /// no two phases can say it differently.
+    #[test]
+    fn every_coding_template_says_a_second_checkout_is_a_build_workspace() {
+        let t = Templates::default();
+        for (name, template) in [
+            ("plan", &t.plan),
+            ("build", &t.build),
+            ("build_stage", &t.build_stage),
+            ("revise", &t.revise),
+            ("revise_stage", &t.revise_stage),
+            ("review_changes", &t.review_changes),
+            ("message", &t.message),
+        ] {
+            let text = collapse_whitespace(template);
+            for sentence in [
+                "A separate checkout is a Build workspace, and `create_workspace` is how you get one.",
+                "Never `git worktree add`, never `git clone`, never a copy of the folder you are standing in",
+                "A workspace you cut is where a sub-agent goes.",
+                "say what you are about to remove before you remove it",
+            ] {
+                assert!(text.contains(sentence), "{name} does not say it: {text}");
+            }
+            for tool in [
+                "`create_workspace`",
+                "`add_workspace_directory`",
+                "`add_workspace_agent`",
+                "`message_workspace_agent`",
+                "`delete_workspace`",
+                "`remove_workspace_directory`",
+            ] {
+                assert!(text.contains(tool), "{name} never names {tool}: {text}");
+            }
+        }
+        // One string, carried whole: a phase cannot hold a softened copy of it.
+        for (name, template) in [
+            ("plan", &t.plan),
+            ("build", &t.build),
+            ("message", &t.message),
+        ] {
+            assert!(
+                template.contains(WORKSPACE_NOTE),
+                "{name} carries something other than the one note: {template}"
+            );
+        }
+    }
+
+    /// The two templates it is deliberately NOT on: the router has no project
+    /// and no checkout, and the project agent says all of this in its own
+    /// words, addressed to an agent that never stands in a workspace itself.
+    #[test]
+    fn the_router_and_project_templates_carry_no_workspace_note() {
+        let t = Templates::default();
+        for (name, template) in [("router", &t.router), ("project_agent", &t.project_agent)] {
+            assert!(
+                !template.contains("A separate checkout is a Build workspace"),
+                "{name} carries the coding phases' note: {template}"
+            );
+        }
+        assert!(
+            !collapse_whitespace(&t.router).contains("create_workspace"),
+            "the router cuts nothing: {}",
+            t.router
+        );
     }
 
     /// Every template whose agent can write to another agent — the coding

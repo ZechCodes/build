@@ -44,6 +44,12 @@ import {
   writeCached,
 } from "./localCache.js";
 import { evictWorkspaceData, expireWorkspaceData, isWorkspaceDataKind, withinBytes } from "./cacheLifetime.js";
+import {
+  surfaceSessionGeneration,
+  surfacesCacheAddress,
+  surfacesFingerprint,
+  surfacesRecord,
+} from "./surfacesCache.js";
 import { coordinatedRead, requestPriorityFields, rpcReadKey } from "./readRequests.js";
 import { pageVisible } from "./visibility.js";
 
@@ -245,8 +251,50 @@ async function writeLists(context, view) {
   await writeCached(addressOf(context, "", "workspaces"), view.workspaces);
   for (const row of view.items || []) {
     const entityId = entityIdOf(row);
-    if (entityId) await writeCached(addressOf(context, entityId, "row"), row);
+    if (!entityId) continue;
+    await writeCached(addressOf(context, entityId, "row"), row);
+    await writeSurfaces(context, entityId, row.agents);
   }
+}
+
+/**
+ * The surface snapshots an agent digest carries.
+ *
+ * A surface — an agent's goal, its checklist — is an observation the live
+ * session makes, so the digest carries it only while that session is up. The
+ * record is what the rail paints for a session that has since died, which is
+ * why it is kept beside the row rather than read back off it, and why it is
+ * written under the generation that observed it: a restarted process must not
+ * inherit the last one's goal.
+ *
+ * Written only where the snapshot moved. The record's own write time is how
+ * long a pill lingers after its session goes (core/agentSurfacesModel.js), and
+ * a rewrite on every unchanged push would hold that grace open for ever.
+ */
+async function writeSurfaces(context, entityId, agents) {
+  for (const agent of agents || []) {
+    if (!context.active()) return;
+    await writeAgentSurfaces(context, entityId, agent);
+  }
+}
+
+/** What the digest observed, as a fingerprint — or null for an agent with no
+ *  live session, which has observed nothing this record could be about. */
+const observedSurfaces = (agent) => {
+  const generation = surfaceSessionGeneration(agent?.surface_session_generation);
+  if (!generation || agent.surfaces === undefined) return null;
+  return { generation, fingerprint: surfacesFingerprint(agent.surfaces, generation) };
+};
+
+const heldSurfaces = (held) => surfacesFingerprint(held?.surfaces, surfaceSessionGeneration(held?.generation));
+
+async function writeAgentSurfaces(context, entityId, agent) {
+  const observed = observedSurfaces(agent);
+  if (!observed?.fingerprint) return;
+  const address = surfacesCacheAddress({ deviceId: context.deviceId, entityId, agentId: agent.id });
+  const held = (await readCached(address))?.value;
+  if (observed.fingerprint === heldSurfaces(held)) return;
+  await writeCached(address, surfacesRecord(agent.surfaces, observed.generation));
 }
 
 /**
@@ -776,6 +824,7 @@ async function applyBoard(context, state) {
  *  is over takes the workspace's data with it — nobody is coming back to it. */
 async function applyState(context, entityId, state) {
   await writeCached(addressOf(context, entityId, "row"), stampRow(state, context.deviceId));
+  await writeSurfaces(context, entityId, state.agents);
   if (isFinishedState(state.state)) await evictWorkspaceData(context.deviceId, entityId);
 }
 

@@ -371,6 +371,43 @@ describe("applying one item", () => {
     expect(calls("run.diff")).toEqual([]);
   });
 
+  // A surface snapshot is process-local: it rides the agent digest while the
+  // session that observed it is alive, and the record is what a reader who
+  // comes back to a dead one is shown. Only this layer writes it.
+  it("writes the surface snapshot a pushed row's agent carries", async () => {
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    await deliver([{
+      entity_id: "run-1",
+      state: branchItem({
+        agents: [{
+          id: "ag-1",
+          surface_session_generation: "gen-1",
+          surfaces: { goal: { text: "land the rail" } },
+        }],
+      }),
+    }]);
+
+    const record = await read("run-1", "surfaces", "ag-1");
+    expect(record.value).toEqual({ surfaces: { goal: { text: "land the rail" } }, generation: "gen-1" });
+  });
+
+  it("leaves the surface record alone while the snapshot has not moved", async () => {
+    const agents = [{ id: "ag-1", surface_session_generation: "gen-1", surfaces: { goal: { text: "land the rail" } } }];
+    await boot([branchItem({ agents })]);
+    await deliver([{ entity_id: "run-1", state: branchItem({ agents }) }]);
+    const first = await read("run-1", "surfaces", "ag-1");
+    await new Promise((done) => setTimeout(done, 2));
+    await deliver([{ entity_id: "run-1", state: branchItem({ agents }) }]);
+
+    expect((await read("run-1", "surfaces", "ag-1")).at).toBe(first.at);
+  });
+
+  it("keeps no surface record for an agent with no session to have observed one", async () => {
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    await deliver([{ entity_id: "run-1", state: branchItem({ agents: [{ id: "ag-1" }] }) }]);
+    expect(await read("run-1", "surfaces", "ag-1")).toBeUndefined();
+  });
+
   it("appends the items a thread item carries and moves the cursor", async () => {
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },

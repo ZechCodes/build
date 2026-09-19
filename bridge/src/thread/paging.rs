@@ -420,6 +420,20 @@ impl Thread {
             _ => None,
         })
     }
+    /// The items a `changes` push carries after a cursor, oldest first.
+    ///
+    /// `None` — send the tip alone and let the client page forward — when
+    /// more than `limit` of them are waiting, or when the cursor sits under
+    /// the tail this process holds. Both are a client better served by one
+    /// read of its own than by a push bigger than that read.
+    pub fn push_items_after(&self, after_sequence: u64, limit: usize) -> Option<Vec<Value>> {
+        if self.forward_page_reaches_stored_history(after_sequence) {
+            return None;
+        }
+        let window: Vec<&ThreadItem> = self.resident_after_sequence(after_sequence).collect();
+        (window.len() <= limit).then(|| window.into_iter().map(|item| json!(item)).collect())
+    }
+
     /// The first line the human said here, for a conversation with no topic
     /// of its own to be called by in a list.
     ///

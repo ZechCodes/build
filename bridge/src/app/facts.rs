@@ -50,7 +50,7 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
             .map(|request| EntityFacts {
                 entity_id: request.entity_id.clone(),
                 threads: if request.thread {
-                    app.thread_tips(&request.entity_id)
+                    app.thread_tips(&request.entity_id, &request.thread_after)
                 } else {
                     Vec::new()
                 },
@@ -156,19 +156,51 @@ impl AppState {
         }))
     }
 
-    /// Where each of an entity's conversations stands — the `thread` item.
-    pub(in crate::app) fn thread_tips(&self, entity_id: &str) -> Vec<ThreadTip> {
+    /// Where each of an entity's conversations stands, and what was said to
+    /// get there — the `thread` item.
+    ///
+    /// `after` is what the subscription being flushed has already been sent,
+    /// per agent. An agent it names gets the items since that sequence; one
+    /// it does not — the first flush a subscription makes for a conversation
+    /// its client has just read for itself — gets its tip alone.
+    ///
+    /// Every read here is off the tail this process holds. A cursor from
+    /// under that tail is answered with the tip alone rather than with a
+    /// store read: this runs under the app mutex, and the client can page
+    /// forward for the gap without holding the daemon up.
+    pub(in crate::app) fn thread_tips(
+        &self,
+        entity_id: &str,
+        after: &[(String, u64)],
+    ) -> Vec<ThreadTip> {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
         roster
             .iter()
-            .map(|agent| ThreadTip {
-                agent_id: agent.id.clone(),
-                last_sequence: self
+            .map(|agent| {
+                let thread = self
                     .agent_conversation(entity_id, Some(&agent.id))
-                    .unwrap_or(&agent.thread)
-                    .last_sequence(),
+                    .unwrap_or(&agent.thread);
+                let carried =
+                    after
+                        .iter()
+                        .find(|(id, _)| *id == agent.id)
+                        .and_then(|(_, since)| {
+                            thread
+                                .push_items_after(*since, crate::changes::THREAD_PUSH_MAX_ITEMS)
+                                .map(|items| (*since, items))
+                        });
+                let (since_sequence, items) = match carried {
+                    Some((since, items)) => (Some(since), items),
+                    None => (None, Vec::new()),
+                };
+                ThreadTip {
+                    agent_id: agent.id.clone(),
+                    last_sequence: thread.last_sequence(),
+                    items,
+                    since_sequence,
+                }
             })
             .collect()
     }

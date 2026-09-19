@@ -574,6 +574,91 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
     );
 }
 
+/// A `thread` item carries the conversation, not a hint about it: the first
+/// flush says where the conversation stands, and the one after it carries
+/// what was said in between — until a burst wider than the push cap, which
+/// goes back to the tip alone and leaves the client to page forward.
+#[tokio::test]
+async fn a_thread_item_carries_what_was_said_since_the_last_flush() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let run_id = {
+        let mut app = state.lock().unwrap();
+        planned_run_in_review(&mut app, "thread rides the item").1
+    };
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-thread",
+                "scope": { "kind": "entity", "id": run_id },
+                "kinds": ["thread"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    // A flush with nothing said since the last one: the tip, and no items to
+    // place against it.
+    state.lock().unwrap().note_entity_changed(&run_id);
+    let first = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    assert_eq!(first["items"], json!([]), "{first:?}");
+    let tip = first["last_sequence"]
+        .as_u64()
+        .expect("a tip is a sequence");
+
+    // The next one: what was said after it, in full.
+    let posted = call(
+        &handler,
+        "thread.post",
+        json!({ "entity_id": run_id, "body": "the item carries this" }),
+    );
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    let second = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    assert_eq!(second["since_sequence"], json!(tip), "{second:?}");
+    let bodies: Vec<&str> = second["items"]
+        .as_array()
+        .expect("the item carries items")
+        .iter()
+        .filter_map(|item| item["data"]["body"].as_str())
+        .collect();
+    assert!(bodies.contains(&"the item carries this"), "{second:?}");
+
+    // A burst wider than the cap: the tip alone, and the client pages.
+    {
+        let mut app = state.lock().unwrap();
+        let active = app.runs.get_mut(&run_id).expect("the run");
+        for turn in 0..(crate::changes::THREAD_PUSH_MAX_ITEMS + 5) {
+            primary_thread_mut(&mut active.agents).post_user(
+                format!("burst {turn}"),
+                None,
+                crate::store::now_rfc3339(),
+            );
+        }
+        app.note_entity_changed(&run_id);
+    }
+    let third = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    assert_eq!(third["items"], json!([]), "{third:?}");
+    assert_eq!(third["since_sequence"], Value::Null, "{third:?}");
+    assert!(
+        third["last_sequence"].as_u64().unwrap() > tip,
+        "the tip still says where the conversation got to: {third:?}"
+    );
+}
+
+/// The first `thread` tip one entity's items carry, out of a push history.
+fn thread_tip(pushes: &[Value], entity_id: &str) -> Value {
+    pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["entity_id"] == entity_id && item["thread"][0].is_object())
+        .map(|item| item["thread"][0].clone())
+        .unwrap_or_else(|| panic!("no thread item for {entity_id}: {pushes:?}"))
+}
+
 /// A tab opening and a tab closing both move the `terminals` kind, and the
 /// item carries the list `term.list` would answer — so a client repaints its
 /// tab row off the push and asks nothing.

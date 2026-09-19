@@ -8,7 +8,27 @@
         {
           "entity_id": "run-7",
           "state": { "run": "working", "agents": 1, "attention": "none" },
-          "thread": [{ "agent_id": "agent-3", "last_sequence": 412 }],
+          "thread": [
+            {
+              "agent_id": "agent-3",
+              "last_sequence": 412,
+              "since_sequence": 410,
+              "items": [
+                {
+                  "type": "message",
+                  "data": {
+                    "id": "message-411",
+                    "sequence": 411,
+                    "updated_sequence": 411,
+                    "role": "user",
+                    "source": "human",
+                    "body": "ship it",
+                    "created_at": "2026-09-18T10:10:00Z"
+                  }
+                }
+              ]
+            }
+          ],
           "git": { "status_key": "9f3c1a0b7e2d4c55", "head": "a1b2c3d" },
           "files": { "paths": ["src/lib.rs", "src/app/rpc.rs"], "truncated": false },
           "terminals": {

@@ -73,6 +73,14 @@ const PENDING_KEY_CAP: usize = 512;
 /// paths".
 pub const FILES_PER_FLUSH: usize = 200;
 
+/// The most conversation items one `thread` item carries.
+///
+/// A push is a cache write, and past a hundred rows the write is bigger than
+/// the read that would replace it: the tip alone goes out, and the client
+/// pages forward from the sequence it holds. An agent that says a hundred
+/// things between two flushes is a harness in a storm, not a conversation.
+pub const THREAD_PUSH_MAX_ITEMS: usize = 100;
+
 /// The clamp on a `{"batch_ms": N}` mode, as the greeting advertises it.
 pub const MIN_BATCH_MS: u64 = 1_000;
 /// The upper end of that clamp: ten minutes.
@@ -361,13 +369,32 @@ pub struct FactsRequest {
     pub state: bool,
     /// The checkout's open tabs.
     pub terminals: bool,
+    /// The last sequence already sent for each agent, so a thread item
+    /// carries what was said after it. An agent named here is one some
+    /// subscription has heard about; one that is not gets its tip alone.
+    pub thread_after: Vec<(String, u64)>,
 }
 
-/// One conversation's tail, as a `thread` item carries it.
+/// One conversation's tail, as a `thread` item carries it: where the
+/// conversation now stands, and what was said to get there.
+///
+/// `items` is empty and `since_sequence` null on the first flush a
+/// subscription makes for an agent — the client's own sync has just read that
+/// conversation — and again when a burst since the last flush is wider than
+/// [`THREAD_PUSH_MAX_ITEMS`], which the client answers by paging forward from
+/// the sequence it holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ThreadTip {
     pub agent_id: String,
     pub last_sequence: u64,
+    /// The conversation items after [`since_sequence`](Self::since_sequence),
+    /// in the order they happened.
+    #[serde(default)]
+    pub items: Vec<Value>,
+    /// The sequence `items` runs from, exclusive. `None` says the item
+    /// carries no items to run from anything.
+    #[serde(default)]
+    pub since_sequence: Option<u64>,
 }
 
 /// What a flush learned about one entity, off the app lock.
@@ -491,6 +518,11 @@ struct Subscription {
     /// the settle floor, pruned on every flush so it never grows with the
     /// entities a bridge has seen.
     emitted_at: HashMap<String, Instant>,
+    /// The last sequence this subscription has sent for each agent, so its
+    /// next thread item carries what was said after it. Per subscription,
+    /// because two subscriptions over one conversation have heard different
+    /// amounts of it; bounded by the agents on the device.
+    emitted_tips: HashMap<String, u64>,
 }
 
 impl Subscription {
@@ -503,6 +535,7 @@ impl Subscription {
             created: now,
             last_flush: None,
             emitted_at: HashMap::new(),
+            emitted_tips: HashMap::new(),
         }
     }
 
@@ -633,6 +666,9 @@ struct DueFrame {
     subscription_id: String,
     priority: Priority,
     items: BTreeMap<String, PendingItem>,
+    /// What this subscription has already sent for each agent, empty when no
+    /// item in the frame carries the `thread` kind.
+    thread_after: Vec<(String, u64)>,
 }
 
 impl DueFrame {
@@ -641,7 +677,13 @@ impl DueFrame {
             .items
             .iter()
             .map(|(id, item)| {
-                item_payload(id, item, facts.get(id.as_str()).copied(), board_revision)
+                item_payload(
+                    id,
+                    item,
+                    facts.get(id.as_str()).copied(),
+                    board_revision,
+                    &self.thread_after,
+                )
             })
             .collect();
         json!({
@@ -658,6 +700,7 @@ fn item_payload(
     item: &PendingItem,
     facts: Option<&EntityFacts>,
     board_revision: u64,
+    thread_after: &[(String, u64)],
 ) -> Value {
     let mut out = Map::new();
     out.insert("entity_id".into(), json!(entity_id));
@@ -668,8 +711,7 @@ fn item_payload(
         );
     }
     if item.kinds.contains(Kind::Thread) {
-        let tips = facts.map(|f| f.threads.clone()).unwrap_or_default();
-        out.insert("thread".into(), json!(tips));
+        out.insert("thread".into(), thread_payload(facts, thread_after));
     }
     if item.kinds.contains(Kind::Git) {
         out.insert("git".into(), git_payload(facts));
@@ -684,6 +726,51 @@ fn item_payload(
         out.insert("terminals".into(), terminals_payload(facts));
     }
     Value::Object(out)
+}
+
+/// One subscription's view of each conversation's tail.
+///
+/// The lookup read one window per entity, from the oldest cursor any due
+/// subscription holds; this cuts that window down to what THIS subscription
+/// has not been sent. A subscription with no cursor for an agent — its first
+/// flush for that conversation — gets the tip alone, because the client has
+/// just read the conversation for itself and the bridge has no idea how much
+/// of it that read carried.
+fn thread_payload(facts: Option<&EntityFacts>, thread_after: &[(String, u64)]) -> Value {
+    let tips = facts.map(|f| f.threads.clone()).unwrap_or_default();
+    let cut: Vec<ThreadTip> = tips
+        .into_iter()
+        .map(|tip| {
+            let held = thread_after
+                .iter()
+                .find(|(agent_id, _)| *agent_id == tip.agent_id)
+                .map(|(_, sequence)| *sequence);
+            match (held, tip.since_sequence) {
+                (Some(since), Some(_)) => ThreadTip {
+                    items: tip.items.into_iter().filter(|i| !sent(i, since)).collect(),
+                    since_sequence: Some(since),
+                    ..tip
+                },
+                _ => ThreadTip {
+                    items: Vec::new(),
+                    since_sequence: None,
+                    ..tip
+                },
+            }
+        })
+        .collect();
+    json!(cut)
+}
+
+/// Whether this conversation item is one the subscription already has.
+///
+/// An item carries its sequence under `data`, the shape `thread.page`
+/// answers in. One whose sequence cannot be read is kept: a duplicate the
+/// client writes twice costs a write, and a hole costs it the conversation.
+fn sent(item: &Value, since: u64) -> bool {
+    item["data"]["sequence"]
+        .as_u64()
+        .is_some_and(|sequence| sequence <= since)
 }
 
 /// The board item carries the revision a client compares against; an entity
@@ -1012,8 +1099,17 @@ impl ChangeBus {
     }
 
     /// This entity is stale — and so is the feed, which shows a row for it.
+    ///
+    /// Both the kinds an entity's own detail is made of: its row, and its
+    /// conversation. That is what the legacy `entity.changed` beside it has
+    /// always meant — "its thread, stages, git state or diff moved" — and it
+    /// is the only origin a conversation has, since an item lands through
+    /// the same mutation tail every other change does. A conversation that
+    /// did not move costs its subscription an unchanged tip, which is what
+    /// the tip is for.
     pub fn note_entity(&self, id: &str) {
         self.note_kind(id, Kind::State);
+        self.note_kind(id, Kind::Thread);
         self.note_board();
     }
 
@@ -1122,11 +1218,20 @@ impl ChangeBus {
             let Some(items) = sub.take_due(self.window, now) else {
                 continue;
             };
+            let thread_after = match items.values().any(|item| item.kinds.contains(Kind::Thread)) {
+                true => sub
+                    .emitted_tips
+                    .iter()
+                    .map(|(a, s)| (a.clone(), *s))
+                    .collect(),
+                false => Vec::new(),
+            };
             due.frames.push(DueFrame {
                 session: sub.session.clone(),
                 subscription_id: sub.spec.id.clone(),
                 priority: sub.spec.priority,
                 items,
+                thread_after,
             });
         }
         drop(subscriptions);
@@ -1150,6 +1255,7 @@ impl ChangeBus {
         for frame in &due.frames {
             if frame.session.push(frame.payload(&by_entity, revision)) {
                 frames += 1;
+                self.stamp_thread_tips(frame, &by_entity);
             } else {
                 dead.push(frame.session.session_id().to_string());
             }
@@ -1158,6 +1264,36 @@ impl ChangeBus {
             self.unsubscribe(&session_id);
         }
         sent + frames
+    }
+
+    /// Record the conversations this frame just carried, so the next one
+    /// carries what was said after them.
+    ///
+    /// HERE and not in [`Subscription::stamp`]: the tips are what the facts
+    /// source answered, which is looked up after the items are taken and
+    /// known only once the frame has gone out.
+    fn stamp_thread_tips(&self, frame: &DueFrame, facts: &BTreeMap<&str, &EntityFacts>) {
+        let sent: Vec<&ThreadTip> = frame
+            .items
+            .iter()
+            .filter(|(_, item)| item.kinds.contains(Kind::Thread))
+            .filter_map(|(id, _)| facts.get(id.as_str()))
+            .flat_map(|fact| fact.threads.iter())
+            .collect();
+        if sent.is_empty() {
+            return;
+        }
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let Some(sub) = subscriptions
+            .iter_mut()
+            .find(|sub| sub.is(frame.session.session_id(), &frame.subscription_id))
+        else {
+            return;
+        };
+        for tip in sent {
+            sub.emitted_tips
+                .insert(tip.agent_id.clone(), tip.last_sequence);
+        }
     }
 
     fn deliver_legacy(&self, keys: &[ChangeKey]) -> usize {
@@ -1280,6 +1416,20 @@ impl Subscription {
     }
 }
 
+/// The cursors two subscriptions over one entity share for one lookup: the
+/// OLDEST each agent has been read to, so the subscription furthest behind
+/// gets everything it is missing. A subscription further ahead is handed
+/// items it already holds, which a cache keyed by sequence writes twice and
+/// reads once.
+fn merge_thread_after(into: &mut Vec<(String, u64)>, tips: &[(String, u64)]) {
+    for (agent_id, sequence) in tips {
+        match into.iter_mut().find(|(held, _)| held == agent_id) {
+            Some((_, held)) => *held = (*held).min(*sequence),
+            None => into.push((agent_id.clone(), *sequence)),
+        }
+    }
+}
+
 /// What the frames due this turn need looked up, one request per entity.
 fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
     let mut wanted: BTreeMap<&str, FactsRequest> = BTreeMap::new();
@@ -1294,11 +1444,15 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
                 thread: false,
                 state: false,
                 terminals: false,
+                thread_after: Vec::new(),
             });
             entry.git |= item.kinds.contains(Kind::Git);
             entry.thread |= item.kinds.contains(Kind::Thread);
             entry.state |= item.kinds.contains(Kind::State);
             entry.terminals |= item.kinds.contains(Kind::Terminals);
+            if item.kinds.contains(Kind::Thread) {
+                merge_thread_after(&mut entry.thread_after, &frame.thread_after);
+            }
         }
     }
     wanted
@@ -2184,6 +2338,7 @@ mod subscriptions {
                         threads: vec![ThreadTip {
                             agent_id: "agent-3".into(),
                             last_sequence: 412,
+                            ..ThreadTip::default()
                         }],
                         ..EntityFacts::default()
                     })
@@ -2210,7 +2365,12 @@ mod subscriptions {
             sent[0]["items"][0],
             json!({
                 "entity_id": "run-7",
-                "thread": [{ "agent_id": "agent-3", "last_sequence": 412 }],
+                "thread": [{
+                    "agent_id": "agent-3",
+                    "last_sequence": 412,
+                    "items": [],
+                    "since_sequence": null,
+                }],
                 "git": { "status_key": "9f3c1a0b7e2d4c55", "head": "a1b2c3d" },
             })
         );
@@ -2339,5 +2499,142 @@ mod subscriptions {
         let parsed: KindSet = serde_json::from_value(json!(["terminals"])).unwrap();
         assert!(parsed.contains(Kind::Terminals));
         assert!(!parsed.needs_worktree());
+    }
+
+    /// A conversation's items ride the push. The first flush an agent appears
+    /// in carries the tip alone — the client's own sync has just read that
+    /// conversation — and every flush after it carries what was said since
+    /// the last one this subscription sent.
+    #[tokio::test(start_paused = true)]
+    async fn a_thread_item_carries_what_was_said_since_the_last_flush() {
+        /// The cursors each lookup was asked with, flush by flush.
+        type Asked = Arc<Mutex<Vec<Vec<(String, u64)>>>>;
+        let seen: Asked = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(move |requests: &[FactsRequest]| {
+                recorder
+                    .lock()
+                    .unwrap()
+                    .push(requests[0].thread_after.clone());
+                let since = requests[0]
+                    .thread_after
+                    .iter()
+                    .find(|(agent, _)| agent == "a1")
+                    .map(|(_, sequence)| *sequence);
+                let items = match since {
+                    Some(since) => ((since + 1)..=812)
+                        .map(|n| json!({ "type": "message", "data": { "sequence": n } }))
+                        .collect(),
+                    None => Vec::new(),
+                };
+                vec![EntityFacts {
+                    entity_id: requests[0].entity_id.clone(),
+                    threads: vec![ThreadTip {
+                        agent_id: "a1".into(),
+                        last_sequence: 812,
+                        items,
+                        since_sequence: since,
+                    }],
+                    ..EntityFacts::default()
+                }]
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::Thread].into_iter().collect(),
+                ..spec(
+                    "s-thread",
+                    Scope::Entity("run-7".into()),
+                    Mode::Realtime,
+                    Priority::Foreground,
+                )
+            },
+        );
+
+        bus.note_kind("run-7", Kind::Thread);
+        bus.flush();
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["thread"],
+            json!([{
+                "agent_id": "a1",
+                "last_sequence": 812,
+                "items": [],
+                "since_sequence": null,
+            }]),
+            "the first flush says where the conversation stands, nothing more"
+        );
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        bus.note_kind("run-7", Kind::Thread);
+        bus.flush();
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["thread"][0]["since_sequence"],
+            json!(812),
+            "the second asks for what was said after the tip the first sent"
+        );
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            vec![Vec::new(), vec![("a1".to_string(), 812)]]
+        );
+    }
+
+    /// Two subscriptions over the same conversation hold their own cursors:
+    /// one that has heard nothing is not caught up by the other's flush.
+    #[tokio::test(start_paused = true)]
+    async fn each_subscription_carries_its_own_thread_cursor() {
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(|requests: &[FactsRequest]| {
+                vec![EntityFacts {
+                    entity_id: requests[0].entity_id.clone(),
+                    threads: vec![ThreadTip {
+                        agent_id: "a1".into(),
+                        last_sequence: 5,
+                        items: Vec::new(),
+                        since_sequence: requests[0]
+                            .thread_after
+                            .iter()
+                            .find(|(agent, _)| agent == "a1")
+                            .map(|(_, sequence)| *sequence),
+                    }],
+                    ..EntityFacts::default()
+                }]
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        let thread_spec = |id: &str| SubscriptionSpec {
+            kinds: [Kind::Thread].into_iter().collect(),
+            ..spec(
+                id,
+                Scope::Entity("run-7".into()),
+                Mode::Realtime,
+                Priority::Foreground,
+            )
+        };
+        bus.subscribe(&sender, thread_spec("s-first"));
+        bus.note_kind("run-7", Kind::Thread);
+        bus.flush();
+        drained(&mut rx, &key);
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        bus.subscribe(&sender, thread_spec("s-second"));
+        bus.note_kind("run-7", Kind::Thread);
+        bus.flush();
+
+        let sent = frames(drained(&mut rx, &key));
+        let cursor = |id: &str| {
+            sent.iter()
+                .find(|frame| frame["subscription_id"] == id)
+                .map(|frame| frame["items"][0]["thread"][0]["since_sequence"].clone())
+                .unwrap_or_else(|| panic!("no frame for {id}: {sent:?}"))
+        };
+        assert_eq!(cursor("s-first"), json!(5), "it heard the tip already");
+        assert_eq!(cursor("s-second"), json!(null), "this one never has");
     }
 }

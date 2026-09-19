@@ -422,6 +422,20 @@ describe("when a pass runs", () => {
     expect(calls("board.list")).toHaveLength(2);
   });
 
+  it("takes the session up again when the lists did not answer", async () => {
+    script["board.list"] = () => {
+      throw new Error("the bridge was busy");
+    };
+    await boot([branchItem()]);
+    expect(registeredWatchers).toEqual([]);
+
+    script = {};
+    stateListeners.forEach((fn) => fn());
+    await settle();
+    expect(calls("board.list")).toHaveLength(2);
+    expect(registeredWatchers.map((watcher) => watcher.id)).toEqual(["s-inbox", "s-background"]);
+  });
+
   it("runs again when the tab comes back", async () => {
     await boot([branchItem()]);
     document.dispatchEvent(new Event("visibilitychange"));

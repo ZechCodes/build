@@ -145,12 +145,15 @@ function dirsOf(paths) {
  * Re-entrant by device and no more: a tab that comes back while a pass is
  * running does not start a second one, and another device's pass is another
  * device's business.
+ *
+ * Answers whether the pass got all the way to the subscriptions — what the
+ * caller needs to know to decide whether this session has been read at all.
  */
 export async function syncDevice(deviceId) {
-  if (!holdingLock || syncing.has(deviceId)) return;
+  if (!holdingLock || syncing.has(deviceId)) return false;
   syncing.add(deviceId);
   try {
-    await orderedSync(deviceId);
+    return await orderedSync(deviceId);
   } finally {
     syncing.delete(deviceId);
   }
@@ -158,14 +161,16 @@ export async function syncDevice(deviceId) {
 
 async function orderedSync(deviceId) {
   const context = await greetedContext(deviceId);
-  if (!context) return;
+  if (!context) return false;
   const view = await readLists(context);
-  if (!view || !context.active()) return;
+  if (!view || !context.active()) return false;
   const pass = await workspacesToRead(context, view);
   await readWorkspaces(context, pass);
   await evictRowsThatAreOver(context, view);
   await dropWhatTheBoardStoppedNaming(context, view);
-  if (context.active()) subscribeDevice(context, pass.routed);
+  if (!context.active()) return false;
+  subscribeDevice(context, pass.routed);
+  return true;
 }
 
 /** This device, once its bridge has said what it speaks. A bridge says which
@@ -769,8 +774,19 @@ function considerDevices() {
   for (const context of liveContexts()) {
     if (syncedSessions.get(context.deviceId) === context.session) continue;
     syncedSessions.set(context.deviceId, context.session);
-    void syncDevice(context.deviceId);
+    void syncSessionOnce(context.deviceId, context.session);
   }
+}
+
+/** A session is marked read before its pass runs, so two announcements in a
+ *  row are one pass. A pass that did not finish takes the mark off again: the
+ *  lists it stopped at are the step the subscriptions sit behind, so a session
+ *  left marked on a stalled `board.list` would spend its whole life hearing
+ *  nothing and reading nothing. Unmarked, the next thing the device announces
+ *  asks again. */
+async function syncSessionOnce(deviceId, session) {
+  if (await syncDevice(deviceId)) return;
+  if (syncedSessions.get(deviceId) === session) syncedSessions.delete(deviceId);
 }
 
 /** Coming back to the tab: everything the subscriptions could not say while it

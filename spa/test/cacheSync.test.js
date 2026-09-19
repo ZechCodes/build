@@ -484,6 +484,27 @@ describe("the lifetime rules a pass applies", () => {
     expect(await read("run-9", "row")).toBeUndefined();
     expect(await read("run-1", "row")).toBeTruthy();
   });
+
+  // Issues left the board, so no board will ever name one and no pass will
+  // ever fill one: the issue surface's records are written by the surface
+  // alone (core/issueCache.js) and are the frame it mounts from. A pass that
+  // took them would leave that frame for ever unpainted.
+  it("leaves an issue's own records where the board does not name the issue", async () => {
+    const issueRecord = (sub, value) =>
+      cache.writeCached({ deviceId: "dev-1", entityId: "issue-7", kind: "issue", sub }, value);
+    await issueRecord("get", { issue_id: "issue-7" });
+    await issueRecord("stages", { stages: [] });
+    await issueRecord("stage:1", { doc: "# one" });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "issue-7", kind: "status" }, {});
+
+    await boot([branchItem()]);
+
+    expect((await read("issue-7", "issue", "get")).value).toEqual({ issue_id: "issue-7" });
+    expect(await read("issue-7", "issue", "stages")).toBeTruthy();
+    expect(await read("issue-7", "issue", "stage:1")).toBeTruthy();
+    // Everything else that entity held is still the board's to take away.
+    expect(await read("issue-7", "status")).toBeUndefined();
+  });
 });
 
 describe("no timers", () => {

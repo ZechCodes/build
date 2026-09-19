@@ -44,6 +44,7 @@ import {
   readCached,
   writeCached,
 } from "./localCache.js";
+import { ISSUE_RECORD_KIND } from "./issueCache.js";
 import {
   FILE_RECORD_KIND,
   cacheFileBody,
@@ -336,15 +337,45 @@ async function evictRowsThatAreOver(context, view) {
  *  row goes with the data. Another device's records are another device's
  *  business. */
 async function dropWhatTheBoardStoppedNaming(context, view) {
+  const named = entitiesTheBoardNames(view);
+  for (const cachedId of await cachedEntityIds(context.deviceId)) {
+    if (!context.active()) return;
+    if (!named.has(cachedId)) await dropUnnamedEntity(context, cachedId);
+  }
+}
+
+const entitiesTheBoardNames = (view) => {
   const named = new Set();
   for (const row of view.items || []) {
     const entityId = entityIdOf(row);
     if (entityId) named.add(entityId);
   }
-  for (const cachedId of await cachedEntityIds(context.deviceId)) {
-    if (!context.active()) return;
-    if (!named.has(cachedId)) await evictEntity(context.deviceId, cachedId);
+  return named;
+};
+
+/**
+ * Everything an unnamed entity holds — except the issue surface's records.
+ *
+ * Issues LEFT the board (core/issueCache.js): no `board.list` names one, no
+ * pass fills one, and nothing but the issue surface itself ever writes one. So
+ * "the board stopped naming it" is not news about an issue — it is the
+ * standing state of every issue there is, and a pass that read it as a
+ * departure would take the records back out on every boot, reconnect and tab
+ * return. The surface's mount-from-cache frame would then be a frame nobody
+ * ever sees.
+ *
+ * Only the kind is exempt, and only from this rule: everything else the entity
+ * holds still goes, a Done or a Delete still takes an issue's records with the
+ * rest (core/cacheLifetime.js), and the 72 h sweep still ages them out.
+ */
+async function dropUnnamedEntity(context, entityId) {
+  const issueRecords = await cachedSubKeys(context.deviceId, entityId, ISSUE_RECORD_KIND);
+  if (!issueRecords.length) {
+    await evictEntity(context.deviceId, entityId);
+    return;
   }
+  const held = await cachedAddresses({ deviceId: context.deviceId, entityId });
+  await deleteCached(held.filter((address) => address.kind !== ISSUE_RECORD_KIND));
 }
 
 // ─── Step 3: one workspace ───────────────────────────────────────────────────

@@ -63,21 +63,31 @@ const entitiesOf = (views, projectKey) =>
  * machine it is on.
  *
  * The in-memory drop is synchronous and first, so the block leaves on the press
- * rather than when the database answers. The eviction and the rewritten record
+ * rather than when the database answers. The rewritten records and the eviction
  * follow; a cache that is unavailable (private mode, a browser that refuses
  * IndexedDB) quietly does nothing, which is the contract every reader of
  * core/localCache.js is written against.
+ *
+ * `evictEntity` rather than `evictWorkspaceData`: the rail reads a row's own
+ * record as well as the board list, so a hide that kept the rows would paint
+ * the block again on the next announcement. Hide is the one case where the row
+ * goes with the data — the machine is gone, and the board that lists it is
+ * never going to answer again.
  */
 export async function hideProject({ deviceId, projectKey }) {
   if (!deviceId || !projectKey) return;
   const live = dropFeedProject(deviceId, projectKey);
   const records = await readCachedMany(RECORDS.map((kind) => recordAddress(deviceId, kind)));
   const views = [live, ...RECORDS.map((kind, index) => (records[index] ? viewOf(kind, records[index].value) : null))];
-  for (const entityId of entitiesOf(views, projectKey)) {
-    await evictEntity(deviceId, entityId);
-  }
+  // The three records first, then the entities under them. Every write here is
+  // announced, and the rail re-reads on the announcement: evicting first would
+  // send it to a board that still names the block, and the project would paint
+  // again between the two halves of its own removal.
   for (const [index, kind] of RECORDS.entries()) {
     const held = records[index];
     if (held) await writeCached(recordAddress(deviceId, kind), withoutProjectIn(kind, held.value, projectKey));
+  }
+  for (const entityId of entitiesOf(views, projectKey)) {
+    await evictEntity(deviceId, entityId);
   }
 }

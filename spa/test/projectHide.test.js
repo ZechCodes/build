@@ -76,6 +76,25 @@ describe("hiding a project", () => {
     expect(value.workspaces.map((row) => row.id)).toEqual(["ws-2"]);
   });
 
+  // The rail re-reads on every announcement, so the order the halves of a hide
+  // land in is visible: a hide that evicted first would send it to a board that
+  // still names the block, and the project would paint again between the two
+  // halves of its own removal.
+  it("rewrites the board before it evicts what the board named", async () => {
+    await cache.writeCached(FEED, view());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread" }, { lines: ["gone"] });
+    const announced = [];
+    const stop = cache.subscribeCache({ deviceId: "dev-1" }, (address) => announced.push(address));
+
+    await hideProject({ deviceId: "dev-1", projectKey: "dev-1/proj-1" });
+    stop();
+
+    const wroteBoard = announced.findIndex((address) => address.kind === "feed");
+    const evicted = announced.findIndex((address) => address.entityId === "run-1");
+    expect(wroteBoard).toBeGreaterThanOrEqual(0);
+    expect(evicted).toBeGreaterThan(wroteBoard);
+  });
+
   // The boot paint takes the project and workspace lists from their own
   // records, because a board push writes those two and never the feed. A hide
   // that rewrote the feed alone would be undone by the next reload: the block

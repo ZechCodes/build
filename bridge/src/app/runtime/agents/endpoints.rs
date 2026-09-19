@@ -18,6 +18,9 @@ use crate::timing::FrameTimer;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
+/// The most of an opening message a bubble's title wears.
+const TITLE_MAX_CHARS: usize = 120;
+
 /// The agent a verb's parameters name, resolved whole.
 ///
 /// Five readings that only make sense together and are only ever taken
@@ -1277,6 +1280,14 @@ impl AppState {
             // place of the harness name. Null until it has, which the client
             // shows as "Starting".
             "topic": agent.topic,
+            // What to CALL this conversation in a list: the agent's own topic,
+            // or — until it sets one — the first line the human opened with.
+            // Null for a conversation with neither, which is one nothing has
+            // been said in yet.
+            "title": agent
+                .topic
+                .clone()
+                .or_else(|| thread.first_user_line(TITLE_MAX_CHARS)),
         });
         if let Some(surfaces) = tab.and_then(|tab| tab.surfaces) {
             digest["surfaces"] = surfaces;

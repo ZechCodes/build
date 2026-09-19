@@ -102,18 +102,49 @@ impl AppState {
         roots
     }
 
-    /// Where this entity's row stands — the `state` item, which carries what
-    /// the board row shows about it and nothing the bridge cannot read: the
-    /// lifecycle state string the board serialises, how many agents are on it,
-    /// and the attention its row carries (`"none"` when it wants nothing).
+    /// Where this entity's row stands — the `state` item, which carries the
+    /// WHOLE row `board.list` paints for it, so a client writes the item into
+    /// its cache and repaints the feed without asking anything back.
     ///
-    /// `None` for an id with no lifecycle of its own — a project's primary
-    /// checkout, an external worktree — whose item stays the bare "refetch".
+    /// `None` for an id the board paints no row for: a project's primary
+    /// checkout, a run that has been archived, a legacy issue. Those items
+    /// stay the bare "refetch" they have always been.
     pub(in crate::app) fn entity_state_item(&self, entity_id: &str) -> Option<Value> {
-        let lifecycle = match self.runs.get(entity_id) {
-            Some(active) => super::run_state_str(&active.run.state),
-            None => super::plan_state_str(&self.plans.get(entity_id)?.plan.state),
+        self.board_row(entity_id)
+            .or_else(|| self.legacy_issue_digest(entity_id))
+    }
+
+    /// The row `board.list` carries for this entity: a run's folded feed row,
+    /// or an external checkout's ride-along row.
+    ///
+    /// Read off the caches the board reads and never refreshed here. A flush
+    /// answers with what the board already knows — the diffstat walk behind a
+    /// row belongs to the board's own TTL, and a push must not start one per
+    /// entity that moved.
+    fn board_row(&self, entity_id: &str) -> Option<Value> {
+        let Some(active) = self.runs.get(entity_id) else {
+            return self.external_worktree_row_of(entity_id);
         };
+        if active.run.state == crate::run::RunState::Archived {
+            return None;
+        }
+        let stat = self
+            .board
+            .diff()
+            .run_stat(entity_id)
+            .map(|cached| cached.value.clone())
+            .unwrap_or(Value::Null);
+        Some(crate::branch::named_project_row(
+            self.branch_candidate_from_run(entity_id, &stat).row,
+        ))
+    }
+
+    /// The three-field digest a legacy issue still answers with. Issues left
+    /// the board, so nothing paints a row for one; a client watching an old
+    /// record hears the same lifecycle, agent count and attention it always
+    /// heard.
+    fn legacy_issue_digest(&self, entity_id: &str) -> Option<Value> {
+        let lifecycle = super::plan_state_str(&self.plans.get(entity_id)?.plan.state);
         let agents = self
             .entity_agents(entity_id)
             .map(|roster| roster.iter().count())

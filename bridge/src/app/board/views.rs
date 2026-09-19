@@ -184,6 +184,59 @@ impl WorkItemStat {
     }
 }
 
+/// Which project a checkout's row is read against.
+pub(in crate::app) struct ExternalRowScope<'a> {
+    pub(in crate::app) project_id: &'a str,
+    pub(in crate::app) project_name: &'a str,
+    pub(in crate::app) base_branch: &'a str,
+}
+
+/// One external checkout's ride-along row, as `board.list` carries it.
+pub(in crate::app) fn external_worktree_row(
+    w: &crate::worktree::ExternalWorktree,
+    scope: &ExternalRowScope<'_>,
+    agent: (bool, bool),
+    attention: Option<Value>,
+) -> Value {
+    let (agent_working, can_finish) = agent;
+    json!({
+        "worktree_id": w.id,
+        "project_id": scope.project_id,
+        "project": scope.project_name,
+        "path": w.path.display().to_string(),
+        "isolation": w.isolation.wire(),
+        "branch": w.branch,
+        "head_sha": w.head_sha,
+        "head_subject": w.head_subject,
+        "head_age_seconds": w.head_age_seconds,
+        "head_committed_at": w.head_committed_at,
+        "dirty_files": w.dirty_files,
+        // Ahead and behind always share one comparison ref. The working-tree
+        // delta is reported separately below.
+        "comparison_ref": w.comparison_ref,
+        "ahead": w.ahead,
+        "behind": w.behind,
+        "base_branch": scope.base_branch,
+        "unpushed": w.unpushed,
+        "upstream": w.upstream,
+        "diffstat": w.diffstat.to_json(),
+        // What is sitting in the tree unsaved — the rail's +/−.
+        "uncommitted": w.uncommitted.to_json(),
+        "adoptable": w.branch.as_deref().is_some_and(|b| b != scope.base_branch),
+        "agent_working": agent_working,
+        "can_finish": can_finish,
+        // A worktree Build cut carries attention from birth, so it surfaces in
+        // the rail as something waiting for you. One made outside Build has
+        // none until you act on it here, and stays in the Worktrees row until
+        // then.
+        "attention": attention.unwrap_or_else(|| json!({
+            "resume_at": Value::Null,
+            "interacted": false,
+            "seen": false,
+        })),
+    })
+}
+
 impl AppState {
     /// When somebody last spoke on this work item, extended through the end of
     /// its most recent in-flight turn. Git, files, tools and terminal output do
@@ -269,48 +322,56 @@ impl AppState {
             let scan = self.external_worktrees(&project_id);
             rows.scanning |= !scan.settled;
             for w in scan.worktrees {
-                let adoptable = w.branch.as_deref().is_some_and(|b| b != base_branch);
-                let (agent_working, can_finish) =
-                    agent_signals.get(&w.id).copied().unwrap_or((false, false));
-                rows.rows.push(json!({
-                    "worktree_id": w.id,
-                    "project_id": project_id,
-                    "project": project_name,
-                    "path": w.path.display().to_string(),
-                    "isolation": w.isolation.wire(),
-                    "branch": w.branch,
-                    "head_sha": w.head_sha,
-                    "head_subject": w.head_subject,
-                    "head_age_seconds": w.head_age_seconds,
-                    "head_committed_at": w.head_committed_at,
-                    "dirty_files": w.dirty_files,
-                    // Ahead and behind always share one comparison ref. The
-                    // working-tree delta is reported separately below.
-                    "comparison_ref": w.comparison_ref,
-                    "ahead": w.ahead,
-                    "behind": w.behind,
-                    "base_branch": base_branch,
-                    "unpushed": w.unpushed,
-                    "upstream": w.upstream,
-                    "diffstat": w.diffstat.to_json(),
-                    // What is sitting in the tree unsaved — the rail's +/−.
-                    "uncommitted": w.uncommitted.to_json(),
-                    "adoptable": adoptable,
-                    "agent_working": agent_working,
-                    "can_finish": can_finish,
-                    // A worktree Build cut carries attention from birth, so it
-                    // surfaces in the rail as something waiting for you. One made
-                    // outside Build has none until you act on it here, and stays
-                    // in the Worktrees row until then.
-                    "attention": attention_of.get(&w.id).cloned().unwrap_or_else(|| json!({
-                        "resume_at": Value::Null,
-                        "interacted": false,
-                        "seen": false,
-                    })),
-                }));
+                rows.rows.push(external_worktree_row(
+                    &w,
+                    &ExternalRowScope {
+                        project_id: &project_id,
+                        project_name: &project_name,
+                        base_branch: &base_branch,
+                    },
+                    agent_signals.get(&w.id).copied().unwrap_or((false, false)),
+                    attention_of.get(&w.id).cloned(),
+                ));
             }
         }
         rows
+    }
+
+    /// The same row for ONE checkout, off the caches the board itself reads —
+    /// what a `state` push carries for an external worktree. Nothing is
+    /// scanned here: a flush answers with what the board knows, and the walk
+    /// that would make it newer is the board's own TTL to run.
+    pub(in crate::app) fn external_worktree_row_of(&self, worktree_id: &str) -> Option<Value> {
+        let projects = self.projects.iter().filter(|project| project.is_git);
+        for project in projects {
+            let scan = self.board.diff().external_scan_cache(&project.id)?;
+            let Some(w) = scan.worktrees.iter().find(|w| w.id == worktree_id) else {
+                continue;
+            };
+            let agent = self
+                .session_registry
+                .agent_working_roots()
+                .into_iter()
+                .find(|(root, _)| crate::worktree::external_worktree_id(root) == w.id)
+                .map(|(_, working)| (working, !working));
+            let attention = self
+                .board
+                .attention()
+                .attention_ids()
+                .any(|id| id == w.id)
+                .then(|| self.attention_json(&w.id));
+            return Some(external_worktree_row(
+                w,
+                &ExternalRowScope {
+                    project_id: &project.id,
+                    project_name: &project.name,
+                    base_branch: &project.base_branch,
+                },
+                agent.unwrap_or((false, false)),
+                attention,
+            ));
+        }
+        None
     }
 
     /// Workspace-wide publication-aware summaries, served stale while every

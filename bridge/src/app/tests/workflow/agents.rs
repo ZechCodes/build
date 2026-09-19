@@ -1,6 +1,56 @@
 use super::*;
 use crate::mcp::BridgeAction;
 
+/// A bubble is named twice over: by the topic the agent set, and — until it
+/// sets one — by the first line the human opened with. A client painting a
+/// conversation list off its cache has something to call every row.
+#[test]
+fn a_bubble_is_titled_by_its_topic_or_by_the_first_thing_asked_of_it() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-title");
+    let agent_id = primary_agent_id(&state, &run_id);
+    let bubble = |state: &mut AppState| -> Value {
+        let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+        listed["result"]["agents"][0].clone()
+    };
+    assert_eq!(
+        bubble(&mut state)["title"],
+        Value::Null,
+        "nothing said and nothing named"
+    );
+
+    let posted = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": run_id,
+            "agent_id": agent_id,
+            "body": "Unify the prompt delivery path\n\nand the rest of it",
+        }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    assert_eq!(
+        bubble(&mut state)["title"],
+        "Unify the prompt delivery path",
+        "the first line of the first thing the human said"
+    );
+
+    state
+        .on_agent_mcp_action(
+            &run_id,
+            &agent_id,
+            BridgeAction::SetTopic {
+                topic: "Align headless carriers".to_string(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        bubble(&mut state)["title"],
+        "Align headless carriers",
+        "the agent's own word for it wins once it has one"
+    );
+}
+
 // ==== Agents: one entity, several conversations ==========================
 
 /// The conversation's topic is the agent's own word for what it is doing:
@@ -1162,7 +1212,10 @@ fn branch_get_ships_the_page_the_branch_surface_asked_for() {
         // window: the count is the whole of it, and there is more above.
         assert_eq!(thread["thread_total"], held as u64, "{read:?}");
         assert_eq!(thread["has_more"], true, "{read:?}");
-        assert!(!read.to_string().contains("turn 0\""), "{read:?}");
+        assert!(
+            !thread["items"].to_string().contains("turn 0\""),
+            "{read:?}"
+        );
     }
 }
 

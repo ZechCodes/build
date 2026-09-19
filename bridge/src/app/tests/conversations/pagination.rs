@@ -186,7 +186,10 @@ fn a_detail_poll_that_asks_for_a_page_of_a_long_conversation_gets_one_not_all_of
 
     // The page is the tail — the work you were doing, not the first hour.
     assert_eq!(items.last().unwrap()["data"]["body"], "turn 249");
-    assert!(!opened.to_string().contains("turn 0\""), "{thread:?}");
+    assert!(
+        !thread["items"].to_string().contains("turn 0\""),
+        "{thread:?}"
+    );
 }
 
 /// A restart drops the history under the tail; the tab watching it does
@@ -296,7 +299,10 @@ fn posting_a_message_answers_with_the_page_the_client_asked_for() {
         thread["items"].as_array().unwrap().last().unwrap()["data"]["body"],
         "one more word"
     );
-    assert!(!posted.to_string().contains("turn 0\""), "{thread:?}");
+    assert!(
+        !thread["items"].to_string().contains("turn 0\""),
+        "{thread:?}"
+    );
 }
 
 #[test]
@@ -412,7 +418,10 @@ fn posting_to_an_implementation_answers_with_a_page_of_its_conversation() {
         "{thread:?}"
     );
     assert_eq!(thread["thread_total"], held as u64 + 1, "{thread:?}");
-    assert!(!posted.to_string().contains("turn 0\""), "{thread:?}");
+    assert!(
+        !thread["items"].to_string().contains("turn 0\""),
+        "{thread:?}"
+    );
 }
 
 #[test]

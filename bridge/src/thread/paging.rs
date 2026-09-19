@@ -420,6 +420,29 @@ impl Thread {
             _ => None,
         })
     }
+    /// The first line the human said here, for a conversation with no topic
+    /// of its own to be called by in a list.
+    ///
+    /// Cut to `max_chars` characters, because the first thing said to an
+    /// agent is as often a pasted page as a sentence, and a title is a line.
+    /// `None` when nobody has said anything yet — and for a conversation so
+    /// long its opening message sits under the tail this process holds, which
+    /// is a conversation that has had a topic set on it or has been going
+    /// long enough not to need one.
+    pub fn first_user_line(&self, max_chars: usize) -> Option<String> {
+        let opening = self.items.iter().find_map(|item| match item {
+            ThreadItem::Message(message) if message.role == MessageRole::User => {
+                Some(&message.body)
+            }
+            _ => None,
+        })?;
+        let line = opening
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?;
+        Some(line.chars().take(max_chars).collect())
+    }
+
     /// The items this process holds that a cursor has not been told about.
     pub(super) fn resident_after(&self, after_sequence: u64) -> Vec<&ThreadItem> {
         self.items

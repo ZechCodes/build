@@ -507,9 +507,9 @@ async fn a_write_in_a_watched_worktree_is_pushed_with_its_path() {
     assert_eq!(frames[0]["subscription_id"], "s-focus");
 }
 
-/// The `state` item says what the board row says — the lifecycle state, how
-/// many agents are on the entity, and its attention — rather than the empty
-/// object that only ever meant "refetch everything about this".
+/// The `state` item IS the feed row: exactly what `board.list` carries for
+/// this entity, so a client writes it into its cache and repaints the inbox
+/// without asking the bridge anything.
 #[tokio::test]
 async fn a_state_item_carries_the_row_the_board_would_paint() {
     let (dir, repo) = init_repo();
@@ -537,6 +537,9 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
         ),
     );
     assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    // Read the board once first: the row a push carries is the row the board
+    // has already worked out, and this is what a client's own first sync is.
+    assert_eq!(call(&handler, "board.list", json!({}))["ok"], true);
     settled_pushes(&mut rx, &key).await;
 
     state.lock().unwrap().note_entity_changed(&plan_id);
@@ -555,13 +558,18 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
         .iter()
         .find(|row| row["run_id"] == plan_id.as_str())
         .unwrap_or_else(|| panic!("no board row for the run: {board:?}"));
+    // Everything but the clock that runs while the test does: how long an
+    // agent has been working is counted from now, so the push and the board
+    // read a moment later disagree about it by design.
+    let steady = |row: &Value| {
+        let mut row = row.clone();
+        assert!(row["working_time"].is_object(), "{row:?}");
+        row["working_time"] = Value::Null;
+        row
+    };
     assert_eq!(
-        item["state"],
-        json!({
-            "run": row["state"],
-            "agents": row["agents"].as_array().expect("a row lists agents").len(),
-            "attention": row["unread_reason"].as_str().unwrap_or("none"),
-        }),
+        steady(&item["state"]),
+        steady(row),
         "{item:?} against {row:?}"
     );
 }

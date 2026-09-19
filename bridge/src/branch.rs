@@ -158,7 +158,7 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
 /// builder could not resolve a display name falls back to the project id
 /// rather than shipping "" — the inbox lists every project's work in one
 /// list, so a row with no project reads as belonging to nothing.
-fn named_project_row(mut row: Value) -> Value {
+pub fn named_project_row(mut row: Value) -> Value {
     let unnamed = row["project"]
         .as_str()
         .map(str::trim)

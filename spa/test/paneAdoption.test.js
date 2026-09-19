@@ -44,7 +44,7 @@ describe("the panes the surfaces paint carry .pane-col", () => {
         return { stage_id: "s1", contents: "# Wire" };
       },
     });
-    for (let i = 0; i < 12 && !host.querySelector(".ivsplit"); i++) await Promise.resolve();
+    for (let i = 0; i < 80 && !host.querySelector(".ivsplit"); i++) await Promise.resolve();
     const split = host.querySelector(".ivsplit");
     expect(split.classList.contains("pane-split")).toBe(true);
     expect(split.querySelector(".ivstages").classList.contains("pane-list")).toBe(true);

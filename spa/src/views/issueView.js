@@ -11,6 +11,7 @@ import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
+import { deviceFeedNow } from "../core/feedRows.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
 import { mountIssueView } from "../core/issueView.js";
 import { mountConsole } from "../core/console.js";
@@ -79,6 +80,7 @@ export async function renderIssue() {
   const view = mountIssueView($("#tabbody"), {
     issueId: id,
     projectId,
+    deviceId,
     agentSelection,
     viewingContext: App.viewingContext,
     initialStageId: selectedStageId,
@@ -88,8 +90,9 @@ export async function renderIssue() {
     // surface asks: by the device its link names.
     loadCatalog: () => deviceCatalog(deviceId),
     // The branches an implementation can be sent into are the feed's own branch
-    // rows, so the assignment control reads the same list the inbox does.
-    loadWorkItems: async () => (await callRpc("board.list")).items || [],
+    // rows, so the assignment control reads the same list the inbox does —
+    // out of the cache, which is where that list is.
+    loadWorkItems: async () => deviceFeedNow(deviceId)?.items || [],
     onSelectStage: (stageId) => {
       selectedStageId = stageId;
       syncHash();

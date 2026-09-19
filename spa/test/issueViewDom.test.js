@@ -11,6 +11,7 @@ import { entryKeyOf } from "../src/core/inbox.js";
 import { INBOX_SCOPE } from "../src/core/inboxView.js";
 import { pendingIn, resetOptimistic } from "../src/core/optimistic.js";
 import { dismissAllNotices } from "../src/core/notify.js";
+import { armChangeEvents, dispatchChangeEvent, resetChangeEvents } from "../src/core/changeEvents.js";
 
 const stage = (overrides = {}) => ({
   id: "s1",
@@ -92,6 +93,14 @@ const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
 
+/** The push that says this issue moved: what wakes the surface now that
+ *  nothing polls it. */
+const pushMoved = async () => {
+  armChangeEvents({ push_events: true });
+  dispatchChangeEvent({ type: "changes", items: [{ entity_id: "issue-1", state: { kind: "issue" } }] });
+  for (let i = 0; i < 40; i++) await Promise.resolve();
+};
+
 /** Every `issue.get` made for `agentId` so far, once at least one has been. The
  *  poll's own tick is the machine's business — how many times it has come round
  *  by any given millisecond is not something a test can name — so a test about
@@ -149,6 +158,7 @@ describe("the issue view", () => {
     resetOptimistic();
   });
   afterEach(() => {
+    resetChangeEvents();
     vi.restoreAllMocks();
     dismissAllNotices();
     resetOptimistic();
@@ -291,12 +301,11 @@ describe("the issue view", () => {
     view.dispose();
   });
 
-  it("leaves the steps alone across a poll pass that changed nothing", async () => {
+  it("leaves the steps alone across a push that changed nothing", async () => {
     const stages = [stage(), stage({ id: "s2", title: "Render" })];
-    const { host, view } = await mount({ stages, pollMs: 5 });
+    const { host, view } = await mount({ stages });
     const next = host.querySelector('[data-stage-step="next"]');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await flush();
+    await pushMoved();
     expect(host.contains(next), "an idempotent pass replaced the step the reader is aiming at").toBe(true);
     view.dispose();
   });
@@ -316,15 +325,12 @@ describe("the issue view", () => {
       return seen;
     };
 
-    const poll = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      await flush();
-    };
+    const poll = () => pushMoved();
 
     it("leaves every stage row alone when the pass changed only the issue", async () => {
       const stages = [stage(), stage({ id: "s2", title: "Render" })];
       const issue = issuePayload({ stages: [{ id: "s1", state: "planned" }, { id: "s2", state: "planned" }] });
-      const { host, view } = await mount({ issue, stages, pollMs: 5 });
+      const { host, view } = await mount({ issue, stages });
       const rows = [...host.querySelectorAll(".stagerow")];
       const records = await churn(host.querySelector("#stagelist"), async () => {
         issue.state = "approved";
@@ -338,7 +344,7 @@ describe("the issue view", () => {
 
     it("redraws only the stage that changed", async () => {
       const stages = [stage(), stage({ id: "s2", title: "Render" })];
-      const { host, view } = await mount({ stages, pollMs: 5 });
+      const { host, view } = await mount({ stages });
       const first = host.querySelector('.stagerow[data-stage="s1"]');
       const second = host.querySelector('.stagerow[data-stage="s2"]');
       const records = await churn(host.querySelector("#stagelist"), async () => {
@@ -480,7 +486,7 @@ describe("the issue view", () => {
   // reader is holding a passage of this doc.
   it("leaves the doc alone while a passage is being selected on it", async () => {
     const stages = [stage()];
-    const { host, view } = await mount({ stages, pollMs: 10 });
+    const { host, view } = await mount({ stages });
     const heading = host.querySelector("#stagedoc h1");
     vi.spyOn(window, "getSelection").mockReturnValue({
       anchorNode: heading.firstChild,
@@ -493,13 +499,13 @@ describe("the issue view", () => {
     });
 
     stages[0].title = "Rewired underneath";
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await pushMoved();
     expect(host.contains(heading), "the doc the selection points into was replaced").toBe(true);
     expect(host.textContent).not.toContain("Rewired underneath");
 
-    // Letting go hands the surface back: the next pass draws what moved.
+    // Letting go hands the surface back: the next push draws what moved.
     vi.restoreAllMocks();
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await pushMoved();
     expect(host.textContent).toContain("Rewired underneath");
     view.dispose();
   });
@@ -623,16 +629,15 @@ describe("the issue view", () => {
     expect(document.querySelector(".assign-pop")).toBeNull();
   });
 
-  it("holds a choice made in the overlay across a poll pass", async () => {
-    const { host, view } = await mount({ pollMs: 5 });
+  it("holds a choice made in the overlay across a push", async () => {
+    const { host, view } = await mount({});
     host.querySelector("#assigntoggle").click();
     await flush();
     const worktree = document.querySelector(".assign-pop #assignworktree");
     worktree.value = "existing";
     worktree.dispatchEvent(new Event("change"));
     await flush();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await flush();
+    await pushMoved();
     expect(document.querySelector(".assign-pop #assignworktree").value).toBe("existing");
     expect(host.querySelector(".ivassign-sum").textContent).toMatch(/existing worktree/i);
     view.dispose();
@@ -748,13 +753,14 @@ describe("the issue view", () => {
     view.dispose();
   });
 
-  it("names a bound again on the read after a bubble switch, which drops the cursor", async () => {
+  it("names the same bound on the read after a bubble switch", async () => {
     const selection = createAgentSelection("agent:one");
-    const { view, calls } = await mount({ agentSelection: selection, pollMs: 1 });
+    const { view, calls } = await mount({ agentSelection: selection });
     const readsBeforeSwitch = calls.filter(([method]) => method === "issue.get").length;
+
     selection.set("agent:two");
-    // The FIRST read of the new bubble is the one that owes a bound: every read
-    // after it is riding a cursor into a conversation this view now holds.
+    await pushMoved();
+
     const afterSwitch = (await readsForAgent(calls, "agent:two"))[0][1];
     expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(readsBeforeSwitch);
     expect(afterSwitch.thread_limit).toBe(1);
@@ -766,7 +772,7 @@ describe("the issue view", () => {
     const { host, view, calls } = await mount({ fail: { "issue.stage_doc": "read failed" } });
     expect(host.querySelector("#stagedocretry")).toBeTruthy();
     const reads = calls.filter(([method]) => method === "issue.stage_doc").length;
-    expect(reads).toBe(1); // latched off: the poll does not retry it
+    expect(reads).toBe(1); // latched off: nothing retries it
     view.dispose();
   });
 });

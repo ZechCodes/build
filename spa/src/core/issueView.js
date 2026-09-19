@@ -7,10 +7,13 @@
 // whichever stage doc is open. There are no tabs and no drill-in: selecting a
 // stage swaps the viewer and the list stays where it is.
 //
-// Owns a 1.6s issue.get + issue.stages poll with a keyed freeze; the freeze also
-// holds while the reviewer is mid-comment or an action is in flight. The pure
-// pieces live in issueModel.js (decisions) and issueRender.js (markup); this
-// file is the wiring.
+// Paints from the issue's own records with a keyed freeze; the freeze also
+// holds while the reviewer is mid-comment or an action is in flight. Issues
+// left the board, so nothing fills those records but this surface: it reads
+// through them (core/issueCache.js) on mount, when a `state` push says the
+// issue moved, and when a verb it sent changed something. There is no poll.
+// The pure pieces live in issueModel.js (decisions) and issueRender.js
+// (markup); this file is the wiring.
 
 import { el } from "../dom.js";
 import { esc } from "./text.js";
@@ -60,8 +63,7 @@ import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { removeRecord, runOptimistic } from "./optimistic.js";
 import { replyOrNothing } from "./session.js";
-
-export const ISSUE_VIEW_POLL_MS = 1600;
+import { forgetIssueRecords, readIssueRecord } from "./issueCache.js";
 
 /** Bind an async RPC to a button: disable + label while in flight, restore and
  *  raise a persistent expandable error notification on failure. */
@@ -123,7 +125,7 @@ export function mountIssueView(
     onSelectStage = () => {},
     onProject = () => {},
     onGone = () => {},
-    pollMs = ISSUE_VIEW_POLL_MS,
+    deviceId = null,
     initialStageId = null,
     // Whose conversation this surface is reading and writing into. An issue
     // carries exactly one agent session, so this all but always names it — but
@@ -145,8 +147,6 @@ export function mountIssueView(
   let assignmentOverlay = null;
   let renderedKey = null;
   let actionsInFlight = 0;
-  let threadCursor = 0;
-  let threadAgentId = agentSelection.get(); // whose conversation the cursor is in
   let drawer = null;
   // The plan of an issue that has no stage manifest at all (a migrated issue
   // predating stages): one doc, read-only, so it is still readable here.
@@ -557,11 +557,14 @@ export function mountIssueView(
 
     const retry = viewerHost.querySelector("#stagedocretry");
     if (retry)
-      retry.onclick = () => {
+      retry.onclick = async () => {
         docErrors.delete(stage.id);
         stageDoc = null;
         renderedKey = null;
-        refresh();
+        // The reader asked for that doc again, so the record it is held under
+        // goes: a retry that answered the cache would answer nothing new.
+        await forgetIssueRecords(deviceId, issueId);
+        await refresh();
       };
 
     bindAction(viewerHost.querySelector("#approvestage"), "approving…", async () => {
@@ -598,7 +601,9 @@ export function mountIssueView(
       }
     }
     bindAction(viewerHost.querySelector("#stagediff"), "loading…", async () => {
-      const diff = await callRpc("issue.stage_diff", { issue_id: issueId, stage_id: stage.id });
+      const diff = await issueRecord(`stagediff:${stage.id}`, () =>
+        callRpc("issue.stage_diff", { issue_id: issueId, stage_id: stage.id }),
+      );
       let pane = viewerHost.querySelector("#stagediffpane");
       if (!pane) {
         pane = document.createElement("pre");
@@ -717,41 +722,58 @@ export function mountIssueView(
 
   /** One pass of the surface's payloads. `force` bypasses the freeze (a repaint
    *  after the user's own action must land). */
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 30, cap 10 — reduce it, then drop this line
-  const load = async (force = false) => {
+  /** One of this issue's records, read through the cache. `force` is a push
+   *  (or a verb this surface sent) saying the record is behind. */
+  const issueRecord = (sub, read, force = false) =>
+    readIssueRecord({ deviceId, issueId, sub, read, force });
+
+  /** The issue itself and its stage manifest. Cold, both are read; warm, both
+   *  are answered off disk and the surface paints on the frame it mounted in. */
+  const readIssueAndStages = (force) =>
+    Promise.all([
+      issueRecord(
+        "get",
+        () =>
+          callRpc("issue.get", {
+            issue_id: issueId,
+            ...agentSelection.scope(),
+            // The only thing this surface takes off the answer's thread is how
+            // far the conversation has got; the rail beside it owns what gets
+            // rendered. So a read asks for the smallest page the daemon will
+            // cut rather than naming no bound at all, which would ship every
+            // item of a long conversation to compute one integer.
+            ...SMALLEST_THREAD_PAGE,
+          }),
+        force,
+      ),
+      issueRecord("stages", () => callRpc("issue.stages", { issue_id: issueId }), force),
+    ]);
+
+  /**
+   * Read what this surface paints and draw it.
+   *
+   * `reread` says the records are behind — a push naming the issue, or a verb
+   * this surface sent — and is what makes the read go to the machine rather
+   * than answering off disk. `repaint` overrides the keyed freeze, which is
+   * for the verb's own answer and nothing else: a push that carried no change
+   * must leave the step the reader is aiming at, and the passage they are
+   * selecting, exactly where they are.
+   */
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 22, cap 10 — reduce it, then drop this line
+  const load = async ({ reread = false, repaint = false } = {}) => {
+    const force = repaint;
     if (disposed || gone) return;
     let payload;
     let stagesPayload;
-    // A cursor is a position in ONE conversation: opening a different agent's
-    // makes what this view holds somebody else's, so the next read is whole.
-    if (agentSelection.get() !== threadAgentId) {
-      threadAgentId = agentSelection.get();
-      threadCursor = 0;
-    }
     try {
-      [payload, stagesPayload] = await Promise.all([
-        callRpc("issue.get", {
-          issue_id: issueId,
-          ...agentSelection.scope(),
-          // The only thing this surface takes off the answer's thread is how
-          // far the conversation has got; the rail beside it owns what gets
-          // rendered. So a read with no cursor yet asks for the smallest page
-          // the daemon will cut rather than naming no bound at all, which
-          // would ship every item of a long conversation to compute one
-          // integer — on the first read of every issue, and again after every
-          // bubble switch.
-          ...(threadCursor ? { thread_after_sequence: threadCursor } : SMALLEST_THREAD_PAGE),
-        }),
-        callRpc("issue.stages", { issue_id: issueId }),
-      ]);
+      [payload, stagesPayload] = await readIssueAndStages(reread || repaint);
     } catch (e) {
-      // A deleted issue is permanent; every other failure is transient and the
-      // poll retries silently.
+      // A deleted issue is permanent; anything else is a machine that could not
+      // answer, and what is held stays on screen until it can.
       if (/unknown (issue_id|plan_id)/.test((e && e.message) || "")) renderGone();
       return;
     }
     if (disposed || gone) return;
-    threadCursor = threadSequence(payload) || threadCursor;
     const first = !issue;
     issue = payload;
     stagesData = stagesPayload || { stages: [] };
@@ -793,7 +815,9 @@ export function mountIssueView(
     if (!shouldFetchPlanDoc({ docsAvailable: issue && issue.docs_available, errorLatched: docErrors.has(selectedStageId) })) return;
     const wanted = selectedStageId;
     try {
-      const doc = await callRpc("issue.stage_doc", { issue_id: issueId, stage_id: wanted });
+      const doc = await issueRecord(`stage:${wanted}`, () =>
+        callRpc("issue.stage_doc", { issue_id: issueId, stage_id: wanted }),
+      );
       if (!disposed && selectedStageId === wanted) stageDoc = doc;
     } catch {
       docErrors.add(wanted); // latch: render an error state, stop refetching
@@ -806,33 +830,23 @@ export function mountIssueView(
     if (stages().length || singleDoc !== null) return;
     if (!shouldFetchPlanDoc({ docsAvailable: issue && issue.docs_available, errorLatched: singleDocError })) return;
     try {
-      singleDoc = (await callRpc("issue.doc", { issue_id: issueId })).contents || "";
+      singleDoc = (await issueRecord("doc", () => callRpc("issue.doc", { issue_id: issueId }))).contents || "";
     } catch {
       singleDocError = true;
     }
   };
 
-  const threadSequence = (payload) => {
-    const thread = payload && payload.thread;
-    if (!thread) return 0;
-    if (thread.thread_last_sequence) return thread.thread_last_sequence;
-    return (thread.items || []).reduce(
-      (highest, item) => Math.max(highest, Number(item.data && item.data.sequence) || 0),
-      0,
-    );
-  };
-
-  const refresh = () => load(true);
+  /** Read the issue again from its machine and draw the answer: a verb this
+   *  surface sent moved something, and the records it paints from are behind. */
+  const refresh = () => load({ reread: true, repaint: true });
 
   load();
   // The issue is the entity: its own plan/stage/thread mutations are what stale
-  // this surface. `pausesWhileHidden: false` keeps the events on exactly the
-  // footing this poll has always had — it is the one detail surface that reads
-  // while the tab is away, and a push must not do less than the tick it stood
-  // down.
+  // this surface, and the push naming it is what says so. There is nothing
+  // behind this to poll. `pausesWhileHidden: false` because this is the one
+  // detail surface that keeps up while the tab is away.
   const watcher = watchChanges({
-    refresh: () => load(),
-    intervalMs: pollMs,
+    refresh: () => load({ reread: true }),
     entity: issueId,
     pausesWhileHidden: false,
     // Focus tier: an issue is plan, stage and conversation — no checkout.
@@ -841,7 +855,7 @@ export function mountIssueView(
   });
 
   return {
-    // The surface's own poll, handed back so a host that follows the app's
+    // The surface's subscription, handed back so a host that follows the app's
     // App.poll convention can hold it too. dispose() ends it either way.
     poll: watcher,
     dispose() {

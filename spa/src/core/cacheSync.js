@@ -44,7 +44,14 @@ import {
   readCached,
   writeCached,
 } from "./localCache.js";
-import { evictWorkspaceData, expireWorkspaceData, isWorkspaceDataKind, withinBytes } from "./cacheLifetime.js";
+import {
+  FILE_RECORD_KIND,
+  cacheFileBody,
+  evictWorkspaceData,
+  expireWorkspaceData,
+  isWorkspaceDataKind,
+  withinBytes,
+} from "./cacheLifetime.js";
 import {
   surfaceSessionGeneration,
   surfacesCacheAddress,
@@ -897,6 +904,36 @@ async function applyFiles(context, entityId, files) {
   const walked = await cachedSubKeys(context.deviceId, entityId, "tree");
   const stale = files.truncated ? walked : dirsOf(files.paths).filter((dir) => walked.includes(dir));
   await listTrees(context, entityId, scope, new Set(files.root ? stale : ["", ...stale]), "background");
+  await rereadHeldFiles(context, entityId, scope, files);
+}
+
+/** A file body the reader has open — or had open recently enough for the cache
+ *  to still hold it — is stale the moment a push names its path. It is the one
+ *  thing a `files` item never carries, so it is read: a bounded pull of what
+ *  the reader is already looking at, and never of a file nobody has opened.
+ *
+ *  A truncated list says "the tree moved" rather than which paths did, so
+ *  every held body is re-read. There are at most `RECENT_FILES` of them. */
+async function rereadHeldFiles(context, entityId, scope, files) {
+  const held = await cachedSubKeys(context.deviceId, entityId, FILE_RECORD_KIND);
+  const named = new Set(files.paths || []);
+  const stale = files.truncated ? held : held.filter((path) => named.has(path));
+  for (const path of stale) {
+    if (!context.active()) return;
+    await rereadFile(context, entityId, scope, path);
+  }
+}
+
+async function rereadFile(context, entityId, scope, path) {
+  const address = addressOf(context, entityId, FILE_RECORD_KIND, path);
+  const openedAt = (await readCached(address))?.value?.openedAt;
+  const file = await ask(context, "fs.read", { ...scope, path }, "background");
+  if (!context.active()) return;
+  // A read that answered nothing is a file that moved out from under the
+  // reader, or a machine that stopped answering. The body held is the last one
+  // anybody saw; a delete here would blank an open preview on a hiccup.
+  if (!file) return;
+  await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt });
 }
 
 const applyTerminals = (context, entityId, terminals) =>

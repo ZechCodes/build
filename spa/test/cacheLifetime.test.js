@@ -199,46 +199,47 @@ describe("the recent files", () => {
 describe("putting a file body in the cache", () => {
   const bodyOf = async (path) => (await cache.readCached(address("ws-1", "file", path)))?.value;
 
-  it("stores the body, its revision and when it was opened", async () => {
-    expect(await lifetime.cacheFileBody({
-      deviceId: "dev-1",
-      entityId: "ws-1",
-      path: "src/a.js",
-      content: "hello",
-      revision: "r-1",
-      openedAt: NOW,
-    })).toBe(true);
-    expect(await bodyOf("src/a.js")).toEqual({ content: "hello", revision: "r-1", openedAt: NOW });
+  /** An `fs.read` answer as the wire carries one. */
+  const read = (over = {}) => ({
+    path: "src/a.js",
+    size: 5,
+    truncated: false,
+    mime: "text/plain",
+    content_b64: "aGVsbG8=",
+    revision: "r-1",
+    ...over,
+  });
+
+  const keep = (path, file, openedAt = NOW) =>
+    lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path, file, openedAt });
+
+  it("stores the read answer whole, and when it was opened", async () => {
+    expect(await keep("src/a.js", read())).toBe(true);
+    expect(await bodyOf("src/a.js")).toEqual({ file: read(), openedAt: NOW });
   });
 
   it("refuses a body over 1 MB, and leaves the one it holds alone", async () => {
-    await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "big.js", content: "small" });
-    const stored = await lifetime.cacheFileBody({
-      deviceId: "dev-1",
-      entityId: "ws-1",
-      path: "big.js",
-      content: "x".repeat(lifetime.FILE_MAX_BYTES + 1),
-    });
-    expect(stored).toBe(false);
-    expect((await bodyOf("big.js")).content).toBe("small");
+    await keep("big.js", read({ path: "big.js" }));
+    expect(await keep("big.js", read({ path: "big.js", size: lifetime.FILE_MAX_BYTES + 1 }))).toBe(false);
+    expect((await bodyOf("big.js")).file.size).toBe(5);
   });
 
-  it("measures the cap in bytes, not in characters", async () => {
+  // A truncated read is a piece of a file. Kept, it would open again as the
+  // whole of one, with nothing on screen saying which piece.
+  it("refuses a read that came back truncated, whatever it weighs", async () => {
+    expect(await keep("part.js", read({ path: "part.js", truncated: true }))).toBe(false);
+  });
+
+  it("measures an answer with no size of its own in bytes, not in characters", async () => {
     // Three bytes each: a body of a third of the cap in characters is at it.
     const content = "な".repeat(Math.ceil(lifetime.FILE_MAX_BYTES / 3));
     expect(content.length).toBeLessThan(lifetime.FILE_MAX_BYTES);
-    expect(await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "jp.txt", content })).toBe(false);
+    expect(await keep("jp.txt", read({ size: null, content_b64: content }))).toBe(false);
   });
 
   it("leaves at most five bodies behind it", async () => {
     for (let index = 0; index < 7; index += 1) {
-      await lifetime.cacheFileBody({
-        deviceId: "dev-1",
-        entityId: "ws-1",
-        path: `src/${index}.js`,
-        content: String(index),
-        openedAt: NOW + index,
-      });
+      await keep(`src/${index}.js`, read({ path: `src/${index}.js` }), NOW + index);
     }
     expect((await cache.cachedSubKeys("dev-1", "ws-1", "file")).sort())
       .toEqual(["src/2.js", "src/3.js", "src/4.js", "src/5.js", "src/6.js"]);

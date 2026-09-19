@@ -53,7 +53,11 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // 56 since the console paints from the cache: `ensureTerminals` — the cached
 // seed, the live listing, the unreachable machine and the unresolvable branch
 // in one function — is a read of two records and a paint.
-const RATCHETED_FUNCTIONS = 56;
+// 55 since the Files tab's listing is the `tree` record: `loadTree` reads it,
+// and the machine is asked only for a directory nothing holds — which is its
+// own function, beside the one that says whether a paint still speaks for
+// where the reader is standing.
+const RATCHETED_FUNCTIONS = 55;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

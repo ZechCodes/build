@@ -91,9 +91,26 @@ export function withinBytes(text, maxBytes) {
   return new TextEncoder().encode(body).length <= maxBytes;
 }
 
+/** Whether a read answer is one the cache may keep.
+ *
+ *  Measured against the file's own size — the bytes on disk, which is what the
+ *  rule is about — rather than against the body on the wire, which is base64
+ *  and a third bigger than them. A read that came back truncated is refused
+ *  whatever it weighs: it is not the file, and a reader opening it again
+ *  would be shown a piece of one with nothing saying so. */
+const fileBodyFits = (file) => {
+  if (!file || file.truncated) return false;
+  // `Number(null)` is zero and passes every cap, so the field has to be a
+  // number before it is read as one: an answer that names no size is measured
+  // by what it carries.
+  const sized = typeof file.size === "number" && Number.isFinite(file.size);
+  return sized ? file.size <= FILE_MAX_BYTES : withinBytes(file.content_b64, FILE_MAX_BYTES);
+};
+
 /** Put one file's body in the cache, under both of the owner's rules for it:
  *  a body over `FILE_MAX_BYTES` is not stored at all, and a write leaves at
- *  most `RECENT_FILES` bodies behind it. Answers whether the body was stored.
+ *  most `RECENT_FILES` bodies behind it. `file` is the `fs.read` answer as it
+ *  came. Answers whether the body was stored.
  *
  *  Every file body goes in through here. A writer that wrote the record
  *  itself would be a second place the two rules have to be remembered, and
@@ -102,9 +119,9 @@ export function withinBytes(text, maxBytes) {
  *
  *  A refusal is not an error: the reader gets the file off the wire as they
  *  always would, and the only thing lost is the instant second look. */
-export async function cacheFileBody({ deviceId, entityId, path, content, revision = null, openedAt = Date.now() }) {
-  if (!deviceId || !entityId || !withinBytes(content, FILE_MAX_BYTES)) return false;
-  await writeCached({ deviceId, entityId, kind: FILE_RECORD_KIND, sub: path || "" }, { content, revision, openedAt });
+export async function cacheFileBody({ deviceId, entityId, path, file, openedAt = Date.now() }) {
+  if (!deviceId || !entityId || !fileBodyFits(file)) return false;
+  await writeCached({ deviceId, entityId, kind: FILE_RECORD_KIND, sub: path || "" }, { file, openedAt });
   await trimRecentFiles(deviceId, entityId);
   return true;
 }

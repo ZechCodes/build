@@ -1,7 +1,13 @@
 // The Files tab — a worktree browser shared by all three surfaces (task,
-// external worktree, plain folder). Left pane: one-directory-at-a-time
-// tree (fs.tree) with a breadcrumb and a `..` row below the root. Right pane: a
-// per-type preview of the selected file (fs.read).
+// external worktree, plain folder). Left pane: one-directory-at-a-time tree
+// with a breadcrumb and a `..` row below the root. Right pane: a per-type
+// preview of the selected file.
+//
+// Both columns read the cache. A directory's listing is its `tree` record, and
+// a `files` push rewriting one moves the tree under the reader; a file's body
+// is its `file` record, and one the cache holds opens with no round trip. Two
+// reads are left on the wire and both write through: `fs.tree` for a directory
+// nothing has ever been written for, and `fs.read` for a file nothing holds.
 //
 // SECURITY: every name/path is escaped. HTML previews render in a
 // `sandbox=""` iframe over a `data:` URL (no scripts, no same-origin); SVG and
@@ -10,7 +16,8 @@
 
 import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId } from "../core/directoryScope.js";
-import { readCached, writeCached } from "../core/localCache.js";
+import { deleteCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
+import { FILE_RECORD_KIND, cacheFileBody } from "../core/cacheLifetime.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
@@ -269,43 +276,96 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   const treeAddress = (path) =>
     cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "tree", sub: path }) || null : null;
 
-  let treeRequest = 0; // which navigation the paints below still speak for
-  let liveRenderedRequest = 0; // a live answer outranks the cache for its request
-  let cachePaintedRequest = 0; // whether the cache already painted this request
+  const fileAddress = (path) =>
+    cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: FILE_RECORD_KIND, sub: path }) || null : null;
 
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
-  const loadTree = async (nextDir) => {
-    const request = ++treeRequest;
-    const address = treeAddress(nextDir);
-    if (address) {
-      // The saved listing paints while the machine is being asked — never over
-      // a live answer, never for a directory the reader has already left. A
-      // machine that then cannot answer leaves the saved listing standing.
-      readCached(address).then((record) => {
-        if (!record || request !== treeRequest || liveRenderedRequest === request) return;
-        cachePaintedRequest = request;
-        dir = record.value.path || "";
-        renderTree(record.value.entries || []);
-      });
-    }
+  const heldValue = async (address) => (address ? (await readCached(address))?.value : undefined);
+
+  let treeRequest = 0; // which navigation the paints below still speak for
+  let unwatchTree = null; // the watch on the listing on screen
+
+  const paintListing = (listing) => {
+    dir = listing.path || "";
+    renderTree(listing.entries || []);
+  };
+
+  /** Hear this directory's record move: a `files` push rewrites the root
+   *  listing, and the sync layer re-lists whichever deeper ones the reader
+   *  walked into. Only the listing on screen is watched — the reader walking
+   *  away takes the watch with them. */
+  const watchListing = (path, request) => {
+    unwatchTree?.();
+    unwatchTree = null;
+    const address = treeAddress(path);
+    if (!address) return;
+    unwatchTree = subscribeCache(address, () => void rereadListing(path, request));
+  };
+
+  /** Whether the paints below still speak for where the reader is standing. */
+  const stillListing = (request) => !disposed && request === treeRequest;
+
+  const rereadListing = async (path, request) => {
+    if (!stillListing(request)) return;
+    const held = await heldValue(treeAddress(path));
+    if (stillListing(request) && held) paintListing(held);
+  };
+
+  const cannotListHtml = (error) => `<div class="empty">cannot list: ${esc((error && error.message) || "error")}</div>`;
+
+  /** The one on-demand listing: a directory nothing has ever been written
+   *  for. It is written through, so the sync layer keeps it fresh from here. */
+  const listTree = async (nextDir, request) => {
     let res;
     try {
       res = await callRpc("fs.tree", { ...scope, path: nextDir });
     } catch (e) {
-      if (request !== treeRequest || cachePaintedRequest === request) return;
-      treeListEl.innerHTML = `<div class="empty">cannot list: ${esc((e && e.message) || "error")}</div>`;
+      if (stillListing(request)) treeListEl.innerHTML = cannotListHtml(e);
       return;
     }
-    if (request !== treeRequest) return;
-    liveRenderedRequest = request;
-    dir = res.path || "";
-    renderTree(res.entries || []);
-    if (address) writeCached(address, { path: dir, entries: res.entries || [] });
+    if (!stillListing(request)) return;
+    const listing = { path: res.path || "", entries: res.entries || [] };
+    paintListing(listing);
+    const address = treeAddress(nextDir);
+    if (address) writeCached(address, listing);
   };
 
-  const readFile = async (path) => {
+  const loadTree = async (nextDir) => {
+    const request = ++treeRequest;
+    watchListing(nextDir, request);
+    const held = await heldValue(treeAddress(nextDir));
+    if (!stillListing(request)) return;
+    if (held) {
+      paintListing(held);
+      return;
+    }
+    await listTree(nextDir, request);
+  };
+
+  /** Keep what the reader just opened, under the recent-files rule. A body too
+   *  big for the cache is shown and not kept (core/cacheLifetime.js). */
+  const keepFileBody = (path, file) => {
+    const address = fileAddress(path);
+    if (address) void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file });
+  };
+
+  /** The saved body is stale the moment this tab writes over it, and the write
+   *  answers with a revision rather than with the file. Let it go: the next
+   *  open reads the file the save made. */
+  const dropFileBody = (path) => {
+    const address = fileAddress(path);
+    if (address) void deleteCached([address]);
+  };
+
+  /** One file's body: the record where there is one, else the one read off the
+   *  wire, written through. `fresh` is the reload verb, which exists to go
+   *  past whatever is held. */
+  const readFile = async (path, { fresh = false } = {}) => {
+    const held = fresh ? undefined : (await heldValue(fileAddress(path)))?.file;
+    if (held) return { file: held };
     try {
-      return { file: await callRpc("fs.read", { ...scope, path }) };
+      const file = await callRpc("fs.read", { ...scope, path });
+      keepFileBody(path, file);
+      return { file };
     } catch (error) {
       return { error };
     }
@@ -415,6 +475,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
         content_b64: encodeBase64Text(snapshot.value),
         expected_revision: snapshot.revision,
       });
+      dropFileBody(path);
       finishSave(submittedState, written, submittedValue);
     } catch (error) {
       failSave(submittedState, error);
@@ -428,7 +489,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     const reloadingState = viewerState;
     const reloadingValue = reloadingState.snapshot().value;
     const request = ++fileRequest;
-    const result = await readFile(path);
+    const result = await readFile(path, { fresh: true });
     if (!selectedFileIsCurrent(request, path) || viewerState !== reloadingState) return;
     if (reloadingState.snapshot().value !== reloadingValue) return;
     if (result.error) {
@@ -553,6 +614,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
       disposed = true;
       treeRequest += 1;
       fileRequest += 1;
+      unwatchTree?.();
+      unwatchTree = null;
       stopPreviewHeadMeasurement();
       editor?.dispose();
       viewingContext?.clear?.();

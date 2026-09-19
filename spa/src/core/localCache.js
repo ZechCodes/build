@@ -261,6 +261,45 @@ export async function cachedSubKeys(deviceId, entityId, kind) {
   return keys.map((key) => decodeURIComponent(String(key).slice(prefix.length)));
 }
 
+/** Every record under an address prefix: its full address, when it was
+ *  written, and its value — what the lifetime rules read to decide what has
+ *  aged out and what a workspace is holding too much of. */
+export async function cachedRecords(prefixAddress) {
+  const prefix = `${keyOfParts(addressParts(prefixAddress))}|`;
+  const range = prefixRange(prefix);
+  let keys = [];
+  let records = [];
+  await inStore("readonly", (store) => {
+    const keyRequest = store.getAllKeys(range);
+    const recordRequest = store.getAll(range);
+    keyRequest.onsuccess = () => {
+      keys = keyRequest.result || [];
+    };
+    recordRequest.onsuccess = () => {
+      records = recordRequest.result || [];
+    };
+    return null;
+  });
+  return keys.map((key, index) => ({
+    address: addressOfParts(partsOfKey(key)),
+    at: records[index]?.at || 0,
+    value: records[index]?.value,
+  }));
+}
+
+/** Delete named records — one transaction, then one announcement each, so a
+ *  surface holding a record that has aged out hears it go. */
+export function deleteCached(addresses) {
+  const keys = addresses.map(recordKey);
+  if (!keys.length) return Promise.resolve();
+  return inStore("readwrite", (store) => {
+    for (const key of keys) store.delete(key);
+    return null;
+  }).then(() => {
+    for (const key of keys) announce(partsOfKey(key));
+  });
+}
+
 /** Drop the whole database. For sign-out, and for a format change. */
 export function wipeCache() {
   return inStore("readwrite", (store) => {

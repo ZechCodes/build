@@ -838,12 +838,80 @@ async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
         "project.diff",
         json!({ "project_id": project_id }),
     );
-    assert_eq!(git["diff"]["files"], diff["result"]["files"], "{git:?}");
+    assert_eq!(
+        git["diff"], diff["result"],
+        "the item carries what `project.diff` answers: {git:?}"
+    );
     assert_eq!(
         git["diff_bytes"].as_u64(),
         Some(diff["result"]["patch"].as_str().unwrap().len() as u64),
         "{git:?}"
     );
+}
+
+/// A `git` item's diff is the body the diff verb for that checkout answers
+/// with — whatever kind of checkout it is, so a client writes the push into
+/// the same cache slot its own read fills.
+///
+/// An external checkout's `worktree.diff` carries more than the stat, the
+/// files and the patch: the checkout's id, the branch the diff is anchored
+/// on so a surface can name it instead of saying "the base branch", and
+/// whether it can be adopted. A push that carried a run's shape instead
+/// would leave every one of those undefined the first time a reader opened
+/// the changes from cache.
+#[tokio::test]
+async fn a_checkouts_pushed_diff_is_the_body_its_own_diff_verb_answers() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let checkout =
+        super::filesystem::add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+    let worktree_id = state
+        .lock()
+        .unwrap()
+        .scan_external_worktrees_now(&project_id)
+        .expect("the project's checkouts are scanned")
+        .first()
+        .expect("the checkout was found")
+        .id
+        .clone();
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-git",
+                "scope": { "kind": "entity", "id": worktree_id },
+                "kinds": ["git"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    std::fs::write(checkout.join("pushed.txt"), "a small change\n").unwrap();
+    let git = pushed_git_item(&state, &mut rx, &key, &worktree_id, |git| {
+        git["diff"]["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("a small change"))
+    })
+    .await;
+
+    let read = call(
+        &handler,
+        "worktree.diff",
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
+    );
+    let mut expected = read["result"].clone();
+    // The one field a push leaves off: the conditional key is a second diff
+    // walk, and a push is not a conditional read.
+    expected
+        .as_object_mut()
+        .expect("the verb answers an object")
+        .remove("diff_key");
+    assert_eq!(git["diff"], expected, "{git:?} against {read:?}");
+    assert_eq!(git["diff"]["worktree_id"], worktree_id.as_str(), "{git:?}");
+    assert_eq!(git["diff"]["base_branch"], "main", "{git:?}");
 }
 
 /// A working tree with more diff than a push may carry says how big it is and

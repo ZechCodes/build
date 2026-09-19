@@ -8,7 +8,7 @@
 //! it released.
 
 use super::watchers::{WorktreeRoots, WorktreeWatchers};
-use super::AppState;
+use super::{AppState, ReadSubject};
 use crate::changes::WORKING_TREE_DIFF_MAX_BYTES;
 use crate::changes::{ChangeBus, EntityFacts, FactsRequest, ThreadTip};
 use crate::gitgui::{counted_status_shape, log_page, unpushed_summary, GIT_STATUS_MAX_FILES};
@@ -18,14 +18,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
-/// What a flush reads one checkout's git with: where it is, and what the work
-/// in it is measured against — a run's baseline sha, the branch an external
-/// checkout was cut from, or nothing at all for a project's own checkout,
-/// whose diff is against its own HEAD.
+/// What a flush reads one checkout's git with: where it is, the branch its
+/// history is marked against, and the diff verb's own subject — the SAME
+/// [`ReadSubject`] `run.diff`, `worktree.diff` and `project.diff` render, so
+/// a pushed diff and a pulled one are one shape and a client keeps them in
+/// one cache slot.
 pub(in crate::app) struct GitSubject {
     root: PathBuf,
-    base_sha: Option<String>,
     base_branch: Option<String>,
+    diff: ReadSubject,
 }
 
 impl GitSubject {
@@ -35,17 +36,6 @@ impl GitSubject {
         self.base_branch
             .as_deref()
             .map(crate::gitgui::LogHighlight::AheadOfBase)
-    }
-
-    /// The working tree's own diff: against the run's baseline, against the
-    /// branch it was cut from, or against HEAD.
-    fn diff(&self) -> Result<crate::diff::WorktreeDiff, String> {
-        match (&self.base_sha, &self.base_branch) {
-            (Some(sha), _) => crate::diff::diff_against_base(&self.root, sha),
-            (None, Some(branch)) => crate::diff::diff_against_merge_base(&self.root, branch),
-            (None, None) => crate::diff::diff_against_head(&self.root),
-        }
-        .map_err(|error| error.to_string())
     }
 }
 
@@ -70,16 +60,19 @@ fn read_git(subject: &GitSubject, fact: &mut EntityFacts) {
     (fact.diff, fact.diff_bytes) = read_worktree_diff(subject);
 }
 
-/// The working tree's diff, when it is small enough to push. The size rides
-/// the item either way; past the cap the client reads the body itself when a
-/// reviewer opens the changes.
+/// The working tree's diff, when it is small enough to push — the body this
+/// checkout's own diff verb answers with, less the `diff_key` a conditional
+/// read stamps on (computing one is a second diff walk, and a push is
+/// nobody's conditional read). The size rides the item either way; past the
+/// cap the client reads the body itself when a reviewer opens the changes.
 fn read_worktree_diff(subject: &GitSubject) -> (Option<Value>, Option<u64>) {
-    let Ok(diff) = subject.diff() else {
+    let Ok(body) = subject.diff.render() else {
         return (None, None);
     };
-    let bytes = diff.patch().len();
-    let body = (bytes <= WORKING_TREE_DIFF_MAX_BYTES)
-        .then(|| crate::app::worktree_diff_json(&subject.root, &diff));
+    let Some(bytes) = body["patch"].as_str().map(str::len) else {
+        return (None, None);
+    };
+    let body = (bytes <= WORKING_TREE_DIFF_MAX_BYTES).then_some(body);
     (body, Some(bytes as u64))
 }
 
@@ -229,8 +222,12 @@ impl AppState {
                 id.clone(),
                 GitSubject {
                     root: active.worktree.path.clone(),
-                    base_sha: active.base_sha.clone(),
                     base_branch: Some(active.worktree.base_branch.clone()),
+                    diff: ReadSubject::Run {
+                        worktree_path: active.worktree.path.clone(),
+                        base_sha: active.base_sha.clone(),
+                        base_branch: active.worktree.base_branch.clone(),
+                    },
                 },
             );
         }
@@ -239,8 +236,11 @@ impl AppState {
                 project.id.clone(),
                 GitSubject {
                     root: project.repo_path.clone(),
-                    base_sha: None,
                     base_branch: None,
+                    diff: ReadSubject::Project {
+                        project_id: project.id.clone(),
+                        repo_path: project.repo_path.clone(),
+                    },
                 },
             );
             let Some(scan) = self.board.diff().external_scan_cache(&project.id) else {
@@ -251,8 +251,11 @@ impl AppState {
                     checkout.id.clone(),
                     GitSubject {
                         root: checkout.path.clone(),
-                        base_sha: None,
                         base_branch: Some(project.base_branch.clone()),
+                        diff: ReadSubject::Worktree {
+                            external: Box::new(checkout.clone()),
+                            base_branch: project.base_branch.clone(),
+                        },
                     },
                 );
             }

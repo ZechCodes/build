@@ -125,6 +125,11 @@ pub struct ThreadPageParams {
     /// The page walks backward from here; absent means the newest page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_sequence: Option<u64>,
+    /// The page walks FORWARD from here instead, oldest first — the read a
+    /// client holding a cached conversation makes. Mutually exclusive with
+    /// `before_sequence`; both is `invalid_params`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sequence: Option<u64>,
     /// Clamped server-side to one page's worth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<PageLimit>,

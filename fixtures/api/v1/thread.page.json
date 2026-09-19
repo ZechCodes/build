@@ -4,7 +4,7 @@
   "params": {
     "entity_id": "run-7",
     "agent_id": "agent-1",
-    "before_sequence": 41,
+    "after_sequence": 29,
     "limit": 20
   },
   "result": {

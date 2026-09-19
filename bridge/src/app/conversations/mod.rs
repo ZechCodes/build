@@ -18,6 +18,7 @@ pub(in crate::app) use inputs::{
     append_user_thread_messages, apply_thread_action, parse_thread_inputs, parse_viewing_context,
     with_post_receipt,
 };
+pub use read::LATEST_THREAD_ITEMS;
 pub(in crate::app) use read::{thread_cursor, thread_detail, view_thread_detail, ReadReport};
 
 /// One addressed agent and the durable conversation it is bound to.

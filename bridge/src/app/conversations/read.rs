@@ -127,6 +127,20 @@ pub(in crate::app) fn thread_page_limit(params: &Value) -> usize {
     )
 }
 
+/// How many ITEMS one forward page carries.
+///
+/// The backward page's limit buys messages, because a reviewer scrolling up
+/// is after what was said. The forward page's buys items, because the caller
+/// is a cache filling a gap and every row in that gap is one it has to hold.
+/// So it is both the default and the ceiling: a client may ask for less, and
+/// asks again from the last item it was handed.
+pub const LATEST_THREAD_ITEMS: usize = 100;
+
+/// How much of a conversation a forward `thread.page` call asked for.
+pub(in crate::app) fn thread_page_forward_limit(params: &Value) -> usize {
+    page_limit_param(params, LATEST_THREAD_ITEMS, LATEST_THREAD_ITEMS)
+}
+
 /// How much of one run's activity a `thread.activity` call asked for.
 pub(in crate::app) fn activity_page_limit(params: &Value) -> usize {
     page_limit_param(
@@ -501,7 +515,18 @@ impl AppState {
         let address = self.resolve_conversation_params(&entity_id, params)?;
         let thread = self.conversation_at(&address)?;
         let before = params.get("before_sequence").and_then(Value::as_u64);
-        self.thread_page_at(thread, before, thread_page_limit(params))
+        let after = params.get("after_sequence").and_then(Value::as_u64);
+        match (before, after) {
+            // Two cursors name two walks, and a verb that picked one would
+            // answer a page nobody asked for.
+            (Some(_), Some(_)) => {
+                Err("provide exactly one of before_sequence and after_sequence".to_string())
+            }
+            (_, Some(after)) => {
+                self.thread_page_after(thread, after, thread_page_forward_limit(params))
+            }
+            (_, None) => self.thread_page_at(thread, before, thread_page_limit(params)),
+        }
     }
 
     /// The activity of one folded run, wherever it lives — what a client asks
@@ -632,6 +657,32 @@ impl AppState {
             .thread_conversation_page(&thread.agent.id, before_sequence, limit)
             .map_err(|error| format!("conversation store: {error}"))?;
         Ok(thread.wire_value_of_page(&cut, has_more))
+    }
+
+    /// One forward page of a conversation, wherever the items live.
+    ///
+    /// The sibling of [`thread_page_at`](Self::thread_page_at), and the same
+    /// gate: a cursor the resident tail reaches is answered out of memory,
+    /// and one below it is completed out of the store. The client walks on
+    /// from the last item it was handed, so the two never have to abut across
+    /// a page boundary the way the backward walk's do — the items themselves
+    /// say where the next page starts.
+    pub(in crate::app) fn thread_page_after(
+        &self,
+        thread: &crate::thread::Thread,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Value, String> {
+        if !thread.forward_page_reaches_stored_history(after_sequence) {
+            return Ok(thread.wire_value_page_after(after_sequence, limit));
+        }
+        let store = self.history_store()?;
+        // One row past the page, so `has_more` is a row rather than a second
+        // query — the same trick the activity span reads by.
+        let history = store
+            .thread_page_after(&thread.agent.id, after_sequence, limit + 1)
+            .map_err(|error| format!("conversation store: {error}"))?;
+        Ok(thread.wire_value_page_after_including_history(after_sequence, limit, &history))
     }
 
     /// A cursor's delta completed out of the store: the forward seek answers

@@ -3,7 +3,7 @@ use super::schema::{
 };
 use super::{
     Store, StoreError, THREAD_ACTIVITY_RANGE_SQL, THREAD_CONVERSATION_FLOOR_SQL, THREAD_CURSOR_SQL,
-    THREAD_ITEM_COUNT_SQL, THREAD_MESSAGE_PAGE_SQL, THREAD_PAGE_SQL,
+    THREAD_FORWARD_PAGE_SQL, THREAD_ITEM_COUNT_SQL, THREAD_MESSAGE_PAGE_SQL, THREAD_PAGE_SQL,
 };
 use crate::thread::cut_activity_runs;
 use crate::thread::page_activity_budget;
@@ -54,6 +54,33 @@ impl Store {
         let connection = self.connection();
         let mut statement = connection.prepare(THREAD_PAGE_SQL)?;
         read_thread_page(&mut statement, agent_id, before, limit)
+    }
+    /// One FORWARD page of a conversation: the oldest `limit` items strictly
+    /// after `after_sequence`, in the order they happened.
+    ///
+    /// What a cache-first client's sync reads when its cursor predates the
+    /// tail this process loaded. Unbounded by kind on purpose — a cache
+    /// filling a gap has to hold every row in it, activity included, and the
+    /// caller walks on from the last item it was handed.
+    pub fn thread_page_after(
+        &self,
+        agent_id: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let after = i64::try_from(after_sequence).unwrap_or(i64::MAX);
+        let connection = self.connection();
+        let mut statement = connection.prepare(THREAD_FORWARD_PAGE_SQL)?;
+        // Read in the conversation's own order, so nothing is reversed after.
+        let page = decode_thread_items(
+            agent_id,
+            statement.query_map(rusqlite::params![agent_id, after, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?,
+        );
+        drop(statement);
+        drop(connection);
+        page
     }
     /// One page of a conversation, measured in messages: the items down to and
     /// including the `limit`-th message below `before_sequence`, cut the way

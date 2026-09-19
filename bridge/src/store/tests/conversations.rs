@@ -322,6 +322,7 @@ fn the_conversation_reads_seek_instead_of_walking() {
     let connection = store.connection();
     for statement in [
         THREAD_PAGE_SQL,
+        THREAD_FORWARD_PAGE_SQL,
         THREAD_CURSOR_SQL,
         THREAD_MESSAGE_PAGE_SQL,
         THREAD_CONVERSATION_FLOOR_SQL,

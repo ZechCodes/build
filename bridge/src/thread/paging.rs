@@ -469,6 +469,69 @@ impl Thread {
         } + self.earlier_item_count as usize;
         self.wire_value_of_page(&cut, outstanding > 0)
     }
+    /// Whether a forward page from this cursor reaches under the tail this
+    /// process loaded, and so has to be completed out of the store.
+    ///
+    /// The sibling of [`page_reaches_stored_history`](Self::page_reaches_stored_history),
+    /// measured the way a forward page is: the very next item after the
+    /// cursor. A cursor sitting at or above the tail's floor has everything
+    /// above it resident, whatever the store holds below.
+    pub fn forward_page_reaches_stored_history(&self, after_sequence: u64) -> bool {
+        self.earlier_item_count > 0
+            && after_sequence.saturating_add(1) < self.resident_from_sequence
+    }
+    /// Forward view for a cache filling its gap: the oldest `limit` items
+    /// strictly after `after_sequence`, in the order they happened, in the
+    /// page shape a backward walk answers in.
+    ///
+    /// No digests and no folding. The caller is caching the conversation, not
+    /// rendering a sitting of it, and a run folded away would be a hole its
+    /// cache could not tell from history. `has_more` says another page waits,
+    /// and the client asks again from the last item it was handed.
+    pub fn wire_value_page_after(&self, after_sequence: u64, limit: usize) -> Value {
+        let window = self.resident_after_sequence(after_sequence).collect();
+        self.wire_value_of_forward_window(window, limit)
+    }
+    /// The same forward view, completed with items read back out of the
+    /// store: the history under the tail this process loaded. Items the tail
+    /// already holds are taken from the tail — memory is the fresher copy of
+    /// those, exactly as it is for the mutation cursor.
+    pub fn wire_value_page_after_including_history(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+        history: &[ThreadItem],
+    ) -> Value {
+        let window: Vec<&ThreadItem> = history
+            .iter()
+            .filter(|item| {
+                item.sequence() > after_sequence && item.sequence() < self.resident_from_sequence
+            })
+            .chain(self.resident_after_sequence(after_sequence))
+            .collect();
+        self.wire_value_of_forward_window(window, limit)
+    }
+    /// The resident items that happened after a cursor, oldest first.
+    ///
+    /// Reads `sequence`, not `latest_sequence`: a forward PAGE is a walk
+    /// through the conversation's own order, where a mutated item keeps its
+    /// place. The mutation cursor
+    /// ([`resident_after`](Self::resident_after)) is the one that reads the
+    /// other column.
+    fn resident_after_sequence(&self, after_sequence: u64) -> impl Iterator<Item = &ThreadItem> {
+        self.items
+            .iter()
+            .filter(move |item| item.sequence() > after_sequence)
+    }
+    /// One forward page, cut out of the window that reaches past it.
+    fn wire_value_of_forward_window(&self, window: Vec<&ThreadItem>, limit: usize) -> Value {
+        let has_more = window.len() > limit;
+        let cut = PageCut {
+            items: window.into_iter().take(limit).collect(),
+            digests: Vec::new(),
+        };
+        self.wire_value_of_page(&cut, has_more)
+    }
     /// The page shape, around the cut the caller already made — off the tail
     /// this process holds, or off a page read back out of the store. Takes the
     /// cut whole, borrowed or owned, so items and digests cannot be assembled

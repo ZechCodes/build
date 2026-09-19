@@ -908,3 +908,161 @@ fn thread_activity_says_so_when_the_history_it_needs_is_not_stored() {
         "{answer:?}"
     );
 }
+
+// ---- the forward page a cache-first client syncs on ----------------------
+
+/// A client that holds a conversation up to a sequence asks for what was
+/// said after it, oldest first, and is told whether more is waiting.
+#[test]
+fn thread_page_after_a_cached_sequence_walks_forward_to_the_end() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let held = run_with_long_conversation(&mut state, "run-forward", 250);
+
+    let page = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": "run-forward", "after_sequence": 100 }),
+    ));
+    assert_eq!(page["ok"], true, "{page:?}");
+    let thread = &page["result"];
+    assert_eq!(
+        page_sequences(thread),
+        (101..=200).collect::<Vec<u64>>(),
+        "{thread:?}"
+    );
+    assert_eq!(thread["has_more"], json!(true), "{thread:?}");
+    assert_eq!(thread["oldest_sequence"], json!(101), "{thread:?}");
+    assert_eq!(thread["thread_total"], held as u64, "{thread:?}");
+
+    // The tail, asked for from the last item the client was handed.
+    let rest = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": "run-forward", "after_sequence": 240 }),
+    ));
+    let tail = &rest["result"];
+    assert_eq!(
+        page_sequences(tail),
+        (241..=250).collect::<Vec<u64>>(),
+        "{tail:?}"
+    );
+    assert_eq!(tail["has_more"], json!(false), "{tail:?}");
+
+    // Caught up: an empty page, and nothing more to ask for.
+    let caught_up = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": "run-forward", "after_sequence": held }),
+    ));
+    assert!(
+        caught_up["result"]["items"].as_array().unwrap().is_empty(),
+        "{caught_up:?}"
+    );
+    assert_eq!(caught_up["result"]["has_more"], json!(false));
+    assert!(caught_up["result"]["oldest_sequence"].is_null());
+}
+
+/// The forward cap is the sync constant, and a client may ask for less of
+/// it but never more.
+#[test]
+fn the_forward_page_is_capped_at_the_latest_thread_items() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    run_with_long_conversation(&mut state, "run-forward-cap", 250);
+
+    let greedy = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": "run-forward-cap", "after_sequence": 0, "limit": 10_000 }),
+    ));
+    assert_eq!(
+        greedy["result"]["items"].as_array().unwrap().len(),
+        crate::app::LATEST_THREAD_ITEMS,
+        "{greedy:?}"
+    );
+
+    let smaller = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": "run-forward-cap", "after_sequence": 0, "limit": 5 }),
+    ));
+    assert_eq!(
+        page_sequences(&smaller["result"]),
+        (1..=5).collect::<Vec<u64>>(),
+        "{smaller:?}"
+    );
+    assert_eq!(smaller["result"]["has_more"], json!(true));
+}
+
+/// Two cursors name two different walks. A verb that guessed which one the
+/// caller meant would answer a page nobody asked for.
+#[test]
+fn thread_page_refuses_both_cursors_at_once() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    run_with_long_conversation(&mut state, "run-two-cursors", 40);
+
+    let refused = state.handle(req(
+        "thread.page",
+        json!({
+            "entity_id": "run-two-cursors",
+            "before_sequence": 30,
+            "after_sequence": 10,
+        }),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error_code"], "invalid_params", "{refused:?}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("exactly one of"),
+        "{refused:?}"
+    );
+}
+
+/// A restarted daemon holds the tail, not the conversation. A client whose
+/// cursor predates the tail must still be walked forward from where it is,
+/// item by item, out of the history no load read.
+#[test]
+fn the_forward_page_reaches_the_history_a_restart_never_loaded() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let held = run_with_long_conversation(&mut state, "run-forward-restart", 250);
+    let active = state
+        .runs
+        .remove("run-forward-restart")
+        .expect("the run is there");
+    state
+        .persist_run_record("run-forward-restart", &active)
+        .expect("the run saves");
+
+    let mut restarted = qa_state(&repo, dir.path());
+    let resident = primary_thread(&restarted.runs["run-forward-restart"].agents)
+        .items
+        .len();
+    assert!(
+        resident < held,
+        "the restart loaded the conversation whole: {resident} of {held}"
+    );
+
+    let mut walked: Vec<u64> = Vec::new();
+    let mut after = 0u64;
+    loop {
+        let page = restarted.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-forward-restart", "after_sequence": after }),
+        ));
+        assert_eq!(page["ok"], true, "{page:?}");
+        let thread = &page["result"];
+        let sequences = page_sequences(thread);
+        assert!(!sequences.is_empty(), "{thread:?}");
+        walked.extend(&sequences);
+        after = *sequences.last().unwrap();
+        if thread["has_more"] == json!(false) {
+            break;
+        }
+    }
+
+    assert_eq!(
+        walked,
+        (1..=held as u64).collect::<Vec<u64>>(),
+        "the forward walk missed, repeated or reordered the stored history"
+    );
+}

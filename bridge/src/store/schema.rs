@@ -168,6 +168,17 @@ pub(super) const THREAD_PAGE_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND sequence < ?2 \
      ORDER BY sequence DESC LIMIT ?3";
 
+/// One forward page of a conversation: the oldest items strictly after the
+/// cursor, in the order they happened.
+///
+/// The mirror of [`THREAD_PAGE_SQL`], and the read the cache-first client's
+/// sync makes for the history a bounded load left in the store. `sequence`
+/// ascending IS the primary key's own order, so the seek starts at the cursor
+/// and stops at the limit — no sort, and the cost of a page is the page.
+pub(super) const THREAD_FORWARD_PAGE_SQL: &str = "SELECT item FROM thread_items \
+     WHERE agent_id = ?1 AND sequence > ?2 \
+     ORDER BY sequence LIMIT ?3";
+
 /// The messages of a conversation, newest-first from the end — what a resumed
 /// agent's catch-up packet is built from when the tail it booted onto holds
 /// only activity.

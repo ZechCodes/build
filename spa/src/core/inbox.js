@@ -579,6 +579,27 @@ export function activeEntryKey(route, entries) {
   return match ? match.key : null;
 }
 
+/**
+ * The entity the route is standing on, in one device's snapshot — what the
+ * sync layer's active subscription names.
+ *
+ * Every kind of route is answered the same way the list marks its own active
+ * row: the snapshot's rows and its workspace rows, asked the route's question.
+ * A workspace's entity is the conversation it holds, which is why the
+ * workspace rows are folded in rather than the workspace id taken as the
+ * answer: they are not the same id, and only the entity one addresses a cache.
+ *
+ * Null when the route names no work item, when the snapshot has not caught up
+ * with it, or when the row it names is on another machine.
+ */
+export function routedEntityId(route, view = {}) {
+  const standsOn = route && STANDS_ON[route.name];
+  if (!standsOn) return null;
+  const items = view.items || [];
+  const rows = [...items.filter(isListed).map(toEntry), ...workspaceEntries(view.workspaces, view.projects, items)];
+  return rows.find(standsOn(route))?.entityId || null;
+}
+
 /** The row's action cluster: one quiet ⋯, and behind it the row's menu — Done
  *  where there is something to finish, then Clear, then Mute.
  *

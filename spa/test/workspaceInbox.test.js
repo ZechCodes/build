@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { workspaceKey } from "../src/core/deviceKey.js";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
-import { activeEntryKey, inboxRowHtml, workspaceEntries } from "../src/core/inbox.js";
+import { activeEntryKey, inboxRowHtml, routedEntityId, workspaceEntries } from "../src/core/inbox.js";
 
 const DEVICE = "dev-1";
 
@@ -208,5 +208,44 @@ describe("workspace inbox rows", () => {
 
     const [silent] = entriesOf([{ id: "workspace-2", project_id: "project-1", status: "failed" }]);
     expect(silent.facts).toBe("Failed");
+  });
+});
+
+// The sync layer's `s-active` subscription names ONE entity: the workspace the
+// reader is standing in. It has a route and a device's snapshot and nothing
+// else, so the derivation is here, beside the entries the same route marks.
+describe("the entity a route is standing on", () => {
+  const view = (workspaces, items) => liveFeedSnapshot(
+    { items },
+    { projects: [{ id: "project-1", name: "Payments" }] },
+    { workspaces },
+    DEVICE,
+  );
+
+  it("is the branch row's entity", () => {
+    const snapshot = view([], [{ kind: "branch", project_id: "project-1", branch: "build/login", run_id: "run-7" }]);
+    const route = { name: "branch", deviceId: DEVICE, projectId: "project-1", branch: "build/login" };
+    expect(routedEntityId(route, snapshot)).toBe("run-7");
+  });
+
+  it("is the conversation a workspace row holds, for a workspace route", () => {
+    const snapshot = view(
+      [{ id: "run-7", project_id: "project-1", name: "wire" }],
+      [{ kind: "branch", project_id: "project-1", branch: "build/wire", run_id: "run-7" }],
+    );
+    const route = { name: "workspace", deviceId: DEVICE, projectId: "project-1", workspaceId: "run-7" };
+    expect(routedEntityId(route, snapshot)).toBe("run-7");
+  });
+
+  it("is that machine's row, never another machine's copy of the same branch", () => {
+    const snapshot = view([], [{ kind: "branch", project_id: "project-1", branch: "build/login", run_id: "run-7" }]);
+    const elsewhere = { name: "branch", deviceId: "dev-2", projectId: "project-1", branch: "build/login" };
+    expect(routedEntityId(elsewhere, snapshot)).toBeNull();
+  });
+
+  it("is nothing for a route that names no work item, and nothing for no route", () => {
+    const snapshot = view([], []);
+    expect(routedEntityId({ name: "inbox" }, snapshot)).toBeNull();
+    expect(routedEntityId(null, snapshot)).toBeNull();
   });
 });

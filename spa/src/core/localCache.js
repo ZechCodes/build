@@ -358,10 +358,13 @@ export async function cachedAddressesWrittenBefore(prefixAddress, writtenBefore)
  *  value itself — everything that only wants addresses or ages asks above. */
 export async function cachedRecords(prefixAddress) {
   const prefix = `${keyOfParts(addressParts(prefixAddress))}|`;
-  const range = prefixRange(prefix);
   let keys = [];
   let records = [];
+  // The range is built inside the transaction, like every other one: a browser
+  // with no `IDBKeyRange` would otherwise throw out of this module rather than
+  // standing the cache down, and nothing above here is allowed to notice.
   await inStore("readonly", (store) => {
+    const range = prefixRange(prefix);
     const keyRequest = store.getAllKeys(range);
     const recordRequest = store.getAll(range);
     keyRequest.onsuccess = () => {

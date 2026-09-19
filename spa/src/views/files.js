@@ -345,7 +345,10 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
    *  big for the cache is shown and not kept (core/cacheLifetime.js). */
   const keepFileBody = (path, file) => {
     const address = fileAddress(path);
-    if (address) void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file });
+    if (!address) return;
+    // Fire and forget, and forgiving: a disk that will not take the body is a
+    // cold second look, never something the reader is told about.
+    void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file }).catch(() => {});
   };
 
   /** The saved body is stale the moment this tab writes over it, and the write

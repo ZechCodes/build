@@ -1672,12 +1672,17 @@ export function mountGitPane(
   const readRecords = async () => {
     if (!cacheAddress("status")) return null;
     const hashes = await cachedSubKeys(cacheScope.deviceId, cacheEntityId, PATCH_RECORD_KIND);
-    const held = await readCachedMany([
+    const addresses = [
       cacheAddress("status"),
       cacheAddress("log"),
       cacheAddress("unpushed"),
       ...hashes.map((hash) => cacheAddress(PATCH_RECORD_KIND, hash)),
-    ]);
+    ];
+    // The device can be retired under the read above, and a retired scope
+    // answers no address at all. There is nothing to read for a machine this
+    // tab has let go of.
+    if (addresses.some((address) => !address)) return null;
+    const held = await readCachedMany(addresses);
     const [status, log, unpushed] = held;
     return {
       status: status?.value,

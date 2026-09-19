@@ -134,6 +134,24 @@ async function openConsole(terminals = ["term-1"]) {
 // the console still says which shells that checkout is holding. What the
 // socket carries is the SCREEN, and that is what this is about.
 describe("the console when the socket is lost", () => {
+  it("says the machine is out of reach rather than 'no terminals', and asks again when it is back", async () => {
+    // Nothing has ever said what this checkout is holding, so the one list is
+    // the console's to make — and it is the list that the lost socket cuts off.
+    manager.listTerminals.mockRejectedValue(lost());
+    const { region, said } = await openConsole(null);
+    expect(said()).toMatch(/reconnecting/i);
+    // The offer to open a shell is withheld: a `+` here would put a second one
+    // beside whatever is already running in that checkout.
+    expect(region.querySelector(".console-new")).toBeNull();
+
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
+    status.set("connected");
+    await flush();
+    expect(manager.listTerminals).toHaveBeenCalledTimes(2);
+    expect([...region.querySelectorAll(".console-tab-name")].map((c) => c.textContent)).toEqual(["Terminal 1"]);
+    expect(region.querySelector(".console-new")).not.toBeNull();
+  });
+
   it("re-mounts a pane whose attach was cut off, rather than calling the terminal unavailable", async () => {
     manager.attachTerminal.mockRejectedValueOnce(lost()).mockResolvedValue({ snapshot: "", cursor: 0 });
     const { region, said } = await openConsole();

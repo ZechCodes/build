@@ -83,6 +83,13 @@ export function terminalTabsController(scope) {
     seed(tabs) {
       terms = (tabs || []).filter((tab) => tab && tab.term_id);
     },
+    /** Ask the checkout itself what it is holding. The record is the strip's
+     *  source; this is the one question, asked where no record has ever
+     *  answered for this checkout at all. */
+    async load() {
+      terms = (await manager.listTerminals(scope)).filter((tab) => tab && tab.term_id);
+      return terms;
+    },
     /** The tab descriptors for the console head: ordinal-labeled, all closable. */
     tabs: () => terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id) })),
     label: labelOf,
@@ -177,6 +184,9 @@ export function mountConsole(host, context) {
   let selectionRead = Boolean(selected); // whether the saved pick has been consulted
   let writtenSelection; // the pick the console record was last told about
   let unresolved = false; // the route named no checkout to stand in
+  let tabsKnown = false; // whether anything has said what this checkout is holding
+  let listing = false; // the one list of a checkout no record has answered for
+  let unreachable = false; // that list did not get through — not "no terminals"
   let pane = null;
   let paneTermId = null; // which terminal the mounted pane is showing
   let connection = null;
@@ -253,6 +263,9 @@ export function mountConsole(host, context) {
     if (terms && JSON.stringify(scope) === JSON.stringify(liveScope)) return;
     scope = liveScope;
     terms = terminalTabsController(liveScope);
+    // Another checkout: nothing said yet about what THIS one is holding.
+    tabsKnown = false;
+    unreachable = false;
   };
 
   /** Read what the cache says and paint it: the checkout, the tab strip, and
@@ -271,10 +284,63 @@ export function mountConsole(host, context) {
     standOnScope(place.scope);
     await readSavedSelection();
     if (disposed) return;
-    terms.seed((await cachedValue(TERMINALS_RECORD_KIND))?.tabs || []);
+    const strip = await cachedValue(TERMINALS_RECORD_KIND);
     if (disposed) return;
+    if (strip) tabsKnown = true;
+    terms.seed(strip?.tabs || []);
     pickSelected();
     remember();
+    paint();
+    if (!tabsKnown) void listOnce();
+  };
+
+  /** The one list. A checkout no record has ever answered for is not a checkout
+   *  with no shells: reading that silence as "no terminals" is how a
+   *  shut-looking console gets a shell opened next to the ones already running
+   *  in it. So before any sync pass or `terminals` push has reached this entity
+   *  — a first visit, a sign-out wipe — the console asks once and writes the
+   *  answer where the strip reads it. From then on the record is the strip. */
+  const listOnce = async () => {
+    // Asked once, and not again until the socket says it is back: a console
+    // that re-asked on every cache announcement would stack retries behind a
+    // machine that is not answering.
+    if (listing || tabsKnown || unreachable || !terms) return;
+    const asked = terms;
+    listing = true;
+    try {
+      await asked.load();
+    } catch (error) {
+      listFailed(error, asked);
+      return;
+    }
+    listAnswered(asked);
+  };
+
+  /** Still unknown. Say the machine is out of reach, keep the `+` back —
+   *  creating a shell needs the socket anyway — and ask again when it is back,
+   *  on the socket's own reconnect rather than a timer of this console's. */
+  const listFailed = (error, asked) => {
+    listing = false;
+    if (disposed || terms !== asked) return;
+    unreachable = true;
+    paint();
+    if (!isTerminalSocketLost(error)) return;
+    retryWhenReconnected(() => {
+      unreachable = false;
+      void listOnce();
+    });
+  };
+
+  /** The checkout answered. The record is what the strip reads, so the answer
+   *  goes there, and every later word about these shells is a push. */
+  const listAnswered = (asked) => {
+    listing = false;
+    if (disposed || terms !== asked) return;
+    tabsKnown = true;
+    unreachable = false;
+    pickSelected();
+    remember();
+    publishTabs();
     paint();
   };
 
@@ -402,7 +468,9 @@ export function mountConsole(host, context) {
 
   const paintNewTerminalControl = (strip) => {
     const standing = strip.querySelector(".console-new");
-    if (!terms) {
+    // Offered only over a checkout something has answered for: a `+` over an
+    // unanswered one opens a second shell beside whatever is already running.
+    if (!terms || !tabsKnown) {
       if (standing) hide(standing, { axis: "width" });
       return;
     }
@@ -474,7 +542,10 @@ export function mountConsole(host, context) {
     region.innerHTML = `<div class="console-empty"><span class="dim">${esc(bodyMessage())}</span></div>`;
   };
 
-  const bodyMessage = () => (unresolved ? "There is no checkout here to open a terminal in." : "");
+  const bodyMessage = () => {
+    if (unresolved) return "There is no checkout here to open a terminal in.";
+    return unreachable ? RECONNECTING_MESSAGE : "";
+  };
 
   const hasSomethingToShow = () => !!((terms && selected) || bodyMessage());
 

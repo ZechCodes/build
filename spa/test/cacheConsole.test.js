@@ -223,3 +223,45 @@ describe("an account with more than one device", () => {
     expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { run_id: "run-9" }, expect.anything());
   });
 });
+
+// An absent record is not an empty one. Before any sync pass or `terminals`
+// push has reached this entity — a first visit, or a sign-out wipe — the cache
+// says nothing about the checkout, and reading that silence as "no terminals"
+// is how a shut-looking console gets a second shell opened beside the one
+// already running there.
+describe("a checkout the cache has never spoken for", () => {
+  const seedRowOnly = async (deviceId = "dev-1") => {
+    const row = branchRow(deviceId);
+    await writeCached({ deviceId, entityId: "", kind: "projects" }, []);
+    await writeCached({ deviceId, entityId: "", kind: "workspaces" }, []);
+    await writeCached({ deviceId, entityId: row.run_id, kind: "row" }, row);
+  };
+
+  it("asks the checkout once what it is holding, and writes the answer down", async () => {
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
+    await seedRowOnly();
+    await mountAndOpen();
+
+    expect(manager.listTerminals).toHaveBeenCalledTimes(1);
+    expect(manager.listTerminals).toHaveBeenCalledWith({ run_id: "run-3" });
+    expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
+    expect(record.value.tabs.map((tab) => tab.term_id)).toEqual(["term-1", "term-2"]);
+  });
+
+  it("offers no new shell while what the checkout holds is still unknown", async () => {
+    manager.listTerminals.mockReturnValue(new Promise(() => {}));
+    await seedRowOnly();
+    await mountAndOpen();
+
+    expect(region().querySelector(".console-new")).toBeNull();
+  });
+
+  it("asks nothing of a checkout whose record says, in so many words, none", async () => {
+    await seedDevice("dev-1", { tabs: [] });
+    await mountAndOpen();
+
+    expect(manager.listTerminals).not.toHaveBeenCalled();
+    expect(region().querySelector(".console-new")).not.toBeNull();
+  });
+});

@@ -31,10 +31,11 @@ const entityOf = (row) => row.run_id || row.worktree_id || row.issue_id || row.b
 export async function seedConsoleWorld({ deviceId = "dev-1", row = consoleBranchRow(), terminals = [] } = {}) {
   await writeCached({ deviceId, entityId: "", kind: "projects" }, []);
   await writeCached({ deviceId, entityId: "", kind: "workspaces" }, []);
-  if (row) {
-    await writeCached({ deviceId, entityId: entityOf(row), kind: "row" }, row);
-    await seedConsoleTerminals(termTabs(terminals), { deviceId, row });
-  }
+  if (!row) return;
+  await writeCached({ deviceId, entityId: entityOf(row), kind: "row" }, row);
+  // `terminals: null` is a checkout nothing has answered for yet — which is not
+  // the same world as `terminals: []`, a checkout holding no shells.
+  if (terminals) await seedConsoleTerminals(termTabs(terminals), { deviceId, row });
 }
 
 /** The tab strip, as a `terminals` push leaves it. */

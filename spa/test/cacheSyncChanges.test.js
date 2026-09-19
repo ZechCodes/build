@@ -342,6 +342,38 @@ describe("applying one item", () => {
     expect(record.newest).toBe("c4");
   });
 
+  it("takes what a pushed history says about commits it already holds", async () => {
+    // A commit's hash is the commit, but what the bridge says ABOUT it moves:
+    // `ahead_of_base` is true until the branch is pushed and false after. A
+    // window carrying nothing new leaves the record's own order alone — it
+    // must not leave the record's own word on each commit alone with it, or a
+    // push made anywhere else leaves them marked unpushed with nothing left to
+    // correct them.
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "log" },
+      { commits: [{ hash: "c2", ahead_of_base: true }, { hash: "c1", ahead_of_base: true }], newest: "c2" },
+    );
+    script["git.log"] = () => ({ commits: [], newest: "c2" });
+    await boot([branchItem()]);
+
+    await deliver([{
+      entity_id: "run-1",
+      git: {
+        log: {
+          commits: [{ hash: "c2", ahead_of_base: false }, { hash: "c1", ahead_of_base: false }],
+          newest: "c2",
+          more: false,
+        },
+      },
+    }]);
+
+    const record = (await read("run-1", "log")).value;
+    expect(record.commits).toEqual([
+      { hash: "c2", ahead_of_base: false },
+      { hash: "c1", ahead_of_base: false },
+    ]);
+  });
+
   it("keeps the project and the triage beside a diff a git item replaces", async () => {
     await boot([branchItem()]);
     const held = (await read("run-1", "diff")).value;

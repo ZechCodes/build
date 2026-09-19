@@ -449,14 +449,18 @@ export function mergedLog(held, answer) {
   const { reset, ...rest } = answer;
   const arriving = answer.commits || [];
   const previous = reset ? [] : (held?.commits || []);
-  const arrived = new Set(arriving.map((commit) => commit.hash));
+  const arrived = new Map(arriving.map((commit) => [commit.hash, commit]));
   const kept = new Set(previous.map((commit) => commit.hash));
   // An answer carrying nothing the record does not already hold leaves the
-  // record's own order alone. Another writer reached it first with more of
+  // record's own ORDER alone. Another writer reached it first with more of
   // this history than this answer walked, and putting these commits back in
-  // front of it would stand an older commit at the head of the list.
+  // front of it would stand an older commit at the head of the list. What the
+  // answer says about each commit is still the newer word: a hash is fixed,
+  // but `ahead_of_base` is true until the branch is pushed and false after,
+  // and a record keeping its own copy of that would go on calling a published
+  // commit unpushed with no read left to correct it.
   const commits = arriving.every((commit) => kept.has(commit.hash))
-    ? previous
+    ? previous.map((commit) => arrived.get(commit.hash) || commit)
     : [...arriving, ...previous.filter((commit) => !arrived.has(commit.hash))];
   return { ...rest, commits, more: moreAfter(held, answer, previous), newest: newestAfter(held, answer, commits) };
 }

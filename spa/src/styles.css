@@ -12,9 +12,9 @@
    strip reserves its room (styles/shell.css) — so it never covers the
    composer, and a glance at the corner answers "is my machine there".
 
-   The ring is dashed while everything is connected and solid while something
-   is being done about it: a dashed ring is a state at rest, and the yellow one
-   is a state with something running inside it. Every move between the three is
+   The ring is dashed in every state — green at rest, amber while something is
+   being done about a machine — so what changes between states is the colour
+   and what is inside the ring, never the ring itself. Every move between the three is
    a transition rather than a redraw, because the markup is written once and
    only its classes change (spa/src/connectionStatus.js). */
 #connection-status {
@@ -25,11 +25,11 @@
 .connection-status::before {
   content:""; position:absolute; width:26px; height:26px; border-radius:50%;
   border:2px dashed var(--green); opacity:.85;
-  transition:border-color 260ms ease, border-style 260ms ease, opacity 260ms ease,
+  transition:border-color 260ms ease, opacity 260ms ease,
     transform 260ms cubic-bezier(.2,.8,.2,1);
 }
 .connection-status.is-attempting::before, .connection-status.is-waiting::before {
-  border-style:solid; border-color:var(--amber); opacity:1;
+  border-color:var(--amber); opacity:1;
 }
 /* The number, and the countdown that takes its place: one line of text that
    fades and shrinks away while an attempt is in flight, because nobody can say

@@ -183,6 +183,38 @@ fn git_log_refuses_a_since_that_is_not_an_object_id_prefix() {
     }
 }
 
+/// A cursor of the wrong type is refused, never ignored — the typed params
+/// are read before the handler sees them, and this pins that they are.
+///
+/// What it costs if they ever stop being: a number dropped on the floor
+/// hands the caller the browsing page with `reset: false` on it, an
+/// uncursored read wearing a cursored read's answer, which is exactly what
+/// a cache would apply as if it had asked for it.
+#[test]
+fn git_log_refuses_a_since_that_is_not_a_string() {
+    let (dir, repo) = repo_with_history(3);
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+
+    for mistyped in [json!(123), json!(true), json!(["deadbeef"])] {
+        let refused = state.handle(req(
+            "git.log",
+            json!({ "project_id": project_id, "since": mistyped }),
+        ));
+        assert_eq!(refused["ok"], false, "since {mistyped}: {refused:?}");
+        assert_eq!(refused["error_code"], "invalid_params", "{refused:?}");
+    }
+
+    // Null is how a client says it holds no cursor at all, so it reads as
+    // the uncursored page rather than as a refusal.
+    let unnamed = state.handle(req(
+        "git.log",
+        json!({ "project_id": project_id, "since": Value::Null }),
+    ));
+    assert_eq!(unnamed["ok"], true, "{unnamed:?}");
+    assert_eq!(unnamed["result"]["commits"].as_array().unwrap().len(), 3);
+}
+
 /// A log nobody handed a cursor to is the page it always was, with the
 /// cursor fields beside it so a client can start holding one.
 #[test]

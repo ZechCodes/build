@@ -1017,6 +1017,46 @@ fn thread_page_refuses_both_cursors_at_once() {
     );
 }
 
+/// A cursor of the wrong type is refused, never ignored — the typed params
+/// are read before the handler sees them, and this pins that they are.
+///
+/// What it costs if they ever stop being: a quoted sequence dropped on the
+/// floor hands the caller the NEWEST page for a forward walk it asked to
+/// start at 100, and a cache would write that over its own history without
+/// ever knowing it had drifted. The refusal above goes with it — a mistyped
+/// `before_sequence` beside a good `after_sequence` would no longer read as
+/// two cursors at once.
+#[test]
+fn thread_page_refuses_a_cursor_that_is_not_a_number() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    run_with_long_conversation(&mut state, "run-mistyped-cursor", 40);
+
+    for params in [
+        json!({ "entity_id": "run-mistyped-cursor", "after_sequence": "10" }),
+        json!({ "entity_id": "run-mistyped-cursor", "before_sequence": "30" }),
+        json!({ "entity_id": "run-mistyped-cursor", "after_sequence": -1 }),
+        json!({
+            "entity_id": "run-mistyped-cursor",
+            "before_sequence": "30",
+            "after_sequence": 10,
+        }),
+    ] {
+        let refused = state.handle(req("thread.page", params.clone()));
+        assert_eq!(refused["ok"], false, "{params}: {refused:?}");
+        assert_eq!(refused["error_code"], "invalid_params", "{refused:?}");
+    }
+
+    // Null is how a client with no cursor names one, so it reads as the
+    // newest page rather than as a refusal.
+    let newest = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": "run-mistyped-cursor", "before_sequence": Value::Null }),
+    ));
+    assert_eq!(newest["ok"], true, "{newest:?}");
+    assert!(!page_sequences(&newest["result"]).is_empty(), "{newest:?}");
+}
+
 /// A restarted daemon holds the tail, not the conversation. A client whose
 /// cursor predates the tail must still be walked forward from where it is,
 /// item by item, out of the history no load read.

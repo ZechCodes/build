@@ -34,9 +34,11 @@ vi.mock("../src/connection.js", () => ({
 
 const { App } = await import("../src/app.js");
 const { refreshDevices } = await import("../src/devices.js");
-const { readCached } = await import("../src/core/localCache.js");
+// The one address, read from where both sides of it read it: the writer here
+// and the boot paint (views/gate.js) agree on it because there is one
+// constant, and a test that restated it would stay green while they drifted.
+const { DEVICES_ADDRESS, readCached } = await import("../src/core/localCache.js");
 
-const DEVICES_ADDRESS = { deviceId: "", entityId: "", kind: "devices" };
 const online = (id) => ({ id, name: id, status: "online", fingerprint: `${id}-fp` });
 
 beforeEach(() => {

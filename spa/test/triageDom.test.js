@@ -5,7 +5,8 @@
 // per project, remembered — that turns the whole reading off.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mountGitPane, GIT_PANE_POLL_MS } from "../src/core/gitPane.js";
+import { mountGitPane } from "../src/core/gitPane.js";
+import { refetchEverything } from "../src/core/changeEvents.js";
 import { patchHunks } from "../src/core/diff.js";
 import { createReviewPlug } from "../src/core/changesReview.js";
 import { worktreeOf } from "./gitWireFixture.js";
@@ -172,7 +173,8 @@ describe("the triage overlay in the Changes pane", () => {
     expect(container.querySelector(".tuntriaged")).toBeTruthy();
 
     pass = TRIAGE;
-    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.querySelector(".file.tcritical").dataset.key).toBe("EDIT:src/crypto.rs");
   });
@@ -199,12 +201,14 @@ describe("the triage overlay in the Changes pane", () => {
     expect(container.querySelector(".triagebar")).toBeNull();
 
     enabled = true;
-    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.querySelector(".file.tcritical")).toBeTruthy();
 
     enabled = false;
-    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.querySelector(".triagebar")).toBeNull();
     expect(container.querySelector(".toverride")).toBeNull();
@@ -318,7 +322,8 @@ describe("disagreeing with the pass in the Changes pane", () => {
     await disagree(container.querySelector('.file.tcritical .toverride[data-direction="collapse"]'));
 
     // The pass has not caught up yet: the reviewer's reading must not flicker.
-    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.querySelector(".file.tcritical")).toBeNull();
     container.querySelector(".tgrouphead").click();
@@ -327,7 +332,8 @@ describe("disagreeing with the pass in the Changes pane", () => {
 
     // Now it does, and the surface renders the disagreement from the pass alone.
     echo({ ...TRIAGE, overrides: [{ hunk_id: ids["src/crypto.rs"], direction: "collapse", note: "" }] });
-    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.querySelector(".file.tcritical")).toBeNull();
     expect(container.querySelectorAll(".hchip.overridden").length).toBe(1);

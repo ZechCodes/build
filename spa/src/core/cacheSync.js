@@ -60,27 +60,29 @@ import {
 } from "./surfacesCache.js";
 import { coordinatedRead, requestPriorityFields, rpcReadKey } from "./readRequests.js";
 import { pageVisible } from "./visibility.js";
+import {
+  BACKGROUND_COOLDOWN_MS,
+  COMMIT_PATCH_MAX_BYTES,
+  LATEST_COMMITS,
+  LATEST_THREAD_ITEMS,
+  PATCH_RECORD_KIND,
+  UNPUSHED_COMMITS_MAX,
+} from "./cacheThresholds.js";
 
 const SYNC_LOCK = "build.cacheSync";
 
-// ─── The thresholds, SPA side (plan README) ──────────────────────────────────
-
-/** Commits read when the cache holds no cursor to read forward from. */
-export const LATEST_COMMITS = 20;
-
-/** Conversation items read when the cache holds no sequence to read after. */
-export const LATEST_THREAD_ITEMS = 100;
-
-/** Unpushed commits whose patches are kept. */
-export const UNPUSHED_COMMITS_MAX = 20;
-
-/** The largest patch worth keeping, asked for on the wire and checked again
- *  here — a bridge that ignored `max_bytes` must not put megabytes under a
- *  record this side says is 256 KB. */
-export const COMMIT_PATCH_MAX_BYTES = 262144;
-
-/** How long the background tier holds a flush before sending it. */
-export const BACKGROUND_COOLDOWN_MS = 30000;
+// The thresholds this layer is written against live in core/cacheThresholds.js
+// — a module that imports nothing, so the surfaces can read the same bounds
+// without importing this one. Re-exported here because this is where a reader
+// looking for them expects them.
+export {
+  BACKGROUND_COOLDOWN_MS,
+  COMMIT_PATCH_MAX_BYTES,
+  LATEST_COMMITS,
+  LATEST_THREAD_ITEMS,
+  PATCH_RECORD_KIND,
+  UNPUSHED_COMMITS_MAX,
+} from "./cacheThresholds.js";
 
 // ─── What this module holds ──────────────────────────────────────────────────
 
@@ -362,10 +364,10 @@ async function syncWorkspace(context, entityId, row, routed) {
     await syncTrees(context, entityId, scope, priority);
   }
   await syncTerminals(context, entityId, row, priority);
-  const unpushed = scope ? await syncCommits(context, entityId, scope, priority) : null;
+  const log = scope ? await syncCommits(context, entityId, scope, priority) : null;
   await syncThreads(context, entityId, row, priority);
   if (!scope) return;
-  await syncPatches(context, entityId, scope, unpushed, priority);
+  await syncPatches(context, entityId, scope, unpushedCommits(log), priority);
   await syncWorkingDiff(context, entityId, row, priority);
 }
 
@@ -408,13 +410,19 @@ async function syncTerminals(context, entityId, row, priority) {
   await writeCached(addressOf(context, entityId, "terminals"), { tabs: answer.terminals || [] });
 }
 
-/** The two commit lists, answered whole. What the unpushed one said is handed
- *  back: the patches behind those commits are read later in the pass, once
- *  the conversations are in. */
+/** The two commit lists, answered whole. The commit record is handed back: the
+ *  patches behind its unpushed commits are read later in the pass, once the
+ *  conversations are in. */
 async function syncCommits(context, entityId, scope, priority) {
   await syncLog(context, entityId, scope, priority);
-  return syncUnpushed(context, entityId, scope, priority);
+  await syncUnpushed(context, entityId, scope, priority);
+  return heldValue(context, entityId, "log");
 }
+
+/** The commits this checkout has that its push target does not, newest first.
+ *  `git.unpushed` answers one aggregate diff and no commit list, so the list
+ *  is the log's own: the bridge marks every commit ahead of the base. */
+const unpushedCommits = (log) => (log?.commits || []).filter((commit) => commit.ahead_of_base);
 
 /** The commit list, read forward from the newest hash the cache holds — or the
  *  latest 20 when it holds none. */
@@ -506,18 +514,18 @@ async function syncUnpushed(context, entityId, scope, priority) {
  *  ones not already held. A patch too big for the record is not stored —
  *  the reader opens it and gets it off the wire, which is what the truncated
  *  answer says on screen anyway. */
-async function syncPatches(context, entityId, scope, unpushed, priority) {
-  const hashes = (unpushed?.commits || [])
+async function syncPatches(context, entityId, scope, commits, priority) {
+  const hashes = (commits || [])
     .map((commit) => commit.hash)
     .filter(Boolean)
     .slice(0, UNPUSHED_COMMITS_MAX);
-  const held = await cachedSubKeys(context.deviceId, entityId, "patch");
+  const held = await cachedSubKeys(context.deviceId, entityId, PATCH_RECORD_KIND);
   await dropStalePatches(context, entityId, held, new Set(hashes));
   for (const hash of hashes) {
     if (held.includes(hash) || !context.active()) continue;
     const answer = await ask(context, "git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES }, priority);
     if (!answer || !context.active() || !withinBytes(answer.patch, COMMIT_PATCH_MAX_BYTES)) continue;
-    await writeCached(addressOf(context, entityId, "patch", hash), answer);
+    await writeCached(addressOf(context, entityId, PATCH_RECORD_KIND, hash), answer);
   }
 }
 
@@ -525,7 +533,7 @@ async function syncPatches(context, entityId, scope, unpushed, priority) {
  *  in the log like every other commit, and nobody is reviewing it here. */
 async function dropStalePatches(context, entityId, held, wanted) {
   const stale = held.filter((hash) => !wanted.has(hash));
-  if (stale.length) await deleteCached(stale.map((hash) => addressOf(context, entityId, "patch", hash)));
+  if (stale.length) await deleteCached(stale.map((hash) => addressOf(context, entityId, PATCH_RECORD_KIND, hash)));
 }
 
 /** Which verb answers this row's working-tree diff, and what to name the read
@@ -888,7 +896,9 @@ async function writePushedDiff(context, entityId, diff, row) {
 async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
   const scope = gitScopeOf(row);
   if (!scope) return;
-  if (git.unpushed) await syncPatches(context, entityId, scope, git.unpushed, "background");
+  if (git.log) {
+    await syncPatches(context, entityId, scope, unpushedCommits(await heldValue(context, entityId, "log")), "background");
+  }
   if (git.diff !== null) return;
   // A null diff is one the bridge had and could not send. It is only worth a
   // round trip for the workspace on screen; the rest are marked, and read it

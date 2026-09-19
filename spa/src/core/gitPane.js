@@ -6,10 +6,19 @@
 // the file's own verbs. There is no staging and no changed-files list — commit
 // is commit-all, and per-file discard lives in the ⋯.
 //
-// Owns a 1.6s git.status + git.log poll with a keyed freeze; the freeze also
-// holds while the reviewer is mid-comment, has a menu open, or has a git action
-// in flight. The pure helpers (poll key, option lists) are exported for unit
-// tests; mountGitPane is the only DOM-touching entry point.
+// What it draws comes off the cache: the `status`, `log` and `unpushed`
+// records a push keeps true, and a `patch` record per commit whose patch has
+// been read. It repaints when one of them moves, under a keyed freeze that
+// also holds while the reviewer is mid-comment, has a menu open, or has a git
+// action in flight.
+//
+// Three reads are left on the wire and all three write what they got back:
+// a checkout the cache holds nothing for at all (a project's own directory is
+// no entity, and a workspace source is not one the sync layer walks), an older
+// page of history the reader asked for, and the patch behind a commit they
+// opened that nothing holds one for. The pure helpers (the repaint key, the
+// option lists) are exported for unit tests; mountGitPane is the only
+// DOM-touching entry point.
 
 import { workspaceCommentMessages } from "./workspaceCommentMessages.js";
 import { reviewCommentContext } from "./reviewCommentContext.js";
@@ -49,7 +58,9 @@ import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
-import { readCached, writeCached } from "./localCache.js";
+import { cachedSubKeys, mergeCached, readCached, readCachedMany, subscribeCache, writeCached } from "./localCache.js";
+import { COMMIT_PATCH_MAX_BYTES, PATCH_RECORD_KIND } from "./cacheThresholds.js";
+import { withinBytes } from "./cacheLifetime.js";
 import { patchList } from "./patchList.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { MUTATION_THREAD_PAGE } from "./thread.js";
@@ -59,8 +70,6 @@ import { createDiffViewport } from "./diffViewport.js";
 import { createReviewPlug } from "./changesReview.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
 import { loadDiffSort, saveDiffSort } from "./diffSort.js";
-
-export const GIT_PANE_POLL_MS = 1600;
 
 /** Workspace directories review everything not represented by their push
  * destination. The plug is created here so every workspace Git pane gets the
@@ -72,12 +81,11 @@ export function createWorkspaceReview({ scope, callRpc, navigate = null, viewing
     viewingContext,
     submit,
     entity: scope.workspace_id,
+    // A workspace source is not an entity the sync layer walks — its records
+    // are filed under the source, which only this side names — so this plug's
+    // diff is the one it reads for itself, kept where the next mount of this
+    // source will find it.
     cacheEntity: directoryCacheId(scope),
-    // The surrounding pane already owns the workspace source's push + fast
-    // fallback watcher. Durable workspace ids are not bridge worktree ids, so
-    // a private entity watcher here would stand down to the 60 s safety poll
-    // without ever receiving filesystem pushes.
-    watchDiff: false,
     fetchDiff: async (ifDiffKey) => {
       const payload = await callRpc("git.unpushed", {
         ...scope,
@@ -93,6 +101,13 @@ export function createWorkspaceReview({ scope, callRpc, navigate = null, viewing
   });
   return {
     ...plug,
+    /** What the cache already knows this diff is measured against, so the
+     *  rail's subtitle is not a round trip late. */
+    seedBase(next) {
+      if (!next || base.label || base.kind !== "empty") return;
+      base = next;
+      onBaseChange();
+    },
     getBase: () => base.label || (base.kind === "published_ancestor" ? "published history" : "Not pushed yet"),
     getRailSubtitle: () =>
       base.label ? `vs ${base.label}` : base.kind === "published_ancestor" ? "since published history" : "Not pushed yet",
@@ -216,14 +231,14 @@ export function resolveInlineConfirm(pending, key) {
   return { fire: false, pending: key };
 }
 
-/** How long an armed inline confirm stays live before the poll auto-disarms it.
+/** How long an armed inline confirm stays live before it auto-disarms.
  *  A destructive verb (force push / discard / abort) armed and then abandoned
  *  must not stay one click from firing indefinitely. */
 export const INLINE_CONFIRM_TTL_MS = 10000;
 
 /** True when an armed confirm (stamped at `armedAt`) has aged past the TTL, so
- *  the poll should disarm it and repaint. `armedAt` null/undefined → nothing is
- *  armed → never expired. */
+ *  it should be disarmed and the pane repainted. `armedAt` null/undefined →
+ *  nothing is armed → never expired. */
 export function confirmExpired(armedAt, now, ttlMs = INLINE_CONFIRM_TTL_MS) {
   if (armedAt === null || armedAt === undefined) return false;
   return now - armedAt >= ttlMs;
@@ -264,10 +279,10 @@ export function repoStateBanner(repoState) {
   return null;
 }
 
-/** The repaint-freeze key for one poll's payloads: the bridge's own status_key
+/** The repaint-freeze key for one reading of the records: the bridge's own status_key
  *  — a hash over everything a repaint depends on, branch and HEAD and repo state
  *  and every file's stage state and content key — plus the visible commit page.
- *  Unchanged key → the poll leaves the DOM (and the user's caret) alone.
+ *  Unchanged key → the repaint leaves the DOM (and the user's caret) alone.
  *
  *  The status carries no patch any more: a file's body is fetched on its own and
  *  keyed by its content key, so what moved in the working tree reaches the key
@@ -280,17 +295,31 @@ export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
   return [status.status_key, commits, Boolean(log && log.more), String(log?.highlight_key || ""), minuteBucket].join("\x03");
 }
 
-/** What to ask git.status with: the key the pane already holds, so a repo that
- *  has not moved answers `{ unchanged: true }` and the bridge never renders a
- *  diff nobody asked for. A pane holding no status asks for the whole shape. */
+/** What to ask `git.status` with when this pane re-reads a checkout nobody
+ *  else reads for it: the key it already holds, so a checkout that has not
+ *  moved answers `{ unchanged: true }` and the bridge never serializes a shape
+ *  nobody needed. A pane holding no status asks for the whole thing. */
 export function ifStatusKey(status) {
   return status && status.status_key ? { if_status_key: status.status_key } : {};
 }
 
-/** The status the pane holds after one poll: the shape it was handed, or the
- *  one it already had when the bridge says the key it was sent still stands. */
-export function statusAfterPoll(answer, held) {
+/** The status the pane holds after such a read: the shape it was handed, or
+ *  the one it already had when the bridge says the key it was sent still
+ *  stands. */
+export function statusAfterRead(answer, held) {
   return answer && answer.unchanged ? held : answer;
+}
+
+/** The commit record after a page of older history: the page's commits behind
+ *  the ones already held, and what that page said about there being more.
+ *
+ *  Written into the record rather than kept beside it, so the history the
+ *  reader paged in is there on the next mount — and so a forward read, which
+ *  puts new commits in front, cannot lose it. */
+export function olderLogPage(held, page) {
+  const known = new Set((held?.commits || []).map((commit) => commit.hash));
+  const older = (page.commits || []).filter((commit) => !known.has(commit.hash));
+  return { ...(held || {}), commits: [...(held?.commits || []), ...older], more: Boolean(page.more) };
 }
 
 /** The stash key for a scope's in-progress commit-message draft: drafts live in
@@ -327,7 +356,7 @@ export function commitVariantClearsDraft(optionId) {
   return optionId === "commit" || optionId === "agent_commit" || optionId === "auto_commit";
 }
 
-// The bridge's terminal git-scope rejections: a pane polling with one of these
+// The bridge's terminal git-scope rejections: a pane reading with one of these
 // will never recover, so it must show the error instead of "loading..." forever.
 const PERMANENT_GIT_SCOPE_ERRORS = [
   "unknown project_id",
@@ -336,8 +365,8 @@ const PERMANENT_GIT_SCOPE_ERRORS = [
   "provide exactly one of project_id",
 ];
 
-/** True only for the bridge's permanent scope errors — every other poll failure
- *  stays silent/transient and the poll retries. */
+/** True only for the bridge's permanent scope errors — every other read
+ *  failure stays silent, and the next push or press asks again. */
 export function isPermanentGitScopeError(message) {
   const text = String(message || "");
   return PERMANENT_GIT_SCOPE_ERRORS.some((known) => text.includes(known));
@@ -429,11 +458,34 @@ export function mountGitPane(
     viewingContext = null,
   } = {},
 ) {
+  // The local cache's address for this checkout. A project-scoped one names no
+  // entity, so it takes no part — nothing to key by, nothing evicted with it.
+  const cacheEntityId = directoryCacheId(scope);
+  const cacheAddress = (kind, sub) =>
+    cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind, sub }) || null : null;
+  /** An answer this pane read or a mutation handed it, put where the reader's
+   *  next visit will find it. Fire and forget: a failed write is a cold mount. */
+  const keep = (kind, value, sub) => {
+    const address = cacheAddress(kind, sub);
+    if (address) writeCached(address, value);
+  };
+
+  /** The workspace this pane's checkout is a source of, off the machine's own
+   *  workspace list — which is the only record that says where each source is
+   *  mounted, and what this pane needs to write a comment's path against the
+   *  workspace root rather than against the source. */
+  const cachedWorkspace = async () => {
+    const address = cacheScope?.address({ entityId: "", kind: "workspaces" });
+    const workspaces = (address ? (await readCached(address))?.value : null) || [];
+    return workspaces.find((workspace) => (workspace.id || workspace.workspace_id) === scope.workspace_id) || null;
+  };
+
   const submitComments = async (messages) => {
     const destination = agentSelection.scope();
     if (scope.workspace_id) {
-      const metadata = await callRpc("workspace.get", { workspace_id: scope.workspace_id, ...MUTATION_THREAD_PAGE });
-      messages = workspaceCommentMessages(messages, metadata.workspace || metadata, scope.source_id);
+      const workspace = await cachedWorkspace();
+      if (!workspace) throw new Error("Workspace source directory is unavailable");
+      messages = workspaceCommentMessages(messages, workspace, scope.source_id);
       const { entity_id } = await callRpc("workspace.ensure_conversation", { workspace_id: scope.workspace_id });
       if (!entity_id) throw new Error("Workspace conversation is unavailable");
       await callRpc("thread.post", { entity_id, ...destination, messages, ...MUTATION_THREAD_PAGE });
@@ -453,30 +505,17 @@ export function mountGitPane(
   let lastStatus = null;
   let lastLog = null; // the poll's first page (limit default)
   let lastHighlightKey = null; // the remote-publication boundary used to highlight commits
-  let lastHead; // undefined until the first poll lands
-  let extraCommits = []; // "Show more" pages beyond the poll's first page
-  let pagedMore = null; // the last fetched page's `more` (null → use lastLog.more)
+  let lastUnpushed = null; // the unpushed record, for what the review is against
   // Rail selection, survives repaints. undefined until the first status lands:
   // where the surface opens depends on whether the tree is dirty (a clean branch
   // opens at the commit list with nothing selected and no commit box).
   let selected;
   let reviewMounted = false; // the review plug currently owns the detail host
   let hint = ""; // sticky action hint/error, re-applied after each repaint
-  const showCache = new Map(); // hash → git.show payload (commits are immutable)
-  // The local cache's address for this checkout. A project-scoped one names no
-  // entity, so it takes no part — nothing to key by, nothing evicted with it.
-  const cacheEntityId = directoryCacheId(scope);
-  const cacheAddress = (kind, sub) =>
-    cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind, sub }) || null : null;
-  const readThroughCache = async (kind, sub) => {
-    const address = cacheAddress(kind, sub);
-    const record = address ? await readCached(address) : undefined;
-    return record ? record.value : undefined;
-  };
-  const writeThroughCache = (kind, value, sub) => {
-    const address = cacheAddress(kind, sub);
-    if (address) writeCached(address, value); // fire and forget — never awaited
-  };
+  // hash → the git.show payload held for that commit. A commit is immutable,
+  // so a patch once read is the patch: this is the `patch` records, plus
+  // whatever this pane read that was too big for one.
+  const patches = new Map();
   // The uncommitted changeset's bodies: git.status names the files and what each
   // one holds, and each file's diff is fetched, cached and answered on its own.
   const fileDiffs = createFileDiffs({
@@ -585,6 +624,12 @@ export function mountGitPane(
     const schedule = view.requestAnimationFrame || ((callback) => view.setTimeout(callback, 0));
     contextFrame = schedule(syncViewingContext);
   };
+  const cancelViewingContextFrame = () => {
+    if (!contextFrame) return;
+    const view = container.ownerDocument.defaultView || globalThis;
+    (view.cancelAnimationFrame || view.clearTimeout).call(view, contextFrame);
+    contextFrame = 0;
+  };
   const captureViewingSelection = () => {
     if (!viewingContext || selected === "review") return;
     if (selectionInsideContext()) viewingContext.captureDomSelection(contextScroller());
@@ -613,16 +658,36 @@ export function mountGitPane(
   // ---- the ONE inline-confirm arm/disarm path (force push / discard / abort).
   // Every armed confirm is stamped so the poll can auto-expire it, and any
   // other action disarms it — no verb keeps its own bookkeeping.
+  let confirmTimer = null; // the one-shot that expires an abandoned confirm
+  const disarmTimer = () => {
+    if (confirmTimer) clearTimeout(confirmTimer);
+    confirmTimer = null;
+  };
   const clearConfirm = () => {
     pendingConfirm = null;
     armedAt = null;
+    disarmTimer();
+  };
+  /** An armed confirm that is walked away from stops being one click from
+   *  firing. A press outside disarms it at once; this is the case where
+   *  nothing is pressed at all. */
+  const expireConfirmLater = () => {
+    disarmTimer();
+    confirmTimer = setTimeout(() => {
+      confirmTimer = null;
+      if (disposed || !confirmExpired(armedAt, Date.now())) return;
+      clearConfirm();
+      render();
+    }, INLINE_CONFIRM_TTL_MS);
   };
   /** Arm `key` (first touch) or fire it (second touch of the same key). Returns
-   *  true only on fire; stamps armedAt when it arms so the poll can expire it. */
+   *  true only on fire; stamps armedAt when it arms so it can be expired. */
   const armConfirm = (key) => {
     const decision = resolveInlineConfirm(pendingConfirm, key);
     pendingConfirm = decision.pending;
     armedAt = decision.fire ? null : Date.now();
+    if (decision.fire) disarmTimer();
+    else expireConfirmLater();
     return decision.fire;
   };
   /** Disarm any pending confirm; returns whether one was actually cleared so the
@@ -822,7 +887,7 @@ export function mountGitPane(
       });
       return;
     }
-    const detail = showCache.get(selected);
+    const detail = patches.get(selected);
     if (!detail) {
       renderedViews = [];
       detailHost.innerHTML = '<div class="empty cdetail-loading">loading…</div>';
@@ -978,15 +1043,10 @@ export function mountGitPane(
       pendingConfirm,
       repo: repoControls,
     });
-    const mergedLog = {
-      ...lastLog,
-      commits: [...(lastLog.commits || []), ...extraCommits],
-      more: pagedMore ?? lastLog.more,
-    };
     paintRail({
       review: review ? { base: review.getBase(), subtitle: review.getRailSubtitle?.() } : null,
       status: lastStatus,
-      log: mergedLog,
+      log: lastLog,
       selected,
     });
     const detailHost = container.querySelector(".cdetail-host");
@@ -1103,11 +1163,15 @@ export function mountGitPane(
     if (!disposed && actionSettleReenables(inFlightActions)) reenableAllControls();
   };
 
+  /** Take up what a mutation answered with — a status, and sometimes the log
+   *  behind it — and put it where the next mount reads it. */
   const paintFrom = (status, log) => {
     lastStatus = status;
+    keep("status", status);
     if (log) {
       lastLog = log;
       lastHighlightKey = log.highlight_key ?? null;
+      keep("log", log);
     }
     // A content refresh clears any stale armed confirm (the file/state it named
     // may be gone) — matching "any repaint resets the pending confirm".
@@ -1116,19 +1180,25 @@ export function mountGitPane(
     renderAndFetch();
   };
 
-  /** Refetch both payloads and repaint unconditionally (post-action refresh). */
+  /** Read this checkout off the machine and repaint (post-action refresh, and
+   *  the one first paint a checkout the cache holds nothing for gets). */
   const forceRefresh = async () => {
-    let status, log;
+    let answer, log;
     try {
-      [status, log] = await Promise.all([callRpc("git.status", { ...scope }), callRpc("git.log", { ...scope })]);
+      [answer, log] = await Promise.all([
+        callRpc("git.status", { ...scope, ...ifStatusKey(lastStatus) }),
+        callRpc("git.log", { ...scope }),
+      ]);
     } catch (e) {
-      actionError(e);
+      if (disposed) return;
+      if (isPermanentGitScopeError(e && e.message)) renderScopeError((e && e.message) || "error");
+      else actionError(e);
       return;
     }
-    if (disposed) return;
-    lastHead = status.head;
-    extraCommits = [];
-    pagedMore = null;
+    const status = statusAfterRead(answer, lastStatus);
+    if (disposed || !status) return;
+    scopeErrorShown = null;
+    if (selected === undefined) selected = defaultChangesSelection({ status, review });
     paintFrom(status, log);
   };
 
@@ -1176,9 +1246,6 @@ export function mountGitPane(
       }
       if (disposed) return;
       if (commitVariantClearsDraft(optionId)) clearCommitDraft();
-      lastHead = result.status.head;
-      extraCommits = [];
-      pagedMore = null;
       paintFrom(result.status); // repaint from the returned status immediately…
       try {
         const log = await callRpc("git.log", { ...scope }); // …then pull the new commit into history
@@ -1232,22 +1299,17 @@ export function mountGitPane(
     clearConfirm();
     fileMenuPath = null; // a menu belongs to the changeset it was opened on
     renderAndFetch();
-    if (sel !== "review" && sel !== "uncommitted" && !showCache.has(sel)) fetchShow(sel);
+    if (sel !== "review" && sel !== "uncommitted" && !patches.has(sel)) fetchShow(sel);
   };
 
+  /** The patch behind a commit the reader opened that nothing holds one for —
+   *  a commit older than the unpushed window the sync layer fills, or one
+   *  whose patch was over the cap. Read once and kept: a commit is immutable,
+   *  so there is no revalidation and never a second ask. */
   const fetchShow = async (hash) => {
-    // A commit is immutable, so the local cache answers for the bridge
-    // outright — no revalidation, no second ask, ever.
-    const cached = await readThroughCache("show", hash);
-    if (disposed) return;
-    if (cached) {
-      showCache.set(cached.hash, cached);
-      if (selected === hash) render();
-      return;
-    }
     let show;
     try {
-      show = await callRpc("git.show", { ...scope, hash });
+      show = await callRpc("git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES });
     } catch (e) {
       if (disposed) return;
       actionError(e);
@@ -1257,13 +1319,18 @@ export function mountGitPane(
       }
       return;
     }
-    showCache.set(show.hash, show);
-    writeThroughCache("show", show, show.hash);
+    patches.set(show.hash, show);
+    // A patch the record cannot take stays in this mount's hand and nowhere
+    // else — the cap is the cache's rule, not the reader's.
+    if (withinBytes(show.patch, COMMIT_PATCH_MAX_BYTES)) keep(PATCH_RECORD_KIND, show, show.hash);
     if (!disposed && selected === hash) render();
   };
 
+  /** An older page of history, asked for by the reader. It goes into the
+   *  commit record behind what is already there, so the next mount opens on
+   *  the history they paged in rather than on the latest twenty again. */
   const showMore = async () => {
-    const skip = ((lastLog && lastLog.commits) || []).length + extraCommits.length;
+    const skip = ((lastLog && lastLog.commits) || []).length;
     let page;
     try {
       page = await callRpc("git.log", { ...scope, skip });
@@ -1272,8 +1339,10 @@ export function mountGitPane(
       return;
     }
     if (disposed) return;
-    extraCommits = [...extraCommits, ...(page.commits || [])];
-    pagedMore = Boolean(page.more);
+    lastLog = olderLogPage(lastLog, page);
+    const address = cacheAddress("log");
+    if (address) void mergeCached(address, (current) => olderLogPage(current, page));
+    renderedKey = pollKeyNow(lastStatus, lastLog);
     render();
   };
 
@@ -1303,9 +1372,6 @@ export function mountGitPane(
    *  then pull the fresh log in (a sync/checkout can rewrite history). */
   const applyStatusResult = async (status, successHint) => {
     if (disposed) return;
-    lastHead = status.head;
-    extraCommits = [];
-    pagedMore = null;
     if (successHint !== undefined) setHint(successHint);
     else setHint("");
     paintFrom(status);
@@ -1313,7 +1379,7 @@ export function mountGitPane(
       const log = await callRpc("git.log", { ...scope });
       if (!disposed) paintFrom(lastStatus, log);
     } catch {
-      /* the poll catches the log up */
+      /* the next push catches the log up */
     }
   };
 
@@ -1539,15 +1605,19 @@ export function mountGitPane(
     renderAndFetch();
   }
 
+  /** Let the review plug go, where it is the one holding the detail host. */
+  const unmountReview = () => {
+    if (!reviewMounted) return;
+    review.unmount();
+    reviewMounted = false;
+  };
+
   /** A permanent scope rejection replaces the pane body (there is nothing to
    *  retry: the task/project this scope named no longer resolves). */
   const renderScopeError = (message) => {
     if (scopeErrorShown === message) return;
     scopeErrorShown = message;
-    if (reviewMounted) {
-      review.unmount(); // its host is about to be wiped with the skeleton
-      reviewMounted = false;
-    }
+    unmountReview(); // its host is about to be wiped with the skeleton
     stopCommitMeasurement();
     stopToolbarMeasurement();
     container.innerHTML = `<div class="gitpane"><div class="empty giterror">${esc(message)}</div></div>`;
@@ -1574,70 +1644,11 @@ export function mountGitPane(
       interactionActive: interactionLive(),
     });
 
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
-  const poll = async () => {
-    if (disposed) return;
-    let status, log;
-    try {
-      [status, log] = await Promise.all([
-        callRpc("git.status", { ...scope, ...ifStatusKey(lastStatus) }),
-        callRpc("git.log", { ...scope }),
-      ]);
-    } catch (e) {
-      // Permanent scope errors (pruned task, removed project) never recover —
-      // surface them instead of "loading…" forever; everything else is
-      // transient and the poll retries silently.
-      if (!disposed && isPermanentGitScopeError(e && e.message)) renderScopeError((e && e.message) || "error");
-      return;
-    }
-    if (disposed) return;
-    scopeErrorShown = null; // recovered — the next render paints normally
-    status = statusAfterPoll(status, lastStatus);
-    if (lastHead !== undefined && status.head !== lastHead) {
-      extraCommits = []; // HEAD moved — the paged-in history is stale
-      pagedMore = null;
-    }
-    const highlightKey = log.highlight_key ?? null;
-    if (lastLog && highlightKey !== lastHighlightKey) {
-      extraCommits = []; // the paged rows carry the old publication highlight
-      pagedMore = null;
-    }
-    lastHead = status.head;
-    lastHighlightKey = highlightKey;
-    lastStatus = status;
-    lastLog = log;
-    // Every live poll writes the shape through as received: it carries no patch
-    // to strip, and each file's body is its own record.
-    writeThroughCache("status", status);
-    writeThroughCache("log", log);
-    // Where the surface opens is a function of what it has to show: the first
-    // status picks it, and an empty selection falls back to the same place
-    // afterwards.
-    selected = selected === undefined ? defaultSelection() : selectionAfterPoll(selected, status, { review });
-    // Every turn asks for whatever the open files are missing, freeze or not: a
-    // body fetch that failed leaves the shape where it was, so a retry gated on
-    // the shape moving would never come. A quiet repo asks for nothing.
-    refreshBodies();
-    // An abandoned confirm auto-expires: past the TTL the poll disarms it and
-    // forces a repaint (S2c), so a destructive verb never stays one click from
-    // firing — and the interactionActive freeze it caused is released too.
-    const expired = confirmExpired(armedAt, Date.now());
-    if (expired) clearConfirm();
-    const key = pollKeyNow(status, log);
-    // Freeze while nothing has moved, while the user is drafting a commit
-    // message, while any action RPC is in flight, or while an interaction is
-    // live. A body that landed unpainted is something that moved; a just-expired
-    // confirm bypasses the freeze so its armed label actually clears.
-    if (!expired && repaintHeld({ keyUnchanged: key === renderedKey && !bodiesUnpainted })) return;
-    renderedKey = key;
-    bodiesUnpainted = false;
-    render();
-  };
-
   // A press anywhere outside the pane dismisses a live interaction (an armed
   // confirm or an open file menu), mirroring splitButton's own outside-close.
   // Without it an abandoned confirm/menu keeps interactionActive true and
-  // freezes the poll until the user clicks back inside (S5). Removed on dispose.
+  // freezes repainting until the user clicks back inside (S5). Removed on
+  // dispose.
   const onOutsidePointerDown = (event) => {
     if (
       !outsidePressDismisses({
@@ -1648,54 +1659,147 @@ export function mountGitPane(
     )
       return;
     clearConfirm();
-    fileMenuPath = null; // an abandoned file menu must not freeze the poll
+    fileMenuPath = null; // an abandoned file menu must not freeze the repaints
     render();
   };
   document.addEventListener("pointerdown", onOutsidePointerDown);
 
-  /** The synced status and commit list, painted while the first poll is still
-   *  in flight. The live answer wins any race — a seed that arrives second
-   *  drops itself. */
-  const seedFromCache = async () => {
-    const [cachedStatus, cachedLog] = await Promise.all([readThroughCache("status"), readThroughCache("log")]);
-    if (disposed || lastStatus || !cachedStatus || !cachedLog) return;
-    lastHead = cachedStatus.head;
-    lastStatus = cachedStatus;
-    lastLog = cachedLog;
-    lastHighlightKey = cachedLog.highlight_key ?? null;
-    if (selected === undefined) selected = defaultSelection();
-    renderAndFetch();
+  // ---- the cache, which is everything this pane draws ------------------------
+
+  /** Every record this pane paints, in one transaction: the status, the
+   *  commits, what is unpushed, and the patch behind each commit anybody has
+   *  read here. */
+  const readRecords = async () => {
+    if (!cacheAddress("status")) return null;
+    const hashes = await cachedSubKeys(cacheScope.deviceId, cacheEntityId, PATCH_RECORD_KIND);
+    const held = await readCachedMany([
+      cacheAddress("status"),
+      cacheAddress("log"),
+      cacheAddress("unpushed"),
+      ...hashes.map((hash) => cacheAddress(PATCH_RECORD_KIND, hash)),
+    ]);
+    const [status, log, unpushed] = held;
+    return {
+      status: status?.value,
+      log: log?.value,
+      unpushed: unpushed?.value,
+      patches: hashes.map((hash, index) => [hash, held[index + 3]?.value]).filter(([, value]) => value),
+    };
   };
 
-  seedFromCache();
-  poll();
-  // The pane reads one checkout, so it refetches when that checkout's entity
-  // moves — the git watcher stales a run the instant files land in it. A
-  // project's own checkout is not an entity the bridge names, and its state
-  // moves with the feed, so that scope watches the board instead.
+  /** What the records say, on screen. The freeze is the same one every other
+   *  repaint asks about: a record moving under a reviewer mid-comment waits
+   *  for them to finish, exactly as a poll's answer used to. */
+  /** Take up the records that are not the two the pane cannot draw without:
+   *  the patches anybody has read here, and what the review is measured
+   *  against. */
+  const takeUpBesides = (held) => {
+    for (const [hash, value] of held.patches) patches.set(hash, value);
+    lastUnpushed = held.unpushed || lastUnpushed;
+    if (lastUnpushed?.base) review?.seedBase?.(lastUnpushed.base);
+  };
+
+  /** Repaint from the status and commits in hand, unless something on screen
+   *  is holding the DOM still — the same freeze every other repaint asks
+   *  about, and a record moving under a reviewer mid-comment waits for them. */
+  const repaintFromRecords = () => {
+    const key = pollKeyNow(lastStatus, lastLog);
+    if (repaintHeld({ keyUnchanged: key === renderedKey && !bodiesUnpainted })) return;
+    renderedKey = key;
+    bodiesUnpainted = false;
+    render();
+  };
+
+  const paintRecords = (held) => {
+    takeUpBesides(held);
+    if (!held.status || !held.log) return false;
+    lastStatus = held.status;
+    lastLog = held.log;
+    lastHighlightKey = held.log.highlight_key ?? null;
+    selected = selected === undefined ? defaultSelection() : selectionAfterPoll(selected, lastStatus, { review });
+    // Asked whatever the freeze says: a body fetch that failed leaves the
+    // shape where it was, so a retry gated on the shape moving would never
+    // come. A quiet repo asks for nothing.
+    refreshBodies();
+    repaintFromRecords();
+    return true;
+  };
+
+  const takeUpRecords = async () => {
+    const held = await readRecords();
+    if (disposed || !held) return false;
+    return paintRecords(held);
+  };
+
+  // One read at a time, and one more where the records moved while it ran: one
+  // push writes a status, a commit list and an unpushed record in a burst.
+  let reading = null;
+  let readAgain = false;
+  const rereadRecords = () => {
+    if (reading) {
+      readAgain = true;
+      return reading;
+    }
+    reading = (async () => {
+      do {
+        readAgain = false;
+        await takeUpRecords();
+      } while (readAgain && !disposed);
+    })().finally(() => {
+      reading = null;
+    });
+    return reading;
+  };
+
+  /** Everything under this checkout: a push writes several of its records at
+   *  once, and the read above takes all of them. */
+  const watchRecords = () => {
+    const prefix = cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId }) || null : null;
+    return prefix ? subscribeCache(prefix, () => void rereadRecords()) : null;
+  };
+
+  /** The first paint. A checkout the cache holds nothing for — a project's own
+   *  directory, which is no entity at all, or a workspace source, which the
+   *  sync layer does not walk — is read off the machine once and written down;
+   *  from then on this pane hears about it like every other. */
+  const standUp = async () => {
+    if (await takeUpRecords()) return;
+    if (!disposed) await forceRefresh();
+  };
+
+  /**
+   * Whether this pane is the only reader of its checkout.
+   *
+   * A run or a worktree is an entity the board lists, so the sync layer walks
+   * it: every record drawn here is kept true without this pane asking anybody
+   * anything. Two checkouts are not on that list — a workspace SOURCE, whose
+   * records are filed under the source and only this side names one, and a
+   * project's own directory, which is no entity at all. For those, and for a
+   * pane mounted with no cache to hear from, this IS the reader: it reads once
+   * on mount and again when the bridge says the checkout moved. No timer
+   * either way.
+   */
+  const readsForItself = !cacheScope || Boolean(scope.workspace_id) || !(scope.run_id || scope.worktree_id);
+
   const refreshCheckout = () => {
-    poll();
-    // A mounted workspace aggregate deliberately has no private watcher: the
-    // workspace source already stays on this fast path because its durable id
-    // is not a bridge worktree entity. Trigger its serialized conditional read
-    // from the same push/tick, even when HEAD and the visible commit page stay
-    // unchanged.
+    void forceRefresh();
+    // The plug over a workspace source reads the same uncovered checkout.
     if (scope.workspace_id && reviewMounted) review?.refreshDiff?.();
   };
-  const watcher = watchChanges({
-    refresh: refreshCheckout,
-    intervalMs: GIT_PANE_POLL_MS,
-    entity: scope.workspace_id || scope.run_id || scope.worktree_id || null,
-    // A workspace source is watched at its own cadence rather than standing
-    // down to the safety poll: the bridge does not push for every source in a
-    // multi-source workspace, so the interval stays where it has always been.
-    keepPolling: Boolean(scope.workspace_id),
-    // Focus tier. A project's own checkout is no entity the bridge names, so
-    // that scope watches the board — where `state` is all there is, and the
-    // manager trims the ask to it.
-    kinds: ["state", "git", "files"],
-    mode: "realtime",
-  });
+
+  void standUp();
+  const unwatchRecords = watchRecords();
+  const checkoutWatcher = readsForItself
+    ? watchChanges({
+        refresh: refreshCheckout,
+        entity: scope.workspace_id || scope.run_id || scope.worktree_id || null,
+        // Focus tier. A project's own checkout is no entity the bridge names,
+        // so that scope watches the board — where `state` is all there is, and
+        // the manager trims the ask to it.
+        kinds: ["state", "git", "files"],
+        mode: "realtime",
+      })
+    : null;
   const editedTimeWatcher = watchEditedTimes(container);
 
   return {
@@ -1703,13 +1807,12 @@ export function mountGitPane(
       disposed = true;
       stopCommitMeasurement();
       stopToolbarMeasurement();
-      watcher.dispose();
+      unwatchRecords?.();
+      checkoutWatcher?.dispose();
+      disarmTimer();
       editedTimeWatcher.dispose();
       document.removeEventListener("pointerdown", onOutsidePointerDown);
-      if (reviewMounted) {
-        review.unmount(); // stop the plug's poll; the view may remount it later
-        reviewMounted = false;
-      }
+      unmountReview(); // the view may remount it later
       if (drawer) {
         drawer.dispose();
         drawer = null;
@@ -1719,11 +1822,7 @@ export function mountGitPane(
       viewport.dispose();
       container.removeEventListener("scroll", onContextScroll, true);
       document.removeEventListener("selectionchange", captureViewingSelection);
-      if (contextFrame) {
-        const view = container.ownerDocument.defaultView || globalThis;
-        (view.cancelAnimationFrame || view.clearTimeout).call(view, contextFrame);
-        contextFrame = 0;
-      }
+      cancelViewingContextFrame();
       if (viewingContext && selected !== "review") viewingContext.clear();
       if (commentLayer) commentLayer.dispose();
       if (overrides) overrides.dispose();

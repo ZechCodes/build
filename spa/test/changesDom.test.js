@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane, taskAgentCommitOptions } from "../src/core/gitPane.js";
+import { refetchEverything } from "../src/core/changeEvents.js";
 
 import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
@@ -221,7 +222,8 @@ describe("the rail's paint", () => {
       const records = await churn(rail, async () => {
         tree.write("src/a.js", "the agent moved on");
         served.status = dirtyStatus({ head: "e".repeat(40) });
-        await vi.advanceTimersByTimeAsync(2000);
+        refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
         await settle();
       });
       expect(container.textContent).toContain("the agent moved on"); // the pane did repaint
@@ -244,7 +246,8 @@ describe("the rail's paint", () => {
       const landed = { hash: "b".repeat(40), short: "bbbbbbb", subject: "just landed", author: "Zech", email: "z@x", time: 2 };
       const records = await churn(rail, async () => {
         served.log = { ...log(), commits: [landed, ...log().commits] };
-        await vi.advanceTimersByTimeAsync(2000);
+        refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
         await settle();
       });
       const fresh = rail.querySelector(`.crow[data-hash="${"b".repeat(40)}"]`);
@@ -537,7 +540,8 @@ describe("a poll preserves a review in progress", () => {
       // the already-anchored comment must remain ready to send.
       tree.write("src/a.js", "the agent moved on");
       served = dirtyStatus({ head: "e".repeat(40) });
-      await vi.advanceTimersByTimeAsync(2000);
+      refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
       await settle();
       expect(container.querySelector(".pcomment").textContent).toContain("hold this thought");
       expect(container.textContent).toContain("the agent moved on");
@@ -576,7 +580,8 @@ describe("the poll freeze holds an open menu", () => {
       expect(menu.hidden).toBe(false);
 
       served = dirtyStatus({ head: "e".repeat(40) });
-      await vi.advanceTimersByTimeAsync(2000);
+      refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
       await settle();
 
       expect(container.querySelector(".csbox-actions .splitmenu"), "the poll replaced the menu").toBe(menu);
@@ -613,7 +618,8 @@ describe("re-review memory on every stack", () => {
 
       tree.write("src/a.js", "the agent moved on");
       served = dirtyStatus();
-      await vi.advanceTimersByTimeAsync(2000);
+      refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
       await settle();
       const changed = container.querySelector('.file[data-key$=":src/a.js"] .fchanged');
       expect(changed.textContent).toContain("changed since your review");
@@ -658,7 +664,8 @@ describe("re-review memory on every stack", () => {
       await settle();
       tree.write("src/a.js", "the agent moved after review");
       served = dirtyStatus();
-      await vi.advanceTimersByTimeAsync(2000);
+      refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
       await settle();
       await click(container.querySelector('.rrow[data-sel="uncommitted"]'));
 

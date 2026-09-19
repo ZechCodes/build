@@ -142,7 +142,7 @@ describe("a flush arriving at the real subscriptions", () => {
     await boot([branchItem()], BRANCH_ROUTE);
     bridge.call.mockClear();
     await flush(
-      [{ entity_id: "run-1", git: { unpushed: { base: {}, commits: [{ hash: "h7" }], diff_key: "d1" } } }],
+      [{ entity_id: "run-1", git: { log: { commits: [{ hash: "h7", ahead_of_base: true }], newest: "h7" } } }],
       "s-active:run-1",
     );
     expect(calls("git.show")).toHaveLength(1);

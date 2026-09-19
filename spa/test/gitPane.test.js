@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   gitPollKey,
   ifStatusKey,
-  statusAfterPoll,
+  statusAfterRead,
   taskAgentCommitOptions,
   gitDraftKey,
   resolveCommitDraft,
@@ -66,7 +66,7 @@ describe("gitPollKey", () => {
 });
 
 describe("ifStatusKey", () => {
-  it("sends the key the pane holds, so an unmoved repo answers with a key not a diff", () => {
+  it("sends the key the pane holds, so an unmoved repo answers with a key not a shape", () => {
     expect(ifStatusKey(status())).toEqual({ if_status_key: "shape-1" });
   });
 
@@ -76,15 +76,15 @@ describe("ifStatusKey", () => {
   });
 });
 
-describe("statusAfterPoll", () => {
+describe("statusAfterRead", () => {
   it("keeps the shape it holds when the bridge says the key still stands", () => {
     const held = status();
-    expect(statusAfterPoll({ unchanged: true, status_key: "shape-1" }, held)).toBe(held);
+    expect(statusAfterRead({ unchanged: true, status_key: "shape-1" }, held)).toBe(held);
   });
 
   it("takes the fresh shape otherwise", () => {
     const moved = status({ status_key: "shape-2" });
-    expect(statusAfterPoll(moved, status())).toBe(moved);
+    expect(statusAfterRead(moved, status())).toBe(moved);
   });
 });
 

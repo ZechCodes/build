@@ -86,10 +86,12 @@ describe("workspace All Changes live refresh", () => {
     const watcher = liveWatchers[0];
     expect(watcher).toMatchObject({
       entity: "workspace-1",
-      keepPolling: true,
       kinds: ["state", "git", "files"],
       mode: "realtime",
     });
+    // A workspace source is not an entity the sync layer walks, so this pane
+    // reads it — but on the bridge's word, never on a clock of its own.
+    expect(watcher.intervalMs).toBeUndefined();
     expect(container.textContent).toContain("No file changes yet.");
 
     // A filesystem invalidation updates the aggregate even though status/HEAD,

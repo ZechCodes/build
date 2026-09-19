@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane } from "../src/core/gitPane.js";
+import { refetchEverything } from "../src/core/changeEvents.js";
 import { createReviewPlug } from "../src/core/changesReview.js";
 
 import { patchFor, worktreeOf } from "./gitWireFixture.js";
@@ -98,7 +99,8 @@ describe("the Changes pane's stack", () => {
 
     tree = worktreeOf({ "src/0.js": "arrived", "src/a.js": "first", "src/b.js": "second" });
     served.status = tree.status({ head: "e".repeat(40) });
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect([...stack.children].map((child) => child.dataset.key)).toEqual([
       "triagebar",
@@ -119,7 +121,8 @@ describe("the Changes pane's stack", () => {
     const records = await churn(scroller, async () => {
       // The repo moved — a fetch shifted the head — but the diff did not.
       served.status = status({ head: "e".repeat(40) });
-      await vi.advanceTimersByTimeAsync(2000);
+      refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
       await settle();
     });
     expect(records).toEqual([]);
@@ -134,7 +137,8 @@ describe("the Changes pane's stack", () => {
     const held = fileOf(container, "src/b.js");
     tree.write("src/a.js", "the agent moved on");
     served.status = status();
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.textContent).toContain("the agent moved on");
     expect(fileOf(container, "src/b.js")).toBe(held);
@@ -165,7 +169,8 @@ describe("the Changes pane's stack", () => {
       scroller.scrollTop = 400; // the reader is at the head of b
       tree.write("src/a.js", "the agent moved on");
     served.status = status();
-      await vi.advanceTimersByTimeAsync(2000);
+      refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
       await settle();
       expect(scroller.scrollTop).toBe(600);
     } finally {
@@ -209,7 +214,8 @@ describe("the Changes pane's stack", () => {
     try {
       scroller.scrollTop = 400;
       served.status = timedStatus({ "src/a.js": 30, "src/b.js": 40 });
-      await vi.advanceTimersByTimeAsync(2000);
+      refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
       await settle();
 
       expect([...container.querySelectorAll(".file")].map((file) => file.dataset.key)).toEqual([

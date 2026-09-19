@@ -168,7 +168,7 @@ describe("the order a pass reads in", () => {
     // What is on screen first is read first. The conversation comes before the
     // patches behind the unpushed commits, which are twenty reads of a quarter
     // of a megabyte and nothing anybody is looking at yet.
-    script["git.unpushed"] = () => ({ base: {}, commits: [{ hash: "h1" }], diff_key: "d1" });
+    script["git.log"] = () => ({ commits: [{ hash: "h1", ahead_of_base: true }], newest: "h1", reset: false });
     await boot([branchItem({ agents: [{ id: "ag-1" }] })], routeTo("build/login"));
     expect(bridge.call.mock.calls.map(([method]) => method).slice(3)).toEqual([
       "git.status",
@@ -350,10 +350,17 @@ describe("the cursors", () => {
 });
 
 describe("the two bodies that never ride a push", () => {
-  const unpushed = (hashes) => ({ base: {}, commits: hashes.map((hash) => ({ hash })), diff_key: "d1" });
+  // `git.unpushed` answers one aggregate diff and no commit list. Which
+  // commits are unpushed is the log's to say: the bridge marks every commit
+  // ahead of the base on the row it writes for it.
+  const ahead = (hashes) => ({
+    commits: hashes.map((hash) => ({ hash, ahead_of_base: true })),
+    newest: hashes[0] || null,
+    reset: false,
+  });
 
   it("reads the patch behind each unpushed commit it does not hold, under the cap", async () => {
-    script["git.unpushed"] = () => unpushed(["h1", "h2"]);
+    script["git.log"] = () => ahead(["h1", "h2"]);
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "h1" }, { hash: "h1" });
     await boot([branchItem()]);
     expect(paramsOf("git.show")).toEqual([
@@ -364,13 +371,13 @@ describe("the two bodies that never ride a push", () => {
   });
 
   it("reads the patches of at most twenty commits", async () => {
-    script["git.unpushed"] = () => unpushed(Array.from({ length: 30 }, (_unused, index) => `h${index}`));
+    script["git.log"] = () => ahead(Array.from({ length: 30 }, (_unused, index) => `h${index}`));
     await boot([branchItem()]);
     expect(calls("git.show")).toHaveLength(sync.UNPUSHED_COMMITS_MAX);
   });
 
   it("refuses a patch over the cap, whatever the bridge answered", async () => {
-    script["git.unpushed"] = () => unpushed(["h1"]);
+    script["git.log"] = () => ahead(["h1"]);
     script["git.show"] = () => ({ hash: "h1", patch: "x".repeat(sync.COMMIT_PATCH_MAX_BYTES + 1) });
     await boot([branchItem()]);
     expect(await read("run-1", "patch", "h1")).toBeUndefined();
@@ -378,7 +385,6 @@ describe("the two bodies that never ride a push", () => {
 
   it("lets go of the patch of a commit that is no longer unpushed", async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "gone" }, { hash: "gone" });
-    script["git.unpushed"] = () => unpushed([]);
     await boot([branchItem()]);
     expect(await read("run-1", "patch", "gone")).toBeUndefined();
   });

@@ -362,7 +362,7 @@ describe("applying one item", () => {
   it("reads the patch behind a commit the git item made unpushed", async () => {
     await boot([branchItem()]);
     bridge.call.mockClear();
-    await deliver([{ entity_id: "run-1", git: { unpushed: { base: {}, commits: [{ hash: "h7" }], diff_key: "d1" } } }]);
+    await deliver([{ entity_id: "run-1", git: { log: { commits: [{ hash: "h7", ahead_of_base: true }], newest: "h7" } } }]);
     expect(calls("git.show").map(([, params]) => params.hash)).toEqual(["h7"]);
     expect((await read("run-1", "patch", "h7")).value.patch).toBe("diff --git");
   });
@@ -711,7 +711,7 @@ describe("an item for somewhere else", () => {
   it("asks nothing of git for an entity whose row this cache has never seen", async () => {
     await boot([branchItem()]);
     bridge.call.mockClear();
-    await deliver([{ entity_id: "run-404", git: { unpushed: { commits: [{ hash: "h1" }] } } }]);
+    await deliver([{ entity_id: "run-404", git: { log: { commits: [{ hash: "h1", ahead_of_base: true }], newest: "h1" } } }]);
     expect(calls("git.show")).toEqual([]);
   });
 });

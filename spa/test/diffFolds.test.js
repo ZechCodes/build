@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane } from "../src/core/gitPane.js";
+import { refetchEverything } from "../src/core/changeEvents.js";
 import { createReviewPlug } from "../src/core/changesReview.js";
 
 import { patchFor, worktreeOf } from "./gitWireFixture.js";
@@ -78,7 +79,8 @@ describe("the Changes pane's folds", () => {
 
     tree.write("src/a.js", "the agent moved on");
     served.status = status({ head: "e".repeat(40) });
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.textContent).toContain("the agent moved on");
     expect(fileOf(container, "src/a.js").classList.contains("capped")).toBe(false);

@@ -22,14 +22,19 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
+};
 
 const row = {
   kind: "branch",
   project_id: "p1",
   project: "relaydb",
   branch: "build/login",
-  worktree_id: "wt-1",
+  // The project's own checkout: no run, no worktree, so it is no entity the
+  // board names and the sync layer never walks it. This surface is the only
+  // reader of it, which is what makes the question below askable at all.
+  worktree_id: null,
   agents: [],
   state: "review",
   primary: false,

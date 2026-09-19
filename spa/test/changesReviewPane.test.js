@@ -12,6 +12,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { mountGitPane } = await import("../src/core/gitPane.js");
 const { createReviewPlug } = await import("../src/core/changesReview.js");
 const { scopeFor } = await import("../src/core/cacheScope.js");
+const { wipeCache, writeCached } = await import("../src/core/localCache.js");
 const { worktreeOf } = await import("./gitWireFixture.js");
 
 const tree = worktreeOf({ "src/a.js": "new line", "uv.lock": "locked" });
@@ -25,8 +26,7 @@ index 1111111..2222222 100644
 `;
 
 const settle = async () => {
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  await new Promise((done) => setTimeout(done, 0));
+  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 const click = async (element) => {
@@ -66,7 +66,8 @@ async function mount({ clean = false, deviceId = "dev-1" } = {}) {
   return { container, pane, calls };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   document.body.innerHTML = "";
   errors = [];
   window.addEventListener("error", (event) => errors.push(event.message));
@@ -197,6 +198,51 @@ describe("the Changes surface, opened on its review aggregate", () => {
   });
 });
 
+// The aggregate the surface opens on is the `diff` record. The surface is
+// asked for one only where the cache holds none.
+describe("the aggregate over a filled cache", () => {
+  async function mountOverDiff({ held = null } = {}) {
+    if (held) await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, held);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const callRpc = async (method, params) => {
+      if (method === "git.status") return tree.status();
+      if (method === "git.diff") return tree.diff(params);
+      if (method === "git.log") return { branch: "main", commits: [], more: false };
+      return {};
+    };
+    const fetchDiff = vi.fn(async () => ({ patch: PATCH.replace("+new", "+off the wire"), commentable: true }));
+    const review = createReviewPlug({ cacheScope: scopeFor("dev-1"), entity: "run-1", fetchDiff, submit: async () => {} });
+    const pane = mountGitPane(container, {
+      scope: { run_id: "run-1" },
+      callRpc,
+      cacheScope: scopeFor("dev-1"),
+      review: { ...review, getBase: () => "main" },
+    });
+    await settle();
+    // The rail's top row is the aggregate; a dirty tree opens on Uncommitted.
+    await click(container.querySelector('.rrow[data-sel="review"]'));
+    return { container, pane, fetchDiff };
+  }
+
+  it("paints the record and asks the surface for nothing", async () => {
+    const held = { patch: PATCH.replace("+new", "+from the record"), commentable: true };
+    const { container, pane, fetchDiff } = await mountOverDiff({ held });
+    expect(container.textContent).toContain("from the record");
+    expect(fetchDiff).not.toHaveBeenCalled();
+    pane.dispose();
+  });
+
+  it("asks once, and only once, when the cache holds no diff", async () => {
+    const { container, pane, fetchDiff } = await mountOverDiff();
+    expect(container.textContent).toContain("off the wire");
+    expect(fetchDiff).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(fetchDiff).toHaveBeenCalledTimes(1);
+    pane.dispose();
+  });
+});
+
 describe("workspace comments", () => {
   async function workspacePane({ fail = false } = {}) {
     const container = document.createElement("div");
@@ -208,13 +254,19 @@ describe("workspace comments", () => {
       if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return { branch: "main", commits: [], more: false };
       if (method === "git.unpushed") return { patch: PATCH + PATCH.replaceAll("src/a.js", "src/b.js"), base: { kind: "empty" } };
-      if (method === "workspace.get") return { workspace: { root: "/work", directories: [{ source_id: "s", path: "/work/source" }] } };
       if (method === "workspace.ensure_conversation") return { entity_id: "workspace-thread" };
       if (method === "thread.post" && fail) throw new Error("offline");
       return {};
     };
+    // Where each source of this workspace is mounted is the machine's
+    // workspace list's to say, and the pane reads it there.
+    await writeCached(
+      { deviceId: "dev-1", entityId: "", kind: "workspaces" },
+      [{ id: "w", root: "/work", directories: [{ source_id: "s", path: "/work/source" }] }],
+    );
     const pane = mountGitPane(container, {
       scope: { workspace_id: "w", source_id: "s" }, callRpc,
+      cacheScope: scopeFor("dev-1"),
       agentSelection: { scope: () => ({ agent_id: "selected-agent" }) },
     });
     await settle();

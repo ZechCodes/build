@@ -133,6 +133,74 @@ describe("the live write-through", () => {
   });
 });
 
+// The whole of a mount, against a cache the sync layer has filled: the pane
+// draws four records and asks the machine for nothing at all, and what moves
+// it afterwards is a record moving.
+describe("a pane over a filled cache", () => {
+  const unpushed = () => ({ base: { kind: "push_target", label: "origin/main" }, diff_key: "d1" });
+
+  const fill = async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "unpushed" }, unpushed());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }, show());
+  };
+
+  it("paints all four without asking the machine anything", async () => {
+    await fill();
+    const never = vi.fn(() => new Promise(() => {}));
+    const { container, pane } = await mountPane(never);
+    expect(container.textContent).toContain("earlier work"); // the log
+    expect(container.textContent).toContain("src/a.js"); // the status
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(container.textContent).toContain("why it happened"); // the held patch
+    expect(never.mock.calls.filter(([method]) => method !== "git.diff")).toEqual([]);
+    pane.dispose();
+  });
+
+  it("repaints when the commit record moves under it", async () => {
+    await fill();
+    const { container, pane } = await mountPane(vi.fn(() => new Promise(() => {})));
+    expect(container.textContent).not.toContain("what landed since");
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "log" },
+      { ...log(), commits: [{ ...log().commits[0], hash: "b".repeat(40), short: "bbbbbbb", subject: "what landed since" }] },
+    );
+    await settle();
+    expect(container.textContent).toContain("what landed since");
+    pane.dispose();
+  });
+
+  it("reads exactly one patch for a commit nothing holds one for, and keeps it", async () => {
+    await fill();
+    await cache.deleteCached([{ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }]);
+    const callRpc = liveRpc();
+    const { container, pane } = await mountPane(callRpc);
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.show")).toHaveLength(1);
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) })).value.body)
+      .toBe("why it happened");
+    pane.dispose();
+  });
+
+  it("asks nothing of the machine for an hour of sitting there", async () => {
+    await fill();
+    const callRpc = liveRpc();
+    const { pane } = await mountPane(callRpc);
+    callRpc.mockClear();
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(callRpc.mock.calls.filter(([method]) => method !== "git.diff")).toEqual([]);
+    pane.dispose();
+  });
+});
+
 describe("a commit's detail", () => {
   it("addresses a selected commit by its full SHA", async () => {
     const viewingContext = { set: vi.fn(), setVisibleDiffs: vi.fn(), captureDomSelection: vi.fn(), clearSelection: vi.fn(), clear: vi.fn() };
@@ -143,8 +211,8 @@ describe("a commit's detail", () => {
     pane.dispose();
   });
 
-  it("serves the cached payload without asking the bridge for what cannot change", async () => {
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "show", sub: "a".repeat(40) }, show());
+  it("serves the held patch without asking the bridge for what cannot change", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }, show());
     const callRpc = liveRpc();
     const { container, pane } = await mountPane(callRpc);
     const commitRow = container.querySelector(".crow");
@@ -155,14 +223,31 @@ describe("a commit's detail", () => {
     pane.dispose();
   });
 
-  it("writes a freshly fetched detail through for the next visit", async () => {
+  it("writes the patch it read for the reader through for the next visit", async () => {
     const callRpc = liveRpc();
     const { container, pane } = await mountPane(callRpc);
     const commitRow = container.querySelector(".crow");
     commitRow.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await settle();
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "show", sub: "a".repeat(40) });
+    expect(callRpc.mock.calls.find(([method]) => method === "git.show")[1].max_bytes).toBe(262144);
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) });
     expect(record.value.body).toBe("why it happened");
+    pane.dispose();
+  });
+
+  it("keeps a patch too big for a record in hand and off the disk", async () => {
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") return status();
+      if (method === "git.diff") return tree.diff(params);
+      if (method === "git.log") return log();
+      if (method === "git.show") return { ...show(), patch: "x".repeat(262145), truncated: true };
+      return {};
+    });
+    const { container, pane } = await mountPane(callRpc);
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(container.textContent).toContain("why it happened");
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) })).toBeUndefined();
     pane.dispose();
   });
 });

@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane } from "../src/core/gitPane.js";
+import { refetchEverything } from "../src/core/changeEvents.js";
 import { COLLAPSED_PREVIEW_ROWS } from "../src/core/fileEntries.js";
 import { unchangedStatus, worktreeOf } from "./gitWireFixture.js";
 
@@ -118,7 +119,8 @@ describe("the shape and its bodies", () => {
     const answers = { "git.status": (params) => (params.if_status_key === status_key ? (unchangedAsked++, unchangedStatus(held)) : held) };
     // the pane's own poll re-asks with the key it holds
     const { container: second, pane: secondPane, calls: secondCalls } = await mount({ tree, answers });
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(unchangedAsked).toBeGreaterThan(0);
     expect(second.textContent).toContain("new line");
@@ -137,7 +139,8 @@ describe("the shape and its bodies", () => {
     const held = fileOf(container, "src/b.js");
     calls.length = 0;
     tree.write("src/a.js", "the agent moved on");
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(pathsAsked(calls)).toEqual([["src/a.js"]]);
     expect(container.textContent).toContain("the agent moved on");
@@ -155,7 +158,8 @@ describe("the shape and its bodies", () => {
 
     calls.length = 0;
     tree.write("src/a.js", "the agent moved on");
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(pathsAsked(calls)).toEqual([]);
     expect(container.textContent).not.toContain("the agent moved on");
@@ -172,7 +176,8 @@ describe("the shape and its bodies", () => {
     const { container, pane, calls } = await mount({ tree, answers: refusingTheFirstBody(tree) });
     expect(container.textContent).toContain("loading…");
 
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(pathsAsked(calls)).toEqual([["src/a.js"], ["src/a.js"]]);
     expect(container.textContent).toContain("new line");
@@ -186,12 +191,14 @@ describe("the shape and its bodies", () => {
     const draft = container.querySelector(".csinput");
     draft.value = "a commit message being typed";
 
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.textContent).not.toContain("new line"); // the draft holds the repaint
 
     draft.value = "";
-    await vi.advanceTimersByTimeAsync(2000);
+    refetchEverything();
+    await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(container.textContent).toContain("new line");
     pane.dispose();

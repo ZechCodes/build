@@ -2,10 +2,11 @@
 // A surface refetching on a push, end to end: real surfaces mounted over a
 // scripted RPC channel, with the bridge's change events arriving on them.
 //
-// The point of the file is that nothing about the surfaces changed. An event
-// runs the poll callback the interval used to run, so what lands is the read
-// the poll made — at the moment the state actually moved rather than 1.6
-// seconds later.
+// The point of the file is that an event is the whole of it. A surface that
+// reads its own checkout — a project's own directory, which is no entity the
+// board names, or a workspace source, which the sync layer does not walk —
+// reads it when the bridge says it moved, and at no other time. There is no
+// clock left in any of them.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
@@ -32,13 +33,13 @@ const status = {
 
 const log = { branch: "build/login", commits: [], more: false };
 
-let mountGitPane, GIT_PANE_POLL_MS;
+let mountGitPane;
 let armChangeEvents, dispatchChangeEvent, refetchEverything, resetChangeEvents, SAFETY_POLL_MS;
 
 beforeEach(async () => {
   vi.resetModules();
   document.body.innerHTML = "";
-  ({ mountGitPane, GIT_PANE_POLL_MS } = await import("../src/core/gitPane.js"));
+  ({ mountGitPane } = await import("../src/core/gitPane.js"));
   ({
     armChangeEvents,
     dispatchChangeEvent,
@@ -115,17 +116,16 @@ describe("a surface against a bridge that pushes", () => {
     pane.dispose();
   });
 
-  it("stands its 1.6s poll down to the safety poll", async () => {
-    // Before the mount: the interval has to be the fake one from the start.
+  it("has no clock at all, not even the safety poll's", async () => {
+    // Before the mount: an interval, if there were one, would be the fake one
+    // from the start.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     armChangeEvents({ push_events: true }, "dev-a");
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS - 1000);
+    await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS * 4);
     expect(reads()).toBe(before);
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(reads()).toBe(before + 1);
     pane.dispose();
   });
 
@@ -155,15 +155,15 @@ describe("a surface against a bridge that pushes", () => {
 });
 
 describe("a surface against a bridge that does not", () => {
-  it("keeps its own poll", async () => {
+  // Nothing replaces the poll for a bridge with no pushes: the surface paints
+  // what it read on mount, and a reconnect is what reads again.
+  it("waits rather than polling", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { pane, reads } = await mountPane();
     const before = reads();
 
-    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS);
-    expect(reads()).toBe(before + 1);
-    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS);
-    expect(reads()).toBe(before + 2);
+    await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS * 4);
+    expect(reads()).toBe(before);
     pane.dispose();
   });
 

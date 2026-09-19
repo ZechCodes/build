@@ -199,12 +199,27 @@ describe("openPeerLink", () => {
   // where the failure is, so the error carries it rather than being guessed at
   // from a message: a reason the caller cannot read is a machine reported as
   // "it failed" when it never opened in time.
+  // On the test's own clock, because the deadline is the thing under test: on
+  // the real one the negotiation races a ten-millisecond timer, and a machine
+  // busy enough to lose that race fails this for a reason the peer link has
+  // nothing to do with — while never reaching the peer it is asked about.
   it("rejects when the channels never open, and blames the deadline", async () => {
-    const { link } = stand({ openTimeoutMs: 10 });
-    const refused = await link.catch((error) => error);
-    expect(refused.message).toMatch(/open/);
-    expect(refused.blockedReason).toBe("timeout");
-    expect(FakePeerConnection.instances.at(-1).closed).toBe(true);
+    vi.useFakeTimers();
+    try {
+      const { link } = stand({ openTimeoutMs: 10 });
+      // Far enough to have built the peer and be waiting on its channels, and
+      // not so far as to have reached the deadline.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(FakePeerConnection.instances.at(-1).closed).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(10);
+      const refused = await link.catch((error) => error);
+      expect(refused.message).toMatch(/open/);
+      expect(refused.blockedReason).toBe("timeout");
+      expect(FakePeerConnection.instances.at(-1).closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects when the connection fails before the channels open, and blames the connection", async () => {

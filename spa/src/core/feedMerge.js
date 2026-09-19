@@ -124,10 +124,16 @@ export function withoutProject(view, projectKey) {
   if (!view || !projectKey) return view;
   const pruned = { ...view };
   for (const field of FEED_COLLECTIONS) {
-    pruned[field] = (view[field] || []).filter((row) => row.projectKey !== projectKey);
+    pruned[field] = rowsWithoutProject(view[field], projectKey);
   }
   return pruned;
 }
+
+/** One collection with the project's rows taken out. The project and workspace
+ *  lists are also cached as bare lists of their own (core/cacheSync.js writes
+ *  them, core/taskFeed.js seeds the boot paint from them), so hiding prunes
+ *  those exactly as it prunes the same collection inside a snapshot. */
+export const rowsWithoutProject = (rows, projectKey) => (rows || []).filter((row) => row.projectKey !== projectKey);
 
 /** Every id a project's rows are cached under on their own device: the entity a
  *  row holds its conversation as, the workspaces checked out for it, and the

@@ -2,7 +2,8 @@
 //
 // A project on a machine that cannot answer is nothing but cache, so hiding it
 // IS dropping that cache — from the snapshot the feed is serving right now and
-// from the per-device record that seeds the next boot paint. Nothing is
+// from every per-device record that seeds the next boot paint: the feed, and
+// the project and workspace lists a board push writes on their own. Nothing is
 // remembered: there is deliberately no hidden list, because a list would keep
 // the project gone after its machine came back.
 
@@ -31,6 +32,10 @@ const view = () => ({
 });
 
 const FEED = { deviceId: "dev-1", entityId: "", kind: "feed" };
+// The two lists a board push writes on their own, and the ones the next boot
+// paint reads (core/taskFeed.js) — never out of the feed record.
+const PROJECTS = { deviceId: "dev-1", entityId: "", kind: "projects" };
+const WORKSPACES = { deviceId: "dev-1", entityId: "", kind: "workspaces" };
 
 let dropped;
 let live;
@@ -69,6 +74,36 @@ describe("hiding a project", () => {
     expect(value.items.map((row) => row.projectKey)).toEqual(["dev-1/proj-2"]);
     expect(value.projects.map((row) => row.id)).toEqual(["proj-2"]);
     expect(value.workspaces.map((row) => row.id)).toEqual(["ws-2"]);
+  });
+
+  // The boot paint takes the project and workspace lists from their own
+  // records, because a board push writes those two and never the feed. A hide
+  // that rewrote the feed alone would be undone by the next reload: the block
+  // would be back on the first frame, with no machine able to remove it.
+  it("takes the project out of the two list records the next boot paint reads", async () => {
+    await cache.writeCached(FEED, view());
+    await cache.writeCached(PROJECTS, view().projects);
+    await cache.writeCached(WORKSPACES, view().workspaces);
+
+    await hideProject({ deviceId: "dev-1", projectKey: "dev-1/proj-1" });
+
+    expect((await cache.readCached(PROJECTS)).value.map((row) => row.id)).toEqual(["proj-2"]);
+    expect((await cache.readCached(WORKSPACES)).value.map((row) => row.id)).toEqual(["ws-2"]);
+  });
+
+  // A workspace checked out since the last whole pass rode in on the board push
+  // that rewrote the workspace list, and is named there and nowhere else.
+  it("evicts what is cached under a workspace only the workspace record names", async () => {
+    await cache.writeCached(FEED, view());
+    await cache.writeCached(WORKSPACES, [
+      ...view().workspaces,
+      { id: "ws-3", project_id: "proj-1", projectKey: "dev-1/proj-1", workspaceKey: "dev-1/ws-3" },
+    ]);
+    await cache.writeCached({ deviceId: "dev-1", entityId: "ws-3", kind: "files" }, ["src/new.js"]);
+
+    await hideProject({ deviceId: "dev-1", projectKey: "dev-1/proj-1" });
+
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "ws-3", kind: "files" })).toBeUndefined();
   });
 
   // The cache is keyed by (device, entity), and a project is not an entity of
@@ -110,6 +145,8 @@ describe("hiding a project", () => {
   it("leaves a device with nothing cached alone rather than writing an empty record", async () => {
     await hideProject({ deviceId: "dev-1", projectKey: "dev-1/proj-1" });
     expect(await cache.readCached(FEED)).toBeUndefined();
+    expect(await cache.readCached(PROJECTS)).toBeUndefined();
+    expect(await cache.readCached(WORKSPACES)).toBeUndefined();
     expect(dropped).toEqual([["dev-1", "dev-1/proj-1"]]);
   });
 

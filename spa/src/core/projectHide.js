@@ -16,19 +16,40 @@
 // hole in this one.
 //
 // Two layers hold it, and both have to let go in the same breath: the snapshot
-// the feed is serving out of memory (core/taskFeed.js) and the per-device record
-// on disk that seeds the boot paint (core/localCache.js). Clearing only the disk
-// would repaint the block from memory on the next tick; clearing only memory
-// would bring it back on the next reload.
+// the feed is serving out of memory (core/taskFeed.js) and the per-device
+// records on disk that seed the boot paint (core/localCache.js). Clearing only
+// the disk would repaint the block from memory on the next tick; clearing only
+// memory would bring it back on the next reload.
 
-import { projectEntityIds, withoutProject } from "./feedMerge.js";
-import { evictEntity, readCached, writeCached } from "./localCache.js";
+import { projectEntityIds, rowsWithoutProject, withoutProject } from "./feedMerge.js";
+import { evictEntity, readCachedMany, writeCached } from "./localCache.js";
 import { dropFeedProject } from "./taskFeed.js";
 
-/** Where a device's whole feed snapshot is cached — the same address the sync
- *  layer writes each live answer to (core/cacheSync.js) and the feed seeds its
- *  boot paint from, so a hide rewrites the record they already share. */
-const feedAddress = (deviceId) => ({ deviceId, entityId: "", kind: "feed" });
+/** The three records a device's board is cached in — the same addresses the
+ *  sync layer writes each live answer to (core/cacheSync.js) and the feed
+ *  seeds its boot paint from, so a hide rewrites the records they already
+ *  share.
+ *
+ *  All three, because the boot paint reads the two lists from their own
+ *  records rather than out of the feed: a board push rewrites those two and
+ *  never the feed. A hide that rewrote the feed alone would be undone by the
+ *  next reload, and nothing would ever rewrite the lists — hide is only
+ *  offered for a machine that has gone, so no live pass is coming. */
+const RECORDS = Object.freeze(["feed", "projects", "workspaces"]);
+
+const recordAddress = (deviceId, kind) => ({ deviceId, entityId: "", kind });
+
+/** The record with the project taken out of it: the feed record holds a whole
+ *  snapshot and is pruned collection by collection, the other two hold one
+ *  collection each and are pruned as they stand. */
+const withoutProjectIn = (kind, value, projectKey) =>
+  kind === "feed" ? withoutProject(value, projectKey) : rowsWithoutProject(value, projectKey);
+
+/** The three records as views `projectEntityIds` can read: a bare list is the
+ *  collection it is named by, so a workspace that rode in on a board push —
+ *  and so is named in the workspace record and nowhere else — is evicted with
+ *  the rest. */
+const viewOf = (kind, value) => (kind === "feed" ? value : { [kind]: value });
 
 /** Every entity the project holds, across both layers: the snapshot may carry
  *  rows the last persisted record did not (and the other way round after a
@@ -50,10 +71,13 @@ const entitiesOf = (views, projectKey) =>
 export async function hideProject({ deviceId, projectKey }) {
   if (!deviceId || !projectKey) return;
   const live = dropFeedProject(deviceId, projectKey);
-  const address = feedAddress(deviceId);
-  const cached = (await readCached(address))?.value || null;
-  for (const entityId of entitiesOf([live, cached], projectKey)) {
+  const records = await readCachedMany(RECORDS.map((kind) => recordAddress(deviceId, kind)));
+  const views = [live, ...RECORDS.map((kind, index) => (records[index] ? viewOf(kind, records[index].value) : null))];
+  for (const entityId of entitiesOf(views, projectKey)) {
     await evictEntity(deviceId, entityId);
   }
-  if (cached) await writeCached(address, withoutProject(cached, projectKey));
+  for (const [index, kind] of RECORDS.entries()) {
+    const held = records[index];
+    if (held) await writeCached(recordAddress(deviceId, kind), withoutProjectIn(kind, held.value, projectKey));
+  }
 }

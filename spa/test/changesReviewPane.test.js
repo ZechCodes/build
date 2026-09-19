@@ -341,3 +341,63 @@ describe("workspace comments", () => {
     pane.dispose();
   });
 });
+
+// The plug over a workspace source reads the same uncovered checkout the pane
+// around it does: no sync pass writes that `diff` record, so the one held is
+// whatever this surface last read. It is painted at once — a tab switch back
+// is not a loading frame — and read through, because nothing else will.
+describe("the aggregate over a checkout nothing walks", () => {
+  const ENTITY = `workspace:${JSON.stringify(["w", "s"])}`;
+
+  async function mountWorkspaceReview({ held = null } = {}) {
+    if (held) await writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "diff" }, held);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const calls = [];
+    let answerUnpushed;
+    const unpushed = new Promise((resolve) => (answerUnpushed = resolve));
+    const callRpc = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "git.status") return tree.status();
+      if (method === "git.diff") return tree.diff(params);
+      if (method === "git.log") return { branch: "main", commits: [], more: false };
+      if (method === "git.unpushed") return unpushed;
+      return {};
+    };
+    const pane = mountGitPane(container, {
+      scope: { workspace_id: "w", source_id: "s" },
+      callRpc,
+      cacheScope: scopeFor("dev-1"),
+    });
+    await settle();
+    await click(container.querySelector('.rrow[data-sel="review"]'));
+    const answer = async () => {
+      answerUnpushed({ patch: PATCH.replace("+new", "+off the wire"), base: { kind: "empty" } });
+      await settle();
+    };
+    return { container, pane, calls, answer };
+  }
+
+  it("paints the record it holds, then reads the source anyway", async () => {
+    const { container, pane, calls, answer } = await mountWorkspaceReview({
+      held: { patch: PATCH.replace("+new", "+from the record"), commentable: true },
+    });
+    expect(container.textContent).toContain("from the record");
+    expect(calls.filter(({ method }) => method === "git.unpushed")).toHaveLength(1);
+    await answer();
+    expect(container.textContent).toContain("off the wire");
+    pane.dispose();
+  });
+
+  it("keeps what it read where the next mount of this source will find it", async () => {
+    const { pane, answer } = await mountWorkspaceReview();
+    await answer();
+    const record = await (await import("../src/core/localCache.js")).readCached({
+      deviceId: "dev-1",
+      entityId: ENTITY,
+      kind: "diff",
+    });
+    expect(record.value.patch).toContain("off the wire");
+    pane.dispose();
+  });
+});

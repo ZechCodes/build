@@ -23,7 +23,7 @@
 import { workspaceCommentMessages } from "./workspaceCommentMessages.js";
 import { reviewCommentContext } from "./reviewCommentContext.js";
 import { esc } from "./text.js";
-import { directoryCacheId } from "./directoryScope.js";
+import { directoryCacheId, syncWalksCheckout } from "./directoryScope.js";
 import { gitToolbarHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
 import {
   changesRailEntries,
@@ -74,18 +74,20 @@ import { loadDiffSort, saveDiffSort } from "./diffSort.js";
 /** Workspace directories review everything not represented by their push
  * destination. The plug is created here so every workspace Git pane gets the
  * aggregate without each hosting view having to remember special wiring. */
-export function createWorkspaceReview({ scope, callRpc, navigate = null, viewingContext = null, onBaseChange = () => {}, submit = null }) {
+export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navigate = null, viewingContext = null, onBaseChange = () => {}, submit = null }) {
   let base = { kind: "empty", label: null };
   const plug = createReviewPlug({
     navigate,
     viewingContext,
     submit,
+    cacheScope,
     entity: scope.workspace_id,
     // A workspace source is not an entity the sync layer walks — its records
     // are filed under the source, which only this side names — so this plug's
     // diff is the one it reads for itself, kept where the next mount of this
-    // source will find it.
+    // source will find it and never taken as the last word.
     cacheEntity: directoryCacheId(scope),
+    readsForItself: true,
     fetchDiff: async (ifDiffKey) => {
       const payload = await callRpc("git.unpushed", {
         ...scope,
@@ -498,7 +500,7 @@ export function mountGitPane(
     }
   };
   if (!review && scope?.workspace_id && scope?.source_id) {
-    review = createWorkspaceReview({ scope, callRpc, navigate, viewingContext, submit: submitComments, onBaseChange: () => render() });
+    review = createWorkspaceReview({ scope, callRpc, cacheScope, navigate, viewingContext, submit: submitComments, onBaseChange: () => render() });
   }
   const parsedDiffs = createParsedDiffCache();
   const viewport = createDiffViewport({ repaint: () => renderAndFetch() });
@@ -1788,15 +1790,6 @@ export function mountGitPane(
     return prefix ? subscribeCache(prefix, () => void rereadRecords()) : null;
   };
 
-  /** The first paint. A checkout the cache holds nothing for — a project's own
-   *  directory, which is no entity at all, or a workspace source, which the
-   *  sync layer does not walk — is read off the machine once and written down;
-   *  from then on this pane hears about it like every other. */
-  const standUp = async () => {
-    if (await takeUpRecords()) return;
-    if (!disposed) await forceRefresh();
-  };
-
   /**
    * Whether this pane is the only reader of its checkout.
    *
@@ -1809,7 +1802,18 @@ export function mountGitPane(
    * on mount and again when the bridge says the checkout moved. No timer
    * either way.
    */
-  const readsForItself = !cacheScope || Boolean(scope.workspace_id) || !(scope.run_id || scope.worktree_id);
+  const readsForItself = !cacheScope || !syncWalksCheckout(scope);
+
+  /** The first paint. Whatever the records say goes on screen at once, so the
+   *  reader gets the surface on the first frame. A checkout the cache holds
+   *  nothing for is then read off the machine and written down — and so is one
+   *  nothing walks, where the records are this pane's own last visit and a
+   *  remount painting them would show a checkout as it was left. */
+  const standUp = async () => {
+    const painted = await takeUpRecords();
+    if (disposed) return;
+    if (!painted || readsForItself) await forceRefresh();
+  };
 
   /**
    * What the bridge would name this checkout on an item.

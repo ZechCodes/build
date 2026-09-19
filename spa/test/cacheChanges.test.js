@@ -324,3 +324,44 @@ describe("uncommitted viewing context", () => {
     pane.dispose();
   });
 });
+
+// A workspace source is on no board row, so no sync pass writes its records:
+// the ones the cache holds are the last mount's own work. They are painted —
+// the reader gets a full surface on the first frame — and then read anyway,
+// because nothing else is going to.
+describe("a pane over a checkout nothing walks", () => {
+  const SOURCE = { workspace_id: "w-1", source_id: "s-1" };
+  const ENTITY = `workspace:${JSON.stringify(["w-1", "s-1"])}`;
+
+  const sourceRpc = () =>
+    vi.fn(async (method, params) => {
+      if (method === "git.status") return status({ head: "e".repeat(40) });
+      if (method === "git.diff") return tree.diff(params);
+      if (method === "git.log") return { ...log(), commits: [{ ...log().commits[0], subject: "landed since" }] };
+      if (method === "git.unpushed") return { patch: "", base: { kind: "empty" } };
+      return {};
+    });
+
+  const fill = async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "log" }, log());
+  };
+
+  it("paints what it holds and reads the checkout anyway", async () => {
+    await fill();
+    const callRpc = sourceRpc();
+    const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.status")).toHaveLength(1);
+    expect(container.textContent).toContain("landed since");
+    pane.dispose();
+  });
+
+  it("leaves a run's records alone — those are kept true for it", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    const callRpc = liveRpc();
+    const { pane } = await mountPane(callRpc);
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.status")).toHaveLength(0);
+    pane.dispose();
+  });
+});

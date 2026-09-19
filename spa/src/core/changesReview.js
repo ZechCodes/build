@@ -99,6 +99,12 @@ export function createReviewPlug({
   // diff off the wire once per mount.
   entity = null,
   cacheEntity = entity,
+  // Whether this plug is the only reader of its changeset. A run's and a
+  // worktree's `diff` record is written by the sync layer on every pass and
+  // moved by every `git` push, so the record IS the diff. A workspace source
+  // is on no board row and the bridge names no entity for it, so its record is
+  // this plug's own last read: painted at once, and read through anyway.
+  readsForItself = false,
   navigate = null,
   viewingContext = null,
 }) {
@@ -438,8 +444,9 @@ export function createReviewPlug({
   };
 
   /** What the plug draws on mount: the record, and one read of the wire only
-   *  where there is no record to draw — or where the push that wrote it said
-   *  it could not carry the body. */
+   *  where there is no record to draw, where the push that wrote it said it
+   *  could not carry the body, or where nothing but this plug reads the
+   *  checkout the record came off. */
   const standUp = async () => {
     const mounted = host;
     const record = await heldDiff();
@@ -448,7 +455,7 @@ export function createReviewPlug({
       applyCachedDiff(record);
       render();
     }
-    if (!record || record.stale) paint();
+    if (!record || record.stale || readsForItself) paint();
   };
 
   /** The record moved — a `git` push carried a new working tree, or another

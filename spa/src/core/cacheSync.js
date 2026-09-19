@@ -163,6 +163,7 @@ async function orderedSync(deviceId) {
   if (!view || !context.active()) return;
   const pass = await workspacesToRead(context, view);
   await readWorkspaces(context, pass);
+  await evictRowsThatAreOver(context, view);
   await dropWhatTheBoardStoppedNaming(context, view);
   if (context.active()) subscribeDevice(context, pass.routed);
 }
@@ -247,6 +248,18 @@ async function recentStillHoldingData(context, items, seen) {
     if (left.some((address) => isWorkspaceDataKind(address.kind))) kept.push(entityId);
   }
   return kept;
+}
+
+/** Step 4: a row the board still lists but whose work is over keeps nothing.
+ *  The push that said so evicts it as it lands — but a tab that was not open
+ *  to hear it boots to a board that already says the row is over, and the rule
+ *  has to hold there too. */
+async function evictRowsThatAreOver(context, view) {
+  for (const row of view.items || []) {
+    if (!context.active()) return;
+    const entityId = entityIdOf(row);
+    if (entityId && isFinishedState(row.state)) await evictWorkspaceData(context.deviceId, entityId);
+  }
 }
 
 /** Step 4, the other half: an entity the board has stopped naming altogether

@@ -358,6 +358,22 @@ describe("the lifetime rules a pass applies", () => {
     expect(paramsOf("git.status").map((params) => params.run_id)).toEqual(["run-1", "run-3"]);
   });
 
+  // A push says a row finished, and the workspace's data goes with it. A tab
+  // that was not open to hear that push boots to a board that already says so,
+  // and the rule has to hold there too.
+  it("lets go of the data of a row the board lists as over", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" }, { head: "old" });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-2", kind: "thread", sub: "ag-1" }, { items: [] });
+    await boot([
+      branchItem(),
+      branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2", state: "merged" }),
+    ]);
+    expect(await read("run-2", "status")).toBeUndefined();
+    expect(await read("run-2", "thread", "ag-1")).toBeUndefined();
+    // The row stays: the board is what lists it, and it still does.
+    expect(await read("run-2", "row")).toBeTruthy();
+  });
+
   it("takes everything from an entity the board has stopped naming", async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-9", kind: "status" }, {});
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-9", kind: "row" }, {});

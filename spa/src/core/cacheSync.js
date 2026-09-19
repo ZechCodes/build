@@ -45,6 +45,7 @@ import {
   writeCached,
 } from "./localCache.js";
 import { ISSUE_RECORD_KIND } from "./issueCache.js";
+import { issuesRecord, readIssuesRecord, writeIssuesRecord } from "./trackerCache.js";
 import {
   FILE_RECORD_KIND,
   cacheFileBody,
@@ -239,6 +240,7 @@ async function orderedSync(deviceId, turn) {
   if (!view || !context.active()) return false;
   const pass = await workspacesToRead(context, view);
   await readWorkspaces(context, pass);
+  await readProjectIssues(context, view);
   await evictRowsThatAreOver(context, view);
   await dropWhatTheBoardStoppedNaming(context, view);
   if (!context.active()) return false;
@@ -365,6 +367,52 @@ async function writeAgentSurfaces(context, entityId, agent) {
 const projectConversationIds = (view) =>
   (view.projects || []).map((project) => project.entity_id || project.run_id).filter(Boolean);
 
+/** Every project this device lists, by the id the wire carries. What the
+ *  tracker's records are addressed by: an issue belongs to a project and never
+ *  moves between projects, and a project is named by the machine it is on. */
+const projectIds = (view) => (view.projects || []).map((project) => project.project_id || project.id).filter(Boolean);
+
+/**
+ * Step 2b: every project's issue list.
+ *
+ * Read on every pass for the same reason a project's conversation is
+ * (`projectConversationIds` above): the Issues tab offers itself the moment the
+ * reader opens a project, and a project is not a board row that ages into
+ * Recent — it holds no work that finishes. Reading it only when routed there
+ * would leave the tab blank on the first pass of a new session, and blank until
+ * somebody filed something.
+ *
+ * The whole list, narrowed by nothing: the tab's filters are `issues.list`
+ * params of their own (core/trackerFilters.js), and a record already narrowed
+ * would be missing whatever the next filter is about to ask for.
+ *
+ * Behind the workspaces, never in front of them. An issue list is a project
+ * surface and the inbox is the landing one, so nothing on screen waits on this.
+ */
+async function readProjectIssues(context, view) {
+  for (const projectId of projectIds(view)) {
+    if (!context.active()) return;
+    await readIssues(context, projectId);
+  }
+}
+
+/** One project's issues, and its columns the first time. The columns change
+ *  with the project rather than with an issue, so they are asked for once and
+ *  held; a bridge that refuses the verb leaves them empty and every board falls
+ *  back to phase 1's five (core/trackerModel.js). A bridge that serves no
+ *  tracker at all refuses both and writes nothing, which is a cold Issues tab
+ *  and never an error the reader sees. */
+async function readIssues(context, projectId) {
+  const answer = await ask(context, "issues.list", { project_id: projectId }, "background");
+  if (!answer || !context.active()) return;
+  const held = await readIssuesRecord(context.deviceId, projectId);
+  const columns = held?.columns?.length
+    ? held.columns
+    : (await ask(context, "issues.columns", { project_id: projectId }, "background"))?.columns || [];
+  if (!context.active()) return;
+  await writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns));
+}
+
 /**
  * Step 2: which workspaces this pass reads, and in what order.
  *
@@ -434,6 +482,10 @@ const entitiesTheBoardNames = (view) => {
     const entityId = entityIdOf(row);
     if (entityId) named.add(entityId);
   }
+  // A project is not a work row, but its issues are cached under its id
+  // (core/trackerCache.js) — so a project the lists still name is still named
+  // here, and one that has gone takes its issues with it.
+  for (const projectId of projectIds(view)) named.add(projectId);
   return named;
 };
 
@@ -826,7 +878,10 @@ async function subscribeDevice(context) {
         ...shape,
         id: "s-inbox",
         scope: "all",
-        kinds: ["state", "thread"],
+        // `issues` rides here rather than on a subscription of its own: it is
+        // not a worktree kind, so it is paced by nothing and costs this flush
+        // nothing, and an issue moving is news the reader is looking at.
+        kinds: ["state", "thread", "issues"],
         mode: "realtime",
         priority: "foreground",
       }),
@@ -1134,11 +1189,19 @@ async function rereadFile(context, entityId, scope, path) {
 const applyTerminals = (context, entityId, terminals) =>
   writeCached(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });
 
+/** `issues`: which issues of this project moved. Content-free beyond the ids —
+ *  and dropped altogether past 200 of them — so there is one answer either
+ *  way, which is to read the project's list again. The entity here is a
+ *  PROJECT, not a workspace: every other applier below is handed a board row's
+ *  entity, and this one is handed the project the issues belong to. */
+const applyIssues = (context, projectId) => readIssues(context, projectId);
+
 /** One writer per kind, in the order a reader would want them applied: what
  *  the row says, what was said in it, then the surfaces under it. */
 const APPLIERS = [
   ["state", applyState],
   ["thread", applyThreadItem],
+  ["issues", applyIssues],
   ["git", applyGit],
   ["files", applyFiles],
   ["terminals", applyTerminals],

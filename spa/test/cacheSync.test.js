@@ -110,6 +110,8 @@ const ANSWERS = {
   "term.list": () => ({ terminals: [] }),
   "fs.tree": (params) => ({ path: params.path, entries: [] }),
   "thread.page": () => ({ items: [], has_more: false }),
+  "issues.list": () => ({ issues: [] }),
+  "issues.columns": () => ({ project_id: "p1", columns: [{ id: "backlog", name: "Backlog" }] }),
   "run.diff": () => ({ patch: "the whole diff", diff_key: "d1" }),
   "worktree.diff": () => ({ patch: "the whole diff", diff_key: "d1" }),
 };
@@ -187,7 +189,9 @@ describe("the order a pass reads in", () => {
   it("reads one workspace's shapes in the order a reader opening it wants them", async () => {
     // What is on screen first is read first. The conversation comes before the
     // patches behind the unpushed commits, which are twenty reads of a quarter
-    // of a megabyte and nothing anybody is looking at yet.
+    // of a megabyte and nothing anybody is looking at yet — and the projects'
+    // issue lists come after every workspace, because an issue list is a
+    // project surface and the inbox is the landing one.
     script["git.log"] = () => ({ commits: [{ hash: "h1", ahead_of_base: true }], newest: "h1", reset: false });
     await boot([branchItem({ agents: [{ id: "ag-1" }] })], routeTo("build/login"));
     expect(bridge.call.mock.calls.map(([method]) => method).slice(3)).toEqual([
@@ -199,6 +203,8 @@ describe("the order a pass reads in", () => {
       "thread.page",
       "git.show",
       "run.diff",
+      "issues.list",
+      "issues.columns",
     ]);
   });
 
@@ -800,5 +806,84 @@ describe("every device answers for itself", () => {
     await settle();
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-9", kind: "status" })).toBeUndefined();
     expect(await cache.readCached({ deviceId: "dev-2", entityId: "run-9", kind: "status" })).toBeTruthy();
+  });
+});
+
+// Every project's issue list, read on every pass for the same reason its own
+// conversation is: the Issues tab offers itself the moment the reader opens a
+// project, and a project holds no work that finishes, so it never ages into
+// Recent to be rescued by being routed to.
+describe("every project's issues", () => {
+  const issuesOf = (projectId) => read(projectId, "tracker-issues");
+
+  it("reads the list of every project the device lists", async () => {
+    script["project.list"] = () => ({ projects: [{ project_id: "p1" }, { project_id: "p2" }] });
+    await boot([]);
+    expect(paramsOf("issues.list")).toEqual([{ project_id: "p1" }, { project_id: "p2" }]);
+  });
+
+  // Not only when routed, and with no work item in the project at all.
+  it("reads a project nobody has cut a workspace in", async () => {
+    script["issues.list"] = () => ({ issues: [{ id: "issue-1", number: 12, status: "backlog" }] });
+    await boot([]);
+    expect((await issuesOf("p1")).value.issues.map((one) => one.number)).toEqual([12]);
+  });
+
+  // The tab's filters are `issues.list` params of their own; a record already
+  // narrowed would be missing whatever the next filter is about to ask for.
+  it("asks for the whole list, narrowed by nothing", async () => {
+    await boot([]);
+    expect(paramsOf("issues.list")).toEqual([{ project_id: "p1" }]);
+  });
+
+  it("holds the project's columns beside its issues", async () => {
+    await boot([]);
+    expect((await issuesOf("p1")).value.columns).toEqual([{ id: "backlog", name: "Backlog" }]);
+  });
+
+  // The columns change with the project, not with an issue.
+  it("asks for the columns once and not again on the next pass", async () => {
+    await boot([]);
+    await sync.syncDevice("dev-1");
+    await settle();
+    expect(calls("issues.columns")).toHaveLength(1);
+    expect(calls("issues.list")).toHaveLength(2);
+  });
+
+  // An issue list is a project surface; the inbox is the landing one.
+  it("reads them behind the workspaces, never in front", async () => {
+    await boot([branchItem()]);
+    const order = bridge.call.mock.calls.map(([method]) => method);
+    expect(order.indexOf("issues.list")).toBeGreaterThan(order.indexOf("git.status"));
+  });
+
+  // A project holds records but is not a board row: the pass that drops what
+  // the board stopped naming must not take them.
+  it("keeps a listed project's issues through the drop pass", async () => {
+    await boot([branchItem()]);
+    expect(await issuesOf("p1")).toBeTruthy();
+    board = [];
+    await sync.syncDevice("dev-1");
+    await settle();
+    expect(await issuesOf("p1")).toBeTruthy();
+  });
+
+  it("drops the issues of a project the device has stopped listing", async () => {
+    await boot([]);
+    expect(await issuesOf("p1")).toBeTruthy();
+    script["project.list"] = () => ({ projects: [{ project_id: "p2" }] });
+    await sync.syncDevice("dev-1");
+    await settle();
+    expect(await issuesOf("p1")).toBeUndefined();
+  });
+
+  // A bridge that predates the tracker refuses both verbs; the tab falls back
+  // to phase 1's five columns and nothing reaches the reader.
+  it("writes nothing when the bridge does not serve the tracker", async () => {
+    script["issues.list"] = () => {
+      throw new Error("unknown method");
+    };
+    await boot([]);
+    expect(await issuesOf("p1")).toBeUndefined();
   });
 });

@@ -83,6 +83,8 @@ const ANSWERS = {
   "term.list": () => ({ terminals: [] }),
   "fs.tree": (params) => ({ path: params.path, entries: [] }),
   "thread.page": () => ({ items: [], has_more: false }),
+  "issues.list": () => ({ issues: [] }),
+  "issues.columns": () => ({ project_id: "p1", columns: [{ id: "backlog", name: "Backlog" }] }),
   "run.diff": () => ({ patch: "pulled", diff_key: "d2" }),
   "worktree.diff": () => ({ patch: "pulled", diff_key: "d2" }),
 };
@@ -147,7 +149,10 @@ describe("the three subscriptions", () => {
   it("takes out exactly three per device, and no more on a second pass", async () => {
     await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
     expect(live().map(shapeOf)).toEqual([
-      ["s-inbox", "all", ["state", "thread"], "realtime", "foreground"],
+      // `issues` rides the inbox subscription rather than one of its own: it
+      // is not a worktree kind, so nothing paces it and it costs this flush
+      // nothing, and an issue moving is news the reader is looking at.
+      ["s-inbox", "all", ["state", "thread", "issues"], "realtime", "foreground"],
       ["s-background", "all", ["git", "files", "terminals"], { batch_ms: sync.BACKGROUND_COOLDOWN_MS }, "background"],
       ["s-active", "run-1", ["git", "files", "terminals"], "realtime", "foreground"],
     ]);
@@ -854,5 +859,49 @@ describe("an item for somewhere else", () => {
     bridge.call.mockClear();
     await deliver([{ entity_id: "run-404", git: { log: { commits: [{ hash: "h1", ahead_of_base: true }], newest: "h1" } } }]);
     expect(calls("git.show")).toEqual([]);
+  });
+});
+
+// An `issues` item names a PROJECT, not a workspace — the one kind on these
+// subscriptions whose entity is not a board row.
+describe("an issues item", () => {
+  const issuesOf = (projectId) => read(projectId, "tracker-issues");
+  const moved = (projectId, over = {}) => [
+    { entity_id: projectId, issues: { issue_ids: ["issue-1"], truncated: false, ...over } },
+  ];
+
+  it("re-reads the list of the project it names", async () => {
+    await boot();
+    bridge.call.mockClear();
+    script["issues.list"] = () => ({ issues: [{ id: "issue-1", number: 12, status: "ready" }] });
+    await deliver(moved("p1"), ["issues"]);
+    expect((await issuesOf("p1")).value.issues.map((one) => one.number)).toEqual([12]);
+  });
+
+  // Content-free beyond the ids, and dropped altogether past 200 of them: a
+  // truncated item means "refetch", which is the same answer.
+  it("re-reads the list the same way when the ids were dropped", async () => {
+    await boot();
+    bridge.call.mockClear();
+    await deliver(moved("p1", { issue_ids: [], truncated: true }), ["issues"]);
+    expect(calls("issues.list")).toHaveLength(1);
+  });
+
+  // The columns are the project's, not any one flush's.
+  it("does not ask for the columns again", async () => {
+    await boot();
+    bridge.call.mockClear();
+    await deliver(moved("p1"), ["issues"]);
+    expect(calls("issues.columns")).toEqual([]);
+  });
+
+  // Every other applier is handed a board row's entity; this one is handed a
+  // project, and must not be looked for among the rows.
+  it("reads no workspace shape for the project it names", async () => {
+    await boot([branchItem()]);
+    bridge.call.mockClear();
+    await deliver(moved("p1"), ["issues"]);
+    expect(calls("git.status")).toEqual([]);
+    expect(calls("thread.page")).toEqual([]);
   });
 });

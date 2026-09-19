@@ -549,7 +549,7 @@ export function mountGitPane(
   const openFile = (navigate && navigate.openFile) || null;
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
-  let bodiesUnpainted = false; // a file body landed while a repaint was held
+  let bodiesUnpainted = false; // a body the pane draws landed unpainted: a file's, or a commit's patch
   let lastStatus = null;
   let lastLog = null; // the poll's first page (limit default)
   let lastHighlightKey = null; // the remote-publication boundary used to highlight commits
@@ -1763,15 +1763,25 @@ export function mountGitPane(
   /** Take up the records that are not the two the pane cannot draw without:
    *  the patches anybody has read here, and what the review is measured
    *  against. */
+  /** One commit's patch record, taken up. A record cut to the headers never
+   *  displaces a patch this mount read: one is the commit, the other is its
+   *  table of contents.
+   *
+   *  A commit is immutable, so a record for one already held as completely
+   *  says nothing new. One that IS news has to say so here: the freeze key is
+   *  over the status and the commit list, and a patch landing moves neither —
+   *  the pane would else hold the frame it has, which for the commit the
+   *  reader just opened is the loading one. */
+  const takeUpPatch = (hash, value) => {
+    if (value.truncated && patchHeld(hash)) return;
+    if (!patches.has(hash) || (headersOnly.has(hash) && !value.truncated)) bodiesUnpainted = true;
+    patches.set(hash, value);
+    if (value.truncated) headersOnly.add(hash);
+    else headersOnly.delete(hash);
+  };
+
   const takeUpBesides = (held) => {
-    for (const [hash, value] of held.patches) {
-      // A record cut to the headers never displaces a patch this mount read:
-      // one is the commit, the other is its table of contents.
-      if (value.truncated && patchHeld(hash)) continue;
-      patches.set(hash, value);
-      if (value.truncated) headersOnly.add(hash);
-      else headersOnly.delete(hash);
-    }
+    for (const [hash, value] of held.patches) takeUpPatch(hash, value);
     lastUnpushed = held.unpushed || lastUnpushed;
     if (lastUnpushed?.base) review?.seedBase?.(lastUnpushed.base);
   };

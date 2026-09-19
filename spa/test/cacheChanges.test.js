@@ -267,6 +267,28 @@ describe("a commit's detail", () => {
     pane.dispose();
   });
 
+  // The freeze key is over the status and the commit list, which a patch
+  // landing does not move. The pane draws the patch all the same, so nothing
+  // in that key may be read as saying the frame on screen is still right.
+  it("draws a patch the sync layer writes under the commit the reader has open", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.diff") return tree.diff(params);
+      return new Promise(() => {}); // the pane's own git.show never answers
+    });
+    const { container, pane } = await mountPane(callRpc);
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(container.textContent).not.toContain("why it happened");
+
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }, show());
+    await settle();
+
+    expect(container.textContent).toContain("why it happened");
+    pane.dispose();
+  });
+
   it("asks once for a patch no record can take, however often the records move", async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());

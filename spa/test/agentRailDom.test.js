@@ -1365,6 +1365,20 @@ describe("the conversation panel", () => {
     expect(tuiToggle().classList.contains("on")).toBe(false);
   });
 
+  it("keeps the terminal mounted when returning to the browser tab", async () => {
+    await mount();
+    tuiToggle().click();
+    await flush();
+    const body = railHost().querySelector("#rail-body");
+    const terminal = document.createElement("div");
+    terminal.textContent = "live terminal";
+    body.append(terminal);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(body.contains(terminal)).toBe(true);
+    expect(body.querySelector(".thread-items")).toBeNull();
+    expect(tuiToggle().getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("remembers the face per work item, reopening on the screen the reader left the branch on", async () => {
     await mount();
     tuiToggle().click();
@@ -1729,6 +1743,36 @@ describe("the conversation panel", () => {
     const line = railHost().querySelector(".thread-unread-line");
     expect(line).toBeTruthy();
     expect(line.nextElementSibling.textContent).toContain("the one you did not");
+  });
+
+  it("keeps New for 60 seconds after reading the latest agent reply", async () => {
+    conversationReadThrough(11, 1);
+    const geometry = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+      return { top: 0, bottom: this.getAttribute("data-key") === "12" ? 100 : 0, height: 0, width: 0 };
+    });
+    try {
+      await mount();
+    } finally {
+      geometry.mockRestore();
+    }
+    vi.useFakeTimers();
+    const body = railHost().querySelector("#rail-body");
+    body.onscroll();
+    vi.advanceTimersByTime(59_999);
+    expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
+    vi.advanceTimersByTime(1);
+    expect(railHost().querySelector(".thread-unread-line")).toBeNull();
+  });
+
+  it("clears New when leaving mid-grace, including with a stale digest on reopening", async () => {
+    conversationReadThrough(11, 1);
+    await mount();
+    expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
+    bubbles()[0].click();
+    await flush();
+    bubbles()[0].click();
+    await flush();
+    expect(railHost().querySelector(".thread-unread-line")).toBeNull();
   });
 
   it("rules no line over a conversation with nothing waiting in it", async () => {

@@ -1,3 +1,4 @@
+import { isAgentMessage } from "./unreadAnchor.js";
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
 import { conversationRoute, hashFromRoute } from "./router.js";
@@ -1464,7 +1465,7 @@ export function timelineEntries(
   };
   const rows = timelineRowsOf(sourceItems, agentLabel, threadId, view);
   const entries = foldActivityRuns(rows, digests, view);
-  return { entries: withUnreadLine(entries, unreadFrom), itemCount: rows.length };
+  return { entries: withUnreadLine(entries, unreadFrom, sourceItems), itemCount: rows.length };
 }
 
 /** The class the unread line is drawn with, and how the scroll finds it. */
@@ -1483,15 +1484,12 @@ const UNREAD_LINE_ENTRY = {
 
 /// The entries with the unread line ruled into them.
 ///
-/// It goes above the first entry that reaches `unreadFrom`, which for a run of
-/// activity is the run it is folded into: the line marks where reading resumes,
-/// and a line ruled INSIDE a shut box would mark nothing at all.
-///
-/// A `unreadFrom` past everything in hand rules no line: the window does not
-/// hold the message it stands for, so there is nowhere honest to put it.
-function withUnreadLine(entries, unreadFrom) {
+/// Only agent message rows can carry the divider. If its original message
+/// is outside the window, the first agent reply after it is the visible anchor.
+function withUnreadLine(entries, unreadFrom, items) {
   if (!Number.isFinite(unreadFrom)) return entries;
-  const at = entries.findIndex((entry) => Number(entry.key) >= unreadFrom);
+  const agentSequences = new Set(items.filter(isAgentMessage).map((item) => Number(item.data.sequence)));
+  const at = entries.findIndex((entry) => Number(entry.key) >= unreadFrom && agentSequences.has(Number(entry.key)));
   if (at < 0) return entries;
   return [...entries.slice(0, at), UNREAD_LINE_ENTRY, ...entries.slice(at)];
 }

@@ -1,59 +1,70 @@
-// Where the reader's unread begins.
-//
-// The daemon holds a read cursor per conversation and says how much is waiting
-// past it. This is the one place those two facts become a PLACE in the
-// timeline: the sequence the divider is ruled above, and the message a repaint
-// opens the conversation on.
-//
-// Both readings come from here so they can never disagree — a line ruled in one
-// place while the scroll lands in another is worse than neither.
+// The divider belongs to the oldest unread agent message, never to a user
+// message or an activity event that happens to follow the read cursor.
+const sequenceOf = (item) => Number(item?.data?.sequence ?? NaN);
+export const isAgentMessage = (item) => item?.type === "message" && item.data?.role === "agent";
+const agentMessages = (items = []) => items.filter(isAgentMessage);
 
-const sequenceOf = (item) => Number((item && item.data && item.data.sequence) ?? NaN);
-
-/// The oldest sequence the window holds past `cursor`, or null when everything
-/// in it has been read.
-const firstSequenceAfter = (items, cursor) =>
-  items.reduce((oldest, item) => {
+export function unreadAnchorSequence({ cursor, held, items = [], unreadCount } = {}) {
+  if (!Number.isFinite(cursor)) return null;
+  const messages = agentMessages(items);
+  if (held != null && (!items.length || messages.some((item) => sequenceOf(item) === held))) return held;
+  if (!unreadCount) return null;
+  return messages.reduce((oldest, item) => {
     const sequence = sequenceOf(item);
     if (!Number.isFinite(sequence) || sequence <= cursor) return oldest;
     return oldest === null ? sequence : Math.min(oldest, sequence);
   }, null);
+}
 
-const windowHolds = (items, sequence) => items.some((item) => sequenceOf(item) === sequence);
+export const UNREAD_LINE_GRACE_MS = 60_000;
 
-/// Whether the line has done its job: the reader is at the end of what the
-/// panel holds and nothing is waiting past the cursor.
-///
-/// Both halves are needed, because the bottom of a WINDOW is not the end of the
-/// conversation: a message waiting under the tail is still waiting.
-const nothingLeftToMark = ({ caughtUp, unreadCount }) => !!caughtUp && !unreadCount;
-
-/// The line this conversation already has, for as long as the window it stands
-/// in still holds the message it was ruled above.
-///
-/// This is what keeps the line still. A message is read the moment its bottom
-/// edge comes into view, so a line computed from the live cursor alone would
-/// rule itself above what just arrived, watch the cursor pass it, and vanish
-/// inside a second. A paint with nothing loaded is not evidence of anything, so
-/// it keeps the line too.
-const lineStillStanding = ({ held, items }) => {
-  if (held === null || held === undefined) return null;
-  if (!items || !items.length) return held;
-  return windowHolds(items, held) ? held : null;
+const readObservation = (reading, previousRead) => {
+  const messages = agentMessages(reading.items);
+  const cursor = reading.cursor;
+  const pending = messages.filter((item) => sequenceOf(item) > cursor);
+  // A read tail is not enough when older unread messages are outside the page.
+  const windowCoversUnread = pending.length >= (reading.unreadCount || 0);
+  return {
+    newest: Math.max(0, ...messages.map(sequenceOf)),
+    windowCoversUnread,
+    readThrough: Math.max(previousRead, Number.isFinite(cursor) ? cursor : 0,
+      windowCoversUnread ? reading.readThrough || 0 : 0),
+  };
 };
 
-/// Where the unread line stands: the sequence it is ruled above, or null over a
-/// conversation the reader has nothing left to mark in.
-///
-/// A daemon that says nothing about the cursor rules no line at all. Reading
-/// that silence as "read nothing" would rule one above the whole window on
-/// every conversation with a badge; no line is the honest answer, and the
-/// conversation falls back to landing on its newest message.
-export function unreadAnchorSequence(reading = {}) {
-  if (typeof reading.cursor !== "number") return null;
-  if (nothingLeftToMark(reading)) return null;
-  const standing = lineStillStanding(reading);
-  if (standing !== null) return standing;
-  if (!reading.unreadCount) return null;
-  return firstSequenceAfter(reading.items || [], reading.cursor || 0);
+// One visit's marker. Read observations are retained across paints so a stale
+// digest cannot restore a line whose grace period has already ended.
+export function createUnreadMarker(onExpire) {
+  let held = null;
+  let timer = null;
+  let readThrough = 0;
+  let latestRead = 0;
+  const cancel = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+  return {
+    update(reading) {
+      const observation = readObservation(reading, readThrough);
+      const { newest, windowCoversUnread } = observation;
+      readThrough = observation.readThrough;
+      held = unreadAnchorSequence({ ...reading, cursor: Math.max(reading.cursor, latestRead), held });
+      const allRead = windowCoversUnread && newest > 0 && readThrough >= newest;
+      if (!allRead) cancel();
+      if (held !== null && allRead && (timer === null || newest > latestRead)) {
+        cancel();
+        latestRead = Math.max(latestRead, newest);
+        timer = setTimeout(() => {
+          timer = null;
+          held = null;
+          onExpire();
+        }, UNREAD_LINE_GRACE_MS);
+      }
+      return held;
+    },
+    leave() {
+      cancel();
+      held = null;
+    },
+  };
 }

@@ -7,12 +7,12 @@
 // The line has to hold still. A message is marked read the moment its bottom
 // edge comes into view, so a line recomputed from the live cursor on every tick
 // would rule itself, clear itself and vanish inside a second. It stays where it
-// was put until the reader reaches the end with nothing waiting.
+// was put until the grace period after reading the latest agent reply ends.
 
-import { describe, expect, it } from "vitest";
-import { unreadAnchorSequence } from "../src/core/unreadAnchor.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createUnreadMarker, unreadAnchorSequence } from "../src/core/unreadAnchor.js";
 
-const items = (...sequences) => sequences.map((sequence) => ({ type: "message", data: { sequence } }));
+const items = (...sequences) => sequences.map((sequence) => ({ type: "message", data: { sequence, role: "agent" } }));
 
 describe("unreadAnchorSequence", () => {
   it("rules the line above the first item past the cursor", () => {
@@ -42,7 +42,7 @@ describe("unreadAnchorSequence", () => {
     expect(anchor).toBe(7);
   });
 
-  it("takes the line away once the reader reaches the end with nothing waiting", () => {
+  it("keeps the line after the reader reaches the end for the visit timer", () => {
     const anchor = unreadAnchorSequence({
       held: 7,
       cursor: 9,
@@ -50,7 +50,7 @@ describe("unreadAnchorSequence", () => {
       items: items(2, 4, 7, 9),
       caughtUp: true,
     });
-    expect(anchor).toBeNull();
+    expect(anchor).toBe(7);
   });
 
   it("keeps asking while the reader is at the end and something is still waiting", () => {
@@ -97,5 +97,73 @@ describe("unreadAnchorSequence", () => {
   it("rules nothing when everything the window holds is behind the cursor", () => {
     // The count is honest about history under the tail the window never got.
     expect(unreadAnchorSequence({ cursor: 9, unreadCount: 1, items: items(2, 4, 7, 9) })).toBeNull();
+  });
+});
+
+
+describe("unread marker grace period", () => {
+  afterEach(() => vi.useRealTimers());
+  const reading = (overrides = {}) => ({ cursor: 4, unreadCount: 2, items: items(4, 7, 9), ...overrides });
+  const marker = () => {
+    vi.useFakeTimers();
+    const expired = vi.fn();
+    return { visit: createUnreadMarker(expired), expired };
+  };
+
+  it("ignores user messages and events before the oldest unread agent reply", () => {
+    const mixed = [{ type: "message", data: { sequence: 5, role: "user" } },
+      { type: "event", data: { sequence: 6 } }, ...items(7, 9)];
+    expect(unreadAnchorSequence(reading({ items: mixed }))).toBe(7);
+  });
+
+  it("waits until the latest agent reply is read then keeps the line for exactly 60 seconds", () => {
+    const { visit, expired } = marker();
+    expect(visit.update(reading({ readThrough: 7 }))).toBe(7);
+    vi.advanceTimersByTime(60_000);
+    expect(expired).not.toHaveBeenCalled();
+    expect(visit.update(reading({ readThrough: 9 }))).toBe(7);
+    vi.advanceTimersByTime(59_999);
+    expect(visit.update(reading({ cursor: 9, unreadCount: 0, readThrough: 0 }))).toBe(7);
+    expect(expired).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(expired).toHaveBeenCalledOnce();
+    expect(visit.update(reading())).toBeNull();
+  });
+
+  it("clears immediately on leaving and cannot revive from a stale read cursor", () => {
+    const { visit, expired } = marker();
+    visit.update(reading({ readThrough: 9 }));
+    vi.advanceTimersByTime(20_000);
+    visit.leave();
+    expect(visit.update(reading())).toBeNull();
+    vi.advanceTimersByTime(60_000);
+    expect(expired).not.toHaveBeenCalled();
+    expect(visit.update(reading({ unreadCount: 3, items: items(4, 7, 9, 12) }))).toBe(12);
+    visit.leave();
+  });
+
+  it("restarts the grace period when a new reply is read", () => {
+    const { visit, expired } = marker();
+    visit.update(reading({ readThrough: 9 }));
+    vi.advanceTimersByTime(40_000);
+    const newer = reading({ unreadCount: 3, items: items(4, 7, 9, 12) });
+    expect(visit.update(newer)).toBe(7);
+    vi.advanceTimersByTime(60_000);
+    expect(expired).not.toHaveBeenCalled();
+    expect(visit.update({ ...newer, readThrough: 12 })).toBe(7);
+    vi.advanceTimersByTime(59_999);
+    expect(expired).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(expired).toHaveBeenCalledOnce();
+  });
+
+  it("does not mistake a read tail window for all unread messages being read", () => {
+    const { visit, expired } = marker();
+    visit.update(reading({ items: items(9), readThrough: 9 }));
+    vi.advanceTimersByTime(60_000);
+    expect(expired).not.toHaveBeenCalled();
+    expect(visit.update(reading({ readThrough: 9 }))).toBe(9);
+    vi.advanceTimersByTime(60_000);
+    expect(expired).toHaveBeenCalledOnce();
   });
 });

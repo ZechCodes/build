@@ -3,14 +3,13 @@ use crate::app::{AppState, DeferredRead, DeferredWork, ProjectListRow, ReadSubje
 use serde_json::{json, Value};
 
 impl AppState {
-    /// All registered projects, for the New-task picker and Settings —
-    /// rendered here rather than deferred.
+    /// All registered projects, rendered here rather than deferred.
     ///
-    /// `project.list` itself defers: the render reads each repository and its
-    /// volume, and a client's own read must not hold the mutex for that. The
-    /// two callers here are the synchronous tests and the board item that
-    /// carries the whole list when a project was added or deleted — rare,
-    /// human-paced, and already holding the lock.
+    /// `project.list` itself defers, and the board item that carries the
+    /// whole list renders off the lock too ([`crate::app::BoardListFacts`]):
+    /// the render reads each repository and its volume, and nothing may hold
+    /// the mutex for that. The remaining callers are the synchronous tests.
+    #[cfg(test)]
     pub(in crate::app) fn project_list(&self) -> Value {
         let projects: Vec<Value> = self
             .project_list_rows()
@@ -24,7 +23,7 @@ impl AppState {
     /// and settings read under the app mutex, and the conversation owner it has
     /// right now — `None` for a project nobody has talked to yet, because a
     /// read may never mint one.
-    fn project_list_rows(&self) -> Vec<ProjectListRow> {
+    pub(in crate::app) fn project_list_rows(&self) -> Vec<ProjectListRow> {
         self.projects
             .iter()
             .map(|project| ProjectListRow {

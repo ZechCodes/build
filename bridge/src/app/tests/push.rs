@@ -669,6 +669,33 @@ async fn a_board_item_carries_the_project_list_when_a_project_arrives() {
     );
 }
 
+/// The project list a board item carries is captured under the app mutex
+/// and RENDERED with it released. A render opens each project's repository
+/// and asks git for its origin remote — a subprocess with no timeout, on
+/// whatever the repository sits on — and the daemon has one lock for every
+/// RPC and every push.
+#[tokio::test]
+async fn a_board_items_project_list_renders_with_the_app_lock_released() {
+    let (dir, repo) = init_repo();
+    let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+    let captured = state
+        .lock()
+        .unwrap()
+        .board_lists(crate::changes::BoardLists::PROJECTS);
+
+    // Rendered with the mutex in this test's own hand: whatever the capture
+    // left to do may not need it back.
+    let held = state.lock().unwrap();
+    let rendered = captured.render();
+    drop(held);
+
+    assert_eq!(
+        rendered["projects"],
+        state.lock().unwrap().project_list()["projects"],
+        "the same list `project.list` answers"
+    );
+}
+
 /// The board's own item out of a push history.
 fn board_item(pushes: &[Value]) -> Value {
     pushes

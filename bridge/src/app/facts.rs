@@ -104,9 +104,42 @@ pub(in crate::app) fn bus_with_sources(
     )
 }
 
+/// What a board item's whole lists cost, split by what the app mutex is
+/// needed for.
+///
+/// A project row RENDERS by opening its repository, reading its volume and
+/// asking git for the origin remote — `std::process::Command`, once per
+/// project and per source, with no timeout, against whatever the repository
+/// sits on. `project.list` defers for exactly that reason, and a flush may
+/// not hold the daemon's one lock for it either: a project on an
+/// unresponsive mount would stall every RPC and every push for as long as
+/// the subprocess took. So the rows are captured under the lock and
+/// rendered with it released.
+pub(in crate::app) struct BoardListFacts {
+    projects: Option<Vec<super::ProjectListRow>>,
+    workspaces: Option<Value>,
+}
+
+impl BoardListFacts {
+    /// The lists as the board item carries them, under the keys
+    /// `project.list` and `workspace.list` answer under. MUST run with the
+    /// app mutex released.
+    pub(in crate::app) fn render(self) -> Value {
+        let mut state = serde_json::Map::new();
+        if let Some(rows) = self.projects {
+            let projects: Vec<Value> = rows.iter().map(super::ProjectListRow::render).collect();
+            state.insert("projects".into(), Value::Array(projects));
+        }
+        if let Some(workspaces) = self.workspaces {
+            state.insert("workspaces".into(), workspaces);
+        }
+        Value::Object(state)
+    }
+}
+
 /// What one request needs read under the app mutex: the conversation tails,
-/// the row, the tab list, and — for the board's own item — the whole lists a
-/// change said moved.
+/// the row, and the tab list. The board item's whole lists are taken beside
+/// this, by [`AppState::board_lists`].
 fn locked_facts(
     app: &mut AppState,
     request: &FactsRequest,
@@ -119,13 +152,10 @@ fn locked_facts(
         } else {
             Vec::new()
         },
-        state: match request.lists.is_empty() {
-            true => request
-                .state
-                .then(|| app.entity_state_item(&request.entity_id))
-                .flatten(),
-            false => Some(app.board_lists(request.lists)),
-        },
+        state: request
+            .state
+            .then(|| app.entity_state_item(&request.entity_id))
+            .flatten(),
         terminals: request
             .terminals
             .then(|| subjects.get(&request.entity_id))
@@ -141,15 +171,27 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
     let Some(state) = handle.get().and_then(Weak::upgrade) else {
         return Vec::new();
     };
-    let (subjects, mut facts) = {
+    let (subjects, mut facts, board_lists) = {
         let mut app = state.lock().unwrap();
         let subjects = app.git_subjects();
         let facts = requests
             .iter()
             .map(|request| locked_facts(&mut app, request, &subjects))
             .collect::<Vec<_>>();
-        (subjects, facts)
+        let board_lists = requests
+            .iter()
+            .find(|request| !request.lists.is_empty())
+            .map(|request| app.board_lists(request.lists));
+        (subjects, facts, board_lists)
     };
+    if let Some(lists) = board_lists {
+        let board = facts
+            .iter_mut()
+            .find(|fact| fact.entity_id == crate::changes::BOARD_ITEM_ID);
+        if let Some(fact) = board {
+            fact.state = Some(lists.render());
+        }
+    }
     for (request, fact) in requests.iter().zip(facts.iter_mut()) {
         let Some(subject) = subjects.get(&request.entity_id) else {
             continue;
@@ -273,18 +315,22 @@ impl AppState {
     }
 
     /// The whole lists a board item carries when the change that noted it
-    /// moved one: the same answers `project.list` and `workspace.list` give,
-    /// under the keys they give them under.
-    pub(in crate::app) fn board_lists(&mut self, lists: crate::changes::BoardLists) -> Value {
-        let mut state = serde_json::Map::new();
-        if lists.projects {
-            state.insert("projects".into(), self.project_list()["projects"].take());
+    /// moved one — the half of them that needs the app mutex.
+    ///
+    /// The workspace list is read here whole: it is what `workspace.list`
+    /// answers, and that verb runs under this lock for every client read
+    /// too. The project rows are only captured; see [`BoardListFacts`].
+    pub(in crate::app) fn board_lists(
+        &mut self,
+        lists: crate::changes::BoardLists,
+    ) -> BoardListFacts {
+        BoardListFacts {
+            projects: lists.projects.then(|| self.project_list_rows()),
+            workspaces: lists.workspaces.then(|| {
+                let listed = self.workspace_list(&json!({})).unwrap_or_default();
+                json!(listed["workspaces"])
+            }),
         }
-        if lists.workspaces {
-            let listed = self.workspace_list(&json!({})).unwrap_or_default();
-            state.insert("workspaces".into(), json!(listed["workspaces"]));
-        }
-        Value::Object(state)
     }
 
     /// Where each of an entity's conversations stands, and what was said to

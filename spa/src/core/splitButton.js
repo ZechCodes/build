@@ -92,6 +92,9 @@ export function createSingleFlight() {
 }
 
 const MENU_GAP_PX = 6;
+/** The margin a lifted menu keeps between itself and every edge of the
+ *  viewport, so no corner of it is ever cut off by one. */
+const VIEWPORT_GAP_PX = 8;
 
 function scrollingAncestorOf(element) {
   for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
@@ -101,18 +104,43 @@ function scrollingAncestorOf(element) {
   return null;
 }
 
+/** Which way a menu falls from its button: DOWN, the direction the stylesheet
+ *  writes every menu in, unless the menu does not fit below the button and does
+ *  fit above it. Preferring above whenever there was room — the rule this
+ *  replaced — opened the conversation head's menu upward off the top of the
+ *  screen, because the room it measured was the whole page above a header that
+ *  sits at the top of it. */
+function menuOpensAbove(buttonBox, menuHeight) {
+  const roomBelow = window.innerHeight - buttonBox.bottom - MENU_GAP_PX - VIEWPORT_GAP_PX;
+  const roomAbove = buttonBox.top - MENU_GAP_PX - VIEWPORT_GAP_PX;
+  return menuHeight > roomBelow && roomAbove >= menuHeight;
+}
+
+/** An edge offset held inside the viewport's gutter, so a menu taller or wider
+ *  than the room its button left it is MOVED to fit rather than hung off the
+ *  edge. One taller than the viewport itself starts at the near gutter — there
+ *  is nowhere left to put the rest of it. */
+function clampedToViewport(offset, extent, bound) {
+  return Math.max(VIEWPORT_GAP_PX, Math.min(offset, bound - extent - VIEWPORT_GAP_PX));
+}
+
 function placeMenuFromButtonBox(menu, buttonBox, { width: menuWidth, height: menuHeight }) {
-  const opensAbove = buttonBox.top - MENU_GAP_PX >= menuHeight;
-  const viewportGap = 8;
-  const left = Math.max(viewportGap, Math.min(buttonBox.right - menuWidth, window.innerWidth - menuWidth - viewportGap));
+  const left = clampedToViewport(buttonBox.right - menuWidth, menuWidth, window.innerWidth);
   menu.style.position = "fixed";
   menu.style.left = `${left}px`;
   menu.style.right = "auto";
-  menu.style.top = opensAbove ? "auto" : `${buttonBox.bottom + MENU_GAP_PX}px`;
-  menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "auto";
-  return opensAbove
-    ? { left, edge: "bottom", bottom: buttonBox.top - MENU_GAP_PX }
-    : { left, edge: "top", top: buttonBox.bottom + MENU_GAP_PX };
+  if (menuOpensAbove(buttonBox, menuHeight)) {
+    // Anchored by its bottom edge: a menu opening upward has to GROW upward as
+    // the reveal animates its height, away from the button rather than over it.
+    const bottom = clampedToViewport(window.innerHeight - buttonBox.top + MENU_GAP_PX, menuHeight, window.innerHeight);
+    menu.style.top = "auto";
+    menu.style.bottom = `${bottom}px`;
+    return { left, edge: "bottom", bottom: window.innerHeight - bottom };
+  }
+  const top = clampedToViewport(buttonBox.bottom + MENU_GAP_PX, menuHeight, window.innerHeight);
+  menu.style.top = `${top}px`;
+  menu.style.bottom = "auto";
+  return { left, edge: "top", top };
 }
 
 function menuSizeWhenShown(menu) {

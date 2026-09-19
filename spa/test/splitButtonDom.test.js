@@ -126,8 +126,10 @@ describe("mountSplitButton in-flight guard (DOM)", () => {
       scrolling.style.overflowY = "hidden";
       scrolling.append(container);
       document.body.append(scrolling);
+      // Low enough in the viewport that the menu does not fit under the button,
+      // which is the whole of what sends it upward.
       container.querySelector(".splitbtn").getBoundingClientRect = () => ({
-        left: 268, right: 300, top: 400, bottom: 432, width: 32, height: 32,
+        left: 268, right: 300, top: 700, bottom: 732, width: 32, height: 32,
       });
       let menuHeight = 96;
       Object.defineProperties(menu, {
@@ -155,12 +157,49 @@ describe("mountSplitButton in-flight guard (DOM)", () => {
 
       const placed = menu.getBoundingClientRect();
       expect(placed.left + placed.width).toBeCloseTo(300);
-      expect(placed.top + placed.height).toBeCloseTo(394);
+      expect(placed.top + placed.height).toBeCloseTo(694);
 
       menuHeight = 48;
       const shrinking = menu.getBoundingClientRect();
-      expect(shrinking.bottom).toBeCloseTo(394);
+      expect(shrinking.bottom).toBeCloseTo(694);
       expect(shrinking.top).toBeGreaterThan(placed.top);
+    });
+
+    it("places a downward menu in viewport coordinates under the same filtered block", () => {
+      // The conversation head's ⋮: a button near the top of a glass header,
+      // whose backdrop-filter makes `position:fixed` resolve from the header.
+      const { container, caret, menu } = mount(pendingRun());
+      const scrolling = document.createElement("div");
+      scrolling.style.overflowY = "hidden";
+      scrolling.append(container);
+      document.body.append(scrolling);
+      container.querySelector(".splitbtn").getBoundingClientRect = () => ({
+        left: 268, right: 300, top: 24, bottom: 56, width: 32, height: 32,
+      });
+      Object.defineProperties(menu, {
+        offsetWidth: { configurable: true, value: 180 },
+        offsetHeight: { configurable: true, value: 96 },
+      });
+      const containingBlock = { left: 100, top: 50, scale: 0.8 };
+      menu.getBoundingClientRect = () => {
+        const topInset = Number.parseFloat(menu.style.top) || 0;
+        return {
+          left: containingBlock.left + (Number.parseFloat(menu.style.left) || 0) * containingBlock.scale,
+          top: containingBlock.top + topInset * containingBlock.scale,
+          bottom: containingBlock.top + (topInset + 96) * containingBlock.scale,
+          right: containingBlock.left + ((Number.parseFloat(menu.style.left) || 0) + 180) * containingBlock.scale,
+          width: 180 * containingBlock.scale,
+          height: 96 * containingBlock.scale,
+        };
+      };
+
+      caret.click();
+
+      const placed = menu.getBoundingClientRect();
+      expect(menu.style.bottom).toBe("auto");
+      expect(placed.top).toBeCloseTo(62);
+      expect(placed.left + placed.width).toBeCloseTo(300);
+      expect(placed.bottom).toBeLessThanOrEqual(window.innerHeight);
     });
 
     it("leaves ordinary viewport-fixed placement unchanged", () => {

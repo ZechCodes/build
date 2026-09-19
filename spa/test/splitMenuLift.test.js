@@ -34,7 +34,7 @@ describe("a split menu that opens inside a scrolling container", () => {
     document.body.innerHTML = "";
   });
 
-  it("is lifted to fixed positioning above its button, from the button's own box", () => {
+  it("is lifted to fixed positioning below its button, from the button's own box", () => {
     const { container, caret, menu } = mountMenuInside(scrollingHost());
     container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 500, bottom: 530, left: 900, right: 980 });
     Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
@@ -44,10 +44,10 @@ describe("a split menu that opens inside a scrolling container", () => {
 
     expect(menu.hidden).toBe(false);
     expect(menu.style.position).toBe("fixed");
-    expect(menu.style.bottom).toBe("306px");
+    expect(menu.style.top).toBe("536px");
     expect(menu.style.left).toBe("800px");
     expect(menu.style.right).toBe("auto");
-    expect(menu.style.top).toBe("auto");
+    expect(menu.style.bottom).toBe("auto");
   });
 
   it("opens below the button when there is no room above it", () => {
@@ -62,6 +62,51 @@ describe("a split menu that opens inside a scrolling container", () => {
     expect(menu.style.top).toBe("76px");
     expect(menu.style.left).toBe("800px");
     expect(menu.style.right).toBe("auto");
+    expect(menu.style.bottom).toBe("auto");
+  });
+
+  it("flips above the button only when the menu does not fit below it", () => {
+    const { container, caret, menu } = mountMenuInside(scrollingHost());
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 700, bottom: 730, left: 900, right: 980 });
+    Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
+    Object.defineProperty(menu, "offsetWidth", { value: 180, configurable: true });
+
+    caret.click();
+
+    expect(menu.style.position).toBe("fixed");
+    expect(menu.style.bottom).toBe("106px");
+    expect(menu.style.top).toBe("auto");
+  });
+
+  it("holds a menu that fits on neither side inside the viewport", () => {
+    Object.defineProperty(window, "innerHeight", { value: 200, configurable: true });
+    const { container, caret, menu } = mountMenuInside(scrollingHost());
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 90, bottom: 120, left: 900, right: 980 });
+    Object.defineProperty(menu, "offsetHeight", { value: 300, configurable: true });
+    Object.defineProperty(menu, "offsetWidth", { value: 180, configurable: true });
+
+    caret.click();
+
+    expect(menu.style.top).toBe("8px");
+    expect(menu.style.bottom).toBe("auto");
+  });
+
+  it("never hangs a head-height menu off the top of a narrow viewport", () => {
+    Object.defineProperty(window, "innerWidth", { value: 420, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 720, configurable: true });
+    const { container, caret, menu } = mountMenuInside(scrollingHost());
+    // The conversation head's ⋮, where the bug was reported: a button at the
+    // top of the panel, on a phone-width viewport.
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 56, bottom: 84, left: 380, right: 408 });
+    Object.defineProperty(menu, "offsetHeight", { value: 140, configurable: true });
+    Object.defineProperty(menu, "offsetWidth", { value: 220, configurable: true });
+
+    caret.click();
+
+    expect(Number.parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(menu.style.top) + 140).toBeLessThanOrEqual(720);
+    expect(Number.parseFloat(menu.style.left)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(menu.style.left) + 220).toBeLessThanOrEqual(420);
     expect(menu.style.bottom).toBe("auto");
   });
 
@@ -203,7 +248,7 @@ describe("a split menu's motion", () => {
 
   it("holds a lifted menu where it stands until it has finished shrinking", async () => {
     const { container, caret, menu } = mountMenuInside(scrollingHost());
-    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 500, bottom: 530, left: 900, right: 980 });
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 700, bottom: 730, left: 900, right: 980 });
     Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
 
     caret.click();
@@ -215,7 +260,7 @@ describe("a split menu's motion", () => {
     await motionBeat();
 
     expect(menu.style.position).toBe("fixed");
-    expect(menu.style.bottom).toBe("306px");
+    expect(menu.style.bottom).toBe("106px");
 
     await settleMotion();
 
@@ -226,7 +271,7 @@ describe("a split menu's motion", () => {
 
   it("keeps the placement a lifted menu is wearing when it opens again mid-shrink", async () => {
     const { container, caret, menu } = mountMenuInside(scrollingHost());
-    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 500, bottom: 530, left: 900, right: 980 });
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 700, bottom: 730, left: 900, right: 980 });
     Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
     caret.click();
     await settleMotion();
@@ -240,7 +285,7 @@ describe("a split menu's motion", () => {
 
     expect(menu.hidden).toBe(false);
     expect(menu.style.position).toBe("fixed");
-    expect(menu.style.bottom).toBe("306px");
+    expect(menu.style.bottom).toBe("106px");
     expect(addListener.mock.calls.filter(([type]) => type === "scroll")).toHaveLength(0);
     addListener.mockRestore();
   });

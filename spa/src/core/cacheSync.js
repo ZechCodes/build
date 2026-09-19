@@ -374,8 +374,20 @@ export function mergedLog(held, answer) {
   const previous = reset ? [] : (held?.commits || []);
   const arrived = new Set(arriving.map((commit) => commit.hash));
   const commits = [...arriving, ...previous.filter((commit) => !arrived.has(commit.hash))];
-  return { ...rest, commits, newest: answer.newest || commits[0]?.hash || held?.newest || null };
+  return { ...rest, commits, newest: newestAfter(held, answer, commits) };
 }
+
+/** The cursor the record reads forward from next: what the answer named, else
+ *  the newest commit the record is left holding, else the cursor it already
+ *  had.
+ *
+ *  A reset takes that last one with it. The hash this cache was reading from
+ *  is one the checkout no longer has, so keeping it would have the next read
+ *  ask after it again and be answered `reset` again, for ever. With no cursor
+ *  the next read asks for the latest commits, which is what a cache that
+ *  knows nothing of a history asks for. */
+const newestAfter = (held, answer, commits) =>
+  answer.newest || commits[0]?.hash || (answer.reset ? null : held?.newest || null);
 
 /** The unpushed commits, without the patch that rides with them: the Records
  *  table holds the base, the commit list and the diff key, and the patch

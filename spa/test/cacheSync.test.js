@@ -245,6 +245,17 @@ describe("the cursors", () => {
     expect((await read("run-1", "log")).value.reset).toBeUndefined();
   });
 
+  it("lets the cursor go when a reset answer carries no commits at all", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, { commits: [{ hash: "c0" }], newest: "c0" });
+    script["git.log"] = () => ({ commits: [], reset: true });
+    await boot([branchItem()]);
+    const record = (await read("run-1", "log")).value;
+    expect(record.commits).toEqual([]);
+    // Keeping the pre-reset hash would have the next pass ask after a commit
+    // this checkout no longer has — which answers `reset` again, for ever.
+    expect(record.newest).toBeNull();
+  });
+
   it("reads a conversation forward from the sequence it holds", async () => {
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },

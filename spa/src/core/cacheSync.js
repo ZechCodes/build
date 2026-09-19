@@ -661,16 +661,26 @@ const tipKey = (tip) => tip.conversation_id || tip.agent_id || "";
  *  conversation this cache has never held is always news. */
 const tipIsNews = (tip, held) => !held || Number(tip.last_sequence || 0) > Number(held.deliveredSequence || 0);
 
+/** Whether a tip's items carry on from where the record stands. `since_sequence`
+ *  is the sequence they run from, exclusive — the cursor the subscription had
+ *  when it sent them. Past this record's own cursor, the items in between went
+ *  to a flush this cache did not write (the page that answered it failed), and
+ *  appending would move the cursor over the hole and leave it there for good:
+ *  every later read asks after the newest sequence. */
+const tipRunsOnFromRecord = (tip, held) =>
+  Number(tip.since_sequence || 0) <= Number(held.deliveredSequence || 0);
+
 async function applyThreadTip(context, entityId, tip) {
   const sub = tipKey(tip);
   if (!sub) return;
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
   if (!tipIsNews(tip, held)) return;
-  // A burst past the push cap arrives as a tip with no items, and a
-  // conversation nothing is held for has nothing to append to. Both are one
-  // cursored page, which is the read this layer would have made anyway.
-  const items = held ? (tip.items || []) : [];
+  // A burst past the push cap arrives as a tip with no items, a conversation
+  // nothing is held for has nothing to append to, and a tip that starts past
+  // the cursor would append over a gap. All three are one cursored page, which
+  // is the read this layer would have made anyway.
+  const items = held && tipRunsOnFromRecord(tip, held) ? (tip.items || []) : [];
   if (!items.length) {
     await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }, "background");
     return;

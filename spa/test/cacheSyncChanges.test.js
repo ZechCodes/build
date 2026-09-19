@@ -293,6 +293,25 @@ describe("applying one item", () => {
     expect((await read("run-1", "thread", "ag-1")).value.deliveredSequence).toBe(400);
   });
 
+  it("pages forward rather than append over a gap the tip left", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 7 } }], deliveredSequence: 7 },
+    );
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    bridge.call.mockClear();
+    // The flush before this one was answered by a `thread.page` that failed:
+    // the bridge's cursor moved to 25, the record's did not.
+    script["thread.page"] = () => ({ items: [{ id: "m-8", data: { sequence: 8 } }], has_more: false });
+    await deliver([{
+      entity_id: "run-1",
+      thread: [{ agent_id: "ag-1", last_sequence: 30, since_sequence: 25, items: [{ id: "m-30", data: { sequence: 30 } }] }],
+    }]);
+    expect(calls("thread.page").map(([, params]) => params.after_sequence)).toEqual([7]);
+    const record = await read("run-1", "thread", "ag-1");
+    expect(record.value.items.map((one) => one.id)).toEqual(["m-1", "m-8"]);
+  });
+
   it("asks for nothing on a tip the record has already heard", async () => {
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },

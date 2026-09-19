@@ -64,7 +64,6 @@ const SETTINGS = {
   agent_modes: { claude: "tui", codex: "headless" },
   isolation: "worktree",
   isolation_available: { rift: true, reason: null },
-  triage_enabled: false,
 };
 const PROJECTS = [
   {
@@ -126,7 +125,7 @@ describe("the machine's own panels", () => {
     expect(session.call).toHaveBeenLastCalledWith("project.set_remote", { project_id: "p1", url: "" });
   });
 
-  it("mounts the agent modes, default harness, isolation and triage panels over the same connection", async () => {
+  it("mounts the agent modes, default harness and isolation panels over the same connection", async () => {
     await renderDeviceSettings();
     await flush();
 
@@ -135,7 +134,7 @@ describe("the machine's own panels", () => {
     expect(document.getElementById("defaultharness").value).toBe("claude");
     expect(document.querySelector("[data-isolation=select]").value).toBe("worktree");
     expect(document.querySelector("[data-isolation=select]").disabled).toBe(false);
-    expect(document.querySelector('[data-triage-setting="control"]').disabled).toBe(false);
+    expect(document.querySelector("[data-triage-setting]")).toBeNull();
     // Everything the bridge owns is asked of this page's own connection.
     expect(session.call).toHaveBeenCalledWith("models.list");
   });
@@ -363,7 +362,7 @@ describe("device settings", () => {
     expect(document.querySelector("#root").textContent).toContain("Work isolation");
     expect(document.querySelector("#root").textContent).toContain("Agent modes");
     expect(document.querySelector("#root").textContent).toContain("Fallback agent");
-    expect(document.querySelector("#root").textContent).toContain("Diff triage");
+    expect(document.querySelector("#root").textContent).not.toContain("Diff triage");
     const select = document.querySelector("[data-isolation=select]");
     select.value = "rift";
     select.dispatchEvent(new Event("change"));
@@ -389,7 +388,6 @@ describe("device settings", () => {
         isolation_available: { rift: false, reason: "Rift CLI was not found" },
         default_harness: "claude",
         agent_modes: { claude: "headless", codex: "headless" },
-        triage_enabled: true,
       };
       if (method === "models.list") return { providers: [{ id: "claude", label: "Claude Code" }] };
       return {};
@@ -437,7 +435,6 @@ describe("device settings", () => {
         isolation_available: { rift: false, reason: "Rift is absent on the reconnected device" },
         default_harness: "claude",
         agent_modes: { claude: "headless", codex: "headless" },
-        triage_enabled: false,
       };
       const newSession = {
         deviceId: "other",

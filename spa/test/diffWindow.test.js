@@ -57,15 +57,6 @@ describe("bounded diff rendering", () => {
     expect(rowWindowStart(3_600)).toBe(120);
     expect(rowWindowStart(3_620)).toBe(120);
   });
-
-  it("keeps absolute hunk marks when the window starts after earlier hunks", () => {
-    const markedRows = rows.slice();
-    markedRows[0] = { t: "hunk", text: "@@ first @@" };
-    markedRows[500] = { t: "hunk", text: "@@ second @@" };
-    const marked = { ...file, rows: markedRows, triageHunks: [{ hunk_id: "one", level: "normal" }, { hunk_id: "two", level: "critical" }] };
-    const viewport = { fileVisible: () => true, rowWindow: () => ({ start: 500 }) };
-    expect(diffFileHtml(marked, { fold: "open", viewport })).toContain('data-hunk="two"');
-  });
 });
 
 describe("the diff viewport controller", () => {

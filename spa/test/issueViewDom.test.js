@@ -386,6 +386,37 @@ describe("the issue view", () => {
     view.dispose();
   });
 
+  // There is no validation gate: a stage is building, then complete. A
+  // complete stage offers its stable diff, and nothing offers to send a stage
+  // "back to fix" — that verb went with the gate.
+  it("offers a complete stage's stable diff and never a send-back-to-fix", async () => {
+    const complete = stage({ approval: "approved", state: "approved", execution: "complete", start_sha: "a".repeat(40), completion_sha: "b".repeat(40) });
+    const { host, view } = await mount({ issue: issuePayload({ state: "approved" }), stages: [complete] });
+    expect(host.querySelector("#stagediff")).toBeTruthy();
+    expect(host.querySelector("#fixstage")).toBeNull();
+    expect(host.querySelector(".ivviewer").textContent).toContain("COMPLETE");
+    view.dispose();
+  });
+
+  it("offers no send-back-to-fix on an incomplete stage either", async () => {
+    const incomplete = stage({ approval: "approved", state: "approved", execution: "incomplete", invalidation_reason: "worktree moved" });
+    const { host, view } = await mount({ issue: issuePayload({ state: "approved" }), stages: [incomplete] });
+    expect(host.querySelector("#fixstage")).toBeNull();
+    view.dispose();
+  });
+
+  it("offers to implement the next stage once every stage before it is complete", async () => {
+    const stages = [
+      stage({ id: "s1", approval: "approved", state: "approved", execution: "complete" }),
+      stage({ id: "s2", title: "Render", approval: "approved", state: "approved", execution: "pending" }),
+    ];
+    const { host, view } = await mount({ issue: issuePayload({ state: "approved" }), stages });
+    host.querySelectorAll(".stagerow")[1].click();
+    await flush();
+    expect(host.querySelector("#implementstage")).toBeTruthy();
+    view.dispose();
+  });
+
   // A note to the agent is a turn: durable the moment the daemon takes it, and
   // answered before the agent it wakes exists. A reply that outlives the
   // browser's timer must not have the reviewer write the note again.

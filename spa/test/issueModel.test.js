@@ -31,14 +31,11 @@ describe("stageStateToken", () => {
 
   it("lets execution speak once the agent has started on the stage", () => {
     expect(stageStateToken(stage({ approval: "approved", execution: "building" }))).toBe("building");
-    expect(stageStateToken(stage({ approval: "approved", execution: "built" }))).toBe("built");
-    expect(stageStateToken(stage({ approval: "approved", execution: "validating" }))).toBe("validating");
-    expect(stageStateToken(stage({ approval: "approved", execution: "validation_failed" }))).toBe("validation_failed");
   });
 
-  it("calls a completed stage validated — including one whose diff is unpinned", () => {
-    expect(stageStateToken(stage({ approval: "approved", execution: "complete" }))).toBe("validated");
-    expect(stageStateToken(stage({ approval: "approved", execution: "legacy_unpinned" }))).toBe("validated");
+  it("calls a completed stage complete — including one whose diff is unpinned", () => {
+    expect(stageStateToken(stage({ approval: "approved", execution: "complete" }))).toBe("complete");
+    expect(stageStateToken(stage({ approval: "approved", execution: "legacy_unpinned" }))).toBe("complete");
   });
 
   it("passes the parked executions through under their own names", () => {
@@ -48,9 +45,16 @@ describe("stageStateToken", () => {
   });
 
   it("names every token it can return", () => {
-    for (const token of ["planned", "approved", "building", "built", "validating", "validated", "validation_failed", "blocked", "failed", "incomplete"]) {
+    for (const token of ["planned", "approved", "building", "complete", "blocked", "failed", "incomplete"]) {
       expect(STAGE_STATE_LABEL[token]).toBeTruthy();
     }
+  });
+
+  it("has no validation vocabulary left: a stage is building, then complete", () => {
+    for (const token of ["built", "validating", "validated", "validation_failed"]) {
+      expect(STAGE_STATE_LABEL[token]).toBeUndefined();
+    }
+    expect(STAGE_STATE_LABEL.complete).toBe("COMPLETE");
   });
 });
 
@@ -59,8 +63,8 @@ describe("stageStateChipClass", () => {
     expect(stageStateChipClass("planned")).toBe("");
     expect(stageStateChipClass("approved")).toBe("attn");
     expect(stageStateChipClass("building")).toBe("work");
-    expect(stageStateChipClass("validated")).toBe("done");
-    expect(stageStateChipClass("validation_failed")).toBe("warn");
+    expect(stageStateChipClass("complete")).toBe("done");
+    expect(stageStateChipClass("incomplete")).toBe("warn");
     expect(stageStateChipClass("blocked")).toBe("warn");
   });
 });

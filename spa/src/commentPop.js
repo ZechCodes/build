@@ -1,11 +1,10 @@
-// The floating popovers the review surfaces write into: a "Comment" popover
-// anchored to a text selection (plan + diff review), and a note popover
-// anchored to a control the reviewer just pressed (a triage disagreement).
+// The floating popover the review surfaces write into: a "Comment" popover
+// anchored to a text selection (plan + diff review), or opened straight onto
+// its composer from a control the reviewer pressed.
 //
-// Both are the same thing — a small composer that floats over the page, takes
-// one short piece of text, and is dismissed by tapping away — so both are one
-// popover at a time, positioned the same way, and discarded under the same
-// rule: a draft with text in it survives the first tap outside and warns.
+// It is a small composer that floats over the page, takes one short piece of
+// text, and is dismissed by tapping away — one popover at a time, and a draft
+// with text in it survives the first tap outside and warns.
 
 import { esc } from "./core/text.js";
 
@@ -67,11 +66,9 @@ function openPop(rect) {
   return pop;
 }
 
-/** Turn an open popover into the composer stage. `requireText` is what a
- *  comment needs (an empty comment is nothing) and what an optional note does
- *  not: pressing the button with nothing typed still submits the decision the
- *  note was going to explain. */
-function mountComposer(pop, { placeholder, confirmLabel, onSubmit, requireText }) {
+/** Turn an open popover into the composer stage. An empty comment is nothing,
+ *  so pressing the button with nothing typed submits nothing. */
+function mountComposer(pop, { placeholder, confirmLabel, onSubmit }) {
   pop.innerHTML = commentComposerHtml(placeholder, confirmLabel);
   const input = pop.querySelector(".cp-input");
   input.focus();
@@ -96,7 +93,7 @@ function mountComposer(pop, { placeholder, confirmLabel, onSubmit, requireText }
 
   const save = () => {
     const value = input.value.trim();
-    if (value || !requireText) onSubmit(value);
+    if (value) onSubmit(value);
     hideCommentPop();
   };
   pop.querySelector(".cp-save").onclick = save;
@@ -119,7 +116,7 @@ function mountComposer(pop, { placeholder, confirmLabel, onSubmit, requireText }
   pop._composer = { input, arm, isArmed: () => armed };
 }
 
-const COMMENT_COMPOSER = { placeholder: "Comment on this passage…", confirmLabel: "Add", requireText: true };
+const COMMENT_COMPOSER = { placeholder: "Comment on this passage…", confirmLabel: "Add" };
 
 /**
  * The selection popover: a Comment button that opens the composer.
@@ -144,18 +141,4 @@ export function showCommentPop(rect, onAdd) {
  */
 export function openCommentComposer(rect, onAdd) {
   mountComposer(openPop(rect), { ...COMMENT_COMPOSER, onSubmit: onAdd });
-}
-
-/**
- * The note popover: the composer straight away, for a decision the reviewer has
- * already made by pressing something.
- *
- * `confirmLabel` names the decision rather than the note ("Collapse", not
- * "Save") — the button does the thing, and whatever was typed rides along.
- * Submitting with nothing typed is the ordinary case, not a cancel; tapping
- * outside is the cancel.
- */
-export function showNotePop(rect, { placeholder = "Why? (optional)", confirmLabel = "Save", onSubmit }) {
-  const pop = openPop(rect);
-  mountComposer(pop, { placeholder, confirmLabel, onSubmit, requireText: false });
 }

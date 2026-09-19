@@ -9,9 +9,8 @@ import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
 import { fileKey, firstLineOf, untouchedFold } from "./diff.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
-import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
 import { editedTimeLabel, editedTimestamp } from "./editedTime.js";
-import { DIFF_ROW_HEIGHT, fileBodyIsVisible, hunkOffsetAt, rowWindowFor, ROW_WINDOW_SIZE } from "./diffWindow.js";
+import { DIFF_ROW_HEIGHT, fileBodyIsVisible, rowWindowFor, ROW_WINDOW_SIZE } from "./diffWindow.js";
 import { sortDiffFiles } from "./diffSort.js";
 
 const sortedWhenRequested = (files, order) => (order ? sortDiffFiles(files, order) : files);
@@ -43,75 +42,15 @@ function codeCellHtml(text, lang, maskDotenv) {
  *  per-line (each row tokenized on its own) — an accepted tradeoff for a
  *  multi-line grammar, since diff rows arrive one line at a time. `maskDotenv`
  *  (set by the caller for a dotenv file path) masks secret-like line content. */
-export function diffRowsHtml(
-  rows,
-  lang = null,
-  { maskDotenv = false, hunkMarks = null, overridable = false, hunkOffset = 0, rowOffset = 0 } = {},
-) {
-  let hunkIndex = hunkOffset;
+export function diffRowsHtml(rows, lang = null, { maskDotenv = false, rowOffset = 0 } = {}) {
   return rows
-    // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
     .map((r, index) => {
       const rowIndex = rowOffset + index + 1;
       if (r.t !== "hunk")
         return `<tr class="${r.t}" aria-rowindex="${rowIndex}" data-ln="${r.n ?? r.o ?? ""}" data-side="${r.t === "del" ? "old" : "new"}" data-old-line="${r.o ?? ""}" data-new-line="${r.n ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`;
-      const mark = hunkMarks ? hunkMarks[hunkIndex] : null;
-      hunkIndex++;
-      const attributes = mark ? ` data-hunk="${esc(mark.hunk_id || "")}" data-level="${esc(mark.level)}"` : "";
-      return `<tr class="hunk" aria-rowindex="${rowIndex}"${attributes}><td class="ln"></td><td class="ln"></td><td class="code">${codeCellHtml(r.text, lang, false)}${hunkChipHtml(mark, overridable)}</td></tr>`;
+      return `<tr class="hunk" aria-rowindex="${rowIndex}"><td class="ln"></td><td class="ln"></td><td class="code">${codeCellHtml(r.text, lang, false)}</td></tr>`;
     })
     .join("");
-}
-
-/** What a hunk row carries besides its code: the pass's claim about it, the
- *  reviewer's answer to that claim, and — where the surface can post one — the
- *  offer to disagree.
- *
- *  The level chip goes on a surfaced critical (carrying the pass's one-line
- *  rationale, on hover as a title and on tap as a revealed line) and on a hunk
- *  the pass never named, so an ordering with holes in it says so rather than
- *  implying every unchipped hunk was read. Nothing else is chipped: a collapsed
- *  group's header already says what its hunks are, and chipping every normal
- *  hunk would be noise over the whole stack. */
-function hunkChipHtml(mark, overridable = false) {
-  if (!mark) return "";
-  if (mark.untriaged)
-    return `<span class="hchip untriaged" title="the triage pass did not classify this hunk">untriaged</span>`;
-  const rationale = mark.rationale || "";
-  const level =
-    mark.level === "critical"
-      ? `<span class="hchip critical" tabindex="0" title="${esc(rationale)}">critical${
-          rationale ? `<span class="hrationale">${esc(rationale)}</span>` : ""
-        }</span>`
-      : "";
-  return level + overrideChipHtml(mark) + (overridable ? overrideButtonHtml(mark) : "");
-}
-
-/** The chip that says this hunk sits where it sits because the reviewer said
- *  so, not because the pass did — and, when they left one, why. Without it a
- *  reviewer coming back to a stack could not tell their own corrections from
- *  the pass's reading, and a repaint would look like the pass had changed its
- *  mind. */
-function overrideChipHtml(mark) {
-  if (!mark.overridden) return "";
-  const surfaced = mark.overrideDirection === "surface";
-  const note = mark.note || "";
-  const title = note || (surfaced ? "you kept this hunk in the stack" : "you collapsed this hunk");
-  return `<span class="hchip overridden" tabindex="0" title="${esc(title)}">your call: ${
-    surfaced ? "surfaced" : "collapsed"
-  }${note ? `<span class="hchip-note">${esc(note)}</span>` : ""}</span>`;
-}
-
-/** The offer to disagree, on the hunk the decision was about: a surfaced
- *  critical offers to be collapsed, a collapsed hunk offers to be kept
- *  surfaced, and a hunk the reviewer already moved offers the way back. */
-function overrideButtonHtml(mark) {
-  const direction = overrideDirectionFor(mark);
-  if (!direction) return "";
-  const surfacing = direction === "surface";
-  return `<button class="toverride" data-hunk="${esc(mark.hunk_id)}" data-direction="${direction}" title="${
-    surfacing ? "disagree: this needs reading" : "disagree: this does not need reading"
-  }">${surfacing ? "Keep surfaced" : "Collapse"}</button>`;
 }
 
 /** HTML for parsed diff files (core/diff.js parseDiff output). The path is
@@ -214,28 +153,25 @@ function spacerRowHtml(className, rows) {
   return rows > 0 ? `<tr class="drow-spacer ${className}" aria-hidden="true"><td colspan="3" style="height:${rows * DIFF_ROW_HEIGHT}px"></td></tr>` : "";
 }
 
-function diffTableBoxHtml(boxClass, file, options, window = { start: 0, end: file.rows.length }, preserveExtent = false) {
+function diffTableBoxHtml(boxClass, file, window = { start: 0, end: file.rows.length }, preserveExtent = false) {
   const shown = file.rows.slice(window.start, window.end);
   const before = preserveExtent ? spacerRowHtml("before", window.start) : "";
   const after = preserveExtent ? spacerRowHtml("after", file.rows.length - window.end) : "";
   return `<div class="${boxClass}" data-row-count="${file.rows.length}"><table aria-rowcount="${file.rows.length}">${before}${diffRowsHtml(shown, langForPath(file.path), {
           maskDotenv: isDotenvPath(file.path),
-          hunkMarks: file.triageHunks || null,
-          overridable: options.overridable,
-          hunkOffset: hunkOffsetAt(file.rows, window.start),
           rowOffset: window.start,
         })}${after}</table></div>`;
 }
 
 /** One file's diff table, every row of it, in the box the collapse rule hides. */
 export function fileBodyHtml(file, options) {
-  return diffTableBoxHtml(BODY_BOX, file, options, rowWindowFor(file, "open", options.viewport));
+  return diffTableBoxHtml(BODY_BOX, file, rowWindowFor(file, "open", options.viewport));
 }
 
 /** The rows a collapsed file keeps on screen: the same table in the box that
  *  survives the collapse — a peek is what a folded file is for. */
 export function filePeekHtml(file, options) {
-  return diffTableBoxHtml(PEEK_BOX, file, options);
+  return diffTableBoxHtml(PEEK_BOX, file);
 }
 
 function virtualFileBodyHtml(file, fold) {
@@ -256,7 +192,7 @@ export function fileContentHtml(file, fold, options = {}) {
   // as it does a 100,000-row body.
   const windowed = fold === "open" && Boolean(options.viewport);
   const box = `${fold === "shut" ? PEEK_BOX : BODY_BOX}${windowed ? " dwindow" : ""}`;
-  return diffTableBoxHtml(box, file, options, window, windowed);
+  return diffTableBoxHtml(box, file, window, windowed);
 }
 
 /** What a file shows where its rows are not there to show: one dim line, in the
@@ -269,7 +205,7 @@ export function fileNoticeHtml(label) {
  *  it in. The fold-aware entry (core/fileEntries.js) hands a preview or a
  *  loading line where this module hands the whole diff. */
 export function fileFrameHtml(file, options, bodyHtml) {
-  const classes = ["file", foldClassOf(file, options), options.sectionClass].filter(Boolean).join(" ");
+  const classes = ["file", foldClassOf(file, options)].filter(Boolean).join(" ");
   return `
       <div class="${classes}" data-key="${esc(fileKey(file))}">${fileHeadHtml(file, options)}
         ${bodyHtml}
@@ -332,12 +268,12 @@ export function diffStackHtml(files, options = {}) {
 
 export function diffStackEntries(
   files,
-  { noiseExpanded = false, review = null, sortOrder = null, empty = "No file changes.", ...fileOptions } = {},
+  { noiseExpanded = false, sortOrder = null, empty = "No file changes.", ...fileOptions } = {},
 ) {
   const grouped = groupNoiseFiles(files);
   if (!grouped.files.length && !grouped.noise.length)
     return [{ key: "empty", html: `<div class="empty">${esc(empty)}</div>` }];
-  const entries = grouped.files.length ? reviewStackEntries(grouped.files, review, fileOptions, files, sortOrder) : [];
+  const entries = grouped.files.length ? fileStackEntries(grouped.files, fileOptions, sortOrder) : [];
   if (!grouped.noise.length) return entries;
   const noise = sortedWhenRequested(grouped.noise, sortOrder);
   return [...entries, { key: "noise", html: noiseGroupHtml(noise, noiseExpanded, fileOptions) }];
@@ -349,98 +285,9 @@ function noiseGroupHtml(noise, noiseExpanded, fileOptions) {
     ${noiseExpanded ? `<div class="noisefiles">${diffFilesHtml(noise, fileOptions)}</div>` : ""}</div>`;
 }
 
-// ---- the triage overlay ----------------------------------------------------
-//
-// Review prioritization (UX Redesign Decisions, "Review prioritization"): the
-// stacked full-file diffs stay exactly what they are, and the overlay only
-// decides what order they come in and what starts collapsed. The diff is ground
-// truth; this is a reading of it, and the dial turns the reading off.
-
-/** The banner over an overlaid stack: what the pass did (or why there is no
- *  ordering), and the reviewer's dial. */
-function triageBarHtml(plan, { dial, offerDial }) {
-  const claim =
-    plan.status === "none"
-      ? `<span class="tuntriaged">untriaged — the full diff, in file order</span>`
-      : plan.status === "stale"
-        ? `<span class="tstale">triage from an earlier revision — re-triaging</span><span class="tsummary">${esc(triageSummaryLine(plan))}</span>`
-        : `<span class="tsummary">${esc(triageSummaryLine(plan))}</span>`;
-  const dialButton = offerDial
-    ? `<button class="tdial" aria-pressed="${dial}" title="${
-        dial ? "order the diff by the triage pass again" : "show the full diff in file order, untriaged"
-      }">${dial ? "Show ordered diff" : "Show full diff"}</button>`
-    : "";
-  return `<div class="triagebar">${claim}${dialButton}</div>`;
-}
-
-function triageGroupHeadHtml(section, expanded) {
-  const counts = `${section.fileCount} file${section.fileCount === 1 ? "" : "s"} · ${section.hunkCount} hunk${
-    section.hunkCount === 1 ? "" : "s"
-  }`;
-  return `<button class="tgrouphead${expanded ? " open" : ""}" aria-expanded="${expanded}" data-group="${esc(section.name)}">${expanded ? "▾" : "▸"} <span class="tgname">${esc(section.name)}</span> <span class="tgcount">${counts}</span>${
-    section.rationale ? `<span class="tgrationale">${esc(section.rationale)}</span>` : ""
-  }</button>`;
-}
-
-function triageGroupHtml(section, fileOptions) {
-  return `<div class="tgroup" data-group="${esc(section.name)}">${triageGroupHeadHtml(section, false)}
-    <div class="tgfiles"></div></div>`;
-}
-
-/** Viewport-only paints reuse the parsed triage plan. In particular this keeps
- * patchHunks' full-patch hashing out of inner diff scroll events. */
-export function createTriagePlanCache(plan = planChangesetTriage) {
-  let last = null;
-  return (sourceFiles, patch, triage, plannedFiles) => {
-    const triageKey = JSON.stringify(triage);
-    if (last?.sourceFiles === sourceFiles && last.patch === patch && last.triageKey === triageKey) return last.value;
-    const value = plan({ files: plannedFiles, patch, triage });
-    last = { sourceFiles, patch, triageKey, value };
-    return value;
-  };
-}
-
-const cachedTriagePlan = createTriagePlanCache();
-
-function reviewStackEntries(files, review, options, sourceFiles, sortOrder) {
-  const fileEntries = (list, fileOptions) =>
-    sortedWhenRequested(list, sortOrder).map((file) => ({
-      key: fileKey(file),
-      html: fileHtmlFor(fileOptions)(file, fileOptions),
-    }));
-  if (!review) return fileEntries(files, options);
-  const { triage = null, patch = "", dial = false, expandedGroups = null, overridable = false } = review;
-  const fileOptions = { ...options, overridable };
-  // The dial renders the untriaged stack, and says so — the pass is still
-  // there, and one click puts it back.
-  if (dial)
-    return [
-      { key: "triagebar", html: triageBarHtml({ status: "none", counts: {} }, { dial: true, offerDial: Boolean(triage) }) },
-      ...fileEntries(files, fileOptions),
-    ];
-  const plan = cachedTriagePlan(sourceFiles, patch, triage, files);
-  const bar = triageBarHtml(plan, { dial: false, offerDial: Boolean(triage) && plan.status !== "none" });
-  const opened = (name) => Boolean(expandedGroups && expandedGroups.has(name));
-  return [
-    { key: "triagebar", html: bar },
-    ...plan.sections.flatMap((section) => sectionEntries(section, { opened, fileEntries, fileOptions })),
-  ];
-}
-
-function sectionEntries(section, { opened, fileEntries, fileOptions }) {
-  if (section.kind === "group" && !opened(section.name))
-    return [{ key: `group:${section.name}`, html: triageGroupHtml(section, fileOptions) }];
-  const sectionClass = section.kind === "group" ? "tgrouped" : `t${section.kind}`;
-  const files = fileEntries(section.files, { ...fileOptions, sectionClass });
-  const head = sectionHeadHtml(section);
-  if (!head) return files;
-  const key = section.kind === "group" ? `grouphead:${section.name}` : `sectionhead:${section.kind}`;
-  return [{ key, html: head }, ...files];
-}
-
-function sectionHeadHtml(section) {
-  if (section.kind === "group") return triageGroupHeadHtml(section, true);
-  return section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
+function fileStackEntries(files, options, sortOrder) {
+  const renderFile = fileHtmlFor(options);
+  return sortedWhenRequested(files, sortOrder).map((file) => ({ key: fileKey(file), html: renderFile(file, options) }));
 }
 
 export function stackClaims({ comments, openFile, folds, approved = () => null, repaint }) {

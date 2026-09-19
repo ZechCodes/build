@@ -257,7 +257,6 @@ describe("Settings → what the account keeps", () => {
     expect(document.querySelector("#projlist")).toBeNull();
     expect(document.querySelector("[data-isolation=select]")).toBeNull();
     expect(document.querySelector("#defaultharness")).toBeNull();
-    expect(document.querySelector("[data-triage-setting]")).toBeNull();
   });
 
   it("links each paired device to its own settings page", async () => {

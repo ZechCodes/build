@@ -50,7 +50,9 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // 57 since the rail reads one work item per kind: `railEntity` is a lookup
 // over four small readers — an issue, a project, a workspace, a branch — rather
 // than one function that walks all of them.
-const RATCHETED_FUNCTIONS = 57;
+// 53 since review prioritization is gone: core/triageModel.js left with its
+// three exemptions, and a diff's hunk row no longer carries a triage chip.
+const RATCHETED_FUNCTIONS = 53;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

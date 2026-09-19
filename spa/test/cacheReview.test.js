@@ -78,22 +78,6 @@ describe("the saved aggregate diff", () => {
     plug.unmount();
   });
 
-  it("keeps a saved triage report hidden until a live payload confirms it is enabled", async () => {
-    const triage = { based_on: "old-revision", hunks: [] };
-    const address = { deviceId: "dev-1", entityId: "run-1", kind: "diff" };
-    await writeCached(address, { patch: PATCH, triageEnabled: true, triage });
-    plug = plugOn("dev-1", { fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1" });
-    plug.mount(host);
-    await settle();
-
-    expect(host.textContent).toContain("cached line");
-    expect(host.querySelector(".triagebar")).toBeNull();
-    expect(host.querySelector(".tgrouphead")).toBeNull();
-    expect(host.querySelector(".toverride")).toBeNull();
-    expect((await readCached(address)).value.triage).toEqual(triage);
-    plug.unmount();
-  });
-
   it("lets the live diff replace it and writes the change through", async () => {
     await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
     const live = PATCH.replace("cached line", "live line");

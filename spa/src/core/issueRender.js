@@ -259,7 +259,7 @@ export function stageViewerHtml({ stage, stages = [], docHtml = "", paneState = 
   const token = stageStateToken(stage);
   const ordered = [...comments].sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
   const failure = stage.invalidation_reason
-    ? `<div class="stage-validation fail"><strong>Stage incomplete</strong><div>${esc(stage.invalidation_reason)}</div></div>`
+    ? `<div class="stage-invalidation"><strong>Stage incomplete</strong><div>${esc(stage.invalidation_reason)}</div></div>`
     : "";
   return `<div class="ivstagehead">
       <span class="ivstagetitle">${esc(stage.title || "")}</span>${stateChip(token)}

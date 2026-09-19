@@ -4277,68 +4277,35 @@ describe("an account with more than one device", () => {
   });
 });
 
-// A reference an agent posts is a path in the checkout it is working in, and
-// the rail is the only thing that knows which checkout that is. So the chip
-// under the message is a real link: it carries the machine, the workspace, the
-// directory the path is mounted under, and the line it points at.
-describe("a file reference in a conversation", () => {
-  const workspaceRow = (links) => ({
-    entity_id: "run-3",
-    id: "ws-1",
-    project_id: "p1",
-    directories: [
-      { source_id: "repo", name: "Repository" },
-      { source_id: "assets", name: "Assets" },
-    ],
-    agents: [agent()],
-    thread: {
-      items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "Changed the parser.", links } }],
-      has_more: false,
-      sessions: [],
-    },
-  });
-
-  const answerWith = (row) => {
+// Agents can no longer attach file links to their messages. A stored
+// conversation may still carry one; the rail draws no chip for it.
+describe("a retired file reference in a conversation", () => {
+  it("draws no chip for it", async () => {
+    const row = {
+      entity_id: "run-3",
+      id: "ws-1",
+      project_id: "p1",
+      directories: [{ source_id: "repo", name: "Repository" }],
+      agents: [agent()],
+      thread: {
+        items: [{
+          id: "m-1",
+          type: "message",
+          data: { sequence: 1, role: "agent", body: "Changed the parser.", links: [{ kind: "file", path: "src/parser.js", line_start: 8 }] },
+        }],
+        has_more: false,
+        sessions: [],
+      },
+    };
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "workspace.get") return row;
-      if (method === "branch.get") return row;
       return {};
     });
-  };
-
-  const chipHref = () => railHost().querySelector("a.thread-reference")?.getAttribute("href");
-
-  it("links a path into the workspace directory it is mounted under", async () => {
-    answerWith(workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }]));
     await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
-    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files?path=logo.svg&line=4");
-  });
-
-  it("links a path of the open directory at the line it starts on", async () => {
-    answerWith(workspaceRow([{ kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 }]));
-    await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
-    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/repo/files?path=src%2Fparser.js&line=8");
-  });
-
-  it("links a branch conversation's reference at the file, not at the tab", async () => {
-    payload = branchRow({
-      run: {
-        run_id: "run-3",
-        thread: {
-          items: [{
-            id: "m-1",
-            type: "message",
-            data: { sequence: 1, role: "agent", body: "Changed the parser.", links: [{ kind: "file", path: "src/parser.js", line_start: 8 }] },
-          }],
-          has_more: false,
-          sessions: [],
-        },
-      },
-    });
-    await mount();
-    expect(chipHref()).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/files?path=src%2Fparser.js&line=8");
+    expect(railHost().textContent).toContain("Changed the parser.");
+    expect(railHost().querySelector(".thread-reference")).toBeNull();
   });
 });
 

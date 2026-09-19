@@ -13,7 +13,6 @@ import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
 import { DEVICE_ISOLATION, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
 import { mountProjectAgentSetting, projectAgentPanelHtml } from "../core/projectAgentSetting.js";
-import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
 
 /** The panels this machine's bridge owns: each states its own markup and mounts
  *  itself on the page's connection, so they are stood up in one pass. */
@@ -22,7 +21,6 @@ const BRIDGE_PANELS = [
   { html: defaultHarnessPanelHtml, mount: mountDefaultHarness },
   { html: projectAgentPanelHtml, mount: mountProjectAgentSetting },
   { html: isolationPanelHtml, mount: (host, options) => mountIsolation(host, { ...options, target: DEVICE_ISOLATION }) },
-  { html: triageSettingPanelHtml, mount: mountTriageSetting },
 ];
 
 /** The account's copy of what this machine offers is what these panels have

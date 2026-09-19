@@ -82,7 +82,7 @@ const { allDevicesOfflineText, deviceUnreachableText, devicesBlockedText } = awa
 const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
 const { holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js");
-const { mountRecoveryBanners, unmountRecoveryBanners } = await import("../src/recoveryBanner.js");
+const { mountConnectionStatus, unmountConnectionStatus } = await import("../src/connectionStatus.js");
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
 const reachNextRecoveryAttempt = async () => {
@@ -201,7 +201,7 @@ beforeEach(() => {
   stopFeed();
   document.body.innerHTML =
     '<div id="root"></div><div id="devpick"></div><div id="compose"></div><div id="inbox-list"></div>' +
-    '<div id="recovery-banners"></div><div id="recovery-announcement" aria-live="polite"></div>';
+    '<div id="connection-status" hidden></div><div id="connection-announcement" aria-live="polite"></div>';
   document.body.className = "";
   App.gated = false;
   App.poll = null;
@@ -252,7 +252,7 @@ beforeEach(() => {
 
 afterEach(() => {
   stopCacheSync();
-  unmountRecoveryBanners();
+  unmountConnectionStatus();
   delete globalThis.RTCPeerConnection;
   stopWatchingPresence();
   unsubscribe();
@@ -496,7 +496,7 @@ describe("per-device connections", () => {
   });
 
   it("keeps the shell mounted and schedules recovery when every online machine is unreachable", async () => {
-    mountRecoveryBanners();
+    mountConnectionStatus();
     unlinkable.add("dev-a");
     unlinkable.add("dev-b");
 
@@ -507,8 +507,9 @@ describe("per-device connections", () => {
       { deviceId: "dev-a", status: "waiting", failedAttempts: 1 },
       { deviceId: "dev-b", status: "waiting", failedAttempts: 1 },
     ]);
-    expect(document.getElementById("recovery-banners").textContent).toContain("Reconnecting to Laptop");
-    expect(document.getElementById("recovery-banners").textContent).toContain("Reconnecting to Desktop");
+    const icon = document.getElementById("connection-status");
+    expect(icon.dataset.state).toBe("waiting");
+    expect(icon.getAttribute("aria-label")).toContain("Reconnecting to Laptop and Desktop");
 
     unlinkable.delete("dev-a");
     await reachNextRecoveryAttempt();

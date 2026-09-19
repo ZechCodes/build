@@ -5,15 +5,83 @@
 @import "./styles/shell.css";
 @import "./styles/surfaces.css";
 
-#recovery-banners {
-  position:fixed; z-index:60; top:max(10px, env(safe-area-inset-top)); right:12px;
-  display:flex; flex-direction:column; align-items:flex-end; gap:6px;
-  pointer-events:none; max-width:min(360px, calc(100vw - 24px));
+/* ---- the connection icon ----------------------------------------------------
+   How many machines are connected, and what is being done about one that is
+   not. It stands at the foot of the conversation rail — inside the bubble
+   strip's column, which is why it is positioned against #view and why the
+   strip reserves its room (styles/shell.css) — so it never covers the
+   composer, and a glance at the corner answers "is my machine there".
+
+   The ring is dashed while everything is connected and solid while something
+   is being done about it: a dashed ring is a state at rest, and the yellow one
+   is a state with something running inside it. Every move between the three is
+   a transition rather than a redraw, because the markup is written once and
+   only its classes change (spa/src/connectionStatus.js). */
+#connection-status {
+  position:absolute; z-index:38; right:0; bottom:8px;
+  width:var(--agent-strip); height:30px; display:grid; place-items:center;
+  pointer-events:none;
 }
-.recovery-banner {
-  padding:7px 11px; border:1px solid var(--line3); border-radius:999px;
-  background:var(--panel); color:var(--ink2); box-shadow:0 4px 16px var(--shadow-soft);
-  font-size:12px; line-height:1.35;
+.connection-status::before {
+  content:""; position:absolute; width:26px; height:26px; border-radius:50%;
+  border:2px dashed var(--green); opacity:.85;
+  transition:border-color 260ms ease, border-style 260ms ease, opacity 260ms ease,
+    transform 260ms cubic-bezier(.2,.8,.2,1);
+}
+.connection-status.is-attempting::before, .connection-status.is-waiting::before {
+  border-style:solid; border-color:var(--amber); opacity:1;
+}
+/* The number, and the countdown that takes its place: one line of text that
+   fades and shrinks away while an attempt is in flight, because nobody can say
+   how long that will take, and fades back in as seconds once there is a wait
+   to count. */
+.connection-centre {
+  position:relative; color:var(--green); font:600 11px/1 var(--mono);
+  opacity:1; transform:scale(1);
+  transition:opacity 220ms ease, transform 220ms cubic-bezier(.2,.8,.2,1), color 260ms ease;
+}
+.connection-status.is-attempting .connection-centre, .connection-status.is-waiting .connection-centre {
+  color:var(--amber);
+}
+.connection-status.is-attempting .connection-centre { opacity:0; transform:scale(.6); }
+/* The radiating circles, which run only while an attempt is actually in
+   flight. Two rings on the same keyframes, half a period apart, so the ring
+   reads as something going out rather than something blinking. */
+.connection-radiate {
+  position:absolute; width:26px; height:26px; border-radius:50%;
+  opacity:0; transition:opacity 220ms ease;
+}
+.connection-radiate::before, .connection-radiate::after {
+  content:""; position:absolute; inset:0; border-radius:50%;
+  border:1.5px solid var(--amber); opacity:0;
+}
+.connection-status.is-attempting .connection-radiate { opacity:1; }
+.connection-status.is-attempting .connection-radiate::before,
+.connection-status.is-attempting .connection-radiate::after {
+  animation:connection-radiate 1.6s cubic-bezier(.2,.8,.2,1) infinite;
+}
+.connection-status.is-attempting .connection-radiate::after { animation-delay:.8s; }
+@keyframes connection-radiate {
+  0% { transform:scale(.45); opacity:.75; }
+  70% { opacity:.18; }
+  100% { transform:scale(1.15); opacity:0; }
+}
+/* Reduced motion keeps every state legible and drops the movement: the ring
+   still changes colour and the countdown still counts, they simply arrive
+   rather than travel. */
+@media (prefers-reduced-motion: reduce) {
+  .connection-status::before, .connection-centre, .connection-radiate { transition:none; }
+  .connection-status.is-attempting .connection-radiate::before,
+  .connection-status.is-attempting .connection-radiate::after {
+    animation:none; opacity:.5; transform:scale(.8);
+  }
+}
+@media (max-width: 760px) {
+  /* The strip runs across the foot here, so the icon stands at its right-hand
+     end rather than under it — and the strip reserves that end for it. */
+  #connection-status {
+    right:8px; bottom:calc(var(--console-space, 0px) + 8px); width:30px;
+  }
 }
 .sr-only {
   position:absolute!important; width:1px!important; height:1px!important; padding:0!important;

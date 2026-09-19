@@ -29,8 +29,7 @@
       <span>A new version of Build is available.</span>
       <button class="btn" id="verbar-reload">Reload</button>
     </div>
-    <div id="recovery-banners" aria-label="Connection status"></div>
-    <div id="recovery-announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+    <div id="connection-announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
     <!-- The universal shell: the inbox rail (global, persistent), the view
          column (toolbar / view body / console), and the agent rail at the
          right edge of the view body. Branches add their view rail beside the
@@ -67,6 +66,10 @@
           <aside id="agent-rail" aria-label="Agents"></aside>
         </div>
         <div id="console-region"></div>
+        <!-- The connection icon: how many machines are connected, and what is
+             being done about one that is not. It stands at the foot of the
+             conversation rail, clear of the composer. -->
+        <div id="connection-status" hidden></div>
       </div>
     </div>
     <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>

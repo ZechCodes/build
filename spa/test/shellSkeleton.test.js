@@ -115,7 +115,9 @@ describe("the shell's markup", () => {
     // The toolbar is the view column's own row, above the body the rail rides.
     const view = document.getElementById("view");
     const rows = [...view.children].map((child) => child.id);
-    expect(rows).toEqual(["toolbar", "view-body", "console-region"]);
+    // The connection icon rides the view column too: it stands at the foot of
+    // the conversation rail, which is a column of this body.
+    expect(rows).toEqual(["toolbar", "view-body", "console-region", "connection-status"]);
   });
 });
 

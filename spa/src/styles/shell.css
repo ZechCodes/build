@@ -732,9 +732,13 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 #agent-rail.rail-unpinned, #agent-rail.rail-collapsed { width:var(--agent-strip); }
 /* position:relative — the strip rises above the card it anchors, so pressing
    the bubble beside the open one reaches that agent. */
+/* The foot of the column is the connection icon's (spa/src/styles.css), so the
+   strip ends above it: a bubble scrolled to the bottom must not come to rest
+   underneath the one thing on the page that says whether the machine it
+   belongs to is even connected. */
 .rail-strip { flex:none; width:var(--agent-strip); display:flex; position:relative;
   margin-left:auto;
-  flex-direction:column; align-items:center; gap:8px; padding:10px 0;
+  flex-direction:column; align-items:center; gap:8px; padding:10px 0 44px;
   border:0; overflow-y:auto; }
 /* A bubble is the agent: the face it wears, its unread count, and a pulse while
    it is working — the whole state of an agent, legible with the panel shut. */
@@ -1224,7 +1228,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   .rail-strip { position:absolute; z-index:31;
     left:0; right:0; bottom:var(--console-space);
     width:auto; height:var(--agent-strip);
-    flex-direction:row; align-items:center; gap:10px; padding:0 10px;
+    /* The connection icon stands at the strip's right-hand end here, so the
+       bubbles end before it rather than scrolling under it. */
+    flex-direction:row; align-items:center; gap:10px; padding:0 44px 0 10px;
     border:0; background:var(--panel); border-radius:10px;
     overflow-x:auto; overflow-y:hidden; }
   /* The strip runs across the foot here, so the line under the project's agent

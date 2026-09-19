@@ -73,6 +73,13 @@ const PENDING_KEY_CAP: usize = 512;
 /// paths".
 pub const FILES_PER_FLUSH: usize = 200;
 
+/// The most working-tree diff one `git` item carries.
+///
+/// A quarter of a megabyte is a large review diff and a small cache write.
+/// Past it the item says how big the diff is and carries none of it, and the
+/// client reads it when a reviewer opens the changes.
+pub const WORKING_TREE_DIFF_MAX_BYTES: usize = 262_144;
+
 /// The most conversation items one `thread` item carries.
 ///
 /// A push is a cache write, and past a hundred rows the write is bigger than
@@ -412,6 +419,20 @@ pub struct EntityFacts {
     /// The checkout's tab list, as `term.list` reads it. `None` leaves the
     /// item's `terminals` an empty object, which says the same.
     pub terminals: Option<Value>,
+    /// The whole `git.status` shape the key was taken from.
+    pub status: Option<Value>,
+    /// The latest commits, as `git.log` answers them.
+    pub log: Option<Value>,
+    /// What this checkout holds that its publication base does not, as a
+    /// commit list and a `diff_key` — never a patch.
+    pub unpushed: Option<Value>,
+    /// The working tree's own diff, the body `run.diff` / `worktree.diff`
+    /// answers with. `None` beside a [`diff_bytes`](Self::diff_bytes) is a
+    /// diff past [`WORKING_TREE_DIFF_MAX_BYTES`] — too big to push.
+    pub diff: Option<Value>,
+    /// How big that diff's patch is. `None` when the diff could not be read
+    /// at all, which leaves both fields off the item.
+    pub diff_bytes: Option<u64>,
 }
 
 /// How a flush answers a batch of [`FactsRequest`]s. Runs on the flusher's
@@ -793,13 +814,30 @@ fn terminals_payload(facts: Option<&EntityFacts>) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+/// Everything the lookup read about one checkout, each field left off when
+/// it read nothing. A `git` item with none of them still says "this moved".
 fn git_payload(facts: Option<&EntityFacts>) -> Value {
     let mut git = Map::new();
-    if let Some(key) = facts.and_then(|f| f.status_key.clone()) {
-        git.insert("status_key".into(), json!(key));
+    let Some(facts) = facts else {
+        return Value::Object(git);
+    };
+    for (field, value) in [
+        ("status_key", facts.status_key.clone().map(Value::String)),
+        ("head", facts.head.clone().map(Value::String)),
+        ("status", facts.status.clone()),
+        ("log", facts.log.clone()),
+        ("unpushed", facts.unpushed.clone()),
+    ] {
+        if let Some(value) = value {
+            git.insert(field.into(), value);
+        }
     }
-    if let Some(head) = facts.and_then(|f| f.head.clone()) {
-        git.insert("head".into(), json!(head));
+    // The pair is written together or not at all: `diff: null` means "too big
+    // to push, here is how big", and a diff that could not be read at all
+    // says nothing rather than saying zero.
+    if let Some(bytes) = facts.diff_bytes {
+        git.insert("diff".into(), facts.diff.clone().unwrap_or(Value::Null));
+        git.insert("diff_bytes".into(), json!(bytes));
     }
     Value::Object(git)
 }
@@ -2636,5 +2674,111 @@ mod subscriptions {
         };
         assert_eq!(cursor("s-first"), json!(5), "it heard the tip already");
         assert_eq!(cursor("s-second"), json!(null), "this one never has");
+    }
+
+    /// A `git` item carries the surfaces themselves — the status shape, the
+    /// latest commits, what is unpublished, and the working tree's diff —
+    /// so a client writes them into its cache and calls nothing back.
+    #[test]
+    fn a_git_item_carries_the_shapes_a_client_would_have_asked_for() {
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(|requests: &[FactsRequest]| {
+                vec![EntityFacts {
+                    entity_id: requests[0].entity_id.clone(),
+                    status_key: Some("9f3c1a0b7e2d4c55".into()),
+                    head: Some("a1b2c3d".into()),
+                    status: Some(json!({ "branch": "build/x", "files": [] })),
+                    log: Some(json!({ "commits": [{ "hash": "a1b2c3d" }], "newest": "a1b2c3d" })),
+                    unpushed: Some(json!({
+                        "base": { "kind": "push_target", "label": "origin/build/x" },
+                        "commits": [{ "hash": "a1b2c3d", "subject": "do it" }],
+                        "diff_key": "77aa11bb",
+                    })),
+                    diff: Some(json!({ "stat": {}, "files": [], "patch": "" })),
+                    diff_bytes: Some(41),
+                    ..EntityFacts::default()
+                }]
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::Git].into_iter().collect(),
+                ..spec(
+                    "s-git",
+                    Scope::Entity("run-7".into()),
+                    Mode::Realtime,
+                    Priority::Foreground,
+                )
+            },
+        );
+
+        bus.note_kind("run-7", Kind::Git);
+        bus.flush();
+
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0],
+            json!({
+                "entity_id": "run-7",
+                "git": {
+                    "status_key": "9f3c1a0b7e2d4c55",
+                    "head": "a1b2c3d",
+                    "status": { "branch": "build/x", "files": [] },
+                    "log": { "commits": [{ "hash": "a1b2c3d" }], "newest": "a1b2c3d" },
+                    "unpushed": {
+                        "base": { "kind": "push_target", "label": "origin/build/x" },
+                        "commits": [{ "hash": "a1b2c3d", "subject": "do it" }],
+                        "diff_key": "77aa11bb",
+                    },
+                    "diff": { "stat": {}, "files": [], "patch": "" },
+                    "diff_bytes": 41,
+                },
+            })
+        );
+    }
+
+    /// A working tree too big to push says so: the item names the size and
+    /// carries no diff, and the client asks for it when a reviewer opens it.
+    #[test]
+    fn a_git_item_past_the_diff_cap_carries_the_size_and_no_diff() {
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(|requests: &[FactsRequest]| {
+                vec![EntityFacts {
+                    entity_id: requests[0].entity_id.clone(),
+                    diff: None,
+                    diff_bytes: Some(WORKING_TREE_DIFF_MAX_BYTES as u64 + 1),
+                    ..EntityFacts::default()
+                }]
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::Git].into_iter().collect(),
+                ..spec(
+                    "s-git",
+                    Scope::Entity("run-7".into()),
+                    Mode::Realtime,
+                    Priority::Foreground,
+                )
+            },
+        );
+
+        bus.note_kind("run-7", Kind::Git);
+        bus.flush();
+
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["git"],
+            json!({
+                "diff": null,
+                "diff_bytes": WORKING_TREE_DIFF_MAX_BYTES + 1,
+            })
+        );
     }
 }

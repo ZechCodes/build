@@ -574,6 +574,168 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
     );
 }
 
+/// A `git` item carries the surfaces themselves: the status shape, the
+/// latest commits, what is unpublished, and the working tree's diff — the
+/// same bodies `git.status`, `git.log`, `git.unpushed` and the diff verbs
+/// answer with, so a client writes them into its cache and asks nothing.
+#[tokio::test]
+async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-git",
+                "scope": { "kind": "entity", "id": project_id },
+                "kinds": ["git"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    std::fs::write(repo.join("pushed.txt"), "a small change\n").unwrap();
+    let git = pushed_git_item(&state, &mut rx, &key, &project_id, |git| {
+        git["diff"]["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("a small change"))
+    })
+    .await;
+
+    // The status walk the flush already ran, whole — the same branch, head
+    // and changed paths `git.status` answers with. The per-file line counts
+    // it adds are left to the diff riding beside it here, so the flush pays
+    // for one walk and not two.
+    let status = call(&handler, "git.status", json!({ "project_id": project_id }));
+    let paths = |shape: &Value| -> Vec<String> {
+        shape["files"]
+            .as_array()
+            .expect("a status names its files")
+            .iter()
+            .map(|file| file["path"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    assert_eq!(
+        git["status"]["branch"], status["result"]["branch"],
+        "{git:?}"
+    );
+    assert_eq!(git["status"]["head"], status["result"]["head"], "{git:?}");
+    assert_eq!(paths(&git["status"]), vec!["pushed.txt".to_string()]);
+    assert_eq!(paths(&git["status"]), paths(&status["result"]));
+    assert_eq!(
+        git["status_key"], status["result"]["status_key"],
+        "the key still names the shape beside it"
+    );
+    let log = call(&handler, "git.log", json!({ "project_id": project_id }));
+    assert_eq!(git["log"]["newest"], log["result"]["newest"], "{git:?}");
+    assert!(git["log"]["commits"][0]["hash"].is_string(), "{git:?}");
+    let unpushed = call(
+        &handler,
+        "git.unpushed",
+        json!({ "project_id": project_id }),
+    );
+    assert_eq!(
+        git["unpushed"]["diff_key"], unpushed["result"]["diff_key"],
+        "{git:?}"
+    );
+    assert_eq!(
+        git["unpushed"]["base"], unpushed["result"]["base"],
+        "{git:?}"
+    );
+    assert!(
+        git["unpushed"].get("patch").is_none(),
+        "a patch is what the item deliberately leaves for the review surface: {git:?}"
+    );
+    let diff = call(
+        &handler,
+        "project.diff",
+        json!({ "project_id": project_id }),
+    );
+    assert_eq!(git["diff"]["files"], diff["result"]["files"], "{git:?}");
+    assert_eq!(
+        git["diff_bytes"].as_u64(),
+        Some(diff["result"]["patch"].as_str().unwrap().len() as u64),
+        "{git:?}"
+    );
+}
+
+/// A working tree with more diff than a push may carry says how big it is and
+/// carries none of it. The client reads it when a reviewer opens the changes.
+#[tokio::test]
+async fn a_git_item_past_the_diff_cap_names_the_size_and_carries_no_diff() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-git",
+                "scope": { "kind": "entity", "id": project_id },
+                "kinds": ["git"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    let huge: String = std::iter::repeat_n(
+        "a line of a very large change\n",
+        crate::changes::WORKING_TREE_DIFF_MAX_BYTES / 10,
+    )
+    .collect();
+    std::fs::write(repo.join("huge.txt"), huge).unwrap();
+    let git = pushed_git_item(&state, &mut rx, &key, &project_id, |git| {
+        git.get("diff_bytes").is_some()
+    })
+    .await;
+
+    assert_eq!(git["diff"], Value::Null, "{git:?}");
+    assert!(
+        git["diff_bytes"].as_u64().unwrap() > crate::changes::WORKING_TREE_DIFF_MAX_BYTES as u64,
+        "{git:?}"
+    );
+    assert!(
+        git["status"]["files"][0]["path"].is_string(),
+        "the rest of the item is unaffected: {git:?}"
+    );
+}
+
+/// The `git` half of one entity's items, waited for until it says what the
+/// test is about. The worktree's own notes are paced by the settle window,
+/// so a git surface may take a second to arrive.
+async fn pushed_git_item(
+    state: &Arc<Mutex<AppState>>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+    key: &str,
+    entity_id: &str,
+    ready: impl Fn(&Value) -> bool,
+) -> Value {
+    let mut seen = Vec::new();
+    for _ in 0..40 {
+        state.lock().unwrap().note_entity_settled(entity_id);
+        for push in settled_pushes(rx, key).await {
+            if push["type"] != "changes" {
+                continue;
+            }
+            for item in push["items"].as_array().cloned().unwrap_or_default() {
+                if item["entity_id"] != entity_id {
+                    continue;
+                }
+                if ready(&item["git"]) {
+                    return item["git"].clone();
+                }
+                seen.push(item);
+            }
+        }
+    }
+    panic!("no git item for {entity_id} saying so: {seen:?}");
+}
+
 /// A `thread` item carries the conversation, not a hint about it: the first
 /// flush says where the conversation stands, and the one after it carries
 /// what was said in between — until a burst wider than the push cap, which

@@ -193,14 +193,25 @@ fn typed<T: serde::de::DeserializeOwned>(value: &Value, what: &str) -> T {
     serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{what}: {e}"))
 }
 
-/// The `git` facts an item carries — the two `git_payload` writes.
+/// The `git` facts an item carries: the two keys a client compares against,
+/// the surfaces it writes into its cache, and the size of the diff whether or
+/// not the diff itself came with it.
 fn check_git_facts(entity_id: &str, git: &Value) {
     for (key, value) in git.as_object().expect("git is an object") {
+        let stated = match key.as_str() {
+            "status_key" | "head" => value.is_string(),
+            "status" | "log" | "unpushed" => value.is_object(),
+            "diff" => value.is_object() || value.is_null(),
+            "diff_bytes" => value.is_u64(),
+            _ => panic!("{entity_id}: git.{key} is not a git fact"),
+        };
+        assert!(stated, "{entity_id}: git.{key} is the wrong shape");
+    }
+    if git.get("diff").is_some() {
         assert!(
-            matches!(key.as_str(), "status_key" | "head"),
-            "{entity_id}: git.{key} is not a git fact"
+            git["diff_bytes"].is_u64(),
+            "{entity_id}: a diff says how big it is"
         );
-        assert!(value.is_string(), "{entity_id}: git.{key} is a string");
     }
 }
 

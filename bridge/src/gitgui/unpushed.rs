@@ -308,12 +308,63 @@ fn file_edited_at(
         .collect()
 }
 
+/// The key naming the whole delta between a checkout and its publication
+/// base — the base itself and the tree above it, so a client holding it holds
+/// this exact answer.
+fn unpushed_diff_key(repo_path: &Path, base: &PublishedBase) -> Result<String, String> {
+    let delta_key =
+        crate::diff::key_against_commit(repo_path, base.oid()).map_err(|e| e.to_string())?;
+    Ok(crate::diff::fnv1a64_hex(&format!(
+        "{:?}\0{}",
+        base, delta_key
+    )))
+}
+
+/// The commits above the publication base, newest first — what a checkout
+/// holds that its push destination does not.
+fn unpublished_commit_list(
+    repo: &git2::Repository,
+    base: Option<git2::Oid>,
+) -> Result<Vec<Value>, String> {
+    let Some(head) = repo.head().ok().and_then(|head| head.target()) else {
+        return Ok(Vec::new());
+    };
+    let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| e.to_string())?;
+    walk.push(head).map_err(|e| e.to_string())?;
+    if let Some(base) = base {
+        walk.hide(base).map_err(|e| e.to_string())?;
+    }
+    let mut commits = Vec::new();
+    for oid in walk {
+        let commit = repo
+            .find_commit(oid.map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        commits.push(super::history::commit_summary_json(&commit));
+    }
+    Ok(commits)
+}
+
+/// What a `changes` push says about unpublished work: the base it is measured
+/// against, the commits standing above that base, and the key naming the diff
+/// between them. No patch — the bytes are what a reviewer opening All changes
+/// asks [`unpushed_payload`] for.
+pub fn unpushed_summary(repo_path: &Path) -> Result<Value, String> {
+    let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let base = published_base(&repo)?;
+    Ok(json!({
+        "base": base.json(),
+        "published": base.push_target_exists(),
+        "commits": unpublished_commit_list(&repo, base.oid())?,
+        "diff_key": unpushed_diff_key(repo_path, &base)?,
+    }))
+}
+
 pub fn unpushed_payload(repo_path: &Path, if_diff_key: Option<&str>) -> Result<Value, String> {
     let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
     let base = published_base(&repo)?;
-    let delta_key =
-        crate::diff::key_against_commit(repo_path, base.oid()).map_err(|e| e.to_string())?;
-    let key = crate::diff::fnv1a64_hex(&format!("{:?}\0{}", base, delta_key));
+    let key = unpushed_diff_key(repo_path, &base)?;
     if if_diff_key == Some(&key) {
         return Ok(json!({ "unchanged": true, "diff_key": key }));
     }

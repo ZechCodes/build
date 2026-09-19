@@ -29,7 +29,70 @@
               ]
             }
           ],
-          "git": { "status_key": "9f3c1a0b7e2d4c55", "head": "a1b2c3d" },
+          "git": {
+            "status_key": "9f3c1a0b7e2d4c55",
+            "head": "a1b2c3d",
+            "status": {
+              "branch": "build/cache-first",
+              "path": "/home/dev/worktrees/cache-first",
+              "head": "a1b2c3d",
+              "repo_state": "clean",
+              "upstream": "origin/build/cache-first",
+              "ahead": 2,
+              "behind": 0,
+              "stash_count": 0,
+              "files": [
+                {
+                  "path": "src/lib.rs",
+                  "index_status": "M",
+                  "worktree_status": " ",
+                  "staged": "all",
+                  "content_key": "3f9a1c0b7e2d4c55"
+                }
+              ],
+              "files_truncated": false
+            },
+            "log": {
+              "branch": "build/cache-first",
+              "commits": [
+                {
+                  "short": "a1b2c3d",
+                  "hash": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+                  "subject": "Push the shapes a client would have pulled",
+                  "author": "Zech",
+                  "email": "zech@example.com",
+                  "time": 1789787235,
+                  "ahead_of_base": true
+                }
+              ],
+              "more": true,
+              "reset": false,
+              "newest": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+              "highlight_key": "5c6d7e8f90123456"
+            },
+            "unpushed": {
+              "base": { "kind": "push_target", "label": "origin/build/cache-first" },
+              "published": true,
+              "commits": [
+                {
+                  "short": "a1b2c3d",
+                  "hash": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+                  "subject": "Push the shapes a client would have pulled",
+                  "author": "Zech",
+                  "email": "zech@example.com",
+                  "time": 1789787235
+                }
+              ],
+              "diff_key": "77aa11bb22cc33dd"
+            },
+            "diff": {
+              "stat": { "files_changed": 1, "insertions": 12, "deletions": 3 },
+              "files": [{ "path": "src/lib.rs", "status": "Modified" }],
+              "file_edited_at": { "src/lib.rs": 1789787235977 },
+              "patch": "diff --git a/src/lib.rs b/src/lib.rs\n"
+            },
+            "diff_bytes": 12345
+          },
           "files": { "paths": ["src/lib.rs", "src/app/rpc.rs"], "truncated": false },
           "terminals": {
             "tabs": [
@@ -51,7 +114,12 @@
       "items": [
         {
           "entity_id": "run-9",
-          "git": { "status_key": "1c4e77aa90b3f012", "head": "0d9e4f1" }
+          "git": {
+            "status_key": "1c4e77aa90b3f012",
+            "head": "0d9e4f1",
+            "diff": null,
+            "diff_bytes": 918273
+          }
         },
         {
           "entity_id": "worktree-2",

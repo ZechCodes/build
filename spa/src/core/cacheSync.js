@@ -521,9 +521,13 @@ async function syncUnpushed(context, entityId, scope, priority) {
 }
 
 /** The patches behind the unpushed commits: the first twenty, and only the
- *  ones not already held. A patch too big for the record is not stored —
- *  the reader opens it and gets it off the wire, which is what the truncated
- *  answer says on screen anyway. */
+ *  ones not already held.
+ *
+ *  Read under the cap, which is what a cache asks under: a commit over it is
+ *  answered with the file headers, and those are kept. Holding which files
+ *  moved is what stops the next pass asking after the commit again — and a
+ *  reader opening it is what asks for the patch itself, uncapped, from the
+ *  pane. */
 async function syncPatches(context, entityId, scope, commits, priority) {
   const hashes = (commits || [])
     .map((commit) => commit.hash)

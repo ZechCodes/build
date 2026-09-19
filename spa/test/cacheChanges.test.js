@@ -30,6 +30,15 @@ const show = () => ({
   truncated: false,
 });
 
+// What `git.show` answers a caller that named `max_bytes` for a commit over
+// it: the file headers, which say which files moved without saying how.
+const headersOnly = () => ({
+  ...show(),
+  patch: "diff --git a/src/b.js b/src/b.js\nindex 1111111..2222222 100644\n--- a/src/b.js\n+++ b/src/b.js\n",
+  truncated: true,
+  patch_bytes: 400000,
+});
+
 let mountGitPane, cache, scopeOf;
 
 const settle = async () => {
@@ -229,9 +238,55 @@ describe("a commit's detail", () => {
     const commitRow = container.querySelector(".crow");
     commitRow.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await settle();
-    expect(callRpc.mock.calls.find(([method]) => method === "git.show")[1].max_bytes).toBe(262144);
+    // Naming a cap is what a cache does: past it the bridge answers the file
+    // headers, which say which files moved without saying how. A reader
+    // opening a commit is asking how, so this read names none and is answered
+    // the patch itself.
+    expect(callRpc.mock.calls.find(([method]) => method === "git.show")[1].max_bytes).toBeUndefined();
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) });
     expect(record.value.body).toBe("why it happened");
+    pane.dispose();
+  });
+
+  it("reads the patch behind a record the sync layer could only keep headers for", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }, headersOnly());
+    const callRpc = liveRpc();
+    const { container, pane } = await mountPane(callRpc);
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.show")).toHaveLength(1);
+    expect(container.textContent).toContain("committed line"); // the diff, not the file list
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) });
+    expect(record.value.truncated).toBe(false);
+    pane.dispose();
+  });
+
+  it("asks once for a patch no record can take, however often the records move", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }, headersOnly());
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") return status();
+      if (method === "git.diff") return tree.diff(params);
+      if (method === "git.log") return log();
+      if (method === "git.show") return { ...show(), patch: "x".repeat(262145), truncated: true, patch_bytes: 262145 };
+      return {};
+    });
+    const { container, pane } = await mountPane(callRpc);
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.show")).toHaveLength(1);
+    // The record still holds the headers — the cap is the cache's rule — but
+    // the patch this mount read is not displaced by them.
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await settle();
+    container.querySelector('.rrow[data-sel="uncommitted"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.show")).toHaveLength(1);
     pane.dispose();
   });
 

@@ -516,6 +516,14 @@ export function mountGitPane(
   // so a patch once read is the patch: this is the `patch` records, plus
   // whatever this pane read that was too big for one.
   const patches = new Map();
+  // The hashes among those whose payload is the file headers rather than the
+  // diff. A `patch` record is written under a cap, and past it `git.show`
+  // answers which files moved without saying how — enough to know the commit
+  // by, never enough to read it. The reader opening one is what asks for the
+  // patch itself.
+  const headersOnly = new Set();
+  /** Whether what is held for a commit is the commit's own diff. */
+  const patchHeld = (hash) => patches.has(hash) && !headersOnly.has(hash);
   // The uncommitted changeset's bodies: git.status names the files and what each
   // one holds, and each file's diff is fetched, cached and answered on its own.
   const fileDiffs = createFileDiffs({
@@ -887,7 +895,7 @@ export function mountGitPane(
       });
       return;
     }
-    const detail = patches.get(selected);
+    const detail = patchHeld(selected) ? patches.get(selected) : null;
     if (!detail) {
       renderedViews = [];
       detailHost.innerHTML = '<div class="empty cdetail-loading">loading…</div>';
@@ -1299,17 +1307,21 @@ export function mountGitPane(
     clearConfirm();
     fileMenuPath = null; // a menu belongs to the changeset it was opened on
     renderAndFetch();
-    if (sel !== "review" && sel !== "uncommitted" && !patches.has(sel)) fetchShow(sel);
+    if (sel !== "review" && sel !== "uncommitted" && !patchHeld(sel)) fetchShow(sel);
   };
 
   /** The patch behind a commit the reader opened that nothing holds one for —
-   *  a commit older than the unpushed window the sync layer fills, or one
-   *  whose patch was over the cap. Read once and kept: a commit is immutable,
-   *  so there is no revalidation and never a second ask. */
+   *  a commit older than the unpushed window the sync layer fills, or one the
+   *  record holds only the file headers of. Read once and kept: a commit is
+   *  immutable, so there is no revalidation and never a second ask.
+   *
+   *  It names no `max_bytes`. The cap is what a caller caching a commit asks
+   *  under, and is answered with the headers; this read is a reader with the
+   *  commit open, so it takes the patch as the wire will carry it. */
   const fetchShow = async (hash) => {
     let show;
     try {
-      show = await callRpc("git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES });
+      show = await callRpc("git.show", { ...scope, hash });
     } catch (e) {
       if (disposed) return;
       actionError(e);
@@ -1320,8 +1332,10 @@ export function mountGitPane(
       return;
     }
     patches.set(show.hash, show);
+    headersOnly.delete(show.hash);
     // A patch the record cannot take stays in this mount's hand and nowhere
-    // else — the cap is the cache's rule, not the reader's.
+    // else — the cap is the cache's rule, not the reader's — so the record
+    // goes on holding whichever files moved, and this mount holds how.
     if (withinBytes(show.patch, COMMIT_PATCH_MAX_BYTES)) keep(PATCH_RECORD_KIND, show, show.hash);
     if (!disposed && selected === hash) render();
   };
@@ -1699,7 +1713,14 @@ export function mountGitPane(
    *  the patches anybody has read here, and what the review is measured
    *  against. */
   const takeUpBesides = (held) => {
-    for (const [hash, value] of held.patches) patches.set(hash, value);
+    for (const [hash, value] of held.patches) {
+      // A record cut to the headers never displaces a patch this mount read:
+      // one is the commit, the other is its table of contents.
+      if (value.truncated && patchHeld(hash)) continue;
+      patches.set(hash, value);
+      if (value.truncated) headersOnly.add(hash);
+      else headersOnly.delete(hash);
+    }
     lastUnpushed = held.unpushed || lastUnpushed;
     if (lastUnpushed?.base) review?.seedBase?.(lastUnpushed.base);
   };

@@ -395,6 +395,19 @@ describe("the two bodies that never ride a push", () => {
     expect((await read("run-1", "patch", "h2")).value.patch).toBe("diff --git");
   });
 
+  it("keeps the file headers a commit over the cap is answered with", async () => {
+    script["git.log"] = () => ahead(["h1"]);
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "h1" },
+      { hash: "h1", patch: "diff --git a/one b/one\n", truncated: true, patch_bytes: 400000 },
+    );
+    await boot([branchItem()]);
+    // Which files moved is what the cap answers with, and holding it is what
+    // keeps the next pass off the wire. How they moved is the reader's ask,
+    // made uncapped from the pane when they open the commit.
+    expect(paramsOf("git.show")).toEqual([]);
+  });
+
   it("reads the patches of at most twenty commits", async () => {
     script["git.log"] = () => ahead(Array.from({ length: 30 }, (_unused, index) => `h${index}`));
     await boot([branchItem()]);

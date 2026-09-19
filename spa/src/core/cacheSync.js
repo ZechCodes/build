@@ -170,7 +170,7 @@ async function orderedSync(deviceId) {
   await evictRowsThatAreOver(context, view);
   await dropWhatTheBoardStoppedNaming(context, view);
   if (!context.active()) return false;
-  subscribeDevice(context, pass.routed);
+  await subscribeDevice(context);
   return true;
 }
 
@@ -553,7 +553,14 @@ const subscriptionShape = (deviceId) => ({
   onChanges: (items) => void applyChanges(items, deviceId),
 });
 
-function subscribeDevice(context, routed) {
+/** The three watchers, and the one that follows the reader.
+ *
+ *  The routed workspace is resolved here rather than carried from the top of
+ *  the pass: a pass is six or eight reads per workspace long and the reader
+ *  walks off mid-way through it. Standing the active subscription up on where
+ *  they were when it started would leave the workspace on screen with no
+ *  realtime watcher at all. */
+async function subscribeDevice(context) {
   const deviceId = context.deviceId;
   if (!subscriptions.has(deviceId)) {
     const shape = subscriptionShape(deviceId);
@@ -578,7 +585,7 @@ function subscribeDevice(context, routed) {
       activeId: null,
     });
   }
-  followRoutedEntity(deviceId, routed);
+  await refollowRoute(deviceId);
 }
 
 /** The active subscription follows the reader: the workspace they are standing
@@ -605,7 +612,11 @@ function followRoutedEntity(deviceId, entityId) {
 
 /** The reader moved. Called from the one place every route is taken up
  *  (app.js `standOn`), so a move within a surface counts the same as a
- *  navigation: both can change which workspace is on screen. */
+ *  navigation: both can change which workspace is on screen.
+ *
+ *  A device whose pass has not reached its subscriptions yet is not here to be
+ *  told, and does not need to be: that pass resolves the route for itself when
+ *  it gets there. */
 export function routeChanged() {
   if (!holdingLock) return;
   for (const deviceId of [...subscriptions.keys()]) void refollowRoute(deviceId);

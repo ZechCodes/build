@@ -195,6 +195,40 @@ describe("the three subscriptions", () => {
     expect(subscription("s-active")?.entity).toBe("run-7");
   });
 
+  it("follows a route taken while the pass was still reading", async () => {
+    // A pass reads six or eight shapes per workspace, one after another, and
+    // the reader does not wait for it. Where they are standing when the
+    // subscriptions are taken out is where they are standing now, not where
+    // the pass found them when it started.
+    const two = [branchItem(), branchItem({ branch: "build/search", run_id: "run-2", worktree_id: "wt-2" })];
+    script["git.unpushed"] = () => {
+      App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/search" };
+      sync.routeChanged();
+      return { base: {}, commits: [], diff_key: "d1" };
+    };
+    await boot(two, { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+
+    expect(subscription("s-active")?.entity).toBe("run-2");
+    expect(live()).toHaveLength(3);
+  });
+
+  it("does not put a later pass's reader back in the workspace they left", async () => {
+    const two = [branchItem(), branchItem({ branch: "build/search", run_id: "run-2", worktree_id: "wt-2" })];
+    await boot(two, { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    expect(subscription("s-active")?.entity).toBe("run-1");
+
+    script["git.unpushed"] = () => {
+      App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/search" };
+      sync.routeChanged();
+      return { base: {}, commits: [], diff_key: "d1" };
+    };
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+
+    expect(subscription("s-active")?.entity).toBe("run-2");
+    expect(live()).toHaveLength(3);
+  });
+
   it("lets the active one go when the reader leaves the workspace", async () => {
     await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
     App.route = { name: "inbox" };

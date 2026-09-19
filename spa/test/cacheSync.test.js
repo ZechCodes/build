@@ -26,6 +26,26 @@ const branchItem = (over = {}) => ({
   ...over,
 });
 
+/** A project's own conversation, as the board carries it: an ordinary row over
+ *  the scratch checkout the bridge cut for it, whose agent is a project agent.
+ *  Quiet for days, which is the ordinary state of a project agent — nobody
+ *  talks to one every day. */
+const projectRow = (over = {}) =>
+  branchItem({
+    branch: "build",
+    run_id: "run-proj",
+    worktree_id: "wt-proj",
+    state: "review",
+    anchor: ago(80),
+    last_activity: ago(80),
+    agents: [{ id: "project-01M2" }],
+    ...over,
+  });
+
+/** The `project.list` row that names it. `entity_id` is the conversation the
+ *  project holds — null for a project nobody has talked to yet. */
+const projectList = { project_id: "p1", name: "build", entity_id: "run-proj", run_id: "run-proj" };
+
 /** The one bridge this file's device answers through. */
 const bridge = { call: null };
 
@@ -360,6 +380,37 @@ describe("the cursors", () => {
     await boot([branchItem({ agents: [{ id: "ag-1", conversation_id: "conv-9" }] })]);
     expect(await read("run-1", "thread", "conv-9")).toBeTruthy();
     expect(await read("run-1", "thread", "ag-1")).toBeUndefined();
+  });
+
+  // A project's conversation is not work that finishes: there is no branch
+  // behind it to merge and no row to clear, and the project page offers it
+  // whenever the reader opens the project. So it is read by every pass
+  // however long it has been quiet — the inbox's Recent partition is about
+  // work items, and a pass that applied it here would leave a reader who
+  // opens their project page a blank panel until somebody says something.
+  it("reads a project's conversation on a first sync, however long it has been quiet", async () => {
+    script["project.list"] = () => ({ projects: [projectList] });
+    await boot([branchItem({ agents: [{ id: "ag-1" }] }), projectRow()]);
+    expect(paramsOf("thread.page")).toContainEqual({
+      entity_id: "run-proj",
+      agent_id: "project-01M2",
+      limit: 100,
+    });
+  });
+
+  it("reads a quiet project conversation again on the pass a reconnect brings", async () => {
+    script["project.list"] = () => ({ projects: [projectList] });
+    script["thread.page"] = () => ({ items: [{ id: "m-1", data: { sequence: 4 } }], has_more: false });
+    await boot([projectRow()]);
+    contexts.get("dev-1").session = { device: "dev-1", again: true };
+    stateListeners.forEach((fn) => fn());
+    await settle();
+    // The second read is the forward delta off what the first one stored, so
+    // a resync costs a cursor rather than the conversation again.
+    expect(paramsOf("thread.page").filter((params) => params.entity_id === "run-proj")).toEqual([
+      { entity_id: "run-proj", agent_id: "project-01M2", limit: 100 },
+      { entity_id: "run-proj", agent_id: "project-01M2", after_sequence: 4, limit: 100 },
+    ]);
   });
 
   it("never asks for a whole conversation or a whole log on a warm cache", async () => {

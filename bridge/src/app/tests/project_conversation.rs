@@ -433,3 +433,37 @@ fn an_unchosen_project_agent_leaves_the_default_harness_standing() {
     );
     assert_eq!(state.runs[&owner].model_choice.model, None);
 }
+
+/// The board lists a project's conversation owner like any other row — kind,
+/// entity id and agent digests included.
+///
+/// Load-bearing for the client: a cache-first client reads every conversation
+/// it syncs off the board's rows (`spa/src/core/cacheSync.js`), so a project
+/// whose owner were missing here would be a project page whose chat never
+/// filled until somebody spoke into it.
+#[test]
+fn the_board_lists_a_projects_conversation_owner() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let owner = ensure(&mut state, &project_id);
+    let run_id = owner["result"]["run_id"].as_str().unwrap().to_string();
+
+    let board = state.handle(req("board.list", json!({})));
+    let items = board["result"]["items"].as_array().unwrap();
+    let row = items
+        .iter()
+        .find(|row| row["run_id"] == json!(run_id))
+        .unwrap_or_else(|| panic!("no row for the project's conversation: {items:?}"));
+    assert_eq!(row["project_id"], json!(project_id), "{row:?}");
+    assert!(row["agents"].is_array(), "{row:?}");
+
+    // And the project list names the same owner, which is how a client knows
+    // which of the board's rows is the project's own conversation.
+    let projects = state.handle(req("project.list", json!({})));
+    let listed = &projects["result"]["projects"][0];
+    assert_eq!(listed["entity_id"], json!(run_id), "{listed:?}");
+}

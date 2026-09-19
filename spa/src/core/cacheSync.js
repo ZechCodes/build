@@ -282,13 +282,27 @@ async function writeAgentSurfaces(context, entityId, agent) {
   await writeCached(address, surfacesRecord(seen.observed, seen.generation));
 }
 
+/** The conversation each project holds, as `project.list` names it. A project
+ *  nobody has talked to yet holds none, and names nothing here.
+ *
+ *  Active whatever the inbox says about the row underneath it: a project's
+ *  conversation is not work that finishes — there is no branch behind it to
+ *  merge and no row to clear — and the project page offers it the moment the
+ *  reader opens the project. Letting it age into Recent would leave that page
+ *  blank on the first sync of a new session, and blank until somebody spoke:
+ *  a Recent row is only read where the cache already holds its data, which on
+ *  a session that has never synced is nothing at all. */
+const projectConversationIds = (view) =>
+  (view.projects || []).map((project) => project.entity_id || project.run_id).filter(Boolean);
+
 /**
  * Step 2: which workspaces this pass reads, and in what order.
  *
- * The active set is the inbox's own partition, plus the Recent rows that still
- * hold data — and a Recent row is aged out before it is asked that question, so
- * "still holds data" means "was written to inside the TTL", which is the rule.
- * The routed workspace leads, whatever the inbox order says.
+ * The active set is the inbox's own partition and every project's own
+ * conversation, plus the Recent rows that still hold data — and a Recent row
+ * is aged out before it is asked that question, so "still holds data" means
+ * "was written to inside the TTL", which is the rule. The routed workspace
+ * leads, whatever the inbox order says.
  */
 async function workspacesToRead(context, view) {
   const items = view.items || [];
@@ -297,7 +311,7 @@ async function workspacesToRead(context, view) {
     const entityId = entityIdOf(row);
     if (entityId) rows.set(entityId, row);
   }
-  const active = cacheableEntityIds({ items });
+  const active = [...new Set([...cacheableEntityIds({ items }), ...projectConversationIds(view)])];
   const recent = await recentStillHoldingData(context, items, new Set(active));
   const routed = routedEntityId(App.route, view);
   const order = [...new Set([...(routed ? [routed] : []), ...active, ...recent])].filter((id) => rows.has(id));

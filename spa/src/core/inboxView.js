@@ -34,15 +34,9 @@ import {
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
-import {
-  isPending,
-  patchRecord,
-  projectOptimistic,
-  reconcileOptimistic,
-  removeRecord,
-  runOptimistic,
-  subscribeOptimistic,
-} from "./optimistic.js";
+import { isPending, projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
+import { patchFeedRow, removeFeedRow } from "./cachedRows.js";
+import { notifyError } from "./notify.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { routeProjectKey } from "./deviceKey.js";
@@ -547,18 +541,14 @@ function openEntry(entry) {
 }
 
 async function toggleMute(entry) {
-  if (!entry || isPending(INBOX_SCOPE, entry.key)) return;
+  if (!entry) return;
   const muted = !entry.muted;
   openMenuKey = null;
-  errors.delete(entry.key);
-  await runOptimistic({
-    scope: INBOX_SCOPE,
-    records: [patchRecord(entry.key, { muted })],
+  await optimisticVerb(entry, {
+    write: () => patchFeedRow(entry.deviceId, entry, { muted }),
     call: () => verbCall(entry)("entity.mute", { entity_id: entry.entityId, muted }),
     failureSummary: `Couldn't ${muted ? "mute" : "unmute"} ${entry.branch || "this item"}`,
-    onRevert: (error) => showRowError(entry.key, error),
   });
-  await refreshFeed();
 }
 
 /** Move the row to Recent until a new user or agent message. Nothing is
@@ -572,12 +562,10 @@ async function toggleMute(entry) {
  *  refuses. */
 async function dismissEntry(entry) {
   const params = entry && dismissParamsOf(entry);
-  if (!params || isPending(INBOX_SCOPE, entry.key)) return;
+  if (!params) return;
   openMenuKey = null;
-  errors.delete(entry.key);
-  await runOptimistic({
-    scope: INBOX_SCOPE,
-    records: [patchRecord(entry.key, { dismissed: true })],
+  await optimisticVerb(entry, {
+    write: () => patchFeedRow(entry.deviceId, entry, { dismissed: true }),
     call: async () => {
       // Clearing an unread row also acknowledges its unread notification. The
       // dismissal controls placement, but preserving read state avoids an
@@ -588,9 +576,7 @@ async function dismissEntry(entry) {
       await verbCall(entry)("entity.dismiss", params);
     },
     failureSummary: `Couldn't clear ${entry.branch || "this item"}`,
-    onRevert: (error) => showRowError(entry.key, error),
   });
-  await refreshFeed();
 }
 
 /** The RPC behind Done. On a branch it DELETES: the branch, its checkout and
@@ -609,20 +595,16 @@ export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
 }
 
 async function finishEntry(entry) {
-  if (!entry || isPending(INBOX_SCOPE, entry.key)) return;
+  if (!entry) return;
   const confirmation = entry.kind === "issue" ? issueDoneConfirm(entry) : branchDoneConfirm(entry);
   if (!(await confirmAction(confirmation))) return;
-  errors.delete(entry.key);
   // Confirmation is the decisive moment: the row goes now, and the git work
-  // (and the feed catching up) carries on behind it.
-  await runOptimistic({
-    scope: INBOX_SCOPE,
-    records: [removeRecord(entry.key)],
+  // (and the push that confirms it) carries on behind it.
+  await optimisticVerb(entry, {
+    write: () => removeFeedRow(entry.deviceId, entry),
     call: () => finishWorkItem(entry),
     failureSummary: branchFinishFailureSummary(entry.branch),
-    onRevert: (error) => showRowError(entry.key, error),
   });
-  await refreshFeed();
 }
 
 /** Put a finished workspace away in one tap. Done removes it: the bridge
@@ -661,6 +643,35 @@ function leaveFinishedWorkspace(entry) {
 function showRowError(key, error) {
   errors.set(key, messageOf(error));
   draw();
+}
+
+// The rows a verb is in flight for, so a second tap on one is not a second
+// verb. What `isPending` answered while the rail kept its moves in memory.
+const acting = new Set();
+
+/**
+ * One press that moves a row: the move is written into the cache, the verb is
+ * sent, and the push that follows confirms it.
+ *
+ * The cache is the only thing a view reads, so writing there is the whole of
+ * showing the move — every surface holding the row hears it, and the move
+ * outlives a remount and a reload. A bridge that refuses puts back exactly
+ * what was there and says so on the row.
+ */
+async function optimisticVerb(entry, { write, call, failureSummary }) {
+  if (acting.has(entry.key)) return;
+  acting.add(entry.key);
+  errors.delete(entry.key);
+  const undo = await write();
+  try {
+    await call();
+  } catch (error) {
+    await undo();
+    showRowError(entry.key, error);
+    notifyError(failureSummary, messageOf(error));
+  } finally {
+    acting.delete(entry.key);
+  }
 }
 
 let mounted = false;

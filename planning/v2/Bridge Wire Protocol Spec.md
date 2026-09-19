@@ -722,10 +722,12 @@ and an item this bridge has never heard of is refused by kind alone.
   active workspace's within a second.
 - `grep -rn "intervalMs\|setInterval" spa/src` names only the presence
   poll, the served-version check, the gate's own clock
-  (`views/gate.js` `watchOnGateCadence`) and the cosmetic clocks. The
-  gate's clock reads the account's REST device list, never a bridge: it
-  runs while the gate is holding the page, which is when there is no
-  machine to ask anything of.
+  (`views/gate.js` `watchOnGateCadence`), the cosmetic clocks, and the
+  `RETIRED_OPTIONS` constant at `core/changeEvents.js` — the list of the
+  poll options `watchChanges` now refuses, which is a name in a string and
+  not a timer. The gate's clock reads the account's REST device list, never
+  a bridge: it runs while the gate is holding the page, which is when there
+  is no machine to ask anything of.
 
 ## Out of scope
 

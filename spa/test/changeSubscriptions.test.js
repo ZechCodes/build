@@ -251,13 +251,33 @@ describe("the changes event", () => {
     expect(other).not.toHaveBeenCalled();
   });
 
-  it("gives an all-scope watcher every entity item and no board item", async () => {
+  it("gives an all-scope watcher that reads state every item, the board's included", async () => {
     const seen = [];
     changeEvents.watchChanges({
       refresh: () => {},
       intervalMs: 600000,
       scope: "all",
-      kinds: ["state"],
+      kinds: ["state", "thread"],
+      mode: "realtime",
+      priority: "foreground",
+      onChanges: (items) => seen.push(...items),
+    });
+    await armed();
+    changeEvents.dispatchChangeEvent({
+      type: "changes",
+      subscription_id: "s-inbox",
+      items: [{ entity_id: "run-7", state: {} }, { entity_id: "board", state: { revision: 4 } }],
+    });
+    expect(seen).toEqual([{ entity_id: "run-7", state: {} }, { entity_id: "board", state: { revision: 4 } }]);
+  });
+
+  it("keeps the board item from an all-scope watcher that never asked for state", async () => {
+    const seen = [];
+    changeEvents.watchChanges({
+      refresh: () => {},
+      intervalMs: 600000,
+      scope: "all",
+      kinds: ["git", "files"],
       mode: { batch_ms: 30000 },
       priority: "background",
       onChanges: (items) => seen.push(...items),
@@ -265,10 +285,10 @@ describe("the changes event", () => {
     await armed();
     changeEvents.dispatchChangeEvent({
       type: "changes",
-      subscription_id: "s-bg",
-      items: [{ entity_id: "run-7", state: {} }, { entity_id: "board", state: { revision: 4 } }],
+      subscription_id: "s-background",
+      items: [{ entity_id: "run-7", git: {} }, { entity_id: "board", state: { revision: 4 } }],
     });
-    expect(seen).toEqual([{ entity_id: "run-7", state: {} }]);
+    expect(seen).toEqual([{ entity_id: "run-7", git: {} }]);
   });
 
   it("gives a board-scoped watcher the board item", async () => {

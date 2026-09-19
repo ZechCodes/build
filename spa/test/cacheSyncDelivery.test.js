@@ -1,0 +1,143 @@
+// @vitest-environment jsdom
+// The wire, end to end: what the bridge flushes at the subscriptions this
+// module takes out is what this module applies.
+//
+// Every other test of the sync layer stands in for `changeEvents` so it can
+// hand a flush straight to a registration. That proves what the appliers write
+// and nothing about the route between the two. This file mocks nothing on that
+// route: it registers the real subscriptions, dispatches a real `changes`
+// frame at the real router, and reads the cache afterwards.
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+const branchItem = (over = {}) => ({
+  kind: "branch",
+  project_id: "p1",
+  branch: "build/login",
+  state: "building",
+  anchor: ago(3),
+  last_activity: ago(1),
+  worktree_id: "wt-1",
+  run_id: "run-1",
+  issue_id: null,
+  agents: [],
+  ...over,
+});
+
+const bridge = { call: null };
+
+const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
+vi.mock("../src/app.js", () => ({ App }));
+
+const contexts = new Map();
+const stateListeners = new Set();
+vi.mock("../src/core/deviceContexts.js", () => ({
+  contextFor: (deviceId) => contexts.get(deviceId) || null,
+  liveContexts: () => [...contexts.values()],
+  onDeviceStateChanged: (fn) => {
+    stateListeners.add(fn);
+    return () => stateListeners.delete(fn);
+  },
+}));
+
+const registerDevice = (deviceId) => {
+  const context = {
+    deviceId,
+    rpc: (...asked) => bridge.call(...asked),
+    session: { device: deviceId },
+    greeted: Promise.resolve(),
+    cacheScope: { deviceId, active: () => true },
+    active: () => contexts.get(deviceId) === context,
+  };
+  contexts.set(deviceId, context);
+  return context;
+};
+
+let cache, sync, changeEvents;
+let board = [];
+
+const ANSWERS = {
+  "board.list": () => ({ items: board }),
+  "project.list": () => ({ projects: [{ project_id: "p1", name: "build" }] }),
+  "workspace.list": () => ({ workspaces: [] }),
+  "git.status": () => ({ head: "abc", status_key: "key-1", files: [] }),
+  "git.log": () => ({ commits: [{ hash: "c1" }], newest: "c1" }),
+  "git.unpushed": () => ({ base: {}, commits: [], diff_key: "d1" }),
+  "term.list": () => ({ terminals: [] }),
+  "fs.tree": (params) => ({ path: params.path, entries: [] }),
+  "thread.page": () => ({ items: [], has_more: false }),
+  "run.diff": () => ({ patch: "pulled", diff_key: "d2" }),
+};
+
+const answer = (method, params) => (ANSWERS[method] || (() => ({})))(params || {});
+
+const settle = async () => {
+  let before = -1;
+  while (before !== bridge.call.mock.calls.length) {
+    before = bridge.call.mock.calls.length;
+    for (let turn = 0; turn < 12; turn += 1) await new Promise((done) => setTimeout(done, 0));
+  }
+};
+
+/** The sync layer up, its subscriptions registered, and a bridge that pushes. */
+const boot = async (items = [branchItem()]) => {
+  board = items;
+  sync.startCacheSync();
+  await settle();
+  changeEvents.armChangeEvents({ push_events: true }, "dev-1");
+};
+
+/** One flush off the wire, at the device that sent it. */
+const flush = async (items) => {
+  changeEvents.dispatchChangeEvent({ type: "changes", subscription_id: "s-inbox", items }, "dev-1");
+  await settle();
+};
+
+const read = (entityId, kind, sub = "") => cache.readCached({ deviceId: "dev-1", entityId, kind, sub });
+
+beforeEach(async () => {
+  vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+  delete globalThis.navigator?.locks;
+  stateListeners.clear();
+  contexts.clear();
+  board = [];
+  App.route = { name: "inbox" };
+  registerDevice("dev-1");
+  bridge.call = vi.fn(async (method, params) => answer(method, params));
+  cache = await import("../src/core/localCache.js");
+  changeEvents = await import("../src/core/changeEvents.js");
+  sync = await import("../src/core/cacheSync.js");
+});
+
+afterEach(() => {
+  sync.stopCacheSync();
+  changeEvents.resetChangeEvents();
+});
+
+describe("a flush arriving at the real subscriptions", () => {
+  it("writes the row a state item carries", async () => {
+    await boot();
+    await flush([{ entity_id: "run-1", state: { ...branchItem(), state: "review" } }]);
+    expect((await read("run-1", "row")).value.state).toBe("review");
+  });
+
+  it("lets go of the data of an entity the board item says left", async () => {
+    await boot();
+    expect(await read("run-1", "status")).toBeTruthy();
+    await flush([{ entity_id: "board", state: { revision: 4, removed: ["run-1"] } }]);
+    expect(await read("run-1", "status")).toBeUndefined();
+  });
+
+  it("writes the lists a board item carries", async () => {
+    await boot();
+    await flush([{ entity_id: "board", state: { revision: 5, projects: [{ project_id: "p2", name: "relaydb" }] } }]);
+    expect((await read("", "projects")).value).toEqual([
+      expect.objectContaining({ id: "p2", deviceId: "dev-1" }),
+    ]);
+  });
+});

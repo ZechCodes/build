@@ -496,12 +496,27 @@ export function watchChanges(registration) {
 
 const watchersWhere = (matches) => [...watchers].filter(matches);
 
+/** The entity id the feed's own item rides under (bridge `BOARD_ITEM_ID`). */
+const BOARD_ITEM_ID = "board";
+
+const isBoardItem = (item) => String(item.entity_id) === BOARD_ITEM_ID;
+
+/** Whether the board's own item is this watcher's. The board item is a `state`
+ *  item — which entities left the feed and the lists that moved — so the
+ *  bridge sends it to a whole-board subscription that asked for state and to
+ *  no other, and the routing here says the same. A background tier watching
+ *  git and files over the whole board is not the feed and gets none of it. */
+const wantsBoardItem = (watcher) => watcher.kinds.includes("state");
+
 /** The items of one flush that belong to this watcher: the board item for the
- *  feed, every entity item for the background tier, and the ones naming an id
- *  a surface is showing for everyone else. */
+ *  feed and for the whole-board watcher that reads state, every entity item
+ *  for a whole-board watcher, and the ones naming an id a surface is showing
+ *  for everyone else. */
 function itemsFor(watcher, items) {
-  if (watcher.scope === "all") return items.filter((item) => String(item.entity_id) !== "board");
-  if (watcher.boardScoped) return items.filter((item) => String(item.entity_id) === "board");
+  if (watcher.scope === "all") {
+    return wantsBoardItem(watcher) ? items : items.filter((item) => !isBoardItem(item));
+  }
+  if (watcher.boardScoped) return items.filter(isBoardItem);
   const ids = entityIdsOf(watcher);
   return items.filter((item) => ids.includes(String(item.entity_id)));
 }
@@ -524,7 +539,7 @@ function deliverChanges(watcher, items) {
 /** The revision the board item of this flush carries, or null for a flush
  *  that carries no board item — or one from a bridge that names no revision. */
 function boardRevisionOf(items) {
-  const board = items.find((item) => String(item.entity_id) === "board");
+  const board = items.find(isBoardItem);
   const revision = board && board.state ? board.state.revision : undefined;
   return typeof revision === "number" ? revision : null;
 }

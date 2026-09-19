@@ -63,9 +63,9 @@ impl AppState {
         self.project_of(&run_id)?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         let subject = ReadSubject::Run {
-            worktree_path: active.worktree.path.clone(),
+            worktree_path: self.run_git_root(&run_id, &active.worktree.path),
             base_sha: active.base_sha.clone(),
-            base_branch: active.worktree.base_branch.clone(),
+            base_branch: self.run_base_branch(&run_id, &active.worktree.base_branch),
         };
         Ok(self.defer_conditional_read(
             subject,

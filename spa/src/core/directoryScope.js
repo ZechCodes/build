@@ -1,6 +1,11 @@
 // A workspace's repositories may contain identical paths and commit IDs.
 // Keep directory-local caches and drafts separate while sharing workspace events.
 export function directoryCacheId(scope) {
+  // The workspace's own git directory is what its conversation's run stands on
+  // for git: the bridge answers run-scoped reads from it and pushes its facts
+  // under the run. A scope that names that entity files its records there —
+  // where the sync layer writes and the pushes land — so it carries `entity_id`.
+  if (scope?.entity_id) return scope.entity_id;
   if (scope?.workspace_id) return `workspace:${JSON.stringify([scope.workspace_id, scope.source_id])}`;
   return scope?.run_id || scope?.worktree_id || null;
 }
@@ -17,6 +22,8 @@ export function directoryCacheId(scope) {
  * body for those, so a surface over one reads for itself.
  */
 export function syncWalksCheckout(scope) {
-  if (!scope || scope.workspace_id) return false;
+  if (!scope) return false;
+  if (scope.entity_id) return true;
+  if (scope.workspace_id) return false;
   return Boolean(scope.run_id || scope.worktree_id);
 }

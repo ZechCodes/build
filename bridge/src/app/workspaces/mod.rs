@@ -346,6 +346,45 @@ impl AppState {
             .map(|(run_id, _)| run_id.clone())
     }
 
+    /// Where a run's git is read: its checkout, unless the run is a workspace
+    /// conversation. That run stands on the workspace root, which is a folder of
+    /// sources and no repository, so its git is the workspace's git directory —
+    /// the first one, where a workspace has several. Every run-scoped read and
+    /// the facts a push carries for the run answer from there, which is the
+    /// entity the client files the workspace's git under.
+    pub(in crate::app) fn run_git_root(&self, run_id: &str, checkout: &Path) -> PathBuf {
+        if checkout.join(".git").exists() {
+            return checkout.to_path_buf();
+        }
+        self.workspaces
+            .list(None)
+            .into_iter()
+            .find(|workspace| {
+                self.workspace_conversation_owner(workspace).as_deref() == Some(run_id)
+            })
+            .and_then(|workspace| {
+                workspace
+                    .directories
+                    .iter()
+                    .find(|directory| directory.is_git)
+                    .map(|directory| directory.path.clone())
+            })
+            .unwrap_or_else(|| checkout.to_path_buf())
+    }
+
+    /// The base a run's git is measured against: its checkout's own, or — for a
+    /// workspace conversation, whose checkout names none — the base branch of
+    /// the project the workspace was cut from.
+    pub(in crate::app) fn run_base_branch(&self, run_id: &str, own: &str) -> String {
+        if !own.is_empty() {
+            return own.to_string();
+        }
+        self.projects
+            .project_id_of(run_id)
+            .and_then(|project_id| self.base_for(project_id).ok())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn workspace_create(&mut self, params: &Value) -> Result<Value, String> {
         if self.deferred_work.is_some() {
             return Err("another filesystem operation is still running".to_string());

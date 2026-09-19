@@ -1778,7 +1778,7 @@ export function mountGitPane(
    * instead — which the workspace's own agent moves on every turn, and which
    * is what a project's own directory has always watched for the same reason.
    */
-  const watchedEntity = scope.workspace_id ? null : scope.run_id || scope.worktree_id || null;
+  const watchedEntity = scope.entity_id || (scope.workspace_id ? null : scope.run_id || scope.worktree_id || null);
 
   const refreshCheckout = () => {
     void forceRefresh();

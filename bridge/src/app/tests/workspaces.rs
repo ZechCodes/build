@@ -1,5 +1,6 @@
 use super::*;
 
+mod conversation_git;
 mod directories;
 mod git_init_deferred;
 mod pending_adoption;

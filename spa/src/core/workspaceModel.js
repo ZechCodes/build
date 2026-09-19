@@ -65,8 +65,22 @@ export const workspaceStatusText = (workspace) =>
 export const standsOnProjectCheckout = (workspace, project) =>
   !!workspace?.root && !!project?.path && workspace.root === project.path;
 
-export function workspaceScope(workspaceId, sourceId) {
-  return workspaceId && sourceId ? { workspace_id: workspaceId, source_id: sourceId } : null;
+export function workspaceScope(workspaceId, sourceId, workspace = null) {
+  if (!workspaceId || !sourceId) return null;
+  const scope = { workspace_id: workspaceId, source_id: sourceId };
+  const entityId = ownGitEntity(workspace, sourceId);
+  if (entityId) scope.entity_id = entityId;
+  return scope;
+}
+
+/** The entity a directory's git is filed under, or null. The workspace's own
+ *  git directory — the first git one — is the checkout its conversation's run
+ *  stands on, so a pane over it files its git under that entity
+ *  (core/directoryScope.js). Every other directory keeps a namespace of its own. */
+function ownGitEntity(workspace, sourceId) {
+  const own = (workspace?.directories || []).find((directory) => directory.is_git);
+  if (!own || !workspace?.entity_id) return null;
+  return own.source_id === sourceId || own.id === sourceId ? workspace.entity_id : null;
 }
 
 /** The legacy active run whose checkout is this adopted workspace. Paths are

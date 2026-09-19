@@ -218,15 +218,17 @@ impl AppState {
             if active.run.state == crate::run::RunState::Archived {
                 continue;
             }
+            let root = self.run_git_root(id, &active.worktree.path);
+            let base_branch = self.run_base_branch(id, &active.worktree.base_branch);
             subjects.insert(
                 id.clone(),
                 GitSubject {
-                    root: active.worktree.path.clone(),
-                    base_branch: Some(active.worktree.base_branch.clone()),
+                    root: root.clone(),
+                    base_branch: Some(base_branch.clone()),
                     diff: ReadSubject::Run {
-                        worktree_path: active.worktree.path.clone(),
+                        worktree_path: root,
                         base_sha: active.base_sha.clone(),
-                        base_branch: active.worktree.base_branch.clone(),
+                        base_branch,
                     },
                 },
             );

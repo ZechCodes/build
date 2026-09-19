@@ -596,6 +596,26 @@ describe("workspace surface", () => {
     );
   });
 
+  // A reload lands on a workspace before its machine has answered — or while
+  // it cannot. The records already hold the workspace, so the surface paints
+  // from them and the strip names the machine, rather than a "connecting"
+  // notice standing where the cached surface should be.
+  it("paints a cached workspace while its machine cannot answer, and names the machine over it", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async () => workspace);
+    feedWorkspaces = [workspace];
+    setContextOffline("dev-1");
+
+    await renderWorkspace();
+    await flush();
+
+    expect(document.getElementById("root").textContent).not.toContain("Connecting to");
+    expect(document.getElementById("tabbody")).toBeTruthy();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("#root > .device-strip").textContent).toContain("this machine");
+  });
+
   // A link can name a machine this client has never opened — another device's
   // workspace, pasted in. There is nothing to read under it, so the surface
   // says which machine is missing instead of asking it anything.

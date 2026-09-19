@@ -108,11 +108,19 @@ async function main() {
   check("the compose fixture project is registered", !!fixtureProject, fixtureProject?.project_id || "none");
   if (!fixtureProject) throw new Error("BRIDGE_REPO fixture project is unavailable");
 
+  // The project's own checkout is a template, never listed as a workspace
+  // (workspace.list omits it), so the setup shell runs in a workspace cut from
+  // it: a worktree of /repo, which sees the same history to clone from.
   const primaryList = await call("workspace.list", { project_id: fixtureProject.project_id });
-  const primary = primaryList.workspaces.find((workspace) =>
-    workspace.directories.some((directory) => directory.path === "/repo"));
-  check("workspace.list adopts BRIDGE_REPO", !!primary, primary?.workspace_id || "none");
-  if (!primary) throw new Error("the /repo workspace is unavailable");
+  check("workspace.list keeps the project's own checkout out", !primaryList.workspaces.some((workspace) =>
+    workspace.directories.some((directory) => directory.path === "/repo")));
+  const primary = await call("workspace.create", {
+    project_id: fixtureProject.project_id,
+    name: `qa-setup-${Date.now().toString(36)}`,
+    isolation: "worktree",
+  });
+  check("a workspace is cut from BRIDGE_REPO for the setup shell", !!primary?.workspace_id, primary?.workspace_id || "none");
+  if (!primary?.workspace_id) throw new Error("no workspace to run the setup shell in");
 
   const setupTerm = await term.call("term.create", { workspace_id: primary.workspace_id, cols: 100, rows: 30 });
   await term.call("term.attach", { workspace_id: primary.workspace_id, term_id: setupTerm.term_id, cols: 100, rows: 30 });

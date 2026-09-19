@@ -250,7 +250,7 @@ function refreshWorkspacePane(state, workspace) {
   state.pane = mountDirectoryPane(body, {
     directory,
     canonical,
-    scope: workspaceScope(state.route.workspaceId, sourceId),
+    scope: workspaceScope(state.route.workspaceId, sourceId, state.workspace),
     callRpc: state.callRpc,
     cacheScope: state.context.cacheScope,
     agentSelection: state.selection,
@@ -331,10 +331,12 @@ export async function renderWorkspace() {
   const route = App.route;
   const context = routeContext(route);
   root.className = "surface";
-  // A machine that cannot answer — never opened here, or gone since — has
-  // nothing under this link to read or write, so the surface names it rather
-  // than standing a frame up over calls that can only be refused.
-  if (!canAnswer(context)) {
+  // A machine that cannot answer has nothing under this link to WRITE — but
+  // what the records hold of it can still be read. A workspace the machine's
+  // cached checkout list names paints from those records, with the strip
+  // naming the machine over it; only a link to a machine never opened here, or
+  // to a workspace nothing here has seen, stands the notice up instead.
+  if (!canAnswer(context) && !(context && workspaceNow(route.deviceId, route.workspaceId))) {
     mountDeviceNotice(root, route.deviceId);
     return;
   }

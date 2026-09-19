@@ -316,13 +316,15 @@ impl AppState {
                     .runs
                     .get(&run_id)
                     .ok_or_else(|| "unknown run_id".to_string())?;
+                let repo_path = self.run_git_root(&run_id, &active.worktree.path);
+                let base_branch = self.run_base_branch(&run_id, &active.worktree.base_branch);
                 Ok(GitScope {
-                    repo_path: active.worktree.path.clone(),
+                    repo_path,
                     cache_namespace: None,
                     project_id: None,
                     run: Some(GitScopeRun {
                         run_id,
-                        base_branch: active.worktree.base_branch.clone(),
+                        base_branch,
                     }),
                     worktree: None,
                 })

@@ -128,11 +128,12 @@ try {
   await page.screenshot({ path: "/tmp/live-3a-active-write.png" });
 
   // ---- check 3b: a write in a BACKGROUND workspace moves its inbox row within 30 s ----
-  const rowText = (name) => page.evaluate((n) => {
-    const el = [...document.querySelectorAll("*")].find((e) => e.children.length < 12 && e.textContent.includes(n) && e.textContent.length < 400);
+  // The inbox row itself, addressed by the entity it stands for.
+  const rowText = (entityId) => page.evaluate((id) => {
+    const el = document.querySelector(`[data-entity="${id}"]`);
     return el ? el.textContent.replace(/\s+/g, " ").trim() : null;
-  }, name);
-  const before = await rowText(B.name);
+  }, entityId);
+  const before = await rowText(B.entityId);
   const markerB = `live-bg-${Date.now().toString(36)}.txt`;
   const tB = Date.now();
   docker(`docker exec deploy-bridge-1 sh -c "echo hello > ${B.gitDir}/${markerB}"`);
@@ -141,7 +142,7 @@ try {
   while (Date.now() - tB < 40000 && !(moved && recordAt)) {
     await page.waitForTimeout(500);
     if (!recordAt && (await statusHas(B.entityId.slice(0, 16), markerB))) recordAt = Date.now() - tB;
-    if (!moved) { after = await rowText(B.name); if (after !== before) moved = true; }
+    if (!moved) { after = await rowText(B.entityId); if (after !== before) moved = true; }
   }
   note("background workspace: its cached git status holds the file within 30 s", recordAt !== null && recordAt <= 32000, recordAt !== null ? `${recordAt} ms` : "never within 40 s");
   note("background workspace: its inbox row moves within 30 s of a write", moved && Date.now() - tB <= 32000, moved ? `${Date.now() - tB} ms: "${before}" → "${after}"` : `no change in 40 s: "${before}"`);

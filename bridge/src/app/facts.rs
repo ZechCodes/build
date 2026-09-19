@@ -185,18 +185,58 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
             fact.state = Some(lists.render());
         }
     }
+    let mut fresh_stats = Vec::new();
     for (request, fact) in requests.iter().zip(facts.iter_mut()) {
         let Some(subject) = subjects.get(&request.entity_id) else {
             continue;
         };
         if request.git {
             read_git(subject, fact);
+            if let Some(stat) = run_stat_of(subject) {
+                restat_row(fact, &stat);
+                fresh_stats.push((fact.entity_id.clone(), stat));
+            }
         }
         if request.files {
             fact.root_listing = super::fs::directory_listing(&subject.root, "").ok();
         }
     }
+    // A run whose git moved has a row whose stat moved with it. The walk ran
+    // above with the mutex released; what it found is stored here so the
+    // `state` item the bus notes after this flush carries the checkout as it
+    // is, not as the board's last TTL read left it.
+    if !fresh_stats.is_empty() {
+        let mut app = state.lock().unwrap();
+        let now = std::time::Instant::now();
+        for (run_id, stat) in fresh_stats {
+            app.store_run_stat(run_id, stat, now);
+        }
+    }
     facts
+}
+
+/// A run's diffstat, walked off the app lock; `None` for a subject that is
+/// no run, whose row carries no stat of this shape.
+fn run_stat_of(subject: &GitSubject) -> Option<Value> {
+    let ReadSubject::Run { .. } = subject.diff else {
+        return None;
+    };
+    let base_branch = subject.base_branch.as_deref()?;
+    Some(super::board::cache::run_diffstat(
+        &subject.root,
+        base_branch,
+    ))
+}
+
+/// The row this flush carries, with the stat it just walked in place of the
+/// one the board read under its TTL.
+fn restat_row(fact: &mut EntityFacts, stat: &Value) {
+    let Some(row) = fact.state.as_mut().and_then(Value::as_object_mut) else {
+        return;
+    };
+    if row.contains_key("stat") {
+        row.insert("stat".into(), stat.clone());
+    }
 }
 
 impl AppState {

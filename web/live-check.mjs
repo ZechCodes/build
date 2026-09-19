@@ -40,7 +40,8 @@ const sampleUntil = (specs, budgetMs) => page.evaluate(({ specs, budgetMs }) => 
     if (firstBodyFrame === null) { firstBodyFrame = frames; first.gated = gate(); first.h1 = h1(); }
     for (const [key, spec] of Object.entries(specs)) {
       if (seen[key] !== undefined) continue;
-      const ok = spec.text ? document.body.innerText.includes(spec.text) : document.querySelectorAll(spec.sel).length >= (spec.min || 1);
+      const scopeText = () => (spec.in ? document.querySelector(spec.in)?.textContent || "" : document.body.textContent || "");
+      const ok = spec.text ? scopeText().includes(spec.text) : document.querySelectorAll(spec.sel).length >= (spec.min || 1);
       if (ok) seen[key] = { ms: Math.round(now), frame: frames };
     }
     if (Object.keys(seen).length === Object.keys(specs).length || now > budgetMs) return resolve({ seen, frames, first, firstBodyFrame, gatedNow: gate(), h1Now: h1() });
@@ -120,12 +121,14 @@ try {
   const markerB = `live-bg-${Date.now().toString(36)}.txt`;
   const tB = Date.now();
   docker(`docker exec deploy-bridge-1 sh -c "echo hello > ${B.gitDir}/${markerB}"`);
-  let after = before; let moved = false;
-  while (Date.now() - tB < 40000) {
+  const statusHas = (entity, name) => page.evaluate(({ entity, name }) => new Promise((resolve) => { const req = indexedDB.open("build-cache"); req.onsuccess = () => { const store = req.result.transaction("records", "readonly").objectStore("records"); const all = store.getAll(); const keys = store.getAllKeys(); all.onsuccess = () => { keys.onsuccess = () => { let hit = false; keys.result.forEach((k, i) => { const key = String(k); if (key.includes(entity) && key.split("|")[2] === "status" && (all.result[i]?.value?.files || []).some((f) => f.path === name)) hit = true; }); resolve(hit); }; }; }; }), { entity, name });
+  let after = before; let moved = false; let recordAt = null;
+  while (Date.now() - tB < 40000 && !(moved && recordAt)) {
     await page.waitForTimeout(500);
-    after = await rowText(B.name);
-    if (after !== before) { moved = true; break; }
+    if (!recordAt && (await statusHas(B.entityId.slice(0, 16), markerB))) recordAt = Date.now() - tB;
+    if (!moved) { after = await rowText(B.name); if (after !== before) moved = true; }
   }
+  note("background workspace: its cached git status holds the file within 30 s", recordAt !== null && recordAt <= 32000, recordAt !== null ? `${recordAt} ms` : "never within 40 s");
   note("background workspace: its inbox row moves within 30 s of a write", moved && Date.now() - tB <= 32000, moved ? `${Date.now() - tB} ms: "${before}" → "${after}"` : `no change in 40 s: "${before}"`);
   // Then open it: the git surface must already hold the file, no wait.
   await page.evaluate((h) => { location.hash = h; }, route(B, "changes"));

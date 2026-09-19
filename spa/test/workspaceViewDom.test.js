@@ -616,6 +616,22 @@ describe("workspace surface", () => {
     expect(document.querySelector("#root > .device-strip").textContent).toContain("this machine");
   });
 
+  // A cold reload lands here before any session has even been attempted: no
+  // context exists for the machine yet. The records still hold the workspace,
+  // so the surface paints from them, standing on a session-less context that
+  // the machine's session retargets when it lands.
+  it("paints a cached workspace before its machine has been opened at all", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    feedWorkspaces = [workspace];
+
+    await renderWorkspace();
+    await flush();
+
+    expect(document.getElementById("root").textContent).not.toContain("Connecting to");
+    expect(document.getElementById("tabbody")).toBeTruthy();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+  });
+
   // A link can name a machine this client has never opened — another device's
   // workspace, pasted in. There is nothing to read under it, so the surface
   // says which machine is missing instead of asking it anything.

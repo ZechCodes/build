@@ -1762,7 +1762,21 @@ impl ChangeBus {
             return 0;
         }
         let facts = bus.gather(due.requests.clone()).await;
-        bus.deliver(due, facts)
+        // A row's stat is a fact of the checkout: an entity whose git moved has
+        // a row that moved with it, so the subscriptions that carry rows hear
+        // `state` for it on the next window — after the facts source has set
+        // the stat walk going, so the row they get carries what it found.
+        let rows_moved: Vec<String> = due
+            .requests
+            .iter()
+            .filter(|request| request.git)
+            .map(|request| request.entity_id.clone())
+            .collect();
+        let delivered = bus.deliver(due, facts);
+        for entity_id in rows_moved {
+            bus.note_kind(&entity_id, Kind::State);
+        }
+        delivered
     }
 
     async fn gather(self: &Arc<Self>, requests: Vec<FactsRequest>) -> Vec<EntityFacts> {
@@ -2216,7 +2230,9 @@ mod subscriptions {
     /// The batch half: the same burst is one item on a subscription that
     /// asked for thirty seconds — pushed at once, because nothing has been
     /// pushed to it yet — and the storm that follows inside the cooldown it
-    /// started is one more item at the cooldown's end.
+    /// started is one more item at the cooldown's end. An entity whose git
+    /// moved has a row that moved with it, so the item after the first
+    /// carries `state` beside `git`.
     #[tokio::test(start_paused = true)]
     async fn a_batch_subscription_hears_the_same_burst_once_an_interval() {
         let (bus, sender, mut rx, key) = bench();
@@ -2259,7 +2275,7 @@ mod subscriptions {
             vec![json!({
                 "type": "changes",
                 "subscription_id": "s-bg",
-                "items": [{ "entity_id": "run-7", "git": {} }],
+                "items": [{ "entity_id": "run-7", "git": {}, "state": {} }],
             })],
             "a hundred more, one item, at the cooldown's end"
         );
@@ -2333,7 +2349,9 @@ mod subscriptions {
             vec![json!({
                 "type": "changes",
                 "subscription_id": "s-bg",
-                "items": [{ "entity_id": "run-9", "git": {} }],
+                // run-7's row rides this interval: its git went out on the
+                // last one, and a row moves with its checkout.
+                "items": [{ "entity_id": "run-7", "state": {} }, { "entity_id": "run-9", "git": {} }],
             })],
             "thirty seconds after the push, not thirty-five after the note"
         );

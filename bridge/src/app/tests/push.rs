@@ -1293,3 +1293,88 @@ async fn a_legacy_greeting_hears_only_the_legacy_frames_for_a_real_mutation() {
         "the legacy session never hears one"
     );
 }
+
+/// A write in a workspace moves its inbox row too: the row's stat is a fact
+/// of the checkout, so a git flush for an entity re-sends its `state` — with
+/// the stat re-read — to the subscriptions that carry rows, rather than
+/// leaving the row as the last lifecycle change left it.
+#[tokio::test]
+async fn a_git_flush_re_sends_the_rows_of_the_entities_that_moved() {
+    let (dir, repo) = init_repo();
+    let (_state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let board = handler.call(sender.clone(), req("board.list", json!({})));
+    let project_id = board["result"]["projects"][0]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace = handler.call(
+        sender.clone(),
+        req(
+            "workspace.create",
+            json!({"project_id": project_id, "name": "spoken", "isolation": "worktree"}),
+        ),
+    );
+    let workspace_id = workspace["result"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let git_dir = std::path::PathBuf::from(
+        workspace["result"]["directories"][0]["path"]
+            .as_str()
+            .unwrap(),
+    );
+    let conversation = handler.call(
+        sender.clone(),
+        req(
+            "workspace.ensure_conversation",
+            json!({"workspace_id": workspace_id}),
+        ),
+    );
+    let run_id = conversation["result"]["entity_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (id, scope, kinds) in [
+        ("s-inbox", json!({"kind": "all"}), json!(["state"])),
+        (
+            "s-active",
+            json!({"kind": "entity", "id": run_id}),
+            json!(["git", "files"]),
+        ),
+    ] {
+        let subscribed = handler.call(
+            sender.clone(),
+            req(
+                "changes.subscribe",
+                json!({"subscription_id": id, "scope": scope, "kinds": kinds, "mode": "realtime"}),
+            ),
+        );
+        assert_eq!(subscribed["result"]["watch"], "live", "{subscribed:?}");
+    }
+    settled_pushes(&mut rx, &key).await;
+
+    std::fs::write(git_dir.join("noted.txt"), "hello").unwrap();
+    let mut row = None;
+    for _ in 0..60 {
+        let pushes = settled_pushes(&mut rx, &key).await;
+        row = pushes
+            .iter()
+            .filter(|push| push["type"] == "changes" && push["subscription_id"] == "s-inbox")
+            .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+            .find(|item| item["entity_id"] == run_id)
+            .map(|item| item["state"].clone());
+        if row
+            .as_ref()
+            .is_some_and(|row| row["stat"]["uncommitted"]["files_changed"] == json!(1))
+        {
+            break;
+        }
+    }
+    let row = row.expect("the write re-sent the run's row on the state subscription");
+    assert_eq!(row["run_id"], json!(run_id), "{row:?}");
+    assert_eq!(
+        row["stat"]["uncommitted"]["files_changed"],
+        json!(1),
+        "{row:?}"
+    );
+}

@@ -16,7 +16,7 @@ import { renderFilesTab } from "./files.js";
 import { directoryId, directoryTab, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
 import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
-import { canAnswer, routeContext } from "../core/deviceContexts.js";
+import { canAnswer, knownDeviceContext, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { cachedFeedView } from "../core/cachedRows.js";
@@ -329,14 +329,19 @@ function mountWorkspace(workspace, state) {
 export async function renderWorkspace() {
   const root = $("#root");
   const route = App.route;
-  const context = routeContext(route);
+  // The records may hold this workspace before its machine has a context at
+  // all — a cold reload, the session not yet attempted. A session-less context
+  // stands in (it answers nothing, and the session retargets it when it lands)
+  // so the surface paints from disk rather than waiting on the wire.
+  const held = workspaceNow(route.deviceId, route.workspaceId);
+  const context = routeContext(route) || (held && route.deviceId ? knownDeviceContext(route.deviceId) : null);
   root.className = "surface";
   // A machine that cannot answer has nothing under this link to WRITE — but
   // what the records hold of it can still be read. A workspace the machine's
   // cached checkout list names paints from those records, with the strip
   // naming the machine over it; only a link to a machine never opened here, or
   // to a workspace nothing here has seen, stands the notice up instead.
-  if (!canAnswer(context) && !(context && workspaceNow(route.deviceId, route.workspaceId))) {
+  if (!canAnswer(context) && !(context && held)) {
     mountDeviceNotice(root, route.deviceId);
     return;
   }

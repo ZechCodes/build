@@ -402,8 +402,11 @@ impl AppState {
         }
         Some(DiffCacheRefresh::RunStat {
             run_id: run_id.to_string(),
-            worktree: active.worktree.path.clone(),
-            base_branch: active.worktree.base_branch.clone(),
+            // A workspace conversation's git is the workspace's git directory,
+            // and its base the project's — the same root every run-scoped git
+            // read answers from.
+            worktree: self.run_git_root(run_id, &active.worktree.path),
+            base_branch: self.run_base_branch(run_id, &active.worktree.base_branch),
         })
     }
 
@@ -550,8 +553,8 @@ impl AppState {
         }
     }
 
-    /// A run's diffstat, as of `now`.
-    #[cfg(test)]
+    /// A run's diffstat, as of `now` — what a flush that walked the checkout
+    /// found, stored so the row the next `state` item carries reads it.
     pub(in crate::app) fn store_run_stat(
         &mut self,
         run_id: String,
@@ -640,7 +643,6 @@ impl AppState {
         }
     }
 
-    #[cfg(test)]
     fn apply_cache_publication(&mut self, publication: CachePublication) {
         match publication {
             CachePublication::Settled(effects) => self.apply_cache_effects(effects),

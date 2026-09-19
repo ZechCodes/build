@@ -1024,10 +1024,18 @@ fn thread_payload(facts: Option<&EntityFacts>, thread_after: &[(String, u64)]) -
 /// An item carries its sequence under `data`, the shape `thread.page`
 /// answers in. One whose sequence cannot be read is kept: a duplicate the
 /// client writes twice costs a write, and a hole costs it the conversation.
+/// Whether this subscription has already been sent this item AS IT STANDS.
+///
+/// The item's own later of the two columns, because an item that was mutated
+/// after it was sent — a delivery status moving, an edit — is news to a
+/// subscription holding the copy from before, and its `sequence` says nothing
+/// about that.
 fn sent(item: &Value, since: u64) -> bool {
-    item["data"]["sequence"]
+    let data = &item["data"];
+    let latest = data["sequence"]
         .as_u64()
-        .is_some_and(|sequence| sequence <= since)
+        .max(data["updated_sequence"].as_u64());
+    latest.is_some_and(|sequence| sequence <= since)
 }
 
 /// The board item carries the revision a client compares against, which

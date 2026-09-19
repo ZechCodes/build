@@ -422,6 +422,15 @@ impl Thread {
     }
     /// The items a `changes` push carries after a cursor, oldest first.
     ///
+    /// Reads `latest_sequence`, not `sequence`: a push is a DELTA — "what has
+    /// happened here that you have not been told about" — and a message whose
+    /// delivery status moved from queued to sent has happened, however old the
+    /// message is. Cutting by creation order instead would leave that message
+    /// out of every push it is ever the subject of, and the reader watching
+    /// their own message sit on "Queued" would go on watching it until
+    /// something else read the conversation whole. The forward PAGE is the one
+    /// that walks creation order ([`resident_after_sequence`]).
+    ///
     /// `None` — send the tip alone and let the client page forward — when
     /// more than `limit` of them are waiting, or when the cursor sits under
     /// the tail this process holds. Both are a client better served by one
@@ -430,7 +439,7 @@ impl Thread {
         if self.forward_page_reaches_stored_history(after_sequence) {
             return None;
         }
-        let window: Vec<&ThreadItem> = self.resident_after_sequence(after_sequence).collect();
+        let window = self.resident_after(after_sequence);
         (window.len() <= limit).then(|| window.into_iter().map(|item| json!(item)).collect())
     }
 

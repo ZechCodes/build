@@ -1148,6 +1148,87 @@ async fn a_message_posted_under_an_operation_carries_it_on_the_item() {
     assert_eq!(paged["data"]["operation_id"], json!("op-1"), "{paged:?}");
 }
 
+/// A message whose delivery status moved — handed to the agent, then seen by
+/// it — is a message that CHANGED, and the reader is watching that word on it.
+///
+/// The push has to carry the message itself, not just a tip saying the
+/// conversation moved: a client that is only told "something moved" has to
+/// read the conversation again to find out what, and until it does the reader
+/// watches their own message sit on the word it arrived with.
+#[tokio::test]
+async fn a_delivery_status_moving_pushes_the_message_it_moved_on() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let run_id = {
+        let mut app = state.lock().unwrap();
+        planned_run_in_review(&mut app, "delivery status rides the item").1
+    };
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-delivery",
+                "scope": { "kind": "entity", "id": run_id },
+                "kinds": ["thread"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    let posted = call(
+        &handler,
+        "thread.post",
+        json!({ "entity_id": run_id, "operation_id": "op-watched", "body": "take a look" }),
+    );
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    let arrival = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    let agent_id = arrival["agent_id"]
+        .as_str()
+        .expect("a tip names its agent")
+        .to_string();
+    let first = arrival["items"]
+        .as_array()
+        .expect("the item carries items")
+        .iter()
+        .find(|item| item["data"]["body"] == json!("take a look"))
+        .unwrap_or_else(|| panic!("no message on the push: {arrival:?}"));
+    let arrived_at = first["data"]["updated_sequence"]
+        .as_u64()
+        .max(first["data"]["sequence"].as_u64())
+        .expect("an item stands at a sequence");
+    let cursor = arrival["last_sequence"]
+        .as_u64()
+        .expect("a tip is a sequence");
+
+    // The agent takes the turn. Nothing new is SAID: the only thing that moved
+    // is the word on the message the reader is watching.
+    state
+        .lock()
+        .unwrap()
+        .record_native_operation_seen(&run_id, &agent_id, "op-watched")
+        .expect("the operation is this conversation's");
+
+    let delivered = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    assert!(
+        delivered["last_sequence"].as_u64().unwrap() > cursor,
+        "the conversation moved, so its tip moved: {delivered:?}"
+    );
+    let moved = delivered["items"]
+        .as_array()
+        .expect("the item carries items")
+        .iter()
+        .find(|item| item["data"]["body"] == json!("take a look"))
+        .unwrap_or_else(|| panic!("the message that moved is not on the push: {delivered:?}"));
+    assert_eq!(moved["data"]["delivery_status"], json!("seen"), "{moved:?}");
+    assert!(
+        moved["data"]["updated_sequence"].as_u64().unwrap() > arrived_at,
+        "the item carries the sequence it moved at, which is how a client merges it \
+         over the copy it holds: {moved:?}"
+    );
+}
+
 /// The first `thread` tip one entity's items carry, out of a push history.
 fn thread_tip(pushes: &[Value], entity_id: &str) -> Value {
     pushes

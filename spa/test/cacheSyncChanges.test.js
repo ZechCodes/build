@@ -534,6 +534,43 @@ describe("applying one item", () => {
     expect(record.value.items.map((one) => one.data.provisional)).toEqual([undefined]);
   });
 
+  // A message whose delivery status moved keeps its place in the conversation
+  // and comes back carrying the sequence it moved at. The reader is watching
+  // that word — "Queued" until the agent has it — so the item replaces the
+  // copy held rather than arriving beside it, and the record's cursor moves to
+  // the mutation so the same news is not asked for twice.
+  it("takes a message whose delivery status moved over the copy it holds", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      {
+        items: [{ id: "m-1", data: { sequence: 7, role: "user", body: "take a look", delivery_status: "queued" } }],
+        deliveredSequence: 7,
+      },
+    );
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    bridge.call.mockClear();
+
+    await deliver([{
+      entity_id: "run-1",
+      thread: [{
+        agent_id: "ag-1",
+        last_sequence: 8,
+        since_sequence: 7,
+        items: [{
+          id: "m-1",
+          data: { sequence: 7, updated_sequence: 8, role: "user", body: "take a look", delivery_status: "seen" },
+        }],
+      }],
+    }]);
+
+    const record = await read("run-1", "thread", "ag-1");
+    expect(record.value.items).toHaveLength(1);
+    expect(record.value.items[0].data.delivery_status).toBe("seen");
+    expect(record.value.deliveredSequence).toBe(8);
+    // The tip carried the whole of the news, so nothing was asked for.
+    expect(calls("thread.page")).toHaveLength(0);
+  });
+
   it("reads one cursored page for a tip that outran the push cap", async () => {
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },

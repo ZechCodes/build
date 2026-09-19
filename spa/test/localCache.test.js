@@ -204,6 +204,19 @@ describe("announcements", () => {
     expect((await cache.readCached(changed)).value.head).toBe("elsewhere");
   });
 
+  it("tells every subscriber, on every tab, that a wipe took the lot", async () => {
+    const heard = announced({ deviceId: "dev-1", entityId: "run-1", kind: "status" });
+    const posted = [];
+    const otherTab = new BroadcastChannel("build-cache");
+    otherTab.onmessage = (event) => posted.push(event.data);
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, {});
+    await cache.wipeCache();
+    await heard;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    otherTab.close();
+    expect(posted).toEqual([{ key: "dev-1|run-1|status|" }, { key: "" }]);
+  });
+
   it("tells the other tabs what it wrote, and does not echo its own message back", async () => {
     const posted = [];
     const otherTab = new BroadcastChannel("build-cache");

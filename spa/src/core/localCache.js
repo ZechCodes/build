@@ -300,10 +300,12 @@ export function deleteCached(addresses) {
   });
 }
 
-/** Drop the whole database. For sign-out, and for a format change. */
+/** Drop the whole database. For sign-out, and for a format change. Announced
+ *  as the empty address, which every listener is under: nothing anyone holds
+ *  is still there. */
 export function wipeCache() {
   return inStore("readwrite", (store) => {
     store.clear();
     return null;
-  });
+  }).then(() => announce([]));
 }

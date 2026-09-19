@@ -25,6 +25,7 @@ import { viewingContextChipsHtml } from "./viewingContext.js";
 import { ICON_CHECK } from "./icons.js";
 import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
 import { setMotionRowHtml } from "./motion.js";
+import { issueCardHtml } from "./trackerMessageCard.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -749,7 +750,36 @@ function conversationLinksHtml(reference, place, prefix) {
 /// Everything inside a message's card. Shared by the reader's own bubble and by
 /// the bubble another agent's words arrive in: the two differ in where they sit
 /// and what colour they are, and in nothing a message holds.
-function messageCardHtml(message, agentLabel, { live, offer, threadState }) {
+/// The issue a message handed over, drawn as a card above its body.
+///
+/// Assignment is dispatch: the issue arrives as an ordinary message carrying a
+/// `from_issue` envelope, and the body is that issue rendered as prose so a
+/// harness that never learns about the envelope still receives the whole of it.
+/// Every message carrying one gets a card, whoever sent it — an assignment the
+/// user made carries no `from_agent` and one an agent made does — and every
+/// message carrying none gets nothing at all, which is every other message.
+///
+/// Its fold is the arrival fold: the same length, the same measurement, the
+/// same press, and the same memory on the thread state. The key is the
+/// message's own with a suffix, so an arrival that hands over an issue can
+/// fold its report and its issue independently.
+function handedIssueHtml(message, context) {
+  const envelope = message.from_issue;
+  if (!envelope) return "";
+  const key = `${messageKey(message)}-issue`;
+  const bodyId = `thread-issue-${esc(key)}`;
+  const long = bodyRunsLong(envelope.body);
+  const open = !long || context.threadState.arrivalIsOpen(key);
+  return issueCardHtml(envelope, {
+    place: context.place,
+    bodyId,
+    folded: !open,
+    pressHtml: long ? arrivalPressHtml(key, bodyId, open) : "",
+  });
+}
+
+function messageCardHtml(message, agentLabel, context) {
+  const { live, offer, threadState } = context;
   // `done` is message metadata, not a presentation type: on a thread written
   // before outcomes were message statuses it flags the send that followed the
   // timeline's done event, and such a message renders like every other one.
@@ -762,6 +792,7 @@ function messageCardHtml(message, agentLabel, { live, offer, threadState }) {
       ${resolvedRevisionHtml(message)}
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
+      ${handedIssueHtml(message, context)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
@@ -789,10 +820,15 @@ const arrivalLineCount = (body) =>
     .split("\n")
     .reduce((lines, line) => lines + Math.ceil(line.trim().length / ARRIVAL_LINE_CHARS), 0);
 
-/// Whether this arrival is long enough to be worth folding. A message that
-/// already fits is left whole, and is given no press: there would be nothing
-/// behind it.
-const arrivalRunsLong = (message) => arrivalLineCount(message.body) > ARRIVAL_LINES;
+/// Whether a body is long enough to be worth folding. A body that already fits
+/// is left whole, and is given no press: there would be nothing behind it.
+///
+/// A handed-over issue's card folds by this same rule and at this same length
+/// — it is handed the answer rather than asking again, so there is one reading
+/// of "does this bury the conversation" and no second one to drift from it.
+const bodyRunsLong = (body) => arrivalLineCount(body) > ARRIVAL_LINES;
+
+const arrivalRunsLong = (message) => bodyRunsLong(message.body);
 
 /// The press under a folded arrival, which is the whole of the affordance: the
 /// two words are swapped by the stylesheet off `aria-expanded`, so the button
@@ -1806,7 +1842,12 @@ export function wireThreadSentMessages(root, threadState = createThreadState()) 
 export function wireThreadArrivals(root, threadState = createThreadState()) {
   if (!root) return;
   root.querySelectorAll(".thread-arrival-press").forEach((press) => {
-    const card = press.closest(".thread-message")?.querySelector(".thread-comment-card");
+    // What the press toggles is what it says it controls: the arrival's card
+    // for a report, and the issue's own body for a handed-over issue. Reading
+    // it off `aria-controls` is how one press serves both without either
+    // knowing about the other.
+    const card = root.ownerDocument?.getElementById(press.getAttribute("aria-controls"))
+      || press.closest(".thread-message")?.querySelector(".thread-comment-card");
     const show = (open) => {
       press.setAttribute("aria-expanded", open ? "true" : "false");
       card?.classList.toggle("thread-arrival-folded", !open);

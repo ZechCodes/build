@@ -237,15 +237,13 @@
 /* The issue's own body, folded to five lines until it is asked for: a hand-off
    carries the whole issue, and the whole issue is not what the next line of the
    conversation is about. */
-.thread-issue-body { font-size:12px; color:var(--ink2); }
-.thread-issue-body[data-folded="1"] .thread-issue-text {
-  display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden;
+.thread-issue-body { font-size:12px; color:var(--ink2); white-space:pre-wrap; }
+/* The fold is the arrival fold — same class, same length, same press
+   (core/thread.js) — over the issue's own body rather than over a card. */
+.thread-issue-body.thread-arrival-folded .thread-issue-text {
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:5; line-clamp:5; overflow:hidden;
 }
-.thread-issue-more {
-  font:inherit; font-size:11px; color:var(--accent);
-  background:none; border:0; padding:2px 0; cursor:pointer;
-}
-.thread-issue-more:hover { text-decoration:underline; }
+.thread-issue .thread-arrival-press { padding:2px 0 0; }
 .thread-issue-links { display:flex; flex-wrap:wrap; gap:8px; }
 .thread-issue-links a { color:var(--ink2); text-decoration:none; font-size:11px; }
 .thread-issue-links a:hover { color:var(--accent); text-decoration:underline; }

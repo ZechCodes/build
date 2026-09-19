@@ -193,11 +193,17 @@ describe("a long arrival", () => {
 
 /// The human's own message, exactly as it was drawn before any of this. The
 /// markup is the assertion: the reader's side of the thread is untouched.
+///
+/// The card's empty slots are what the blank lines are — one per thing a
+/// message may carry and this one does not. The issue card a hand-off draws
+/// (`from_issue`) is one of them, and it is nothing at all on every message
+/// that carries no envelope, which is every other message there is.
 const USER_MESSAGE_HTML = `<section class="review-thread pane-col">
     <div class="thread-title"><span class="thread-title-text">Conversation <span>1</span></span></div>
     <div class="thread-items thread-timeline"><article class="thread-message thread-comment user" data-sequence="38">
     <span class="thread-avatar" aria-hidden="true">Y</span>
     <div class="thread-comment-card">
+      
       
       
       

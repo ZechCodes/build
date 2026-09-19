@@ -174,12 +174,26 @@ pub struct GitLogParams {
     pub since: Option<String>,
 }
 
+/// The most patch one commit's answer carries when the caller caps it.
+///
+/// A quarter of a megabyte is a large review diff and a small cache entry.
+/// Past it a client is better served by the file list and a second call for
+/// the patch it actually opens.
+pub const COMMIT_PATCH_MAX_BYTES: u64 = 262_144;
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitShowParams {
     #[serde(flatten)]
     pub scope: ScopeParams,
     /// A 4–40 character lowercase hex object-id prefix, never a revspec.
     pub hash: String,
+    /// The most patch this answer may carry, clamped server-side to
+    /// `1024..=`[`COMMIT_PATCH_MAX_BYTES`]. A larger patch comes back as the
+    /// commit's file headers with `truncated` set, and the client fetches the
+    /// whole of it when a reviewer opens the commit. Absent leaves the
+    /// 1 MiB wire cap alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -487,7 +501,14 @@ pub struct CommitDetail {
     pub body: String,
     pub stat: DiffStat,
     pub patch: String,
-    /// The patch was cut at the 1 MiB cap.
+    /// How large the whole patch is, whether or not this answer carries all
+    /// of it — what a client reads to decide whether opening it is worth a
+    /// second call.
+    #[serde(default)]
+    pub patch_bytes: u64,
+    /// The patch was cut: at the caller's `max_bytes` when it named one, at
+    /// the 1 MiB wire cap otherwise. A patch cut at `max_bytes` carries the
+    /// commit's file headers alone — which files moved, not how.
     pub truncated: bool,
 }
 

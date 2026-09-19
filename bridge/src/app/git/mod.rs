@@ -494,7 +494,14 @@ impl AppState {
     pub(crate) fn git_show(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let hash = require_str(params, "hash")?;
-            crate::gitgui::show_commit(&scope.repo_path, &hash)
+            // Clamped, never refused: a caller that asked for a byte wants a
+            // small answer, and one that asked for the moon wants the most
+            // the wire carries.
+            let max_bytes = params
+                .get("max_bytes")
+                .and_then(Value::as_u64)
+                .map(|cap| cap.clamp(1024, crate::api::v1::git::COMMIT_PATCH_MAX_BYTES) as usize);
+            crate::gitgui::show_commit(&scope.repo_path, &hash, max_bytes)
         })
     }
 

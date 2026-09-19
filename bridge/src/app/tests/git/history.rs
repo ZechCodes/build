@@ -185,3 +185,90 @@ fn git_log_on_an_unborn_head_names_no_cursor() {
     assert_eq!(log["result"]["reset"], false, "{log:?}");
     assert!(log["result"]["newest"].is_null(), "{log:?}");
 }
+
+// ---- git.show, capped ----------------------------------------------------
+
+/// A repository whose HEAD commit adds `lines` identical lines — a patch as
+/// large as the test needs it, with an exact stat to check it against.
+fn repo_with_a_large_commit(lines: usize) -> (tempfile::TempDir, PathBuf) {
+    let (dir, repo) = init_repo();
+    std::fs::write(repo.join("big.txt"), "0123456789abcdef\n".repeat(lines)).unwrap();
+    git_in(&repo, &["add", "big.txt"]);
+    git_in(&repo, &["commit", "-q", "-m", "a large commit"]);
+    (dir, repo)
+}
+
+/// What `git.show` makes of the scope's HEAD commit.
+fn show_head(state: &mut AppState, project_id: &str, max_bytes: Option<u64>) -> Value {
+    let log = state.handle(req(
+        "git.log",
+        json!({ "project_id": project_id, "limit": 1 }),
+    ));
+    let hash = log["result"]["commits"][0]["hash"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut params = json!({ "project_id": project_id, "hash": hash });
+    if let Some(max_bytes) = max_bytes {
+        params["max_bytes"] = json!(max_bytes);
+    }
+    state.handle(req("git.show", params))
+}
+
+/// A client caching commits asks for a patch it can afford. Past the cap it
+/// is told which files moved and how large the real patch is, and fetches
+/// the patch itself only when a reviewer opens the commit.
+#[test]
+fn git_show_capped_at_max_bytes_answers_the_file_list_and_the_patchs_true_size() {
+    let (dir, repo) = repo_with_a_large_commit(2_000);
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+
+    let shown = show_head(&mut state, &project_id, Some(1024));
+    assert_eq!(shown["ok"], true, "{shown:?}");
+    let result = &shown["result"];
+    assert_eq!(result["truncated"], true, "{result:?}");
+    let patch = result["patch"].as_str().unwrap();
+    assert!(patch.contains("diff --git a/big.txt b/big.txt"), "{patch}");
+    assert!(patch.contains("+++ b/big.txt"), "{patch}");
+    // The header and the file list, not the top of the diff.
+    assert!(!patch.contains("+0123456789abcdef"), "{patch}");
+    assert!(patch.len() <= 1024, "{} bytes", patch.len());
+    // The counts and the size are the whole patch's, so the client can say
+    // what opening it would cost.
+    assert_eq!(result["stat"]["insertions"], 2_000, "{result:?}");
+    assert!(result["patch_bytes"].as_u64().unwrap() > 1024, "{result:?}");
+}
+
+/// The cap is clamped at both ends: a patch that fits under the floor is
+/// never cut, and a caller that asks for more than the wire carries gets
+/// `COMMIT_PATCH_MAX_BYTES`.
+#[test]
+fn git_show_clamps_the_cap_it_was_asked_for() {
+    let (dir, repo) = repo_with_a_large_commit(30_000);
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+
+    // ~510 KiB of patch: under the 1 MiB default, over the clamped ceiling.
+    let greedy = show_head(&mut state, &project_id, Some(8 * 1_048_576));
+    assert_eq!(greedy["result"]["truncated"], true, "{greedy:?}");
+    let uncapped = show_head(&mut state, &project_id, None);
+    assert_eq!(uncapped["result"]["truncated"], false, "{uncapped:?}");
+    assert_eq!(
+        uncapped["result"]["patch_bytes"].as_u64().unwrap(),
+        uncapped["result"]["patch"].as_str().unwrap().len() as u64,
+        "{uncapped:?}"
+    );
+
+    // A floor of 1 KiB, so a cap of nothing still answers a small commit
+    // whole rather than as a file list.
+    let (small_dir, small_repo) = repo_with_a_large_commit(10);
+    let mut small = git_gui_state(&small_dir, &small_repo);
+    let small_project = small.project_at(0).id.clone();
+    let tiny_cap = show_head(&mut small, &small_project, Some(1));
+    assert_eq!(tiny_cap["result"]["truncated"], false, "{tiny_cap:?}");
+    assert!(tiny_cap["result"]["patch"]
+        .as_str()
+        .unwrap()
+        .contains("+0123456789abcdef"));
+}

@@ -38,7 +38,7 @@ fn show_commit_keeps_canonical_prefixes_under_local_diff_config() {
         let root = git_run(dir.path(), &["rev-list", "--max-parents=0", "HEAD"]);
         assert!(root.status.success());
         let root = String::from_utf8(root.stdout).unwrap();
-        let root_patch = show_commit(dir.path(), root.trim()).unwrap();
+        let root_patch = show_commit(dir.path(), root.trim(), None).unwrap();
         let root_patch = root_patch["patch"].as_str().unwrap();
         assert!(
             root_patch.contains("diff --git a/f.txt b/f.txt"),
@@ -51,7 +51,7 @@ fn show_commit_keeps_canonical_prefixes_under_local_diff_config() {
         let head = git_run(dir.path(), &["rev-parse", "HEAD"]);
         assert!(head.status.success());
         let head = String::from_utf8(head.stdout).unwrap();
-        let patch = show_commit(dir.path(), head.trim()).unwrap();
+        let patch = show_commit(dir.path(), head.trim(), None).unwrap();
         let patch = patch["patch"].as_str().unwrap();
         assert!(
             patch.contains("diff --git a/f.txt b/f.txt"),

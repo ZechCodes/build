@@ -775,9 +775,19 @@ async function applyBoard(context, state) {
   }
 }
 
+/** Whether a `state` item is a feed row at all.
+ *
+ *  A legacy issue left the board, so the bridge has no row to push for one and
+ *  answers with the three-field digest it always did: a lifecycle word, an
+ *  agent COUNT and an attention reason. Nothing cache-first reads that, and
+ *  written where a row belongs it is a work item whose agents are a number —
+ *  which every reader of the record then tries to walk. */
+const isFeedRow = (state) => typeof state?.kind === "string" && state.kind !== "";
+
 /** `state`: the feed row exactly as `board.list` carries it. A row whose work
  *  is over takes the workspace's data with it — nobody is coming back to it. */
 async function applyState(context, entityId, state) {
+  if (!isFeedRow(state)) return;
   await writeCached(addressOf(context, entityId, "row"), stampRow(state, context.deviceId));
   await writeSurfaces(context, entityId, state.agents);
   if (isFinishedState(state.state)) await evictWorkspaceData(context.deviceId, entityId);

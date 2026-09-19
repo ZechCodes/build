@@ -620,20 +620,34 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(calls).toEqual([]);
   });
 
-  it("never reads a work item off the wire, whatever kind of one it is on", async () => {
+  it("never reads a work item off the wire where the board writes it a row", async () => {
     payload = branchRow({ agents: three() });
     await mount();
     bubbles()[1].click();
     await flush();
     await pushRow(branchRow({ agents: three().slice(0, 2) }));
-    rail.dispose();
-    rail = null;
-
-    payload = { issue_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the issue")] } };
-    await mount({ kind: "issue", projectId: "p1", issueId: "plan-1" });
 
     const reads = ["branch.get", "issue.get", "run.get", "workspace.get", "thread.page"];
     expect(calls.filter((call) => reads.includes(call.method))).toEqual([]);
+  });
+
+  // An issue left the board (bridge board/views.rs), so nothing pushes one a
+  // row and nothing ever writes one: the cache holds no work item a rail on an
+  // issue could stand on. Its own read is what answers who its agents are, and
+  // the rail makes it once — on mount, never on a clock. Stage 9 takes the
+  // issue surface cache-only and this goes with it.
+  it("asks an issue for its agents, because nothing writes an issue a row", async () => {
+    await wipeCache();
+    await writeRailThread("plan-1", "ag-1", { items: [said(1, "on the issue")] });
+    payload = { issue_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the issue")] } };
+    rail = mountAgentRail(railHost(), railAddress({ kind: "issue", projectId: "p1", issueId: "plan-1" }));
+    await flush();
+
+    // One bubble and no `+`: an issue carries exactly one agent.
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);
+    expect(railHost().querySelector("#rail-body").textContent).toContain("on the issue");
+    expect(callsTo("issue.get")).toHaveLength(1);
+    expect(calls.filter((call) => ["branch.get", "run.get", "workspace.get"].includes(call.method))).toEqual([]);
   });
 });
 

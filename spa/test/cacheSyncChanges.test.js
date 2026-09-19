@@ -260,6 +260,16 @@ describe("applying one item", () => {
     expect(bridge.call).not.toHaveBeenCalled();
   });
 
+  // A legacy issue left the board, so the bridge has no row to push for one:
+  // its `state` item is the three-field digest it always answered with, whose
+  // `agents` is a COUNT. Written as if it were a row, it is a work item whose
+  // agents cannot be walked, and every reader of that record is handed one.
+  it("leaves the row alone for a state item that is not a row", async () => {
+    await boot([branchItem()]);
+    await deliver([{ entity_id: "plan-1", state: { run: "planning", agents: 2, attention: "none" } }]);
+    expect(await read("plan-1", "row")).toBeUndefined();
+  });
+
   it("lets a finished workspace's data go, and keeps its row", async () => {
     await boot([branchItem()]);
     expect(await read("run-1", "status")).toBeTruthy();

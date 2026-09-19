@@ -1183,6 +1183,16 @@ function mountRailOnContext(host, context, swap) {
     return (await readCached(address))?.value || null;
   };
 
+  /// The work item this rail stands on: the cached row, for every kind the
+  /// board writes one for. An issue is the exception — nothing on either side
+  /// writes an issue a row — and its context reads its own
+  /// (core/agentRailContext.js). A read that is refused leaves the rail as it
+  /// was rather than blanking the conversation under the reader.
+  const workItem = async (entityId) => {
+    if (!railContext.workItem) return cachedRow(entityId);
+    return railContext.workItem(chatRepository.currentCall()).catch(() => null);
+  };
+
   const answerLostTheAgents = (answered) => {
     if (answered.agents.length || !visibleAgents().length || agentlessOnce) return false;
     agentlessOnce = true;
@@ -1234,7 +1244,7 @@ function mountRailOnContext(host, context, swap) {
     if (disposed) return;
     watchRow(entityId);
     watchMountedSources();
-    const row = await cachedRow(entityId);
+    const row = await workItem(entityId);
     if (disposed) return;
     if (row) standOnRow(row);
     await refreshAlongside();

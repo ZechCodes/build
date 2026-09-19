@@ -3,8 +3,9 @@
 // The rail reads nothing off the wire any more: its agents and its
 // conversation come from the cache, and what is left here is how each kind of
 // work item is NAMED — the key it is remembered under, the route its row is
-// found by, the verb that mints it a conversation — plus the one on-demand
-// read there is, the page above the window a reader has scrolled to the top of.
+// found by, the verb that mints it a conversation — plus the two on-demand
+// reads there are: the page above the window a reader has scrolled to the top
+// of, and an issue's own work item, which the board writes no row for.
 
 import { mergeCached } from "./localCache.js";
 import { mergeActivityDigests } from "./activityDigest.js";
@@ -77,6 +78,16 @@ class BranchRailContext {
   }
 }
 
+/**
+ * An issue, which is the one work item the cache holds nothing for.
+ *
+ * Issues left the active-work board (bridge `app/board/views.rs`), so no row is
+ * ever built for one, no `state` push carries one, and the sync layer's ordered
+ * pass never walks one. `issue.get` is the only thing on either side that says
+ * who an issue's agents are, so this context keeps it — the single exception to
+ * "the rail reads the cache", asked once per mount and never on a clock. Stage
+ * 9 takes the issue surface cache-only and this goes with it.
+ */
 class IssueRailContext {
   constructor({ deviceId = null, projectId, issueId }) {
     this.kind = "issue";
@@ -88,6 +99,10 @@ class IssueRailContext {
 
   ensureConversation() {
     return null;
+  }
+
+  workItem(call) {
+    return call("issue.get", { issue_id: this.issueId });
   }
 
   olderPage(call, asked) {

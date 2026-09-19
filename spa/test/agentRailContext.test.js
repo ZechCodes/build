@@ -28,16 +28,30 @@ beforeEach(async () => {
 });
 
 describe("agent rail context adapters", () => {
-  // Nothing here reads a work item any more: its agents and its conversation
-  // are in the cache, and the rail paints them from there.
-  it("offers no read of the work item on any kind", () => {
+  // Nothing here reads a work item the board writes a row for: its agents and
+  // its conversation are in the cache, and the rail paints them from there.
+  it("offers no read of the work item where the board writes a row", () => {
     const kinds = [
       { kind: "branch", projectId: "p1", branch: "build/chat" },
-      { kind: "issue", projectId: "p1", issueId: "issue-1" },
       { kind: "project", projectId: "p1", entityId: "run-9" },
       { kind: "workspace", projectId: "p1", workspaceId: "ws-1" },
     ];
-    for (const context of kinds) expect(createAgentRailContext(context).detail).toBeUndefined();
+    for (const context of kinds) {
+      expect(createAgentRailContext(context).detail).toBeUndefined();
+      expect(createAgentRailContext(context).workItem).toBeUndefined();
+    }
+  });
+
+  // Except an issue, which left the board: nothing pushes one a row and the
+  // sync layer's ordered pass never walks one, so `issue.get` is the only
+  // thing on either side that says who its agents are.
+  it("reads an issue's own work item, because the board writes it none", async () => {
+    const call = vi.fn(async () => ({ issue_id: "issue-1", agents: [] }));
+    const issue = createAgentRailContext({ kind: "issue", projectId: "p1", issueId: "issue-1" });
+
+    expect(await issue.workItem(call)).toEqual({ issue_id: "issue-1", agents: [] });
+    expect(call).toHaveBeenCalledWith("issue.get", { issue_id: "issue-1" });
+    expect(issue.detail).toBeUndefined();
   });
 
   it("names a branch by the route its row is found under", () => {

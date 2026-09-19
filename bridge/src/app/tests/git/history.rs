@@ -309,6 +309,46 @@ fn git_show_capped_at_max_bytes_answers_the_file_list_and_the_patchs_true_size()
     assert!(result["patch_bytes"].as_u64().unwrap() > 1024, "{result:?}");
 }
 
+/// A commit of binary files truncates to a file list too. Git prints no
+/// hunks for a binary delta — the whole of what it says about one is the
+/// file header and a line saying the two differ — so a capped answer that
+/// carried only hunk-bearing files would name nothing at all here, and the
+/// client would cache a commit it could not describe.
+#[test]
+fn git_show_capped_on_a_commit_of_binary_files_still_names_them() {
+    let (dir, repo) = init_repo();
+    for n in 0..20 {
+        std::fs::write(repo.join(format!("blob{n}.bin")), [0u8, 159, 146, 150, n]).unwrap();
+    }
+    git_in(&repo, &["add", "-A"]);
+    git_in(&repo, &["commit", "-q", "-m", "twenty binaries"]);
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+
+    let shown = show_head(&mut state, &project_id, Some(1024));
+    assert_eq!(shown["ok"], true, "{shown:?}");
+    let result = &shown["result"];
+    assert_eq!(result["truncated"], true, "{result:?}");
+    let patch = result["patch"].as_str().unwrap();
+    assert!(
+        patch.contains("diff --git a/blob0.bin b/blob0.bin"),
+        "{patch}"
+    );
+    assert!(patch.len() <= 1024, "{} bytes", patch.len());
+    assert_eq!(result["stat"]["files_changed"], 20, "{result:?}");
+
+    // And these really are binary deltas: the whole patch says so, which is
+    // what keeps this from quietly becoming a test about text files.
+    let whole = show_head(&mut state, &project_id, None);
+    assert!(
+        whole["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("Binary files"),
+        "{whole:?}"
+    );
+}
+
 /// The cap is clamped at both ends: a patch that fits under the floor is
 /// never cut, and a caller that asks for more than the wire carries gets
 /// `COMMIT_PATCH_MAX_BYTES`.

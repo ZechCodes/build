@@ -412,6 +412,13 @@ pub fn truncate_at_utf8_boundary(text: String, max_bytes: usize) -> (String, boo
 /// cap it gets the file headers, which say which files moved without saying
 /// how, and asks again when a reviewer opens the commit. A caller that named
 /// nothing gets the patch cut at the wire cap, as it always did.
+///
+/// Every file has a header, binary ones included — git says a binary delta
+/// in a header and one line, so a commit of nothing but images still names
+/// what it touched. A commit with more headers than the cap has them cut
+/// where the cap falls, still `truncated`: a caller that asked for a
+/// kilobyte gets a kilobyte, and the count it needs to decide whether to
+/// ask for more rides `stat` and `patch_bytes` rather than the text.
 fn capped_patch(patch: String, headers: String, max_bytes: Option<usize>) -> (String, bool) {
     match max_bytes {
         Some(cap) if patch.len() > cap => (truncate_at_utf8_boundary(headers, cap).0, true),

@@ -19,8 +19,24 @@ vi.mock("../src/core/console.js", () => ({ mountConsole }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 
+// The surface stands on this machine's cached workspace list. The feed is a
+// view over those records (core/taskFeed.js); what it is holding here is
+// whatever this file's scripted machine says the workspace is.
+let feedWorkspaces = [];
+vi.mock("../src/core/taskFeed.js", () => ({
+  subscribeFeed: (fn) => {
+    fn({ devices: { "dev-1": { items: [], projects: [], workspaces: feedWorkspaces } } });
+    return () => {};
+  },
+  startFeed: () => {},
+  stopFeed: () => {},
+  refreshFeed: async () => {},
+  deliverFeed: () => {},
+  dropFeedDevice: () => {},
+  joinFeed: () => {},
+}));
+
 import { App } from "../src/app.js";
-import { SMALLEST_THREAD_PAGE } from "../src/core/thread.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
@@ -52,10 +68,21 @@ const initOptions = {
 // A workspace is a checkout on one machine, so every answer this surface reads
 // comes from the machine the route names. The account has two other devices
 // throughout: one paired and answering, one listed but never opened here.
+let scripted = null; // what dev-1 would answer, for the records below
 const device = (deviceId, answer = async () => ({})) => {
   const call = vi.fn(answer);
+  if (deviceId === "dev-1") scripted = answer;
   adoptDeviceSession({ ...fakeSession(deviceId), call });
   return call;
+};
+
+/** Put what the machine would have answered `workspace.get` with into the
+ *  records, then mount. The surface reads the list, never the row. */
+const standUp = async () => {
+  const answer = (await scripted("workspace.get", { workspace_id: App.route.workspaceId })) || {};
+  const held = answer.workspace || answer;
+  feedWorkspaces = held.id ? [held] : [];
+  await renderWorkspace();
 };
 
 let elsewhere;
@@ -74,6 +101,8 @@ beforeEach(() => {
     { id: "dev-3", name: "workshop", status: "offline" },
   ];
   elsewhere = device("dev-2");
+  scripted = null;
+  feedWorkspaces = [];
 });
 
 afterEach(() => {
@@ -86,21 +115,20 @@ afterEach(() => {
 });
 
 describe("workspace surface", () => {
-  it("bounds the unused conversation on its initial workspace detail read", async () => {
+  it("stands on the cached workspace list, and asks the machine for no detail at all", async () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     const call = device("dev-1", async () => workspace);
 
-    await renderWorkspace();
+    await standUp();
 
-    // The machine the route names is asked, and asked for the smallest thread
-    // window: the rail pages the conversation it opens on its own.
-    expect(call).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1", ...SMALLEST_THREAD_PAGE });
+    expect(renderFilesTab).toHaveBeenCalled();
+    expect(call).not.toHaveBeenCalledWith("workspace.get", expect.anything());
   });
 
   it("scopes Files to a directory while terminals stay workspace scoped", async () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", async () => workspace);
-    await renderWorkspace();
+    await standUp();
     expect(renderFilesTab.mock.calls[0][1].scope).toEqual({ workspace_id: "ws-1", source_id: "assets" });
     expect(App.routeLeaveGuard).toBe(renderFilesTab.mock.results[0].value.canLeave);
     renderFilesTab.mock.calls[0][1].onFileOpen("logo.svg");
@@ -125,7 +153,7 @@ describe("workspace surface", () => {
       if (method === "git.checkout_ref") throw new Error(`Cannot switch: local changes would be overwritten (${params.full_ref})`);
       return {};
     });
-    await renderWorkspace();
+    await standUp();
     await flush();
     document.querySelector("[data-refpicker-toggle]").click();
     document.querySelector("[data-ref-kind=tag]").click();
@@ -151,7 +179,7 @@ describe("workspace surface", () => {
       };
       return {};
     });
-    await renderWorkspace();
+    await standUp();
     await flush();
     document.querySelector("[data-refpicker-toggle]").click();
     document.querySelector("[data-ref-kind=tag]").click();
@@ -178,7 +206,7 @@ describe("workspace surface", () => {
     };
     device("dev-1", async () => workspace);
 
-    await renderWorkspace();
+    await standUp();
     await flush();
 
     expect(mountAgentRail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ openAgentId: "ag-2" }));
@@ -188,7 +216,7 @@ describe("workspace surface", () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
     device("dev-1", async () => workspace);
 
-    await renderWorkspace();
+    await standUp();
     await flush();
 
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe(null);
@@ -200,7 +228,7 @@ describe("workspace surface", () => {
     // of something you had to open to reach them.
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
     device("dev-1", async () => workspace);
-    await renderWorkspace();
+    await standUp();
     await flush();
     expect(document.querySelector("#tabbody [data-tab]")).toBeNull();
     expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("changes");
@@ -224,7 +252,7 @@ describe("workspace surface", () => {
       if (method === "git.checkout_ref") return checkout;
       return {};
     });
-    await renderWorkspace();
+    await standUp();
     await flush();
     document.querySelector("[data-refpicker-toggle]").click();
     document.querySelector("[data-ref-kind=tag]").click();
@@ -238,7 +266,7 @@ describe("workspace surface", () => {
   it("does not offer Finish for a ready workspace", async () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", async () => ({ ...workspace, status: "ready" }));
-    await renderWorkspace();
+    await standUp();
     expect(document.querySelector("[data-workspace-action]")).toBeNull();
   });
 
@@ -246,7 +274,7 @@ describe("workspace surface", () => {
     const failedWorkspace = { ...workspace, status: "failed" };
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     const call = device("dev-1", async (method) => method === "workspace.retry" ? { ...workspace, status: "ready" } : failedWorkspace);
-    await renderWorkspace();
+    await standUp();
     const firstGuard = App.routeLeaveGuard;
     expect(document.querySelector("[data-workspace-action]").textContent).toBe("Retry");
     document.querySelector("[data-workspace-action]").click();
@@ -275,7 +303,7 @@ describe("workspace surface", () => {
     };
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", async (method) => method === "workspace.retry" ? repaired : mixedWorkspace);
-    await renderWorkspace();
+    await standUp();
     const originalPane = renderFilesTab.mock.results[0].value;
     const originalGuard = App.routeLeaveGuard;
     document.querySelector("[data-workspace-action]").click();
@@ -293,7 +321,7 @@ describe("workspace surface", () => {
       outcomes: [{ target: "workspace", status: "initialized", is_git: true }],
       source: { source_id: "assets", path: "/srv/projects/assets", is_git: false },
     } : plainWorkspace);
-    await renderWorkspace();
+    await standUp();
     const pane = renderFilesTab.mock.results[0].value;
     const guard = App.routeLeaveGuard;
     document.querySelector("[data-init-git]").click();
@@ -332,7 +360,7 @@ describe("workspace surface", () => {
         source: { source_id: "assets", path: "/srv/projects/assets", is_git: true },
       };
     });
-    await renderWorkspace();
+    await standUp();
     document.querySelector("[data-init-git]").click();
     await flush();
     document.querySelector('[data-init-target="both"]').click();
@@ -353,7 +381,7 @@ describe("workspace surface", () => {
     const pending = new Promise((resolve) => { finish = resolve; });
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
-    await renderWorkspace();
+    await standUp();
     document.querySelector("[data-init-git]").click();
     await flush();
     document.querySelector('[data-init-target="workspace"]').click();
@@ -382,7 +410,7 @@ describe("workspace surface", () => {
       };
       return { workspace: plainWorkspace, source: { id: "assets", is_git: false }, results: [] };
     });
-    await renderWorkspace();
+    await standUp();
     document.querySelector("[data-init-git]").click();
     await flush();
     document.querySelector('[data-init-target="both"]').click();
@@ -399,7 +427,7 @@ describe("workspace surface", () => {
   it("can reopen initialization after Escape dismisses the dialog", async () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     const call = device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : plainWorkspace);
-    await renderWorkspace();
+    await standUp();
     document.querySelector("[data-init-git]").click();
     await flush();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -408,7 +436,8 @@ describe("workspace surface", () => {
     document.querySelector("[data-init-git]").click();
     await flush();
     expect(document.querySelector(".modal-workspace-init")).not.toBeNull();
-    expect(call).toHaveBeenCalledTimes(3);
+    // Two reads of the options, one per press, and no read of the workspace.
+    expect(call).toHaveBeenCalledTimes(2);
   });
 
   it("discovers a plain original source after reloading a Git workspace copy", async () => {
@@ -417,7 +446,7 @@ describe("workspace surface", () => {
     device("dev-1", async (method) => method === "workspace.git_init_options" ? {
       ...initOptions, workspace: { ...initOptions.workspace, is_git: true },
     } : initializedCopy);
-    await renderWorkspace();
+    await standUp();
     await flush();
     expect(document.querySelector("[data-init-git]").textContent).toContain("original source");
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
@@ -435,7 +464,7 @@ describe("workspace surface", () => {
       workspace: initializedCopy, source: { id: "assets", is_git: true },
       results: [{ target: "workspace", status: "already_initialized", is_git: true }],
     } : initializedCopy);
-    await renderWorkspace();
+    await standUp();
     await flush();
     expect(document.querySelector("[data-init-git]").textContent).toContain("Finish Git initialization");
     document.querySelector("[data-init-git]").click();
@@ -456,7 +485,7 @@ describe("workspace surface", () => {
     const pending = new Promise((resolve) => { finish = resolve; });
     device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    await renderWorkspace();
+    await standUp();
     document.querySelector("[data-init-git]").click();
     await flush();
     document.querySelector('[data-init-target="workspace"]').click();
@@ -478,7 +507,7 @@ describe("workspace surface", () => {
     const { setContextOffline } = await import("../src/core/deviceContexts.js");
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", async () => workspace);
-    await renderWorkspace();
+    await standUp();
     await flush();
 
     setContextOffline("dev-1");

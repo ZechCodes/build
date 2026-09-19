@@ -382,7 +382,12 @@ describe("the device context registry", () => {
 // something names another: a row's verbs are its own machine's.
 describe("one device's view of the feed", () => {
   const mine = { items: [{ id: "a" }], projects: [{ id: "p1" }], runs: [{ run_id: "run-a" }] };
-  const theirs = { items: [{ id: "b" }], projects: [{ id: "p9" }], externalWorktrees: [{ worktree_id: "wt-b" }] };
+  const theirs = {
+    items: [{ id: "b" }],
+    projects: [{ id: "p9" }],
+    externalWorktrees: [{ worktree_id: "wt-b" }],
+    workspaces: [{ id: "ws-b" }],
+  };
   const merged = { items: [...mine.items, ...theirs.items], devices: { "dev-a": mine, "dev-b": theirs } };
 
   it("reads the home device's rows and projects out of a merged snapshot", () => {
@@ -394,6 +399,7 @@ describe("one device's view of the feed", () => {
       projects: mine.projects,
       runs: mine.runs,
       externalWorktrees: [],
+      workspaces: [],
     });
   });
 
@@ -406,11 +412,12 @@ describe("one device's view of the feed", () => {
       projects: theirs.projects,
       runs: [],
       externalWorktrees: theirs.externalWorktrees,
+      workspaces: theirs.workspaces,
     });
   });
 
   it("answers empty collections while no device is home", () => {
-    expect(deviceFeedView(merged)).toEqual({ items: [], projects: [], runs: [], externalWorktrees: [] });
+    expect(deviceFeedView(merged)).toEqual({ items: [], projects: [], runs: [], externalWorktrees: [], workspaces: [] });
   });
 });
 

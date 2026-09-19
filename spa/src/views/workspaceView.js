@@ -18,7 +18,7 @@ import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
-import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
+import { deviceFeedNow } from "../core/feedRows.js";
 import "../styles/surfaces.css";
 
 function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection }) {
@@ -357,16 +357,16 @@ export async function renderWorkspace() {
     state.gitInitialization.forEach((controller) => controller.dispose());
     clearToolbarVerb(state.toolbarAction);
   };
-  try {
-    // This read mounts workspace metadata; the agent rail opens and pages its
-    // own selected conversation. Ask for the smallest valid thread window so
-    // an old conversation never bloats the surface's initial response.
-    const response = await state.callRpc("workspace.get", {
-      workspace_id: state.route.workspaceId,
-      ...SMALLEST_THREAD_PAGE,
-    });
-    mountWorkspace(response.workspace || response, state);
-  } catch (error) {
-    if (!state.disposed) $("#tabbody").innerHTML = errorHtml(error.message || String(error));
+  // The workspace is a record: the pass writes the machine's checkouts and a
+  // board push rewrites them, so the surface stands on the list rather than
+  // asking for the one row again. Its conversation is the rail's, and the rail
+  // pages that out of the cache for itself.
+  const workspace = (deviceFeedNow(route.deviceId)?.workspaces || []).find(
+    (candidate) => candidate.id === route.workspaceId,
+  );
+  if (!workspace) {
+    if (!state.disposed) $("#tabbody").innerHTML = errorHtml(`unknown workspace_id: ${route.workspaceId}`);
+    return;
   }
+  mountWorkspace(workspace, state);
 }

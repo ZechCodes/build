@@ -50,6 +50,8 @@ let feed = {
     { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb", path: "/repos/relaydb" },
     { id: "p2", deviceId: "dev-1", projectKey: "dev-1/p2", name: "mascot" },
   ],
+  workspaces: [],
+  devices: {},
 };
 // A Set, matching the real module (core/taskFeed.js): this file's own
 // navigation can land the router on a route it has already rendered (the
@@ -81,6 +83,7 @@ const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/c
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
 const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
 const { rememberDeviceFilter } = await import("../src/core/deviceFilter.js");
+const { stampWorkspace } = await import("../src/core/feedMerge.js");
 
 /** What each machine answers. A workspace read the bar makes is made on the
  *  machine the project it is about lives on, so the two are told apart. */
@@ -111,13 +114,14 @@ const payments = {
   ],
 };
 
-/** The workshop answering workspace reads for whatever it has been given. */
+/** The workshop's checkouts, as one pass left them in the cache: the bar is a
+ *  view over the same records the rail is, and asks no machine for them. */
 const workshopHolds = (byProject) => {
-  workshopCall.mockImplementation(async (method, params) => {
-    if (method === "workspace.list") return { workspaces: byProject[params.project_id] || [] };
-    if (method === "workspace.get") return { workspace: payments };
-    return {};
-  });
+  const workspaces = Object.values(byProject)
+    .flat()
+    .map((workspace) => stampWorkspace(workspace, "dev-1"));
+  feed = { ...feed, workspaces, devices: { ...feed.devices, "dev-1": { ...feed.devices?.["dev-1"], workspaces } } };
+  subscribers.forEach((fn) => fn(feed));
 };
 
 /** Stand on the workshop's payment-work, with its directory tabs hydrated. */
@@ -197,9 +201,11 @@ describe("the workspace toolbar", () => {
       .toBeLessThan([...bar().children].indexOf(bar().querySelector(".tb-directories")));
   });
 
-  it("reads the workspaces from the machine the route names, not another device's", async () => {
+  it("lists the workspaces of the machine the route names, and asks no machine for them", async () => {
     await standOnWorkspace();
-    expect(workshopCall).toHaveBeenCalledWith("workspace.list", { project_id: "p1" });
+    openJump("workspace");
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+    expect(workshopCall).not.toHaveBeenCalledWith("workspace.list", expect.anything());
     expect(laptopCall).not.toHaveBeenCalledWith("workspace.list", expect.anything());
   });
 
@@ -268,41 +274,18 @@ describe("the workspace toolbar", () => {
     expect(labels("[data-workspace]")).toEqual(["payment-work"]);
   });
 
-  it("rehydrates the active workspace when its project is selected from the popup", async () => {
-    workshopHolds({ p1: [{ id: "ws-1", project_id: "p1", name: "payment-work", status: "ready" }] });
+  // The directories the tabs are drawn from ride the workspace list itself, so
+  // reopening the menu on the project you are in draws them off the record
+  // rather than reading the one row again.
+  it("keeps the active workspace's directory tabs when its project is selected from the popup", async () => {
     await standOnWorkspace();
 
     openJump("workspace").querySelector("[data-projects]").click();
     menu().querySelector('[data-project="dev-1/p1"]').click();
     await flush();
 
-    expect(workshopCall).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1", thread_limit: 1 });
+    expect(workshopCall).not.toHaveBeenCalledWith("workspace.get", expect.anything());
     expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
-  });
-
-  it("ignores a workspace list response overtaken by a newer project choice", async () => {
-    let answerSandbox;
-    const sandboxAnswer = new Promise((done) => {
-      answerSandbox = done;
-    });
-    workshopCall.mockImplementation(async (method, params) => {
-      if (method === "workspace.list" && params.project_id === "p2") return sandboxAnswer;
-      if (method === "workspace.list") return { workspaces: [payments] };
-      if (method === "workspace.get") return { workspace: payments };
-      return {};
-    });
-    await standOnWorkspace();
-
-    openJump("workspace").querySelector("[data-projects]").click();
-    menu().querySelector('[data-project="dev-1/p2"]').click();
-    menu().querySelector("[data-projects]").click();
-    menu().querySelector('[data-project="dev-1/p1"]').click();
-    await flush();
-    answerSandbox({ workspaces: [{ id: "ws-2", project_id: "p2", name: "prototype" }] });
-    await flush();
-
-    expect(menu().querySelector(".tb-scope > span").textContent).toBe("relaydb");
-    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
   });
 
   it("shows directory tabs and opens ordinary directories in Files", async () => {
@@ -589,7 +572,6 @@ describe("creating from the menu", () => {
     menu().querySelector('[data-project="dev-2/p1"]').click();
     await flush();
     menu().querySelector('[data-create="workspace"]').click();
-    expect(laptopCall).toHaveBeenCalledWith("workspace.list", { project_id: "p1" });
     expect(openCreateWork).toHaveBeenCalledWith({
       projectId: "p1",
       deviceId: "dev-2",

@@ -30,7 +30,6 @@ import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
 import { openWorkspaceSettings } from "../sheets/workspaceSettings.js";
 import { deviceCatalog } from "./inboxDevices.js";
-import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import {
   projectMenuModel,
   toolbarIdentity,
@@ -41,7 +40,7 @@ import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
 import { canAnswer, contextFor } from "./deviceContexts.js";
 import { filterByDevice } from "./deviceFilter.js";
 import { deviceKey, routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
-import { stampWorkspace } from "./feedMerge.js";
+import { deviceView } from "./feedMerge.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
 import { projectRoute, workspaceRoute } from "./projectModel.js";
@@ -62,8 +61,6 @@ let scopedProjectKey = null;
 // Each project's workspaces as its own machine last listed them, by project
 // key — two machines' `proj-1` are two projects with two sets.
 const workspacesByProject = new Map();
-let workspaceRequest = 0;
-let loadingProjectKey = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
 let paintedIdentity = null; // what the bar's OWN markup was last built from — see paint()
@@ -124,52 +121,27 @@ function rememberScope(projectKey) {
   }
 }
 
-/** A workspace as this bar names it — the same account-wide names the feed
- *  stamps, minted in the one place that mints them (core/feedMerge.js), so a
- *  row read here and a row read by the rail are the same row. */
-const workspaceAnswer = (answer, deviceId) => stampWorkspace(answer?.workspace || answer || {}, deviceId);
-
-async function workspaceRows(context, projectId, selectedWorkspaceId) {
-  const listed = await context.rpc("workspace.list", { project_id: projectId });
-  // The project's own checkout is never a place to go (core/workspaceModel.js),
-  // whatever an older bridge on that machine still lists.
-  const project = projectFor(deviceKey(context.deviceId, projectId));
-  const rows = (listed?.workspaces || [])
-    .map((workspace) => stampWorkspace(workspace, context.deviceId))
+/** One project's workspaces, off the cache the feed is a view over. The rows
+ *  are already stamped with the machine they are on (core/feedMerge.js), so a
+ *  row the bar lists and a row the rail lists are the same row.
+ *
+ *  The project's own checkout is never a place to go
+ *  (core/workspaceModel.js), whatever an older bridge on that machine listed. */
+function workspaceRows(deviceId, projectId) {
+  const project = projectFor(deviceKey(deviceId, projectId));
+  return (deviceView(feed, deviceId).workspaces || [])
+    .filter((workspace) => workspace.project_id === projectId)
     .filter((workspace) => !standsOnProjectCheckout(workspace, project));
-  if (!selectedWorkspaceId) return rows;
-  const selected = rows.find((workspace) => workspace.id === selectedWorkspaceId);
-  if (Array.isArray(selected?.directories)) return rows;
-  const detail = workspaceAnswer(
-    await context.rpc("workspace.get", { workspace_id: selectedWorkspaceId, ...SMALLEST_THREAD_PAGE }),
-    context.deviceId,
-  );
-  return detail.id ? [...rows.filter((workspace) => workspace.id !== detail.id), detail] : rows;
 }
 
-function acceptWorkspaceRows(request, projectKey, rows) {
-  if (request !== workspaceRequest) return;
-  workspacesByProject.set(projectKey, rows);
-  loadingProjectKey = null;
+/** Take up the workspace menu for one project. Nothing is read: the pass and
+ *  the board pushes fill the workspace list, and this is the bar's own view of
+ *  it. A project whose machine has never been read lists nothing, and lists
+ *  something the moment that machine's records land. */
+function loadWorkspaces(project) {
+  if (!project?.projectKey) return;
+  workspacesByProject.set(project.projectKey, workspaceRows(project.deviceId, project.id));
   paint();
-}
-
-/** Read the workspace menu for one project off that project's own machine, then
- * hydrate the selected row so its directory tabs are available even when
- * `workspace.list` is summarized. A route or project switch overtakes an older
- * answer rather than letting it repaint another project's toolbar. A machine
- * that cannot answer lists nothing rather than standing over refused calls. */
-async function loadWorkspaces(project, selectedWorkspaceId = null) {
-  const context = contextFor(project?.deviceId);
-  if (!project?.projectKey || !canAnswer(context)) return;
-  const request = ++workspaceRequest;
-  loadingProjectKey = project.projectKey;
-  paint();
-  try {
-    acceptWorkspaceRows(request, project.projectKey, await workspaceRows(context, project.id, selectedWorkspaceId));
-  } catch {
-    acceptWorkspaceRows(request, project.projectKey, []);
-  }
 }
 
 /** The project the route is standing in, as the workspace reads need it: the
@@ -184,7 +156,7 @@ const routeProject = () => ({
 /** Read the workspaces of the project the route is standing in, when the route
  *  is standing in a workspace at all. Every way into a route runs this. */
 const loadStandingWorkspaces = () => {
-  if (App.route.name === "workspace") void loadWorkspaces(routeProject(), App.route.workspaceId);
+  if (App.route.name === "workspace") loadWorkspaces(routeProject());
 };
 
 /** The workspace the route is standing in, off the rows its project's machine
@@ -418,15 +390,9 @@ function pickProject(element) {
   const project = projectFor(element.dataset.project);
   rememberScope(element.dataset.project);
   showList("workspaces");
-  void loadWorkspaces(project, standingWorkspaceIdIn(project));
+  loadWorkspaces(project);
   return true;
 }
-
-/** The workspace the route is standing in, when the route is standing in this
- *  project at all — so reopening the menu on the project you are in hydrates
- *  the row you are on and its directory tabs. */
-const standingWorkspaceIdIn = (project) =>
-  routeProjectKey(App.route) === project?.projectKey ? App.route.workspaceId : null;
 
 function pickWorkspace(element) {
   if (!element) return false;
@@ -491,8 +457,8 @@ function openStandingWorkspaceSettings() {
       // The name is printed by this bar and by every inbox row, so both are
       // told rather than left to their next poll.
       onRenamed: async () => {
-        await loadWorkspaces(routeProject(), workspaceId);
         await refreshFeed(deviceId);
+        loadWorkspaces(routeProject());
       },
       // Standing in a workspace that no longer exists is standing nowhere.
       onDeleted: async () => {
@@ -556,10 +522,9 @@ const scopedWorkspaces = () =>
 
 function workspaceMenuEntries() {
   const entries = scopedWorkspaces();
-  if (!entries.length) {
-    const message = loadingProjectKey === scopedProject()?.projectKey ? "Loading workspaces…" : "No workspace by that name.";
-    return [{ key: "none", html: `<div class="tb-none dim">${message}</div>` }];
-  }
+  // Nothing is being waited for: the menu is a view over the records, and an
+  // empty one is a project with no workspace by that name in them.
+  if (!entries.length) return [{ key: "none", html: '<div class="tb-none dim">No workspace by that name.</div>' }];
   return entries.map((workspace) => ({
     key: `workspace:${workspace.workspaceKey}`,
     html: `<button class="mi${workspace.current ? " current" : ""}" data-workspace="${esc(workspace.workspaceKey)}" type="button" role="menuitem">
@@ -628,6 +593,9 @@ export function initToolbar() {
   subscribeFeed((next) => {
     feed = next;
     shownFeed = filterByDevice(next, App.deviceFilter);
+    // The menu is a view over the same records: a workspace made, renamed or
+    // finished on another machine moves it on the delivery that carried it.
+    loadStandingWorkspaces();
     paint();
   });
   paint({ entering: true });
@@ -646,9 +614,7 @@ export function toolbarRouteChanged() {
 
 /** Teardown, for tests and for a gate that tears the session down. */
 export function stopToolbar() {
-  workspaceRequest += 1;
   workspacesByProject.clear();
-  loadingProjectKey = null;
   toolbarResizeObserver?.disconnect();
   toolbarResizeObserver = null;
   closeMenu();

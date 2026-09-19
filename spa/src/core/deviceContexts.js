@@ -374,6 +374,7 @@ export function deviceFeedView(snapshot, deviceId = null) {
     projects: view.projects || [],
     runs: view.runs || [],
     externalWorktrees: view.externalWorktrees || [],
+    workspaces: view.workspaces || [],
   };
 }
 

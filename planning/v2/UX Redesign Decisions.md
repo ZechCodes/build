@@ -1,5 +1,17 @@
 # UX Redesign Decisions
 
+> **Amendment (2026-09-18, Zech):** `post_thread_message` takes only `status`,
+> `body` and `options`. There is no `phase`, `outputs`, `anchor` or `links`:
+> Build knows which phase a report closes from the session that sent it, and a
+> plan's stages are read from `.build/plan/stages.json` on disk when the plan
+> agent reports Complete. The per-stage validation gate (validate/fix-stage
+> sessions, `ValidationReport`, `run.stage_fix`/`issue.stage_fix`), diff triage
+> (`triage.override`, `triage_enabled`, `.build/review-rules.json`), the
+> branch-recovery agent (`RecoveryAttempt`, `phase=recover`) and agent-reported
+> comment resolutions are removed. A stage is `building` until its build
+> reports Complete, then `completed`. Where this document says otherwise, this
+> note wins.
+
 Source of truth for the 2026-08 UX redesign, implementing the five Do issues
 (Build project → Planning): UX Architecture: Inbox and Control Plane,
 Phase 1: Conversation Threads, Capture and Router Agent, Phase 2: Review

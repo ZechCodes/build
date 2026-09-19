@@ -96,7 +96,7 @@ Each device has its own settings page — the settings cog beside a device in th
 dropdown opens it. That page is everything that belongs to that machine: its
 projects folder, its projects list, **Add project**, agent modes, the default
 harness, its **Work isolation** choice — git worktrees or **Rift
-(copy-on-write)**, as below — and its triage settings. The device must be online
+(copy-on-write)**, as below. The device must be online
 to open its page.
 
 **Settings** (the account page) holds what is not any one machine's: the

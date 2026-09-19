@@ -6,9 +6,16 @@
 // lives in the agent rail, and is never one of these. The panes ride the ONE
 // shared terminal socket (terminal/manager.js), demuxed by term_id, so opening
 // the console costs no second connection.
+//
+// Everything the head draws comes off the cache: which checkout this console
+// stands in is the routed row's, and the tab strip is the `terminals` record
+// the sync layer writes and every `terminals` push moves. The console asks the
+// machine nothing to paint — `term.create` and `term.close` are the only two
+// calls left, and both are mutations the reader pressed for.
 
 import {
   DEFAULT_OPEN_SIZE,
+  consoleFeedRoute,
   consoleKey,
   consoleScope,
   consoleTakesKey,
@@ -27,16 +34,24 @@ import { hide, motionHooks, motionSettled, reveal } from "./motion.js";
 import { notifyError } from "./notify.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
-import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
-import { branchRowIn, deviceFeedNow } from "./feedRows.js";
-import { entityIdOf } from "./entityId.js";
-import { readCached, writeCached } from "./localCache.js";
+import { branchRowIn } from "./feedRows.js";
+import { cachedFeedView } from "./cachedRows.js";
+import { routedEntityId } from "./inbox.js";
+import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import "../styles/shell.css";
 
 const TAB_MOTION = motionHooks({ axis: "width" });
+
+/** The record the tab strip is: what the sync layer writes from `term.list`
+ *  and every `terminals` push carries. */
+const TERMINALS_RECORD_KIND = "terminals";
+
+/** The console's own record. It keeps one thing — which tab was open — and
+ *  nothing the bridge is the author of. */
+const CONSOLE_RECORD_KIND = "console";
 
 /** Which terminal each work item was last looking at. The console is rebuilt
  *  whenever the surface under it is (a tab switch re-renders the view), so the
@@ -48,41 +63,34 @@ export function resetConsoleMemory() {
   chosenTerminal.clear();
 }
 
-/** Track a checkout's open user terminals: list on mount, create from the `+`,
- *  close on `×`. Labels are ordinals over list/creation order. */
+/** Track a checkout's open user terminals: seeded from the `terminals` record,
+ *  created from the `+`, closed on `×`. Labels are ordinals over the order the
+ *  record lists them in. The list itself is never asked for — a `terminals`
+ *  push is what moves it, and the record is where that lands. */
 export function terminalTabsController(scope) {
   const manager = terminalManager();
-  let terms = []; // [{ term_id }] in list/creation order
+  let terms = []; // the record's tabs, in the order it lists them
   const labelOf = (termId) => {
     const index = terms.findIndex((t) => t.term_id === termId);
     return index < 0 ? "" : `Terminal ${index + 1}`;
   };
   return {
     ids: () => terms.map((t) => t.term_id),
-    /** Stand the list up from the saved tab ids — the cached first paint. */
-    seed(termIds) {
-      terms = termIds.map((term_id) => ({ term_id }));
+    /** The tabs as the record holds them — what a create or a close writes
+     *  back, so nothing the bridge said about a shell is dropped on the way. */
+    list: () => terms,
+    /** Stand the strip up from the record. */
+    seed(tabs) {
+      terms = (tabs || []).filter((tab) => tab && tab.term_id);
     },
     /** The tab descriptors for the console head: ordinal-labeled, all closable. */
     tabs: () => terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id) })),
     label: labelOf,
     has: (termId) => terms.some((t) => t.term_id === termId),
-    async load() {
-      try {
-        terms = (await manager.listTerminals(scope)).map((t) => ({ term_id: t.term_id }));
-      } catch (error) {
-        // A machine we cannot reach has not answered the question — reading its
-        // silence as "no terminals" is how a shut-looking console gets a shell
-        // opened next to the ones already running in that checkout.
-        if (isTerminalSocketLost(error)) throw error;
-        terms = []; // an unknown/unresolvable scope means "no terminals"
-      }
-      return terms;
-    },
     /** Open one of the user's shells in this checkout's directory. */
     async create() {
       const r = await manager.createTerminal(scope, 80, 24);
-      terms.push({ term_id: r.term_id });
+      terms = [...terms, { term_id: r.term_id }];
       return r.term_id;
     },
     async close(termId) {
@@ -162,17 +170,20 @@ export function mountConsole(host, context) {
   const wantedHere = context && context.kind === "branch" ? wanted : null;
   let requestedSize = wantedHere ? DEFAULT_OPEN_SIZE : readConsoleSize(key);
   let reopenSize = readConsoleReopenSize(key);
-  let scope = null; // the checkout's terminal scope, once resolved
-  let terms = null; // the controller, once there is a scope to list
+  let entityId = null; // which entity's records this console is standing in
+  let scope = null; // the checkout's terminal scope, once the row names one
+  let terms = null; // the controller, once there is a scope to stand it on
   let selected = chosenTerminal.get(key) || null;
-  let loading = false;
-  let unresolved = false; // the branch named no directory to stand in
-  let unreachable = false; // the machine did not answer — not the same as empty
+  let selectionRead = Boolean(selected); // whether the saved pick has been consulted
+  let writtenSelection; // the pick the console record was last told about
+  let unresolved = false; // the route named no checkout to stand in
   let pane = null;
   let paneTermId = null; // which terminal the mounted pane is showing
   let connection = null;
   let reconnectWatch = null; // the one-shot wait for the socket to come back
   let disposed = false;
+  let unwatchCache = null;
+  let watchedEntity; // the entity the cache watch is pointed at
 
   /** Do this again once the terminal socket is back. Only one wait at a time:
    *  the list and the pane are steps of the same mount, so the later one
@@ -187,34 +198,27 @@ export function mountConsole(host, context) {
 
   // ---- the terminals ---------------------------------------------------------
 
-  const resolveScope = async () => {
-    if (context.kind === "issue" || context.kind === "workspace") return consoleScope(context, null);
-    let row = null;
-    try {
-      row = await context.call("branch.get", {
-        project_id: context.projectId,
-        branch: context.branch,
-        ...SMALLEST_THREAD_PAGE,
-      });
-    } catch {
-      // A branch that stopped resolving (finished, renamed) has no directory to
-      // open a shell in; the console says so rather than showing a dead tab.
-      return null;
-    }
-    return consoleScope(context, row);
+  const cacheAddress = (kind) => (entityId ? cacheScope?.address({ entityId, kind }) || null : null);
+
+  const cachedValue = async (kind) => {
+    const address = cacheAddress(kind);
+    return address ? (await readCached(address))?.value : undefined;
   };
 
-  /** The feed's row for this branch, read off the shared snapshot without
-   *  subscribing — the replay-to-late-subscribers path, used synchronously.
-   *  One device's rows, not the merge: the checkout this console stands in is
-   *  on the machine the link named, and every machine mints a `proj-1`. */
-  const feedRowNow = () => branchRowIn(deviceFeedNow(context.deviceId), context.projectId, context.branch);
+  const writeThrough = (kind, value) => {
+    const address = cacheAddress(kind);
+    if (address) writeCached(address, value); // fire and forget
+  };
 
-  /** The local cache's address for this checkout's tab list, or null while the
-   *  entity is unknown. Cached tabs paint the head without a round trip. */
-  const tabsCacheAddress = () => {
-    const entityId = context.kind === "issue" ? context.issueId : entityIdOf(feedRowNow());
-    return entityId ? cacheScope?.address({ entityId, kind: "tabs" }) || null : null;
+  /** Where this console stands, off the device's own rows: the entity its
+   *  records are filed under, and the checkout its shells run in. An issue is
+   *  its own entity and its agent runs in the project's checkout, so neither
+   *  answer needs a row. */
+  const readPlace = async () => {
+    if (context.kind === "issue") return { entityId: context.issueId || null, scope: consoleScope(context, null) };
+    const view = await cachedFeedView(context.deviceId);
+    const row = context.kind === "branch" ? branchRowIn(view, context.projectId, context.branch) : null;
+    return { entityId: routedEntityId(consoleFeedRoute(context), view), scope: consoleScope(context, row) };
   };
 
   const pickSelected = () => {
@@ -222,100 +226,111 @@ export function mountConsole(host, context) {
     selected = (wantedHere && ids.includes(wantedHere) ? wantedHere : null) || (ids.includes(selected) ? selected : ids[0]) || null;
   };
 
-  /** The live list, folded over whatever the cache painted: the scope is
-   *  re-resolved (an adoption may have moved it), the tabs are re-listed, and
-   *  the answer is written through for the next visit. */
-  const reconcileTerminals = async (address) => {
-    const liveScope = await resolveScope();
-    if (disposed || !liveScope) return;
-    const live = terminalTabsController(liveScope);
-    try {
-      await live.load();
-    } catch {
-      // Out of reach: the cached tabs stand, and the machine coming back
-      // reconciles them then.
-      if (!disposed) retryWhenReconnected(() => reconcileTerminals(address));
-      return;
-    }
-    if (disposed) return;
+  /** The tab this console was last left on, read once. The in-session memory
+   *  leads: it is this tab's own most recent word, and it answers without a
+   *  round trip to the disk. */
+  const readSavedSelection = async () => {
+    if (selectionRead) return;
+    selectionRead = true;
+    const saved = (await cachedValue(CONSOLE_RECORD_KIND))?.selected;
+    if (saved && !selected) selected = saved;
+  };
+
+  /** Point the cache watch at the narrowest thing that can answer: this
+   *  console's own entity once a row names it, and the device as a whole while
+   *  no row does — a branch adopted under an open console gains its row then. */
+  const watchCache = () => {
+    const at = entityId || "";
+    if (watchedEntity === at) return;
+    const address = cacheScope?.address(entityId ? { entityId } : {});
+    if (!address) return;
+    watchedEntity = at;
+    unwatchCache?.();
+    unwatchCache = subscribeCache(address, () => void takeUpCache());
+  };
+
+  const standOnScope = (liveScope) => {
+    if (terms && JSON.stringify(scope) === JSON.stringify(liveScope)) return;
     scope = liveScope;
-    terms = live;
-    pickSelected();
-    remember();
-    paint();
-    writeCached(address, { scope, termIds: terms.ids() });
+    terms = terminalTabsController(liveScope);
   };
 
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
-  const ensureTerminals = async () => {
-    if (terms || loading) return;
-    loading = true;
-    paint();
-    const address = tabsCacheAddress();
-    const saved = address ? await readCached(address) : undefined;
-    if (disposed || terms) return;
-    if (saved && saved.value && saved.value.scope && Array.isArray(saved.value.termIds)) {
-      scope = saved.value.scope;
-      terms = terminalTabsController(scope);
-      terms.seed(saved.value.termIds);
-      loading = false;
-      pickSelected();
-      paint();
-      reconcileTerminals(address);
-      return;
-    }
-    scope = await resolveScope();
+  /** Read what the cache says and paint it: the checkout, the tab strip, and
+   *  the tab this console was left on. */
+  const readCacheOnce = async () => {
+    const place = await readPlace();
     if (disposed) return;
-    if (!scope) {
-      loading = false;
-      unresolved = true;
-      paint();
-      return;
-    }
-    terms = terminalTabsController(scope);
-    try {
-      await terms.load();
-    } catch {
-      // The socket was not there. Nothing was listed, so nothing is known yet:
-      // say the machine is out of reach and ask again when it is back.
+    entityId = place.entityId;
+    unresolved = !place.scope;
+    watchCache();
+    if (!place.scope) {
       terms = null;
-      loading = false;
-      unreachable = true;
-      if (disposed) return;
       paint();
-      retryWhenReconnected(ensureTerminals);
       return;
     }
-    loading = false;
-    unreachable = false;
+    standOnScope(place.scope);
+    await readSavedSelection();
+    if (disposed) return;
+    terms.seed((await cachedValue(TERMINALS_RECORD_KIND))?.tabs || []);
     if (disposed) return;
     pickSelected();
     remember();
     paint();
-    if (address) writeCached(address, { scope, termIds: terms.ids() });
   };
 
+  // One read at a time, and one more where the cache moved while it ran: a
+  // sync pass writes a row, a terminals record and a console record in a
+  // burst, and resolving the route walks every row the device holds.
+  let reading = null;
+  let readAgain = false;
+  const takeUpCache = () => {
+    if (reading) {
+      readAgain = true;
+      return reading;
+    }
+    reading = (async () => {
+      do {
+        readAgain = false;
+        await readCacheOnce();
+      } while (readAgain && !disposed);
+    })().finally(() => {
+      reading = null;
+    });
+    return reading;
+  };
+
+  /** Keep the record the strip reads telling the truth after a create or a
+   *  close. The bridge will say the same thing on its next `terminals` push;
+   *  this is so the reader does not wait for it. */
+  const publishTabs = () => {
+    if (terms) writeThrough(TERMINALS_RECORD_KIND, { tabs: terms.list() });
+  };
+
+  /** Which terminal this console is on: in memory for the rest of the session,
+   *  and in the `console` record for the next visit. Written only where the
+   *  pick actually moved — every write announces, and a write per read would
+   *  have the watch below re-reading itself for ever. */
   const remember = () => {
     if (selected) chosenTerminal.set(key, selected);
     else chosenTerminal.delete(key);
-  };
-
-  /** Keep the saved tab list telling the truth after a create or a close. */
-  const persistTabs = () => {
-    const address = tabsCacheAddress();
-    if (address && scope && terms) writeCached(address, { scope, termIds: terms.ids() });
+    if (selected === writtenSelection) return;
+    writtenSelection = selected;
+    writeThrough(CONSOLE_RECORD_KIND, { selected });
   };
 
   const newTerminal = async () => {
     if (!terms) return;
     try {
       selected = await terms.create();
-      remember();
     } catch (error) {
       notifyError("Could not open a terminal", (error && error.message) || "error");
       return;
     }
-    persistTabs();
+    // The strip's record first, then the pick: both announce, and a reader
+    // woken by the pick would otherwise re-seed the strip off a record that
+    // has not been told about this terminal yet.
+    publishTabs();
+    remember();
     openPanel();
     scrollStripToNewest();
   };
@@ -334,7 +349,7 @@ export function mountConsole(host, context) {
    *  back to whatever is left. */
   const afterTerminalGone = (termId) => {
     if (terms) terms.drop(termId);
-    persistTabs();
+    publishTabs();
     if (selected === termId) {
       selected = (terms && terms.ids()[0]) || null;
       remember();
@@ -459,11 +474,7 @@ export function mountConsole(host, context) {
     region.innerHTML = `<div class="console-empty"><span class="dim">${esc(bodyMessage())}</span></div>`;
   };
 
-  const bodyMessage = () => {
-    if (unreachable) return RECONNECTING_MESSAGE;
-    if (unresolved) return "There is no checkout here to open a terminal in.";
-    return "";
-  };
+  const bodyMessage = () => (unresolved ? "There is no checkout here to open a terminal in." : "");
 
   const hasSomethingToShow = () => !!((terms && selected) || bodyMessage());
 
@@ -554,7 +565,7 @@ export function mountConsole(host, context) {
   document.addEventListener("keydown", onKeydown);
 
   paint();
-  ensureTerminals();
+  void takeUpCache();
 
   return {
     size: () => drawnSize(),
@@ -562,6 +573,8 @@ export function mountConsole(host, context) {
     dispose() {
       disposed = true;
       document.removeEventListener("keydown", onKeydown);
+      unwatchCache?.();
+      unwatchCache = null;
       if (reconnectWatch) reconnectWatch.dispose();
       reconnectWatch = null;
       disposePane();

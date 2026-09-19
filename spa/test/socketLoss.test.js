@@ -7,7 +7,7 @@
 // is back, on the socket's OWN reconnect (never a timer of their own, which is
 // how retries used to stack up behind a dead socket).
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
@@ -69,26 +69,36 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
+const { consoleCacheScope, emptyConsoleWorld, seedConsoleWorld } = await import("./consoleWorld.js");
 const { TerminalSocketLost } = await import("../src/terminal/session.js");
 const { App } = await import("../src/app.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 const { mountAgentTab } = await import("../src/core/surfaceTabs.js");
 
 const flush = async () => {
-  for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
+  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
 };
 const lost = () => new TerminalSocketLost("disconnected");
 const host = () => document.body.appendChild(document.createElement("div"));
 
-beforeEach(() => {
+// A console left standing hears the next case's cache writes and mounts its
+// pane again over them: every one this suite opens is torn down after it.
+const mounted = [];
+
+beforeEach(async () => {
   document.body.innerHTML = "";
   localStorage.clear();
   resetConsoleMemory();
+  await emptyConsoleWorld();
   status.reset();
   for (const fn of Object.values(manager)) fn.mockReset();
   manager.input.mockResolvedValue(undefined);
   manager.resize.mockResolvedValue(undefined);
   bridge.call = vi.fn(async () => ({ project_id: "p1", branch: "build/login", run_id: "run-3" }));
+});
+
+afterEach(() => {
+  while (mounted.length) mounted.pop().dispose();
 });
 
 const branch = {
@@ -97,46 +107,40 @@ const branch = {
   projectId: "p1",
   branch: "build/login",
   call: (...args) => bridge.call(...args),
+  cacheScope: consoleCacheScope(),
 };
 
-/** An open console on a branch whose checkout resolves. */
-async function openConsole() {
+/** An open console on a branch whose checkout resolves, over the terminals the
+ *  cache says that checkout is holding. */
+async function openConsole(terminals = ["term-1"]) {
+  await seedConsoleWorld({ terminals });
   const region = host();
   const panel = mountConsole(region, branch);
+  mounted.push(panel);
   await flush();
   panel.toggle(); // the console opens at half, and lists what is there
   await flush();
   return {
     region,
     panel,
-    // What the console says INSTEAD of a screen — the failed-listing line or the
-    // failed-mount one. A mounted pane says nothing (its connectivity chip is
-    // hidden until the status hub says otherwise).
+    // What the console says INSTEAD of a screen — the failed-mount line, or the
+    // line for a checkout with nowhere to open a shell. A mounted pane says
+    // nothing (its connectivity chip is hidden until the status hub says so).
     said: () => region.querySelector(".console-body .console-empty, .console-body .empty")?.textContent ?? "",
   };
 }
 
+// The tab strip comes off the cache, so a lost socket takes nothing off it:
+// the console still says which shells that checkout is holding. What the
+// socket carries is the SCREEN, and that is what this is about.
 describe("the console when the socket is lost", () => {
-  it("says the machine is out of reach instead of 'no terminals', and lists again when it is back", async () => {
-    manager.listTerminals.mockRejectedValue(lost());
-    const { region, said } = await openConsole();
-    expect(said()).toMatch(/reconnecting/i);
-    // The offer to open a shell is withheld: creating one needs the socket too.
-    expect(region.querySelector(".console-start")).toBeNull();
-
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    status.set("connected");
-    await flush();
-    expect(manager.listTerminals).toHaveBeenCalledTimes(2);
-    expect([...region.querySelectorAll(".console-tab-name")].map((c) => c.textContent)).toEqual(["Terminal 1"]);
-  });
-
   it("re-mounts a pane whose attach was cut off, rather than calling the terminal unavailable", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
     manager.attachTerminal.mockRejectedValueOnce(lost()).mockResolvedValue({ snapshot: "", cursor: 0 });
     const { region, said } = await openConsole();
     expect(said()).toMatch(/reconnecting/i);
     expect(said()).not.toMatch(/unavailable/i);
+    // The tabs are the cache's, so they are all still there to come back to.
+    expect([...region.querySelectorAll(".console-tab-name")].map((c) => c.textContent)).toEqual(["Terminal 1"]);
 
     status.set("connected");
     await flush();
@@ -146,21 +150,20 @@ describe("the console when the socket is lost", () => {
   });
 
   it("still reports a real failure as one", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
     manager.attachTerminal.mockRejectedValue(new Error("pty is gone"));
     const { said } = await openConsole();
     expect(said()).toMatch(/pty is gone/);
   });
 
   it("leaves no watcher behind when the console is torn down while it waits", async () => {
-    manager.listTerminals.mockRejectedValue(lost());
+    manager.attachTerminal.mockRejectedValue(lost());
     const { panel } = await openConsole();
     expect(status.watchers()).toBe(1);
     panel.dispose();
     status.set("connected");
     await flush();
     expect(status.watchers()).toBe(0);
-    expect(manager.listTerminals).toHaveBeenCalledTimes(1);
+    expect(manager.attachTerminal).toHaveBeenCalledTimes(1);
   });
 });
 

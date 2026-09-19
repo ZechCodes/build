@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-// The console's tab list against the local cache: a revisit renders the tabs
-// without a round trip, the live list reconciles whatever drifted, and both
-// the first listing and every create/close write through.
+// The console against the local cache. The tab list is the `terminals` record
+// the sync layer writes, the checkout the shells run in comes off the cached
+// row, and nothing here asks the machine anything to paint: no `branch.get`,
+// no `term.list`. A push that lands while the console is open moves the strip.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -29,13 +30,9 @@ const manager = {
 vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => manager,
   subscribeTerminalStatus: () => () => {},
-  // Which machine the shells type at, and the moves between machines, are the
-  // app spine's business and not this suite's: they answer, and nothing moves.
   terminalDeviceId: () => null,
   followTerminalDevice: () => {},
   resetTerminalManager: () => {},
-  // Minting a terminal session is the connection layer's (spec rule 5); no
-  // suite here opens one.
   provideTerminalSessions: () => {},
 }));
 vi.mock("../src/terminal/pane.js", () => ({
@@ -45,20 +42,6 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
-const homeRow = { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1" };
-let feedSnapshot = { items: [homeRow], projects: [] };
-vi.mock("../src/core/taskFeed.js", () => ({
-  subscribeFeed: (fn) => {
-    fn(feedSnapshot);
-    return () => {};
-  },
-  startFeed: () => {},
-  stopFeed: () => {},
-  refreshFeed: () => {},
-  dropFeedDevice: () => {},
-}));
-
-const { App } = await import("../src/app.js");
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
@@ -72,6 +55,27 @@ const bar = () => region().querySelector(".console-bar");
 const tabs = () => [...region().querySelectorAll(".console-tab-name")].map((cell) => cell.textContent);
 
 let panel = null;
+
+const branchRow = (deviceId = "dev-1", over = {}) => ({
+  kind: "branch",
+  deviceId,
+  project_id: "p1",
+  projectKey: `${deviceId}:p1`,
+  branch: "build/login",
+  run_id: "run-3",
+  worktree_id: "wt-3",
+  ...over,
+});
+
+/** One device's world as a sync pass leaves it: the two lists, one row, and
+ *  whatever shells that row's checkout is holding. */
+const seedDevice = async (deviceId, { row = branchRow(deviceId), tabs: termTabs = [] } = {}) => {
+  await writeCached({ deviceId, entityId: "", kind: "projects" }, []);
+  await writeCached({ deviceId, entityId: "", kind: "workspaces" }, []);
+  const entityId = row.run_id;
+  await writeCached({ deviceId, entityId, kind: "row" }, row);
+  await writeCached({ deviceId, entityId, kind: "terminals" }, { tabs: termTabs });
+};
 
 const mountAndOpen = async (deviceId = "dev-1") => {
   panel = mountConsole(region(), {
@@ -91,16 +95,12 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetConsoleMemory();
-  feedSnapshot = { items: [homeRow], projects: [] };
   await wipeCache();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });
   manager.closeTerminal.mockReset().mockResolvedValue(undefined);
   manager.attachTerminal.mockReset().mockResolvedValue({ snapshot: "", cursor: 0 });
-  bridge.call = vi.fn(async (method) => {
-    if (method === "branch.get") return { project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" };
-    return {};
-  });
+  bridge.call = vi.fn(async () => ({}));
 });
 
 afterEach(() => {
@@ -108,67 +108,118 @@ afterEach(() => {
   panel = null;
 });
 
-describe("the cached tab list", () => {
-  it("renders the saved tabs without waiting on the machine", async () => {
-    await writeCached(
-      { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
-      { scope: { run_id: "run-3" }, termIds: ["term-1", "term-2"] },
-    );
-    bridge.call = vi.fn(() => new Promise(() => {}));
-    manager.listTerminals.mockImplementation(() => new Promise(() => {}));
+describe("the tab strip", () => {
+  it("is the terminals record, painted without asking the machine anything", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }, { term_id: "term-2" }] });
     await mountAndOpen();
+    expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
+    expect(bridge.call).not.toHaveBeenCalled();
+    expect(manager.listTerminals).not.toHaveBeenCalled();
+  });
+
+  it("takes the checkout the shells run in off the cached row", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }] });
+    await mountAndOpen();
+    expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { run_id: "run-3" }, expect.anything());
+  });
+
+  it("grows a tab when a push announces one", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }] });
+    await mountAndOpen();
+    expect(tabs()).toEqual(["Terminal 1"]);
+
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: "terminals" },
+      { tabs: [{ term_id: "term-1" }, { term_id: "term-7" }] },
+    );
+    await flush();
+
     expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
   });
 
-  it("reconciles the saved tabs against the live list and writes it through", async () => {
-    await writeCached(
-      { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
-      { scope: { run_id: "run-3" }, termIds: ["term-1", "term-2"] },
-    );
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
+  it("drops a tab the push stopped naming", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }, { term_id: "term-2" }] });
     await mountAndOpen();
+
+    await writeCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" }, { tabs: [{ term_id: "term-2" }] });
+    await flush();
+
     expect(tabs()).toEqual(["Terminal 1"]);
-    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "tabs" });
-    expect(record.value.termIds).toEqual(["term-1"]);
   });
 
-  it("writes the first-ever listing through for the next visit", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-5" }]);
+  it("says there is nowhere to open a shell when no row answers to the route", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, []);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
     await mountAndOpen();
-    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "tabs" });
-    expect(record.value).toEqual({ scope: { run_id: "run-3" }, termIds: ["term-5"] });
+    expect(region().textContent).toContain("no checkout here");
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
+
+  it("stands the console up when the row it is waiting for lands", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, []);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
+    await mountAndOpen();
+    expect(tabs()).toEqual([]);
+
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-4" }] });
+    await flush();
+
+    expect(tabs()).toEqual(["Terminal 1"]);
+  });
+});
+
+describe("opening and closing one", () => {
+  it("writes the new terminal into the record the strip reads", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }] });
+    await mountAndOpen();
+    region().querySelector(".console-new").click();
+    await flush();
+    expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
+    expect(record.value.tabs.map((tab) => tab.term_id)).toEqual(["term-1", "term-9"]);
+  });
+
+  it("takes a closed terminal out of the record too", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }, { term_id: "term-2" }] });
+    await mountAndOpen();
+    region().querySelectorAll(".console-tab .tx")[0].click();
+    await flush();
+    expect(manager.closeTerminal).toHaveBeenCalledWith("term-1");
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
+    expect(record.value.tabs.map((tab) => tab.term_id)).toEqual(["term-2"]);
+  });
+
+  it("remembers which tab was open in the console record", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }, { term_id: "term-2" }] });
+    await mountAndOpen();
+    region().querySelectorAll(".console-tab-name")[1].click();
+    await flush();
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "console" });
+    expect(record.value).toEqual({ selected: "term-2" });
+  });
+
+  it("reopens on the tab the console record names", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }, { term_id: "term-2" }] });
+    await writeCached({ deviceId: "dev-1", entityId: "run-3", kind: "console" }, { selected: "term-2" });
+    await mountAndOpen();
+    expect(manager.attachTerminal.mock.calls[0][0]).toBe("term-2");
   });
 });
 
 // The rail merges every device's rows, and every machine mints a `p1`. The
 // console stands in one checkout on one machine — the one the link that opened
-// the surface named — so the row it addresses the tab cache with is that
-// device's, not whichever `p1` the merge happens to list first.
+// the surface named — so the records it reads are that device's.
 describe("an account with more than one device", () => {
-  it("addresses the tab cache with the route device's row", async () => {
-    // The desktop's own build/login sorts first in the merge, and this console
-    // is the desktop's: its run is what the saved tabs are filed under.
-    const theirs = { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-9", worktree_id: "wt-9", deviceId: "dev-2" };
-    feedSnapshot = {
-      items: [theirs, homeRow],
-      projects: [],
-      devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [homeRow], projects: [] } },
-    };
-    await writeCached(
-      { deviceId: "dev-2", entityId: "run-9", kind: "tabs" },
-      { scope: { run_id: "run-9" }, termIds: ["term-1"] },
-    );
-    // This machine's own row is cached too, under a different device and a
-    // different run: reading it here would paint two tabs instead of one.
-    await writeCached(
-      { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
-      { scope: { run_id: "run-3" }, termIds: ["term-4", "term-5"] },
-    );
-    bridge.call = vi.fn(() => new Promise(() => {}));
-    manager.listTerminals.mockImplementation(() => new Promise(() => {}));
+  it("reads the route device's row and its terminals", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-4" }, { term_id: "term-5" }] });
+    await seedDevice("dev-2", {
+      row: branchRow("dev-2", { run_id: "run-9", worktree_id: "wt-9" }),
+      tabs: [{ term_id: "term-1" }],
+    });
 
     await mountAndOpen("dev-2");
 
     expect(tabs()).toEqual(["Terminal 1"]);
+    expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { run_id: "run-9" }, expect.anything());
   });
 });

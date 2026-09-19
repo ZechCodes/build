@@ -111,6 +111,26 @@ export function consoleScope(context, row) {
   return scopeResolvers[context?.kind]?.(context, row) || null;
 }
 
+/**
+ * The route this work item is named by, as the cache resolves routes
+ * (core/cachedRows.js). The console is mounted on an address, not on an
+ * entity — a branch is its project and its name, a workspace the conversation
+ * it holds — and the cached rows are what turn one into the other.
+ */
+export function consoleFeedRoute(context) {
+  if (!context) return null;
+  if (context.kind === "issue")
+    return { name: "issue", deviceId: context.deviceId, projectId: context.projectId, id: context.issueId };
+  if (context.kind === "workspace")
+    return {
+      name: "workspace",
+      deviceId: context.deviceId,
+      projectId: context.projectId,
+      workspaceId: context.workspaceId,
+    };
+  return { name: "branch", deviceId: context.deviceId, projectId: context.projectId, branch: context.branch };
+}
+
 /** Whether the backtick is the console's to take, given what has focus.
  *
  *  Anything the user is typing into keeps its own keystrokes — a text field, a

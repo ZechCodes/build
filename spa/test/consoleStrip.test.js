@@ -41,12 +41,13 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
+const { consoleBranchRow, consoleCacheScope, emptyConsoleWorld, seedConsoleWorld } = await import("./consoleWorld.js");
 const { App } = await import("../src/app.js");
 const { consoleGrowHtml, consoleHeadHtml, consoleNewTerminalHtml, consoleTabHtml, mountConsole, resetConsoleMemory } =
   await import("../src/core/console.js");
 
 const flush = async () => {
-  for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
+  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 const region = () => document.getElementById("console-region");
@@ -69,11 +70,12 @@ const branchAddress = (over = {}) => ({
   projectId: "p1",
   branch: "build/login",
   call: (...args) => bridge.call(...args),
+  cacheScope: consoleCacheScope(),
   ...over,
 });
 
 const openConsole = async (termIds) => {
-  manager.listTerminals.mockResolvedValue(termIds.map((term_id) => ({ term_id })));
+  await seedConsoleWorld({ terminals: termIds });
   panel = mountConsole(region(), branchAddress());
   await flush();
   region().querySelector(".console-bar").click();
@@ -81,10 +83,11 @@ const openConsole = async (termIds) => {
   await settleMotion();
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetConsoleMemory();
+  await emptyConsoleWorld();
   started = recordAnimations();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });
@@ -155,7 +158,9 @@ describe("the head the mount paints", () => {
   // project's own. It is a route naming no project at all that has nowhere to
   // open a shell.
   it("offers no + where there is no directory to open a shell in", async () => {
-    bridge.call = vi.fn(async () => ({ branch: "loose", run_id: null, worktree_id: null }));
+    await seedConsoleWorld({
+      row: consoleBranchRow({ branch: "loose", project_id: null, run_id: null, worktree_id: null }),
+    });
     panel = mountConsole(region(), branchAddress({ branch: "loose", projectId: null }));
     await flush();
     await settleMotion();

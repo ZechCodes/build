@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 // The console: the bar at the bottom of a work surface, the terminals of the
 // checkout behind it, and the three sizes it opens to.
+//
+// Everything it draws is off the cache — the routed row says which checkout,
+// the `terminals` record says which shells — so every case here puts that
+// world on the disk and then mounts.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -49,12 +53,14 @@ vi.mock("../src/terminal/pane.js", () => ({
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 
+const { consoleBranchRow, consoleCacheScope, emptyConsoleWorld, seedConsoleTerminals, seedConsoleWorld } =
+  await import("./consoleWorld.js");
 const { App } = await import("../src/app.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 const { markConsoleTerminal, takeConsoleTerminal } = await import("../src/core/consoleModel.js");
 
 const flush = async () => {
-  for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
+  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 const region = () => document.getElementById("console-region");
@@ -73,6 +79,7 @@ const branchAddress = (over = {}) => ({
   projectId: "p1",
   branch: "build/login",
   call: (...args) => bridge.call(...args),
+  cacheScope: consoleCacheScope(over.deviceId || "dev-1"),
   ...over,
 });
 
@@ -82,19 +89,26 @@ const mount = async (context = branchAddress()) => {
   return panel;
 };
 
+/** The world this suite's branch stands in, then the console over it. */
+const mountOver = async (terminals, context = branchAddress()) => {
+  await seedConsoleWorld({ terminals });
+  return mount(context);
+};
+
 const open = async () => {
   bar().click();
   await flush();
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetConsoleMemory();
   takeConsoleTerminal();
   calls = [];
   panes.length = 0;
-  branchRow = { project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", primary: false };
+  await emptyConsoleWorld();
+  branchRow = consoleBranchRow();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });
   manager.closeTerminal.mockReset().mockResolvedValue(undefined);
@@ -117,22 +131,24 @@ afterEach(() => {
 // the surface said which. It asks that machine what is under the branch — not
 // whichever machine creation happens to go to.
 describe("the machine it was mounted for", () => {
-  it("branch.get goes to the device the console was mounted for", async () => {
-    const theirCall = vi.fn(async () => ({ project_id: "p1", branch: "build/login", run_id: "run-9" }));
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount(branchAddress({ deviceId: "dev-2", call: theirCall }));
+  it("stands in the routed device's checkout, not in this one's", async () => {
+    await seedConsoleWorld({ terminals: ["term-4"] });
+    const theirs = consoleBranchRow({ deviceId: "dev-2", projectKey: "dev-2:p1", run_id: "run-9", worktree_id: "wt-9" });
+    await seedConsoleWorld({ deviceId: "dev-2", row: theirs, terminals: ["term-1"] });
+
+    await mount(branchAddress({ deviceId: "dev-2" }));
     await open();
 
-    expect(theirCall.mock.calls.map(([method]) => method)).toContain("branch.get");
-    expect(callsTo("branch.get")).toHaveLength(0);
-    expect(manager.listTerminals).toHaveBeenCalledWith({ run_id: "run-9" });
+    expect(tabs()).toEqual(["Terminal 1"]);
+    expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { run_id: "run-9" }, expect.anything());
+    // Nothing was asked of any machine to draw that.
+    expect(calls).toEqual([]);
   });
 });
 
 describe("the shut console", () => {
   it("is a bar with the checkout's terminals beside it, and creates none of them", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     expect(size()).toBe("collapsed");
     expect(bar().getAttribute("aria-expanded")).toBe("false");
     expect(bar().textContent).toContain("Console");
@@ -144,63 +160,72 @@ describe("the shut console", () => {
 });
 
 describe("opening it", () => {
-  it("puts it at half and lists the terminals of the branch's own worktree", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
-    await mount();
+  it("puts it at half and shows the terminals of the branch's own worktree", async () => {
+    await mountOver(["term-1", "term-2"]);
     await open();
     expect(size()).toBe("half");
     expect(bar().getAttribute("aria-expanded")).toBe("true");
-    expect(manager.listTerminals).toHaveBeenCalledWith({ run_id: "run-3" });
     expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
-    // The first terminal is what it lands on.
-    expect(manager.attachTerminal.mock.calls[0][0]).toBe("term-1");
+    // The first terminal is what it lands on, in the checkout the row names.
+    expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { run_id: "run-3" }, expect.anything());
   });
 
-  // All the console wants off the row is which directory to open a shell in.
-  // Naming no bound would have the daemon serialize the branch's whole
-  // conversation to answer that.
-  it("asks the row for a directory, not for a conversation", async () => {
-    await mount();
+  // The row is read off the disk, never off the wire: a console that asked the
+  // daemon which directory it stands in would have it serialize the branch's
+  // whole conversation to answer.
+  it("asks the machine nothing to say where it is standing", async () => {
+    await mountOver(["term-1"]);
     await open();
-    expect(callsTo("branch.get")[0].params.thread_limit).toBe(1);
+    expect(calls).toEqual([]);
   });
 
   it("opens a checkout Build never cut by the worktree itself", async () => {
-    branchRow = { project_id: "p1", branch: "loose", run_id: null, worktree_id: "wt-9", primary: false };
+    const loose = consoleBranchRow({ branch: "loose", run_id: null, worktree_id: "wt-9" });
+    await seedConsoleWorld({ row: loose, terminals: ["term-1"] });
     await mount(branchAddress({ branch: "loose" }));
     await open();
-    expect(manager.listTerminals).toHaveBeenCalledWith({ project_id: "p1", worktree_id: "wt-9" });
+    expect(manager.attachTerminal).toHaveBeenCalledWith(
+      "term-1",
+      { project_id: "p1", worktree_id: "wt-9" },
+      expect.anything(),
+    );
   });
 
-  it("opens an issue's console on the primary checkout, without asking about a branch", async () => {
-    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args) });
+  it("opens an issue's console on the primary checkout, without a row to read", async () => {
+    await emptyConsoleWorld();
+    await seedConsoleTerminals(["term-1"], { row: { run_id: "i-1" } });
+    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() });
     await open();
-    expect(manager.listTerminals).toHaveBeenCalledWith({ project_id: "p1" });
-    expect(callsTo("branch.get")).toEqual([]);
+    expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { project_id: "p1" }, expect.anything());
+    expect(calls).toEqual([]);
   });
 
   it("never spawns a shell just because it was opened", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     expect(manager.createTerminal).not.toHaveBeenCalled();
   });
 
-  it("says so when the branch names no directory to stand in", async () => {
-    bridge.call = vi.fn(async () => {
-      throw new Error("branch.get: no branch is checked out in this project");
-    });
+  it("says so when no row on this device names a directory to stand in", async () => {
+    await seedConsoleWorld({ row: null });
     await mount();
     await open();
-    expect(manager.listTerminals).not.toHaveBeenCalled();
     expect(region().textContent).toContain("no checkout here");
+  });
+
+  it("stands itself up when the row it is waiting for lands", async () => {
+    await seedConsoleWorld({ row: null });
+    await mount();
+    expect(tabs()).toEqual([]);
+    await seedConsoleWorld({ terminals: ["term-1"] });
+    await flush();
+    expect(tabs()).toEqual(["Terminal 1"]);
   });
 });
 
 describe("the sizes", () => {
   it("grows to the overlay and back to half", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     region().querySelector(".console-grow").click();
     await flush();
@@ -214,8 +239,7 @@ describe("the sizes", () => {
   });
 
   it("shuts from the bar, dropping the screen and leaving the PTY running", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     await open(); // the same control shuts it
     expect(size()).toBe("collapsed");
@@ -225,23 +249,21 @@ describe("the sizes", () => {
   });
 
   it("remembers the size per work item, and reopens there", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     panel.dispose();
     await mount();
     expect(size()).toBe("half");
     // Another work item's console is its own, and starts shut.
     panel.dispose();
-    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args) });
+    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() });
     expect(size()).toBe("collapsed");
   });
 });
 
 describe("the terminals", () => {
   it("opens one from the +, and lands on it", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     region().querySelector(".console-new").click();
     await flush();
@@ -251,7 +273,7 @@ describe("the terminals", () => {
   });
 
   it("opens the first one from the + in the shut head", async () => {
-    await mount();
+    await mountOver([]);
     region().querySelector(".console-new").click();
     await flush();
     expect(manager.createTerminal).toHaveBeenCalled();
@@ -261,8 +283,7 @@ describe("the terminals", () => {
   });
 
   it("switches between them", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
-    await mount();
+    await mountOver(["term-1", "term-2"]);
     await open();
     [...region().querySelectorAll(".console-tab-name")][1].click();
     await flush();
@@ -271,8 +292,7 @@ describe("the terminals", () => {
   });
 
   it("closes one from its ×, and falls back to what is left", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
-    await mount();
+    await mountOver(["term-1", "term-2"]);
     await open();
     region().querySelector('[data-close="term-1"]').click();
     await flush();
@@ -282,9 +302,8 @@ describe("the terminals", () => {
   });
 
   it("drops a terminal the machine no longer knows instead of showing a dead pane", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
     manager.attachTerminal.mockRejectedValue(new Error("unknown term_id"));
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     expect(tabs()).toEqual([]);
     expect(size()).toBe("collapsed");
@@ -296,8 +315,7 @@ describe("a console with no terminals", () => {
   const storedSize = () => localStorage.getItem("build.console.size.branch:p1:build/login");
 
   it("opens on the tab that was pressed", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
-    await mount();
+    await mountOver(["term-1", "term-2"]);
     expect(size()).toBe("collapsed");
     [...region().querySelectorAll(".console-tab-name")][1].click();
     await flush();
@@ -306,7 +324,7 @@ describe("a console with no terminals", () => {
   });
 
   it("stays shut when the label is pressed with nothing to show", async () => {
-    await mount();
+    await mountOver([]);
     await open();
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-body").textContent).toBe("");
@@ -314,7 +332,7 @@ describe("a console with no terminals", () => {
   });
 
   it("is the same control under the backtick, and just as inert", async () => {
-    await mount();
+    await mountOver([]);
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "`", bubbles: true, cancelable: true }));
     await flush();
     expect(size()).toBe("collapsed");
@@ -322,8 +340,7 @@ describe("a console with no terminals", () => {
   });
 
   it("shuts when the last terminal is closed, and reopens at the size it was left", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     region().querySelector(".console-grow").click();
     await flush();
@@ -339,40 +356,36 @@ describe("a console with no terminals", () => {
 
   it("renders shut when the size it remembers is open and nothing is running", async () => {
     localStorage.setItem("build.console.size.branch:p1:build/login", "half");
-    await mount();
+    await mountOver([]);
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-body").textContent).toBe("");
   });
 
   it("says why a terminal could not be opened, and opens no empty panel for it", async () => {
     manager.createTerminal.mockRejectedValue(new Error("no such directory"));
-    await mount();
+    await mountOver([]);
     region().querySelector(".console-new").click();
     await flush();
     expect(notifyError).toHaveBeenCalledWith("Could not open a terminal", "no such directory");
     expect(size()).toBe("collapsed");
   });
 
-  it("stays shut while it is still listing a checkout it remembers as open", async () => {
+  it("stays shut until the checkout it remembers as open has something in it", async () => {
     localStorage.setItem("build.console.size.branch:p1:build/login", "half");
-    let listed = null;
-    manager.listTerminals.mockReturnValue(new Promise((resolve) => {
-      listed = () => resolve([{ term_id: "term-1" }]);
-    }));
+    await seedConsoleWorld({ terminals: [] });
     panel = mountConsole(region(), branchAddress());
     await flush();
 
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-body").textContent).toBe("");
 
-    listed();
+    await seedConsoleTerminals(["term-1"]);
     await flush();
     expect(size()).toBe("half");
   });
 
   it("reopens at the size it was left at, not at half, once it has been shut", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     region().querySelector(".console-grow").click();
     await flush();
@@ -396,8 +409,7 @@ describe("the backtick", () => {
   };
 
   it("opens and shuts the console from anywhere else on the page", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     const opened = press();
     await flush();
     expect(size()).toBe("half");
@@ -408,7 +420,7 @@ describe("the backtick", () => {
   });
 
   it("is a backtick in a field, a composer and a terminal screen", async () => {
-    await mount();
+    await mountOver([]);
     const field = document.createElement("input");
     document.body.appendChild(field);
     press(field);
@@ -426,7 +438,7 @@ describe("the backtick", () => {
   });
 
   it("stops listening once the surface is gone", async () => {
-    await mount();
+    await mountOver([]);
     panel.dispose();
     press();
     await flush();
@@ -437,7 +449,7 @@ describe("the backtick", () => {
 
 describe("a pre-redesign term-<n> URL", () => {
   it("opens the branch's console on the terminal it named", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
+    await seedConsoleWorld({ terminals: ["term-1", "term-2"] });
     markConsoleTerminal("term-2");
     await mount();
     await flush();
@@ -447,7 +459,7 @@ describe("a pre-redesign term-<n> URL", () => {
   });
 
   it("is spent once, so the next surface opens on what it remembers", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
+    await seedConsoleWorld({ terminals: ["term-1", "term-2"] });
     markConsoleTerminal("term-2");
     await mount();
     panel.dispose();
@@ -458,8 +470,7 @@ describe("a pre-redesign term-<n> URL", () => {
 
 describe("disposal", () => {
   it("leaves the region empty and the server PTY running", async () => {
-    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
-    await mount();
+    await mountOver(["term-1"]);
     await open();
     panel.dispose();
     expect(region().innerHTML).toBe("");

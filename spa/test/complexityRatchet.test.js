@@ -50,7 +50,10 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // 57 since the rail reads one work item per kind: `railEntity` is a lookup
 // over four small readers — an issue, a project, a workspace, a branch — rather
 // than one function that walks all of them.
-const RATCHETED_FUNCTIONS = 57;
+// 56 since the console paints from the cache: `ensureTerminals` — the cached
+// seed, the live listing, the unreachable machine and the unresolvable branch
+// in one function — is a read of two records and a paint.
+const RATCHETED_FUNCTIONS = 56;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

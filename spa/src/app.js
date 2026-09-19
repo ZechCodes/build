@@ -7,6 +7,7 @@ import { renderBranch } from "./views/branchView.js";
 import { renderWorkspace } from "./views/workspaceView.js";
 import { renderProject } from "./views/projectView.js";
 import { renderIssue } from "./views/issueView.js";
+import { renderTrackerIssue } from "./views/trackerIssueView.js";
 import { isSettingsRoute, renderSettingsModal } from "./views/settingsModal.js";
 import { renderAccount } from "./views/account.js";
 import { renderCaptureDecision } from "./views/captureDecision.js";
@@ -249,6 +250,7 @@ const VIEWS = {
   branch: renderBranch,
   workspace: renderWorkspace,
   issue: renderIssue,
+  trackerIssue: renderTrackerIssue,
   capture: renderCaptureDecision,
   account: renderAccount,
   resolve: renderResolving,

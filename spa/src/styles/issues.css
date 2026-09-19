@@ -1,0 +1,270 @@
+/* The issue tracker: the Issues tab (list and board) and one issue's page.
+
+   Every colour here is a theme token from styles.css — a rule with a hex in it
+   is a rule that only works in one theme. The vocabulary is the one the rest of
+   the app already speaks: --panel slabs on the --bg ground, --panel2 for the
+   step inside one, --line2 for a seam, --row-hover for the pointer, and the
+   .btn / .chip / .empty families for the controls.
+
+   The one layout rule that is not shared: the board SCROLLS SIDEWAYS rather
+   than reflowing. A column that wraps under another is not a column, and on a
+   phone the reader would lose the only thing the layout is for. */
+
+/* ---- the tab's own header ------------------------------------------------ */
+
+.issue-head {
+  display:flex; align-items:center; gap:10px;
+  padding:12px var(--pane-gutter) 0;
+}
+.issue-views { display:flex; gap:4px; }
+.issue-view.active { background:var(--accent-soft); border-color:var(--accent-soft); color:var(--accent); }
+.issue-new { margin-left:auto; display:inline-flex; align-items:center; gap:5px; }
+.issue-new svg { width:14px; height:14px; }
+
+.issue-filters {
+  display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+  padding:10px var(--pane-gutter);
+}
+.issue-filter select, .issue-filters select {
+  font:inherit; font-size:12px; color:var(--ink2);
+  background:var(--panel2); border:1px solid var(--line2); border-radius:7px;
+  padding:4px 8px; max-width:180px;
+}
+.issue-filters select:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+.issue-body { padding:0 var(--pane-gutter) var(--pane-bottom); }
+
+/* ---- the marks an issue wears -------------------------------------------- */
+
+/* Open/closed is NOT the Done column: one says whether the work is live, the
+   other where it stands. They are drawn as two different things on purpose. */
+.issue-state {
+  flex:0 0 9px; width:9px; height:9px; border-radius:50%;
+  background:var(--green); display:inline-block;
+}
+.issue-state-closed { background:var(--violet); }
+
+.issue-number { color:var(--dim); font-variant-numeric:tabular-nums; }
+.issue-status {
+  font-size:11px; color:var(--ink2); background:var(--panel2);
+  border-radius:999px; padding:1px 8px; white-space:nowrap;
+}
+.issue-label {
+  font-size:11px; color:var(--ink2); background:var(--line2);
+  border:1px solid var(--line2); border-radius:999px; padding:1px 8px; white-space:nowrap;
+}
+.issue-priority {
+  font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+  border-radius:999px; padding:1px 7px; background:var(--line2); color:var(--ink2);
+}
+.issue-priority-medium { background:var(--panel2); color:var(--ink2); }
+.issue-priority-high { background:var(--amber-bg); color:var(--amber); }
+.issue-priority-urgent { background:var(--red-bg); color:var(--red); }
+.issue-age, .issue-when { color:var(--dim); font-size:11px; white-space:nowrap; }
+.issue-sep { color:var(--dim); font-size:11px; }
+.issue-assignee { font-size:11px; color:var(--ink2); white-space:nowrap; }
+.issue-unassigned { color:var(--dim); font-style:italic; }
+
+/* ---- the list ------------------------------------------------------------ */
+
+.issue-rows { list-style:none; margin:0; padding:0; }
+.issue-row {
+  display:flex; align-items:center; gap:8px;
+  border-radius:9px; transition:background var(--motion-fast);
+}
+.issue-row:hover { background:var(--row-hover); }
+.issue-row-open {
+  flex:1; min-width:0; display:flex; align-items:center; gap:10px;
+  padding:9px 10px; color:inherit; text-decoration:none;
+}
+.issue-row-open:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; border-radius:9px; }
+.issue-row-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.issue-row-head { display:flex; align-items:center; gap:8px; min-width:0; }
+.issue-title {
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--ink); font-weight:550;
+}
+.issue-row-facts { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+
+/* The assignee is a press, not a label: assigning is dispatching, and handing
+   an issue to an agent is worth reaching from the list. */
+.issue-assign {
+  font:inherit; background:none; border:1px solid transparent; border-radius:7px;
+  padding:4px 8px; margin-right:8px; cursor:pointer; color:var(--ink2);
+  transition:background var(--motion-fast), border-color var(--motion-fast);
+}
+.issue-assign:hover:not(:disabled) { background:var(--panel2); border-color:var(--line2); }
+.issue-assign:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+.issue-empty { padding:32px 4px; }
+.issue-empty h2 { font-size:15px; margin:0 0 6px; color:var(--ink); }
+.issue-empty p { margin:0; max-width:52ch; }
+
+/* ---- the board ----------------------------------------------------------- */
+
+.issue-board {
+  display:flex; align-items:flex-start; gap:12px;
+  overflow-x:auto; overscroll-behavior-x:contain;
+  padding-bottom:10px;
+  scrollbar-width:thin;
+}
+.issue-column {
+  flex:0 0 260px; min-width:0;
+  background:var(--panel2); border-radius:12px; padding:10px;
+}
+.issue-column-head { display:flex; align-items:center; gap:8px; padding:0 4px 8px; }
+.issue-column-head h3 { margin:0; font-size:12px; font-weight:650; color:var(--ink2); }
+.issue-column-count {
+  margin-left:auto; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums;
+}
+.issue-column-cards {
+  list-style:none; margin:0; padding:0;
+  display:flex; flex-direction:column; gap:8px; min-height:44px;
+}
+.issue-card {
+  background:var(--panel); border:1px solid var(--line2); border-radius:10px;
+  padding:9px 10px; display:flex; flex-direction:column; gap:6px; cursor:grab;
+  transition:border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.issue-card:hover { border-color:var(--line3); }
+.issue-card:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.issue-card:active { cursor:grabbing; }
+.issue-card-head { display:flex; align-items:center; gap:7px; }
+.issue-card-head .issue-priority { margin-left:auto; }
+.issue-card-title { color:var(--ink); text-decoration:none; font-weight:550; line-height:1.35; }
+.issue-card-title:hover { text-decoration:underline; }
+.issue-card-labels { display:flex; flex-wrap:wrap; gap:4px; }
+.issue-card .issue-assign { margin:0; align-self:flex-start; padding:2px 6px; }
+
+/* ---- one issue's page ---------------------------------------------------- */
+
+.issue-surface { padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom); }
+.issue-page { display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:24px; align-items:start; }
+.issue-page-main { min-width:0; }
+
+.issue-page-marks { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.issue-page-state { font-size:11px; font-weight:650; color:var(--ink2); }
+.issue-page-title { margin:0 0 8px; font-size:20px; line-height:1.25; color:var(--ink); }
+.issue-page-labels { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px; }
+.issue-page-body {
+  background:var(--panel2); border-radius:10px; padding:12px 14px; margin:0 0 20px;
+}
+.issue-page-body.empty { color:var(--dim); font-style:italic; }
+
+.issue-timeline { list-style:none; margin:0 0 18px; padding:0; display:flex; flex-direction:column; gap:10px; }
+.issue-entry { display:flex; align-items:flex-start; gap:9px; }
+.issue-avatar {
+  flex:0 0 24px; width:24px; height:24px; border-radius:50%;
+  background:var(--panel2); color:var(--ink2);
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:700;
+}
+.issue-comment-card {
+  flex:1; min-width:0;
+  background:var(--panel); border:1px solid var(--line2); border-radius:10px; padding:9px 12px;
+}
+.issue-entry-head { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; font-size:12px; color:var(--ink2); }
+.issue-comment-body { color:var(--ink); }
+
+/* History is drawn quieter than a comment — but never hidden: "the board moved
+   and nobody said anything" is exactly what a timeline is for. */
+.issue-event { align-items:center; gap:9px; padding-left:7px; font-size:12px; color:var(--dim); }
+.issue-event-dot {
+  flex:0 0 7px; width:7px; height:7px; border-radius:50%;
+  background:var(--line3); margin-left:4px;
+}
+.issue-event-text { flex:1; min-width:0; }
+.issue-event-text strong { color:var(--ink2); font-weight:600; }
+
+.issue-composer { display:flex; flex-direction:column; gap:8px; }
+.issue-composer textarea {
+  font:inherit; width:100%; resize:vertical;
+  background:var(--panel); color:var(--ink);
+  border:1px solid var(--line); border-radius:10px; padding:9px 11px;
+}
+.issue-composer textarea:focus-visible { outline:2px solid var(--accent); outline-offset:-1px; }
+.issue-composer-row { display:flex; justify-content:flex-end; }
+
+.issue-rail { display:flex; flex-direction:column; gap:16px; }
+.issue-rail-section { display:flex; flex-direction:column; gap:6px; }
+.issue-rail-section h2 {
+  margin:0; font-size:10px; font-weight:700; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--dim);
+}
+.issue-rail-section .sub { margin:0; font-size:11px; color:var(--dim); }
+.issue-rail select, .issue-rail input[type="text"] {
+  font:inherit; font-size:13px; width:100%;
+  background:var(--panel); color:var(--ink);
+  border:1px solid var(--line); border-radius:8px; padding:6px 9px;
+}
+.issue-assign-open { text-align:left; }
+.issue-links { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px; }
+.issue-link a { color:var(--accent); text-decoration:none; font-size:12px; }
+.issue-link a:hover { text-decoration:underline; }
+.issue-link code { font-family:var(--mono); font-size:11px; color:var(--ink2); }
+
+/* ---- the assignee control ------------------------------------------------ */
+
+.issue-assignee-control { display:flex; flex-direction:column; gap:4px; margin-top:4px; }
+.issue-assignee-control select, .issue-assignee-control input[type="text"] {
+  font:inherit; width:100%;
+  background:var(--panel); color:var(--ink);
+  border:1px solid var(--line); border-radius:8px; padding:7px 10px;
+}
+/* Assigning starts work. The reader is told which before they press. */
+.issue-assignee-hint { margin:2px 0 6px; font-size:11px; color:var(--dim); min-height:1.2em; }
+
+.modal-issue-new textarea {
+  font:inherit; width:100%; resize:vertical;
+  background:var(--panel); color:var(--ink);
+  border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+}
+
+/* ---- the message an issue was handed over in ----------------------------- */
+
+.thread-issue {
+  display:flex; flex-direction:column; gap:4px; margin-bottom:8px;
+  background:var(--panel2); border:1px solid var(--line2);
+  border-left:3px solid var(--accent); border-radius:8px; padding:8px 10px;
+}
+.thread-issue-head { display:flex; align-items:baseline; gap:7px; min-width:0; }
+.thread-issue-link { color:var(--accent); text-decoration:none; font-weight:650; font-size:12px; }
+.thread-issue-link:hover { text-decoration:underline; }
+.thread-issue-title {
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--ink); font-size:12px;
+}
+/* The issue's own body, folded to five lines until it is asked for: a hand-off
+   carries the whole issue, and the whole issue is not what the next line of the
+   conversation is about. */
+.thread-issue-body { font-size:12px; color:var(--ink2); }
+.thread-issue-body[data-folded="1"] .thread-issue-text {
+  display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden;
+}
+.thread-issue-more {
+  font:inherit; font-size:11px; color:var(--accent);
+  background:none; border:0; padding:2px 0; cursor:pointer;
+}
+.thread-issue-more:hover { text-decoration:underline; }
+.thread-issue-links { display:flex; flex-wrap:wrap; gap:8px; }
+.thread-issue-links a { color:var(--ink2); text-decoration:none; font-size:11px; }
+.thread-issue-links a:hover { color:var(--accent); text-decoration:underline; }
+
+/* ---- narrow ---------------------------------------------------------------
+   Under 760px the rail goes under the issue rather than beside it, and the
+   board keeps its sideways scroll — with the gutter bled into it, so a column
+   can sit flush against the edge and read as "there is more this way". */
+
+@media (max-width: 760px) {
+  .issue-page { grid-template-columns:minmax(0,1fr); gap:18px; }
+  .issue-rail { flex-direction:row; flex-wrap:wrap; gap:14px 20px; }
+  .issue-rail-section { flex:1 1 150px; }
+  .issue-board {
+    margin:0 calc(var(--pane-gutter) * -1);
+    padding:0 var(--pane-gutter) 10px;
+    scroll-snap-type:x proximity;
+  }
+  .issue-column { flex-basis:78vw; max-width:300px; scroll-snap-align:start; }
+  .issue-head, .issue-filters { padding-left:var(--pane-gutter); padding-right:var(--pane-gutter); }
+  .issue-filter select, .issue-filters select { max-width:46vw; }
+}

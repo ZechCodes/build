@@ -1,0 +1,57 @@
+// The issue page's route host: `#/project/<p>/issues/<issueId>`.
+//
+// Thin by design — the surface itself is core/trackerIssuePage.js. This file is
+// what the route needs: the machine the project is on, its caller and its
+// catalog, the feed the links and the assignee names are read off, and the
+// teardown.
+//
+// An issue belongs to exactly one project and never moves between projects, so
+// the project in the URL is the project — there is no lookup to do here beyond
+// the device one the router already parked on.
+
+import { $ } from "../dom.js";
+import { App, go } from "../app.js";
+import { canAnswer, routeContext } from "../core/deviceContexts.js";
+import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
+import { routeProjectKey } from "../core/deviceKey.js";
+import { subscribeFeed } from "../core/taskFeed.js";
+import { mountIssuePage } from "../core/trackerIssuePage.js";
+import "../styles/issues.css";
+import "../styles/surfaces.css";
+
+export async function renderTrackerIssue() {
+  const root = $("#root");
+  const route = App.route;
+  const context = routeContext(route);
+  root.className = "surface";
+  // A machine that cannot answer — never opened here, or gone since — has
+  // nothing under this link to read or write, so the surface names it rather
+  // than standing a page up over calls that can only be refused.
+  if (!canAnswer(context)) {
+    mountDeviceNotice(root, route.deviceId);
+    return;
+  }
+  root.innerHTML = `<div id="tabbody" class="flush"><div id="issue-pane" class="issue-surface"></div></div>`;
+  let feed = null;
+  const page = mountIssuePage($("#issue-pane"), {
+    projectId: route.projectId,
+    deviceId: context.deviceId,
+    projectKey: routeProjectKey(route),
+    issueId: route.issueId,
+    callRpc: context.rpc,
+    catalog: () => context.modelCatalog(),
+    refreshCatalog: () => context.refreshModelCatalog(),
+    feed: () => feed,
+    navigate: go,
+  });
+  const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => true });
+  const unsubscribe = subscribeFeed((snapshot) => {
+    feed = snapshot;
+    page.feedMoved();
+  });
+  App.viewDispose = () => {
+    unsubscribe();
+    deviceStrip();
+    page.dispose();
+  };
+}

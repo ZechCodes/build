@@ -1,0 +1,148 @@
+// The issue page, as HTML: the issue, its timeline, the composer, and the rail
+// of everything about it that can be changed.
+//
+// The rail's ordering is the ordering of how often a thing is touched, not of
+// how important it sounds: state, then the column, then the labels and the
+// priority, then who holds it, then what it is linked to. Assigning sits low
+// because it is the one press that starts an agent, and a control that starts
+// work should not be the first thing under a thumb.
+//
+// Pure: HTML in, no DOM, no app imports. core/trackerIssuePage.js mounts it.
+
+import { esc } from "./text.js";
+import { renderMarkdown } from "./markdown.js";
+import { hashFromRoute } from "./router.js";
+import { actorInitials, actorLabel, columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
+import { eventSentence } from "./trackerTimeline.js";
+import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateDotHtml } from "./trackerChips.js";
+
+/** The head: what the issue is called, and the two facts that are independent
+ *  of each other — is it still open, and where does it stand on the board. */
+export const issueHeadHtml = (issue, columns) => `<header class="issue-page-head">
+    <div class="issue-page-marks">
+      ${stateDotHtml(issue.state)}<span class="issue-page-state">${esc(stateLabel(issue.state))}</span>
+      ${numberHtml(issue)}
+      ${ageHtml(issue.updated_at)}
+    </div>
+    <h1 class="issue-page-title">${esc(issue.title)}</h1>
+    ${issue.labels?.length ? `<div class="issue-page-labels">${labelsHtml(issue.labels)}</div>` : ""}
+  </header>`;
+
+/** The body, as markdown. An issue with an empty body says so rather than
+ *  leaving a gap a reader has to interpret. */
+export const issueBodyHtml = (issue) =>
+  issue.body
+    // renderMarkdown escapes all input before adding its fixed safe tag set.
+    ? `<div class="issue-page-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(issue.body)}</div>`
+    : `<p class="issue-page-body empty">No description.</p>`;
+
+const whenHtml = (row) => (row.at ? `<span class="issue-when" title="${esc(row.at)}">${esc(ageText(row.at))}</span>` : "");
+
+const commentHtml = (row, agentLabels) => `<li class="issue-entry issue-comment">
+    <span class="issue-avatar" aria-hidden="true">${esc(actorInitials(row.actor))}</span>
+    <div class="issue-comment-card">
+      <div class="issue-entry-head"><strong>${esc(actorLabel(row.actor, agentLabels))}</strong>${whenHtml(row)}</div>
+      <div class="issue-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(row.body)}</div>
+    </div>
+  </li>`;
+
+/** An event is one line: who, what they did, and when. It is history, so it is
+ *  drawn quieter than a comment — but never hidden, because "the board moved
+ *  and nobody said anything" is exactly what a timeline is for. */
+const eventHtml = (row, { agentLabels, columns }) => `<li class="issue-entry issue-event">
+    <span class="issue-event-dot" aria-hidden="true"></span>
+    <span class="issue-event-text"><strong>${esc(actorLabel(row.actor, agentLabels))}</strong> ${esc(eventSentence(row, { columns, agentLabels }))}</span>
+    ${whenHtml(row)}
+  </li>`;
+
+/** The timeline: comments and events interleaved, ascending, in the order the
+ *  bridge answered them. Never re-sorted here — see core/trackerTimeline.js. */
+export function timelineHtml(rows, context) {
+  if (!rows.length) return `<p class="empty issue-empty">Nothing has happened on this issue yet.</p>`;
+  return `<ul class="issue-timeline">${rows
+    .map((row) => (row.type === "comment" ? commentHtml(row, context.agentLabels) : eventHtml(row, context)))
+    .join("")}</ul>`;
+}
+
+export const composerHtml = (draft, busy) => `<form class="issue-composer" data-issue-composer>
+    <label class="sr-only" for="issue-comment">Comment on this issue</label>
+    <textarea id="issue-comment" rows="3" placeholder="Comment on this issue"${busy ? " disabled" : ""}>${esc(draft)}</textarea>
+    <div class="row issue-composer-row">
+      <button class="btn primary" type="submit"${busy || !draft.trim() ? " disabled" : ""}>${busy ? "sending…" : "Comment"}</button>
+    </div>
+  </form>`;
+
+// ---- the rail ---------------------------------------------------------------
+
+const railSection = (title, inner) => `<section class="issue-rail-section"><h2>${esc(title)}</h2>${inner}</section>`;
+
+/** Close and reopen, and nothing else on this control. Closing an issue stops
+ *  nothing and starts nothing — it says the work is over — so the button says
+ *  only that. */
+const stateControlHtml = (issue, busy) => railSection(
+  "State",
+  `<button class="btn" type="button" data-issue-state${busy ? " disabled" : ""}>${issue.state === "closed" ? "Reopen issue" : "Close issue"}</button>
+   <p class="sub">${issue.state === "closed" ? "Closed issues keep their column." : "Closing does not move it to Done."}</p>`,
+);
+
+const selectRow = (id, label, optionsHtml, busy) => `<label class="create-label" for="${esc(id)}">${esc(label)}</label>
+  <select id="${esc(id)}"${busy ? " disabled" : ""}>${optionsHtml}</select>`;
+
+const columnOptionsHtml = (columns, status) =>
+  columnsOf(columns)
+    .map((column) => `<option value="${esc(column.id)}"${column.id === status ? " selected" : ""}>${esc(column.name)}</option>`)
+    .join("");
+
+const priorityOptionsHtml = (priority) =>
+  PRIORITIES.map(
+    (candidate) => `<option value="${esc(candidate.id)}"${candidate.id === priority ? " selected" : ""}>${esc(candidate.label)}</option>`,
+  ).join("");
+
+const linkRowHtml = (row) =>
+  row.route
+    ? `<li class="issue-link"><a href="${esc(hashFromRoute(row.route))}">${esc(row.label)}</a></li>`
+    : `<li class="issue-link"><code title="${esc(row.title || row.label)}">${esc(row.label)}</code></li>`;
+
+const linksHtml = (rows) =>
+  rows.length
+    ? `<ul class="issue-links">${rows.map(linkRowHtml).join("")}</ul>`
+    : `<p class="sub">Nothing linked yet. A dispatch links the workspace and the conversation it made.</p>`;
+
+/**
+ * The rail.
+ *
+ * Every control here writes one field, so each one is the smallest verb that
+ * says what it means: `issues.close`/`issues.reopen` for the state,
+ * `issues.update` for the column, the labels and the priority, and
+ * `issues.assign` for who holds it. The page never sends a whole record.
+ */
+export function issueRailHtml(issue, context) {
+  const { columns, agentLabels, links, labelsDraft, busy } = context;
+  return `<aside class="issue-rail" aria-label="About this issue">
+    ${stateControlHtml(issue, busy)}
+    ${railSection("Column", selectRow("issue-status", "Column", columnOptionsHtml(columns, issue.status), busy))}
+    ${railSection("Labels", `<input id="issue-labels" type="text" autocomplete="off" placeholder="bug, ui" value="${esc(labelsDraft)}"${busy ? " disabled" : ""} />
+      <p class="sub">Comma separated. Enter saves.</p>`)}
+    ${railSection("Priority", selectRow("issue-priority", "Priority", priorityOptionsHtml(issue.priority), busy))}
+    ${railSection("Assignee", `<button class="btn issue-assign-open" type="button" data-issue-assign="${esc(issue.id)}"${busy ? " disabled" : ""}>${assigneeHtml(issue.assignee, agentLabels)}</button>
+      <p class="sub">Assigning hands the issue to an agent and starts it.</p>`)}
+    ${railSection("Links", linksHtml(links))}
+  </aside>`;
+}
+
+/** The whole page. */
+export function issuePageHtml(issue, context) {
+  return `<div class="issue-page">
+    <div class="issue-page-main">
+      ${issueHeadHtml(issue, context.columns)}
+      ${issueBodyHtml(issue)}
+      ${timelineHtml(context.rows, context)}
+      ${composerHtml(context.draft, context.sending)}
+    </div>
+    ${issueRailHtml(issue, context)}
+  </div>`;
+}
+
+/** An issue this device cannot answer for yet — never opened here, or gone. */
+export const issueMissingHtml = () => `<div class="empty gone"><h2>This issue is not here</h2>
+  <p>It may belong to another project, or it may have been read on another machine.</p></div>`;

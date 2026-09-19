@@ -10,6 +10,11 @@
 // The page's two verbs sit in the toolbar's verb slot beside the project's
 // name: the + that makes the first workspace, and the cog that settles the
 // project. Both say which project they are about, because the bar names one.
+//
+// Two tabs, because a project holds two kinds of thing: the workspaces the work
+// happens in, and the issues that say what the work IS. The Issues tab is its
+// own surface (core/trackerIssuesPane.js) mounted into this page's body, and it
+// keeps its own URL — `#/project/<p>/issues` — so a link to a board opens one.
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
@@ -25,7 +30,18 @@ import { projectPageModel } from "../core/projectPageModel.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { notifyError } from "../core/notify.js";
 import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
+import { mountTabShell } from "../core/tabshell.js";
+import { routeProjectKey } from "../core/deviceKey.js";
+import { mountIssuesPane } from "../core/trackerIssuesPane.js";
+import { hashFromRoute } from "../core/router.js";
+import "../styles/issues.css";
 import "../styles/surfaces.css";
+
+/** The two tabs, and which one a route stands on. Workspaces is the page
+ *  itself, so a route that names no tab names that one. */
+const WORKSPACES_TAB = "workspaces";
+const ISSUES_TAB = "issues";
+const tabOf = (route) => (route.tab === ISSUES_TAB ? ISSUES_TAB : WORKSPACES_TAB);
 
 /** Line two of a workspace row: what it is standing on, what its checkout is
  *  doing when that is not simply "ready", and what the work weighs. The same
@@ -91,14 +107,68 @@ function settleProject(state) {
 }
 
 function paint(state) {
+  setToolbarVerb(state.verb);
   const pane = $("#project-pane");
   if (!pane) return;
+  if (state.tab === ISSUES_TAB) {
+    state.issues?.feedMoved();
+    return;
+  }
   const shown = JSON.stringify(state.page.rows);
   if (pane.dataset.rows !== shown) {
     pane.dataset.rows = shown;
     pane.innerHTML = pageHtml(state.page);
   }
-  setToolbarVerb(state.verb);
+}
+
+/**
+ * Open one of the two tabs.
+ *
+ * Each owns the body outright — the workspaces list paints into it and the
+ * Issues pane mounts into it — so the one leaving is torn down before the one
+ * arriving is built. The URL is rewritten rather than navigated: the page is
+ * the same page, and a navigation would remount the rail beside it.
+ */
+function openTab(state, tab) {
+  if (state.tab === tab) return;
+  state.issues?.dispose();
+  state.issues = null;
+  state.tab = tab;
+  const pane = $("#project-pane");
+  pane.innerHTML = "";
+  delete pane.dataset.rows;
+  if (tab === ISSUES_TAB) mountIssues(state, pane);
+  else paint(state);
+  state.tabs?.setActive(tab);
+  writeTabHash(state);
+}
+
+/** The hash this page is standing at, kept in step with the tab and the view
+ *  without a navigation. A reload lands back on what is on screen. */
+function writeTabHash(state) {
+  const route = { ...state.route, tab: state.tab === ISSUES_TAB ? ISSUES_TAB : undefined, view: state.view };
+  App.route = route;
+  state.route = route;
+  history.replaceState(null, "", hashFromRoute(route));
+}
+
+function mountIssues(state, pane) {
+  state.issues = mountIssuesPane(pane, {
+    projectId: state.route.projectId,
+    projectName: state.page.name,
+    deviceId: state.context.deviceId,
+    projectKey: routeProjectKey(state.route),
+    callRpc: state.context.rpc,
+    catalog: () => state.context.modelCatalog(),
+    refreshCatalog: () => state.context.refreshModelCatalog(),
+    feed: () => state.feed,
+    navigate: go,
+    view: state.view,
+    onViewChange: (view) => {
+      state.view = view;
+      writeTabHash(state);
+    },
+  });
 }
 
 /** A row opens its workspace. The row carries the route the rail would have
@@ -162,9 +232,15 @@ export async function renderProject() {
   const state = {
     route, context, disposed: false, rail: null, selection: createAgentSelection(),
     page: projectPageModel(null, route), verb: null,
+    tab: tabOf(route), view: route.view || "list", feed: null, issues: null, tabs: null,
   };
   state.verb = (host) => paintProjectVerbs(host, state);
-  root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
+  root.innerHTML = `<div id="project-tabs"></div><div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
+  state.tabs = mountTabShell($("#project-tabs"), {
+    tabs: [{ id: WORKSPACES_TAB, label: "Workspaces" }, { id: ISSUES_TAB, label: "Issues" }],
+    active: state.tab,
+    onSelect: (tab) => openTab(state, tab),
+  });
   $("#project-pane").onclick = (event) => {
     const row = event.target.closest("[data-workspace]");
     if (row) openWorkspace(state, row.dataset.workspace);
@@ -172,14 +248,17 @@ export async function renderProject() {
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => !state.page.empty });
   const unsubscribe = subscribeFeed((feed) => {
     if (state.disposed) return;
+    state.feed = feed;
     state.page = projectPageModel(feed, state.route);
     paint(state);
   });
+  if (state.tab === ISSUES_TAB) mountIssues(state, $("#project-pane"));
   paint(state);
   App.viewDispose = () => {
     state.disposed = true;
     unsubscribe();
     deviceStrip();
+    state.issues?.dispose();
     state.rail?.dispose?.();
     clearToolbarVerb(state.verb);
   };

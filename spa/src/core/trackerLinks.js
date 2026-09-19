@@ -1,0 +1,96 @@
+// What an issue's links open.
+//
+// An issue says what should be done; the doing is a workspace, a branch, a
+// commit and a conversation, each of which already has a surface. So nothing
+// here invents a destination — every row is a route the app already writes, or
+// it is not a link at all.
+//
+// The one that takes a lookup is the conversation. `links.conversation_ids`
+// holds conversation OWNER ids (`run-…`), and which page an owner belongs to is
+// not in the id: a workspace's owner opens that workspace with the rail
+// standing on it, and the project's own opens the project page. The feed knows
+// which is which, so it is asked rather than guessed.
+//
+// A commit is the exception that proves the rule: there is no surface addressed
+// by a bare hash, so a commit is shown and not linked. Drawing a dead link
+// would be worse than drawing a fact.
+//
+// No DOM, no app imports.
+
+import { conversationRoute } from "./router.js";
+import { workspaceDisplayName } from "./workspaceModel.js";
+import { issueLinks } from "./trackerModel.js";
+
+/** How much of a hash is enough to recognize it, and the length git itself
+ *  abbreviates to. */
+const SHORT_HASH = 7;
+
+const workspacesOfProject = (feed, projectKey) =>
+  (feed?.workspaces || []).filter((workspace) => workspace.projectKey === projectKey);
+
+const ownerOf = (workspace) => workspace.entity_id || workspace.run_id || workspace.id;
+
+const workspaceRow = (workspaceId, place, feed) => {
+  const workspace = workspacesOfProject(feed, place.projectKey).find(
+    (candidate) => (candidate.workspace_id || candidate.id) === workspaceId,
+  );
+  return {
+    kind: "workspace",
+    label: workspace ? workspaceDisplayName(workspace) : workspaceId,
+    route: { name: "workspace", projectId: place.projectId, deviceId: place.deviceId, workspaceId, tab: "changes" },
+  };
+};
+
+const branchRow = (branch, place) => ({
+  kind: "branch",
+  label: branch,
+  route: { name: "branch", projectId: place.projectId, deviceId: place.deviceId, branch, tab: "changes" },
+});
+
+/** A commit is shown, not linked: no surface is addressed by a bare hash. */
+const commitRow = (commit) => ({ kind: "commit", label: String(commit).slice(0, SHORT_HASH), title: commit, route: null });
+
+/** Which page a conversation owner belongs to. A workspace of this project
+ *  owns it, or the project itself does — and an owner the feed does not place
+ *  opens the project page, which is where a conversation of the project's is
+ *  always reachable. */
+function conversationRow(conversationId, place, feed) {
+  const workspace = workspacesOfProject(feed, place.projectKey).find(
+    (candidate) => ownerOf(candidate) === conversationId,
+  );
+  const page = {
+    kind: workspace ? "workspace" : "project",
+    projectId: place.projectId,
+    deviceId: place.deviceId,
+    workspaceId: workspace ? workspace.workspace_id || workspace.id : null,
+  };
+  return {
+    kind: "conversation",
+    label: workspace ? `${workspaceDisplayName(workspace)} · conversation` : "Project agent · conversation",
+    route: conversationRoute(page),
+  };
+}
+
+const parentRow = (parentIssueId, place) => ({
+  kind: "parent",
+  label: "Parent issue",
+  route: { name: "trackerIssue", projectId: place.projectId, deviceId: place.deviceId, issueId: parentIssueId },
+});
+
+/**
+ * Every link an issue carries, in one list, in the order the record holds them.
+ *
+ * `place` is where the reader is standing — `{projectId, deviceId, projectKey}`
+ * — because every route under a project is written against the machine that
+ * project is on.
+ */
+export function issueLinkRows(issue, place, feed = null) {
+  const links = issueLinks(issue);
+  return [
+    ...links.workspace_ids.map((workspaceId) => workspaceRow(workspaceId, place, feed)),
+    ...links.branches.map((branch) => branchRow(branch, place)),
+    ...links.conversation_ids.map((conversationId) => conversationRow(conversationId, place, feed)),
+    ...links.commits.map(commitRow),
+    ...(links.parent_issue_id ? [parentRow(links.parent_issue_id, place)] : []),
+  ];
+}

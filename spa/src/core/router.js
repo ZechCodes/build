@@ -2,6 +2,8 @@
 // global surfaces, and that is the whole vocabulary:
 //   #/inbox                                     — the landing surface
 //   #/project/<projectId>                       — the project: its workspaces
+//   #/project/<projectId>/issues[?view=board]   — the project: its issue tracker
+//   #/project/<projectId>/issues/<issueId>      — one issue of the tracker
 //   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
 //   #/project/<projectId>/issue/<issueId>[/stage/<stageId>]
@@ -25,6 +27,18 @@
 
 const BRANCH_TABS = new Set(["changes", "files"]);
 const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
+
+/// The project page's second tab, and the collection the tracker lives under.
+/// One word for both, because `#/project/<p>/issues` IS that tab.
+///
+/// The singular `issue` beside it belongs to the retired plan flow and is left
+/// exactly as it was: the tracker is a different thing that happens to share
+/// the English word, and the two never meet (planning/v2/Issues Spec.md).
+const ISSUES_TAB = "issues";
+
+/// Which way the Issues tab is laid out. The list is the default and writes no
+/// query; the board says so, because a link to a board should open one.
+const BOARD_VIEW = "board";
 
 const isTermTab = (segment) => /^term-\d+$/.test(segment || "");
 // Tab segments a pre-redesign URL could carry. They are not destinations any
@@ -89,6 +103,19 @@ function legacyStage(tabSegment, stageSegment) {
   if (!stageSegment) return undefined;
   return tabSegment === "stage" || isTabSegment(tabSegment) ? stageSegment : undefined;
 }
+
+/**
+ * `#/project/<p>/issues[/<issueId>]` — the tracker.
+ *
+ * With an id it is one issue's page; without one it is the project page
+ * standing on its Issues tab. That bare URL used to park on the inbox, as one
+ * of the retired right-cluster tabs: the old Issues tab named a project-wide
+ * issue pane, and there is a project-wide issue pane again, so it lands on it.
+ * The same segment on a BRANCH or a legacy issue still goes to the inbox —
+ * there is no tracker of a branch to open.
+ */
+const trackerRoute = (projectId, issueId) =>
+  issueId ? { name: "trackerIssue", projectId, issueId } : { name: "project", projectId, tab: ISSUES_TAB };
 
 /** `#/project/<p>/issue/<id>[…]` — the project is in the URL, so this is the
  *  canonical issue route no matter which legacy tail follows the id. */
@@ -190,6 +217,24 @@ function railAgent(query) {
   return agent ? { agent } : null;
 }
 
+/// Which way the Issues tab is laid out, for a URL that says. The list is what
+/// a URL that says nothing opens, so only the board is ever written or read.
+function issuesView(query) {
+  const view = query ? new URLSearchParams(query).get("view") : "";
+  return view === BOARD_VIEW ? { view: BOARD_VIEW } : null;
+}
+
+/// Everything a surface reads off the query rather than off the path: where in
+/// a tab the reader is standing, whose conversation the rail is open on, and
+/// which way the Issues tab is laid out. A surface that reads none gets null,
+/// and its route is left exactly as the path made it.
+function placeInSurface(route, query) {
+  const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
+  const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
+  const view = route.name === "project" && route.tab === ISSUES_TAB ? issuesView(query) : null;
+  return place || agent || view ? { ...place, ...agent, ...view } : null;
+}
+
 /// The route a hash names, and where in it the reader is standing.
 ///
 /// Split before parse: everything up to the `?` is the surface, everything
@@ -197,12 +242,12 @@ function railAgent(query) {
 export function routeFromHash(hash) {
   const [path, query] = String(hash || "").split("?");
   const route = surfaceFromHashPath(path);
-  const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
-  const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
-  // Both are merged BEFORE the device question is asked: a device-less Files
-  // link parks on a resolve route that still knows which file it meant, and a
-  // device-less conversation link one that still knows which agent.
-  return withDeviceOrResolve(place || agent ? { ...route, ...place, ...agent } : route);
+  // Merged BEFORE the device question is asked: a device-less Files link parks
+  // on a resolve route that still knows which file it meant, a device-less
+  // conversation link one that still knows which agent, and a device-less board
+  // link one that still knows it was a board.
+  const place = placeInSurface(route, query);
+  return withDeviceOrResolve(place ? { ...route, ...place } : route);
 }
 
 /// The segments of a hash path, decoded, with the empties dropped.
@@ -246,6 +291,7 @@ function insideProject(projectId, parts) {
   const [collection, id, ...tail] = parts;
   if (collection === "workspace") return workspaceRoute(projectId, [id, ...tail]);
   if (collection === "branch") return branchRoute(projectId, id ? [id, ...tail] : []);
+  if (collection === ISSUES_TAB) return trackerRoute(projectId, id);
   if (!id) return projectSurface(projectId, collection);
   if (collection === "issue" || collection === "plan") return issueRoute(projectId, id, tail);
   const kind = LEGACY_ID_COLLECTIONS[collection];
@@ -307,6 +353,16 @@ const tabPlacePairs = (route, tab) =>
 /// The conversation the rail is standing on, where the route names one.
 const railAgentPairs = (route) => [["agent", route.agent || ""]];
 
+/// The Issues tab's layout, and nothing at all for the list or for the
+/// workspaces tab: a URL says only what is not the default.
+const issuesViewPairs = (route) =>
+  [["view", route.tab === ISSUES_TAB && route.view === BOARD_VIEW ? BOARD_VIEW : ""]];
+
+/// Which of the project page's two tabs a route stands on. Workspaces is the
+/// page itself and writes nothing, so every URL that named a project and
+/// nothing else still parses and writes back the way it always has.
+const projectTabPath = (route) => (route.tab === ISSUES_TAB ? `/${ISSUES_TAB}` : "");
+
 /// Everything a work URL says before the branch or the issue: the machine the
 /// project is on, when the route names one, and the project itself. A route
 /// that names no device is written without one — a device is never invented.
@@ -317,7 +373,7 @@ function projectPrefix(route) {
 
 // The surfaces that are about one machine's checkout, and so cannot be opened
 // until the route says which machine: every device mints a `proj-1`.
-const WORK_SURFACES = new Set(["branch", "issue", "project", "workspace"]);
+const WORK_SURFACES = new Set(["branch", "issue", "project", "trackerIssue", "workspace"]);
 
 /// A work route that names no machine is a question, not a destination: park it
 /// on the resolve route that asks the feed which device holds that project, and
@@ -338,8 +394,16 @@ const HASH_WRITERS = Object.freeze({
   // link would land scoped and then immediately re-parse as the whole
   // account's inbox. The plain inbox writes nothing and takes the fallback.
   inbox: (route) => (route.projectId ? `${projectPrefix(route)}/inbox` : null),
-  // The project's own page is the project and nothing after it.
-  project: (route) => (route.projectId ? `${projectPrefix(route)}${hashQuery(railAgentPairs(route))}` : null),
+  // The project's own page is the project, the tab it stands on when that is
+  // not the workspaces it opens on, and the query each of those two reads.
+  project: (route) =>
+    route.projectId
+      ? `${projectPrefix(route)}${projectTabPath(route)}${hashQuery([...railAgentPairs(route), ...issuesViewPairs(route)])}`
+      : null,
+  // One issue of the tracker, under the project it belongs to and never moves
+  // between.
+  trackerIssue: (route) =>
+    route.projectId && route.issueId ? `${projectPrefix(route)}/${ISSUES_TAB}/${encode(route.issueId)}` : null,
   workspace: (route) => {
     if (!route.projectId || !route.workspaceId) return null;
     const tab = branchTab(route.tab);

@@ -16,6 +16,12 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openC
 const openProjectSettings = vi.fn();
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => openProjectSettings(...args) }));
 
+// The Issues tab is its own surface with its own reads and its own push; this
+// file is about the page that holds it, so it is mocked to the handle the page
+// keeps.
+const mountIssuesPane = vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() }));
+vi.mock("../src/core/trackerIssuesPane.js", () => ({ mountIssuesPane: (...args) => mountIssuesPane(...args) }));
+
 let subscribers = [];
 let snapshot = { items: [], projects: [], workspaces: [], pending: [], devices: {} };
 const refreshFeed = vi.fn(async () => {});
@@ -73,6 +79,7 @@ beforeEach(() => {
   document.body.innerHTML =
     '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   mountAgentRail.mockClear();
+  mountIssuesPane.mockClear();
   openCreateWork.mockClear();
   openProjectSettings.mockClear();
   subscribers = [];
@@ -224,5 +231,81 @@ describe("the project surface", () => {
     expect(mountAgentRail).not.toHaveBeenCalled();
     expect(rows()).toHaveLength(0);
     expect(document.querySelector("#root").textContent).toBeTruthy();
+  });
+});
+
+
+// A project holds two kinds of thing: the workspaces the work happens in, and
+// the issues that say what the work IS.
+describe("the project's two tabs", () => {
+  const tabs = () => [...document.querySelectorAll("#project-tabs .t[data-tab]")].map((tab) => tab.dataset.tab);
+  const activeTab = () => document.querySelector("#project-tabs .t.active")?.dataset.tab;
+
+  it("opens on the workspaces, which is what a project URL has always opened on", async () => {
+    await renderProject();
+    await flush();
+    expect(tabs()).toEqual(["workspaces", "issues"]);
+    expect(activeTab()).toBe("workspaces");
+    expect(document.querySelector(".project-rows")).not.toBeNull();
+    expect(mountIssuesPane).not.toHaveBeenCalled();
+  });
+
+  it("mounts the Issues tab on the machine the project is on", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
+    await renderProject();
+    await flush();
+    expect(activeTab()).toBe("issues");
+    const [host, given] = mountIssuesPane.mock.calls[0];
+    expect(host.id).toBe("project-pane");
+    expect([given.projectId, given.deviceId, given.projectKey]).toEqual(["proj-1", "dev-1", "dev-1/proj-1"]);
+  });
+
+  // Each tab owns the body outright, so the one leaving is torn down before
+  // the one arriving is built.
+  it("tears the Issues tab down on the way back to the workspaces", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
+    await renderProject();
+    await flush();
+    const pane = mountIssuesPane.mock.results[0].value;
+    document.querySelector('#project-tabs .t[data-tab="workspaces"]').click();
+    await flush();
+    expect(pane.dispose).toHaveBeenCalled();
+    expect(document.querySelector(".project-rows")).not.toBeNull();
+  });
+
+  // The page is the same page: a navigation would remount the rail beside it.
+  it("rewrites the hash rather than navigating", async () => {
+    await renderProject();
+    await flush();
+    mountAgentRail.mockClear();
+    document.querySelector('#project-tabs .t[data-tab="issues"]').click();
+    await flush();
+    expect(location.hash).toBe("#/device/dev-1/project/proj-1/issues");
+    expect(mountAgentRail).not.toHaveBeenCalled();
+  });
+
+  it("keeps a board link a board link", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues", view: "board" };
+    await renderProject();
+    await flush();
+    expect(mountIssuesPane.mock.calls[0][1].view).toBe("board");
+  });
+
+  it("writes the view the tab moved to into the hash", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
+    await renderProject();
+    await flush();
+    mountIssuesPane.mock.calls[0][1].onViewChange("board");
+    expect(location.hash).toBe("#/device/dev-1/project/proj-1/issues?view=board");
+  });
+
+  it("takes the Issues tab down with the page", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
+    await renderProject();
+    await flush();
+    const pane = mountIssuesPane.mock.results[0].value;
+    App.viewDispose();
+    App.viewDispose = null;
+    expect(pane.dispose).toHaveBeenCalled();
   });
 });

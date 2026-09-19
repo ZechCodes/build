@@ -312,7 +312,6 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     // rail standing there is a surface of its own, beside the project's page.
     // Archive is still the account's one archive.
     expect(routeFromHash("#/project/p/inbox")).toEqual({ name: "inbox", projectId: "p" });
-    expect(routeFromHash("#/project/p/issues")).toEqual({ name: "inbox", projectId: "p" });
     expect(routeFromHash("#/project/p/archive")).toEqual({ name: "account", page: "archive" });
   });
 
@@ -549,5 +548,73 @@ describe("the conversation a URL names", () => {
     expect(conversationRoute({ kind: "workspace", projectId: "p", workspaceId: "ws" })).toEqual({
       name: "workspace", projectId: "p", workspaceId: "ws", tab: "changes",
     });
+  });
+});
+
+// The tracker's own routes. The singular `issue` beside them belongs to the
+// retired plan flow and is left exactly as it was: the two are different things
+// that happen to share the English word.
+describe("the issue tracker under a project", () => {
+  it("opens the project page on its Issues tab", () => {
+    expect(workRoute("#/project/p/issues")).toEqual({ name: "project", projectId: "p", tab: "issues" });
+  });
+
+  it("opens one issue's page", () => {
+    expect(workRoute("#/project/p/issues/issue-01K5Z")).toEqual({
+      name: "trackerIssue", projectId: "p", issueId: "issue-01K5Z",
+    });
+  });
+
+  // A board is worth linking to; the list is what a link that says nothing
+  // opens, so only the board is ever written.
+  it("carries which way the tab is laid out, and writes only the board", () => {
+    const board = "#/device/d1/project/p/issues?view=board";
+    expect(routeFromHash(board)).toEqual({ name: "project", deviceId: "d1", projectId: "p", tab: "issues", view: "board" });
+    expect(hashFromRoute(routeFromHash(board))).toBe(board);
+    expect(hashFromRoute({ name: "project", deviceId: "d1", projectId: "p", tab: "issues", view: "list" }))
+      .toBe("#/device/d1/project/p/issues");
+  });
+
+  it("round-trips both, on the machine the project is on", () => {
+    for (const hash of ["#/device/d1/project/p/issues", "#/device/d1/project/p/issues/issue-1"]) {
+      expect(hashFromRoute(routeFromHash(hash))).toBe(hash);
+    }
+  });
+
+  it("encodes an issue id that carries a separator", () => {
+    expect(hashFromRoute({ name: "trackerIssue", deviceId: "d1", projectId: "p", issueId: "a/b" }))
+      .toBe("#/device/d1/project/p/issues/a%2Fb");
+  });
+
+  // Both machines mint a `proj-1`, so a tracker URL with no device on it is a
+  // question — and the answer must still know which issue it was about.
+  it("parks on the resolve hop when the URL names no machine", () => {
+    expect(routeFromHash("#/project/p/issues/issue-1")).toEqual({
+      name: "resolve", kind: "project", projectId: "p",
+      route: { name: "trackerIssue", projectId: "p", issueId: "issue-1" },
+    });
+  });
+
+  // There is no tracker of a branch or of a plan issue to open, so the retired
+  // cluster tab still means what it meant on those.
+  it("leaves the retired Issues cluster tab alone on every other surface", () => {
+    for (const base of ["#/task/r", "#/worktree/p/w", "#/project/p/branch/main", "#/project/p/issue/i"]) {
+      expect([base, routeFromHash(`${base}/issues`)]).toEqual([base, { name: "inbox" }]);
+    }
+  });
+
+  // The project page itself is unchanged: a URL that named a project and
+  // nothing else still parses and writes back the way it always has.
+  it("leaves the workspaces tab writing no tab at all", () => {
+    expect(routeFromHash("#/device/d1/project/p")).toEqual({ name: "project", deviceId: "d1", projectId: "p" });
+    expect(hashFromRoute({ name: "project", deviceId: "d1", projectId: "p" })).toBe("#/device/d1/project/p");
+  });
+
+  it("keeps the rail's agent beside the tab", () => {
+    const hash = "#/device/d1/project/p/issues?agent=agent-7&view=board";
+    expect(routeFromHash(hash)).toEqual({
+      name: "project", deviceId: "d1", projectId: "p", tab: "issues", agent: "agent-7", view: "board",
+    });
+    expect(hashFromRoute(routeFromHash(hash))).toBe(hash);
   });
 });

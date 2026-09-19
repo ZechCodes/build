@@ -102,6 +102,100 @@ const recordKey = ({ deviceId, entityId, kind, sub = "" }) =>
 
 const prefixRange = (prefix) => IDBKeyRange.bound(prefix, `${prefix}￿`, false, true);
 
+// ─── Announcements ───────────────────────────────────────────────────────────
+//
+// Every writer says what it changed, and a surface that holds a record hears
+// it. The message is the address and nothing else: the record is already on
+// disk, and only the reader knows which shape it wants out of it — so a
+// listener re-reads rather than being handed a body it may not want.
+//
+// An address is matched part by part, so a listener names as much of the key
+// as it cares about: a device, an entity, a kind, or one sub-key. An eviction
+// names a prefix, and reaches every listener under it as well as every
+// listener it is under.
+
+const CHANNEL_NAME = "build-cache";
+
+/** The encoded key parts an address names, in key order, stopping at the
+ *  first one it leaves out. Leaving `sub` out means "every sub-key under this
+ *  kind"; naming it, even as `""`, means that one record. */
+function addressParts(address) {
+  const named = [];
+  for (const part of [address.deviceId, address.entityId, address.kind, address.sub]) {
+    if (part === undefined || part === null) break;
+    named.push(encodeURIComponent(part));
+  }
+  return named;
+}
+
+const keyOfParts = (parts) => parts.join("|");
+const partsOfKey = (key) => (key ? String(key).split("|") : []);
+
+const addressOfParts = (parts) => {
+  const names = ["deviceId", "entityId", "kind", "sub"];
+  const address = {};
+  parts.forEach((part, index) => {
+    if (index < names.length) address[names[index]] = decodeURIComponent(part);
+  });
+  return address;
+};
+
+/** Two addresses touch when neither contradicts the other on a part they both
+ *  name: `dev|run-1` covers `dev|run-1|status|`, and is covered by it. */
+function partsTouch(one, other) {
+  const depth = Math.min(one.length, other.length);
+  for (let index = 0; index < depth; index += 1) if (one[index] !== other[index]) return false;
+  return true;
+}
+
+const listeners = new Set(); // { parts, listener }
+
+let channel; // undefined until first asked for, null where there is none
+
+/** The tab-to-tab channel, opened on the first subscription so a tab that
+ *  never writes still hears. A browser without it simply has no cross-tab
+ *  announcements; everything in this tab works the same. */
+function cacheChannel() {
+  if (channel !== undefined) return channel;
+  channel = null;
+  if (typeof BroadcastChannel === "undefined") return channel;
+  try {
+    const opened = new BroadcastChannel(CHANNEL_NAME);
+    opened.onmessage = (event) => announce(partsOfKey(event?.data?.key), false);
+    opened.unref?.(); // node: never hold the process open for the cache
+    channel = opened;
+  } catch (error) {
+    console.warn("cross-tab cache announcements unavailable:", error);
+  }
+  return channel;
+}
+
+/** Tell every listener the change is under or over, and — for a change made
+ *  here — the other tabs. A listener that throws is the caller's problem, not
+ *  the writer's: the record is already stored. */
+function announce(parts, broadcast = true) {
+  for (const entry of [...listeners]) {
+    if (!partsTouch(entry.parts, parts)) continue;
+    try {
+      entry.listener(addressOfParts(parts));
+    } catch (error) {
+      console.warn("a cache listener threw:", error);
+    }
+  }
+  if (broadcast) cacheChannel()?.postMessage({ key: keyOfParts(parts) });
+}
+
+/** Hear every write and eviction at or under `prefixAddress`, from this tab
+ *  and from every other tab on this browser profile. The listener is handed
+ *  the address that changed and reads what it wants; answers the way to stop
+ *  listening. */
+export function subscribeCache(prefixAddress, listener) {
+  const entry = { parts: addressParts(prefixAddress), listener };
+  listeners.add(entry);
+  cacheChannel();
+  return () => listeners.delete(entry);
+}
+
 /** Read one record: `{ at, value }`, or undefined when it was never written,
  *  the cache is unavailable, or anything went wrong. */
 export function readCached(address) {
@@ -133,7 +227,7 @@ export function writeCached(address, value) {
   return inStore("readwrite", (store) => {
     store.put(record, recordKey(address));
     return null;
-  });
+  }).then(() => announce(addressParts({ ...address, sub: address.sub === undefined ? "" : address.sub })));
 }
 
 /** Drop every record one entity holds on one device — a single range delete,
@@ -143,7 +237,7 @@ export function evictEntity(deviceId, entityId) {
   return inStore("readwrite", (store) => {
     store.delete(prefixRange(prefix));
     return null;
-  });
+  }).then(() => announce([encodeURIComponent(deviceId), encodeURIComponent(entityId)]));
 }
 
 /** Every entity id that holds at least one record on this device. What the

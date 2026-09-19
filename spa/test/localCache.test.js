@@ -135,3 +135,86 @@ describe("readCachedMany", () => {
     expect(await cache.readCachedMany([])).toEqual([]);
   });
 });
+
+describe("announcements", () => {
+  /** Resolve on the subscriber's first call, or reject if nothing arrives —
+   *  the timer also keeps the loop alive while a channel message is in
+   *  flight. */
+  const announced = (address, { within = 2000 } = {}) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("nothing was announced")), within);
+      cache.subscribeCache(address, (changed) => {
+        clearTimeout(timer);
+        resolve(changed);
+      });
+    });
+
+  it("tells a subscriber on the entity which address was written", async () => {
+    const heard = announced({ deviceId: "dev-1", entityId: "run-1" });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "abc" });
+    expect(await heard).toEqual({ deviceId: "dev-1", entityId: "run-1", kind: "status", sub: "" });
+  });
+
+  it("announces only to the listeners the address is under", async () => {
+    const seen = [];
+    cache.subscribeCache({ deviceId: "dev-1" }, (changed) => seen.push(["device", changed.kind]));
+    cache.subscribeCache({ deviceId: "dev-1", entityId: "run-1", kind: "tree" }, (changed) => seen.push(["tree", changed.sub]));
+    cache.subscribeCache({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" }, () => seen.push(["one-tree"]));
+    cache.subscribeCache({ deviceId: "dev-2" }, () => seen.push(["other-device"]));
+    cache.subscribeCache({ deviceId: "dev-1", entityId: "run-2" }, () => seen.push(["other-entity"]));
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src-two" }, []);
+    expect(seen).toEqual([["device", "tree"], ["tree", "src-two"]]);
+  });
+
+  it("announces an eviction to everyone holding any of that entity", async () => {
+    const heard = announced({ deviceId: "dev-1", entityId: "run-1", kind: "status" });
+    await cache.evictEntity("dev-1", "run-1");
+    expect(await heard).toEqual({ deviceId: "dev-1", entityId: "run-1" });
+  });
+
+  it("stops announcing once the subscriber lets go", async () => {
+    const seen = [];
+    const unsubscribe = cache.subscribeCache({ deviceId: "dev-1" }, (changed) => seen.push(changed.kind));
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, {});
+    unsubscribe();
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, {});
+    expect(seen).toEqual(["status"]);
+  });
+
+  it("keeps one throwing subscriber from stopping the next one, or the write", async () => {
+    const seen = [];
+    cache.subscribeCache({ deviceId: "dev-1" }, () => {
+      throw new Error("a view that is already unmounted");
+    });
+    cache.subscribeCache({ deviceId: "dev-1" }, (changed) => seen.push(changed.kind));
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "abc" });
+    expect(seen).toEqual(["status"]);
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.head).toBe("abc");
+  });
+
+  it("hears another tab's write over the channel and re-reads", async () => {
+    const heard = announced({ deviceId: "dev-1", entityId: "run-1" });
+    // The other tab writes the record into the shared database, then says so.
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "elsewhere" });
+    const otherTab = new BroadcastChannel("build-cache");
+    otherTab.postMessage({ key: "dev-1|run-1|status|" });
+    const changed = await heard;
+    otherTab.close();
+    expect(changed).toEqual({ deviceId: "dev-1", entityId: "run-1", kind: "status", sub: "" });
+    expect((await cache.readCached(changed)).value.head).toBe("elsewhere");
+  });
+
+  it("tells the other tabs what it wrote, and does not echo its own message back", async () => {
+    const posted = [];
+    const otherTab = new BroadcastChannel("build-cache");
+    otherTab.onmessage = (event) => posted.push(event.data);
+    const echoed = [];
+    cache.subscribeCache({ deviceId: "dev-1" }, () => echoed.push(1));
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, {});
+    await cache.evictEntity("dev-1", "run-1");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    otherTab.close();
+    expect(posted).toEqual([{ key: "dev-1|run-1|status|" }, { key: "dev-1|run-1" }]);
+    expect(echoed).toHaveLength(2); // the two local writes, not four
+  });
+});

@@ -80,17 +80,14 @@ function timeHtml(createdAt) {
   return `<time datetime="${esc(createdAt)}">${esc(label)}</time>`;
 }
 
-// Client half of the thread cursor: the detail polls (plan.get / run.get every
-// 1.6s) would otherwise re-ship the whole forever-growing conversation over
-// E2EE on every tick. The cache holds a WINDOW over one entity's conversation —
-// the newest items the daemon paged out, widened upwards as the reader scrolls
-// back — tells the caller which cursor to send, and folds each delta back into
-// a full thread for rendering. A window that no longer reaches the newest item,
-// or that holds more than the conversation does (bridge restart, entity swap,
-// dropped delta), drops it for a refetch of a window the same height.
+// A conversation is held as a WINDOW over it: the newest items, widened
+// upwards as the reader scrolls back. The record on disk is that window
+// (core/conversationCache.js) and the sync layer is what fills it; what the
+// surfaces still name here is how much of one an answer is asked to carry.
+//
 // How much conversation a first load asks for. The daemon clamps whatever it
 // hears, so this is a request rather than a promise — but it has to be made:
-// a poll that names no bound gets the conversation whole, which is the only
+// a read that names no bound gets the conversation whole, which is the only
 // answer a client written before paging could reconcile.
 export const FIRST_PAGE_ITEMS = 20;
 
@@ -205,9 +202,11 @@ export function withoutProvisionalItem(items = [], operationId) {
 }
 
 /** The items with the sequence a post was acknowledged at stamped onto the
- *  stand-in waiting for it, so it sits where the message will. */
+ *  stand-in waiting for it, so it sits where the message will. The list itself
+ *  where it holds no such stand-in, so a caller can tell nothing happened. */
 export function acknowledgeProvisionalItem(items = [], operationId, sequence, deliveryStatus = "sent") {
   const key = provisionalItemKey(operationId);
+  if (!items.some((item) => threadItemKey(item) === key)) return items;
   return items.map((item) =>
     threadItemKey(item) === key
       ? { ...item, data: { ...item.data, sequence, delivery_status: deliveryStatus } }
@@ -215,214 +214,45 @@ export function acknowledgeProvisionalItem(items = [], operationId, sequence, de
   );
 }
 
+/**
+ * The panel's view of one conversation's record.
+ *
+ * It holds no conversation of its own any more: the record is the conversation
+ * (core/conversationCache.js), and this is the shape the timeline is drawn
+ * from, kept beside the controller that owns the panel so a repaint does not
+ * have to go back to disk. `seedWindow` opens a record into it, and every
+ * write to that record opens it again.
+ */
 export function createThreadCache() {
   let accumulatedItems = [];
   // What each activity run that touches the window totals, keyed by the run's
   // first sequence. A page ships a bounded slice of a run and says here what
-  // the whole of it came to; a forward delta says nothing about a run, which is
-  // why these are held rather than recomputed from what is in hand.
+  // the whole of it came to.
   let activityDigests = [];
-  // Whether the daemon said there is conversation above the window. Only a
-  // paged answer knows; a forward delta says nothing about the far end.
+  // Whether there is conversation above the window. Only a paged answer knows,
+  // and the record remembers what the last one said.
   let olderItemsRemain = false;
-  // The newest counter value the daemon has named that this cache has already
-  // taken delivery of. Usually the top of the window — but an item mutated in
-  // place BELOW the window is taken delivery of by being left out of it (see
-  // `theWindowMayTake`), and the cursor still has to move past its bump or the
-  // daemon re-ships it on every poll for as long as the view is open.
+  // The newest counter value the record has taken delivery of — the cursor the
+  // sync layer reads forward from, and what a repaint is measured against.
   let deliveredSequence = 0;
-  // How long the daemon last said the whole conversation is, or null while no
-  // window is open. Held because a REMOVAL is the one change the wire has no
-  // other word for (see `growsByWhatItWasTold`).
+  // How long the conversation is, where the wire has said.
   let knownTotalItems = null;
-  // How tall the window was when it last broke, or 0 with nothing to recover.
-  // See `forgetTheBrokenWindowButNotItsHeight`.
-  let itemsToRecover = 0;
-
-  // The bridge bumps `updated_sequence` (drawn from the same counter as
-  // `sequence`) when it mutates a message in place — marking it seen,
-  // resolving it with a revision — so the cursor must cover the newest
-  // counter value any held item has touched, not just the newest creation.
-  const itemCursorSequence = (item) =>
-    Math.max(item.data?.sequence || 0, item.data?.updated_sequence || 0);
 
   const highestCursorSequence = (items) =>
-    items.reduce((highest, item) => Math.max(highest, itemCursorSequence(item)), 0);
+    items.reduce(
+      (highest, item) => Math.max(highest, item.data?.sequence || 0, item.data?.updated_sequence || 0),
+      0,
+    );
 
-  /// The part of an arrival the window is allowed to fold in.
-  ///
-  /// The daemon's forward cursor selects on the newest counter value an item
-  /// has TOUCHED, so mutating an old message in place — marking it seen,
-  /// resolving it with a revision, answering its offer — re-ships that message
-  /// however far below the window it was written. Folding it back in by
-  /// creation sequence would seat it under the window's floor with everything
-  /// between them missing: a hole the two-ended check below cannot see, because
-  /// the mutated item's own bump IS the newest sequence the daemon names. Worse,
-  /// it would move the floor down to the far side of the hole, so one scroll
-  /// back would answer with the handful of items above the mutated one, say
-  /// there is no more, and bury the rest of the conversation for the life of
-  /// the view.
-  ///
-  /// So an arrival from under the window stays out of it. The reader meets its
-  /// current state the moment they scroll back far enough to fetch it.
-  const theWindowMayTake = (arrivedItems) => {
-    if (!accumulatedItems.length) return arrivedItems;
-    const floor = accumulatedItems[0].data?.sequence || 0;
-    return arrivedItems.filter((item) => (item.data?.sequence || 0) >= floor);
-  };
-
-  /// Whether a payload's `has_more` is still an answer about the window in
-  /// hand. It answers one question — is there anything above the payload's own
-  /// first item — so it holds only while that item is still the window's floor.
-  /// With no window open, the payload is the one about to become it.
-  ///
-  /// The distinction is not academic: a repaint folds the payload in hand back
-  /// through the cache, and the payload in hand stays the page the window was
-  /// opened on until the next poll replaces it with a delta. Once the reader
-  /// has scrolled back, that page speaks for a floor the window has already
-  /// lifted past, and taking its answer would put them at a top they have
-  /// already reached — every further scroll gesture asking for a page the
-  /// daemon has already said is not there.
-  const speaksForTheWindowsFloor = (arrivedItems) => {
-    if (!accumulatedItems.length) return true;
-    return (arrivedItems[0]?.data?.sequence || 0) === (accumulatedItems[0].data?.sequence || 0);
-  };
-
-  /// Drop the window: what is held, what was said about either end of it, and
-  /// how long the conversation was. The next poll opens a fresh one on the
-  /// newest items, which is where a conversation is opened.
   const forgetTheWindow = () => {
     accumulatedItems = [];
     activityDigests = [];
     olderItemsRemain = false;
     deliveredSequence = 0;
     knownTotalItems = null;
-    itemsToRecover = 0;
   };
-
-  /// Drop a window that turned out to be broken, remembering how tall it was.
-  ///
-  /// A reader who has scrolled back is reading history, and the window they are
-  /// reading it in is the only record of how far back they went — the daemon's
-  /// detail poll takes a size, not a floor, so the height is what can be asked
-  /// for again. Reopening on a first page instead would take that history off
-  /// the screen with nothing said: the surfaces write the reader's scroll
-  /// offset back after a repaint, and a timeline a quarter as tall clamps it to
-  /// a point in the conversation they were never at, with the passage they were
-  /// reading only reachable by scrolling back page by page a second time.
-  ///
-  /// So a break asks for the window again rather than for a first page, and the
-  /// recovery is invisible. This is the one thing kept across a break: what was
-  /// held is suspect, and what it was a window on may not even be the same
-  /// conversation any more, but how much the reader had open is a fact about
-  /// the reader.
-  const forgetTheBrokenWindowButNotItsHeight = () => {
-    const heldItemCount = accumulatedItems.length;
-    forgetTheWindow();
-    itemsToRecover = heldItemCount;
-  };
-
-  const mergeArrivals = (arrivedItems) => {
-    // Keyed by creation sequence so a replay never grows the list, while an
-    // arrived copy replaces the held one — the bridge re-ships an item
-    // exactly when it holds newer state (seen, resolved) for it.
-    const mergedBySequence = new Map(accumulatedItems.map((item) => [item.data?.sequence, item]));
-    for (const arrived of arrivedItems) {
-      mergedBySequence.set(arrived.data?.sequence, arrived);
-    }
-    return [...mergedBySequence.values()].sort(
-      (a, b) => (a.data?.sequence || 0) - (b.data?.sequence || 0),
-    );
-  };
-
-  /// Whether a window is still one unbroken run of the conversation's newest
-  /// items — the only shape the forward cursor is safe on top of.
-  ///
-  /// Counting is not the test any more: a paged client holds fewer items than
-  /// `thread_total` on purpose, and treating that as a loss would refetch the
-  /// whole conversation every 1.6s, which is the exact cost paging exists to
-  /// avoid. Contiguity WITHIN the window is kept by construction — a forward
-  /// delta carries everything after the cursor, an older page carries the items
-  /// immediately before the front — so what is left to check is the two ends:
-  /// the cache must have taken delivery of everything up to the newest sequence
-  /// the daemon names (falling short of it means a delta went missing), and the
-  /// window can never be larger than the conversation it is a window on (a
-  /// smaller whole means the conversation restarted, was trimmed, or belongs to
-  /// somebody else now).
-  ///
-  /// Delivery rather than the top of the window, because the two part company:
-  /// an item mutated below the floor is delivered and deliberately not held.
-  ///
-  /// A PAGE is held to the size end only. It is the answer that OPENS a window
-  /// rather than one that extends it, so there is no delta it could have lost
-  /// — the cursor is read straight back off the items it shipped. Meanwhile
-  /// `thread_last_sequence` names the newest counter value in the whole
-  /// conversation, which an in-place bump routinely puts on an item the page
-  /// deliberately left out: an old message marked seen, an old comment
-  /// resolved, with nothing posted since. That is the state an idle
-  /// conversation is normally opened in, so holding a page to the delivery end
-  /// would fail the check on every first load — resetting the window every
-  /// tick, leaving the reader the newest page with no scroll-back, and never
-  /// letting the cursor engage. The bump arrives from under the floor on the
-  /// next poll, as a delta, and moves delivery past itself there.
-  const holdsAnUnbrokenRunEndingAtTheNewest = (merged, delivered, threadPayload, arrivedAsAPage) => {
-    const newest = threadPayload.thread_last_sequence;
-    // A daemon old enough not to name its newest sequence leaves only the size
-    // check to go on.
-    if (!arrivedAsAPage && newest != null && delivered !== newest) return false;
-    return merged.length <= threadPayload.thread_total;
-  };
-
-  /// How many of an arrival's items are conversation that did not exist when
-  /// the window was last checked. The forward cursor re-ships an item it merely
-  /// mutated in place, and that item was counted the first time it arrived —
-  /// only a creation makes the conversation longer, and a creation is exactly
-  /// an item whose own sequence is past everything delivered so far.
-  const createdSince = (arrivedItems, delivered) =>
-    arrivedItems.filter((item) => (item.data?.sequence || 0) > delivered).length;
-
-  /// Whether the conversation is as long as what the cache has been told about
-  /// it — the only signal the wire carries for an item that was DELETED.
-  ///
-  /// Nothing arrives to unsay a removed item. `Thread::remove_doc_comment`
-  /// takes it out of the conversation and spends no sequence doing so, so the
-  /// next delta is empty, the newest sequence is where it was, and the one
-  /// thing that moves is `thread_total` going down by one. A window is shorter
-  /// than the whole by design, so the size check cannot hear that: a reviewer
-  /// deleting their own comment would leave it drawn on the rail for the life
-  /// of the view, because no later poll ever mentions it again.
-  ///
-  /// So the length is predicted instead of compared: whatever the daemon said
-  /// last, plus the items it has since shipped that are new. Falling short of
-  /// that means the conversation lost something — a deletion inside the window
-  /// or below it — and the window is dropped for a refetch. Predicting also
-  /// catches the tick that deletes one item and posts another, which leaves the
-  /// count alone and would otherwise pass unnoticed.
-  ///
-  /// Only falling SHORT is a loss. A conversation longer than predicted is a
-  /// delta the daemon bounded, which the delivery end of the check answers.
-  const growsByWhatItWasTold = (threadPayload, arrivedItems, delivered) => {
-    if (knownTotalItems == null) return true;
-    return threadPayload.thread_total >= knownTotalItems + createdSince(arrivedItems, delivered);
-  };
-
-  /// The thread a caller renders: the payload, the items the window holds, and
-  /// what the daemon said each activity run over them totals. One shape for
-  /// every answer, so items and digests can never be handed out out of step.
-  const threadOver = (threadPayload, items, digests) => ({ ...threadPayload, items, activityDigests: digests });
 
   return {
-    // Extra params for the next plan.get / run.get: the last sequence held, or
-    // — with no window open (first load, or after a reset) — how much of the
-    // newest conversation to open one on. A window dropped for a break asks for
-    // its own height back, so the reader keeps the history they had scrolled to
-    // (`forgetTheBrokenWindowButNotItsHeight`); the daemon clamps that like any
-    // other request.
-    cursorParam() {
-      return accumulatedItems.length
-        ? { thread_after_sequence: deliveredSequence }
-        : { thread_limit: Math.max(FIRST_PAGE_ITEMS, itemsToRecover) };
-    },
     // Extra params for the next thread.page: the seek for the page above the
     // window, or nothing while there is no window to widen.
     olderPageParam() {
@@ -442,115 +272,23 @@ export function createThreadCache() {
       if (!accumulatedItems.length) return null;
       return accumulatedItems[0].data?.sequence ?? null;
     },
-    // Fold a polled thread payload into the cache and return a thread whose
-    // `items` is the complete accumulated list. Never mutates the payload.
-    absorb(threadPayload) {
-      if (!threadPayload) {
-        forgetTheWindow();
-        return threadPayload;
-      }
-      const arrivedItems = threadPayload.items || [];
-      const digests = mergeActivityDigests(activityDigests, threadPayload);
-      activityDigests = digests;
-      // `has_more` is what a page carries and a forward delta does not, so it
-      // is also what tells the two kinds of answer apart.
-      const arrivedAsAPage = threadPayload.has_more != null;
-      // A paged answer is the only one that knows what lies above it; a bare
-      // forward delta leaves the standing answer alone, and so does a page that
-      // no longer speaks for the window's floor.
-      if (arrivedAsAPage && speaksForTheWindowsFloor(arrivedItems)) {
-        olderItemsRemain = threadPayload.has_more === true;
-      }
-      if (threadPayload.thread_total == null) {
-        // An uncursored (full) response is authoritative: replace, don't merge.
-        // It names no length, so there is none to hold the next one to.
-        accumulatedItems = [...arrivedItems];
-        deliveredSequence = highestCursorSequence(accumulatedItems);
-        knownTotalItems = null;
-        return threadOver(threadPayload, accumulatedItems, digests);
-      }
-      // A window is opened by a PAGE and only by a page. A forward delta
-      // carries what is newer than the cursor it was asked with, which says
-      // nothing about how far back the conversation goes — only a paged answer
-      // knows that, and says so with `has_more`. So a delta arriving on an
-      // empty cache is rendered and forgotten rather than taken as the window:
-      // the cache holds no window here because the last absorb reset it (or
-      // the reader just switched agents), and the delta is the tail of a
-      // conversation whose floor it cannot name. Seating it as the window would
-      // pass both ends of the check trivially — it reaches the newest item, and
-      // a handful of items is never more than the whole — leaving the reader
-      // with those few messages, a cursor past them, and no page above, which
-      // no later delta ever brings the rest back to. The repaints that make
-      // this reachable are ordinary: pressing a bubble, or leaving the chat and
-      // coming back, folds the payload in hand through the cache again.
-      if (!accumulatedItems.length && !arrivedAsAPage) {
-        return threadOver(threadPayload, arrivedItems, digests);
-      }
-      const merged = mergeArrivals(theWindowMayTake(arrivedItems));
-      // Everything the delta carried is delivered, whether the window took it
-      // or left it below the floor.
-      const delivered = Math.max(
-        deliveredSequence,
-        highestCursorSequence(merged),
-        highestCursorSequence(arrivedItems),
-      );
-      const sound =
-        holdsAnUnbrokenRunEndingAtTheNewest(merged, delivered, threadPayload, arrivedAsAPage) &&
-        growsByWhatItWasTold(threadPayload, arrivedItems, deliveredSequence);
-      if (!sound) {
-        // A real gap: render what we have this tick, but drop the cache so the
-        // next poll refetches a window this tall from the newest item down and
-        // self-heals under a reader who never sees it happen.
-        forgetTheBrokenWindowButNotItsHeight();
-        return threadOver(threadPayload, merged, digests);
-      }
-      accumulatedItems = merged;
-      deliveredSequence = delivered;
-      knownTotalItems = threadPayload.thread_total;
-      return threadOver(threadPayload, accumulatedItems, digests);
-    },
-    // Widen the window upwards with a `thread.page` answer and return the whole
-    // of it, or nothing when the page no longer belongs above the window.
-    // Never mutates the payload, and never moves the forward cursor: that one
-    // reads what has been delivered, and history arriving late is not news.
-    //
-    // `seek` is the `olderPageParam()` the page was asked for with, and it is
-    // what makes the answer safe to fold in: a page carries the items
-    // immediately before the seek it was fetched at, so it abuts this window
-    // only while the window's floor is still that seek. A round trip is long
-    // enough for it to stop being — the reader switched agents, or a poll
-    // tripped the gap check and the poll after it opened a fresh window on the
-    // newest items. Folding the page in then would seat it under a floor it was
-    // never below, with everything between them missing and the floor left on
-    // the far side of the hole, so scrolling back would walk downward and the
-    // skipped items could never be asked for again. A hole, dressed as history
-    // — and one neither end of the window is short enough to give away. So a
-    // page that has outlived its seek is dropped; the reader's next scroll asks
-    // for the page this window actually wants.
-    absorbOlderPage(pagePayload, seek) {
-      if (!pagePayload || !accumulatedItems.length) return null;
-      if (!seek || seek.before_sequence !== accumulatedItems[0].data?.sequence) return null;
-      if (pagePayload.has_more != null) olderItemsRemain = pagePayload.has_more === true;
-      accumulatedItems = mergeArrivals(pagePayload.items || []);
-      activityDigests = mergeActivityDigests(activityDigests, pagePayload);
-      return threadOver(pagePayload, accumulatedItems, activityDigests);
-    },
     reset() {
       forgetTheWindow();
     },
-    // The window as a value the local cache can hold across sessions, or null
-    // while none is open. What seedWindow takes back.
+    // The window as it stands.
     readWindow() {
       if (!accumulatedItems.length) return null;
       return { items: accumulatedItems, olderItemsRemain, deliveredSequence, knownTotalItems, activityDigests };
     },
-    // Open a saved window in an empty cache. Only an empty one: a conversation
-    // already live outranks anything the disk remembers. After a seed the
-    // cursor is a forward delta, and the standing soundness checks self-heal
-    // whatever the time away made stale — a break refetches, invisibly.
+    // Open a record's window. The record is the conversation, so this replaces
+    // whatever was held rather than merging into it — including the reader's
+    // own widening, which is written back to the record before it gets here.
+    // Answers whether there is a conversation to draw.
     seedWindow(saved) {
-      if (accumulatedItems.length || deliveredSequence) return false;
-      if (!saved || !Array.isArray(saved.items) || !saved.items.length) return false;
+      if (!saved || !Array.isArray(saved.items) || !saved.items.length) {
+        forgetTheWindow();
+        return false;
+      }
       accumulatedItems = [...saved.items];
       olderItemsRemain = !!saved.olderItemsRemain;
       deliveredSequence = saved.deliveredSequence || highestCursorSequence(accumulatedItems);

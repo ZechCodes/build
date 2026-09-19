@@ -101,6 +101,7 @@ const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
+const { pushRailThreadItems, writeRailBoard, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 /** The topic each fixture agent named its work with. The head and the bubbles
  *  say the topic now, so it is the topic — not a harness and an ordinal — that
@@ -134,8 +135,10 @@ let catalog = null;
 let calls = [];
 let rail = null;
 
+// The rail settles over the disk: its row, and the conversation in it —
+// every record it opens is a turn.
 const flush = async () => {
-  for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
+  for (let i = 0; i < 12; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 const finishTitleMotion = async (titleElement) => {
@@ -203,7 +206,16 @@ const railAddress = (over = {}) => ({
 });
 
 const mount = async (context = {}) => {
+  await writeRailWorkItem(payload);
   rail = mountAgentRail(railHost(), railAddress(context));
+  await flush();
+};
+
+/** The row moved: the sync layer writes what the bridge pushed, and every rail
+ *  reading that record hears it. */
+const pushRow = async (row = payload) => {
+  payload = row;
+  await writeRailWorkItem(row);
   await flush();
 };
 
@@ -530,8 +542,7 @@ describe("the unpinned panel's popover", () => {
         { id: "m-3", type: "message", data: { sequence: 3, role: "agent", body: "three" } },
       ], sessions: [] } },
     });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(markSeen).not.toHaveBeenCalled();
     expect(history.textContent).not.toContain("three");
@@ -551,6 +562,78 @@ describe("the unpinned panel's popover", () => {
     expect(() =>
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
     ).not.toThrow();
+  });
+});
+
+// The reviewer's headline complaint: switching workspaces showed a rail with
+// nothing in it until a round trip came back. The rail reads the cache and
+// nothing else now — the strip and the conversation are on the first frame,
+// and a row arriving moves them without anything being asked of the machine.
+describe("the rail over a machine that is asked nothing", () => {
+  const said = (sequence, body) => ({
+    id: `m-${sequence}`,
+    type: "message",
+    data: { sequence, role: "agent", body, created_at: "2026-08-30T12:00:00Z" },
+  });
+  const three = () => [agent(), agent({ id: "ag-2", ordinal: 2 }), agent({ id: "ag-3", ordinal: 3 })];
+
+  it("paints the agents and the conversation the disk holds, with no context live at all", async () => {
+    payload = branchRow({ agents: three(), run: { run_id: "run-3", thread: { items: [said(1, "what was said")] } } });
+    // Nothing is answering: no device session, and every call left hanging.
+    resetDeviceContexts();
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      return new Promise(() => {});
+    });
+
+    await mount();
+
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", "ag-3", ""]);
+    expect(railHost().querySelector("#rail-body").textContent).toContain("what was said");
+  });
+
+  // A rail can be on screen before this machine has a row for the work item at
+  // all — the reader deep-linked into a branch, and the first sync pass is
+  // still running. The rail stands up on what arrives rather than waiting for
+  // something to press.
+  it("takes up the row when one arrives for a work item the disk did not hold", async () => {
+    await wipeCache();
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    rail = mountAgentRail(railHost(), railAddress());
+    await flush();
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual([""]);
+
+    await writeRailWorkItem(payload);
+    await flush();
+
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
+  });
+
+  it("adds the bubble a row brings without asking anything", async () => {
+    payload = branchRow({ agents: three() });
+    await mount();
+    calls.length = 0;
+
+    await pushRow(branchRow({ agents: [...three(), agent({ id: "ag-4", ordinal: 4 })] }));
+
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", "ag-3", "ag-4", ""]);
+    expect(calls).toEqual([]);
+  });
+
+  it("never reads a work item off the wire, whatever kind of one it is on", async () => {
+    payload = branchRow({ agents: three() });
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    await pushRow(branchRow({ agents: three().slice(0, 2) }));
+    rail.dispose();
+    rail = null;
+
+    payload = { issue_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the issue")] } };
+    await mount({ kind: "issue", projectId: "p1", issueId: "plan-1" });
+
+    const reads = ["branch.get", "issue.get", "run.get", "workspace.get", "thread.page"];
+    expect(calls.filter((call) => reads.includes(call.method))).toEqual([]);
   });
 });
 
@@ -643,8 +726,7 @@ describe("the bubble strip", () => {
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("claude_adk");
 
     payload = branchRow({ agents: [agent({ provider: "codex_app_server", topic: "" })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
     // Nothing named yet, so the hover falls back to the harness — the new one.
@@ -659,8 +741,7 @@ describe("the bubble strip", () => {
     await mount();
     const before = bubbles();
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     const after = bubbles();
     expect(after).toHaveLength(before.length);
@@ -676,8 +757,7 @@ describe("the bubble strip", () => {
     const before = bubbles()[0];
     payload = branchRow({ agents: [agent({ unread_count: 3, working: true })] });
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(bubbles()[0]).toBe(before);
     expect(countOn(bubbles()[0]).textContent).toBe("3");
@@ -688,8 +768,7 @@ describe("the bubble strip", () => {
 
     // …and back again: the count goes, the animation stops where it was.
     payload = branchRow({ agents: [agent()] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(bubbles()[0]).toBe(before);
     expect(countOn(bubbles()[0]).hidden).toBe(true);
     expect(bubbles()[0].classList.contains("working")).toBe(false);
@@ -701,8 +780,7 @@ describe("the bubble strip", () => {
     const painter = livePainters()[0];
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(bubbles()).toHaveLength(3);
     expect(bubbles()[0]).toBe(before);
@@ -803,41 +881,33 @@ describe("the bubble strip", () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     const selection = createAgentSelection();
     await mount({ kind: "branch", projectId: "p1", branch: "build/login", selection });
-    // The rail opens on the first agent, and its next poll asks about it.
+    // The rail opens on the first agent, and the surfaces beside it hear so.
     expect(selection.get()).toBe("ag-1");
-    vi.advanceTimersByTime(2000);
-    await flush();
-    expect(callsTo("branch.get").at(-1).params).toMatchObject({ agent_id: "ag-1" });
+    await pushRow();
+    expect(selection.get()).toBe("ag-1");
 
     bubbles()[1].click();
     await flush();
     expect(selection.get()).toBe("ag-2");
-    vi.advanceTimersByTime(2000);
-    await flush();
-    expect(callsTo("branch.get").at(-1).params).toMatchObject({ agent_id: "ag-2" });
+    // A row arriving does not move the reader off the bubble they opened.
+    await pushRow();
+    expect(selection.get()).toBe("ag-2");
   });
 
-  it("lets go of an agent the work item no longer has, instead of asking after it forever", async () => {
+  it("lets go of an agent the work item no longer has, instead of holding a bubble nobody answers for", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     const selection = createAgentSelection();
     await mount({ kind: "branch", projectId: "p1", branch: "build/login", selection });
+    bubbles()[1].click();
+    await flush();
+    expect(selection.get()).toBe("ag-2");
+
+    // The run behind the branch was replaced: its row names another agent, and
+    // the one the reader had open is not on the work item any more.
+    await pushRow(branchRow({ agents: [agent()] }));
+
     expect(selection.get()).toBe("ag-1");
-
-    // The run behind the branch was replaced: the daemon refuses the id rather
-    // than answering with somebody else's conversation.
-    const refusing = bridge.call;
-    bridge.call = vi.fn(async (method, params) => {
-      calls.push({ method, params });
-      if (method === "branch.get" && params.agent_id) throw new Error("unknown agent_id: ag-1");
-      return refusing(method, params);
-    });
-    vi.advanceTimersByTime(2000);
-    await flush();
-    expect(selection.get()).toBe(null);
-
-    // …and the next read asks the question that can be answered.
-    vi.advanceTimersByTime(2000);
-    await flush();
-    expect(callsTo("branch.get").at(-1).params.agent_id).toBe(undefined);
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", ""]);
   });
 });
 
@@ -871,13 +941,11 @@ describe("the painter behind a bubble", () => {
     expect(livePainters()[0].working).toBe(false);
 
     payload = branchRow({ agents: [agent({ working: true })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(livePainters()[0].working).toBe(true);
 
     payload = branchRow({ agents: [agent()] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(livePainters()[0].working).toBe(false);
   });
 
@@ -891,8 +959,7 @@ describe("the painter behind a bubble", () => {
     expect(countOn(bubbles()[0]).hidden).toBe(true);
 
     payload = branchRow({ agents: [agent({ unread_count: 2 })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(painter.dimmed).toBe(true);
     expect(painter.ink).toBeTruthy();
     expect(painter.ink).not.toBe(resting);
@@ -900,8 +967,7 @@ describe("the painter behind a bubble", () => {
     expect(countOn(bubbles()[0]).textContent).toBe("2");
 
     payload = branchRow({ agents: [agent()] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(painter.dimmed).toBe(false);
     expect(painter.ink).toBe(resting);
     expect(countOn(bubbles()[0]).hidden).toBe(true);
@@ -915,8 +981,7 @@ describe("the painter behind a bubble", () => {
     const painter = livePainters()[0];
     payload = branchRow({ agents: [agent({ working: true, unread_count: 1 })] });
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(livePainters()).toEqual([painter]);
   });
@@ -927,8 +992,7 @@ describe("the painter behind a bubble", () => {
     const [, second] = livePainters();
 
     payload = branchRow({ agents: [agent()] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(second.destroyed).toBe(true);
     expect(livePainters()).toHaveLength(1);
@@ -995,8 +1059,7 @@ describe("taking an agent back off the branch", () => {
     // An answer that loses the agents has to say it twice — a poll hiccup must
     // not close the conversation under a reader. A real remove-all says it
     // every tick.
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-1" });
     // A working branch, not a broken one: the strip drops to its ghost and the
@@ -1034,8 +1097,7 @@ describe("taking an agent back off the branch", () => {
     expect(standing.title).toBe("Remove this Claude Code agent from this branch");
 
     payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(removeButton()).toBe(standing);
     expect(standing.title).toBe('Remove "Unify prompt delivery" from this branch');
@@ -1154,13 +1216,12 @@ describe("taking an agent back off the branch", () => {
 
   it("takes the agent off the moment the answer is yes, before the daemon replies", async () => {
     payload = twoAgents();
-    await mount();
-    payload = twoAgents({
-      run: {
-        run_id: "run-3",
-        thread: { items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "words from the second agent" } }], sessions: [] },
-      },
+    // Only the second agent has said anything, so dropping to the first is a
+    // different conversation and an empty one.
+    await writeRailThread("run-3", "ag-2", {
+      items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "words from the second agent" } }],
     });
+    await mount();
     bubbles()[1].click();
     await flush();
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
@@ -1195,19 +1256,18 @@ describe("taking an agent back off the branch", () => {
     expect(notifyError).not.toHaveBeenCalled();
   });
 
-  it("does not resurrect the agent when a read lands mid-flight still listing it", async () => {
+  it("does not resurrect the agent when a row lands mid-flight still listing it", async () => {
     await openSecondAgent();
     holdRemove();
     removeButton().click();
     await flush();
     confirmModal().querySelector("[data-confirm-ok]").click();
     await flush();
-    const readsBefore = callsTo("branch.get").length;
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    // The board has not caught up with a removal the daemon has not answered
+    // for yet; the reader is not shown the bubble they just took off.
+    await pushRow(twoAgents());
 
-    expect(callsTo("branch.get").length).toBeGreaterThan(readsBefore);
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -1316,8 +1376,7 @@ describe("the conversation panel", () => {
     expect(document.activeElement).toBe(standingPin);
 
     payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(panel().querySelector(".rail-head")).toBe(standingHead);
     expect(panel().querySelector(".pinbtn")).toBe(standingPin);
@@ -1413,8 +1472,7 @@ describe("the conversation panel", () => {
     expect(bubbles()[0].title).toContain("starting…");
 
     payload = branchRow({ agents: [agent({ state: "live" })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
   });
@@ -1434,8 +1492,7 @@ describe("the conversation panel", () => {
     payload = branchRow({
       agents: [agent({ state: "idle", start_error: "could not reach the agent: no such worktree" })],
     });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
     expect(bubbles()[0].title).toContain("could not reach the agent");
@@ -1539,8 +1596,7 @@ describe("the conversation panel", () => {
     payload = branchRow({
       agents: [agent({ state: "exited", start_error: "no session to open: this entity's session is over" })],
     });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
     expect(bubbles()[0].title).toContain("no session to open");
@@ -1658,8 +1714,7 @@ describe("the conversation panel", () => {
     expect(panel().querySelector("#railinput")).toBe(null);
 
     payload = branchRow({ agents: [agent({ has_terminal: false })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(panel().querySelector(".rail-tui")).toBe(null);
     expect(panel().querySelector("#railinput")).toBeTruthy();
@@ -1744,40 +1799,25 @@ describe("the conversation panel", () => {
   // pushing change events, that poll has stood down to a 60s safety read, so the
   // wrong words sat there for a minute.
   describe("switching between two agents", () => {
-    const twoAgents = () => {
-      const said = (who) => ({
-        items: [{ type: "message", data: { role: "agent", body: `words from ${who}`, seen_at: null } }],
-        sessions: [],
-      });
-      bridge.call = vi.fn(async (method, params) => {
-        calls.push({ method, params });
-        if (method === "branch.get") {
-          return branchRow({
-            agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
-            run: { run_id: "run-3", thread: said(params.agent_id || "ag-1") },
-          });
-        }
-        return {};
-      });
-    };
-
-    it("reads the newly opened agent's conversation at once, not on the next poll", async () => {
-      twoAgents();
-      await mount();
-      const before = callsTo("branch.get").length;
-
-      bubbles()[1].click();
-      await flush();
-
-      const reads = callsTo("branch.get");
-      expect(reads.length).toBeGreaterThan(before);
-      expect(reads.at(-1).params.agent_id).toBe("ag-2");
+    const said = (who) => ({
+      items: [{ type: "message", data: { sequence: 1, role: "agent", body: `words from ${who}`, seen_at: null } }],
+      sessions: [],
     });
 
-    it("shows the conversation of the agent it switched to", async () => {
-      twoAgents();
+    /** Two conversations on one work item, each in its own record — which is
+     *  how they are stored, and why pressing a bubble needs nothing off the
+     *  wire to show what was said in it. */
+    const twoAgents = async () => {
+      payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+      await writeRailThread("run-3", "ag-1", said("ag-1"));
+      await writeRailThread("run-3", "ag-2", said("ag-2"));
+    };
+
+    it("shows the conversation of the agent it switched to, off the disk, asking nothing", async () => {
+      await twoAgents();
       await mount();
       expect(panel().textContent).toContain("words from ag-1");
+      const asked = calls.length;
 
       bubbles()[1].click();
       await flush();
@@ -1785,15 +1825,16 @@ describe("the conversation panel", () => {
       expect(headWho(panel())).toBe("Polish the rail");
       expect(panel().textContent).toContain("words from ag-2");
       expect(panel().textContent).not.toContain("words from ag-1");
+      expect(calls.length).toBe(asked);
     });
 
-    it("never shows one agent's words under another's name while the read is in flight", async () => {
-      twoAgents();
+    it("never shows one agent's words under another's name while the record is being opened", async () => {
+      await twoAgents();
       await mount();
       expect(panel().textContent).toContain("words from ag-1");
 
-      // The press repaints before its read can answer. Whatever the panel draws
-      // in that gap, it must not be the conversation of the agent just left.
+      // The press repaints before the record can be read. Whatever the panel
+      // draws in that gap, it must not be the conversation of the agent left.
       bubbles()[1].click();
       expect(panel().textContent).not.toContain("words from ag-1");
 
@@ -1825,20 +1866,16 @@ describe("reading back past the top of a paged conversation", () => {
   });
   const railBody = () => railHost().querySelector("#rail-body");
 
+  // What the sync layer left on disk: a window over the newest items, saying
+  // whether the conversation reaches back further than it does.
   const pagedConversation = (hasMore, moreAboveThatPage = true, agents = [agent()]) => {
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
-      if (method === "branch.get") {
-        // A cursored poll is a forward delta and says nothing about the far
-        // end of the conversation — only a paged answer does.
-        const thread = params.thread_after_sequence
-          ? { sessions: [], items: [], thread_total: 99, thread_last_sequence: 99 }
-          : firstPage(hasMore);
-        return branchRow({ agents, run: { run_id: "run-3", thread } });
-      }
+      if (method === "models.list") return catalog;
       if (method === "thread.page") return pageAbove(moreAboveThatPage);
       return {};
     });
+    payload = branchRow({ agents, run: { run_id: "run-3", thread: firstPage(hasMore) } });
   };
 
   it("asks the daemon for the page above the window when the reader reaches the top", async () => {
@@ -1969,19 +2006,10 @@ describe("the count on a folded run of activity", () => {
   });
 
   const conversationOf = (thread) => {
+    payload = branchRow({ run: { run_id: "run-3", thread } });
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
-      if (method === "branch.get") {
-        return branchRow({
-          run: {
-            run_id: "run-3",
-            thread: params.thread_after_sequence
-              ? { sessions: [], items: [], thread_total: 1530, thread_last_sequence: 1530 }
-              : thread,
-          },
-        });
-      }
       if (method === "thread.page") {
         return {
           items: [toolCall(400, "Read bridge/src/thread.rs")],
@@ -2182,8 +2210,7 @@ describe("the pinned status line above the composer", () => {
       ...payload,
       agents: [agent({ ...payload.agents[0], working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 } })],
     });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(railStatus().textContent).toContain("Working 0:05");
     expect(railStatus().textContent).not.toContain("Run started");
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
@@ -2330,8 +2357,7 @@ describe("the chat tab of a branch with no agent", () => {
 
     // The branch has the agent the send made, and the panel is open on it.
     payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2 })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(headWho(panel())).toBe("Polish the rail");
   });
 
@@ -2490,8 +2516,7 @@ describe("the chat tab of a branch with no agent", () => {
     await mount();
     const before = cards();
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(cards().every((entry, index) => entry === before[index])).toBe(true);
   });
@@ -2543,8 +2568,7 @@ describe("the composer's model menu", () => {
     await flush();
 
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "high" })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(modelMenuButton().textContent).toContain("Claude Opus 5");
     expect(reasoningMenuButton().textContent).toContain("high");
@@ -2796,8 +2820,7 @@ describe("interrupting the turn", () => {
     expect(send().dataset.action).toBe("send");
 
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
@@ -2805,8 +2828,7 @@ describe("interrupting the turn", () => {
 
     // …and back to the plain button when the turn it could have stopped ends.
     payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
@@ -2821,19 +2843,19 @@ describe("the conversation's local cache", () => {
     data: { sequence, role: "user", body, created_at: "2026-08-30T12:00:00Z" },
   });
 
-  it("seeds the saved window, so opening the chat asks for a delta, history in hand", async () => {
+  it("opens the saved window, and asks the bridge for nothing at all", async () => {
     await writeCached(
       { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
       { items: [threadItem(1, "what was said before")], olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: feedItems, projects: [] };
     await mount();
-    await flush(); // the auto-selected agent's seed lands before the next poll
-    vi.advanceTimersByTime(1600);
-    await flush();
-    const delta = callsTo("branch.get").find((call) => call.params.agent_id === "ag-1");
-    expect(delta.params.thread_after_sequence).toBe(1);
-    expect(delta.params.thread_limit).toBeUndefined();
+    await flush(); // the auto-selected agent's record is opened
+
+    expect(railHost().querySelector("#rail-body").textContent).toContain("what was said before");
+    // The conversation is on the disk; the wire is only ever asked for the
+    // harnesses this machine offers.
+    expect(calls.map((call) => call.method)).toEqual(["models.list"]);
   });
 
   // The count on a folded run comes off the window, so the window on disk
@@ -2861,7 +2883,10 @@ describe("the conversation's local cache", () => {
     expect(railHost().querySelector(".thread-activity-count").textContent).toBe("1000");
   });
 
-  it("writes the conversation's window through for the next visit", async () => {
+  // The panel writes to the record only for what the reader does: a message
+  // they send stands on it until the wire carries it back. Everything else in
+  // there is the sync layer's.
+  it("writes what the reader sends into the window, and nothing else", async () => {
     feedSnapshot = { items: feedItems, projects: [] };
     payload = branchRow({
       run: {
@@ -2870,12 +2895,13 @@ describe("the conversation's local cache", () => {
       },
     });
     await mount();
-    bubbles()[0].click();
+    panel().querySelector("#railinput").value = "and mine";
+    panel().querySelector("#railsend").click();
     await flush();
+
     const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
-    expect(record.value.items).toHaveLength(1);
-    expect(record.value.items[0].data.body).toBe("fresh words");
-    expect(record.value.deliveredSequence).toBe(2);
+    expect(record.value.items.map((entry) => entry.data.body)).toEqual(["fresh words", "and mine"]);
+    expect(record.value.items[1].data.sequence).toBe(7); // the sequence thread.post answered with
   });
 });
 
@@ -2889,17 +2915,17 @@ describe("revisiting a conversation", () => {
     sessions: [],
   });
 
-  it("stands the strip and the saved conversation up before the first read answers", async () => {
+  it("stands the strip and the saved conversation up with the machine saying nothing", async () => {
     await writeCached(
       { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
       { items: historyThread().items, olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: [{ ...feedItems[0], agents: [agent()] }], projects: [] };
+    // Nothing this rail needs is on the wire: every read it makes is answered
+    // by a machine that never replies.
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
-      if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return new Promise(() => {});
-      return {};
+      return new Promise(() => {});
     });
     await mount();
     await flush();
@@ -2908,33 +2934,21 @@ describe("revisiting a conversation", () => {
   });
 
   // The deployed bug: the rail remembers which agent was open across remounts,
-  // but the cache's owner marker started blank — so the first threadFor of a
-  // revisit wiped the window the seed had just opened, after its delta cursor
-  // was already sent. The empty delta painted "No conversation yet" until the
-  // 60s safety poll.
-  it("paints the saved history at once, and an empty delta does not blank it", async () => {
+  // and the revisit blanked the conversation the disk was already holding
+  // until a read came back. There is no read to wait for now, and a row
+  // arriving that says nothing about the conversation must not take it away.
+  it("paints the saved history at once, and a row that says nothing does not blank it", async () => {
     feedSnapshot = { items: feedItems, projects: [] };
     payload = branchRow({ run: { run_id: "run-3", thread: historyThread() } });
     await mount();
-    await flush(); // the first visit auto-selects ag-1 and persists its window
+    await flush();
     rail.dispose();
     rail = null;
 
-    bridge.call = vi.fn(async (method, params) => {
-      calls.push({ method, params });
-      if (method === "models.list") return CATALOG;
-      if (method === "branch.get") {
-        // The revisit's delta cursor: nothing new since the saved window.
-        if (params.thread_after_sequence != null)
-          return branchRow({ run: { run_id: "run-3", thread: { items: [], thread_total: 1, thread_last_sequence: 1, sessions: [] } } });
-        return branchRow({ run: { run_id: "run-3", thread: historyThread() } });
-      }
-      return {};
-    });
     await mount();
     await flush();
-    const delta = callsTo("branch.get").find((call) => call.params.thread_after_sequence != null);
-    expect(delta).toBeTruthy();
+    await pushRow(branchRow({ agents: [agent({ unread_count: 1 })] }));
+
     const body = railHost().querySelector("#rail-body");
     expect(body.textContent).toContain("the history");
     expect(body.textContent).not.toContain("No conversation yet");
@@ -3034,13 +3048,13 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return new Promise(() => {});
       return {};
     });
   };
 
   beforeEach(() => {
     feedSnapshot = { items: feedItems, projects: [] };
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
   });
 
   it("paints the saved pills before the first read answers", async () => {
@@ -3136,86 +3150,38 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     expect(pillKinds()).toEqual([]);
   });
 
-  it("drops a mounted cached observation when a replacement generation answers", async () => {
+  // A snapshot is the row's to carry while the session that observed it is
+  // alive, and the record's once it is not. Which of the two the panel paints
+  // is decided by the generation: a restarted process inherits nothing.
+  it("drops a mounted cached observation when a row arrives on another generation", async () => {
     await saveSurfaces("ag-1", {
       checklist: [{ id: "t-1", subject: "old process step", state: "in_progress" }],
       observations: { checklist: { support: "supported", freshness: "current", coverage: "complete" } },
     });
-    let answer;
-    bridge.call = vi.fn(async (method) => {
-      if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return new Promise((resolve) => { answer = resolve; });
-      return {};
-    });
+    answerNothing();
     await mount();
     expect(pillKinds()).toEqual(["checklist"]);
     openTasks();
     expect(railHost().querySelector(".surface-checklist").textContent).toContain("old process step");
 
-    answer(branchRow({
+    await pushRow(branchRow({
       agents: [agent({ surface_session_generation: "surface-session-2", surfaces: null })],
     }));
-    await flush();
 
     expect(railHost().querySelector(".agent-observation-host").hidden).toBe(true);
     expect(pillKinds()).toEqual([]);
     expect(railHost().textContent).not.toContain("old process step");
   });
 
-  it("replaces the seeded pills with the first live payload", async () => {
+  it("replaces the seeded pills with what the row's agent is observing now", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test", "cargo clippy"));
-    let answer = null;
-    bridge.call = vi.fn(async (method, params) => {
-      calls.push({ method, params });
-      if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return new Promise((resolve) => { answer = resolve; });
-      return {};
-    });
+    answerNothing();
     await mount();
     expect(pillCount("shells")).toBe("2");
 
-    answer(branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] }));
-    await flush();
+    await pushRow(branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] }));
+
     expect(pillCount("shells")).toBe("1");
-  });
-
-  it("writes the snapshot a payload moved, and rewrites nothing while it holds still", async () => {
-    payload = branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] });
-    await mount();
-    expect(await savedDescription("ag-1")).toBe("cargo test");
-
-    await saveSurfaces("ag-1", shellsRunning("left by another hand"));
-    vi.advanceTimersByTime(1600);
-    await flush();
-    expect(await savedDescription("ag-1")).toBe("left by another hand");
-
-    payload = branchRow({ agents: [agent({ surfaces: shellsRunning("cargo clippy") })] });
-    vi.advanceTimersByTime(1600);
-    await flush();
-    expect(await savedDescription("ag-1")).toBe("cargo clippy");
-  });
-
-  it("clears the scoped record for a payload carrying no surfaces at all", async () => {
-    await saveSurfaces("ag-1", shellsRunning("from the last visit"));
-    payload = branchRow({ agents: [agent()] });
-    await mount();
-    expect((await savedSurfaces("ag-1")).value).toEqual({ surfaces: null, generation });
-  });
-
-  it("addresses the conversation and its surfaces alike, the kind apart", async () => {
-    payload = branchRow({
-      agents: [agent({ surfaces: shellsRunning("cargo test") })],
-      run: {
-        run_id: "run-3",
-        thread: {
-          items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "hello", created_at: "2026-08-30T12:00:00Z" } }],
-          has_more: false, thread_total: 1, thread_last_sequence: 1, sessions: [],
-        },
-      },
-    });
-    await mount();
-    expect(await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).toBeTruthy();
-    expect(await savedSurfaces("ag-1")).toBeTruthy();
   });
 
   it("leaves no seed landing after the rail is gone", async () => {
@@ -3249,12 +3215,10 @@ describe("task completion notifications", () => {
     expect(document.querySelector(".task-completion-toast")).toBe(null);
 
     payload = branchRow({ agents: [checklistAgent("completed", 2)] });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(document.querySelector(".task-completion-toast")?.textContent).toContain("Ship the release");
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
     expect(document.querySelectorAll(".task-completion-toast")).toHaveLength(1);
     rail.dispose();
     rail = null;
@@ -3265,34 +3229,35 @@ describe("task completion notifications", () => {
 // The bridge behind these is the machine's own, handed over mid-test: a
 // workspace whose checkout this bridge holds no run for answers differently,
 // it is not another machine.
-describe("a workspace conversation on a metadata-only bridge", () => {
-  it("recovers the exact adopted run and posts through its agent conversation", async () => {
-    const run = {
-      run_id: "run-3",
-      project_id: "p1",
-      branch: "build/login",
-      agents: [agent({ id: "ag-workspace", conversation_id: "conversation-workspace", state: "live" })],
-      thread: { items: [], sessions: [] },
-    };
+describe("a workspace's conversation", () => {
+  // A workspace is not addressed by its own id: the conversation it holds is
+  // its entity, and the two lists are what say which. The rail finds its row
+  // the way the sync layer finds the workspace to watch.
+  it("finds the row the workspace's conversation is on, and posts through it", async () => {
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
-      if (method === "workspace.get") return { id: "run-3", project_id: "p1", directories: [{ branch: "build/login" }] };
-      if (method === "run.get") return run;
       if (method === "thread.post") return {
         entity_id: "run-3", agent_id: "ag-workspace", conversation_id: "conversation-workspace", posted_sequence: 7,
       };
       return {};
     });
+    payload = branchRow({
+      agents: [agent({ id: "ag-workspace", conversation_id: "conversation-workspace", state: "live" })],
+    });
+    await writeRailBoard({
+      items: [payload],
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-1", project_id: "p1", name: "login", status: "ready", entity_id: "run-3" }],
+    });
 
-    await mount({ kind: "workspace", projectId: "p1", workspaceId: "run-3", sourceId: "root" });
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "root" });
     const input = railHost().querySelector("#railinput");
     expect(input).not.toBeNull();
     input.value = "fix the deployed workspace";
     railHost().querySelector("#railsend").click();
     await flush();
 
-    expect(callsTo("run.get")[0].params).toMatchObject({ run_id: "run-3" });
     expect(callsTo("thread.post")[0].params).toMatchObject({
       entity_id: "run-3",
       agent_id: "ag-workspace",
@@ -3525,29 +3490,26 @@ describe("creating an agent, before the daemon has answered for it", () => {
     bubble.focus();
     payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2, state: "idle" })] });
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(bubbles()[0]).toBe(bubble);
     expect(painter.destroyed).toBe(false);
     expect(document.activeElement).toBe(bubble);
   });
 
-  it("leaves the optimistic agent standing when a read lands mid-flight", async () => {
+  it("leaves the optimistic agent standing when a row lands mid-flight", async () => {
     payload = agentless();
     await mount();
     const release = holdAgentAdd();
     await press("start here");
     const bubble = bubbles()[0];
-    const reads = callsTo("branch.get").length;
 
-    vi.advanceTimersByTime(3200);
-    await flush();
+    // The board has not heard of the agent this tab is creating; the bubble
+    // the reader is typing into is not taken off them for that.
+    await pushRow(agentless());
 
     expect(bubbles()[0]).toBe(bubble);
     expect(bubbles()).toHaveLength(2);
-    expect(callsTo("branch.get").length).toBeGreaterThan(reads);
-    expect(callsTo("branch.get").every((call) => call.params.agent_id === undefined)).toBe(true);
 
     release();
     await flush();
@@ -3658,8 +3620,7 @@ describe("sending to an agent that is already there", () => {
     const release = holdThreadPost();
     await press("look at the login flow");
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(copiesOf("look at the login flow")).toBe(1);
 
@@ -3683,8 +3644,7 @@ describe("sending to an agent that is already there", () => {
         },
       },
     });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(copiesOf("look at the login flow")).toBe(1);
   });
@@ -3870,8 +3830,7 @@ describe("the one status row", () => {
 
     payload = branchRow({ agents: [agent({ surfaces: {} })] });
     payload.agents[0].working_time = { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 };
-    vi.advanceTimersByTime(2000);
-    await flush();
+    await pushRow();
     await motionSettled();
 
     expect(railStatusPills().querySelector(".surface-pill")).toBe(null);
@@ -3896,8 +3855,7 @@ describe("the one status row", () => {
 
       started.length = 0;
       payload = branchRow({ agents: [agent({ working_time: null })] });
-      vi.advanceTimersByTime(1600);
-      await flush();
+      await pushRow();
       await pushFeed({ items: [], projects: [] });
       await settleMotion();
 
@@ -4068,13 +4026,7 @@ describe("a run of activity in the rail", () => {
     answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
     await mount();
 
-    payload = branchRow({
-      run: {
-        run_id: "run-3",
-        thread: { sessions: [], items: [toolCall(52, "Read q.js")], thread_total: 4, thread_last_sequence: 52 },
-      },
-    });
-    vi.advanceTimersByTime(1600);
+    await pushRailThreadItems("run-3", "ag-1", [toolCall(52, "Read q.js")]);
     await flush();
 
     runHead().click();
@@ -4087,11 +4039,10 @@ describe("a run of activity in the rail", () => {
     expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50", "51", "52"]);
   });
 
-  // A window that breaks — an item deleted, a delta dropped, the daemon
-  // restarted — is let go for a refetch, and the very tick that let it go still
-  // paints the rows and the digests it was drawn from. So the side that decides
-  // what to fetch has to read the digests the paint read: reading the window
-  // instead leaves the run the reader presses in that frame asking for nothing.
+  // What to fetch is decided over the digests the TIMELINE was painted from,
+  // not over whatever the window holds at the moment of the press: the two part
+  // company for a frame whenever the record moves under an open panel, and
+  // reading the window instead leaves that press asking for nothing.
   it("asks over the digests the timeline was painted from, not the window's", async () => {
     payload = conversation(
       [said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js"), said(60, "Done.")],
@@ -4100,13 +4051,9 @@ describe("a run of activity in the rail", () => {
     answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
     await mount();
 
-    // One item shorter than the cache was told the conversation is: a deletion,
-    // which is the one change no arrival ever unsays.
-    payload = branchRow({
-      run: { run_id: "run-3", thread: { sessions: [], items: [], thread_total: 3, thread_last_sequence: 60 } },
-    });
-    vi.advanceTimersByTime(1600);
-    await flush();
+    // A row arrives saying nothing about the conversation; the digests the
+    // timeline was drawn with are still what the press is answered over.
+    await pushRow(branchRow({ agents: [agent({ unread_count: 1 })] }));
 
     runHead().click();
     await flush();
@@ -4207,8 +4154,7 @@ describe("a chat paint with nothing to say", () => {
     await mount();
     markTheFirstRow();
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(markSurvived()).toBe(true);
   });
@@ -4219,8 +4165,7 @@ describe("a chat paint with nothing to say", () => {
     markTheFirstRow();
 
     payload = conversationOf([said(1, "the first thing said"), said(2, "and the next")]);
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow();
 
     expect(markSurvived()).toBe(false);
     expect(railHost().querySelector(".thread-items").textContent).toContain("and the next");
@@ -4277,12 +4222,55 @@ describe("an account with more than one device", () => {
   });
 });
 
+// The two bodies a conversation points at rather than carries: the bytes of an
+// attachment, and the contents of a diff revision. Neither is in the cache —
+// they are immutable and they are big — so they are fetched when the reader
+// asks and held in memory for the session.
+describe("what the conversation points at", () => {
+  const revisionMessage = {
+    id: "m-1",
+    type: "message",
+    data: {
+      sequence: 1,
+      role: "user",
+      body: "looks right",
+      created_at: "2026-08-30T12:00:00Z",
+      resolved_by_revision: "revision-2",
+    },
+  };
+
+  it("reads a revision once, however often the reader opens it", async () => {
+    payload = branchRow({ run: { run_id: "run-3", thread: { items: [revisionMessage], sessions: [] } } });
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "thread.revision") return { revision_id: "revision-2", contents: "+renamed" };
+      return {};
+    });
+    await mount();
+
+    const open = async () => {
+      railHost().querySelector(".thread-revision-link").click();
+      await flush();
+    };
+    await open();
+    expect(railHost().querySelector(".thread-revision-view").textContent).toContain("+renamed");
+
+    railHost().querySelector(".thread-revision-view button").click();
+    await open();
+
+    expect(railHost().querySelector(".thread-revision-view").textContent).toContain("+renamed");
+    expect(callsTo("thread.revision")).toHaveLength(1);
+  });
+});
+
 // A reference an agent posts is a path in the checkout it is working in, and
 // the rail is the only thing that knows which checkout that is. So the chip
 // under the message is a real link: it carries the machine, the workspace, the
 // directory the path is mounted under, and the line it points at.
 describe("a file reference in a conversation", () => {
   const workspaceRow = (links) => ({
+    kind: "branch",
     entity_id: "run-3",
     id: "ws-1",
     project_id: "p1",
@@ -4298,26 +4286,30 @@ describe("a file reference in a conversation", () => {
     },
   });
 
-  const answerWith = (row) => {
-    bridge.call = vi.fn(async (method, params) => {
-      calls.push({ method, params });
-      if (method === "models.list") return CATALOG;
-      if (method === "workspace.get") return row;
-      if (method === "branch.get") return row;
-      return {};
+  /** The workspace as the disk holds it: its row, and the list that says the
+   *  route's workspace id is the row's conversation. */
+  const workspaceOnDisk = async (row) => {
+    payload = row;
+    await writeRailBoard({
+      items: [row],
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{
+        id: "ws-1", project_id: "p1", name: "login", status: "ready", entity_id: "run-3",
+        directories: row.directories,
+      }],
     });
   };
 
   const chipHref = () => railHost().querySelector("a.thread-reference")?.getAttribute("href");
 
   it("links a path into the workspace directory it is mounted under", async () => {
-    answerWith(workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }]));
+    await workspaceOnDisk(workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }]));
     await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
     expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files?path=logo.svg&line=4");
   });
 
   it("links a path of the open directory at the line it starts on", async () => {
-    answerWith(workspaceRow([{ kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 }]));
+    await workspaceOnDisk(workspaceRow([{ kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 }]));
     await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
     expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/repo/files?path=src%2Fparser.js&line=8");
   });
@@ -4358,9 +4350,6 @@ describe("a new agent on a project's rail", () => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
       if (method === "settings.get") return { default_harness: "claude_adk", ...settings };
-      if (method === "run.get") {
-        return { run_id: "run-project", project_id: "p1", agents: [], thread: { items: [], sessions: [] } };
-      }
       if (method === "agent.add") {
         return { entity_id: "run-project", agent: agent({ id: "ag-project", ordinal: 1, state: "idle" }) };
       }
@@ -4368,6 +4357,9 @@ describe("a new agent on a project's rail", () => {
       if (method === "agent.start") return { agent_id: "ag-project" };
       return {};
     });
+    // The project's conversation is a row on this machine like any other: the
+    // page mints the owner, the sync layer writes the row, the rail reads it.
+    payload = { entity_id: "run-project", project_id: "p1", agents: [] };
     await mount({ kind: "project", projectId: "p1", entityId: "run-project" });
   };
 

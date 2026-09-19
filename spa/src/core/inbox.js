@@ -597,11 +597,19 @@ export function activeEntryKey(route, entries) {
  * with it, or when the row it names is on another machine.
  */
 export function routedEntityId(route, view = {}) {
+  return routedEntry(route, view)?.entityId || null;
+}
+
+/** The whole entry the route is standing on — what it is called as well as
+ *  what it is addressed by. A workspace's name lives here and nowhere else in
+ *  the cache: its row is the conversation's, and the conversation is not what
+ *  the reader named. */
+export function routedEntry(route, view = {}) {
   const standsOn = route && STANDS_ON[route.name];
   if (!standsOn) return null;
   const items = view.items || [];
   const rows = [...items.filter(isListed).map(toEntry), ...workspaceEntries(view.workspaces, view.projects, items)];
-  return rows.find(standsOn(route))?.entityId || null;
+  return rows.find(standsOn(route)) || null;
 }
 
 /** The row's action cluster: one quiet ⋯, and behind it the row's menu — Done

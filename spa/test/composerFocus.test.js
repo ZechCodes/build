@@ -11,6 +11,12 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+// The rail paints from the cache: a database before the modules are imported,
+// and the work item written into it before a rail goes up.
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
@@ -37,6 +43,8 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: 
 const { App } = await import("../src/app.js");
 const { threadHtml, writeThreadKeepingComposer } = await import("../src/core/thread.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { wipeCache } = await import("../src/core/localCache.js");
+const { writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const RAIL_COMPOSER = {
   inputId: "railinput",
@@ -155,12 +163,14 @@ describe("writing a repainted thread", () => {
   });
 });
 
-describe("the rail's poll", () => {
+describe("a repaint under the box", () => {
   let rail = null;
   let payload = null;
 
+  // The rail settles over the disk — its row, then the conversation in it —
+  // and every read of a record is a turn.
   const flush = async () => {
-    for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
+    for (let i = 0; i < 12; i++) await new Promise((done) => setTimeout(done, 0));
   };
 
   const branchRow = (items) => ({
@@ -178,8 +188,10 @@ describe("the rail's poll", () => {
     localStorage.clear();
     resetAgentRailMemory();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    await wipeCache();
     payload = branchRow([]);
-    bridge.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
+    bridge.call = vi.fn(async () => ({}));
+    await writeRailWorkItem(payload);
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
       deviceId: "dev-1",
@@ -204,7 +216,7 @@ describe("the rail's poll", () => {
     input.setSelectionRange(7, 7);
 
     payload = branchRow([message("the agent replied")]);
-    vi.advanceTimersByTime(2000);
+    await writeRailWorkItem(payload);
     await flush();
 
     expect(document.getElementById("railinput")).toBe(input);
@@ -221,7 +233,7 @@ describe("the rail's poll", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
 
     payload = branchRow([message("the agent replied")]);
-    vi.advanceTimersByTime(2000);
+    await writeRailWorkItem(payload);
     await flush();
 
     document.getElementById("railsend").click();
@@ -245,7 +257,7 @@ describe("a work item that keeps losing its agent", () => {
   let payload = null;
 
   const flush = async () => {
-    for (let i = 0; i < 8; i++) await new Promise((done) => setTimeout(done, 0));
+    for (let i = 0; i < 14; i++) await new Promise((done) => setTimeout(done, 0));
   };
 
   const withAgent = () => ({
@@ -261,13 +273,13 @@ describe("a work item that keeps losing its agent", () => {
     run: { run_id: "run-3", thread: { items: [], sessions: [] } },
   });
 
-  // The same branch, read off the checkout instead: no run, no conversation,
-  // no agents.
+  // The same row with the run's agents gone from it: the harness died and the
+  // board's next word about the branch knows nothing about any conversation.
   const bareCheckout = () => ({
     kind: "branch",
     project_id: "p1",
     branch: "build/login",
-    run_id: null,
+    run_id: "run-3",
     worktree_id: "wt-3",
     agents: [],
     run: null,
@@ -275,7 +287,8 @@ describe("a work item that keeps losing its agent", () => {
 
   const mount = async () => {
     payload = withAgent();
-    bridge.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
+    bridge.call = vi.fn(async () => ({}));
+    await writeRailWorkItem(payload);
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
       deviceId: "dev-1",
@@ -300,10 +313,13 @@ describe("a work item that keeps losing its agent", () => {
     return input;
   };
 
+  /** The row flapping between two shapes — an agent that keeps dying and its
+   *  branch falling back to the bare checkout under it. Each is a write the
+   *  rail hears, which is what a push looks like from here. */
   const flap = async (rowAt, ticks = 6) => {
     for (let tick = 0; tick < ticks; tick += 1) {
       payload = rowAt(tick);
-      vi.advanceTimersByTime(1700);
+      await writeRailWorkItem(payload);
       await flush();
     }
   };
@@ -315,9 +331,10 @@ describe("a work item that keeps losing its agent", () => {
     Object.defineProperty(window, "innerHeight", { value: height, configurable: true });
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     document.body.innerHTML = bodyHtml;
     localStorage.clear();
+    await wipeCache();
     resetAgentRailMemory();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   });
@@ -340,7 +357,7 @@ describe("a work item that keeps losing its agent", () => {
     expect(input.value).toBe("half a thought");
   });
 
-  it("keeps it through the run coming and going with the agent", async () => {
+  it("keeps it, and the conversation's name, through the agents coming and going", async () => {
     await mount();
     const input = typeInto();
 
@@ -349,6 +366,7 @@ describe("a work item that keeps losing its agent", () => {
     expect(document.getElementById("railinput")).toBe(input);
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe("half a thought");
+    expect(headWho()).toBe("Fix login redirect");
   });
 
   // The rail has no media path of its own — the phone lays the panel over the
@@ -369,40 +387,6 @@ describe("a work item that keeps losing its agent", () => {
     expect(document.getElementById("railinput")).toBe(input);
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe("half a thought");
-  });
-
-  // A daemon that knows about agents refuses the agent id the rail names when
-  // the row it resolved this tick has no run behind it — so the rail hears the
-  // hiccup twice over: a refusal, and then the agent-less row itself on the
-  // unscoped ask that follows. Both are the same non-answer.
-  it("keeps the box when the daemon refuses the agent it asked about", async () => {
-    let tick = 0;
-    bridge.call = vi.fn(async (method, params) => {
-      if (method !== "branch.get") return {};
-      // Two ticks off the bare checkout for every one that resolves the run.
-      const bare = tick++ % 3 !== 2;
-      if (!bare) return withAgent();
-      if (params.agent_id) throw new Error(`unknown agent_id: ${params.agent_id}`);
-      return bareCheckout();
-    });
-    rail = mountAgentRail(document.getElementById("agent-rail"), {
-      kind: "branch",
-      deviceId: "dev-1",
-      projectId: "p1",
-      branch: "build/login",
-      call: (method, params) => bridge.call(method, params),
-    });
-    await flush();
-    // The first read lands on a bare tick; the run resolves on the third.
-    await flap(() => null, 3);
-    const input = typeInto();
-
-    await flap(() => null, 12);
-
-    expect(document.getElementById("railinput")).toBe(input);
-    expect(document.activeElement).toBe(input);
-    expect(input.value).toBe("half a thought");
-    expect(headWho()).toBe("Fix login redirect");
   });
 
   // The same tick that rebuilt the panel also rewrote the strip and the head:

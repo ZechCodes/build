@@ -41,6 +41,7 @@ const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agent
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
 const { wipeCache } = await import("../src/core/localCache.js");
+const { writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const CATALOG = {
   default_provider: "claude_adk",
@@ -82,8 +83,10 @@ const branchPayload = () => ({
   run: { run_id: "run-1", thread: { items: [], sessions: [] } },
 });
 
+// The rail settles over the disk: its row, and the conversation in it —
+// every record it opens is a turn.
 const flush = async () => {
-  for (let count = 0; count < 6; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let count = 0; count < 12; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
 const host = () => document.querySelector("#agent-rail");
@@ -111,7 +114,10 @@ const device = () => contextFor(DEVICE_ID);
  *  case hands the rail a new transport mid-run. */
 const bridgeAnswersWith = (answer) => adoptDeviceSession({ deviceId: DEVICE_ID, call: answer });
 
-const mountBranch = () => {
+const mountBranch = async () => {
+  // The work item is read off this machine's disk, so that is where a case
+  // puts it before the rail goes up.
+  await writeRailWorkItem(payload, { deviceId: DEVICE_ID });
   rail = mountAgentRail(host(), {
     kind: "branch",
     deviceId: DEVICE_ID,
@@ -258,7 +264,7 @@ describe("agent rail chat ownership", () => {
     expect(input().value).toBe("");
   });
 
-  it("blocks a remembered conversation until its live detail resolves", async () => {
+  it("holds the remembered conversation shut until the work item is in hand", async () => {
     await mountBranch();
     bubble("agent-b").click();
     await flush();
@@ -267,15 +273,18 @@ describe("agent rail chat ownership", () => {
     rail = null;
     document.body.innerHTML = '<div id="agent-rail"></div>';
 
-    let resolveDetail;
-    const baseCall = call;
-    call = vi.fn(async (method, params = {}) => {
-      if (method !== "branch.get") return baseCall(method, params);
-      calls.push({ method, params });
-      return new Promise((resolve) => (resolveDetail = resolve));
+    // The row is on disk, and reading it is a turn away: in that turn the
+    // panel knows which conversation it is coming back to and nothing about
+    // it, so it says so rather than offering a composer addressed at nobody.
+    rail = mountAgentRail(host(), {
+      kind: "branch",
+      deviceId: DEVICE_ID,
+      projectId: "project-1",
+      branch: "build/isolation",
+      autofocusComposer: true,
+      cacheScope: device().cacheScope,
+      chatRepository: device().chatRepository,
     });
-    bridgeAnswersWith(call);
-    await mountBranch();
 
     expect(input()).toBeNull();
     expect(host().querySelector("#railsend")).toBeNull();
@@ -283,7 +292,6 @@ describe("agent rail chat ownership", () => {
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
     expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(0);
 
-    resolveDetail(payload);
     await flush();
     expect(input().disabled).toBe(false);
     expect(input().value).toBe("agent B draft");
@@ -519,6 +527,7 @@ describe("agent rail chat ownership", () => {
         }),
       },
     };
+    await writeRailWorkItem(payload, { deviceId: DEVICE_ID });
     rail = mountAgentRail(host(), {
       kind: "issue",
       deviceId: DEVICE_ID,

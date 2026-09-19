@@ -1,70 +1,81 @@
-import { describe, expect, it, vi } from "vitest";
-import { createAgentRailContext } from "../src/core/agentRailContext.js";
+// The rail's adapters: how each kind of work item is named, and the one read
+// the rail still makes — the page above a window the reader has scrolled to the
+// top of, written into the record the panel paints from.
+
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+let cache, agentRailContext;
+let createAgentRailContext, widenCachedThread;
+
+const address = { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "agent-2" };
+const item = (sequence) => ({ type: "message", data: { sequence, role: "agent", body: `m-${sequence}` } });
+const digest = (from, through) => ({
+  from_sequence: from,
+  through_sequence: through,
+  tool_calls: 3,
+  rows: 3,
+  last_tool_call: null,
+});
+
+beforeEach(async () => {
+  vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+  cache = await import("../src/core/localCache.js");
+  agentRailContext = await import("../src/core/agentRailContext.js");
+  ({ createAgentRailContext, widenCachedThread } = agentRailContext);
+});
 
 describe("agent rail context adapters", () => {
-  it("addresses branch detail and history without exposing dispatch conditionals", async () => {
-    const call = vi.fn(async () => ({}));
-    const context = createAgentRailContext({ kind: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/chat" });
+  // Nothing here reads a work item any more: its agents and its conversation
+  // are in the cache, and the rail paints them from there.
+  it("offers no read of the work item on any kind", () => {
+    const kinds = [
+      { kind: "branch", projectId: "p1", branch: "build/chat" },
+      { kind: "issue", projectId: "p1", issueId: "issue-1" },
+      { kind: "project", projectId: "p1", entityId: "run-9" },
+      { kind: "workspace", projectId: "p1", workspaceId: "ws-1" },
+    ];
+    for (const context of kinds) expect(createAgentRailContext(context).detail).toBeUndefined();
+  });
 
-    await context.detail(call, { agent_id: "agent-2", after_sequence: 5 });
-    await context.olderPage(call, { entityId: "run-1", agentId: "agent-2", beforeSequence: 4 });
+  it("names a branch by the route its row is found under", () => {
+    const context = createAgentRailContext({ kind: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/chat" });
 
     expect(context.key).toBe("branch:p1:build/chat");
     // The row this rail is about is on one machine: the route it looks for
     // carries the device, the way every other route does.
     expect(context.feedRoute()).toEqual({ name: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/chat" });
-    expect(call).toHaveBeenNthCalledWith(1, "branch.get", {
-      project_id: "p1", branch: "build/chat", agent_id: "agent-2", after_sequence: 5,
-    });
-    expect(call).toHaveBeenNthCalledWith(2, "thread.page", {
-      entity_id: "run-1", agent_id: "agent-2", before_sequence: 4,
-    });
   });
 
-  it("keeps an execution agent out of the issue roster read", async () => {
-    const call = vi.fn(async () => ({}));
-    const context = createAgentRailContext({ kind: "issue", deviceId: "dev-2", projectId: "p1", issueId: "issue-1" });
+  it("names an issue and a workspace the way their routes do", () => {
+    const issue = createAgentRailContext({ kind: "issue", deviceId: "dev-2", projectId: "p1", issueId: "issue-1" });
+    expect(issue.key).toBe("issue:issue-1");
+    expect(issue.feedRoute()).toEqual({ name: "issue", deviceId: "dev-2", projectId: "p1", id: "issue-1" });
 
-    await context.detail(call, { agent_id: "agent-1" });
-
-    expect(context.key).toBe("issue:issue-1");
-    expect(context.feedRoute()).toEqual({ name: "issue", deviceId: "dev-2", projectId: "p1", id: "issue-1" });
-    expect(call).toHaveBeenCalledWith("issue.get", { issue_id: "issue-1" });
-  });
-
-  it("reads workspace chat from workspace.get when the bridge supplies ownership", async () => {
-    const owned = { entity_id: "run-1", agents: [{ id: "agent-1" }] };
-    const call = vi.fn(async () => owned);
-    const context = createAgentRailContext({
+    const workspace = createAgentRailContext({
       kind: "workspace", deviceId: "dev-2", projectId: "p1", workspaceId: "run-1",
     });
-
-    expect(await context.detail(call, { agent_id: "agent-1", after_sequence: 4 })).toBe(owned);
-    expect(context.key).toBe("workspace:run-1");
+    expect(workspace.key).toBe("workspace:run-1");
     // A workspace is named across the account by its machine and its id
     // together: the route this rail looks itself up by carries the machine, the
     // way the branch and issue routes beside it do.
-    expect(context.feedRoute()).toEqual({
+    expect(workspace.feedRoute()).toEqual({
       name: "workspace", deviceId: "dev-2", projectId: "p1", workspaceId: "run-1",
-    });
-    expect(call).toHaveBeenCalledWith("workspace.get", {
-      workspace_id: "run-1", agent_id: "agent-1", after_sequence: 4,
     });
   });
 
   // A project is a conversation owner the way a workspace is: the page mints
-  // the owner before it mounts the rail, and the rail reads that owner's run.
-  it("reads a project's rail off the owner the page was handed", async () => {
-    const owner = { run_id: "run-9", agents: [{ id: "agent-1" }] };
-    const call = vi.fn(async () => owner);
+  // the owner before it mounts the rail, and the rail reads that owner's row.
+  it("carries the entity a project's page was handed", () => {
     const context = createAgentRailContext({
       kind: "project", deviceId: "dev-2", projectId: "p1", entityId: "run-9",
     });
 
-    expect(await context.detail(call, { agent_id: "agent-1", after_sequence: 3 })).toBe(owner);
+    expect(context.entityId).toBe("run-9");
     expect(context.key).toBe("project:dev-2/p1");
     expect(context.feedRoute()).toEqual({ name: "project", deviceId: "dev-2", projectId: "p1" });
-    expect(call).toHaveBeenCalledWith("run.get", { run_id: "run-9", agent_id: "agent-1", after_sequence: 3 });
   });
 
   it("creates conversation ownership only where there is an owner to mint", async () => {
@@ -82,54 +93,52 @@ describe("agent rail context adapters", () => {
     expect(call).toHaveBeenNthCalledWith(1, "workspace.ensure_conversation", { workspace_id: "workspace-1" });
     expect(call).toHaveBeenNthCalledWith(2, "project.ensure_conversation", { project_id: "p1" });
   });
+});
 
-  it("recovers an adopted run by its exact workspace id on a metadata-only bridge", async () => {
-    const metadata = { id: "run-1", directories: [{ branch: "build/shared" }] };
-    const run = { run_id: "run-1", agents: [{ id: "agent-1" }] };
-    const call = vi.fn(async (method) => method === "workspace.get" ? metadata : run);
-    const context = createAgentRailContext({ kind: "workspace", projectId: "p1", workspaceId: "run-1" });
+describe("the page above the window", () => {
+  const page = { items: [item(1), item(2)], activity_digests: [digest(1, 2)], has_more: false };
 
-    expect(await context.detail(call, { after_sequence: 7 })).toBe(run);
-    expect(call).toHaveBeenNthCalledWith(2, "run.get", { run_id: "run-1", after_sequence: 7 });
+  it("asks for the history before the seek and writes it into the record", async () => {
+    await cache.writeCached(address, {
+      items: [item(3), item(4)],
+      deliveredSequence: 4,
+      olderItemsRemain: true,
+      activityDigests: [digest(3, 4)],
+    });
+    const call = vi.fn(async () => page);
+    const context = createAgentRailContext({ kind: "branch", deviceId: "dev-1", projectId: "p1", branch: "b" });
+
+    const answered = await context.olderPage(call, {
+      entityId: "run-1", agentId: "agent-2", beforeSequence: 3, address,
+    });
+
+    expect(answered).toBe(page);
+    expect(call).toHaveBeenCalledWith("thread.page", {
+      entity_id: "run-1", agent_id: "agent-2", before_sequence: 3,
+    });
+    const record = (await cache.readCached(address)).value;
+    expect(record.items.map((held) => held.data.sequence)).toEqual([1, 2, 3, 4]);
+    // What the page says about the far end is the answer about the floor this
+    // window now has, and it replaces what the last page said.
+    expect(record.olderItemsRemain).toBe(false);
+    expect(record.activityDigests.map((held) => held.from_sequence)).toEqual([1, 3]);
   });
 
-  it("keeps an unowned metadata-only workspace out of another branch conversation", async () => {
-    const metadata = { id: "folder-1", directories: [{ branch: "main" }] };
-    const call = vi.fn(async (method) => {
-      if (method === "run.get") throw new Error("unknown run_id");
-      return metadata;
-    });
-    const context = createAgentRailContext({ kind: "workspace", projectId: "p1", workspaceId: "folder-1" });
+  // A round trip is long enough for the window to be replaced under it — the
+  // reader switched agents, or a fresh window opened on the newest items.
+  // Folding the page in then would seat it under a floor it was never below,
+  // with everything in between missing and nothing to ask for it again.
+  it("drops a page whose window moved while it was in flight", async () => {
+    const held = { items: [item(9)], deliveredSequence: 9, olderItemsRemain: true, activityDigests: [] };
+    await cache.writeCached(address, held);
 
-    expect(await context.detail(call, {})).toBe(metadata);
-    expect(call.mock.calls.map(([method]) => method)).toEqual(["workspace.get", "run.get", "board.list"]);
+    await widenCachedThread(address, page, 3);
+
+    expect((await cache.readCached(address)).value).toEqual(held);
   });
 
-  it("recovers an adopted run whose id differs by matching its exact project and root", async () => {
-    const metadata = { id: "external-1", project_id: "p1", root: "/work/exact" };
-    const run = { run_id: "run-7", worktree_path: "/work/exact", agents: [{ id: "agent-1" }] };
-    const call = vi.fn(async (method, params) => {
-      if (method === "workspace.get") return metadata;
-      if (method === "run.get" && params.run_id === "external-1") throw new Error("unknown run_id");
-      if (method === "board.list") return { items: [
-        { kind: "branch", project_id: "p2", run_id: "wrong-project", worktree_path: "/work/exact" },
-        { kind: "branch", project_id: "p1", run_id: "run-7", worktree_path: "/work/exact" },
-      ] };
-      return run;
-    });
-    const context = createAgentRailContext({ kind: "workspace", projectId: "p1", workspaceId: "external-1" });
-
-    expect(await context.detail(call, { agent_id: "agent-1" })).toBe(run);
-    expect(call).toHaveBeenLastCalledWith("run.get", { run_id: "run-7", agent_id: "agent-1" });
-  });
-
-  it("does not hide a failed compatibility read as an agentless workspace", async () => {
-    const call = vi.fn(async (method) => {
-      if (method === "run.get") throw new Error("connection lost");
-      return { id: "run-1" };
-    });
-    const context = createAgentRailContext({ kind: "workspace", projectId: "p1", workspaceId: "run-1" });
-
-    await expect(context.detail(call, {})).rejects.toThrow("connection lost");
+  it("leaves a record that holds no window at all alone", async () => {
+    await widenCachedThread(address, page, 3);
+    expect(await cache.readCached(address)).toBeUndefined();
   });
 });

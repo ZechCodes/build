@@ -262,6 +262,35 @@ export function writeCached(address, value) {
   });
 }
 
+/** The merges in flight, one queue per record key. */
+const merges = new Map();
+
+/**
+ * Read a record, put something into it, and write it back — one writer at a
+ * time under that address.
+ *
+ * Two writers meet on a record all the time: the sync layer folding in a page
+ * while a view writes the message its reader just sent. Both read, merge and
+ * write, and neither waits for the other — so the one that read first writes
+ * the other's work back out of existence. The merge therefore runs UNDER the
+ * address, handed the record as it stands at that moment rather than one read
+ * earlier. `null` from the merge leaves the record alone.
+ */
+export function mergeCached(address, merge) {
+  const key = recordKey(address);
+  const run = async () => {
+    const next = merge((await readCached(address))?.value);
+    if (next) await writeCached(address, next);
+  };
+  const ran = (merges.get(key) || Promise.resolve()).then(run, run);
+  const settled = ran.catch(() => {});
+  merges.set(key, settled);
+  void settled.then(() => {
+    if (merges.get(key) === settled) merges.delete(key);
+  });
+  return ran;
+}
+
 /** Drop every record one entity holds on one device — a single range delete,
  *  which is why the entity sits second in the key. */
 export function evictEntity(deviceId, entityId) {

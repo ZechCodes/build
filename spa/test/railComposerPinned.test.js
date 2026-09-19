@@ -13,6 +13,12 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+// The rail paints from the cache: give the modules a database before they are
+// imported, and the work item a place to be read from.
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
@@ -39,6 +45,8 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: (...args) => mount
 
 const { App } = await import("../src/app.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { wipeCache } = await import("../src/core/localCache.js");
+const { writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const message = (body) => ({ type: "message", data: { role: "agent", body, sequence: body.length } });
 
@@ -55,8 +63,10 @@ const branchRow = (items = []) => ({
 let payload = branchRow();
 let rail = null;
 
+// The rail settles over the disk: its row, and the conversation in it —
+// every record it opens is a turn.
 const flush = async () => {
-  for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
+  for (let i = 0; i < 12; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 const panel = () => document.getElementById("rail-panel");
@@ -65,6 +75,7 @@ const scroller = () => document.getElementById("rail-body");
 const composerRow = () => document.getElementById("rail-composer");
 
 const mount = async () => {
+  await writeRailWorkItem(payload);
   rail = mountAgentRail(document.getElementById("agent-rail"), {
     kind: "branch",
     deviceId: "dev-1",
@@ -77,14 +88,15 @@ const mount = async () => {
   await flush();
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
+  await wipeCache();
   resetAgentRailMemory();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   mountAgentTab.mockClear();
   payload = branchRow();
-  bridge.call = vi.fn(async (method) => (method === "branch.get" ? payload : {}));
+  bridge.call = vi.fn(async () => ({}));
 });
 
 afterEach(() => {
@@ -122,14 +134,14 @@ describe("the conversation panel's column", () => {
     expect(composerRow().querySelector("#railinput")).toBeTruthy();
   });
 
-  it("keeps the pinned box through a poll that repaints the thread under it", async () => {
+  it("keeps the pinned box through a repaint of the thread under it", async () => {
     await mount();
     const input = document.getElementById("railinput");
     input.focus();
     input.value = "half a thought";
 
     payload = branchRow([message("the agent replied")]);
-    vi.advanceTimersByTime(2000);
+    await writeRailWorkItem(payload);
     await flush();
 
     expect(document.getElementById("railinput")).toBe(input);
@@ -140,14 +152,14 @@ describe("the conversation panel's column", () => {
 
   // A second agent arriving on the branch — added from another device, or by a
   // dispatch — moves the strip, not the box being typed into.
-  it("keeps the pinned box through a poll that brings another agent", async () => {
+  it("keeps the pinned box through a row that brings another agent", async () => {
     await mount();
     const input = document.getElementById("railinput");
     input.value = "half a thought";
 
     payload = branchRow();
     payload.agents = [...payload.agents, { ...payload.agents[0], id: "ag-2", ordinal: 2 }];
-    vi.advanceTimersByTime(2000);
+    await writeRailWorkItem(payload);
     await flush();
 
     expect(document.getElementById("railinput")).toBe(input);

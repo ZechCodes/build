@@ -29,6 +29,7 @@ import { App } from "../app.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
+import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
 import { liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { mergeActivityDigests } from "./activityDigest.js";
@@ -39,8 +40,8 @@ import {
   cachedSubKeys,
   deleteCached,
   evictEntity,
+  mergeCached,
   readCached,
-  readCachedMany,
   writeCached,
 } from "./localCache.js";
 import { evictWorkspaceData, expireWorkspaceData, isWorkspaceDataKind, withinBytes } from "./cacheLifetime.js";
@@ -100,37 +101,6 @@ const addressOf = (context, entityId, kind, sub = "") => ({ deviceId: context.de
 
 const heldValue = async (context, entityId, kind, sub = "") =>
   (await readCached(addressOf(context, entityId, kind, sub)))?.value;
-
-/** The merges in flight, one queue per address. */
-const recordWrites = new Map();
-
-const recordKey = (address) =>
-  [address.deviceId, address.entityId, address.kind, address.sub || ""].join("\u0000");
-
-/**
- * A record two writers meet on, merged one writer at a time.
- *
- * The pass and the pushes both read a record, merge what they are carrying
- * into it and write it back, and neither waits for the other: a pass holding
- * a commit list it read before a push landed would write the push's commits
- * back out of existence. So the merge itself runs under the address, and it
- * is handed the record as it stands at that moment rather than one read
- * earlier. `null` from the merge leaves the record alone.
- */
-function mergeRecord(address, merge) {
-  const key = recordKey(address);
-  const run = async () => {
-    const next = merge((await readCached(address))?.value);
-    if (next) await writeCached(address, next);
-  };
-  const ran = (recordWrites.get(key) || Promise.resolve()).then(run, run);
-  const settled = ran.catch(NOTHING);
-  recordWrites.set(key, settled);
-  void settled.then(() => {
-    if (recordWrites.get(key) === settled) recordWrites.delete(key);
-  });
-  return ran;
-}
 
 /** One read, written through by the caller. A failure is a cold record: the
  *  machine is offline, the checkout moved under the read, or this bridge does
@@ -441,7 +411,7 @@ async function syncLog(context, entityId, scope, priority) {
   const params = held?.newest ? { ...scope, since: held.newest } : { ...scope, limit: LATEST_COMMITS };
   const answer = await ask(context, "git.log", params, priority);
   if (!answer || !context.active()) return;
-  await mergeRecord(addressOf(context, entityId, "log"), (current) => mergedLog(current, answer));
+  await mergeCached(addressOf(context, entityId, "log"), (current) => mergedLog(current, answer));
 }
 
 /**
@@ -582,7 +552,7 @@ async function pullWorkingDiff(context, entityId, row, priority) {
     load: (envelope) => context.call(method, params, envelope),
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
-  await mergeRecord(address, (current) => diffRecord(current, diff, row));
+  await mergeCached(address, (current) => diffRecord(current, diff, row));
 }
 
 /** The diff record after a new body, wherever the body came from. The body
@@ -616,7 +586,7 @@ async function syncThread(context, entityId, agent, priority) {
   const after = Number(held?.deliveredSequence || 0);
   const page = await ask(context, "thread.page", threadPageParams(entityId, agent, after), priority);
   if (!page || !context.active()) return;
-  await mergeRecord(address, (current) => threadWindow(current, page));
+  await mergeCached(address, (current) => threadWindow(current, page));
 }
 
 const threadPageParams = (entityId, agent, after) => ({
@@ -740,31 +710,11 @@ export function routeChanged() {
 
 async function refollowRoute(deviceId) {
   if (!contextFor(deviceId) || !subscriptions.has(deviceId)) return;
-  const view = await routeView(deviceId);
+  // Off the records rather than off the `feed` this pass wrote: the workspace
+  // the reader is standing in may have been made since (core/cachedRows.js).
+  const entityId = await cachedRouteEntityId(deviceId, App.route);
   if (!subscriptions.has(deviceId)) return;
-  followRoutedEntity(deviceId, routedEntityId(App.route, view));
-}
-
-/** The snapshot a route is resolved against: every row this device holds right
- *  now, and the two lists a workspace route is named by.
- *
- *  Off the records rather than off the `feed` the last pass wrote, because a
- *  workspace created since that pass rode in on its own `state` item — the
- *  board pushes deltas, not the whole board — and lives in the cache as a row
- *  and nowhere else. That workspace is the likeliest of all to be the one
- *  being stood on: the reader just made it and walked in. */
-async function routeView(deviceId) {
-  const rowAddresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === "row");
-  const [rows, projects, workspaces] = await Promise.all([
-    readCachedMany(rowAddresses),
-    readCached({ deviceId, entityId: "", kind: "projects" }),
-    readCached({ deviceId, entityId: "", kind: "workspaces" }),
-  ]);
-  return {
-    items: rows.map((record) => record?.value).filter(Boolean),
-    projects: projects?.value || [],
-    workspaces: workspaces?.value || [],
-  };
+  followRoutedEntity(deviceId, entityId);
 }
 
 // ─── Applying a push ─────────────────────────────────────────────────────────
@@ -868,7 +818,7 @@ async function applyThreadTip(context, entityId, tip) {
     await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }, "background");
     return;
   }
-  await mergeRecord(address, (current) => threadWindow(current, { items, thread_total: tip.thread_total }));
+  await mergeCached(address, (current) => threadWindow(current, { items, thread_total: tip.thread_total }));
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things
@@ -878,7 +828,7 @@ async function applyGit(context, entityId, git) {
   const row = await heldValue(context, entityId, "row");
   if (git.status) await writeCached(addressOf(context, entityId, "status"), git.status);
   if (git.log) {
-    await mergeRecord(addressOf(context, entityId, "log"), (current) => windowedLog(current, git.log));
+    await mergeCached(addressOf(context, entityId, "log"), (current) => windowedLog(current, git.log));
   }
   if (git.unpushed) await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
   if (git.diff) await writePushedDiff(context, entityId, git.diff, row);
@@ -887,7 +837,7 @@ async function applyGit(context, entityId, git) {
 
 async function writePushedDiff(context, entityId, diff, row) {
   const address = addressOf(context, entityId, "diff");
-  await mergeRecord(address, (current) => diffRecord(current, diff, row));
+  await mergeCached(address, (current) => diffRecord(current, diff, row));
 }
 
 async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {

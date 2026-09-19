@@ -1,24 +1,58 @@
+// What the rail is the rail OF, one adapter per kind of work item.
+//
+// The rail reads nothing off the wire any more: its agents and its
+// conversation come from the cache, and what is left here is how each kind of
+// work item is NAMED — the key it is remembered under, the route its row is
+// found by, the verb that mints it a conversation — plus the one on-demand
+// read there is, the page above the window a reader has scrolled to the top of.
+
+import { mergeCached } from "./localCache.js";
+import { mergeActivityDigests } from "./activityDigest.js";
 import { deviceKey } from "./deviceKey.js";
-import { workspaceRun } from "./workspaceModel.js";
+import { mergeThreadItems } from "./thread.js";
 
-const unknownRun = (error) => /unknown run_id/i.test(error?.message || String(error));
-const runMatchesWorkspace = (run, workspace) => {
-  if (run.worktree_path && run.worktree_path !== workspace.root) return false;
-  if (run.project_id && run.project_id !== workspace.project_id) return false;
-  return true;
-};
+/**
+ * Widen the conversation's record with the page above it.
+ *
+ * The page is folded into the record rather than into whatever the panel is
+ * holding, because the record is the conversation: the panel is re-drawn from
+ * it, and a widening kept only in the view would be lost to the next write.
+ *
+ * `beforeSequence` is the seek the page was asked for, and it is what makes
+ * the answer safe to fold in: a page carries the items immediately before its
+ * seek, so it abuts this window only while the window's floor is still that
+ * seek. A round trip is long enough for it to stop being — the reader switched
+ * agents, or a fresh window was opened on the newest items. Folding it in then
+ * would seat it under a floor it was never below, with everything in between
+ * missing and nothing that would ever ask for it again.
+ */
+export function widenCachedThread(address, page, beforeSequence) {
+  if (!address || !page) return Promise.resolve();
+  return mergeCached(address, (held) => {
+    const items = held?.items || [];
+    if (!items.length || items[0].data?.sequence !== beforeSequence) return null;
+    return {
+      ...held,
+      items: mergeThreadItems(items, page.items || []),
+      // What the page says about the far end replaces what the last one said:
+      // it is the answer about the floor this window now has.
+      olderItemsRemain: page.has_more === true,
+      activityDigests: mergeActivityDigests(held.activityDigests || [], page),
+    };
+  });
+}
 
-async function legacyWorkspaceDetail(call, workspace, workspaceId, scope) {
-  try {
-    return await call("run.get", { run_id: workspaceId, ...scope });
-  } catch (error) {
-    if (!unknownRun(error)) throw error;
-  }
-  const board = await call("board.list");
-  const owner = workspaceRun(workspace, board.items || []);
-  if (!owner) return workspace;
-  const run = await call("run.get", { run_id: owner.run_id, ...scope });
-  return runMatchesWorkspace(run, workspace) ? run : workspace;
+/** The one read a rail makes: the page above the window, written where the
+ *  panel reads it from. Shared by every kind of work item — a conversation is
+ *  paged the same way whatever holds it. */
+async function olderThreadPage(call, { entityId, agentId, beforeSequence, address }) {
+  const page = await call("thread.page", {
+    entity_id: entityId,
+    ...(agentId ? { agent_id: agentId } : {}),
+    before_sequence: beforeSequence,
+  });
+  await widenCachedThread(address, page, beforeSequence);
+  return page;
 }
 
 class BranchRailContext {
@@ -30,20 +64,12 @@ class BranchRailContext {
     this.key = `branch:${projectId}:${branch}`;
   }
 
-  detail(call, scope) {
-    return call("branch.get", { project_id: this.projectId, branch: this.branch, ...scope });
-  }
-
   ensureConversation() {
     return null;
   }
 
-  olderPage(call, { entityId, agentId, beforeSequence }) {
-    return call("thread.page", {
-      entity_id: entityId,
-      ...(agentId ? { agent_id: agentId } : {}),
-      before_sequence: beforeSequence,
-    });
+  olderPage(call, asked) {
+    return olderThreadPage(call, asked);
   }
 
   feedRoute() {
@@ -60,26 +86,12 @@ class IssueRailContext {
     this.key = `issue:${issueId}`;
   }
 
-  detail(call, scope) {
-    // An issue's selected execution agent belongs to its implementation run,
-    // not to the issue roster accepted by issue.get. The issue read still
-    // owns metadata and the canonical transcript; execution_context on its
-    // answer supplies the addressed run/agent triple for mutations.
-    const issueScope = { ...scope };
-    delete issueScope.agent_id;
-    return call("issue.get", { issue_id: this.issueId, ...issueScope });
-  }
-
   ensureConversation() {
     return null;
   }
 
-  olderPage(call, { entityId, agentId, beforeSequence }) {
-    return call("thread.page", {
-      entity_id: entityId,
-      ...(agentId ? { agent_id: agentId } : {}),
-      before_sequence: beforeSequence,
-    });
+  olderPage(call, asked) {
+    return olderThreadPage(call, asked);
   }
 
   feedRoute() {
@@ -90,8 +102,8 @@ class IssueRailContext {
 /** A project is a conversation owner the way a workspace is, with one
  *  difference that is the whole point: its agents work in a scratch directory
  *  Build owns, never in the project's checkout. The page mints the owner before
- *  it mounts the rail (views/projectView.js), so the rail is handed the run to
- *  read and reads it as a run. */
+ *  it mounts the rail (views/projectView.js), so the rail is handed the entity
+ *  whose row it reads. */
 class ProjectRailContext {
   constructor({ deviceId = null, projectId, entityId = null }) {
     this.kind = "project";
@@ -103,20 +115,12 @@ class ProjectRailContext {
     this.key = `project:${deviceKey(deviceId, projectId)}`;
   }
 
-  detail(call, scope) {
-    return call("run.get", { run_id: this.entityId, ...scope });
-  }
-
   ensureConversation(call) {
     return call("project.ensure_conversation", { project_id: this.projectId });
   }
 
-  olderPage(call, { entityId, agentId, beforeSequence }) {
-    return call("thread.page", {
-      entity_id: entityId,
-      ...(agentId ? { agent_id: agentId } : {}),
-      before_sequence: beforeSequence,
-    });
+  olderPage(call, asked) {
+    return olderThreadPage(call, asked);
   }
 
   feedRoute() {
@@ -133,24 +137,12 @@ class WorkspaceRailContext {
     this.key = `workspace:${workspaceId}`;
   }
 
-  async detail(call, scope) {
-    const workspace = await call("workspace.get", { workspace_id: this.workspaceId, ...scope });
-    const payload = workspace.workspace || workspace;
-    if ("entity_id" in payload || "agents" in payload) return payload;
-    // Workspace-only bridges initially returned metadata here. Recover the
-    // exact adopted run without guessing from a branch shared by checkouts.
-    return legacyWorkspaceDetail(call, payload, this.workspaceId, scope);
-  }
   ensureConversation(call) {
     return call("workspace.ensure_conversation", { workspace_id: this.workspaceId });
   }
 
-  olderPage(call, { entityId, agentId, beforeSequence }) {
-    return call("thread.page", {
-      entity_id: entityId,
-      ...(agentId ? { agent_id: agentId } : {}),
-      before_sequence: beforeSequence,
-    });
+  olderPage(call, asked) {
+    return olderThreadPage(call, asked);
   }
 
   feedRoute() {

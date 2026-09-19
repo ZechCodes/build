@@ -1,5 +1,6 @@
-// The conversation's two saved records, without a rail around them: what a
-// seed reports, what a write costs, and what a switch forgets.
+// The conversation's records, without a rail around them: what a seed reports,
+// what a re-read replaces, and what a message sent from here puts on the
+// record before the wire has carried it.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -11,7 +12,8 @@ const identity = {
   surfaceSessionGeneration: "gen-1",
 };
 const threadAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
-const savedWindow = { items: [{ id: "m-1" }], deliveredSequence: 4 };
+const item = (sequence) => ({ type: "message", data: { sequence, role: "agent", body: `m-${sequence}` } });
+const savedWindow = { items: [item(4)], deliveredSequence: 4 };
 const shells = (description) => ({ shells: [{ id: "sh-1", description, state: "running" }] });
 
 let cache, surfaces, conversationCache;
@@ -23,16 +25,12 @@ const settle = async () => {
 
 const stubThreadCache = () => ({
   seeded: null,
-  window: null,
+  seeds: 0,
   resets: 0,
-  refuses: false,
   seedWindow(window) {
-    if (this.refuses) return false;
+    this.seeds += 1;
     this.seeded = window;
-    return true;
-  },
-  readWindow() {
-    return this.window;
+    return !!window;
   },
   reset() {
     this.resets += 1;
@@ -67,7 +65,7 @@ beforeEach(async () => {
 const saveSurfaces = (snapshot) =>
   cache.writeCached(surfaces.surfacesCacheAddress(identity), surfaces.surfacesRecord(snapshot, "gen-1"));
 
-describe("seeding a conversation from what was saved", () => {
+describe("opening a conversation from what is on disk", () => {
   it("reports both records to whoever is painting", async () => {
     await cache.writeCached(threadAddress, savedWindow);
     await saveSurfaces(shells("cargo test"));
@@ -80,6 +78,12 @@ describe("seeding a conversation from what was saved", () => {
     expect(seededSurfaces.surfaces).toEqual(shells("cargo test"));
   });
 
+  it("names the record the panel is reading, so a watcher can hear it move", () => {
+    expect(mountCache().address()).toEqual(threadAddress);
+    standing = null;
+    expect(mountCache().address()).toBe(null);
+  });
+
   it("reads the records once per conversation", async () => {
     await cache.writeCached(threadAddress, savedWindow);
     const held = mountCache();
@@ -88,6 +92,22 @@ describe("seeding a conversation from what was saved", () => {
 
     await held.seed();
     expect(threadCache.seeded).toBe(null);
+  });
+
+  // The record IS the conversation: a write to it — a page the sync layer
+  // pulled, a push it applied, a message this panel sent — is read back whole
+  // rather than merged into what the panel was holding.
+  it("opens the record again whenever it moves", async () => {
+    await cache.writeCached(threadAddress, savedWindow);
+    const held = mountCache();
+    await held.seed();
+
+    const wider = { items: [item(1), item(4)], deliveredSequence: 4 };
+    await cache.writeCached(threadAddress, wider);
+    await held.reread();
+
+    expect(threadCache.seeded).toEqual(wider);
+    expect(seededThread).toBe("ag-1");
   });
 
   it("reports nothing for the agent the reader left while the read was in flight", async () => {
@@ -124,69 +144,6 @@ describe("seeding a conversation from what was saved", () => {
     expect(seededSurfaces).toBe(null);
   });
 
-  it("reports no surfaces once a payload has answered for the agent", async () => {
-    await saveSurfaces(shells("cargo test"));
-    const held = mountCache();
-
-    held.absorbSurfaces(shells("cargo clippy"), "gen-1");
-    await held.seed();
-    expect(seededSurfaces).toBe(null);
-  });
-
-  it("leaves the window alone when the cache refuses the seed", async () => {
-    await cache.writeCached(threadAddress, savedWindow);
-    threadCache.refuses = true;
-    const held = mountCache();
-
-    await held.seed();
-    expect(seededThread).toBe(null);
-  });
-});
-
-describe("writing a conversation back through", () => {
-  it("persists a window that moved, and rewrites nothing while it stands still", async () => {
-    const held = mountCache();
-    threadCache.window = savedWindow;
-
-    held.persistThread();
-    await settle();
-    expect((await cache.readCached(threadAddress)).value).toEqual(savedWindow);
-
-    await cache.wipeCache();
-    held.persistThread();
-    await settle();
-    expect(await cache.readCached(threadAddress)).toBeUndefined();
-  });
-
-  it("persists the snapshot a payload moved, and rewrites nothing while it stands still", async () => {
-    const held = mountCache();
-    const address = surfaces.surfacesCacheAddress(identity);
-
-    held.absorbSurfaces(shells("cargo test"), "gen-1");
-    await settle();
-    expect((await cache.readCached(address)).value).toEqual(surfaces.surfacesRecord(shells("cargo test"), "gen-1"));
-
-    await cache.wipeCache();
-    held.absorbSurfaces(shells("cargo test"), "gen-1");
-    await settle();
-    expect(await cache.readCached(address)).toBeUndefined();
-
-    held.absorbSurfaces(shells("cargo clippy"), "gen-1");
-    await settle();
-    expect((await cache.readCached(address)).value.surfaces).toEqual(shells("cargo clippy"));
-  });
-
-  it("persists an answer carrying no surfaces as a whole-snapshot clear", async () => {
-    await saveSurfaces(shells("from the last visit"));
-    const held = mountCache();
-
-    held.absorbSurfaces(null, "gen-1");
-    await settle();
-    expect((await cache.readCached(surfaces.surfacesCacheAddress(identity))).value).toEqual(
-      surfaces.surfacesRecord(null, "gen-1"),
-    );
-  });
-
   it("does not seed a legacy or replaced process snapshot", async () => {
     const address = surfaces.surfacesCacheAddress(identity);
     await cache.writeCached(address, surfaces.surfacesRecord(shells("old"), "gen-old"));
@@ -204,24 +161,6 @@ describe("writing a conversation back through", () => {
     expect(seededSurfaces).toBe(null);
   });
 
-  it("drops a write when the agent or generation changes during its async guard read", async () => {
-    const held = mountCache();
-    held.absorbSurfaces(shells("old"), "gen-1");
-    standing = { ...identity, surfaceSessionGeneration: "gen-2" };
-    await settle();
-    expect(await cache.readCached(surfaces.surfacesCacheAddress(identity))).toBeUndefined();
-  });
-
-  it("lets only the newest same-generation snapshot survive overlapping writes", async () => {
-    const held = mountCache();
-    held.absorbSurfaces(shells("older"), "gen-1");
-    held.absorbSurfaces(shells("newest"), "gen-1");
-    await settle();
-    expect((await cache.readCached(surfaces.surfacesCacheAddress(identity))).value).toEqual(
-      surfaces.surfacesRecord(shells("newest"), "gen-1"),
-    );
-  });
-
   it("drops a seed when the entity changes without changing the agent id", async () => {
     await saveSurfaces(shells("old entity"));
     const held = mountCache();
@@ -229,6 +168,62 @@ describe("writing a conversation back through", () => {
     standing = { ...identity, entityId: "run-4" };
     await seeding;
     expect(seededSurfaces).toBe(null);
+  });
+});
+
+// A sent message is on the conversation the moment it is written, and the
+// conversation is the record — so that is where it goes, keyed by the
+// operation carrying it, and it leaves when the wire brings the real thing.
+describe("a message sent from this panel", () => {
+  const sentItems = async () => (await cache.readCached(threadAddress)).value.items;
+
+  it("stands on the record until the post has been answered", async () => {
+    await cache.writeCached(threadAddress, savedWindow);
+
+    await conversationCache.writeProvisionalMessage(threadAddress, "op-1", { body: "ship it" });
+
+    const items = await sentItems();
+    expect(items.map((entry) => entry.data.body)).toEqual(["m-4", "ship it"]);
+    expect(items[1].data.sequence).toBe(null);
+    expect(items[1].data.delivery_status).toBe("queued");
+  });
+
+  it("opens a record for the first thing ever said in a conversation", async () => {
+    await conversationCache.writeProvisionalMessage(threadAddress, "op-1", { body: "first words" });
+
+    const record = (await cache.readCached(threadAddress)).value;
+    expect(record.items.map((entry) => entry.data.body)).toEqual(["first words"]);
+    expect(record.deliveredSequence).toBe(0);
+  });
+
+  it("takes the sequence the post was written at", async () => {
+    await cache.writeCached(threadAddress, savedWindow);
+    await conversationCache.writeProvisionalMessage(threadAddress, "op-1", { body: "ship it" });
+
+    await conversationCache.acknowledgeProvisionalMessage(threadAddress, "op-1", 5, "sent");
+
+    const items = await sentItems();
+    expect(items[1].data.sequence).toBe(5);
+    expect(items[1].data.delivery_status).toBe("sent");
+  });
+
+  it("comes back off the record when the post was refused", async () => {
+    await cache.writeCached(threadAddress, savedWindow);
+    await conversationCache.writeProvisionalMessage(threadAddress, "op-1", { body: "ship it" });
+
+    await conversationCache.withdrawProvisionalMessage(threadAddress, "op-1");
+
+    expect((await sentItems()).map((entry) => entry.data.body)).toEqual(["m-4"]);
+  });
+
+  it("leaves the record alone when there is nothing of that operation on it", async () => {
+    await cache.writeCached(threadAddress, savedWindow);
+    const before = await cache.readCached(threadAddress);
+
+    await conversationCache.withdrawProvisionalMessage(threadAddress, "op-nothing");
+    await conversationCache.acknowledgeProvisionalMessage(threadAddress, "op-nothing", 9, "sent");
+
+    expect((await cache.readCached(threadAddress)).at).toBe(before.at);
   });
 });
 
@@ -242,16 +237,9 @@ describe("where a conversation's transcript is stored", () => {
   const conversational = { ...identity, conversationId: "conv-9" };
   const conversationAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "conv-9" };
 
-  it("keeps a conversation-keyed transcript under the workspace, keyed by the conversation", async () => {
+  it("keeps a conversation-keyed transcript under the workspace, keyed by the conversation", () => {
     standing = conversational;
-    const held = mountCache();
-    threadCache.window = savedWindow;
-
-    held.persistThread();
-    await settle();
-
-    expect((await cache.readCached(conversationAddress)).value).toEqual(savedWindow);
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "conv-9", kind: "thread", sub: "" })).toBeUndefined();
+    expect(mountCache().address()).toEqual(conversationAddress);
   });
 
   it("seeds that transcript back from under the workspace", async () => {
@@ -284,5 +272,18 @@ describe("the conversation the reader switched away from", () => {
 
     await held.seed();
     expect(seededThread).toBe("ag-1");
+  });
+
+  it("settles a message sent to it whatever the panel has moved on to", async () => {
+    // The address is taken from the submission, not from what is on screen: a
+    // reader who presses send and walks to another bubble has still sent it.
+    await cache.writeCached(threadAddress, savedWindow);
+    await conversationCache.writeProvisionalMessage(threadAddress, "op-1", { body: "ship it" });
+    standing = { ...identity, agentId: "ag-2" };
+
+    await conversationCache.acknowledgeProvisionalMessage(threadAddress, "op-1", 5, "sent");
+    await settle();
+
+    expect((await cache.readCached(threadAddress)).value.items[1].data.sequence).toBe(5);
   });
 });

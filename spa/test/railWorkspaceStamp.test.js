@@ -44,6 +44,7 @@ const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agent
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
 const { wipeCache } = await import("../src/core/localCache.js");
+const { writeRailBoard, writeRailThread } = await import("./railCacheFixture.js");
 
 const CATALOG = {
   default_provider: "claude_adk",
@@ -68,7 +69,7 @@ const agent = (id) => ({
 });
 
 const flush = async () => {
-  for (let count = 0; count < 8; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let count = 0; count < 16; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
 const host = () => document.querySelector("#agent-rail");
@@ -85,6 +86,7 @@ let rail;
 
 /** The project's conversation, carrying whatever has been sent into it. */
 const projectPayload = () => ({
+  kind: "branch",
   entity_id: OWNER,
   run_id: OWNER,
   project_id: PROJECT_ID,
@@ -93,16 +95,33 @@ const projectPayload = () => ({
 });
 
 const workspacePayload = () => ({
+  kind: "branch",
   workspace_id: WORKSPACE_ID,
   project_id: PROJECT_ID,
   name: "wire-facade",
   entity_id: "run-workspace",
   agents: [agent("wa-1")],
   directories: [],
-  thread: { items: [], sessions: [] },
 });
 
+/** This machine's board on disk, and the workspace list that names the
+ *  workspace — which is where the chip on a message gets its wording. */
+const writeBoard = async () => {
+  await writeRailBoard({
+    items: [workspacePayload(), projectPayload()],
+    projects: [{ project_id: PROJECT_ID, name: "build", entity_id: OWNER, run_id: OWNER }],
+    workspaces: [{
+      id: WORKSPACE_ID, project_id: PROJECT_ID, name: "wire-facade", status: "ready", entity_id: "run-workspace",
+    }],
+  }, { deviceId: DEVICE_ID });
+  // What the project's agent has been told, as its conversation holds it.
+  if (posted.length) {
+    await writeRailThread(OWNER, `conversation-pa-1`, { items: posted }, { deviceId: DEVICE_ID });
+  }
+};
+
 const mountRail = async (context) => {
+  await writeBoard();
   rail = mountAgentRail(host(), {
     deviceId: DEVICE_ID,
     projectId: PROJECT_ID,
@@ -142,10 +161,6 @@ beforeEach(async () => {
     call: async (method, params = {}) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
-      if (method === "workspace.get") return workspacePayload();
-      if (method === "project.list") {
-        return { projects: [{ project_id: PROJECT_ID, name: "build", entity_id: OWNER, run_id: OWNER }] };
-      }
       if (method === "project.ensure_conversation") {
         return { project_id: PROJECT_ID, entity_id: OWNER, run_id: OWNER };
       }
@@ -163,7 +178,6 @@ beforeEach(async () => {
         });
         return { posted_sequence: posted.length };
       }
-      if (method === "run.get") return projectPayload();
       return {};
     },
   });

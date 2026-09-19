@@ -45,6 +45,7 @@ const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agent
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
 const { wipeCache } = await import("../src/core/localCache.js");
+const { writeRailBoard } = await import("./railCacheFixture.js");
 
 const CATALOG = {
   default_provider: "claude_adk",
@@ -71,25 +72,39 @@ const agent = (id, over = {}) => ({
 });
 
 const workspacePayload = () => ({
+  kind: "branch",
   workspace_id: WORKSPACE_ID,
   project_id: PROJECT_ID,
   entity_id: "run-workspace",
   agents: [agent("wa-1")],
   directories: [],
-  thread: { items: [], sessions: [] },
 });
 
 const projectPayload = (over = {}) => ({
+  kind: "branch",
   entity_id: OWNER,
   run_id: OWNER,
   project_id: PROJECT_ID,
   agents: [agent("pa-1")],
-  thread: { items: [], sessions: [] },
   ...over,
 });
 
+/** This machine's board as the sync layer leaves it: the workspace's row, the
+ *  project's conversation once there is one, and the two lists that say which
+ *  entity each route stands on. */
+const writeBoard = () => writeRailBoard({
+  items: [workspace, ...(owner ? [project] : [])],
+  projects: [{ project_id: PROJECT_ID, name: "build", entity_id: owner, run_id: owner }],
+  workspaces: [{
+    id: WORKSPACE_ID, project_id: PROJECT_ID, name: "login", status: "ready", entity_id: "run-workspace",
+  }],
+}, { deviceId: DEVICE_ID });
+
 const flush = async () => {
-  for (let count = 0; count < 8; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  // The rail settles over the disk: a row read, the row of the conversation
+  // beside it, and — where a URL named the other side — the mount that stands
+  // it there. Every one of those is a turn.
+  for (let count = 0; count < 16; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
 const host = () => document.querySelector("#agent-rail");
@@ -111,6 +126,7 @@ let calls;
 let rail;
 
 const mountWorkspaceRail = async (over = {}) => {
+  await writeBoard();
   rail = mountAgentRail(host(), {
     kind: "workspace",
     deviceId: DEVICE_ID,
@@ -141,15 +157,13 @@ beforeEach(async () => {
     call: async (method, params = {}) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
-      if (method === "workspace.get") return workspace;
-      if (method === "project.list") {
-        return { projects: [{ project_id: PROJECT_ID, name: "build", entity_id: owner, run_id: owner }] };
-      }
       if (method === "project.ensure_conversation") {
         owner = OWNER;
+        // The mint makes a run, which the board carries and the sync layer
+        // writes down — which is where the rail reads it.
+        await writeBoard();
         return { project_id: PROJECT_ID, entity_id: OWNER, run_id: OWNER };
       }
-      if (method === "run.get") return project;
       return {};
     },
   });
@@ -185,7 +199,9 @@ describe("the project's agent on a workspace's strip", () => {
     // Nothing is minted to paint it. A rail that asked for an owner would give
     // every workspace page a project agent nobody asked for.
     expect(callsTo("project.ensure_conversation")).toHaveLength(0);
-    expect(callsTo("project.list")).toHaveLength(1);
+    // Nothing is read off the wire to paint the bubble: the project list is on
+    // disk like everything else the rail draws.
+    expect(calls.map((call) => call.method)).toEqual(["models.list"]);
   });
 
   it("carries what the project's agent is waiting on once there is one", async () => {
@@ -441,6 +457,7 @@ describe("the project conversation's chip", () => {
 
   it("is left off the project's own page, where it would point at the page it is on", async () => {
     owner = OWNER;
+    await writeBoard();
     rail = mountAgentRail(host(), {
       kind: "project",
       deviceId: DEVICE_ID,

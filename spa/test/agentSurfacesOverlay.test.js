@@ -6,6 +6,12 @@ import { motionBeat } from "./motionRecorder.js";
 import { sessionAnswering } from "./deviceSessionFixture.js";
 import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+// The rail paints from the cache, so this suite gives the modules a database
+// before anything imports them.
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
@@ -37,6 +43,8 @@ const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/de
 const { mountAgentRail, panelHeadHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
 const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
+const { wipeCache } = await import("../src/core/localCache.js");
+const { writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const surfaces = () => surfacesSnapshot({ subagents: [], checklist: [] });
 
@@ -68,8 +76,10 @@ let rail = null;
 /** What the machine this rail is mounted on offers to start work with. */
 let catalog = { default_provider: "claude", providers: [] };
 
+// The rail settles over the disk: its row, and the conversation in it —
+// every record it opens is a turn.
 const flush = async () => {
-  for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
+  for (let i = 0; i < 12; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 const panel = () => document.getElementById("rail-panel");
@@ -133,6 +143,7 @@ const finishedShells = () => {
 };
 
 const mount = async () => {
+  await writeRailWorkItem(payload);
   rail = mountAgentRail(document.getElementById("agent-rail"), {
     kind: "branch",
     deviceId: "dev-1",
@@ -145,15 +156,17 @@ const mount = async () => {
   await flush();
 };
 
+/** The row moved: what a push writes, and what the rail hears. */
 const poll = async (next) => {
   payload = next;
-  vi.advanceTimersByTime(2000);
+  await writeRailWorkItem(next);
   await flush();
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
+  await wipeCache();
   resetAgentRailMemory();
   notifyError.mockClear();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });

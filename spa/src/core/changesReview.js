@@ -411,7 +411,8 @@ export function createReviewPlug({
     const entityId = cacheEntityId();
     return entityId ? cacheScope?.address({ entityId, kind: "diff" }) || null : null;
   };
-  let refreshHeld = false; // news fetched while an interaction froze repainting
+  let refreshHeld = false; // a wire answer dropped because repainting was frozen
+  let recordHeld = false; // a record that moved while repainting was frozen
   let writtenRecord = null; // the fingerprint of the record this plug last wrote
 
   /** The saved diff, painted whole — comment tray and verbs included, and the
@@ -461,7 +462,7 @@ export function createReviewPlug({
       return;
     }
     if (repaintFrozen()) {
-      refreshHeld = true;
+      recordHeld = true;
       return;
     }
     applyCachedDiff(record);
@@ -576,11 +577,17 @@ export function createReviewPlug({
 
   /** A diff that moved can land while a comment draft or popover freezes
    *  repainting. Keep that news pending and consume it as soon as the owning
-   *  surface says the interaction ended. */
+   *  surface says the interaction ended — as whatever it was. A record that
+   *  moved is re-read off the disk; only an answer this plug asked for and
+   *  then could not paint is asked for again. */
   const resumeHeldRefresh = () => {
-    if (!refreshHeld || !host || repaintFrozen()) return;
+    if (!host || repaintFrozen()) return;
+    if (recordHeld) {
+      recordHeld = false;
+      void rereadDiff();
+    }
+    if (!refreshHeld) return;
     refreshHeld = false;
-    void rereadDiff();
     paint();
   };
 
@@ -620,6 +627,7 @@ export function createReviewPlug({
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       refreshHeld = false;
+      recordHeld = false;
       writtenRecord = null;
       responseDiffKey = null;
       host.innerHTML = '<div class="empty">loading…</div>';
@@ -656,6 +664,7 @@ export function createReviewPlug({
       }
       host = null;
       refreshHeld = false;
+      recordHeld = false;
       viewingContext?.clear();
       trayMounted = false;
     },

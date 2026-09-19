@@ -55,7 +55,23 @@ export function projectMenuModel({ projects = [], items = [], devices = [], proj
   return fuzzyRank(entries, query, (entry) => entry.name);
 }
 
-/** Workspaces registered for one project, filtered by their human name. A
+const WORKSPACE_STATUS_ORDER = new Map([
+  ["ready", 0],
+  ["provisioning", 1],
+  ["failed", 2],
+  ["finished", 4],
+]);
+
+function compareWorkspaceStatus(left, right) {
+  const leftStatus = left.status || "";
+  const rightStatus = right.status || "";
+  return (WORKSPACE_STATUS_ORDER.get(leftStatus) ?? 3) - (WORKSPACE_STATUS_ORDER.get(rightStatus) ?? 3)
+    || leftStatus.localeCompare(rightStatus);
+}
+
+/** Workspaces registered for one project, filtered by their human name and
+ *  grouped by status, ready first and finished last. Within each status retain
+ *  the listed order, or match relevance when filtering. A
  *  project belongs to one machine, so the narrowing and the marking are both by
  *  the account-wide names (core/deviceKey.js) the feed stamped on every row. */
 export function workspaceMenuModel({ workspaces = [], projectKey = null, workspaceKey = null, query = "" } = {}) {
@@ -69,7 +85,7 @@ export function workspaceMenuModel({ workspaces = [], projectKey = null, workspa
       name: workspaceDisplayName(workspace, workspace.id),
       current: workspace.workspaceKey === workspaceKey,
     }));
-  return fuzzyRank(entries, query, (entry) => entry.name);
+  return fuzzyRank(entries, query, (entry) => entry.name).sort(compareWorkspaceStatus);
 }
 
 /** The source directories mounted into the selected workspace. `source_id` is

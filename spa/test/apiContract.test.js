@@ -48,9 +48,11 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
-  it("was introduced at a version this adapter speaks, no later than current", () => {
+  it("was introduced within this adapter's major, no later than current", () => {
+    // The adapter's floor is where it stops serving OLD bridges; a verb that
+    // predates the floor is still one it speaks. What must hold is the major.
     for (const { name, body } of methodFixtures) {
-      expect(satisfies(body.since, v1.range), `${name} since ${body.since}`).toBe(true);
+      expect(Number(String(body.since).split(".")[0]), `${name} since ${body.since}`).toBe(v1.major);
       expect(compare(body.since, versions.current), `${name} since ${body.since}`).toBeLessThanOrEqual(0);
     }
   });

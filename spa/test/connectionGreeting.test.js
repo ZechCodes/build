@@ -82,10 +82,10 @@ afterEach(() => {
 
 describe("what a greeting settles on the device it greeted", () => {
   it("writes the adapter and the API version onto that machine's context", async () => {
-    const { context, session } = await greet("dev-a", { api_version: "1.0.0", push_events: true });
+    const { context, session } = await greet("dev-a", { api_version: "1.2.0", push_events: true });
     expect(session.installAdapter).toHaveBeenCalledTimes(1);
     expect(context.adapter).toBe(session.adapter());
-    expect(context.apiVersion).toBe("1.0.0");
+    expect(context.apiVersion).toBe("1.2.0");
     expect(context.unsupported).toBe(null);
     expect(canAnswer(context)).toBe(true);
   });
@@ -98,7 +98,7 @@ describe("what a greeting settles on the device it greeted", () => {
   });
 
   it("does not release a replacement barrier when an old re-greeting captured none", async () => {
-    const { context, session } = await greet("dev-a", { api_version: "1.0.0" });
+    const { context, session } = await greet("dev-a", { api_version: "1.2.0" });
     let finishOld;
     session.call.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
     const oldGreeting = greetLiveBridge(context);
@@ -111,13 +111,13 @@ describe("what a greeting settles on the device it greeted", () => {
     context.greeted.then(() => { barrierReleased = true; });
     const newGreeting = greetLiveBridge(context);
 
-    finishOld({ api_version: "1.0.0" });
+    finishOld({ api_version: "1.2.0" });
     await oldGreeting;
 
     expect(barrierReleased).toBe(false);
     expect(replacement.installAdapter).not.toHaveBeenCalled();
 
-    finishReplacement({ api_version: "1.0.0" });
+    finishReplacement({ api_version: "1.2.0" });
     await newGreeting;
     expect(barrierReleased).toBe(true);
     expect(replacement.installAdapter).toHaveBeenCalledTimes(1);

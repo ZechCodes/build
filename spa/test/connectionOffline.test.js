@@ -1425,7 +1425,7 @@ describe("per-device connections", () => {
     await oldSession.fireCarrier();
 
     expect(newSession.call.mock.calls.filter(([method]) => method === "session.hello")).toHaveLength(hellosBefore);
-    releaseGreeting({ api_version: "1.0.0", capabilities: {} });
+    releaseGreeting({ capabilities: {} });
     await replacement;
   });
 });

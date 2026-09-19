@@ -3,8 +3,9 @@
 // A surface never asks what version the bridge reports — it asks the adapter's
 // `capabilities`, which are derived once from the greeting and the minor
 // version and never from probing a method to see whether it is refused. That
-// is the whole point of the version: a 1.0 bridge and a 1.1 bridge take the
-// same code path, with `changes.subscriptions` off on the first.
+// is the whole point of the version. The floor is 1.2: the client reads what
+// a push carries and polls nothing, and a bridge below 1.2 pushes keys, not
+// bodies, so it is gated rather than served a client that would never move.
 //
 // The adapter also owns error normalisation. From 1.1 a refusal carries
 // `error_code`, `retryable` and `details` beside the string; from 1.0 it is
@@ -12,7 +13,7 @@
 // A view therefore reads `error.code` whatever it is talking to.
 
 /** The range of bridge versions this adapter claims. */
-export const range = ">=1.0.0 <2.0.0";
+export const range = ">=1.2.0 <2.0.0";
 
 /** The API major it is the adapter for. */
 export const major = 1;

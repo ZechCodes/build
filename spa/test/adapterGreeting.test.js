@@ -10,7 +10,7 @@ let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChan
 const NONE = { changes: { subscriptions: false }, requests: { priority: false }, errors: { codes: false } };
 
 const greeting11 = () => ({
-  api_version: "1.1.0",
+  api_version: "1.2.0",
   push_events: true,
   events: ["board.changed", "entity.changed", "changes"],
   changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], batch_ms: { min: 1000, max: 600000 } },
@@ -38,7 +38,7 @@ describe("the adapter a greeting selects", () => {
     const install = vi.fn((selection) => selection.create(async () => ({})));
     await greetBridge(async () => greeting11(), { install });
     expect(install).toHaveBeenCalledTimes(1);
-    expect(install.mock.calls[0][0]).toMatchObject({ major: 1, version: "1.1.0" });
+    expect(install.mock.calls[0][0]).toMatchObject({ major: 1, version: "1.2.0" });
     expect(bridgeAdapter()).toBe(install.mock.results[0].value);
     expect(bridgeCapabilities()).toEqual({
       changes: { subscriptions: true },
@@ -48,8 +48,10 @@ describe("the adapter a greeting selects", () => {
   });
 
   it("is created on the greeting call itself when nobody installs it elsewhere", async () => {
-    await greetBridge(async () => ({ api_version: "1.0.0", push_events: true }));
-    expect(bridgeAdapter()).toMatchObject({ major: 1, version: "1.0.0" });
+    // A greeting that reports no version is the one bridge shape left that
+    // advertises nothing: the lowest adapter takes it with every flag off.
+    await greetBridge(async () => ({ push_events: true }));
+    expect(bridgeAdapter()).toMatchObject({ major: 1, version: "0.0.0" });
     expect(bridgeCapabilities()).toEqual(NONE);
     expect(changeEventsArmed()).toBe(true);
   });
@@ -80,8 +82,8 @@ describe("the adapter a greeting selects", () => {
     expect(bridgeCapabilities().changes.subscriptions).toBe(true);
     await greetBridge(async () => ({ api_version: "2.0.0" }));
     expect(bridgeAdapter()).toBe(null);
-    await greetBridge(async () => ({ api_version: "1.0.0", push_events: true }));
-    expect(bridgeAdapter()).toMatchObject({ version: "1.0.0" });
+    await greetBridge(async () => ({ push_events: true }));
+    expect(bridgeAdapter()).toMatchObject({ version: "0.0.0" });
     expect(bridgeCapabilities().changes.subscriptions).toBe(false);
     expect(changeEventsArmed()).toBe(true);
   });

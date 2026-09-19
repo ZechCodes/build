@@ -13,7 +13,7 @@ let calls;
 
 const SUBSCRIBING_GREETING = {
   push_events: true,
-  api_version: "1.1.0",
+  api_version: "1.2.0",
   events: ["board.changed", "entity.changed", "changes"],
   changes: {
     subscriptions: true,
@@ -40,7 +40,7 @@ const subscribingBridge = () => {
 const legacyBridge = () => {
   call = vi.fn(async (method, params) => {
     calls.push([method, params]);
-    if (method === "session.hello") return { push_events: true, api_version: "1.0.0" };
+    if (method === "session.hello") return { push_events: true };
     return {};
   });
   return call;

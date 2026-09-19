@@ -4,7 +4,7 @@ import { ApiError, normalizeError, selectAdapter } from "../src/core/bridgeApi/i
 import * as v1 from "../src/core/bridgeApi/v1/index.js";
 
 const greetingV1 = (over = {}) => ({
-  api_version: "1.1.0",
+  api_version: "1.2.0",
   push_events: true,
   events: ["board.changed", "entity.changed", "changes"],
   changes: {
@@ -75,19 +75,6 @@ describe("semver", () => {
 describe("adapter selection", () => {
   const v2 = { major: 2, range: ">=2.0.0 <3.0.0", create: () => ({}) };
 
-  it("a 1.0 bridge and a 1.1-aware SPA: the v1 adapter, subscriptions off", () => {
-    const selected = selectAdapter({ api_version: "1.0.0", push_events: true });
-    expect(selected.unsupported).toBe(undefined);
-    expect(selected.major).toBe(1);
-    expect(selected.version).toBe("1.0.0");
-    const adapter = selected.create(vi.fn());
-    expect(adapter.capabilities).toEqual({
-      changes: { subscriptions: false },
-      requests: { priority: false },
-      errors: { codes: false },
-    });
-  });
-
   it("a 1.1 bridge greeting a 1.1-aware SPA: every capability on", () => {
     const selected = selectAdapter(greetingV1());
     expect(selected.major).toBe(1);
@@ -110,7 +97,14 @@ describe("adapter selection", () => {
   });
 
   it("a 1.x bridge with only a v2 adapter: the bridge is the one to update", () => {
-    expect(selectAdapter(greetingV1(), [v2])).toEqual({ unsupported: "bridge", version: "1.1.0" });
+    expect(selectAdapter(greetingV1(), [v2])).toEqual({ unsupported: "bridge", version: "1.2.0" });
+  });
+
+  // The cache-first client reads bodies off the push and polls nothing, which
+  // a 1.1 bridge does not carry. It is not a degraded 1.1 client; it is a gate.
+  it("a 1.1 bridge against this SPA: the bridge is the one to update", () => {
+    expect(selectAdapter(greetingV1({ api_version: "1.1.0" }))).toEqual({ unsupported: "bridge", version: "1.1.0" });
+    expect(selectAdapter(greetingV1({ api_version: "1.0.0" }))).toEqual({ unsupported: "bridge", version: "1.0.0" });
   });
 
   it("a greeting with no api_version is 0.0.0 on the v1 adapter, every flag false", () => {
@@ -133,9 +127,11 @@ describe("adapter selection", () => {
 });
 
 describe("the v1 adapter", () => {
-  it("declares a range that admits every 1.x", () => {
-    expect(v1.range).toBe(">=1.0.0 <2.0.0");
-    expect(satisfies("1.1.0", v1.range)).toBe(true);
+  it("declares a range that starts where pushes carry bodies", () => {
+    expect(v1.range).toBe(">=1.2.0 <2.0.0");
+    expect(satisfies("1.1.0", v1.range)).toBe(false);
+    expect(satisfies("1.2.0", v1.range)).toBe(true);
+    expect(satisfies("1.9.4", v1.range)).toBe(true);
   });
 
   it("passes a call through and returns its result", async () => {

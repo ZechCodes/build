@@ -18,6 +18,7 @@
 // between states is a CSS transition rather than a redraw (spa/src/styles.css).
 
 import { App } from "./app.js";
+import { esc } from "./core/text.js";
 import { deviceRecoverySnapshot, onDeviceRecoveryChanged } from "./connection.js";
 import { liveContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
 import { connectionStatus } from "./core/connectionStatusModel.js";
@@ -46,20 +47,91 @@ function devicesNow() {
   return App.devices.map((device) => ({ id: device.id, name: device.name, live: live.has(device.id) }));
 }
 
-/** The ring's parts, made once and then kept: the radiating circles that run
- *  while an attempt is in flight, and the one place a number is written. Both
- *  are hidden from a screen reader — the ring's label says all of it in
- *  words. */
+/** The ring's parts, made once and then kept: the button the ring is drawn on,
+ *  the radiating circles that run while an attempt is in flight, the one place
+ *  a number is written, and the menu behind the press. Everything inside the
+ *  button is hidden from a screen reader — the button's own label says all of
+ *  it in words, and the menu says it machine by machine. */
 function partsOf(host) {
-  let centre = host.querySelector(".connection-centre");
-  if (!centre) {
-    host.classList.add("connection-status");
-    host.setAttribute("role", "status");
-    host.innerHTML = `<span class="connection-radiate" aria-hidden="true"></span><span class="connection-centre" aria-hidden="true"></span>`;
-    host.dataset.from = "";
-    centre = host.querySelector(".connection-centre");
+  let button = host.querySelector(".connection-status");
+  if (!button) {
+    host.innerHTML = `<button type="button" class="connection-status" data-state="" data-from=""
+        aria-haspopup="menu" aria-expanded="false"
+      ><span class="connection-radiate" aria-hidden="true"></span><span class="connection-centre" aria-hidden="true"></span></button>
+      <div class="connection-menu" role="menu" aria-label="Devices" hidden></div>`;
+    button = host.querySelector(".connection-status");
+    wirePress(host, button);
   }
-  return { centre };
+  return {
+    button,
+    centre: host.querySelector(".connection-centre"),
+    menu: host.querySelector(".connection-menu"),
+  };
+}
+
+/** One row per machine: what it is called, and what is true of it. Rows are
+ *  not pressable — there is nothing to do to a machine from here, and a row
+ *  that looks like a button and does nothing is a worse answer than a line of
+ *  text. */
+const rowHtml = (row) =>
+  `<div class="mi" role="menuitem" data-device="${esc(row.id)}" data-status="${esc(row.status)}"><span class="mt">${esc(row.name)}</span><span class="md">${esc(row.label)}</span></div>`;
+
+/** What the menu is showing, so a tick that moves a countdown redraws it and a
+ *  repaint that moves nothing leaves it alone. */
+const rowsSignature = (rows) => rows.map((row) => `${row.id}:${row.status}:${row.label}`).join("|");
+
+function paintMenu(menu, rows) {
+  const signature = rowsSignature(rows);
+  if (menu.dataset.rows === signature) return;
+  menu.dataset.rows = signature;
+  menu.innerHTML = rows.map(rowHtml).join("");
+}
+
+// ─── The press ───────────────────────────────────────────────────────────────
+
+/** Whether the menu is showing. Read off the button rather than held beside
+ *  it: the button is what a screen reader is told, and two places to ask would
+ *  be two answers to keep in step. */
+const menuIsOpen = (button) => button.getAttribute("aria-expanded") === "true";
+
+function setMenuOpen(host, open, { restoreFocus = false } = {}) {
+  // Asked of the DOM as it stands rather than built: shutting a menu is also
+  // what teardown does, and teardown must not stand an icon back up to do it.
+  const button = host.querySelector(".connection-status");
+  const menu = host.querySelector(".connection-menu");
+  if (button) button.setAttribute("aria-expanded", open ? "true" : "false");
+  if (menu) menu.hidden = !open;
+  host.classList.toggle("is-open", open);
+  if (open) {
+    document.addEventListener("keydown", onMenuKey, true);
+    document.addEventListener("pointerdown", onOutsidePress, true);
+    return;
+  }
+  document.removeEventListener("keydown", onMenuKey, true);
+  document.removeEventListener("pointerdown", onOutsidePress, true);
+  // Only where the reader shut it themselves: an outside press has already put
+  // the focus where they meant it to go.
+  if (restoreFocus) button?.focus();
+}
+
+function onMenuKey(event) {
+  if (event.key !== "Escape") return;
+  const host = document.getElementById("connection-status");
+  if (!host) return;
+  event.preventDefault();
+  setMenuOpen(host, false, { restoreFocus: true });
+}
+
+function onOutsidePress(event) {
+  const host = document.getElementById("connection-status");
+  if (!host || host.contains(event.target)) return;
+  setMenuOpen(host, false);
+}
+
+/** The press itself. A `<button>`, so Enter and Space are the browser's own
+ *  and nothing here re-implements them. */
+function wirePress(host, button) {
+  button.onclick = () => setMenuOpen(host, !menuIsOpen(button), { restoreFocus: true });
 }
 
 /** Tell a screen reader what the ring now says — once per state, never once
@@ -74,23 +146,27 @@ function paint() {
   const host = document.getElementById("connection-status");
   if (!host) return;
   const status = connectionStatus({ devices: devicesNow(), recoveries: deviceRecoverySnapshot() });
-  const signature = `${status.visible}|${status.state}|${status.centre}|${status.label}`;
+  const signature = `${status.visible}|${status.state}|${status.centre}|${status.label}|${rowsSignature(status.rows)}`;
   if (signature === painted) return;
   painted = signature;
-  const { centre } = partsOf(host);
+  const { button, centre, menu } = partsOf(host);
   if (status.state !== shownState) {
     // Where the change is coming from, for the stylesheet to animate out of.
-    host.dataset.from = shownState;
+    button.dataset.from = shownState;
     shownState = status.state;
     announce(status);
   }
-  host.dataset.state = status.state;
-  host.classList.remove(...STATE_CLASSES);
-  host.classList.add(`is-${status.state}`);
+  button.dataset.state = status.state;
+  button.classList.remove(...STATE_CLASSES);
+  button.classList.add(`is-${status.state}`);
   host.hidden = !status.visible;
-  host.setAttribute("aria-label", status.label);
-  host.setAttribute("title", status.label);
+  button.setAttribute("aria-label", status.label);
+  button.setAttribute("title", status.label);
   centre.textContent = status.centre;
+  paintMenu(menu, status.rows);
+  // A machine that has gone takes its menu with it: a menu standing over an
+  // account with nothing in it is a menu about nothing.
+  if (!status.visible && menuIsOpen(button)) setMenuOpen(host, false);
   keepTime(status.ticking);
 }
 
@@ -123,10 +199,10 @@ export function unmountConnectionStatus() {
   shownState = "";
   const host = document.getElementById("connection-status");
   if (host) {
+    setMenuOpen(host, false);
     host.hidden = true;
     host.innerHTML = "";
-    host.dataset.state = "";
-    host.dataset.from = "";
+    host.classList.remove("is-open");
   }
   const live = document.getElementById("connection-announcement");
   if (live) live.textContent = "";

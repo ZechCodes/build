@@ -507,9 +507,10 @@ describe("per-device connections", () => {
       { deviceId: "dev-a", status: "waiting", failedAttempts: 1 },
       { deviceId: "dev-b", status: "waiting", failedAttempts: 1 },
     ]);
-    const icon = document.getElementById("connection-status");
-    expect(icon.dataset.state).toBe("waiting");
-    expect(icon.getAttribute("aria-label")).toContain("Reconnecting to Laptop and Desktop");
+    // The ring is the button inside the icon's box (spa/src/connectionStatus.js).
+    const ring = document.querySelector("#connection-status .connection-status");
+    expect(ring.dataset.state).toBe("waiting");
+    expect(ring.getAttribute("aria-label")).toContain("Reconnecting to Laptop and Desktop");
 
     unlinkable.delete("dev-a");
     await reachNextRecoveryAttempt();

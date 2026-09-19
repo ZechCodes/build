@@ -20,8 +20,15 @@
 #connection-status {
   position:absolute; z-index:38; right:0; bottom:8px;
   width:var(--agent-strip); height:30px; display:grid; place-items:center;
-  pointer-events:none;
 }
+/* The ring is the press: it answers "which machines, and how are they" in a
+   menu, so it is a button and not a picture. The button carries the whole of
+   the ring's look; the box around it only says where it stands. */
+.connection-status {
+  position:relative; width:30px; height:30px; padding:0; display:grid; place-items:center;
+  border:0; border-radius:50%; background:none; cursor:pointer;
+}
+.connection-status:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .connection-status::before {
   content:""; position:absolute; width:26px; height:26px; border-radius:50%;
   border:2px dashed var(--green); opacity:.85;
@@ -76,6 +83,34 @@
     animation:none; opacity:.5; transform:scale(.8);
   }
 }
+/* The machines, one row each, opened by the ring. Upward, because the ring is
+   at the foot of the page — the same move `.splitmenu` makes — and anchored to
+   the ring's right edge so it can only ever run INWARDS from the corner it
+   stands in. That, with a width bounded by the viewport, is what keeps it on
+   screen at both widths without anything measuring anything.
+
+   The rows are not pressable: there is nothing to do to a machine from here,
+   so they carry no hover and no pointer. What they borrow from the menus
+   beside them is everything else — the panel, the line, the radius, the
+   shadow, and `.mt` over `.md`. */
+.connection-menu {
+  position:absolute; z-index:39; bottom:calc(100% + 8px); right:0;
+  min-width:180px; max-width:min(260px, calc(100vw - 24px));
+  padding:2px 0; border:1px solid var(--line); border-radius:10px;
+  background:var(--panel); box-shadow:0 10px 30px var(--shadow);
+  overflow:hidden; text-align:left;
+}
+.connection-menu[hidden] { display:none; }
+.connection-menu .mi {
+  display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+  padding:7px 12px; font-size:13px; line-height:1.4;
+}
+.connection-menu .mt { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--ink); font-weight:550; }
+.connection-menu .md { flex:none; color:var(--dim); font-size:11.5px; }
+/* The row says the same thing the ring does, in the same colours. */
+.connection-menu .mi[data-status="connected"] .md { color:var(--green); }
+.connection-menu .mi[data-status="attempting"] .md, .connection-menu .mi[data-status="waiting"] .md { color:var(--amber); }
 @media (max-width: 760px) {
   /* The strip runs across the foot here, so the icon stands at its right-hand
      end rather than under it — and the strip reserves that end for it. */

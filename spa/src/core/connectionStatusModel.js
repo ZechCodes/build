@@ -56,6 +56,43 @@ const connectedLabel = (connectedCount) => {
   return connectedCount === 1 ? "Connected to 1 device" : `Connected to ${connectedCount} devices`;
 };
 
+/** A machine the account lists that holds no session and has nothing being
+ *  done about it. Not every unconnected machine is being recovered: the
+ *  supervisor stands down when the account stops calling a machine online, and
+ *  never starts for one that was never online. That machine is off — a state,
+ *  not a failure. */
+export const OFFLINE = "offline";
+
+/** What one row says about one machine. Short by design: a row has the room
+ *  for a state, and the ring's own label is where the sentence is. */
+const rowLabel = (status, seconds) => {
+  if (status === CONNECTED) return "Connected";
+  if (status === OFFLINE) return "Offline";
+  return status === WAITING && seconds > 0 ? `Reconnecting in ${seconds} s` : "Reconnecting";
+};
+
+const rowFor = (id, name, status, seconds) => ({ id, name, status, seconds, label: rowLabel(status, seconds) });
+
+/** Every machine, in the account's own order, each with what is true of IT —
+ *  the same records the ring is derived from, read one machine at a time. A
+ *  machine named only by a recovery record (a connection lost before the
+ *  device list answered) is a machine being reconnected to, and is listed
+ *  behind the ones the account has names for. */
+function rowsFor(devices, recoveries, nowMs) {
+  const recovering = new Map(recoveries.map((record) => [record.deviceId, record]));
+  const rowOf = (id, name) => {
+    const record = recovering.get(id);
+    if (!record) return rowFor(id, name, devices.find((device) => device.id === id)?.live ? CONNECTED : OFFLINE, null);
+    const seconds = record.status === WAITING ? secondsUntilAttempt(record.nextAttemptAt, nowMs) : null;
+    return rowFor(id, name, record.status, seconds);
+  };
+  const listed = devices.map((device) => rowOf(device.id, device.name || "a device"));
+  const unlisted = [...recovering.keys()]
+    .filter((id) => !devices.some((device) => device.id === id))
+    .map((id) => rowOf(id, nameOf(devices, id)));
+  return [...listed, ...unlisted];
+}
+
 /**
  * The icon's whole state.
  *
@@ -73,6 +110,11 @@ export function connectionStatus({ devices = [], recoveries = [], nowMs = Date.n
   const attempting = recovering.filter((record) => record.status === ATTEMPTING);
   const waiting = recovering.filter((record) => record.status === WAITING);
   const visible = devices.length > 0 || recovering.length > 0;
+  const rows = rowsFor(devices, recovering, nowMs);
+  // The clock is held open by the MENU's countdowns as much as the ring's: a
+  // ring showing an attempt in flight has no number of its own while a second
+  // machine behind it is counting down, and that row has to keep counting.
+  const ticking = waiting.length > 0;
 
   if (attempting.length) {
     return {
@@ -81,7 +123,8 @@ export function connectionStatus({ devices = [], recoveries = [], nowMs = Date.n
       seconds: null,
       centre: "",
       label: `Reconnecting to ${namesOf(devices, attempting)}`,
-      ticking: false,
+      ticking,
+      rows,
       visible,
     };
   }
@@ -93,7 +136,8 @@ export function connectionStatus({ devices = [], recoveries = [], nowMs = Date.n
       seconds: soonest,
       centre: String(soonest),
       label: `Reconnecting to ${namesOf(devices, waiting)}${waitSuffix(soonest)}`,
-      ticking: true,
+      ticking,
+      rows,
       visible,
     };
   }
@@ -103,7 +147,8 @@ export function connectionStatus({ devices = [], recoveries = [], nowMs = Date.n
     seconds: null,
     centre: String(connectedCount),
     label: connectedLabel(connectedCount),
-    ticking: false,
+    ticking,
+    rows,
     visible,
   };
 }

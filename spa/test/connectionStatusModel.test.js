@@ -50,6 +50,59 @@ describe("every machine connected", () => {
   });
 });
 
+// The ring says what is true of the account; the menu behind it says what is
+// true of each machine. One derivation, because the two must never disagree
+// about the same machine — and the words are the menu's own: a row has the
+// room for a state and no room for a sentence.
+describe("the machines, one row each", () => {
+  const attempting = { deviceId: "b", status: "attempting", failedAttempts: 0, nextAttemptAt: null };
+  const waiting = { deviceId: "b", status: "waiting", failedAttempts: 1, nextAttemptAt: NOW + 2400 };
+
+  it("says Connected for a machine holding a session", () => {
+    expect(status([STUDIO]).rows).toEqual([{ id: "a", name: "Studio", status: "connected", seconds: null, label: "Connected" }]);
+  });
+
+  // Not every machine that is not connected is being reconnected to: recovery
+  // stands down when the account stops calling a machine online, and never
+  // starts for one that was never online. Such a machine is off, which is a
+  // state and not a failure.
+  it("says Offline for a machine with no session and nothing being done about it", () => {
+    expect(status([{ ...STUDIO, live: false }]).rows[0]).toMatchObject({ status: "offline", label: "Offline", seconds: null });
+  });
+
+  it("says Reconnecting while an attempt is in flight", () => {
+    const rows = status([STUDIO, { ...LAPTOP, live: false }], [attempting]).rows;
+    expect(rows.map((row) => row.label)).toEqual(["Connected", "Reconnecting"]);
+    expect(rows[1]).toMatchObject({ id: "b", status: "attempting", seconds: null });
+  });
+
+  it("counts that machine's own wait down, not the soonest of them all", () => {
+    const rows = status([STUDIO, LAPTOP], [
+      { deviceId: "a", status: "waiting", failedAttempts: 1, nextAttemptAt: NOW + 9000 },
+      waiting,
+    ]).rows;
+    expect(rows.map((row) => row.label)).toEqual(["Reconnecting in 9 s", "Reconnecting in 3 s"]);
+    expect(rows.map((row) => row.seconds)).toEqual([9, 3]);
+  });
+
+  it("drops the count from a wait that is spent, because the try is beginning", () => {
+    expect(status([LAPTOP], [{ ...waiting, nextAttemptAt: NOW - 1 }]).rows[0].label).toBe("Reconnecting");
+  });
+
+  it("keeps the account's own order, and names a machine the list has not caught up with", () => {
+    const rows = status([STUDIO], [{ deviceId: "z", status: "attempting", failedAttempts: 0, nextAttemptAt: null }]).rows;
+    expect(rows.map((row) => row.name)).toEqual(["Studio", "a device"]);
+  });
+
+  it("holds the clock open while any machine is counting, whatever the ring shows", () => {
+    // The ring shows the attempt in flight and has no countdown of its own,
+    // but the menu behind it is counting a second machine down.
+    const seen = status([STUDIO, LAPTOP], [attempting, { ...waiting, deviceId: "a" }]);
+    expect(seen.state).toBe("attempting");
+    expect(seen.ticking).toBe(true);
+  });
+});
+
 describe("a machine being reconnected to", () => {
   const attempting = { deviceId: "a", status: "attempting", failedAttempts: 0, nextAttemptAt: null };
   const waiting = { deviceId: "a", status: "waiting", failedAttempts: 1, nextAttemptAt: NOW + 2400 };

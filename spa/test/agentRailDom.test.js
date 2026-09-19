@@ -4269,15 +4269,18 @@ describe("what the conversation points at", () => {
 // under the message is a real link: it carries the machine, the workspace, the
 // directory the path is mounted under, and the line it points at.
 describe("a file reference in a conversation", () => {
+  const SOURCES = [
+    { source_id: "repo", name: "Repository" },
+    { source_id: "assets", name: "Assets" },
+  ];
+
+  /** The row as the board pushes it: a work item, with no word about what a
+   *  workspace is mounted out of — that is the workspace list's to say. */
   const workspaceRow = (links) => ({
     kind: "branch",
     entity_id: "run-3",
     id: "ws-1",
     project_id: "p1",
-    directories: [
-      { source_id: "repo", name: "Repository" },
-      { source_id: "assets", name: "Assets" },
-    ],
     agents: [agent()],
     thread: {
       items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "Changed the parser.", links } }],
@@ -4287,7 +4290,8 @@ describe("a file reference in a conversation", () => {
   });
 
   /** The workspace as the disk holds it: its row, and the list that says the
-   *  route's workspace id is the row's conversation. */
+   *  route's workspace id is the row's conversation — and what it is mounted
+   *  out of, which lives on the list entry and nowhere else. */
   const workspaceOnDisk = async (row) => {
     payload = row;
     await writeRailBoard({
@@ -4295,7 +4299,7 @@ describe("a file reference in a conversation", () => {
       projects: [{ project_id: "p1", name: "build" }],
       workspaces: [{
         id: "ws-1", project_id: "p1", name: "login", status: "ready", entity_id: "run-3",
-        directories: row.directories,
+        directories: SOURCES,
       }],
     });
   };
@@ -4305,6 +4309,27 @@ describe("a file reference in a conversation", () => {
   it("links a path into the workspace directory it is mounted under", async () => {
     await workspaceOnDisk(workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }]));
     await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
+    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files?path=logo.svg&line=4");
+  });
+
+  it("re-reads its sources when one is mounted while the rail is open", async () => {
+    await writeRailBoard({
+      items: [workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }])],
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-1", project_id: "p1", name: "login", status: "ready", entity_id: "run-3", directories: [SOURCES[0]] }],
+    });
+    payload = workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }]);
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
+    // One source: the path is the open directory's own, name and all.
+    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/repo/files?path=Assets%2Flogo.svg&line=4");
+
+    await writeRailBoard({
+      items: [],
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-1", project_id: "p1", name: "login", status: "ready", entity_id: "run-3", directories: SOURCES }],
+    });
+    await flush();
+
     expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files?path=logo.svg&line=4");
   });
 

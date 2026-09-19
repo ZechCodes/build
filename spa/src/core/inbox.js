@@ -89,6 +89,11 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     // Done removes the workspace, so only the bridge decides when it is
     // offered: it is the one that can see every repository and every agent at
     // once. A missing verdict is not a yes.
+    // What the workspace is mounted out of. It is on the list entry and
+    // nowhere else — a board row is a work item and says nothing about
+    // sources — and a conversation's file references are read against it
+    // (core/threadLinks.js).
+    directories: workspace.directories || [],
     ready: workspace.status === "ready",
     canFinish: workspace.status === "ready" && workspace.can_finish === true,
     finishBlockers: workspace.finish_blockers || [],

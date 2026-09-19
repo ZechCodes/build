@@ -175,8 +175,6 @@ fn legacy_repo_root_run(root: &str) -> crate::store::PersistedRun {
         revising_stage_id: None,
         auto_advance: false,
         adopted: true,
-        triage: None,
-        recovery: None,
         publication_attempt: None,
         provider: Default::default(),
         model: None,

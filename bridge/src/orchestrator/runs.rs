@@ -8,9 +8,7 @@ use crate::models::ModelChoice;
 use crate::plan::{
     stage_doc_transition, PlanId, PlanState, StageDoc, StageDocEvent, StageDocState,
 };
-use crate::run::{
-    run_transition, Run, RunEvent, RunId, StageProgress, StageProgressEvent, StageProgressState,
-};
+use crate::run::{run_transition, Run, RunEvent, RunId, StageProgress, StageProgressState};
 use crate::store::{PersistedRun, Store};
 use crate::templates::{self, Templates, Vars};
 use crate::worktree::{configured_remote_for_branch, slugify, Worktree, WorktreeManager};
@@ -40,7 +38,7 @@ pub struct ActiveRun {
     /// store write-back from post-review changes on `done(revise)`).
     /// PERIPHERY: the mid-run revision flow itself lands with the stage flows.
     pub revising_stage_id: Option<String>,
-    /// "Run all": auto-dispatch the next approved stage when validation passes.
+    /// "Run all": auto-dispatch the next approved stage when one completes.
     pub auto_advance: bool,
     /// True for a run minted around a pre-existing (user-created) worktree.
     ///
@@ -50,13 +48,6 @@ pub struct ActiveRun {
     /// because the one the human was already having is one Build never heard
     /// and cannot show.
     pub adopted: bool,
-    /// The last triage pass over this run's diff, with the revision it read.
-    /// Presentational: nothing in the lifecycle reads it, and a stale one still
-    /// ships (the SPA labels it) until the re-triage lands.
-    pub triage: Option<crate::run::TriageReport>,
-    /// Durable nonce-bound branch recovery attempt, if one is active or last
-    /// completed. The app layer owns verification and lifecycle events.
-    pub recovery: Option<crate::run::RecoveryAttempt>,
     /// Push/merge write-ahead intent, retained across a crash until repository
     /// refs independently prove or disprove publication.
     pub publication_attempt: Option<crate::run::PublicationAttempt>,
@@ -103,8 +94,6 @@ impl ActiveRun {
             revising_stage_id: None,
             auto_advance: false,
             adopted: true,
-            triage: None,
-            recovery: None,
             publication_attempt: None,
             model_choice,
             agents: AgentRoster::empty(),
@@ -139,8 +128,6 @@ impl ActiveRun {
             revising_stage_id: record.revising_stage_id.clone(),
             auto_advance: record.auto_advance,
             adopted: record.adopted,
-            triage: record.triage.clone(),
-            recovery: record.recovery.clone(),
             publication_attempt: record.publication_attempt.clone(),
             model_choice: record.model_choice(),
             agents: record.roster(),
@@ -320,8 +307,6 @@ impl Orchestrator {
             revising_stage_id: None,
             auto_advance: false,
             adopted: false,
-            triage: None,
-            recovery: None,
             publication_attempt: None,
             model_choice,
             agents,
@@ -380,9 +365,8 @@ impl Orchestrator {
     /// sequential gate lives here and is deliberately cross-entity without any
     /// map lookup: the caller passes the owning plan's stage docs, so the run
     /// checks (1) the plan marks THIS stage `Approved`, and (2) every earlier
-    /// stage passed validation ON THIS RUN (its `StageProgress` is
-    /// `Validated{passed:true}`). Only then does it capture `start_sha` and
-    /// spawn.
+    /// stage completed ON THIS RUN (its `StageProgress` is `Completed`). Only
+    /// then does it capture `start_sha` and spawn.
     pub fn dispatch_run_stage(
         &self,
         active: &mut ActiveRun,
@@ -408,17 +392,17 @@ impl Orchestrator {
                 plan_stage_docs[doc_index].state
             )));
         }
-        // Sequential gate: every earlier stage must have passed validation on
-        // this run (the run consults its own progress, keyed by the plan's ids).
-        if let Some(unvalidated) = plan_stage_docs[..doc_index].iter().find(|doc| {
+        // Sequential gate: every earlier stage must have completed on this
+        // run (the run consults its own progress, keyed by the plan's ids).
+        if let Some(incomplete) = plan_stage_docs[..doc_index].iter().find(|doc| {
             active
                 .stage_progress(&doc.id)
                 .map(|progress| progress.state)
-                != Some(StageProgressState::Validated { passed: true })
+                != Some(StageProgressState::Completed)
         }) {
             return Err(OrchestratorError::Gate(format!(
-                "stage {} has not passed validation yet",
-                unvalidated.id
+                "stage {} has not completed yet",
+                incomplete.id
             )));
         }
 
@@ -457,56 +441,9 @@ impl Orchestrator {
         );
         Ok(AgentTurn::dispatched(prompt, "build"))
     }
-    /// Send a validation-failed stage back to a fresh fix session (the run-side
-    /// `fix_stage`). The stored validation findings drive the prompt; `note` is
-    /// the reviewer's optional steer. The stage's `start_sha` is kept across the
-    /// fix re-dispatch so its diff still covers all of the stage's work.
-    pub fn fix_run_stage(
-        &self,
-        active: &mut ActiveRun,
-        plan_stage_docs: &[StageDoc],
-        stage_id: &str,
-        note: &str,
-    ) -> Result<AgentTurn, OrchestratorError> {
-        let doc_index = plan_stage_docs
-            .iter()
-            .position(|doc| doc.id == stage_id)
-            .ok_or_else(|| {
-                OrchestratorError::Gate(format!("stage {stage_id} is not in the plan's stage docs"))
-            })?;
-        run_transition(&active.run.state, RunEvent::Dispatch)
-            .map_err(|e| OrchestratorError::Gate(format!("cannot fix a stage: {e}")))?;
-        let progress_index = active.stage_progress_index(stage_id).ok_or_else(|| {
-            OrchestratorError::Gate(format!("stage {stage_id} has no progress to fix"))
-        })?;
-        if active.stages[progress_index].state != (StageProgressState::Validated { passed: false })
-        {
-            return Err(OrchestratorError::Gate(format!(
-                "stage {stage_id} has no failed validation to fix (state {:?})",
-                active.stages[progress_index].state
-            )));
-        }
-
-        active.run.apply(RunEvent::Dispatch)?;
-        // Validated{passed:false} → Building, keeping start_sha and the stored
-        // findings the fix prompt consumes.
-        active.stages[progress_index].apply(StageProgressEvent::Dispatch)?;
-        active.current_stage_id = Some(stage_id.to_string());
-        active.last_error = None;
-        let prompt = self.render_run_stage(
-            &self.templates.fix_stage,
-            active,
-            plan_stage_docs,
-            doc_index,
-            note,
-        );
-        Ok(AgentTurn::dispatched(prompt, "build"))
-    }
     /// Submit a batch of diff comments (the run-side `request_changes`): put the
     /// run back to work and hand the caller the turn to deliver. Valid both from
-    /// `Review` (agent parked) and `Building` (agent still working). A stage
-    /// awaiting its validation verdict is refused — only a `validate` report may
-    /// move it, so redirecting it here would hang the run.
+    /// `Review` (agent parked) and `Building` (agent still working).
     ///
     /// The worktree's agent is never ended and never replaced: the reviewer is
     /// mid conversation with a process, and killing it to say something to it
@@ -522,19 +459,6 @@ impl Orchestrator {
         comments: &str,
         conversation_agent: Option<&str>,
     ) -> Result<AgentTurn, OrchestratorError> {
-        if let Some(stage_id) = active.current_stage_id.clone() {
-            if let Some(progress) = active.stage_progress(&stage_id) {
-                if matches!(
-                    progress.state,
-                    StageProgressState::Built | StageProgressState::Validating
-                ) {
-                    return Err(OrchestratorError::Gate(format!(
-                        "stage {stage_id} is awaiting validation; wait for the verdict \
-                         before requesting changes"
-                    )));
-                }
-            }
-        }
         active.run.apply(RunEvent::RequestChanges)?;
         active.last_error = None;
         let rendered = self.render_run(
@@ -563,9 +487,6 @@ impl Orchestrator {
     /// `Building`, and what reopens a gate is the gate's own structured verb
     /// (request changes, dispatch a stage). A freeform side channel that
     /// restarts the build would bypass the batched-review contract.
-    ///
-    /// A stage awaiting its validation verdict is refused for the same reason
-    /// as in `run_request_changes`: only a `validate` report may move it.
     pub fn message_run(
         &self,
         active: &mut ActiveRun,
@@ -574,19 +495,6 @@ impl Orchestrator {
     ) -> Result<AgentTurn, OrchestratorError> {
         if message.trim().is_empty() {
             return Err(OrchestratorError::Gate("message must not be empty".into()));
-        }
-        if let Some(stage_id) = active.current_stage_id.clone() {
-            if let Some(progress) = active.stage_progress(&stage_id) {
-                if matches!(
-                    progress.state,
-                    StageProgressState::Built | StageProgressState::Validating
-                ) {
-                    return Err(OrchestratorError::Gate(format!(
-                        "stage {stage_id} is awaiting validation; wait for the \
-                         verdict before messaging the agent"
-                    )));
-                }
-            }
         }
         use crate::run::RunState as S;
         let event = match active.run.state {
@@ -637,12 +545,10 @@ impl Orchestrator {
         Ok(AgentTurn::dispatched(prompt, "resume"))
     }
     /// An interrupted multi-stage build phase, routed by the current stage's
-    /// persisted progress: `Building` respawns the build session (or `fix_stage`
-    /// when a failed validation report shows that is what died); `Built` /
-    /// `Validating` respawn the validation pass (a `Built` stage is forced to
-    /// `Validating` first). A `Validated` current stage means the interrupted
-    /// session was a post-review change request, whose comments were not
-    /// persisted — it cannot be resumed blindly.
+    /// persisted progress: `Building` respawns the build session. A `Completed`
+    /// current stage means the interrupted session was a post-review change
+    /// request, whose comments were not persisted — it cannot be resumed
+    /// blindly.
     pub(super) fn resume_run_stage_prompt(
         &self,
         active: &mut ActiveRun,
@@ -663,41 +569,18 @@ impl Orchestrator {
             OrchestratorError::Gate(format!("no progress record for stage {stage_id}"))
         })?;
         match active.stages[progress_index].state {
-            StageProgressState::Building => {
-                let died_in_fix_session = active.stages[progress_index]
-                    .validation
-                    .as_ref()
-                    .is_some_and(|report| !report.passed);
-                let template = if died_in_fix_session {
-                    &self.templates.fix_stage
-                } else {
-                    &self.templates.build_stage
-                };
-                Ok(self.render_run_stage(template, active, plan_stage_docs, doc_index, ""))
-            }
-            StageProgressState::Built => {
-                active.stages[progress_index].apply(StageProgressEvent::StartValidation)?;
-                Ok(self.render_run_stage(&self.templates.validate, active, plan_stage_docs, doc_index, ""))
-            }
-            StageProgressState::Validating => Ok(self.render_run_stage(
-                &self.templates.validate,
+            StageProgressState::Building => Ok(self.render_run_stage(
+                &self.templates.build_stage,
                 active,
                 plan_stage_docs,
                 doc_index,
                 "",
             )),
-            StageProgressState::Validated { passed: true } => {
-                Err(OrchestratorError::Gate(format!(
-                    "stage {stage_id} already passed validation — the interrupted session was a \
-                     post-review change request; re-send the diff comments with Request Changes, \
-                     or approve the merge"
-                )))
-            }
-            StageProgressState::Validated { passed: false } => {
-                Err(OrchestratorError::Gate(format!(
-                    "stage {stage_id} failed validation — dispatch a fix session instead of resuming"
-                )))
-            }
+            StageProgressState::Completed => Err(OrchestratorError::Gate(format!(
+                "stage {stage_id} is already complete — the interrupted session was a \
+                 post-review change request; re-send the diff comments with Request Changes, \
+                 or approve the merge"
+            ))),
         }
     }
     /// Approve the run's diff and merge (the run-side `approve_merge`). Merge
@@ -757,10 +640,9 @@ impl Orchestrator {
     /// Consume a mid-run stage-doc revision's `done(revise)`: ingest the revised
     /// docs from the run's worktree back into the canonical store (fail-fast —
     /// the revision is never accepted with unpersisted docs), reset the plan's
-    /// stage-doc state (a revised doc's approval is stale), and land the agent's
-    /// per-comment resolutions on the plan's comments. Cross-entity by design:
-    /// the caller hands both the run (whose worktree holds the docs) and the
-    /// owning plan (whose store id, doc state, and comments are updated). The
+    /// stage-doc state (a revised doc's approval is stale). Cross-entity by
+    /// design: the caller hands both the run (whose worktree holds the docs)
+    /// and the owning plan (whose store id and doc state are updated). The
     /// run's coarse state is untouched.
     pub fn consume_run_stage_revision(
         &self,
@@ -787,26 +669,6 @@ impl Orchestrator {
         }
         plan.stages[index].state =
             stage_doc_transition(&plan.stages[index].state, StageDocEvent::Revised)?;
-        if let Some(resolutions) = &report.outputs.comment_resolutions {
-            for resolution in resolutions {
-                let answers_this_stage = plan
-                    .open_comments_for(&stage_id)
-                    .iter()
-                    .any(|comment| comment.id == resolution.comment_id);
-                if !answers_this_stage
-                    || !plan
-                        .agents
-                        .sole_thread_mut()
-                        .resolve_doc_comment(&resolution.comment_id, &resolution.response)
-                {
-                    eprintln!(
-                        "run stage revision for {stage_id}: unknown or non-open comment {:?}; \
-                         skipping",
-                        resolution.comment_id
-                    );
-                }
-            }
-        }
         active.revising_stage_id = None;
         active.last_summary = Some(report.summary.clone());
         active.last_error = None;
@@ -838,8 +700,8 @@ impl Orchestrator {
     }
     /// Render a stage-scoped template for a run with the full stage variable
     /// set: the stage doc's own fields (from the plan's manifest), the next
-    /// stage's doc path (empty on the final stage), the previous stage's
-    /// validation notes, and this stage's own findings — the split twin of
+    /// stage's doc path (empty on the final stage), and where this stage
+    /// started — the split twin of
     /// [`render_stage`](Self::render_stage), joining plan docs to run progress
     /// by stage id.
     pub(super) fn render_run_stage(
@@ -855,17 +717,9 @@ impl Orchestrator {
             .get(doc_index + 1)
             .map(|next| next.path.as_str())
             .unwrap_or("");
-        let prior_notes = doc_index
-            .checked_sub(1)
-            .and_then(|previous| active.stage_progress(&plan_stage_docs[previous].id))
-            .and_then(|progress| progress.validation.as_ref())
-            .map(|v| v.notes_for_next_stage.as_str())
-            .unwrap_or("");
-        let progress = active.stage_progress(&doc.id);
-        let stage_start_sha = progress.and_then(|p| p.start_sha.as_deref()).unwrap_or("");
-        let findings = progress
-            .and_then(|p| p.validation.as_ref())
-            .map(|v| v.findings.as_str())
+        let stage_start_sha = active
+            .stage_progress(&doc.id)
+            .and_then(|p| p.start_sha.as_deref())
             .unwrap_or("");
         let rendered = templates::render(
             template,
@@ -880,8 +734,6 @@ impl Orchestrator {
                 stage_summary: &doc.summary,
                 next_stage_path,
                 stage_start_sha,
-                findings,
-                prior_notes,
                 ..Vars::default()
             },
         );
@@ -890,10 +742,7 @@ impl Orchestrator {
                 .stage_progress(stage_id)
                 .map(|progress| match progress.state {
                     StageProgressState::Building => "building",
-                    StageProgressState::Built => "built",
-                    StageProgressState::Validating => "validating",
-                    StageProgressState::Validated { passed: true } => "complete",
-                    StageProgressState::Validated { passed: false } => "validation failed",
+                    StageProgressState::Completed => "complete",
                 })
                 .unwrap_or("not started")
                 .to_string()

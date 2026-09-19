@@ -56,8 +56,6 @@ pub(super) fn run_record(id: &str, plan_id: Option<&str>, created_at: &str) -> P
         revising_stage_id: None,
         auto_advance: false,
         adopted: false,
-        triage: None,
-        recovery: None,
         publication_attempt: None,
         provider: Default::default(),
         model: None,

@@ -61,19 +61,6 @@
         "created_at": "2026-09-13T09:00:00Z"
       }
     ],
-    "triage": {
-      "based_on": "8b1a9953c4611296",
-      "hunks": [
-        {
-          "hunk_id": "src/lib.rs:1",
-          "level": "critical",
-          "rationale": "the wire shape changes here"
-        }
-      ],
-      "overrides": [],
-      "stale": false
-    },
-    "triage_enabled": true,
     "auto_advance": false,
     "current_stage_id": "stage-2",
     "adopted": false,
@@ -84,16 +71,11 @@
     "stages": [
       {
         "id": "stage-1",
-        "state": "validated_passed",
+        "state": "completed",
         "start_sha": "aa11bb22cc33dd44ee55ff6677889900aabbccdd",
         "built_sha": "bb22cc33dd44ee55ff6677889900aabbccddeeff",
         "completion_sha": "cc33dd44ee55ff6677889900aabbccddeeff0011",
-        "publication": "pushed",
-        "validation": {
-          "passed": true,
-          "findings": "Everything the stage doc asked for is present.",
-          "notes_for_next_stage": "The typed params are in place."
-        }
+        "publication": "pushed"
       },
       {
         "id": "stage-2",

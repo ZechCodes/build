@@ -13,8 +13,6 @@ fn offered() -> Thread {
     thread.post_user("the tests are red", None, "2026-08-19T09:00:00Z");
     thread.post_agent_offering(
         "Two ways out. Which?",
-        None,
-        Vec::new(),
         vec![
             option(
                 "option-1",

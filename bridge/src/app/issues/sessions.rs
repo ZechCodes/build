@@ -5,7 +5,7 @@ use crate::app::{
     PendingAgentTurn, PlanSessionOpening,
 };
 use crate::lifecycle::{OpenPlanWorkspace, PendingRow};
-use crate::mcp::{DonePhase, DoneReport, DoneStatus};
+use crate::mcp::{DoneReport, DoneStatus};
 use crate::models::ModelChoice;
 use crate::operation::OperationReceipt;
 use crate::orchestrator::{ActivePlan, AgentTurn};
@@ -296,6 +296,7 @@ impl AppState {
         };
         let previous_stage_ids: Vec<String> =
             active.stages.iter().map(|stage| stage.id.clone()).collect();
+        let was_revising_stage = active.revising_stage_id.is_some();
         let report_for_thread = report.clone();
         let outcome = (|| -> Result<(), String> {
             let project_id = self.project_of(plan_id)?;
@@ -308,7 +309,7 @@ impl AppState {
             eprintln!("on_agent_done {plan_id}: {e}");
         }
         if outcome.is_ok()
-            && report_for_thread.phase == DonePhase::Plan
+            && !was_revising_stage
             && report_for_thread.status == DoneStatus::Completed
         {
             let new_stages: Vec<(usize, StageDoc)> = active

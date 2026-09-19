@@ -374,51 +374,15 @@ describe("applying one item", () => {
     ]);
   });
 
-  const triagedDiff = async () => {
-    await boot([branchItem()]);
-    const held = (await read("run-1", "diff")).value;
-    expect(held.projectId).toBe("p1");
-    await cache.writeCached(
-      { deviceId: "dev-1", entityId: "run-1", kind: "diff", sub: "" },
-      { ...held, triageEnabled: true, triage: { "src/a.js": "reviewed" } },
-    );
-    return held;
-  };
-
   it("keeps the project beside a diff a git item replaces", async () => {
-    await triagedDiff();
+    await boot([branchItem()]);
+    expect((await read("run-1", "diff")).value.projectId).toBe("p1");
 
     await deliver([{ entity_id: "run-1", git: { diff: { patch: "pushed body", diff_key: "d9" } } }]);
     const after = (await read("run-1", "diff")).value;
     expect(after.patch).toBe("pushed body");
     expect(after.diff_key).toBe("d9");
     expect(after.projectId).toBe("p1");
-  });
-
-  // A triage pass is read against one body and says nothing about any other:
-  // it is not a wire field of the diff, so nothing on the push carries a new
-  // one, and a record keeping the old one beside a new body would have the
-  // reviewer shown an ordering and a set of verdicts computed against a diff
-  // that has since moved.
-  it("keeps the triage where the body it was read against is the one that arrived", async () => {
-    const held = await triagedDiff();
-
-    await deliver([{ entity_id: "run-1", git: { diff: { patch: held.patch, diff_key: "d9" } } }]);
-    const after = (await read("run-1", "diff")).value;
-    expect(after.triage).toEqual({ "src/a.js": "reviewed" });
-    expect(after.triageEnabled).toBe(true);
-  });
-
-  it("lets go of a triage the arriving body was not read against", async () => {
-    await triagedDiff();
-
-    await deliver([{ entity_id: "run-1", git: { diff: { patch: "pushed body", diff_key: "d9" } } }]);
-    const after = (await read("run-1", "diff")).value;
-    // Absent, not null: the surface reads "no pass for this body" off the
-    // missing key and asks for one, where `null` would be a pass that is
-    // missing and nothing would ask.
-    expect(Object.hasOwn(after, "triage")).toBe(false);
-    expect(after.triageEnabled).toBe(true);
   });
 
   it("reads the patch behind a commit the git item made unpushed", async () => {

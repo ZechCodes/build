@@ -214,7 +214,7 @@ export function composeBoxHtml({ value = "", placeholder, note = "", error = "",
       aria-label="${esc(placeholder)}">${esc(value)}</textarea>
     <div class="compose-row">
       <button class="compose-disclose" id="compose-advanced" type="button" aria-expanded="${advanced ? "true" : "false"}">
-        ${advanced ? "▾" : "▸"} I know where this goes</button>
+        <span class="disclosure-caret" aria-hidden="true">${advanced ? "▾" : "▸"}</span> I know where this goes</button>
       <button class="btn mini" id="compose-cancel" type="button">Cancel</button>
       <button class="btn mini primary" id="compose-send" type="button"${busy ? " disabled" : ""}>${busy ? "sending…" : "Capture"}</button>
     </div>

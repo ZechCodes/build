@@ -1,7 +1,7 @@
 //! The run model and its lifecycle state machine.
 //!
 //! A run is *worktree-scoped*: one implementation attempt — a worktree, a
-//! branch, a sequence of build/fix/validation sessions, and a state. A run
+//! branch, a sequence of build sessions, and a state. A run
 //! usually implements a plan (`plan_id`); an *adopted* run — one minted around
 //! a worktree that already existed — is the only kind with `plan_id = None`.
 //! This module is the pure domain core — no IO, no git, no
@@ -13,15 +13,14 @@
 //! created → building → review → merged
 //!              │  ▲        │
 //!              │  └ changes┘
-//!              ├──⇄ stage_gate (multi-stage: between validated stages)
+//!              ├──⇄ stage_gate (multi-stage: between completed stages)
 //!              └── blocked / failed / idle_unreported / interrupted
 //!              └── abandoned / archived (terminal)
 //! ```
 //!
 //! `StageGate` replaces the fused task machine's reuse of `PlanReview` as the
-//! between-stages board: the run parks there after a stage validates (or its
-//! validation fails) until the human dispatches the next stage or a fix
-//! session. Four interruptions can occur while a build agent works: `blocked`
+//! between-stages board: the run parks there after a stage completes until
+//! the human dispatches the next stage. Four interruptions can occur while a build agent works: `blocked`
 //! and `failed` (the agent calls `done` with that status), `idle_unreported`
 //! (the PTY went quiet without any `done`), and `interrupted` (the daemon died
 //! mid-session and recovered the run from the durable store on boot). There is
@@ -52,8 +51,8 @@ pub enum RunState {
     /// A build agent is running in a PTY, executing the plan (or, for an
     /// adopted run, its derived goal).
     Building,
-    /// Multi-stage only: between stages. The previous stage's validation
-    /// verdict is in; the human dispatches the next stage or a fix session.
+    /// Multi-stage only: between stages. The previous stage is complete; the
+    /// human dispatches the next one.
     StageGate,
     /// The diff is ready; the human is reviewing it (a gate).
     Review,
@@ -109,8 +108,8 @@ impl RunState {
 
 /// Everything that can drive a run lifecycle transition.
 ///
-/// Agent-originated events (`BuildReady`, `Blocked`, `Failed`, the validation
-/// verdicts) arrive via the `done` MCP tool; `WentIdle` is the quiescence
+/// Agent-originated events (`BuildReady`, `Blocked`, `Failed`,
+/// `StageCompleted`) arrive via the `done` MCP tool; `WentIdle` is the quiescence
 /// timer; `Archive` is the worktree sweep; the rest are human actions from the
 /// review surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,7 +117,7 @@ pub enum RunEvent {
     /// Begin work: the first build session (Created → Building), or the next
     /// stage / fix session from the stage gate (StageGate → Building).
     Dispatch,
-    /// `done(phase=build, completed)`. Building → Review.
+    /// `done(completed)` on a single-plan or adopted run. Building → Review.
     BuildReady,
     /// The user submits a batch of diff comments. Legal from Review (revise)
     /// *and* from Building — it redirects the running agent.
@@ -141,12 +140,9 @@ pub enum RunEvent {
     /// The run's worktree disappeared from disk, either outside Build or when
     /// the human used Done to finish and archive its checkout.
     Archive,
-    /// The validation agent reported done(phase=validate, completed,
-    /// passed=true). `last_stage` = the validated stage is the manifest's
-    /// final stage.
-    ValidationPassed { last_stage: bool },
-    /// done(phase=validate, completed, passed=false).
-    ValidationFailed,
+    /// A stage's build reported done(completed) and Build committed its
+    /// boundary. `last_stage` = the stage is the manifest's final stage.
+    StageCompleted { last_stage: bool },
 }
 
 /// A rejected run transition: `event` is not valid from `from`.
@@ -214,19 +210,15 @@ pub fn run_transition(state: &RunState, event: RunEvent) -> Result<RunState, Ill
         (Interrupted, E::Reply) => Ok(Building),
         (Interrupted, E::RequestChanges) => Ok(Building),
 
-        // Multi-stage validation verdicts. The run stays `Building` while a
-        // stage's validation agent runs; only the verdict moves the coarse
-        // state. The final stage's pass opens merge review; otherwise the run
-        // parks at the between-stages gate. The IdleUnreported and Blocked
-        // arms preserve the standing rule: neither quiescence nor a plea for
-        // help decided anything, so a late validation `done` is still honored.
-        (Building | IdleUnreported | Blocked, E::ValidationPassed { last_stage: true }) => {
-            Ok(Review)
-        }
-        (Building | IdleUnreported | Blocked, E::ValidationPassed { last_stage: false }) => {
+        // A multi-stage run's stage finished. The final stage opens merge
+        // review; any other parks the run at the between-stages gate. The
+        // IdleUnreported and Blocked arms preserve the standing rule: neither
+        // quiescence nor a plea for help decided anything, so a late `done` is
+        // still honored.
+        (Building | IdleUnreported | Blocked, E::StageCompleted { last_stage: true }) => Ok(Review),
+        (Building | IdleUnreported | Blocked, E::StageCompleted { last_stage: false }) => {
             Ok(StageGate)
         }
-        (Building | IdleUnreported | Blocked, E::ValidationFailed) => Ok(StageGate),
 
         // Abandon is legal from any non-terminal state.
         (s, E::Abandon) if !s.is_terminal() => Ok(Abandoned),
@@ -241,202 +233,57 @@ pub fn run_transition(state: &RunState, event: RunEvent) -> Result<RunState, Ill
     }
 }
 
-/// The validation agent's verdict for one stage.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ValidationReport {
-    pub passed: bool,
-    /// Markdown findings — what matched/diverged from the stage doc.
-    pub findings: String,
-    /// Markdown notes handed to the next stage's build prompt (and surfaced on
-    /// the next stage in the UI). Empty string when there is nothing to say.
-    pub notes_for_next_stage: String,
-}
-
-/// How much review one hunk of a diff needs.
-///
-/// Presentational, and only that: triage orders and collapses the review
-/// surface. No level gates a lifecycle transition, and no state waits on a
-/// triage pass — the diff underneath it is always the whole diff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TriageLevel {
-    Critical,
-    Normal,
-    Low,
-}
-
-impl TriageLevel {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TriageLevel::Critical => "critical",
-            TriageLevel::Normal => "normal",
-            TriageLevel::Low => "low",
-        }
-    }
-}
-
-/// One hunk's classification, keyed by the id `crate::diff::patch_hunks`
-/// assigns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TriageHunk {
-    pub hunk_id: String,
-    pub level: TriageLevel,
-    /// The one line the reviewer reads instead of a collapsed hunk, or the one
-    /// that says what to look at in a critical one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rationale: Option<String>,
-    /// The named group `low` hunks collapse into, shared by several hunks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<String>,
-}
-
-/// Which way a reviewer disagreed with a hunk's classification.
-///
-/// The two directions are the two ways triage can be wrong, and they are worth
-/// very different things: `Surface` says the pass hid something that mattered,
-/// `Collapse` says it spent the reviewer's attention on something that did not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OverrideDirection {
-    /// The reviewer opened a hunk triage had collapsed.
-    Surface,
-    /// The reviewer collapsed a hunk triage had surfaced.
-    Collapse,
-}
-
-impl OverrideDirection {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OverrideDirection::Surface => "surface",
-            OverrideDirection::Collapse => "collapse",
-        }
-    }
-
-    /// The wire token as a direction, or an error naming what was accepted.
-    pub fn parse(token: &str) -> Result<OverrideDirection, String> {
-        match token {
-            "surface" => Ok(OverrideDirection::Surface),
-            "collapse" => Ok(OverrideDirection::Collapse),
-            other => Err(format!(
-                "unknown override direction {other}: expected surface or collapse"
-            )),
-        }
-    }
-}
-
-/// One reviewer's disagreement with one hunk's classification.
-///
-/// The reviewer's, always: an agent never writes one of these, and a triage
-/// report that claims to carry them is rejected whole. Overriding is the only
-/// place in the review surface where the human's judgment is the record rather
-/// than an input to somebody else's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TriageOverride {
-    pub hunk_id: String,
-    pub direction: OverrideDirection,
-    /// What the reviewer said about the disagreement, when they said anything.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-    pub at: String,
-}
-
-/// A triage pass over one revision of a run's diff.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TriageReport {
-    /// The diff revision this pass read — the content hash of the patch it was
-    /// given. A triage whose `based_on` is not the current revision is stale:
-    /// it still ships, labelled, because a stale ordering beats none.
-    pub based_on: String,
-    pub hunks: Vec<TriageHunk>,
-    /// Where the reviewer disagreed with the pass, at most one per hunk. Not
-    /// part of what an agent reports — see [`TriageOverride`] — so a report
-    /// that arrives carrying any is refused rather than trusted. Carried
-    /// forward across a re-triage for every hunk the new pass still names.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub overrides: Vec<TriageOverride>,
-}
-
-impl TriageReport {
-    /// Record one disagreement, replacing whatever this reviewer last said
-    /// about the same hunk. Answers whether the direction is new — a reviewer
-    /// toggling the same hunk the same way twice has not said anything twice,
-    /// and must not be counted as though they had.
-    pub fn record_override(&mut self, disagreement: TriageOverride) -> bool {
-        match self
-            .overrides
-            .iter_mut()
-            .find(|existing| existing.hunk_id == disagreement.hunk_id)
-        {
-            Some(existing) => {
-                let is_new_direction = existing.direction != disagreement.direction;
-                *existing = disagreement;
-                is_new_direction
-            }
-            None => {
-                self.overrides.push(disagreement);
-                true
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecoveryState {
-    Started,
-    Succeeded,
-    Failed,
-}
-
-/// Durable nonce and outcome for one attempt to recover an Issue's original
-/// implementation branch. The agent's MCP report is a claim; `Succeeded` is
-/// written only after the daemon independently verifies the restored checkout.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecoveryAttempt {
-    pub id: String,
-    pub requested_stage_id: String,
-    pub branch: String,
-    pub state: RecoveryState,
-    #[serde(default)]
-    pub report: Option<crate::mcp::RecoveryReport>,
-    pub started_at: String,
-    #[serde(default)]
-    pub completed_at: Option<String>,
-}
-
 /// Position of one stage in its run-side execution lifecycle. Plan-side doc
 /// review (`Planned/Approved`) lives on the plan (`crate::plan::StageDoc`);
 /// a progress record exists only once the stage has been dispatched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageProgressState {
-    /// A build (or fix) session is running for this stage.
+    /// A build session is running for this stage.
     Building,
-    /// The build session reported done; validation has not started yet.
-    Built,
-    /// A validation agent session is running for this stage.
-    Validating,
-    /// Validation reported. `passed: true` is terminal for the stage;
-    /// `passed: false` awaits `Dispatch` (a fix session) or a plan change.
-    Validated { passed: bool },
+    /// The build session reported done and Build committed its boundary.
+    /// Terminal for the stage.
+    Completed,
+}
+
+/// Records written before the validation gate was removed carry its states.
+/// A stage that passed is complete; one still waiting on (or sent back by) a
+/// validation that will never come is still being built.
+impl<'de> Deserialize<'de> for StageProgressState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match &value {
+            serde_json::Value::String(state) => match state.as_str() {
+                "building" | "built" | "validating" => Ok(StageProgressState::Building),
+                "completed" => Ok(StageProgressState::Completed),
+                other => Err(serde::de::Error::unknown_variant(
+                    other,
+                    &["building", "completed"],
+                )),
+            },
+            serde_json::Value::Object(legacy) => match legacy
+                .get("validated")
+                .and_then(|validated| validated.get("passed"))
+                .and_then(serde_json::Value::as_bool)
+            {
+                Some(true) => Ok(StageProgressState::Completed),
+                Some(false) => Ok(StageProgressState::Building),
+                None => Err(serde::de::Error::custom(format!(
+                    "unknown stage progress state {value}"
+                ))),
+            },
+            _ => Err(serde::de::Error::custom(format!(
+                "unknown stage progress state {value}"
+            ))),
+        }
+    }
 }
 
 /// Everything that can drive a stage-progress transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StageProgressEvent {
-    /// A fix session is spawned after a failed validation.
-    /// Validated{passed:false} → Building. (The *first* build session creates
-    /// the progress record instead — see `StageProgress::dispatched`.)
-    Dispatch,
-    /// The stage's build/fix session reported done(completed). Building → Built.
+    /// The stage's build session reported done(completed). Building → Completed.
     BuildDone,
-    /// The validation session is spawned. Built → Validating.
-    StartValidation,
-    /// The validation session reported done(completed). Validating → Validated.
-    ValidationDone { passed: bool },
 }
 
 /// A rejected stage-progress transition.
@@ -453,19 +300,10 @@ pub fn stage_progress_transition(
     state: &StageProgressState,
     event: StageProgressEvent,
 ) -> Result<StageProgressState, IllegalStageProgressTransition> {
-    use StageProgressEvent as E;
-    use StageProgressState::*;
-
     match (state, event) {
-        // The fix path: a new build session after a failed validation.
-        // `Validated{passed:true}` is stage-terminal.
-        (Validated { passed: false }, E::Dispatch) => Ok(Building),
-
-        // Build → validation pipeline.
-        (Building, E::BuildDone) => Ok(Built),
-        (Built, E::StartValidation) => Ok(Validating),
-        (Validating, E::ValidationDone { passed }) => Ok(Validated { passed }),
-
+        (StageProgressState::Building, StageProgressEvent::BuildDone) => {
+            Ok(StageProgressState::Completed)
+        }
         _ => Err(IllegalStageProgressTransition {
             from: *state,
             event,
@@ -517,8 +355,6 @@ pub struct StageProgress {
     /// Evidence retained when worktree loss or recovery invalidates execution.
     #[serde(default)]
     pub invalidation_reason: Option<String>,
-    #[serde(default)]
-    pub validation: Option<ValidationReport>,
 }
 
 impl StageProgress {
@@ -533,7 +369,6 @@ impl StageProgress {
             completion_sha: None,
             publication: StagePublication::Local,
             invalidation_reason: None,
-            validation: None,
         }
     }
 
@@ -829,16 +664,16 @@ mod tests {
         }
     }
 
-    // ---- Multi-stage: validation verdicts and the stage gate ----
+    // ---- Multi-stage: completed stages and the stage gate ----
 
     #[test]
-    fn validation_passed_on_last_stage_moves_building_to_review() {
+    fn completing_the_last_stage_moves_building_to_review() {
         drive(
             planned_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (
-                    RunEvent::ValidationPassed { last_stage: true },
+                    RunEvent::StageCompleted { last_stage: true },
                     RunState::Review,
                 ),
             ],
@@ -846,13 +681,13 @@ mod tests {
     }
 
     #[test]
-    fn validation_passed_mid_plan_parks_at_the_stage_gate() {
+    fn completing_a_mid_plan_stage_parks_at_the_stage_gate() {
         drive(
             planned_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (
-                    RunEvent::ValidationPassed { last_stage: false },
+                    RunEvent::StageCompleted { last_stage: false },
                     RunState::StageGate,
                 ),
             ],
@@ -860,37 +695,18 @@ mod tests {
     }
 
     #[test]
-    fn validation_failed_parks_at_the_stage_gate() {
-        drive(
-            planned_run(),
-            &[
-                (RunEvent::Dispatch, RunState::Building),
-                (RunEvent::ValidationFailed, RunState::StageGate),
-            ],
-        );
-    }
-
-    #[test]
-    fn blocked_then_late_validation_verdict_is_honored() {
-        // A validation agent can block (it needs something) and then, once
-        // answered, still deliver its verdict from the same warm session.
+    fn blocked_then_late_stage_completion_is_honored() {
+        // A stage's agent can block (it needs something) and then, once
+        // answered, still finish the stage from the same warm session.
         drive(
             planned_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::Blocked, RunState::Blocked),
                 (
-                    RunEvent::ValidationPassed { last_stage: false },
+                    RunEvent::StageCompleted { last_stage: false },
                     RunState::StageGate,
                 ),
-            ],
-        );
-        drive(
-            planned_run(),
-            &[
-                (RunEvent::Dispatch, RunState::Building),
-                (RunEvent::Blocked, RunState::Blocked),
-                (RunEvent::ValidationFailed, RunState::StageGate),
             ],
         );
     }
@@ -902,12 +718,12 @@ mod tests {
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (
-                    RunEvent::ValidationPassed { last_stage: false },
+                    RunEvent::StageCompleted { last_stage: false },
                     RunState::StageGate,
                 ),
                 (RunEvent::Dispatch, RunState::Building),
                 (
-                    RunEvent::ValidationPassed { last_stage: true },
+                    RunEvent::StageCompleted { last_stage: true },
                     RunState::Review,
                 ),
                 (RunEvent::ApproveMerge, RunState::Merged),
@@ -926,9 +742,8 @@ mod tests {
             RunEvent::WentIdle,
             RunEvent::Interrupt,
             RunEvent::Reply,
-            RunEvent::ValidationPassed { last_stage: true },
-            RunEvent::ValidationPassed { last_stage: false },
-            RunEvent::ValidationFailed,
+            RunEvent::StageCompleted { last_stage: true },
+            RunEvent::StageCompleted { last_stage: false },
         ] {
             assert!(
                 run_transition(&RunState::StageGate, event).is_err(),
@@ -950,19 +765,18 @@ mod tests {
     }
 
     #[test]
-    fn late_validation_outcomes_are_honored_from_idle_unreported() {
-        // Quiescence never decided anything: a late validation `done` still
-        // moves the run, exactly like a late BuildReady.
+    fn late_stage_completion_is_honored_from_idle_unreported() {
+        // Quiescence never decided anything: a late stage `done` still moves
+        // the run, exactly like a late BuildReady.
         for (event, expected) in [
             (
-                RunEvent::ValidationPassed { last_stage: true },
+                RunEvent::StageCompleted { last_stage: true },
                 RunState::Review,
             ),
             (
-                RunEvent::ValidationPassed { last_stage: false },
+                RunEvent::StageCompleted { last_stage: false },
                 RunState::StageGate,
             ),
-            (RunEvent::ValidationFailed, RunState::StageGate),
         ] {
             let got = run_transition(&RunState::IdleUnreported, event)
                 .expect("legal from IdleUnreported");
@@ -971,9 +785,9 @@ mod tests {
     }
 
     #[test]
-    fn validation_events_are_rejected_outside_working_states() {
+    fn stage_completion_is_rejected_outside_working_states() {
         // Blocked is deliberately absent: a plea for help decided nothing, so
-        // a late verdict from a nudged validation agent is still honored.
+        // a late stage completion is still honored.
         for state in [
             RunState::Created,
             RunState::StageGate,
@@ -985,9 +799,8 @@ mod tests {
             RunState::Archived,
         ] {
             for event in [
-                RunEvent::ValidationPassed { last_stage: true },
-                RunEvent::ValidationPassed { last_stage: false },
-                RunEvent::ValidationFailed,
+                RunEvent::StageCompleted { last_stage: true },
+                RunEvent::StageCompleted { last_stage: false },
             ] {
                 assert!(
                     run_transition(&state, event).is_err(),
@@ -1007,7 +820,10 @@ mod tests {
             vec![RunEvent::Dispatch, RunEvent::BuildReady],
             vec![RunEvent::Dispatch, RunEvent::Blocked],
             vec![RunEvent::Dispatch, RunEvent::WentIdle],
-            vec![RunEvent::Dispatch, RunEvent::ValidationFailed],
+            vec![
+                RunEvent::Dispatch,
+                RunEvent::StageCompleted { last_stage: false },
+            ],
         ] {
             let mut r = planned_run();
             for e in setup {
@@ -1026,7 +842,10 @@ mod tests {
             vec![RunEvent::Dispatch],
             vec![RunEvent::Dispatch, RunEvent::BuildReady],
             vec![RunEvent::Dispatch, RunEvent::Blocked],
-            vec![RunEvent::Dispatch, RunEvent::ValidationFailed],
+            vec![
+                RunEvent::Dispatch,
+                RunEvent::StageCompleted { last_stage: false },
+            ],
         ] {
             let mut r = planned_run();
             for e in setup {
@@ -1078,8 +897,7 @@ mod tests {
                 RunEvent::Interrupt,
                 RunEvent::Reply,
                 RunEvent::Abandon,
-                RunEvent::ValidationPassed { last_stage: true },
-                RunEvent::ValidationFailed,
+                RunEvent::StageCompleted { last_stage: true },
             ] {
                 assert!(
                     run_transition(&r.state, e).is_err(),
@@ -1132,85 +950,17 @@ mod tests {
     // ---- Stage-progress sub-state machine ----
 
     #[test]
-    fn stage_progress_transition_full_table() {
-        use StageProgressEvent as E;
-        use StageProgressState::*;
-        let table: &[(StageProgressState, StageProgressEvent, StageProgressState)] = &[
-            (Validated { passed: false }, E::Dispatch, Building),
-            (Building, E::BuildDone, Built),
-            (Built, E::StartValidation, Validating),
-            (
-                Validating,
-                E::ValidationDone { passed: true },
-                Validated { passed: true },
-            ),
-            (
-                Validating,
-                E::ValidationDone { passed: false },
-                Validated { passed: false },
-            ),
-        ];
-        for (from, event, to) in table {
-            assert_eq!(
-                stage_progress_transition(from, *event).expect("legal stage progress transition"),
-                *to,
-                "{event:?} from {from:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn stage_progress_rejects_everything_not_in_the_table() {
-        use StageProgressEvent as E;
-        use StageProgressState::*;
-        let all_events = [
-            E::Dispatch,
-            E::BuildDone,
-            E::StartValidation,
-            E::ValidationDone { passed: true },
-            E::ValidationDone { passed: false },
-        ];
-        let legal: &[(StageProgressState, StageProgressEvent)] = &[
-            (Validated { passed: false }, E::Dispatch),
-            (Building, E::BuildDone),
-            (Built, E::StartValidation),
-            (Validating, E::ValidationDone { passed: true }),
-            (Validating, E::ValidationDone { passed: false }),
-        ];
-        for from in [
-            Building,
-            Built,
-            Validating,
-            Validated { passed: true },
-            Validated { passed: false },
-        ] {
-            for event in all_events {
-                if legal.contains(&(from, event)) {
-                    continue;
-                }
-                let err = stage_progress_transition(&from, event)
-                    .expect_err(&format!("{event:?} should be rejected from {from:?}"));
-                assert_eq!(err.from, from);
-                assert_eq!(err.event, event);
-            }
-        }
-    }
-
-    #[test]
-    fn validated_passed_is_stage_terminal() {
-        use StageProgressEvent as E;
-        for event in [
-            E::Dispatch,
-            E::BuildDone,
-            E::StartValidation,
-            E::ValidationDone { passed: true },
-        ] {
-            assert!(
-                stage_progress_transition(&StageProgressState::Validated { passed: true }, event)
-                    .is_err(),
-                "{event:?} should be rejected from Validated{{passed:true}}"
-            );
-        }
+    fn a_built_stage_is_complete_and_complete_is_terminal() {
+        let mut progress = StageProgress::dispatched("api-endpoints");
+        assert_eq!(progress.state, StageProgressState::Building);
+        progress
+            .apply(StageProgressEvent::BuildDone)
+            .expect("build done legal");
+        assert_eq!(progress.state, StageProgressState::Completed);
+        let err = progress
+            .apply(StageProgressEvent::BuildDone)
+            .expect_err("a complete stage accepts nothing");
+        assert_eq!(err.from, StageProgressState::Completed);
     }
 
     #[test]
@@ -1219,30 +969,6 @@ mod tests {
         assert_eq!(progress.stage_id, "database-schema");
         assert_eq!(progress.state, StageProgressState::Building);
         assert_eq!(progress.start_sha, None);
-        assert_eq!(progress.validation, None);
-    }
-
-    #[test]
-    fn stage_progress_apply_walks_the_pipeline() {
-        let mut progress = StageProgress::dispatched("api-endpoints");
-        progress
-            .apply(StageProgressEvent::BuildDone)
-            .expect("build done legal");
-        progress
-            .apply(StageProgressEvent::StartValidation)
-            .expect("start validation legal");
-        progress
-            .apply(StageProgressEvent::ValidationDone { passed: false })
-            .expect("validation done legal");
-        assert_eq!(
-            progress.state,
-            StageProgressState::Validated { passed: false }
-        );
-        // The fix path: dispatch again after a failed validation.
-        progress
-            .apply(StageProgressEvent::Dispatch)
-            .expect("fix dispatch legal");
-        assert_eq!(progress.state, StageProgressState::Building);
     }
 
     // ---- Serde shapes ----
@@ -1251,16 +977,7 @@ mod tests {
     fn stage_progress_state_serde_round_trips() {
         for (state, json) in [
             (StageProgressState::Building, "\"building\""),
-            (StageProgressState::Built, "\"built\""),
-            (StageProgressState::Validating, "\"validating\""),
-            (
-                StageProgressState::Validated { passed: true },
-                "{\"validated\":{\"passed\":true}}",
-            ),
-            (
-                StageProgressState::Validated { passed: false },
-                "{\"validated\":{\"passed\":false}}",
-            ),
+            (StageProgressState::Completed, "\"completed\""),
         ] {
             assert_eq!(serde_json::to_string(&state).unwrap(), json);
             assert_eq!(
@@ -1271,21 +988,43 @@ mod tests {
         }
     }
 
+    /// Records written while the validation gate existed still load: a stage
+    /// that passed is complete, and one that was waiting on (or sent back by)
+    /// a validation that will never come is still being built.
     #[test]
-    fn stage_progress_serde_round_trips_including_validation_report() {
+    fn validation_era_stage_states_still_load() {
+        for (json, state) in [
+            ("\"built\"", StageProgressState::Building),
+            ("\"validating\"", StageProgressState::Building),
+            (
+                "{\"validated\":{\"passed\":true}}",
+                StageProgressState::Completed,
+            ),
+            (
+                "{\"validated\":{\"passed\":false}}",
+                StageProgressState::Building,
+            ),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<StageProgressState>(json).unwrap(),
+                state,
+                "{json}"
+            );
+        }
+        assert!(serde_json::from_str::<StageProgressState>("\"merged\"").is_err());
+        assert!(serde_json::from_str::<StageProgressState>("{\"other\":1}").is_err());
+    }
+
+    #[test]
+    fn stage_progress_serde_round_trips() {
         let progress = StageProgress {
             stage_id: "database-schema".into(),
-            state: StageProgressState::Validated { passed: false },
+            state: StageProgressState::Completed,
             start_sha: Some("abc123".into()),
             built_sha: Some("def456".into()),
-            completion_sha: None,
+            completion_sha: Some("def456".into()),
             publication: StagePublication::Local,
             invalidation_reason: None,
-            validation: Some(ValidationReport {
-                passed: false,
-                findings: "- migration missing".into(),
-                notes_for_next_stage: "".into(),
-            }),
         };
         let json = serde_json::to_string(&progress).unwrap();
         assert_eq!(
@@ -1293,15 +1032,17 @@ mod tests {
             progress
         );
 
-        // New boundary fields default safely for records written before they existed.
-        let bare: StageProgress =
-            serde_json::from_str(r#"{"stage_id":"s","state":"building"}"#).unwrap();
+        // New boundary fields default safely for records written before they
+        // existed, and a stored validation report is simply ignored.
+        let bare: StageProgress = serde_json::from_str(
+            r#"{"stage_id":"s","state":"building","validation":{"passed":true,"findings":"","notes_for_next_stage":""}}"#,
+        )
+        .unwrap();
         assert_eq!(bare.start_sha, None);
         assert_eq!(bare.built_sha, None);
         assert_eq!(bare.completion_sha, None);
         assert_eq!(bare.publication, StagePublication::LegacyUnknown);
         assert_eq!(bare.invalidation_reason, None);
-        assert_eq!(bare.validation, None);
     }
 
     #[test]
@@ -1310,20 +1051,6 @@ mod tests {
         assert_eq!(progress.publication, StagePublication::Local);
         assert_eq!(progress.built_sha, None);
         assert_eq!(progress.completion_sha, None);
-    }
-
-    #[test]
-    fn validation_report_serde_round_trips() {
-        let report = ValidationReport {
-            passed: true,
-            findings: "- all good".into(),
-            notes_for_next_stage: "watch the renamed symbol".into(),
-        };
-        let json = serde_json::to_string(&report).unwrap();
-        assert_eq!(
-            serde_json::from_str::<ValidationReport>(&json).unwrap(),
-            report
-        );
     }
 
     #[test]

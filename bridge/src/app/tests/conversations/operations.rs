@@ -3,17 +3,12 @@ use super::*;
 #[test]
 fn completion_message_correlation_survives_the_control_socket_round_trip() {
     let report = crate::mcp::DoneReport {
-        phase: crate::mcp::DonePhase::Build,
-        status: crate::mcp::DoneStatus::Completed,
-        summary: "Shipped it".into(),
-        outputs: crate::mcp::DoneOutputs {
-            message_id: Some("message-42".into()),
-            ..crate::mcp::DoneOutputs::default()
-        },
+        message_id: Some("message-42".to_string()),
+        ..crate::mcp::DoneReport::new(crate::mcp::DoneStatus::Completed, "Shipped it")
     };
     let wire = serde_json::to_vec(&report).unwrap();
     let decoded: crate::mcp::DoneReport = serde_json::from_slice(&wire).unwrap();
-    assert_eq!(decoded.outputs.message_id.as_deref(), Some("message-42"));
+    assert_eq!(decoded.message_id.as_deref(), Some("message-42"));
 }
 
 #[test]
@@ -135,8 +130,6 @@ fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
             &run_id,
             BridgeAction::PostThreadMessage {
                 body: "Two ways out. Which?".into(),
-                anchor: None,
-                links: Vec::new(),
                 still_working: false,
                 options: suggested(&[
                     (
@@ -198,8 +191,6 @@ fn a_choice_made_after_the_conversation_moved_on_is_refused() {
             &run_id,
             BridgeAction::PostThreadMessage {
                 body: "Two ways out. Which?".into(),
-                anchor: None,
-                links: Vec::new(),
                 still_working: false,
                 options: suggested(&[("Revert it", None), ("Fix forward", None)]),
             },
@@ -239,8 +230,6 @@ fn an_option_the_agent_never_offered_cannot_be_answered_with() {
             &run_id,
             BridgeAction::PostThreadMessage {
                 body: "Which?".into(),
-                anchor: None,
-                links: Vec::new(),
                 still_working: false,
                 options: suggested(&[("Revert it", None)]),
             },
@@ -830,8 +819,6 @@ fn operation_payload_preserves_batches_attachments_and_normalized_options() {
             &agent_id,
             BridgeAction::PostThreadMessage {
                 body: "Choose a repair".into(),
-                anchor: None,
-                links: Vec::new(),
                 still_working: false,
                 options: suggested(&[(
                     "Fix forward",
@@ -1392,54 +1379,5 @@ fn thread_post_refuses_terminal_and_unknown_entities() {
     assert!(
         unknown["error"].as_str().unwrap().contains("unknown"),
         "{unknown:?}"
-    );
-}
-
-/// A stage awaiting its validation verdict refuses the dispatching verb
-/// (`run.message`) but must NOT block a post-only write.
-#[test]
-fn thread_post_is_not_blocked_by_a_stage_awaiting_validation() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let (_, run_id) = planned_run_in_review(&mut state, "stage gate wait");
-    let active = state.runs.get_mut(&run_id).unwrap();
-    active.run.state = RunState::Building;
-    active.current_stage_id = Some("stage-1".into());
-    active.stages = vec![StageProgress {
-        stage_id: "stage-1".into(),
-        state: StageProgressState::Built,
-        start_sha: None,
-        built_sha: None,
-        completion_sha: None,
-        publication: crate::run::StagePublication::Local,
-        invalidation_reason: None,
-        validation: None,
-    }];
-
-    let dispatching = state.handle(req(
-        "run.message",
-        json!({ "run_id": run_id, "message": "hurry it up" }),
-    ));
-    assert_eq!(dispatching["ok"], false, "{dispatching:?}");
-    assert!(
-        dispatching["error"]
-            .as_str()
-            .unwrap()
-            .contains("awaiting validation"),
-        "{dispatching:?}"
-    );
-
-    let posted = state.handle(req(
-        "thread.post",
-        json!({ "entity_id": run_id, "body": "for the record" }),
-    ));
-    assert_eq!(posted["ok"], true, "{posted:?}");
-    assert!(
-        posted["result"]["thread"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["data"]["body"] == "for the record"),
-        "{posted:?}"
     );
 }

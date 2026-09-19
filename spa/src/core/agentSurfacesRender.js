@@ -33,6 +33,7 @@ const VIEWER_CLASS = {
   viewer: "surface-viewer",
   workflowChoices: "surface-workflows",
   workflowPhases: "surface-phases",
+  workflowDetail: "surface-workflow-detail",
   workflowAgents: "surface-phase-agents",
   running: "surface-running",
   completed: "surface-completed-rows",
@@ -233,8 +234,10 @@ export function workflowHeadHtml(workflow) {
 export function workflowViewerHtml(workflow, choices, phases = []) {
   return `<div class="${VIEWER_CLASS.viewer} surface-workflow">
     <div class="${VIEWER_CLASS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
-    ${workflowHeadHtml(workflow)}
-    <div class="${VIEWER_CLASS.workflowPhases}">${phases.map(phaseSectionHtml).join("")}</div>
+    <div class="${VIEWER_CLASS.workflowDetail}">
+      ${workflowHeadHtml(workflow)}
+      <div class="${VIEWER_CLASS.workflowPhases}">${phases.map(phaseSectionHtml).join("")}</div>
+    </div>
   </div>`;
 }
 

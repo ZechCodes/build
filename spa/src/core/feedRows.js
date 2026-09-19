@@ -105,7 +105,7 @@ export const branchRowIn = (snapshot, projectId, branch) =>
   ) || null;
 
 /** The live run body the board carries beside its rows — the goal, the state,
- *  the base the diff is measured against, the triage pass. A row that names no
+ *  the base the diff is measured against. A row that names no
  *  run has none, and neither has a slice the board has not filled. */
 export const runBodyIn = (snapshot, runId) =>
   (runId && (snapshot?.runs || []).find((run) => run.run_id === runId)) || null;

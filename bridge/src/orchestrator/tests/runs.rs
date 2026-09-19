@@ -3,20 +3,20 @@ use super::plans::{
     approved_multi_stage_plan, approved_plan, approved_plan_with_goal, dispatch_planned_run,
     dispatch_planned_run_and_turn,
 };
-use super::reporting::{done, done_validate};
+use super::reporting::done;
 use super::workspace::worktree_head;
 use crate::git_fixture::init_repo;
 use crate::git_process::run_git;
 use crate::harness::HarnessError;
-use crate::mcp::{DonePhase, DoneStatus};
+use crate::mcp::DoneStatus;
 use crate::models::ModelChoice;
 use crate::orchestrator::{
-    conversation_prompt, mcp_config_path, triage_is_due, ActivePlan, ActiveRun, Agent, AgentTurn,
+    conversation_prompt, mcp_config_path, ActivePlan, ActiveRun, Agent, AgentTurn,
     ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
 };
 use crate::plan::{StageDocState, StageManifestEntry};
 use crate::pty::HarnessSpec;
-use crate::run::{RunState, StageProgressState, TriageHunk, TriageLevel};
+use crate::run::{RunState, StageProgressState};
 use crate::store::{PersistedRun, Store};
 use crate::templates::Templates;
 use crate::worktree::WorktreeError;
@@ -125,8 +125,7 @@ pub(super) fn comment_by_id(plan: &ActivePlan, comment_id: &str) -> crate::threa
         .unwrap_or_else(|| panic!("no comment {comment_id}"))
 }
 /// Assert both halves of the cold/warm rule on a DISPATCHED turn (one whose
-/// whole content is the rendered prompt: a dispatch, a resume, a validation
-/// hand-off, a stage fix), and hand back the warm half to assert content on.
+/// whole content is the rendered prompt: a dispatch, a resume), and hand back the warm half to assert content on.
 ///
 /// Both halves matter equally: the caller cannot know which one will travel
 /// — that depends on whether it had to spawn a harness — so a turn that
@@ -210,8 +209,6 @@ fn reattach_run_mirrors_the_store_record() {
         revising_stage_id: None,
         auto_advance: true,
         adopted: true,
-        triage: None,
-        recovery: None,
         publication_attempt: None,
         provider: crate::models::AgentProvider::Claude,
         model: None,
@@ -261,49 +258,11 @@ async fn dispatch_single_stage_run_goes_straight_to_building() {
     assert!(run.worktree.path.join(mcp_config_path("run-1")).exists());
 
     std::fs::write(run.worktree.path.join("fix.txt"), "fixed\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &[],
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
+    orch.on_run_done(&mut run, &[], done(DoneStatus::Completed))
+        .unwrap();
     assert_eq!(run.run.state, RunState::Review);
     let diff = orch.run_diff(&run).unwrap();
     assert!(diff.files().iter().any(|f| f.path == "fix.txt"));
-}
-pub(super) fn classified(hunk_id: &str, level: TriageLevel) -> TriageHunk {
-    TriageHunk {
-        hunk_id: hunk_id.into(),
-        level,
-        rationale: Some("because".into()),
-        group: None,
-    }
-}
-/// Triage gates nothing, so the lifecycle's opinion of a report does not
-/// decide whether the diff gets ordered. An agent that reports done at a
-/// review gate moves no state and still leaves a diff to read.
-#[test]
-fn what_needs_ordering_is_decided_by_the_diff_not_by_the_state_machine() {
-    for phase in [DonePhase::Build, DonePhase::Revise] {
-        assert!(triage_is_due(
-            &done(phase, DoneStatus::Completed, None),
-            false
-        ));
-        assert!(
-            !triage_is_due(&done(phase, DoneStatus::Blocked, None), false),
-            "a blocked turn produced no finished diff"
-        );
-        assert!(
-            !triage_is_due(&done(phase, DoneStatus::Completed, None), true),
-            "the agent hears one thing at a time"
-        );
-    }
-    for phase in [DonePhase::Plan, DonePhase::Triage, DonePhase::Route] {
-        assert!(!triage_is_due(
-            &done(phase, DoneStatus::Completed, None),
-            false
-        ));
-    }
 }
 #[tokio::test]
 async fn an_implementable_issue_enforces_the_single_active_writer_rule() {
@@ -361,92 +320,8 @@ async fn dispatch_multi_stage_run_starts_the_first_stage() {
     );
     assert!(!turn.cold.contains("read_unread_messages"), "{}", turn.cold);
 }
-#[tokio::test]
-async fn validation_rejects_a_dirty_or_moved_candidate_boundary() {
-    let (dir, repo) = init_repo();
-    let orch = orchestrator(&dir, &repo);
-    let store = split_store(&dir);
-    let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 1);
-    let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
-    std::fs::write(run.worktree.path.join("only.txt"), "one\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
-
-    std::fs::write(run.worktree.path.join("validation-mutated.txt"), "bad\n").unwrap();
-    let error = orch
-        .on_run_done(&mut run, &plan.stages, done_validate(true, "- ok", ""))
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("validation must be observational"),
-        "{error}"
-    );
-    assert_eq!(run.stages[0].state, StageProgressState::Validating);
-    assert_eq!(run.stages[0].completion_sha, None);
-}
-#[tokio::test]
-async fn run_validation_pass_on_the_last_stage_opens_review() {
-    let (dir, repo) = init_repo();
-    let orch = orchestrator(&dir, &repo);
-    let store = split_store(&dir);
-    let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 1);
-    let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
-    std::fs::write(run.worktree.path.join("only.txt"), "one\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
-
-    orch.on_run_done(&mut run, &plan.stages, done_validate(true, "- ok", ""))
-        .unwrap();
-    assert_eq!(run.run.state, RunState::Review, "last stage → merge review");
-}
-#[tokio::test]
-async fn run_validation_failure_parks_at_the_stage_gate_and_disarms_run_all() {
-    let (dir, repo) = init_repo();
-    let orch = orchestrator(&dir, &repo);
-    let store = split_store(&dir);
-    let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
-    let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
-    run.auto_advance = true;
-    std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
-
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done_validate(false, "- migration missing", ""),
-    )
-    .unwrap();
-    assert_eq!(run.run.state, RunState::StageGate);
-    assert_eq!(
-        run.stages[0].state,
-        StageProgressState::Validated { passed: false }
-    );
-    assert_eq!(
-        run.stages[0]
-            .validation
-            .as_ref()
-            .map(|v| v.findings.as_str()),
-        Some("- migration missing")
-    );
-    assert!(!run.auto_advance, "a failed validation disarms run-all");
-}
-/// Drive a two-stage planned run through its first stage (build + a passing
-/// validation), leaving it parked at the between-stages gate with stage one
-/// `Validated{passed:true}`.
+/// Drive a two-stage planned run through its first stage, leaving it parked
+/// at the between-stages gate with stage one `Completed`.
 pub(super) fn run_past_first_stage(
     orch: &Orchestrator,
     store: &Store,
@@ -455,13 +330,7 @@ pub(super) fn run_past_first_stage(
 ) -> ActiveRun {
     let mut run = dispatch_planned_run(orch, store, plan, id);
     std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
-    orch.on_run_done(&mut run, &plan.stages, done_validate(true, "- ok", "notes"))
+    orch.on_run_done(&mut run, &plan.stages, done(DoneStatus::Completed))
         .unwrap();
     assert_eq!(run.run.state, RunState::StageGate);
     run
@@ -488,7 +357,7 @@ async fn dispatch_run_stage_enforces_the_sequential_gate_and_pins_start_sha() {
         "no state change on refusal"
     );
 
-    // Approve it → the sequential gate opens (stage one validated).
+    // Approve it → the sequential gate opens (stage one completed).
     orch.approve_plan_stage(&mut plan, "second").unwrap();
     let turn = orch
         .dispatch_run_stage(&mut run, &plan.stages, "second", None)
@@ -505,81 +374,25 @@ async fn dispatch_run_stage_enforces_the_sequential_gate_and_pins_start_sha() {
     let prompt = dispatch_turn_halves(&turn, "build");
     assert!(prompt.contains(".build/plan/02-second.md"), "{prompt}");
 }
+/// The sequential gate reads the run's own progress: a stage whose
+/// predecessor never completed on this run cannot be dispatched, even from
+/// the stage gate.
 #[tokio::test]
-async fn dispatch_run_stage_rejects_a_stage_whose_predecessor_has_not_validated() {
+async fn dispatch_run_stage_rejects_a_stage_whose_predecessor_has_not_completed() {
     let (dir, repo) = init_repo();
     let orch = orchestrator(&dir, &repo);
     let store = split_store(&dir);
     let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
-    // Stage one fails validation → the run parks at the gate, stage one
-    // `Validated{passed:false}`.
-    let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
-    std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
-    orch.on_run_done(&mut run, &plan.stages, done_validate(false, "- nope", ""))
-        .unwrap();
-    assert_eq!(run.run.state, RunState::StageGate);
+    let mut run = run_past_first_stage(&orch, &store, &plan, "run-1");
+    // A record whose first stage never finished (an older store shape, a
+    // hand-edited record) parked at the gate.
+    run.stages[0].state = StageProgressState::Building;
 
     let err = orch
         .dispatch_run_stage(&mut run, &plan.stages, "second", None)
-        .expect_err("stage one has not passed validation");
-    assert!(
-        err.to_string().contains("has not passed validation"),
-        "{err}"
-    );
-}
-#[tokio::test]
-async fn fix_run_stage_respawns_with_findings_and_keeps_the_start_sha() {
-    let (dir, repo) = init_repo();
-    let orch = orchestrator(&dir, &repo);
-    let store = split_store(&dir);
-    let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
-    let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
-    std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done_validate(false, "- migration missing", ""),
-    )
-    .unwrap();
-    let start_before = run.stage_progress("first").unwrap().start_sha.clone();
-
-    let turn = orch
-        .fix_run_stage(&mut run, &plan.stages, "first", "add the migration")
-        .unwrap();
-    assert_eq!(run.run.state, RunState::Building);
-    let first = run.stage_progress("first").unwrap();
-    assert_eq!(first.state, StageProgressState::Building);
-    assert_eq!(
-        first.start_sha, start_before,
-        "the fix keeps the stage's start sha"
-    );
-    let prompt = dispatch_turn_halves(&turn, "build");
-    assert!(
-        prompt.contains("- migration missing"),
-        "findings drive the fix: {prompt}"
-    );
-    assert!(
-        prompt.contains("add the migration"),
-        "the note is the steer: {prompt}"
-    );
-
-    // Nothing to fix on a stage without a failed validation.
-    let err = orch
-        .fix_run_stage(&mut run, &plan.stages, "second", "")
-        .expect_err("second has no progress to fix");
-    assert!(matches!(err, OrchestratorError::Gate(_)), "{err}");
+        .expect_err("stage one has not completed");
+    assert!(err.to_string().contains("has not completed"), "{err}");
+    assert_eq!(run.run.state, RunState::StageGate, "no state change");
 }
 /// Requesting changes hands the caller a turn to deliver; it never ends the
 /// worktree's agent nor spawns a replacement. The turn carries both halves
@@ -593,18 +406,9 @@ async fn run_request_changes_returns_a_revise_turn_and_never_respawns() {
     let store = split_store(&dir);
 
     let mut single = dispatch_single_stage_run(&orch, &store, "run-q", "single stage work");
-    let consumed = orch
-        .on_run_done(
-            &mut single,
-            &[],
-            done(DonePhase::Build, DoneStatus::Completed, None),
-        )
+    orch.on_run_done(&mut single, &[], done(DoneStatus::Completed))
         .unwrap();
     assert_eq!(single.run.state, RunState::Review);
-    assert!(
-        consumed.next.is_none(),
-        "opening review says nothing to the agent — it is the human's move"
-    );
 
     let turn = orch
         .run_request_changes(&mut single, &[], "tweak it", None)
@@ -612,28 +416,9 @@ async fn run_request_changes_returns_a_revise_turn_and_never_respawns() {
     assert_eq!(single.run.state, RunState::Building);
     let cold = posted_turn_halves(&turn, "revise", "tweak it");
     assert!(
-        cold.contains("phase=\"revise\""),
+        cold.contains("The reviewer requested changes on your diff"),
         "a cold agent gets the whole revise prompt: {cold}"
     );
-
-    // A stage awaiting its validation verdict must not be redirected.
-    let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
-    let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
-    std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
-    assert_eq!(
-        run.stage_progress("first").unwrap().state,
-        StageProgressState::Validating
-    );
-    let err = orch
-        .run_request_changes(&mut run, &plan.stages, "no", None)
-        .expect_err("cannot redirect a validating stage");
-    assert!(err.to_string().contains("awaiting validation"), "{err}");
 }
 #[tokio::test]
 async fn message_run_redirects_building_continues_and_refuses_gates() {
@@ -656,12 +441,8 @@ async fn message_run_redirects_building_continues_and_refuses_gates() {
     posted_turn_halves(&turn, "message", "also handle the empty case");
 
     // The review gate refuses a message (request-changes is the verb there).
-    orch.on_run_done(
-        &mut run,
-        &[],
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
+    orch.on_run_done(&mut run, &[], done(DoneStatus::Completed))
+        .unwrap();
     let err = orch
         .message_run(&mut run, &[], "sneak past")
         .expect_err("review gate refuses messages");

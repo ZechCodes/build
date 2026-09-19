@@ -145,6 +145,16 @@ body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:colum
   background:var(--bg); color:var(--ink); font:14px/1.55 var(--sans); -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 a { color:inherit; }
 .mono { font-family:var(--mono); }
+
+/* Dropdown and disclosure triangles share a legible size independently of the
+   surrounding label's font. Keep their line box compact in dense toolbars. */
+.disclosure-caret,
+.viewing-context-files summary::before,
+.agent-observation-checklist summary::before {
+  display:inline-flex; align-items:center; justify-content:center; flex:none;
+  width:16px; height:16px; vertical-align:middle;
+  font:400 18px/1 var(--sans); letter-spacing:0;
+}
 .dim { color:var(--dim); }
 /* shared chrome bits (used by the inbox rail and gate/settings views) */
 .badge { background:var(--accent-fill); color:var(--accent-ink); border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
@@ -393,7 +403,7 @@ main#root.surface { max-width:none;
      from off the number above. */
   .pane-handle-what { flex:1 1 auto; min-width:0;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .pane-handle-caret { flex:none; font-size:9px; color:var(--dim);
+  .pane-handle-caret { flex:none; color:var(--dim);
     transition:transform .18s ease; }
   .pane-handle-caret::after { content:"▾"; }
   .pane-split.drawer-open .pane-handle-caret { transform:rotate(180deg); }
@@ -548,14 +558,8 @@ main#root.surface { max-width:none;
 .stagechip { margin-left:0; }
 .cbadge { font-size:11px; color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:2px 8px; white-space:nowrap; }
 .stagesummary { color:var(--ink2); font-size:12.5px; margin-top:4px; }
-.stage-validation { border:1px solid var(--line); border-radius:11px; padding:12px 15px; margin-bottom:14px; }
-.stage-validation .sv-head { font-weight:650; font-size:13.5px; margin-bottom:4px; }
-.stage-validation .sv-body { font-size:13px; }
-.stage-validation .sv-body p { margin:6px 0; }
-.stage-validation.pass { background:var(--green-bg); border-color:var(--green); }
-.stage-validation.pass .sv-head { color:var(--green); }
-.stage-validation.fail { background:var(--red-bg); border-color:var(--red); }
-.stage-validation.fail .sv-head { color:var(--red); }
+.stage-invalidation { border:1px solid var(--red); border-radius:11px; padding:12px 15px; margin-bottom:14px;
+  background:var(--red-bg); }
 .stagecomments { margin-top:14px; display:flex; flex-direction:column; gap:8px; }
 .commentcard { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:9px 30px 9px 12px; font-size:13px; position:relative; }
 .commentcard.addressed { border-left-color:var(--green); opacity:.72; }
@@ -714,11 +718,11 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    column is paid — the same line the toolbar's project name and the tab labels
    stand on. The right side keeps the rail's own tighter inset; nothing is
    aligned against it. */
-/* A section label is the type scale's bottom step — 11px mono, uppercase, dim —
-   and the room above it is what separates one section from the last. */
+/* The section label uses the surrounding panel's ground to separate the
+   commit list from the change views above it. */
 .crail .rhead { font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:650;
-  text-transform:uppercase; margin-top:18px; padding:0 13px 6px var(--pane-gutter); }
-.crail .rhead:first-child { margin-top:10px; }
+  text-transform:uppercase; background:var(--panel); padding:18px 13px 6px var(--pane-gutter); }
+.crail .rhead:first-child { padding-top:10px; }
 .crail .empty { padding:6px 13px 10px var(--pane-gutter); }
 /* No rule between rows: space separates them, the hover fill answers the
    pointer, and the selected one is a soft accent fill with an accent bar. */
@@ -727,18 +731,17 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .crail .rrow .rtitle { font-weight:600; }
 .crail .rrow .rsub { margin-left:auto; font-size:11px; color:var(--dim); }
 .crail .rrow:hover { background:var(--row-hover); }
-.crail .rrow.sel, .crail .crow.sel { background:var(--accent-soft); box-shadow:inset 3px 0 var(--accent); }
+.crail .rrow.sel { background:var(--accent-soft); box-shadow:inset 3px 0 var(--accent); }
 .crail .rrow.sel .rtitle { color:var(--accent); }
 .crow { display:flex; flex-direction:column; gap:1px; margin-bottom:4px; padding:10px 13px 10px var(--pane-gutter);
   font-size:12.5px; cursor:pointer; }
 .crow:hover { background:var(--row-hover); }
-.crow.ahead, .crow.unpushed { background:color-mix(in srgb, var(--accent-soft) 48%, transparent);
-  box-shadow:inset 3px 0 var(--accent); }
-.crow.ahead:hover, .crow.unpushed:hover { background:color-mix(in srgb, var(--accent-soft) 72%, var(--row-hover)); }
-.crow.ahead.sel, .crow.unpushed.sel { background:var(--accent-soft); box-shadow:inset 4px 0 var(--accent); }
+.crow.ahead, .crow.unpushed { background:var(--amber-bg); box-shadow:inset 3px 0 var(--amber); }
+.crow.ahead:hover, .crow.unpushed:hover { background:color-mix(in srgb, var(--amber-bg) 72%, var(--row-hover)); }
+.crail .crow.sel, .crail .crow.sel:hover { background:var(--accent-soft); box-shadow:inset 3px 0 var(--accent); }
 .crow .chash { font-family:var(--mono); font-size:11px; color:var(--dim); }
-.crow.ahead .chash, .crow.unpushed .chash { color:var(--accent); font-weight:600; }
-.crow.sel .csubject { color:var(--accent); }
+.crow.ahead .chash, .crow.unpushed .chash { color:var(--amber); font-weight:600; }
+.crow.sel .chash, .crow.sel .csubject { color:var(--accent); }
 .crow .csubject { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .crow .cmeta { color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .cdetail { cursor:default; }
@@ -910,6 +913,7 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
    against the bar rather than against the window. */
 @container (max-width: 600px) {
   .gittoolbar .gtsync .btn:not(.caret), .gittoolbar .gtstash .btn:not(.caret) { gap:0; font-size:0; }
+  .gittoolbar .gtfetch { align-self:stretch; }
   .gittoolbar .gtrest .btn:not(.caret)::before { margin-right:0; font-size:12px; }
   .gittoolbar .gtrest { column-gap:4px; }
   .gtrest:has(.selbar) .gtsync, .gtrest:has(.selbar) .gtstash,
@@ -1788,7 +1792,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 .empty.gone, .fpidle { color:var(--ink2); }
 .notice { border-color:var(--line3); background:var(--panel); box-shadow:0 14px 38px var(--shadow); }
-.notice-x, .notice-expand, .iconbtn, .fmenu, .tdial, .workspace-refrow, .ivassign-head,
+.notice-x, .notice-expand, .iconbtn, .fmenu, .workspace-refrow, .ivassign-head,
 .browse-nav, .chooser-card, .stagerow, .frow, .srow {
   transition:background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), opacity var(--motion-fast), transform var(--motion-fast);
 }

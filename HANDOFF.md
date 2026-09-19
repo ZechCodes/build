@@ -364,7 +364,7 @@ to ask about.
 - **Per-device settings pages** (`views/deviceSettings.js`,
   `views/devicePanels.js`, `views/deviceProjects.js`): projects folder,
   projects list, Add project, Set remote, agent modes, default harness,
-  isolation and triage — everything that is one bridge's answer, on that
+  and isolation — everything that is one bridge's answer, on that
   bridge's page, over its own session. The account page keeps what is the
   account's: creation device, agent defaults, appearance, notifications,
   downloads, devices and keys.
@@ -816,14 +816,9 @@ main, each measured in the two-bridge browser stack before it was called done.
   "Fixed in the bridge" above; three workspaces per machine now materialize on
   one project (`ws-a--repo`, `ws-b--repo`, `ws-c--repo` in the source repo's
   registry) and the pre-existing checkout keeps its plain name.
-- **File references under a message are links** (`spa/src/core/threadLinks.js`,
-  `core/thread.js`, `core/agentRail.js`). A `kind: "file"` link renders as an
-  anchor whose href is the Files route of the conversation's workspace or
-  branch, with the file and `line_start`; a plain click opens it in place, a
-  middle- or modifier-click opens it in a new tab, and in a workspace with
-  several directories a path prefixed with another directory's mount name
-  opens that directory with the prefix stripped. Retired three functions from
-  the complexity ratchet on the way (65 → 62).
+- **File references under a message** were links, and are now retired
+  (2026-09-18): `post_thread_message` no longer takes `links` or `anchor`, and
+  a stored `kind: "file"` link draws no chip.
 - **One header height across a work surface** (`--surface-head`, 46px): the
   ref picker, the git action bar and the conversation head share it. The ref
   bar's always-present status line costs nothing while empty, and the git bar

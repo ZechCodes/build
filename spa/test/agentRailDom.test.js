@@ -1438,6 +1438,20 @@ describe("the conversation panel", () => {
     expect(tuiToggle().classList.contains("on")).toBe(false);
   });
 
+  it("keeps the terminal mounted when returning to the browser tab", async () => {
+    await mount();
+    tuiToggle().click();
+    await flush();
+    const body = railHost().querySelector("#rail-body");
+    const terminal = document.createElement("div");
+    terminal.textContent = "live terminal";
+    body.append(terminal);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(body.contains(terminal)).toBe(true);
+    expect(body.querySelector(".thread-items")).toBeNull();
+    expect(tuiToggle().getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("remembers the face per work item, reopening on the screen the reader left the branch on", async () => {
     await mount();
     tuiToggle().click();
@@ -1798,6 +1812,36 @@ describe("the conversation panel", () => {
     const line = railHost().querySelector(".thread-unread-line");
     expect(line).toBeTruthy();
     expect(line.nextElementSibling.textContent).toContain("the one you did not");
+  });
+
+  it("keeps New for 60 seconds after reading the latest agent reply", async () => {
+    conversationReadThrough(11, 1);
+    const geometry = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+      return { top: 0, bottom: this.getAttribute("data-key") === "12" ? 100 : 0, height: 0, width: 0 };
+    });
+    try {
+      await mount();
+    } finally {
+      geometry.mockRestore();
+    }
+    vi.useFakeTimers();
+    const body = railHost().querySelector("#rail-body");
+    body.onscroll();
+    vi.advanceTimersByTime(59_999);
+    expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
+    vi.advanceTimersByTime(1);
+    expect(railHost().querySelector(".thread-unread-line")).toBeNull();
+  });
+
+  it("clears New when leaving mid-grace, including with a stale digest on reopening", async () => {
+    conversationReadThrough(11, 1);
+    await mount();
+    expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
+    bubbles()[0].click();
+    await flush();
+    bubbles()[0].click();
+    await flush();
+    expect(railHost().querySelector(".thread-unread-line")).toBeNull();
   });
 
   it("rules no line over a conversation with nothing waiting in it", async () => {
@@ -4306,101 +4350,6 @@ describe("what the conversation points at", () => {
 
     expect(railHost().querySelector(".thread-revision-view").textContent).toContain("+renamed");
     expect(callsTo("thread.revision")).toHaveLength(1);
-  });
-});
-
-// A reference an agent posts is a path in the checkout it is working in, and
-// the rail is the only thing that knows which checkout that is. So the chip
-// under the message is a real link: it carries the machine, the workspace, the
-// directory the path is mounted under, and the line it points at.
-describe("a file reference in a conversation", () => {
-  const SOURCES = [
-    { source_id: "repo", name: "Repository" },
-    { source_id: "assets", name: "Assets" },
-  ];
-
-  /** The row as the board pushes it: a work item, with no word about what a
-   *  workspace is mounted out of — that is the workspace list's to say. */
-  const workspaceRow = (links) => ({
-    kind: "branch",
-    entity_id: "run-3",
-    id: "ws-1",
-    project_id: "p1",
-    agents: [agent()],
-    thread: {
-      items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "Changed the parser.", links } }],
-      has_more: false,
-      sessions: [],
-    },
-  });
-
-  /** The workspace as the disk holds it: its row, and the list that says the
-   *  route's workspace id is the row's conversation — and what it is mounted
-   *  out of, which lives on the list entry and nowhere else. */
-  const workspaceOnDisk = async (row) => {
-    payload = row;
-    await writeRailBoard({
-      items: [row],
-      projects: [{ project_id: "p1", name: "build" }],
-      workspaces: [{
-        id: "ws-1", project_id: "p1", name: "login", status: "ready", entity_id: "run-3",
-        directories: SOURCES,
-      }],
-    });
-  };
-
-  const chipHref = () => railHost().querySelector("a.thread-reference")?.getAttribute("href");
-
-  it("links a path into the workspace directory it is mounted under", async () => {
-    await workspaceOnDisk(workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }]));
-    await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
-    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files?path=logo.svg&line=4");
-  });
-
-  it("re-reads its sources when one is mounted while the rail is open", async () => {
-    await writeRailBoard({
-      items: [workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }])],
-      projects: [{ project_id: "p1", name: "build" }],
-      workspaces: [{ id: "ws-1", project_id: "p1", name: "login", status: "ready", entity_id: "run-3", directories: [SOURCES[0]] }],
-    });
-    payload = workspaceRow([{ kind: "file", path: "Assets/logo.svg", line_start: 4 }]);
-    await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
-    // One source: the path is the open directory's own, name and all.
-    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/repo/files?path=Assets%2Flogo.svg&line=4");
-
-    await writeRailBoard({
-      items: [],
-      projects: [{ project_id: "p1", name: "build" }],
-      workspaces: [{ id: "ws-1", project_id: "p1", name: "login", status: "ready", entity_id: "run-3", directories: SOURCES }],
-    });
-    await flush();
-
-    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files?path=logo.svg&line=4");
-  });
-
-  it("links a path of the open directory at the line it starts on", async () => {
-    await workspaceOnDisk(workspaceRow([{ kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 }]));
-    await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", branch: undefined });
-    expect(chipHref()).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/repo/files?path=src%2Fparser.js&line=8");
-  });
-
-  it("links a branch conversation's reference at the file, not at the tab", async () => {
-    payload = branchRow({
-      run: {
-        run_id: "run-3",
-        thread: {
-          items: [{
-            id: "m-1",
-            type: "message",
-            data: { sequence: 1, role: "agent", body: "Changed the parser.", links: [{ kind: "file", path: "src/parser.js", line_start: 8 }] },
-          }],
-          has_more: false,
-          sessions: [],
-        },
-      },
-    });
-    await mount();
-    expect(chipHref()).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/files?path=src%2Fparser.js&line=8");
   });
 });
 

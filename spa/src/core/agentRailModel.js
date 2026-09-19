@@ -467,9 +467,7 @@ const projectEntity = (row, agents) => ({
   thread: row.thread || null,
 });
 
-/** A workspace: the owner it minted, and the checkouts mounted into it — kept
- *  because a path an agent writes names the directory it is in
- *  (core/threadLinks.js). */
+/** A workspace: the owner it minted, and the checkouts mounted into it. */
 const workspaceOwner = (row) => row.entity_id || row.run_id || (row.run && row.run.id) || null;
 /** The one branch a workspace's row says it is on: its own, else the first of
  *  its sources that is on one. */

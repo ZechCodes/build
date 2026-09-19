@@ -14,21 +14,18 @@ import { agentChoiceParams } from "./agentChoice.js";
 import { normalizeModelCatalog } from "./modelPicker.js";
 
 /** The one vocabulary the stage list speaks: the doc's approval until the agent
- *  starts, then what execution has reached. `validated` is the end of the line. */
+ *  starts, then what execution has reached. `complete` is the end of the line. */
 export const STAGE_STATE_LABEL = {
   planned: "PLANNED",
   approved: "APPROVED",
   building: "BUILDING",
-  built: "BUILT",
-  validating: "VALIDATING",
-  validated: "VALIDATED",
-  validation_failed: "VALIDATION FAILED",
+  complete: "COMPLETE",
   blocked: "BLOCKED",
   failed: "FAILED",
   incomplete: "INCOMPLETE",
 };
 
-// A completed stage is validated whether or not its stable diff can still be
+// A completed stage is complete whether or not its stable diff can still be
 // pinned — "COMPLETE · DIFF UNAVAILABLE" was a storage detail wearing a state's
 // clothes, and the diff button's absence already says it.
 const COMPLETED_EXECUTIONS = new Set(["complete", "legacy_unpinned"]);
@@ -39,18 +36,18 @@ const COMPLETED_EXECUTIONS = new Set(["complete", "legacy_unpinned"]);
 export function stageStateToken(stage) {
   if (!stage) return "planned";
   const execution = stage.execution || "pending";
-  if (COMPLETED_EXECUTIONS.has(execution)) return "validated";
+  if (COMPLETED_EXECUTIONS.has(execution)) return "complete";
   if (execution !== "pending") return execution;
   return stage.approval || stage.state || "planned";
 }
 
 /** The chip palette (styles.css .chip.*): a drafted stage is neutral, an
- *  approved one awaits the human, in-flight work reads as work, a validated
+ *  approved one awaits the human, in-flight work reads as work, a complete
  *  stage is done, and every parked arm warns. */
 export function stageStateChipClass(token) {
   if (token === "approved") return "attn";
-  if (token === "building" || token === "built" || token === "validating") return "work";
-  if (token === "validated") return "done";
+  if (token === "building") return "work";
+  if (token === "complete") return "done";
   if (token === "planned") return "";
   return "warn";
 }

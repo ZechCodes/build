@@ -290,12 +290,7 @@ fn done_records_on_the_authenticated_agents_canonical_conversation() {
     assert_eq!(added["ok"], true, "{added:?}");
     let secondary_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
 
-    let report = |summary: &str| DoneReport {
-        phase: DonePhase::Build,
-        status: DoneStatus::Completed,
-        summary: summary.to_string(),
-        outputs: DoneOutputs::default(),
-    };
+    let report = |summary: &str| DoneReport::new(DoneStatus::Completed, summary.to_string());
     state.done_deferring_for_agent(
         &run_id,
         &secondary_agent,

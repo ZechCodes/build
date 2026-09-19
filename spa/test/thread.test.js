@@ -104,149 +104,67 @@ describe("conversation thread rendering", () => {
     expect(document.querySelectorAll(".thread-event-icon")).toHaveLength(3);
   });
 
+  // Agents can no longer attach file links; a stored conversation may still
+  // carry one (or a link to the retired recovery agent), and neither renders.
+  // Build's own references — a stage, an implementation, a commit — still do.
   const REFERENCE_ITEMS = [
-    { type: "message", data: { role: "agent", body: "Changed the parser.", links: [{ kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 }] } },
+    {
+      type: "message",
+      data: {
+        role: "agent",
+        body: "Changed the parser.",
+        links: [
+          { kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 },
+          { kind: "recovery", recovery_id: "rec-1" },
+        ],
+      },
+    },
     { type: "event", data: { event: "stage_started", summary: "Started parser stage", links: [{ kind: "plan_stage", plan_id: "plan-1", stage_id: "parser", path: ".build/plan/01-parser.md" }] } },
+    { type: "event", data: { event: "committed", summary: "Committed", links: [{ kind: "commit", sha: "abc123" }] } },
   ];
-  const FILE_LINK = { kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 };
   const STAGE_LINK = { kind: "plan_stage", plan_id: "plan-1", stage_id: "parser", path: ".build/plan/01-parser.md" };
-  const fileRoute = { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "repo", tab: "files", file: "src/parser.js", line: 8 };
 
-  it("renders a file reference as a link and every other kind as a button", () => {
+  it("renders Build's own references as buttons and no chip for a retired file or recovery link", () => {
     document.body.innerHTML = threadHtml({ items: REFERENCE_ITEMS });
     const links = [...document.querySelectorAll(".thread-reference")];
-    expect(links).toHaveLength(2);
-    expect(links[0].tagName).toBe("A");
-    expect(links[0].textContent).toContain("src/parser.js:8-12");
-    expect(links[1].tagName).toBe("BUTTON");
-    expect(links[1].textContent).toContain(".build/plan/01-parser.md");
+    expect(links.map((link) => link.tagName)).toEqual(["BUTTON", "BUTTON"]);
+    expect(links[0].textContent).toContain(".build/plan/01-parser.md");
+    expect(links[1].textContent).toContain("abc123");
+    expect(document.body.textContent).not.toContain("src/parser.js");
+    expect(document.body.textContent).not.toContain("rec-1");
+    expect(document.querySelector("a.thread-reference")).toBeNull();
+    expect(document.querySelector("[data-recovery-id]")).toBeNull();
   });
 
-  // A file chip is a real link, so the browser's own gestures on it work:
-  // middle-click and Cmd-click open the file in another tab. The href is the
-  // route the conversation's context names (core/threadLinks.js), written as a
-  // URL the router reads back.
-  it("gives a file reference the href its route names, and none to the rest", () => {
-    document.body.innerHTML = threadHtml({ items: REFERENCE_ITEMS });
-    const asked = [];
-    wireThreadLinks(document.body, () => {}, (link) => {
-      asked.push(link);
-      return link.kind === "file" ? fileRoute : null;
-    });
-    const links = [...document.querySelectorAll(".thread-reference")];
-    expect(links[0].getAttribute("href")).toBe(
-      "#/device/dev-1/project/p1/workspace/ws-1/directory/repo/files?path=src%2Fparser.js&line=8",
-    );
-    expect(links[1].hasAttribute("href")).toBe(false);
-    // Only the anchors are asked: a button has nowhere to put an answer.
-    expect(asked).toEqual([FILE_LINK]);
-  });
-
-  it("navigates in the app on a plain press and reads the reference back off the row", () => {
-    document.body.innerHTML = threadHtml({ items: REFERENCE_ITEMS });
-    const opened = [];
-    wireThreadLinks(document.body, (link) => opened.push(link), () => fileRoute);
-    const links = [...document.querySelectorAll(".thread-reference")];
-    const press = new MouseEvent("click", { bubbles: true, cancelable: true });
-    links[0].dispatchEvent(press);
-    links[1].click();
-    expect(press.defaultPrevented).toBe(true);
-    expect(opened).toEqual([FILE_LINK, STAGE_LINK]);
-  });
-
-  // A modified press means "somewhere else" — another tab, another window. The
-  // app must not swallow it, or the chip is a link that cannot be opened as one.
-  it("leaves a modified or middle press to the browser", () => {
-    document.body.innerHTML = threadHtml({ items: REFERENCE_ITEMS });
-    const opened = [];
-    wireThreadLinks(document.body, (link) => opened.push(link), () => fileRoute);
-    const chip = document.querySelector("a.thread-reference");
-    for (const press of [
-      new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }),
-      new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }),
-      new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }),
-      new MouseEvent("click", { bubbles: true, cancelable: true, button: 1 }),
-    ]) {
-      chip.dispatchEvent(press);
-      expect(press.defaultPrevented).toBe(false);
-    }
-    expect(opened).toEqual([]);
-  });
-
-  // A conversation about no checkout (an issue) names no route for a file, and
-  // a caller that asks for none is the surfaces that only ever opened work
-  // items. Either way the press still goes to the app.
-  it("still opens a reference the context cannot write a URL for", () => {
+  it("opens a reference in the app, reading it back off the chip", () => {
     document.body.innerHTML = threadHtml({ items: REFERENCE_ITEMS });
     const opened = [];
     wireThreadLinks(document.body, (link) => opened.push(link));
-    const chip = document.querySelector("a.thread-reference");
-    expect(chip.hasAttribute("href")).toBe(false);
-    chip.click();
-    expect(opened).toEqual([FILE_LINK]);
+    const press = new MouseEvent("click", { bubbles: true, cancelable: true });
+    document.querySelector(".thread-reference").dispatchEvent(press);
+    expect(press.defaultPrevented).toBe(true);
+    expect(opened).toEqual([STAGE_LINK]);
   });
 
-  // The bridge sends a `triaged` event when a review-prioritization pass
-  // finishes. It is status, not a hand-back, so it reads as a fact about the
-  // diff and carries none of the tone a blocked or done entry does.
-  it("names a triage pass rather than falling back to its wire token", () => {
-    document.body.innerHTML = threadHtml({
-      items: [
-        {
-          type: "event",
-          data: { event: "triaged", summary: "the crypto change carries the risk" },
-        },
-      ],
-    });
-    const entry = document.querySelector(".thread-event");
-    expect(entry.textContent).toContain("Diff ordered for review");
-    expect(entry.textContent).toContain("the crypto change carries the risk");
-    expect(entry.classList.contains("blocked")).toBe(false);
-    expect(entry.classList.contains("success")).toBe(false);
-  });
-
-  // And a `triage_overridden` event when the reviewer disagrees with where the
-  // pass put a hunk. It is the same shape of fact: the agent is told, and
-  // nothing is asked of anyone.
-  it("names a reviewer's disagreement with a triage pass", () => {
+  // A multi-paragraph event summary keeps its paragraphs: each claim its own
+  // line, so a reader can see which part of it matters to them.
+  it("shows an event's multi-paragraph summary as separate paragraphs", () => {
     document.body.innerHTML = threadHtml({
       items: [
         {
           type: "event",
           data: {
-            event: "triage_overridden",
-            summary: "The reviewer opened src/crypto.rs: triage collapsed a change that needed reading.",
-          },
-        },
-      ],
-    });
-    const entry = document.querySelector(".thread-event");
-    expect(entry.textContent).toContain("Review order corrected");
-    expect(entry.textContent).toContain("src/crypto.rs");
-    expect(entry.classList.contains("blocked")).toBe(false);
-    expect(entry.classList.contains("success")).toBe(false);
-  });
-
-  // The whole disagreement, in the conversation: which file, the claim the pass
-  // made about it, and what the reviewer said back — each its own line, so the
-  // agent reading this can see which of its own claims was not believed.
-  it("shows the hunk's context on an override: the file, the rejected rationale, the reviewer's note", () => {
-    document.body.innerHTML = threadHtml({
-      items: [
-        {
-          type: "event",
-          data: {
-            event: "triage_overridden",
+            event: "stage_invalidated",
             summary:
-              "The reviewer opened src/crypto.rs: triage collapsed a change that needed reading.\n\n" +
-              "Triage said: a mechanical rename\n\nkey derivation is never boilerplate",
+              "The reviewer reopened src/crypto.rs.\n\n" +
+              "The stage said: a mechanical rename\n\nkey derivation is never boilerplate",
           },
         },
       ],
     });
     const detail = document.querySelector(".thread-event .thread-event-detail");
     expect(detail.textContent).toContain("src/crypto.rs");
-    expect(detail.textContent).toContain("Triage said: a mechanical rename");
+    expect(detail.textContent).toContain("The stage said: a mechanical rename");
     expect(detail.textContent).toContain("key derivation is never boilerplate");
     // Three claims, three paragraphs — not one run-on line.
     expect(detail.querySelectorAll("p").length).toBe(3);

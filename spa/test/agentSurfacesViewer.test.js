@@ -234,6 +234,116 @@ describe("mountSurfaceViewer", () => {
   });
 });
 
+describe("completed workflows", () => {
+  const workflow = (id, state) => ({
+    id, name: id, state,
+    phases: [{ title: `${id} phase`, agents: [{ id: `${id}-agent`, label: `${id} agent`, state }] }],
+  });
+  const choices = (selector) => [...document.querySelectorAll(`${selector} > .surface-workflow-choice:not([data-exiting])`)]
+    .map((choice) => choice.dataset.key);
+  const detail = () => document.querySelector(".surface-workflow-detail");
+  const completed = () => document.querySelector(".surface-completed");
+
+  it("starts with an active workflow and groups done and failed workflows under Completed", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    viewer.set({ workflows: [workflow("done", "done"), workflow("active", "running"), workflow("failed", "failed")] });
+
+    expect(choices(".surface-workflows")).toEqual(["active"]);
+    expect(choices(".surface-completed-rows")).toEqual(["done", "failed"]);
+    expect(completed().open).toBe(false);
+    expect(completed().querySelector("summary").textContent).toBe("Completed (2)");
+    expect(detail().textContent).toContain("active phase");
+    expect(detail().closest(".surface-completed")).toBe(null);
+    viewer.dispose();
+  });
+
+  it("moves the selected workflow's entire detail into Completed when it finishes", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    viewer.set({ workflows: [workflow("first", "running"), workflow("second", "running")] });
+    const standing = detail();
+    viewer.set({ workflows: [workflow("first", "done"), workflow("second", "running")] });
+
+    expect(choices(".surface-workflows")).toEqual(["second"]);
+    expect(choices(".surface-completed-rows")).toEqual(["first"]);
+    expect(detail()).toBe(standing);
+    expect(detail().closest(".surface-completed")).toBe(completed());
+    expect(completed().open).toBe(true);
+    expect(detail().textContent).toContain("first phase");
+
+    document.querySelector('.surface-workflow-choice[data-key="second"]').click();
+    expect(detail().closest(".surface-completed")).toBe(null);
+    expect(detail().textContent).toContain("second phase");
+    viewer.dispose();
+  });
+
+  it("keeps a lone finished workflow and its phases hidden in a collapsed Completed section", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    viewer.set({ workflows: [workflow("only", "done")] });
+
+    expect(choices(".surface-workflows")).toEqual([]);
+    expect(choices(".surface-completed-rows")).toEqual(["only"]);
+    expect(completed().open).toBe(false);
+    expect(detail().closest(".surface-completed")).toBe(completed());
+    completed().querySelector("summary").click();
+    expect(completed().open).toBe(true);
+    expect(detail().textContent).toContain("only phase");
+    viewer.dispose();
+  });
+
+  it("preserves the selected workflow through reordered snapshots and moves restarted detail back out", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    viewer.set({ workflows: [workflow("first", "running"), workflow("second", "done")] });
+    completed().querySelector("summary").click();
+    document.querySelector('.surface-workflow-choice[data-key="second"]').click();
+    viewer.set({ workflows: [workflow("second", "done"), workflow("first", "running")] });
+    expect(detail().textContent).toContain("second phase");
+    expect(detail().closest(".surface-completed")).toBe(completed());
+
+    viewer.set({ workflows: [workflow("second", "running"), workflow("first", "running")] });
+    expect(completed()).toBe(null);
+    expect(detail().textContent).toContain("second phase");
+    expect(detail().closest(".surface-completed")).toBe(null);
+    viewer.dispose();
+  });
+
+  it.each(["running", "done"])("keeps focused workflow controls attached through an unchanged %s update", (state) => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    const surfaces = { workflows: [workflow("selected", state)] };
+    viewer.set(surfaces);
+    if (completed()) completed().querySelector("summary").click();
+    const section = detail().querySelector(".surface-phase");
+    const control = section.querySelector("summary");
+    control.focus();
+    expect(document.activeElement).toBe(control);
+    viewer.set(surfaces);
+    expect(detail().querySelector(".surface-phase")).toBe(section);
+    expect(document.activeElement).toBe(control);
+    viewer.dispose();
+  });
+
+  it("uses the compact history control and keeps selected history available after reopening", async () => {
+    const historyControl = document.createElement("button");
+    historyControl.innerHTML = '<span class="surface-history-count"></span>';
+    const viewer = mount(WORKFLOW_ENTRY_KIND, { compact: true, historyControl });
+    viewer.set({ workflows: [workflow("active", "running"), workflow("done", "done")] });
+    expect(historyControl.hidden).toBe(false);
+    expect(historyControl.textContent).toBe("1");
+    expect(completed().querySelector("summary").hidden).toBe(true);
+    historyControl.click();
+    document.querySelector('.surface-workflow-choice[data-key="done"]').click();
+    expect(detail().closest(".surface-completed")).toBe(completed());
+    historyControl.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(completed().open).toBe(false);
+    viewer.set({ workflows: [workflow("active", "running"), workflow("done", "done")] });
+    expect(completed().open).toBe(false);
+    historyControl.click();
+    expect(completed().open).toBe(true);
+    expect(detail().textContent).toContain("done phase");
+    viewer.dispose();
+  });
+});
+
 describe("the text a viewer clips", () => {
   const clipped = () => document.querySelector(".surface-row-label");
 

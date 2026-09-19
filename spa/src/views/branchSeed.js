@@ -37,9 +37,9 @@ const folderRowIn = (snapshot, projectId, branch) => {
 
 /** The feed row with the run's own body on it, the way `branch.get` used to
  *  answer. The board carries every live run whole beside its rows — the goal
- *  and state the commit box reads, the base the diff is measured against, and
- *  the triage pass that orders it — and a row that names no run carries null,
- *  exactly as a bare checkout always did. */
+ *  and state the commit box reads, the base the diff is measured against —
+ *  and a row that names no run carries null, exactly as a bare checkout
+ *  always did. */
 const withRunBody = (snapshot, row) => ({ ...row, run: runBodyIn(snapshot, row.run_id) });
 
 /**

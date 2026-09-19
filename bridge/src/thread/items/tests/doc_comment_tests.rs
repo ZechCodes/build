@@ -112,34 +112,6 @@ fn open_comments_are_scoped_to_their_stage() {
     assert_eq!(open[0].stage_id, "api-surface");
 }
 
-/// The agent's answer lands on the comment it answers, which closes it —
-/// and the mutation bumps the cursor so a polling client re-ships it.
-#[test]
-fn resolving_a_comment_records_the_reply_and_closes_it() {
-    let mut thread = commented_stage();
-    let id = thread.doc_comments()[0].id.clone();
-    let before = thread.last_sequence();
-
-    assert!(thread.resolve_doc_comment(&id, "Switched to deleted_at."));
-    let comment = &thread.doc_comments()[0];
-    assert_eq!(comment.state, DocCommentState::Addressed);
-    assert_eq!(
-        comment.agent_reply.as_deref(),
-        Some("Switched to deleted_at.")
-    );
-    assert!(thread.open_doc_comments_for("database-schema").is_empty());
-    assert!(thread.last_sequence() > before, "the cursor moves");
-
-    assert!(
-        !thread.resolve_doc_comment("message-404", "nothing to answer"),
-        "an unknown comment resolves nothing"
-    );
-    assert!(
-        !thread.resolve_doc_comment(&id, "again"),
-        "an addressed comment is not re-answered"
-    );
-}
-
 /// Deleting a comment deletes the post: there is nowhere else it lives.
 #[test]
 fn removing_an_open_comment_takes_the_post_with_it() {
@@ -153,7 +125,16 @@ fn removing_an_open_comment_takes_the_post_with_it() {
 
     let mut thread = commented_stage();
     let id = thread.doc_comments()[0].id.clone();
-    thread.resolve_doc_comment(&id, "done");
+    // A comment answered before replies were retired still reads as answered.
+    let ThreadItem::Message(message) = &mut thread.items[0] else {
+        panic!("a comment is a message");
+    };
+    message.agent_reply = Some("done".into());
+    assert_eq!(
+        thread.doc_comments()[0].state,
+        DocCommentState::Addressed,
+        "stored agent_reply data still reads as addressed"
+    );
     assert!(
         thread.remove_doc_comment(&id).is_none(),
         "an answered comment is history, not a draft"

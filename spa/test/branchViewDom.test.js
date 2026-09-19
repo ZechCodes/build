@@ -914,7 +914,7 @@ describe("the branch surface on the cache alone", () => {
   it("takes the run's own body off the board's run list", async () => {
     bridge.call = boardWith(
       [finishableRow({ run_id: "run-1" })],
-      [{ run_id: "run-1", state: "review", goal: "land it", base_branch: "trunk", triage_enabled: true }],
+      [{ run_id: "run-1", state: "review", goal: "land it", base_branch: "trunk" }],
     );
     await readTheBoard();
 

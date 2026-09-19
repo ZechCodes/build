@@ -56,10 +56,7 @@ pub(in crate::app) struct PendingAgentTurn {
     /// Whether this turn outlives a refusal of the request that queued it.
     ///
     /// False for almost everything: a turn speaks for a mutation, and a request
-    /// that failed wrote no mutation to speak for. A recovery is the exception
-    /// — it is written down and started, and the verb then refuses its caller
-    /// to say exactly that, so the agent handed the recovery must still hear
-    /// it.
+    /// that failed wrote no mutation to speak for.
     pub(in crate::app) survives_refusal: bool,
 }
 
@@ -191,60 +188,6 @@ impl PendingAgentTurn {
             phase: turn.phase,
             wants_catch_up: true,
             survives_refusal: false,
-        })
-    }
-
-    /// Address a recovery to the run's primary agent. `None` on an agentless
-    /// run: a recovery only exists for an entity that has run, so this is a
-    /// refusal rather than a case — and refusing beats minting an agent to
-    /// hand a recovery nobody asked for.
-    pub(in crate::app) fn for_recovery(
-        owner: &str,
-        active: &ActiveRun,
-        project_root: &std::path::Path,
-        prompt: String,
-    ) -> Option<Self> {
-        // A recovery may replace a dead process or take over a warm
-        // implementation tab. In either case it is a distinct Issue agent and
-        // must re-establish the durable conversation protocol before touching
-        // refs. Wrapping both variants also gives a warm recovery the unread
-        // pull instruction instead of assuming an earlier phase primed it.
-        //
-        // Only the cold half is closed with the catch-up packet at delivery: a
-        // warm recovery is a live process that lived this conversation, and
-        // the protocol block it keeps already tells it to read what it missed.
-        let primed = crate::orchestrator::conversation_prompt(&prompt);
-        let agent_id = active.agents.primary()?.id.clone();
-        Some(PendingAgentTurn {
-            operation_id: None,
-            root: AppState::canonical_root(project_root),
-            owner: owner.to_string(),
-            conversation_id: active
-                .agents
-                .primary()
-                .expect("the recovery agent was just resolved")
-                .conversation_id()
-                .to_string(),
-            model_choice: active
-                .agents
-                .primary()
-                .expect("the recovery agent was just resolved")
-                .choice
-                .clone(),
-            choice_revision: active
-                .agents
-                .primary()
-                .expect("the recovery agent was just resolved")
-                .choice_revision,
-            interrupt: false,
-            agent_id,
-            say: Some(TurnText {
-                cold: primed.clone(),
-                warm: primed,
-            }),
-            phase: "recover",
-            wants_catch_up: true,
-            survives_refusal: true,
         })
     }
 }

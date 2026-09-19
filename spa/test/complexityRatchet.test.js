@@ -60,7 +60,12 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // 54 since the Changes pane has no poll to hold the whole of a turn in one
 // function: it reads its records, paints them, and the checkout it is the only
 // reader of is read by the one function a mutation already used.
-const RATCHETED_FUNCTIONS = 53;
+// 53 since the Changes pane read is where the mutation already reads: the
+// two counts above and this one are the cache-first branch, and land beside
+// the four that review prioritization took with it below.
+// 49 since review prioritization is gone: core/triageModel.js left with its
+// three exemptions, and a diff's hunk row no longer carries a triage chip.
+const RATCHETED_FUNCTIONS = 49;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

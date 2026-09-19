@@ -363,7 +363,7 @@ export function routeContext(route) {
  * Named collections rather than the whole view: a slice is what a surface is
  * handed, and a field nobody here names is a field no surface may quietly come
  * to depend on. `runs` carries what a branch row does not — the goal, the
- * state, the base a diff is measured against, the triage pass — and
+ * state, the base a diff is measured against — and
  * `externalWorktrees` carries the checkouts the inbox leaves out, which a link
  * to one still has to open.
  */

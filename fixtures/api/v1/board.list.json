@@ -160,11 +160,8 @@
         "effort": null,
         "summary": null,
         "last_error": null,
-        "recovery": null,
         "stages": [],
         "current_stage_id": null,
-        "triage": null,
-        "triage_enabled": true,
         "stat": {
           "files_changed": 3,
           "insertions": 41,

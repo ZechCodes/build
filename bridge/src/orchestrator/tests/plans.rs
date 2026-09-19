@@ -1,5 +1,5 @@
 use super::super::workspace::NEW_THREAD_MESSAGES_PROMPT;
-use super::reporting::{done, done_validate};
+use super::reporting::done;
 use super::runs::{
     comment_by_id, comment_on, dispatch_turn_halves, last_commit_subject, manifest_entry,
     orchestrator, posted_turn_halves, run_past_first_stage, split_store,
@@ -7,7 +7,7 @@ use super::runs::{
 use super::workspace::{registered_checkouts, user_worktree, worktree_head};
 use crate::git_fixture::init_repo;
 use crate::isolation::Isolation;
-use crate::mcp::{DoneOutputs, DonePhase, DoneReport, DoneStatus};
+use crate::mcp::{DoneReport, DoneStatus};
 use crate::orchestrator::{
     gate_plan_message, gate_plan_stage_notes, mcp_config_path, ActivePlan, ActiveRun,
     AdoptableCheckout, AgentTurn, ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
@@ -87,17 +87,16 @@ fn concurrent_planning_workspaces_never_shorten_the_humans_exclude_file() {
         "temp files left beside exclude: {leftovers:?}"
     );
 }
-pub(super) fn done_plan_stages(entries: Vec<StageManifestEntry>) -> DoneReport {
-    DoneReport {
-        phase: DonePhase::Plan,
-        status: DoneStatus::Completed,
-        summary: "planned".into(),
-        outputs: DoneOutputs {
-            plan_path: Some(templates::STAGES_MANIFEST_PATH.to_string()),
-            stages: Some(entries),
-            ..DoneOutputs::default()
-        },
-    }
+/// Play the plan agent's last move: write the stage manifest into the
+/// plan's docs dir, where Build reads it on the Complete report.
+pub(super) fn write_stage_manifest(plan: &ActivePlan, entries: &[StageManifestEntry]) {
+    let plan_dir = plan_docs_dir(plan).join(".build/plan");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(
+        plan_dir.join("stages.json"),
+        serde_json::to_string(entries).unwrap(),
+    )
+    .unwrap();
 }
 /// The plan's live scratch docs dir (panics once the workspace is gone).
 pub(super) fn plan_docs_dir(plan: &ActivePlan) -> PathBuf {
@@ -192,16 +191,8 @@ pub(super) fn plan_in_review_with_goal(
     let mut plan = drafting_plan(orch, store, id, goal);
     let worktree_path = plan_docs_dir(&plan);
     std::fs::write(worktree_path.join(".build/plan.md"), "# Plan v1\n").unwrap();
-    orch.on_plan_done(
-        &mut plan,
-        store,
-        done(
-            DonePhase::Plan,
-            DoneStatus::Completed,
-            Some(".build/plan.md"),
-        ),
-    )
-    .unwrap();
+    orch.on_plan_done(&mut plan, store, done(DoneStatus::Completed))
+        .unwrap();
     assert_eq!(plan.plan.state, PlanState::PlanReview);
     plan
 }
@@ -240,8 +231,8 @@ pub(super) fn multi_stage_plan_in_review(
         .unwrap();
         entries.push(manifest_entry(&stage_id, title, position + 1));
     }
-    std::fs::write(plan_dir.join("stages.json"), "[]").unwrap();
-    orch.on_plan_done(&mut plan, store, done_plan_stages(entries))
+    write_stage_manifest(&plan, &entries);
+    orch.on_plan_done(&mut plan, store, done(DoneStatus::Completed))
         .unwrap();
     assert_eq!(plan.plan.state, PlanState::PlanReview);
     plan
@@ -391,15 +382,7 @@ async fn plan_done_ingest_failure_keeps_the_plan_drafting_with_the_error_surface
     // The agent reports done but wrote NO docs: the ingest is transactional,
     // so the done errors and the plan never advances with unpersisted docs.
     let err = orch
-        .on_plan_done(
-            &mut plan,
-            &store,
-            done(
-                DonePhase::Plan,
-                DoneStatus::Completed,
-                Some(".build/plan.md"),
-            ),
-        )
+        .on_plan_done(&mut plan, &store, done(DoneStatus::Completed))
         .expect_err("ingest failure fails the done");
     assert!(matches!(err, OrchestratorError::Store(_)), "{err}");
     assert_eq!(plan.plan.state, PlanState::Drafting, "no state advance");
@@ -419,22 +402,14 @@ async fn plan_blocked_and_failed_reports_park_the_plan() {
     let store = split_store(&dir);
 
     let mut blocked = drafting_plan(&orch, &store, "plan-b", "goal b");
-    orch.on_plan_done(
-        &mut blocked,
-        &store,
-        done(DonePhase::Plan, DoneStatus::Blocked, None),
-    )
-    .unwrap();
+    orch.on_plan_done(&mut blocked, &store, done(DoneStatus::Blocked))
+        .unwrap();
     assert_eq!(blocked.plan.state, PlanState::Blocked);
     assert_eq!(blocked.last_summary.as_deref(), Some("summary"));
 
     let mut failed = drafting_plan(&orch, &store, "plan-f", "goal f");
-    orch.on_plan_done(
-        &mut failed,
-        &store,
-        done(DonePhase::Plan, DoneStatus::Failed, None),
-    )
-    .unwrap();
+    orch.on_plan_done(&mut failed, &store, done(DoneStatus::Failed))
+        .unwrap();
     assert_eq!(failed.plan.state, PlanState::Failed);
 }
 #[tokio::test]
@@ -449,37 +424,13 @@ async fn plan_idle_then_late_done_is_still_honored() {
 
     // Quiescence never decided anything: the late report still lands.
     std::fs::write(plan_docs_dir(&plan).join(".build/plan.md"), "# Late plan\n").unwrap();
-    orch.on_plan_done(
-        &mut plan,
-        &store,
-        done(
-            DonePhase::Plan,
-            DoneStatus::Completed,
-            Some(".build/plan.md"),
-        ),
-    )
-    .unwrap();
+    orch.on_plan_done(&mut plan, &store, done(DoneStatus::Completed))
+        .unwrap();
     assert_eq!(plan.plan.state, PlanState::PlanReview);
     assert_eq!(
         store.read_plan_doc("plan-1", ".build/plan.md").as_deref(),
         Some("# Late plan\n")
     );
-}
-#[tokio::test]
-async fn build_or_validate_reports_on_a_plan_are_rejected_without_mutation() {
-    let (dir, repo) = init_repo();
-    let orch = orchestrator(&dir, &repo);
-    let store = split_store(&dir);
-    let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
-
-    for phase in [DonePhase::Build, DonePhase::Validate] {
-        let err = orch
-            .on_plan_done(&mut plan, &store, done(phase, DoneStatus::Completed, None))
-            .expect_err("plans only accept plan/revise reports");
-        assert!(matches!(err, OrchestratorError::Gate(_)), "{err}");
-    }
-    assert_eq!(plan.plan.state, PlanState::Drafting);
-    assert_eq!(plan.last_summary, None, "a rejected report leaves no trace");
 }
 #[tokio::test]
 async fn plan_done_merges_the_manifest_into_stage_docs() {
@@ -512,15 +463,15 @@ async fn plan_done_merges_the_manifest_into_stage_docs() {
         "# Stage: Third\n",
     )
     .unwrap();
-    orch.on_plan_done(
-        &mut plan,
-        &store,
-        done_plan_stages(vec![
+    write_stage_manifest(
+        &plan,
+        &[
             manifest_entry("second", "Second v2", 2),
             manifest_entry("third", "Third", 3),
-        ]),
-    )
-    .unwrap();
+        ],
+    );
+    orch.on_plan_done(&mut plan, &store, done(DoneStatus::Completed))
+        .unwrap();
     let ids: Vec<&str> = plan.stages.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, vec!["second", "third"]);
     assert_eq!(plan.stages[0].title, "Second v2");
@@ -530,6 +481,50 @@ async fn plan_done_merges_the_manifest_into_stage_docs() {
         "an existing id keeps its review sub-state across a re-plan"
     );
     assert_eq!(plan.stages[1].state, StageDocState::Planned);
+}
+/// The manifest is read from disk on the Complete report, so a broken one
+/// is Build's to name: the report is refused, the plan keeps drafting, and
+/// the card says why — nothing is ingested and no stage is invented.
+#[tokio::test]
+async fn a_malformed_stage_manifest_refuses_the_plan_with_the_reason_on_the_card() {
+    let (dir, repo) = init_repo();
+    let orch = orchestrator(&dir, &repo);
+    let store = split_store(&dir);
+    let mut plan = drafting_plan(&orch, &store, "plan-1", "Add greetings");
+    let plan_dir = plan_docs_dir(&plan).join(".build/plan");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("01-first.md"), "# Stage: First\n").unwrap();
+    std::fs::write(plan_dir.join("stages.json"), "{\"not\": \"a list\"}").unwrap();
+
+    let err = orch
+        .on_plan_done(&mut plan, &store, done(DoneStatus::Completed))
+        .expect_err("a manifest Build cannot read refuses the plan");
+    assert!(matches!(err, OrchestratorError::Gate(_)), "{err}");
+    assert_eq!(plan.plan.state, PlanState::Drafting, "no state advance");
+    assert!(plan.stages.is_empty(), "no stage is invented");
+    let reason = plan.last_error.as_deref().unwrap_or_default();
+    assert!(reason.contains("stages.json"), "{reason}");
+    assert_eq!(
+        plan.last_summary, None,
+        "a refused report leaves no summary"
+    );
+    assert_eq!(
+        store.read_plan_doc("plan-1", ".build/plan/01-first.md"),
+        None,
+        "nothing is ingested past a refused manifest"
+    );
+}
+/// With no stages.json on disk the plan is one document, whatever else the
+/// docs dir holds.
+#[tokio::test]
+async fn a_plan_without_a_stage_manifest_stays_a_single_document() {
+    let (dir, repo) = init_repo();
+    let orch = orchestrator(&dir, &repo);
+    let store = split_store(&dir);
+    let plan = plan_in_review(&orch, &store, "plan-1");
+    assert!(!plan.is_multi_stage());
+    assert!(plan.stages.is_empty());
+    assert_eq!(plan.plan_path, ".build/plan.md");
 }
 #[tokio::test]
 async fn send_plan_notes_revises_in_the_warm_worktree() {
@@ -556,16 +551,8 @@ async fn send_plan_notes_revises_in_the_warm_worktree() {
 
     // The revised doc lands in the store on the next done.
     std::fs::write(worktree_path.join(".build/plan.md"), "# Plan v2\n").unwrap();
-    orch.on_plan_done(
-        &mut plan,
-        &store,
-        done(
-            DonePhase::Plan,
-            DoneStatus::Completed,
-            Some(".build/plan.md"),
-        ),
-    )
-    .unwrap();
+    orch.on_plan_done(&mut plan, &store, done(DoneStatus::Completed))
+        .unwrap();
     assert_eq!(plan.plan.state, PlanState::PlanReview);
     assert_eq!(
         store.read_plan_doc("plan-1", ".build/plan.md").as_deref(),
@@ -698,7 +685,7 @@ async fn an_implementable_issue_rejects_one_whose_first_stage_doc_is_unapproved(
     );
 }
 #[tokio::test]
-async fn plan_stage_revision_done_ingests_resolves_comments_and_resets_approval() {
+async fn plan_stage_revision_done_ingests_and_resets_approval() {
     let (dir, repo) = init_repo();
     let orch = orchestrator(&dir, &repo);
     let store = split_store(&dir);
@@ -721,24 +708,7 @@ async fn plan_stage_revision_done_ingests_resolves_comments_and_resets_approval(
     orch.on_plan_done(
         &mut plan,
         &store,
-        DoneReport {
-            phase: DonePhase::Revise,
-            status: DoneStatus::Completed,
-            summary: "revised".into(),
-            outputs: DoneOutputs {
-                comment_resolutions: Some(vec![
-                    crate::mcp::CommentResolution {
-                        comment_id: first_comment.clone(),
-                        response: "switched to a timestamp".into(),
-                    },
-                    crate::mcp::CommentResolution {
-                        comment_id: "message-999".into(),
-                        response: "unknown id is skipped".into(),
-                    },
-                ]),
-                ..DoneOutputs::default()
-            },
-        },
+        DoneReport::new(DoneStatus::Completed, "revised"),
     )
     .unwrap();
 
@@ -749,16 +719,13 @@ async fn plan_stage_revision_done_ingests_resolves_comments_and_resets_approval(
         "a revised doc resets the stale approval"
     );
     assert_eq!(plan.revising_stage_id, None);
-    let answered = comment_by_id(&plan, &first_comment);
-    assert_eq!(answered.state, crate::thread::DocCommentState::Addressed);
-    assert_eq!(
-        answered.agent_reply.as_deref(),
-        Some("switched to a timestamp")
-    );
-    assert_eq!(
-        comment_by_id(&plan, &second_comment).state,
-        crate::thread::DocCommentState::Open
-    );
+    for comment in [&first_comment, &second_comment] {
+        assert_eq!(
+            comment_by_id(&plan, comment).state,
+            crate::thread::DocCommentState::Open,
+            "a report resolves no comment; the reviewer does"
+        );
+    }
     assert_eq!(
         store
             .read_plan_doc("plan-1", ".build/plan/01-first.md")
@@ -851,12 +818,8 @@ async fn dispatch_planned_run_materializes_commits_and_baselines_the_diff() {
     assert!(prompt.contains(".build/plan.md"), "{prompt}");
     assert!(prompt.contains("Add a greeting"), "{prompt}");
 
-    orch.on_run_done(
-        &mut run,
-        &[],
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
+    orch.on_run_done(&mut run, &[], done(DoneStatus::Completed))
+        .unwrap();
     assert_eq!(run.run.state, RunState::Review);
 }
 #[tokio::test]
@@ -876,7 +839,7 @@ async fn an_implementable_issue_requires_an_approved_plan() {
     assert!(err.to_string().contains("approved"), "{err}");
 }
 #[tokio::test]
-async fn run_validation_pass_mid_plan_parks_at_the_stage_gate() {
+async fn a_mid_plan_stage_complete_parks_at_the_gate_with_run_all_armed() {
     let (dir, repo) = init_repo();
     let orch = orchestrator(&dir, &repo);
     let store = split_store(&dir);
@@ -884,32 +847,15 @@ async fn run_validation_pass_mid_plan_parks_at_the_stage_gate() {
     let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
     run.auto_advance = true;
     std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done(DonePhase::Build, DoneStatus::Completed, None),
-    )
-    .unwrap();
+    orch.on_run_done(&mut run, &plan.stages, done(DoneStatus::Completed))
+        .unwrap();
 
-    orch.on_run_done(
-        &mut run,
-        &plan.stages,
-        done_validate(true, "- ok", "note for second"),
-    )
-    .unwrap();
     assert_eq!(run.run.state, RunState::StageGate);
-    assert_eq!(
-        run.stages[0].state,
-        StageProgressState::Validated { passed: true }
+    assert_eq!(run.stages[0].state, StageProgressState::Completed);
+    assert!(
+        run.auto_advance,
+        "run-all stays armed after a completed stage"
     );
-    assert_eq!(
-        run.stages[0]
-            .validation
-            .as_ref()
-            .map(|v| v.notes_for_next_stage.as_str()),
-        Some("note for second")
-    );
-    assert!(run.auto_advance, "run-all stays armed after a pass");
     assert_eq!(run.stages[0].completion_sha, run.stages[0].built_sha);
 }
 #[tokio::test]
@@ -971,7 +917,8 @@ async fn send_plan_stage_notes_revises_a_stage_and_round_trips_through_done() {
     assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
 
     // The agent revises the doc and reports done → back to PlanReview, the
-    // stage approval reset, the comment resolved, the store copy updated.
+    // stage approval reset, the store copy updated. The comment stays open:
+    // resolving it is the reviewer's call.
     std::fs::write(
         plan_docs_dir(&plan).join(".build/plan/01-first.md"),
         "# Stage: First (revised)\n",
@@ -980,18 +927,7 @@ async fn send_plan_stage_notes_revises_a_stage_and_round_trips_through_done() {
     orch.on_plan_done(
         &mut plan,
         &store,
-        DoneReport {
-            phase: DonePhase::Revise,
-            status: DoneStatus::Completed,
-            summary: "revised".into(),
-            outputs: DoneOutputs {
-                comment_resolutions: Some(vec![crate::mcp::CommentResolution {
-                    comment_id: first_comment.clone(),
-                    response: "done".into(),
-                }]),
-                ..DoneOutputs::default()
-            },
-        },
+        DoneReport::new(DoneStatus::Completed, "revised"),
     )
     .unwrap();
     assert_eq!(plan.plan.state, PlanState::PlanReview);
@@ -999,7 +935,7 @@ async fn send_plan_stage_notes_revises_a_stage_and_round_trips_through_done() {
     assert_eq!(plan.revising_stage_id, None);
     assert_eq!(
         comment_by_id(&plan, &first_comment).state,
-        crate::thread::DocCommentState::Addressed
+        crate::thread::DocCommentState::Open
     );
     assert_eq!(
         store
@@ -1048,12 +984,8 @@ async fn message_plan_redirects_drafting_resumes_parked_and_refuses_gates() {
     posted_turn_halves(&turn, "message", "focus on error paths");
 
     // A blocked plan resumes drafting on reply.
-    orch.on_plan_done(
-        &mut plan,
-        &store,
-        done(DonePhase::Plan, DoneStatus::Blocked, None),
-    )
-    .unwrap();
+    orch.on_plan_done(&mut plan, &store, done(DoneStatus::Blocked))
+        .unwrap();
     assert_eq!(plan.plan.state, PlanState::Blocked);
     let turn = message_plan(&orch, &mut plan, &store, "here is the missing detail").unwrap();
     assert_eq!(plan.plan.state, PlanState::Drafting);
@@ -1201,18 +1133,7 @@ async fn mid_run_stage_revision_writes_back_to_the_plan_store() {
 
     // While a revision is in flight, a revise report must NOT go through
     // on_run_done — it is a store write-back, not a build report.
-    let revise = DoneReport {
-        phase: DonePhase::Revise,
-        status: DoneStatus::Completed,
-        summary: "revised".into(),
-        outputs: DoneOutputs {
-            comment_resolutions: Some(vec![crate::mcp::CommentResolution {
-                comment_id: comment_id.clone(),
-                response: "reworked the section".into(),
-            }]),
-            ..DoneOutputs::default()
-        },
-    };
+    let revise = DoneReport::new(DoneStatus::Completed, "revised");
     let guard = orch
         .on_run_done(&mut run, &plan.stages, revise.clone())
         .expect_err("on_run_done rejects a revision in flight");
@@ -1222,7 +1143,8 @@ async fn mid_run_stage_revision_writes_back_to_the_plan_store() {
     );
 
     // The agent revised the doc in the run's worktree; consuming ingests it
-    // back to the plan store, resets the stale approval, resolves the comment.
+    // back to the plan store and resets the stale approval; the comment stays
+    // open for the reviewer to resolve.
     std::fs::write(
         run.worktree.path.join(".build/plan/02-second.md"),
         "# Stage: Second (reworked)\n",
@@ -1243,7 +1165,7 @@ async fn mid_run_stage_revision_writes_back_to_the_plan_store() {
     );
     assert_eq!(
         comment_by_id(&plan, &comment_id).state,
-        crate::thread::DocCommentState::Addressed
+        crate::thread::DocCommentState::Open
     );
     assert_eq!(
         store

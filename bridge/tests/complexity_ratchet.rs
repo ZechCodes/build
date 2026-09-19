@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 /// seam owns what it used to describe, and needs no allow. Shrinking the relay to
 /// a rendezvous retired the last two: `serve_device` and `serve_client` lost the
 /// presence fan-out and were split around `DeviceWatch` / `ClientWatch`.
-const RATCHETED_FUNCTIONS: usize = 21;
+/// Retiring the validation gate and the recovery agent took two more:
+/// `on_run_agent_done` came under the cap and `consume_recovery_report` is gone.
+const RATCHETED_FUNCTIONS: usize = 19;
 
 const ALLOW: &str = "#[allow(clippy::cognitive_complexity)]";
 

@@ -291,6 +291,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry .inbox-facts-float { right:calc(10px + var(--inbox-row-bleed-right)); }
 .inbox-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
 .inbox-entry .sdot { margin-top:5px; }
+/* Align project row dots with the fold while keeping the text column fixed. */
+.inbox-project .inbox-entry > .sdot { margin-left:-5px; margin-right:5px; }
 .inbox-line { display:flex; align-items:center; gap:6px; min-width:0; }
 .inbox-line .stitle { font-size:13px; }
 .inbox-line .badge { flex:none; }
@@ -449,9 +451,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 0; }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg,
 .inbox-project-settings svg, .inbox-project-hide svg { width:16px; height:16px; display:block; }
-/* The chevron's column is the rows' state-dot column: the rows sit 2px in and
-   pad 6px, the dot is 8px wide — centre 12px; the fold pads 4px round a 16px
-   icon — centre 12px. The Recent toggle's caret is padded the same. */
+/* The fold and Recent caret center 12px into the band. Row dots use the same
+   center: 13px row padding minus 5px margin plus half the 8px dot. */
 .inbox-fold { flex:none; padding:3px 4px; }
 /* Nothing to fold: no chevron at all. A dimmed "open" chevron said the block
    was open when it had nothing to be open; the button keeps its column so the
@@ -640,7 +641,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font-size:13px; color:var(--ink); }
 .tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tb-workspace .tb-name { white-space:pre; }
-.tb-caret { flex:none; font-size:9px; color:var(--dim); }
+.tb-caret { flex:none; color:var(--dim); }
 .tb-sep { color:var(--line); flex:none; }
 .tb-directories { display:flex; align-self:stretch; align-items:stretch; min-width:0;
   overflow-x:auto; scrollbar-width:none; margin-left:14px; }

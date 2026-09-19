@@ -261,6 +261,40 @@ describe("workspace navigation", () => {
     expect(workspaceMenuModel({ ...scope, query: "pay" }).map((row) => row.id)).toEqual(["ws-1"]);
   });
 
+  it("groups workspaces by status with ready first and finished last, preserving order within groups", () => {
+    const entries = [
+      ["Alpha", "finished"],
+      ["Beta", "ready"],
+      ["Delta", "failed"],
+      ["Echo", "provisioning"],
+      ["Foxtrot", "ready"],
+      ["Golf", "paused"],
+      ["Hotel", "finished"],
+      ["India", "failed"],
+      ["Juliet", "paused"],
+    ].map(([name, status]) => ({ name, status }));
+
+    expect(workspaceMenuModel({ workspaces: entries }).map((row) => row.name)).toEqual([
+      "Beta", "Foxtrot", "Echo", "Delta", "India", "Golf", "Juliet", "Alpha", "Hotel",
+    ]);
+    expect(entries.map((row) => row.name)).toEqual([
+      "Alpha", "Beta", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet",
+    ]);
+  });
+
+  it("keeps filtered results grouped by status and ranks matches within each group", () => {
+    const entries = [
+      { name: "Old payment", status: "ready" },
+      { name: "Payment", status: "finished" },
+      { name: "Payment work", status: "ready" },
+      { name: "Release", status: "ready" },
+    ];
+
+    expect(workspaceMenuModel({ workspaces: entries, query: "payment" }).map((row) => row.name)).toEqual([
+      "Payment work", "Old payment", "Payment",
+    ]);
+  });
+
   it.each(["", "  ", "Bridge wire interface / 🦊"])("preserves the chosen workspace name %j in the menu and toolbar", (name) => {
     const workspace = { ...workspaces[0], name };
     expect(workspaceMenuModel({ workspaces: [workspace] })[0].name).toBe(name);

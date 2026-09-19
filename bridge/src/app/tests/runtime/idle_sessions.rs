@@ -45,15 +45,7 @@ pub(in crate::app::tests) fn approved_side_plan(
     orch.on_plan_done(
         &mut plan,
         store,
-        DoneReport {
-            phase: DonePhase::Plan,
-            status: DoneStatus::Completed,
-            summary: "planned".to_string(),
-            outputs: DoneOutputs {
-                plan_path: Some(".build/plan.md".to_string()),
-                ..DoneOutputs::default()
-            },
-        },
+        DoneReport::new(DoneStatus::Completed, "planned"),
     )
     .unwrap();
     orch.approve_plan(&mut plan).unwrap();
@@ -434,7 +426,6 @@ fn reading_messages_says_it_started_the_working_indicator() {
 
     let read = apply_thread_action(
         &mut thread,
-        crate::thread::ArtifactKind::Diff,
         BridgeAction::ReadUnreadMessages,
         "2026-08-09T18:00:01Z",
     )
@@ -451,7 +442,6 @@ fn reading_messages_says_it_started_the_working_indicator() {
     // there is nothing to explain.
     let empty = apply_thread_action(
         &mut thread,
-        crate::thread::ArtifactKind::Diff,
         BridgeAction::ReadUnreadMessages,
         "2026-08-09T18:00:02Z",
     )
@@ -1307,8 +1297,6 @@ pub(in crate::app::tests) fn fake_run_record(id: &str) -> PersistedRun {
         revising_stage_id: None,
         auto_advance: false,
         adopted: false,
-        triage: None,
-        recovery: None,
         publication_attempt: None,
         provider: AgentProvider::Claude,
         model: None,

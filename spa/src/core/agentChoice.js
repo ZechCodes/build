@@ -68,7 +68,7 @@ export function agentChoicePanelHtml(catalog, choice, { prefix = "agent-choice",
   const model = modelInCatalog(models, choice.model);
   return `<div class="agent-choice">
     <button class="compose-disclose" type="button" data-agent-choice-toggle="${esc(prefix)}" aria-expanded="${open ? "true" : "false"}">
-      ${open ? "▾" : "▸"} Agent, model and effort</button>
+      <span class="disclosure-caret" aria-hidden="true">${open ? "▾" : "▸"}</span> Agent, model and effort</button>
     <div class="agent-choice-fields"${open ? "" : " hidden"}>
       <label for="${esc(prefix)}-provider">Agent</label>
       <select id="${esc(prefix)}-provider">${providerOptionsHtml(offered.providers, providerId)}</select>

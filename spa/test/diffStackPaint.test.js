@@ -72,7 +72,7 @@ describe("the Changes pane's stack", () => {
       if (method === "git.log") return log();
       return {};
     });
-    const pane = mountGitPane(container, { scope, callRpc, triageEnabled: () => Boolean(scope.run_id) });
+    const pane = mountGitPane(container, { scope, callRpc });
     await settle();
     return { container, pane };
   };
@@ -85,13 +85,12 @@ describe("the Changes pane's stack", () => {
     pane.dispose();
   });
 
-  it("keys a triaged stack by file too, so a file arriving above leaves the one being read standing", async () => {
+  it("keys a run's stack by file too, so a file arriving above leaves the one being read standing", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const served = { status: status() };
     const { container, pane } = await mount(served, { run_id: "run-1" });
     const stack = container.querySelector(".dstack");
     expect([...stack.children].map((child) => child.dataset.key)).toEqual([
-      "triagebar",
       "EDIT:src/a.js",
       "EDIT:src/b.js",
     ]);
@@ -103,7 +102,6 @@ describe("the Changes pane's stack", () => {
     await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect([...stack.children].map((child) => child.dataset.key)).toEqual([
-      "triagebar",
       "EDIT:src/0.js",
       "EDIT:src/a.js",
       "EDIT:src/b.js",

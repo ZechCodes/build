@@ -5,7 +5,7 @@ mod runs;
 mod workspace;
 
 pub use plans::{ActivePlan, PlanWorkspace};
-pub use reporting::{triage_is_due, AgentTurn, OrchestratorError, ReportConsumed, ReportOutcome};
+pub use reporting::{AgentTurn, OrchestratorError, ReportOutcome};
 pub use runs::{ActiveRun, ImplementableIssue, PreparedImplementation, RunSource};
 pub(crate) use workspace::{
     append_durable_conversation, conversation_prompt, AgentLaunch, PreparedAgentLaunch,

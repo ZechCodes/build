@@ -497,9 +497,6 @@ impl AppState {
         if let BridgeAction::SetTopic { topic } = &action {
             return self.set_agent_topic(entity_id, agent_id, topic);
         }
-        if let BridgeAction::PostThreadMessage { links, .. } = &action {
-            self.validate_thread_links_for_owner(entity_id, links)?;
-        }
         let posted_still_working = match &action {
             BridgeAction::PostThreadMessage { still_working, .. } => Some(*still_working),
             _ => None,
@@ -509,8 +506,8 @@ impl AppState {
         // is the implementation's first — is one rule, and it is
         // `edit_agent_conversation`'s.
         let now = now_rfc3339();
-        let result = self.edit_agent_conversation(entity_id, agent_id, |thread, artifact| {
-            apply_thread_action(thread, artifact, action, &now)
+        let result = self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
+            apply_thread_action(thread, action, &now)
         });
         if let Ok(value) = &result {
             if reads_unread && value["working"].is_string() {

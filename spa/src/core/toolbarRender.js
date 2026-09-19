@@ -13,7 +13,7 @@ import { ICON_CHEVRON_LEFT, ICON_SETTINGS } from "./icons.js";
  *  different name, so the button is written once. */
 const selectorHtml = ({ select, className = `tb-${select}`, name, ariaLabel = "" }) =>
   `<button class="tb-sel ${className}" data-select="${select}" type="button" aria-haspopup="menu" aria-expanded="false"${ariaLabel ? ` aria-label="${esc(ariaLabel)}"` : ""}>
-     <span class="tb-name">${esc(name)}</span><span class="tb-caret">▾</span>
+     <span class="tb-name">${esc(name)}</span><span class="tb-caret disclosure-caret" aria-hidden="true">▾</span>
    </button>`;
 
 const projectSelectorHtml = (project) => selectorHtml({ select: "project", name: project || "Projects" });

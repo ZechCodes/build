@@ -267,8 +267,6 @@ async fn a_process_that_exits_after_handing_back_records_no_interruption() {
             &agent_id,
             BridgeAction::PostThreadMessage {
                 body: "here is what I did".to_string(),
-                anchor: None,
-                links: Vec::new(),
                 still_working: false,
                 options: Vec::new(),
             },

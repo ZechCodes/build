@@ -84,7 +84,6 @@ import {
 } from "./threadSend.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
-import { fileLinkRoute } from "./threadLinks.js";
 import { hashFromRoute } from "./router.js";
 import { createRailWorkItem } from "./railWorkItem.js";
 import { forgetRevisionBodies, revisionContents } from "./revisionBodies.js";
@@ -117,8 +116,7 @@ import {
   wireThreadSentMessages,
 } from "./thread.js";
 import { createActivityRuns } from "./activityRuns.js";
-import { isAtBottom } from "./paintKeepingPlace.js";
-import { unreadAnchorSequence } from "./unreadAnchor.js";
+import { createUnreadMarker } from "./unreadAnchor.js";
 import { wireExpansionReveal } from "./revealExpanded.js";
 import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
@@ -841,6 +839,12 @@ function mountRailOnContext(host, context, swap) {
   let activityRuns = null; // the open runs of the conversation in the panel
   let activityRunsFor = null; // whose conversation those runs belong to
   let unreadFrom = null; // where the unread line stands in that conversation
+  const unreadMarkers = new Map();
+  let unreadMarker = null;
+  const leaveUnreadMarker = () => {
+    unreadMarker?.leave();
+    unreadFrom = null;
+  };
   let reportedRead = 0; // how far this panel has told the daemon it read
   let reportedFloor = null; // and how much of the conversation it held saying so
   let paintedChat = null; // what the timeline in the panel was drawn from
@@ -958,6 +962,7 @@ function mountRailOnContext(host, context, swap) {
   /** Open this agent's conversation, and tell everything else on screen: the
    *  bubble strip is the selector for the whole work item, not just the rail. */
   const chooseAgent = (id) => {
+    if (selectedId !== (id || null)) leaveUnreadMarker();
     selectedId = id || null;
     railView.chooseAgent(selectedId);
     if (!isProvisionalKey(selectedId)) {
@@ -1495,6 +1500,7 @@ function mountRailOnContext(host, context, swap) {
   /** Collapse the live panel without changing its docked/card preference. */
   const closePanel = ({ restoreFocus = false } = {}) => {
     if (!panelVisible) return;
+    leaveUnreadMarker();
     const trigger = activeBubble();
     closeSurfaceMenu?.();
     closeSurfaceOverlay();
@@ -1600,6 +1606,7 @@ function mountRailOnContext(host, context, swap) {
     // than rewritten, so the agent beside it that does have a terminal is still
     // where the human left it.
     const shownMode = shownPanelMode();
+    if (shownMode !== "chat" || addingAgent || rememberedConversationIsLoading()) leaveUnreadMarker();
     // Structural head changes replace its controls; a topic change keeps this
     // head mounted and moves only its title below — so the head is fingerprinted
     // by WHICH agent it is open on rather than by what that agent is called.
@@ -1862,31 +1869,28 @@ function mountRailOnContext(host, context, swap) {
       // Everything else the panel remembers about the conversation goes with
       // it: a line ruled in one thread marks nothing in the next, and how far
       // this panel read one says nothing about the other.
-      unreadFrom = null;
+      leaveUnreadMarker();
+      if (!unreadMarkers.has(runsFor)) unreadMarkers.set(runsFor, createUnreadMarker(() => {
+        unreadFrom = null;
+        if (!disposed) paintChat();
+      }));
+      unreadMarker = unreadMarkers.get(runsFor);
       reportedRead = 0;
       reportedFloor = null;
     }
     return activityRuns;
   };
 
-  /// Where the unread line stands in the conversation on screen, and with it
-  /// where a paint that is following the conversation lands.
-  ///
-  /// The daemon's cursor says how far the reader got and the bubble's count says
-  /// whether anything is waiting past it; core/unreadAnchor.js reads those two
-  /// as a place. It is HELD rather than recomputed, because a message is read
-  /// the moment its foot comes into view — a line taken from the live cursor
-  /// alone would rule itself above what just arrived and clear itself a tick
-  /// later. The reader reaching the end with nothing waiting is what retires it.
-  const unreadLineFor = (body, thread) => {
+  // The marker's clock starts when the newest agent message has been read;
+  // trailing user messages and activity do not delay it until scroll bottom.
+  const unreadLineFor = (thread, readThrough = 0) => {
     const agent = agentInFocus();
-    return unreadAnchorSequence({
-      held: unreadFrom,
-      cursor: agent ? agent.read_through_sequence : undefined,
-      unreadCount: (agent && agent.unread_count) || 0,
+    return unreadMarker?.update({
+      cursor: agent?.read_through_sequence,
+      unreadCount: agent?.unread_count || 0,
       items: threadItems(thread),
-      caughtUp: isAtBottom(body),
-    });
+      readThrough,
+    }) ?? null;
   };
 
   /// What the daemon last said each run over this window totals: the digests
@@ -1950,9 +1954,8 @@ function mountRailOnContext(host, context, swap) {
     // Whose conversation this is, settled first: a switch drops everything the
     // panel remembers about the last one, including the line about to be ruled.
     const runs = conversationRuns();
-    // Measured before the paint, because where the reader is standing NOW is
-    // what says whether they have caught up.
-    unreadFrom = unreadLineFor(body, thread);
+    // Keep the visit marker stable as daemon read cursors catch up.
+    unreadFrom = unreadLineFor(thread);
     const fingerprint = chatFingerprintOf(thread, agentLabel);
     if (fingerprint === paintedChat && body.querySelector(".thread-items")) return;
     paintedChat = fingerprint;
@@ -1977,8 +1980,10 @@ function mountRailOnContext(host, context, swap) {
     );
   };
 
+  const chatIsVisible = () => panelVisible && !document.hidden && shownPanelMode() === "chat";
+
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
-    if (!panelVisible) return;
+    if (!chatIsVisible()) return;
     const body = host.querySelector("#rail-body");
     if (!body) return;
     if (entity.chatCapable === false) {
@@ -2172,7 +2177,7 @@ function mountRailOnContext(host, context, swap) {
     );
     wireThreadRevisionLinks(body, (revisionId) =>
       revisionContents(controller.identity.entityId, revisionId, chatRepository.currentCall()));
-    wireThreadLinks(body, openLink, routeForLink);
+    wireThreadLinks(body, openLink);
     wireThreadSentMessages(body, controller.threadState);
     wireThreadOptions(body, (choice) => choose(choice).catch((error) => {
       notifyError("Choice failed", error.message);
@@ -2341,32 +2346,10 @@ function mountRailOnContext(host, context, swap) {
     surfaceOverlay = null;
   };
 
-  /** What the paths in this conversation are written against: the checkout the
-   *  rail is mounted on, and — for a workspace — the directories it is made of,
-   *  so a path mounted under one of them opens in that directory. */
-  const linkContext = () => ({
-    kind: entity.kind,
-    deviceId: context.deviceId ?? null,
-    projectId: entity.projectId || context.projectId,
-    workspaceId: context.workspaceId,
-    sourceId: context.sourceId,
-    directories: entity.directories,
-    branch: entity.branch,
-  });
-
-  /** Where a file reference points, for the chip's own href and for the press
-   *  on it alike — one answer, so a link says where it goes. */
-  const routeForLink = (link) => fileLinkRoute(link, linkContext());
-
-  /** A reference in the conversation goes where it points, as far as the two
+  /** A reference in the conversation goes where it points, as far as the
    *  work-item surfaces can take it. */
   const openLink = (link) => {
-    if (link.issue_id || link.plan_id) {
-      go({ name: "issue", projectId: entity.projectId, id: link.issue_id || link.plan_id });
-      return;
-    }
-    const route = routeForLink(link);
-    if (route) go(route);
+    if (link.issue_id || link.plan_id) go({ name: "issue", projectId: entity.projectId, id: link.issue_id || link.plan_id });
   };
 
   /// Tell the daemon how much of this agent's conversation has been read, and
@@ -2383,12 +2366,13 @@ function mountRailOnContext(host, context, swap) {
   /// A scroll gesture fires this many times over, so a report that says what
   /// the last one said is never made.
   const reportRead = (body) => {
-    if (!panelVisible) return;
+    if (!chatIsVisible()) return;
     const agent = agentInFocus();
+    const read = readThroughSequence(body);
+    unreadFrom = unreadLineFor(threadFor(), read);
     if (!agent || !agent.unread_count) return;
     const controller = controllerForAgent(agent);
     if (!controller.identity.entityId || !controller.identity.agentId) return;
-    const read = readThroughSequence(body);
     const floor = threadCache.windowFloorSequence();
     if (!readingIsNews(read, floor)) return;
     reportedRead = read;
@@ -2929,6 +2913,11 @@ function mountRailOnContext(host, context, swap) {
   // The elapsed-time clock: the one timer left on the rail, and it says nothing
   // about the wire — it is the "working for 4m" line counting.
   statusTicker = setInterval(paintRailStatus, 1000);
+  const visibilityChanged = () => {
+    if (document.hidden) leaveUnreadMarker();
+    else paintChat();
+  };
+  document.addEventListener("visibilitychange", visibilityChanged);
   document.addEventListener("keydown", dismissOnEscape);
   document.addEventListener("pointerdown", dismissOnOutsidePointer);
   window.addEventListener("hashchange", dismissPopover);
@@ -2939,6 +2928,8 @@ function mountRailOnContext(host, context, swap) {
   return {
     dispose() {
       disposed = true;
+      for (const marker of unreadMarkers.values()) marker.leave();
+      document.removeEventListener("visibilitychange", visibilityChanged);
       panelMotion.cancel();
       unwatchCache();
       clearInterval(statusTicker);

@@ -83,7 +83,7 @@ export function assignmentHtml({ assignment, open = false, worktrees = [] }) {
   return `<div class="ivassign${open ? " open" : ""}">
     <button class="ivassign-head" id="assigntoggle" aria-haspopup="dialog" aria-expanded="${open ? "true" : "false"}">
       <span class="ivassign-text"><span class="ivsec">Assignment</span><span class="ivassign-sum">${esc(assignmentSummary(assignment, worktrees))}</span></span>
-      <span class="ivassign-caret" aria-hidden="true">▾</span>
+      <span class="ivassign-caret disclosure-caret" aria-hidden="true">▾</span>
     </button></div>`;
 }
 
@@ -259,7 +259,7 @@ export function stageViewerHtml({ stage, stages = [], docHtml = "", paneState = 
   const token = stageStateToken(stage);
   const ordered = [...comments].sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
   const failure = stage.invalidation_reason
-    ? `<div class="stage-validation fail"><strong>Stage incomplete</strong><div>${esc(stage.invalidation_reason)}</div></div>`
+    ? `<div class="stage-invalidation"><strong>Stage incomplete</strong><div>${esc(stage.invalidation_reason)}</div></div>`
     : "";
   return `<div class="ivstagehead">
       <span class="ivstagetitle">${esc(stage.title || "")}</span>${stateChip(token)}

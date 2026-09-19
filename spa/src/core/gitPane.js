@@ -43,13 +43,11 @@ import {
 import { createAgentSelection } from "./agentSelection.js";
 import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
-import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
-import { createTriageOverrides } from "./triageOverride.js";
 import { createFileFolds, fileKey, pathOf } from "./diff.js";
 import { fileFoldOf, stackClaims } from "./diffRender.js";
 import { fileStackEntries, fileViewFromStatus } from "./fileEntries.js";
 import { watchEditedTimes } from "./editedTime.js";
-import { createFileDiffs, wholePatch } from "./fileDiffs.js";
+import { createFileDiffs } from "./fileDiffs.js";
 import { timedPaint } from "./paintTiming.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
@@ -490,13 +488,6 @@ export function mountGitPane(
     agentCommitOptions = [],
     review = null,
     revisionId = () => null,
-    // Review prioritization: the run's freshest triage pass (read on every
-    // paint — a re-triage lands under this pane), and the project the reviewer's
-    // trust dial is remembered for. A surface with neither renders the plain
-    // stack it always did.
-    triage = () => null,
-    triageEnabled = () => false,
-    projectId = null,
     // Whose conversation the comments written here belong in: the agent whose
     // bubble is open in the rail beside this pane. Mounted without one (the
     // standalone Files/Changes hosts), the daemon answers with the entity's
@@ -591,14 +582,7 @@ export function mountGitPane(
   let scopeErrorShown = null; // the terminal scope error currently rendered
   let fileMenuPath = null; // the file whose header ⋯ is open
   const noiseExpanded = new Set(); // changesets whose collapsed noise group is open
-  // The triage overlay's reviewer-owned state: which collapsed groups they have
-  // opened (keyed by changeset, so opening one on the uncommitted stack says
-  // nothing about a commit's), and whether they have dialled the ordering off
-  // for this project.
-  const expandedGroups = new Map(); // changeset key → the group names opened in it
   const fileFolds = new Map();
-  const triageProject = projectId || (scope && scope.project_id) || null;
-  let trustDial = loadTrustDial(triageProject);
   // Re-review memory, per changeset: what the reviewer saw when they last sent
   // comments on it, so the next pass can mark what moved. renderedViews is the
   // OPEN changeset's files as the stack draws them, which is what a stamp is of.
@@ -607,8 +591,6 @@ export function mountGitPane(
   let sortOrder = loadDiffSort();
   let uncommittedSource = null;
   let uncommittedSourceViews = [];
-  let wholePatchIdentity = null;
-  let wholePatchValue = null;
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport drop-down, re-wired per skeleton
@@ -804,32 +786,6 @@ export function mountGitPane(
     return fileFolds.get(key);
   };
 
-  // Disagreeing with the pass. Only a run has a pass to disagree with (and a
-  // run_id to name in the RPC), so a bare worktree mounts none and its stack
-  // draws no offers.
-  const overrides = scope?.run_id
-    ? createTriageOverrides({
-        post: ({ hunk_id, direction, note }) => {
-          if (!triageEnabled()) throw new Error("Review prioritization is turned off.");
-          return callRpc("triage.override", { run_id: scope.run_id, hunk_id, direction, note });
-        },
-        onChange: () => render(),
-      })
-    : null;
-
-  /** The pass as the reviewer's latest word makes it: what this pane renders,
-   *  and what it decides to repaint on. */
-  const currentTriage = () => {
-    if (!triageEnabled()) return undefined;
-    return overrides ? overrides.apply(triage()) : triage();
-  };
-
-  /** The freeze key for one poll: the repo's own, plus what the triage overlay
-   *  is drawing from. A pass landing (or a re-pass reclassifying) moves nothing
-   *  in git, so without it the ordering would wait for the next commit. */
-  const pollKeyNow = (status, log) =>
-    [gitPollKey(status, log), String(triageEnabled()), triageFingerprint(currentTriage())].join("\x03");
-
   // Comments are a conversation post, so they exist where there is an agent to
   // post to. One layer serves every changeset: switching selection keeps the
   // pending set (they name their own files), and the tray renders under
@@ -861,23 +817,6 @@ export function mountGitPane(
       })
     : null;
 
-  /** The triage overlay for the stack being drawn, or null on a surface that
-   *  has no pass to read: only a run is triaged, so a bare worktree renders
-   *  the plain stack it always did. The pass is read
-   *  fresh on every paint — a re-triage lands under this pane while it is open. */
-  const triageOverlay = (patch) => {
-    if (!scope?.run_id || !triageEnabled()) return null;
-    return {
-      triage: currentTriage(),
-      patch: patch || "",
-      dial: trustDial,
-      expandedGroups: expandedGroups.get(String(selected)) || null,
-      // The offers are on the hunks of the changeset the pass actually read;
-      // a hunk it never named renders none (core/triageModel).
-      overridable: Boolean(overrides) && triageEnabled(),
-    };
-  };
-
   /** The uncommitted changeset's files as the stack draws them: shape from the
    *  status, bodies from the per-file cache. */
   const uncommittedViews = () => {
@@ -888,17 +827,6 @@ export function mountGitPane(
     return uncommittedSourceViews;
   };
 
-  const uncommittedWholePatch = () => {
-    const files = lastStatus.files || [];
-    const identity = files
-      .map((file) => `${file.path}\x01${fileDiffs.bodyOf(file.path)?.content_key || ""}`)
-      .join("\x02");
-    if (identity === wholePatchIdentity) return wholePatchValue;
-    wholePatchIdentity = identity;
-    wholePatchValue = wholePatch(lastStatus, fileDiffs.bodyOf);
-    return wholePatchValue;
-  };
-
   /** The one renderer for every changeset: a header, the stacked file diffs in
    *  the folds the reader put them in (noise collapsed into its group at the
    *  bottom), and — where the surface can talk to an agent — the pending-comment
@@ -907,7 +835,7 @@ export function mountGitPane(
     const folds = foldsOfOpenChangeset();
     // Every stack carries the same re-review chip: a file that moved since the
     // reviewer last sent comments on THIS changeset says so.
-    const stackFor = (views, patch) => ({
+    const stackFor = (views) => ({
       commentable,
       openable: Boolean(openFile),
       approvable: true,
@@ -918,11 +846,6 @@ export function mountGitPane(
       folds,
       changedSince: changedSinceChangeset(reviewStamps, selected, views),
       ...viewport.renderOptions(),
-      // Review prioritization, on the changeset the reviewer has open — the
-      // rail is never reordered, only the stack under it. A surface with no run
-      // behind it has no pass to read, and a stack whose bodies are still
-      // arriving has no whole patch to read one from, so both draw plain.
-      review: patch === null ? null : triageOverlay(patch),
     });
     if (selected === "uncommitted") {
       sortOrder = loadDiffSort();
@@ -934,7 +857,7 @@ export function mountGitPane(
         bar: uncommittedHeaderHtml(lastStatus, { sortOrder }),
         views: renderedViews,
         stackOptions: {
-          ...stackFor(renderedViews, uncommittedWholePatch()),
+          ...stackFor(renderedViews),
           sortOrder,
           fileMenu,
           bodyOf: fileDiffs.bodyOf,
@@ -958,7 +881,7 @@ export function mountGitPane(
     paintChangeset(detailHost, {
       bar: commitHeaderHtml(detail),
       views: renderedViews,
-      stackOptions: stackFor(renderedViews, detail.patch),
+      stackOptions: stackFor(renderedViews),
     });
   };
 
@@ -1235,7 +1158,7 @@ export function mountGitPane(
     // A content refresh clears any stale armed confirm (the file/state it named
     // may be gone) — matching "any repaint resets the pending confirm".
     clearConfirm();
-    renderedKey = pollKeyNow(lastStatus, lastLog);
+    renderedKey = gitPollKey(lastStatus, lastLog);
     renderAndFetch();
   };
 
@@ -1407,7 +1330,7 @@ export function mountGitPane(
     lastLog = olderLogPage(lastLog, page);
     const address = cacheAddress("log");
     if (address) void mergeCached(address, (current) => olderLogPage(current, page));
-    renderedKey = pollKeyNow(lastStatus, lastLog);
+    renderedKey = gitPollKey(lastStatus, lastLog);
     render();
   };
 
@@ -1554,29 +1477,6 @@ export function mountGitPane(
     return true;
   };
 
-  const claimOverride = (event) => Boolean(!reviewMounted && overrides && overrides.handleClick(event));
-
-  const claimTrustDial = (event) => {
-    if (!event.target.closest(".tdial")) return false;
-    trustDial = !trustDial;
-    saveTrustDial(triageProject, trustDial);
-    render();
-    return true;
-  };
-
-  const claimTriageGroup = (event) => {
-    const head = event.target.closest(".tgrouphead");
-    if (!head) return false;
-    const key = String(selected);
-    if (!expandedGroups.has(key)) expandedGroups.set(key, new Set());
-    const opened = expandedGroups.get(key);
-    const name = head.dataset.group;
-    if (opened.has(name)) opened.delete(name);
-    else opened.add(name);
-    render();
-    return true;
-  };
-
   const claimNoiseGroup = (event) => {
     if (!event.target.closest(".noisehead")) return false;
     const key = String(selected);
@@ -1632,9 +1532,6 @@ export function mountGitPane(
     claimAbort,
     claimDiscard,
     claimFileMenu,
-    claimOverride,
-    claimTrustDial,
-    claimTriageGroup,
     claimNoiseGroup,
     claimRailRow,
     ...stackClaims({
@@ -1790,7 +1687,7 @@ export function mountGitPane(
    *  is holding the DOM still — the same freeze every other repaint asks
    *  about, and a record moving under a reviewer mid-comment waits for them. */
   const repaintFromRecords = () => {
-    const key = pollKeyNow(lastStatus, lastLog);
+    const key = gitPollKey(lastStatus, lastLog);
     if (repaintHeld({ keyUnchanged: key === renderedKey && !bodiesUnpainted })) return;
     renderedKey = key;
     bodiesUnpainted = false;
@@ -1927,7 +1824,6 @@ export function mountGitPane(
       cancelViewingContextFrame();
       if (viewingContext && selected !== "review") viewingContext.clear();
       if (commentLayer) commentLayer.dispose();
-      if (overrides) overrides.dispose();
       container.onclick = null;
       container.onchange = null;
     },

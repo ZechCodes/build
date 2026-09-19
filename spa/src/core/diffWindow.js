@@ -8,12 +8,6 @@ export const ROW_WINDOW_STRIDE = 120;
 
 const clamp = (value, low, high) => Math.max(low, Math.min(value, high));
 
-export function hunkOffsetAt(rows, start) {
-  let count = 0;
-  for (let index = 0; index < start; index++) if (rows[index].t === "hunk") count++;
-  return count;
-}
-
 export function boundedRows(rows, fold) {
   const limit = fold === "shut" ? COLLAPSED_PREVIEW_ROWS : CAPPED_PREVIEW_ROWS;
   return { start: 0, end: Math.min(rows.length, limit) };

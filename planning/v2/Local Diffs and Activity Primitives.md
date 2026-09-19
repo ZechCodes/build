@@ -1,5 +1,17 @@
 # Primitives: local-feel diffs and chat (bridge-git, bridge-thread, spa-diffs, spa-chat)
 
+> **Amendment (2026-09-18, Zech):** `post_thread_message` takes only `status`,
+> `body` and `options`. There is no `phase`, `outputs`, `anchor` or `links`:
+> Build knows which phase a report closes from the session that sent it, and a
+> plan's stages are read from `.build/plan/stages.json` on disk when the plan
+> agent reports Complete. The per-stage validation gate (validate/fix-stage
+> sessions, `ValidationReport`, `run.stage_fix`/`issue.stage_fix`), diff triage
+> (`triage.override`, `triage_enabled`, `.build/review-rules.json`), the
+> branch-recovery agent (`RecoveryAttempt`, `phase=recover`) and agent-reported
+> comment resolutions are removed. A stage is `building` until its build
+> reports Complete, then `completed`. Where this document says otherwise, this
+> note wins.
+
 Four items, one idea: **the wire carries shape; bodies are fetched per unit and cached; a surface renders only what is open.** Build the primitives below, then compose. Names here are binding — a Fable checkin holds both halves of every wire shape to this doc.
 
 ## Bridge primitives

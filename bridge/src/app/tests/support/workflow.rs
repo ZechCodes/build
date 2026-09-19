@@ -118,7 +118,7 @@ pub(in crate::app::tests) fn run_id_of(res: &Value) -> String {
 
 /// A run in review, minted the only way runs are minted now: author a plan
 /// with the scripted agent, approve it and both of its stage docs, implement
-/// stage one, then dispatch stage two (whose validation opens review).
+/// stage one, then dispatch stage two (whose completion opens review).
 /// Returns `(plan_id, run_id)`. The goal-only "Quick task" dispatch this
 /// replaces is gone — see `run_create_refuses_a_goal_without_a_plan`.
 pub(in crate::app::tests) fn planned_run_in_review(

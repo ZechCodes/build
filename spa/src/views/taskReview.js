@@ -108,7 +108,6 @@ export function createTaskReview({
       // awaiting would render pre-post state if something landed underneath it.
       const task = getTask();
       if (!task) return null;
-      const triageEnabled = task.triage_enabled === true;
       return {
         patch: diff.patch,
         unchanged: diff.unchanged,
@@ -116,12 +115,6 @@ export function createTaskReview({
         file_edited_at: diff.file_edited_at,
         key: task.state,
         commentable: COMMENTABLE_STATES.includes(task.state),
-        // Review prioritization: the run's own diff is the one the triage pass
-        // read, so this is where its ordering belongs. Null until a pass lands —
-        // the stack says it is untriaged rather than implying it was read.
-        ...(triageEnabled ? { triage: task.triage || null } : {}),
-        triageEnabled,
-        projectId: task.project_id || null,
       };
     },
     submit: (messages) => {
@@ -132,12 +125,6 @@ export function createTaskReview({
         messages: context ? messages.map((message) => ({ ...message, viewing_context: message.viewing_context || context })) : messages,
         ...MUTATION_THREAD_PAGE,
       }).then((result) => { viewingContext?.clearSelectionIfMatches?.(context); return result; });
-    },
-    // The reviewer's disagreement with the pass. It lands on the run's own
-    // triage, and in the conversation of the agent that wrote the rationale.
-    submitOverride: ({ hunk_id, direction, note }) => {
-      if (getTask()?.triage_enabled !== true) throw new Error("Review prioritization is turned off.");
-      return callRpc("triage.override", { run_id: taskId, hunk_id, direction, note });
     },
     revisionId: () => currentRevisionId(getTask()?.thread, "diff"),
     statusHtml: () =>

@@ -1554,7 +1554,7 @@ fn project_delete_blocks_mutations_until_filesystem_cleanup_settles() {
     assert!(state.project_deletion_in_progress);
     // The runtime normally takes this work immediately before releasing its lock.
     let pending = state.deferred_work.take();
-    let refused = state.handle(req("settings.set", json!({"triage_enabled": true})));
+    let refused = state.handle(req("settings.set", json!({"default_harness": "pi"})));
     assert_eq!(refused["ok"], false, "{refused}");
     let read = state.handle(req("settings.get", json!({})));
     assert_eq!(read["ok"], true, "{read}");

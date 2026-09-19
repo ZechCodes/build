@@ -78,11 +78,6 @@ describe("pathsToFetch", () => {
     expect(fileDiffs.pathsToFetch(TWO, { openPaths: open, cached })).toEqual(["a.js"]);
   });
 
-  it("makes every file eager on a triaged stack — the overlay reads a whole patch", () => {
-    const wanted = fileDiffs.pathsToFetch(TWO, { openPaths: new Set(), cached: () => undefined, triaged: true });
-    expect(wanted).toEqual(["a.js", "b.js"]);
-  });
-
   it("wants nothing from a shape with no files", () => {
     expect(fileDiffs.pathsToFetch(status([]), { openPaths: new Set(["a.js"]) })).toEqual([]);
   });
@@ -98,23 +93,6 @@ describe("batchPaths", () => {
 
   it("makes no call for nothing to fetch", () => {
     expect(fileDiffs.batchPaths([], 50)).toEqual([]);
-  });
-});
-
-describe("wholePatch", () => {
-  it("is the cached bodies in status-file order", () => {
-    const bodies = { "a.js": bodyFor("a.js", "key-a"), "b.js": bodyFor("b.js", "key-b") };
-    expect(fileDiffs.wholePatch(TWO, (path) => bodies[path])).toBe(patchFor("a.js", "key-a") + patchFor("b.js", "key-b"));
-  });
-
-  it("is null while any file's body is missing", () => {
-    const bodies = { "a.js": bodyFor("a.js", "key-a") };
-    expect(fileDiffs.wholePatch(TWO, (path) => bodies[path])).toBe(null);
-  });
-
-  it("is null while any file's body is stale", () => {
-    const bodies = { "a.js": bodyFor("a.js", "key-a"), "b.js": bodyFor("b.js", "older") };
-    expect(fileDiffs.wholePatch(TWO, (path) => bodies[path])).toBe(null);
   });
 });
 

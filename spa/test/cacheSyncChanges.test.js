@@ -239,6 +239,23 @@ describe("applying one item", () => {
     expect(calls("run.diff")).toEqual([]);
   });
 
+  it("keeps the project and the triage beside a diff a git item replaces", async () => {
+    await boot([branchItem()]);
+    const held = (await read("run-1", "diff")).value;
+    expect(held.projectId).toBe("p1");
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "diff", sub: "" },
+      { ...held, triage: { "src/a.js": "reviewed" } },
+    );
+
+    await deliver([{ entity_id: "run-1", git: { diff: { patch: "pushed body", diff_key: "d9" } } }]);
+    const after = (await read("run-1", "diff")).value;
+    expect(after.patch).toBe("pushed body");
+    expect(after.diff_key).toBe("d9");
+    expect(after.projectId).toBe("p1");
+    expect(after.triage).toEqual({ "src/a.js": "reviewed" });
+  });
+
   it("reads the patch behind a commit the git item made unpushed", async () => {
     await boot([branchItem()]);
     bridge.call.mockClear();

@@ -450,8 +450,19 @@ async function pullWorkingDiff(context, entityId, row, priority) {
     load: (envelope) => context.call(method, params, envelope),
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
-  await writeCached(address, { ...held, ...diff, triage: held?.triage || null, projectId: row.project_id || null });
+  await writeCached(address, diffRecord(held, diff, row));
 }
+
+/** The diff record after a new body, wherever the body came from. The body
+ *  replaces what was held; the two fields the review surface keeps beside it —
+ *  which project the diff belongs to, and what the reviewer has triaged in it —
+ *  are nothing the wire knows about and stay where they were put. */
+const diffRecord = (held, diff, row) => ({
+  ...held,
+  ...diff,
+  triage: held?.triage || null,
+  projectId: row?.project_id || held?.projectId || null,
+});
 
 /** Every conversation on this workspace. The feed row's `agents[]` IS the
  *  conversation list, so a conversation nobody has opened is still read once
@@ -693,17 +704,22 @@ async function applyThreadTip(context, entityId, tip) {
  *  never ride one — the patch behind a commit, and a working-tree diff too big
  *  to send — and those are pulled here. */
 async function applyGit(context, entityId, git) {
+  const row = await heldValue(context, entityId, "row");
   if (git.status) await writeCached(addressOf(context, entityId, "status"), git.status);
   if (git.log) {
     await writeCached(addressOf(context, entityId, "log"), mergedLog(await heldValue(context, entityId, "log"), git.log));
   }
   if (git.unpushed) await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
-  if (git.diff) await writeCached(addressOf(context, entityId, "diff"), { ...git.diff, projectId: null, triage: null });
-  await pullWhatTheGitItemCouldNotCarry(context, entityId, git);
+  if (git.diff) await writePushedDiff(context, entityId, git.diff, row);
+  await pullWhatTheGitItemCouldNotCarry(context, entityId, git, row);
 }
 
-async function pullWhatTheGitItemCouldNotCarry(context, entityId, git) {
-  const row = await heldValue(context, entityId, "row");
+async function writePushedDiff(context, entityId, diff, row) {
+  const address = addressOf(context, entityId, "diff");
+  await writeCached(address, diffRecord((await readCached(address))?.value, diff, row));
+}
+
+async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
   const scope = gitScopeOf(row);
   if (!scope) return;
   if (git.unpushed) await syncPatches(context, entityId, scope, git.unpushed, "background");

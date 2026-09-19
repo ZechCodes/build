@@ -30,7 +30,7 @@ export const MOVE_HINT = "Use the left and right arrow keys to move this issue b
  * draggable anchor fights the browser's own drag of its href.
  */
 export const issueCardHtml = (issue, { columns, agentLabels, href }) =>
-  `<li class="issue-card" draggable="true" tabindex="0" role="listitem"
+  `<li class="issue-card" draggable="true" tabindex="0"
       data-issue="${esc(issue.id)}" data-status="${esc(issue.status)}"
       aria-label="#${esc(String(issue.number ?? ""))} ${esc(issue.title)}">
     <div class="issue-card-head">${stateDotHtml(issue.state)}${numberHtml(issue)}${priorityChipHtml(issue.priority)}</div>
@@ -62,7 +62,9 @@ const columnHtml = (column, context) => `<section class="issue-column" data-colu
  * as a row above.
  */
 export function boardHtml(board, context) {
-  return `<div class="issue-board" role="list" aria-label="Issues by column">
+  // A group rather than a list: its children are the COLUMNS, and a column is
+  // a region with a heading and a list inside it, not a list item.
+  return `<div class="issue-board" role="group" aria-label="Issues by column">
     <p class="sr-only">${esc(MOVE_HINT)}</p>
     ${board.map((column) => columnHtml(column, context)).join("")}
   </div>`;

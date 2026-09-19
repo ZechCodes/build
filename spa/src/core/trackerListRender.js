@@ -17,10 +17,12 @@ import { assigneeHtml, ageHtml, labelsHtml, numberHtml, priorityChipHtml, stateD
 const optionHtml = (option, chosen) =>
   `<option value="${esc(option.value)}"${option.value === chosen ? " selected" : ""}>${esc(option.label)}</option>`;
 
-const selectHtml = (name, label, options, chosen) => `<label class="issue-filter">
-    <span class="sr-only">${esc(label)}</span>
-    <select data-issue-filter="${esc(name)}" aria-label="${esc(label)}">${options.map((option) => optionHtml(option, chosen)).join("")}</select>
-  </label>`;
+/** One filter. The select carries its own accessible name — the bar has no room
+ *  for four visible labels, and a name said twice is a name read twice. */
+const selectHtml = (name, label, options, chosen) =>
+  `<select class="issue-filter" data-issue-filter="${esc(name)}" aria-label="${esc(label)}">${options
+    .map((option) => optionHtml(option, chosen))
+    .join("")}</select>`;
 
 /**
  * The filter bar.

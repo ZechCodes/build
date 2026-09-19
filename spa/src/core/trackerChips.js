@@ -9,8 +9,7 @@
 //
 // Everything here is escaped. Nothing here reads the app or the DOM.
 
-import { esc } from "./text.js";
-import { humanAge } from "./text.js";
+import { esc, humanAge } from "./text.js";
 import { actorLabel, columnName, priorityIsMarked, priorityLabel, stateLabel } from "./trackerModel.js";
 
 /** Open or closed, as a dot and its accessible name. A closed issue is drawn

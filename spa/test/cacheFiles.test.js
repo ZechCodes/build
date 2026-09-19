@@ -243,6 +243,27 @@ describe("a checkout nothing walks", () => {
     expect(call.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(1);
   });
 
+  it("lets go of a body that has grown past what the cache may keep", async () => {
+    await seedSourceTree("", [{ name: "README.md", kind: "file", size: 5 }]);
+    await writeCached(
+      { deviceId: "dev-1", entityId: SOURCE_ENTITY, kind: "file", sub: "README.md" },
+      { file: fileAnswer({ content_b64: b64("small, once") }), openedAt: Date.now() },
+    );
+    const grown = fileAnswer({ size: 2 * 1024 * 1024, truncated: true, content_b64: b64("the first megabyte") });
+    const call = vi.fn(async (method, params) =>
+      method === "fs.read" ? grown : { path: params.path, entries: [{ name: "README.md", kind: "file", size: 5 }] },
+    );
+    const { host } = mountFiles(call, { scope: SOURCE });
+    await settle();
+    host.querySelector(".ffile").click();
+    await settle();
+
+    expect(host.textContent).toContain("truncated");
+    // Not "keep the old one": the record is of a file that no longer exists in
+    // that shape, and the next open must go to the machine rather than paint it.
+    expect(await readCached({ deviceId: "dev-1", entityId: SOURCE_ENTITY, kind: "file", sub: "README.md" })).toBeUndefined();
+  });
+
   it("paints what it holds before the machine answers", async () => {
     await seedSourceTree("", [{ name: "held.js", kind: "file", size: 1 }]);
     let answer = null;

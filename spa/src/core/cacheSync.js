@@ -969,7 +969,13 @@ async function rereadFile(context, entityId, scope, path) {
   // reader, or a machine that stopped answering. The body held is the last one
   // anybody saw; a delete here would blank an open preview on a hiccup.
   if (!file) return;
-  await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt });
+  // A body the cache may not keep — grown past the cap, or answered truncated —
+  // takes the record with it. The rule is about what may be STORED; the record
+  // is of a file that has since moved, and leaving it would hand the reader the
+  // body from before the change on their next open, with no round trip and
+  // nothing saying so.
+  const kept = await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt });
+  if (!kept) await deleteCached([addressOf(context, entityId, FILE_RECORD_KIND, path)]);
 }
 
 const applyTerminals = (context, entityId, terminals) =>

@@ -353,13 +353,17 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   };
 
   /** Keep what the reader just opened, under the recent-files rule. A body too
-   *  big for the cache is shown and not kept (core/cacheLifetime.js). */
+   *  big for the cache is shown and not kept (core/cacheLifetime.js) — and it
+   *  takes any record of the same path with it, which is of a file that has
+   *  since grown out of the rule and must not be the next open's answer. */
   const keepFileBody = (path, file) => {
     const address = fileAddress(path);
     if (!address) return;
     // Fire and forget, and forgiving: a disk that will not take the body is a
     // cold second look, never something the reader is told about.
-    void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file }).catch(() => {});
+    void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file })
+      .then((kept) => (kept ? null : deleteCached([address])))
+      .catch(() => {});
   };
 
   /** The saved body is stale the moment this tab writes over it, and the write

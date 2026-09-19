@@ -575,6 +575,54 @@ describe("applying one item", () => {
     expect(calls("fs.tree").map(([, params]) => params.path).sort()).toEqual(["", "docs", "src"]);
   });
 
+  it("re-reads a held body a files item names, and writes what came back", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" },
+      { file: { path: "src/a.js", size: 5, content_b64: "b2xk" }, openedAt: 1 },
+    );
+    script["fs.read"] = (params) => ({ path: params.path, size: 6, content_b64: "bmV3" });
+    await boot([branchItem()]);
+    bridge.call.mockClear();
+    await deliver([{ entity_id: "run-1", files: { paths: ["src/a.js"], truncated: false } }]);
+    expect(calls("fs.read").map(([, params]) => params.path)).toEqual(["src/a.js"]);
+    const record = await read("run-1", "file", "src/a.js");
+    expect(record.value.file.content_b64).toBe("bmV3");
+    // The stamp is when the reader opened it, not when the pass re-read it:
+    // a file nobody has been near since is still the oldest of the five.
+    expect(record.value.openedAt).toBe(1);
+  });
+
+  // The cache refuses a body over its cap or one that came back truncated. The
+  // refusal is about the answer, not about the record — and the record is of a
+  // file that has since moved, so leaving it would serve the reader a body from
+  // before the growth, with no round trip and nothing saying so.
+  it("drops a held body the re-read came back too big to keep", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" },
+      { file: { path: "src/a.js", size: 900_000, content_b64: "b2xk" }, openedAt: 1 },
+    );
+    script["fs.read"] = (params) => ({ path: params.path, size: 2_000_000, truncated: true, content_b64: "bmV3" });
+    await boot([branchItem()]);
+    bridge.call.mockClear();
+    await deliver([{ entity_id: "run-1", files: { paths: ["src/a.js"], truncated: false } }]);
+    expect(calls("fs.read")).toHaveLength(1);
+    expect(await read("run-1", "file", "src/a.js")).toBeUndefined();
+  });
+
+  // A machine that stopped answering has said nothing about the file, and the
+  // body held is the last one anybody saw.
+  it("keeps a held body when the re-read answers nothing at all", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" },
+      { file: { path: "src/a.js", size: 5, content_b64: "b2xk" }, openedAt: 1 },
+    );
+    script["fs.read"] = () => Promise.reject(new Error("unreachable"));
+    await boot([branchItem()]);
+    bridge.call.mockClear();
+    await deliver([{ entity_id: "run-1", files: { paths: ["src/a.js"], truncated: false } }]);
+    expect((await read("run-1", "file", "src/a.js")).value.file.content_b64).toBe("b2xk");
+  });
+
   it("writes the tab list a terminals item carries", async () => {
     await boot([branchItem()]);
     bridge.call.mockClear();

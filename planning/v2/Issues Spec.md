@@ -1,0 +1,564 @@
+# Issues
+
+## Purpose
+
+An issue tracker, one per project, that is where the user and the agents working
+that project agree on what is being done. It reads like GitHub issues — a title,
+a markdown body, a state, labels, an assignee, comments and a timeline — with a
+kanban view over status columns.
+
+What makes it Build's rather than a copy of GitHub's: **assigning an issue is
+dispatching it**. An issue handed to an agent arrives in that agent's
+conversation and the agent starts on it. There is no second step where somebody
+turns an issue into work.
+
+Agents are first-class here. An agent of a project can list, read, file, comment
+on, move, close, link and assign issues in its own project, and can assign to
+another agent of that project, to the project's own agent, to the user, or to a
+workspace and agent it asks Build to create. It cannot reach another project's
+issues however a call is spelled.
+
+This document is phase 1: the bridge. The SPA phase follows from
+[What the SPA phase builds](#what-the-spa-phase-builds).
+
+## Not the plan flow
+
+Build already has a table called `issues` and a family of `issue.*` / `plan.*`
+verbs. Those are the retired **plan** flow — a goal, stage documents, approvals
+and implementation runs. This is a different thing that happens to share the
+English word.
+
+Nothing here extends that flow. The tracker gets its own tables
+(`tracker_issues`, `tracker_comments`, `tracker_events`) and its own verb family
+(`issues.*`, which cannot collide with the singular `issue.*`). Everywhere else
+in this document, "plan" means the legacy flow and "issue" means the tracker's.
+
+## The record
+
+### Issue
+
+| Field | Wire | Notes |
+| --- | --- | --- |
+| `id` | `"issue-01K5Z…"` | ULID-style, the same mint agent ids use: 48 bits of milliseconds then 80 bits of randomness, Crockford base32, under an `issue-` prefix. Time-ordered, so ids sort the way the issues were filed. |
+| `project_id` | `"proj-1"` | The project the issue belongs to. |
+| `number` | `12` | Per-project, sequential from 1, for `#12`. Never reused. |
+| `title` | string | Trimmed, non-empty, at most 200 characters. |
+| `body` | markdown string | May be empty. At most 32 000 bytes, the bound a thread message already carries. |
+| `state` | `"open"` \| `"closed"` | |
+| `status` | `"backlog"` | The kanban column, as a **slug string** — see [Columns](#columns). |
+| `labels` | `["bug", …]` | Free strings, deduped, trimmed, at most 20, each at most 40 characters. |
+| `priority` | `"none"` \| `"low"` \| `"medium"` \| `"high"` \| `"urgent"` | `none` is the default and is a value, not an absence. |
+| `assignee` | `null` \| assignee | See [Actors](#actors). |
+| `links` | object | See [Links](#links). |
+| `created_by` | actor | Who filed it. |
+| `created_at`, `updated_at` | RFC 3339 UTC | |
+| `closed_at` | RFC 3339 UTC \| `null` | Set when `state` becomes `closed`, cleared on reopen. |
+
+### Comment
+
+| Field | Wire | Notes |
+| --- | --- | --- |
+| `id` | `"ic-01K5Z…"` | Same mint, `ic-` prefix. |
+| `issue_id` | | |
+| `author` | actor | |
+| `body` | markdown string | Non-empty, at most 32 000 bytes. |
+| `refs` | `[ThreadLink]` | Typed references, validated exactly the way a thread message's links are — see [Typed references](#typed-references). |
+| `created_at` | RFC 3339 UTC | |
+
+### Event
+
+| Field | Wire | Notes |
+| --- | --- | --- |
+| `id` | `"ie-01K5Z…"` | Same mint, `ie-` prefix. |
+| `issue_id` | | |
+| `at` | RFC 3339 UTC | |
+| `actor` | actor | |
+| `kind` | `created` \| `assigned` \| `unassigned` \| `moved` \| `labelled` \| `linked` \| `closed` \| `reopened` \| `dispatched` | |
+| `payload` | object | What the kind needs. `moved` carries `{from, to}`; `assigned` carries `{assignee}`; `labelled` carries `{added, removed}`; `linked` carries the link that was added; `closed` carries `{reason}`; `dispatched` carries `{workspace_id?, entity_id, agent_id, kind}`. |
+
+### Actors
+
+One tagged shape everywhere a person or an agent is named — `assignee`,
+`created_by`, a comment's `author`, an event's `actor`:
+
+```json
+{ "kind": "user" }
+{ "kind": "project_agent" }
+{ "kind": "agent", "agent_id": "agent-01K5Z…" }
+```
+
+`project_agent` is only ever an **assignee**. An author or an actor is always
+`user` or `agent`: by the time an agent of a project's conversation owner has
+written something, it has an id, and that id already says it is a project agent
+(the `project-` prefix). `assignee` may additionally be `null` — unassigned.
+
+### Links
+
+An issue's links are what it is about in the repository and in Build:
+
+```json
+{
+  "workspace_ids": ["ws-3f2a91c4"],
+  "branches": ["build/issues-board"],
+  "commits": ["c8381faa…"],
+  "conversation_ids": ["run-5d90b1e7"],
+  "parent_issue_id": null
+}
+```
+
+The four lists are ordered by when each was added, deduped, and capped at 20
+entries each. `parent_issue_id` is a single issue of the **same project**; an
+issue may not be its own parent, and a cycle is refused.
+
+`conversation_ids` holds conversation owner ids (`run-…`), which is what
+`agent.list`, `thread.page` and the rail are addressed by. A dispatch records
+the conversation it delivered into here, so an issue page can open the
+conversation that is working it.
+
+### Typed references
+
+A comment's `refs` are `ThreadLink`s — the same enum a thread message carries,
+with the same two-part fencing the Issue Security Checklist records (controls 8
+and 9):
+
+1. **Shape**, by `validate_thread_links`: at most 20, a `file` path that stays
+   inside a checkout, a line range that is ordered and non-zero, a `commit` that
+   is 40 lowercase hex digits, a `worktree` id of the exact minted shape.
+2. **Ownership**, scoped to the issue rather than to a conversation: a `file`
+   link is accepted only when the issue links a workspace (its paths are
+   checkout-relative and unresolvable otherwise); a `commit` must be one the
+   issue links; a `worktree` must be a checkout of a workspace the issue links;
+   `plan_stage`, `issue_stage`, `run`, `implementation` and `recovery` are
+   **refused outright** — they address the retired plan flow, which the tracker
+   does not extend.
+
+An agent-supplied ref that fails either half refuses the whole
+`issues.comment` / `comment_issue` call by name. Nothing partially lands.
+
+## Columns
+
+Phase 1 has five fixed columns, in this order:
+
+| Slug (stored) | Name (shown) |
+| --- | --- |
+| `backlog` | Backlog |
+| `ready` | Ready |
+| `in_progress` | In progress |
+| `in_review` | In review |
+| `done` | Done |
+
+`status` is stored as the **slug string**, not as an enum, so a later
+per-project column set is a record change and not a migration. Every verb that
+takes a status accepts the slug or the display name, case-insensitively, and
+normalizes to the slug; anything else is `invalid_params` naming the columns
+that exist.
+
+`issues.columns {project_id}` answers the list. It takes a project so the verb
+does not have to change when columns become per-project.
+
+A closed issue keeps its status. Closing does not move it to `done` and moving
+it to `done` does not close it: one is "where is this on the board", the other
+is "is this still open", and the SPA shows both.
+
+## The verbs
+
+All under `issues.*`, registered in `api/v1` as a family of their own
+(`bridge/src/api/v1/issues.rs`) with typed params and results, a fixture under
+`fixtures/api/v1/` per verb, and `since: "1.2.0"`.
+
+| Verb | Params | Result |
+| --- | --- | --- |
+| `issues.list` | `{project_id, state?, status?, assignee?, label?}` | `{issues: [Issue]}` |
+| `issues.get` | `{issue_id}` | `{issue, timeline: [TimelineEntry]}` |
+| `issues.create` | `{project_id, title, body?, status?, labels?, priority?, assignee?, links?}` | `{issue, dispatch}` |
+| `issues.update` | `{issue_id, title?, body?, labels?, priority?, status?, state?}` | `{issue}` |
+| `issues.assign` | `{issue_id, assignee, note?}` | `{issue, dispatch}` |
+| `issues.comment` | `{issue_id, body, refs?}` | `{issue, comment}` |
+| `issues.link` | `{issue_id, workspace_id?, branch?, commit?, conversation_id?, parent_issue_id?}` | `{issue}` |
+| `issues.close` | `{issue_id, reason?}` | `{issue}` |
+| `issues.reopen` | `{issue_id}` | `{issue}` |
+| `issues.columns` | `{project_id}` | `{project_id, columns: [{id, name}]}` |
+
+Notes on each:
+
+- **`issues.list`** answers newest first (`number` descending). Every filter is
+  optional and they are ANDed. `state` absent means both; `assignee` takes the
+  actor shape, plus the two words `"none"` (unassigned) and `"any"`.
+- **`issues.get`** answers the issue and its whole timeline. Comments and events
+  interleave into one ascending list ordered by `(created_at|at, id)` — ids are
+  time-ordered, so equal timestamps still have one stable order. Each entry is
+  `{"type": "comment", …}` or `{"type": "event", …}`.
+- **`issues.create`** mints the number inside the same transaction as the insert,
+  writes a `created` event, and — when it was given an `assignee` — runs the
+  whole of `issues.assign` before answering. So `dispatch` on the result is the
+  same shape `issues.assign` answers, and `null` when nothing was dispatched.
+- **`issues.update`** applies only the fields present. Each one that actually
+  changes something writes its own event: `moved` for `status`, `labelled` for
+  `labels`, `closed`/`reopened` for `state`. A `title`/`body`/`priority` change
+  writes no event — the record's `updated_at` is the whole history those need.
+- **`issues.link`** takes one or more of its five keys and appends each,
+  writing one `linked` event per link that was not already there.
+- **`issues.close`** on a closed issue and **`issues.reopen`** on an open one are
+  `conflict`, not silent no-ops: the caller believed something that was not true.
+
+Errors are `not_found`, `invalid_params`, `conflict` and `internal`, named the
+way the workspace family names them.
+
+`fixtures/api/versions.json` goes to `1.2.0` — a minor bump, because every verb
+here is new and nothing existing changed shape. `supported_majors` is untouched.
+
+## Assignment is dispatch
+
+`issues.assign` takes one tagged `assignee`. Assignment IS dispatch here, so a
+single field says both who holds the issue and where the work runs; there is no
+second `dispatch` object for the two to disagree in. The five kinds:
+
+| `assignee` | What happens | Stored assignee |
+| --- | --- | --- |
+| `{"kind":"user"}` | Nothing is dispatched. | `{"kind":"user"}` |
+| `{"kind":"project_agent"}` | `project.ensure_conversation` on the issue's project, an agent on it if it has none, then deliver. | `{"kind":"project_agent"}` |
+| `{"kind":"agent","agent_id":…}` | Deliver into that agent's conversation. The agent must be on this issue's project. | `{"kind":"agent","agent_id":…}` |
+| `{"kind":"new_workspace","name"?,"isolation"?,"harness"?,"model"?,"effort"?}` | `workspace.create` in the issue's project, `agent.add` on the workspace's conversation owner, deliver. | `{"kind":"agent","agent_id":…}` — the agent that was made |
+| `{"kind":"new_agent","workspace_id","harness"?,"model"?,"effort"?}` | `agent.add` on that workspace's conversation owner, deliver. | `{"kind":"agent","agent_id":…}` |
+
+`new_workspace` defaults its `name` to the issue's title and its `isolation` to
+the project's own setting — it passes no `isolation` at all when none was asked
+for, which is how `workspace.create` reads "the project's".
+
+An optional `note` on `issues.assign` is extra instruction text delivered under
+the issue. It is not stored on the issue: the issue's body is the issue, and a
+hand-off note belongs in the conversation it was said in.
+
+Assigning over an existing assignee replaces it and writes one `assigned` event.
+Assigning `null` unassigns and writes `unassigned`; it dispatches nothing and
+stops nothing that is already running.
+
+### Reuse, not a fork
+
+Every one of these goes down the code path that already exists:
+
+- the workspace is cut by `AppState::workspace_create`, the same call
+  `workspace.create` and the project agent's `create_workspace` make;
+- the agent is added by `AppState::project_agent_add_workspace_agent`, which
+  mints the workspace's conversation owner with
+  `workspace.ensure_conversation` when it has none and then calls `agent.add` —
+  the same call `add_workspace_agent` makes;
+- the project's conversation is `AppState::project_ensure_conversation`;
+- the delivery is `AppState::post_from_agent_to_agent` /
+  `AppState::thread_post`, the same send `message_agent` and
+  `message_workspace_agent` make, so it is durable, it gets an operation
+  receipt, it skips `note_user_message`, and it starts the agent exactly the
+  way any other queued turn does.
+
+The scope check is the project agent's own: a workspace or an agent that is not
+in this issue's project is refused in the same words
+(`workspace … is not in project …`, `agent … is not in project …`).
+
+### The dispatch result and the events
+
+A dispatching assign answers
+
+```json
+{
+  "issue": { … },
+  "dispatch": {
+    "kind": "new_workspace",
+    "workspace_id": "ws-3f2a91c4",
+    "entity_id": "run-5d90b1e7",
+    "agent_id": "agent-01K5Z…",
+    "operation_id": "op-…"
+  }
+}
+```
+
+and writes two events: `assigned`, then `dispatched` carrying the same four ids.
+It also links what it made — the `workspace_id` and the `entity_id` go onto
+`links.workspace_ids` and `links.conversation_ids` — and those write no separate
+`linked` events, because `dispatched` already says it.
+
+A dispatching assign also **moves the issue to `in_progress`** and writes a
+`moved` event, when the issue is open and its status is `backlog` or `ready`.
+An issue already at `in_progress`, `in_review` or `done` is left where it is:
+the board position was set deliberately and a reassignment is not a reason to
+rewind it.
+
+### The envelope
+
+The delivered message is an ordinary conversation message on the user's side of
+the conversation — that is the side an instruction arrives on whoever wrote it —
+carrying an **issue envelope** the way a hand-off carries `from_agent`:
+
+```json
+{
+  "id": "message-9",
+  "role": "user",
+  "from_issue": {
+    "issue_id": "issue-01K5Z…",
+    "number": 12,
+    "title": "Kanban drag does not persist",
+    "body": "Dragging a card to In review …",
+    "links": { "workspace_ids": [], "branches": [], "commits": [],
+               "conversation_ids": [], "parent_issue_id": null }
+  },
+  "from_agent": { "id": "agent-01K5Y…" },
+  "body": "…"
+}
+```
+
+`from_issue` is optional and absent on every other message, so a client that has
+never heard of it reads the conversation exactly as it always has. `from_agent`
+is present when an agent did the assigning and absent when the user did.
+
+The message body is the issue rendered as prose — `#12 <title>`, then the body,
+then the note if one was given — so a harness that never learns about
+`from_issue` still receives the whole issue. The envelope is for the SPA, which
+draws the message as an issue card and links `#12`.
+
+The delivery prompt the harness actually reads gains one line, beside the
+existing "These messages came from agent `…`" and "The user sent this from
+workspace `…`" lines (`bridge/src/operation.rs`):
+
+> This message hands you issue #12 "Kanban drag does not persist"
+> (`issue-01K5Z…`). Comment your progress on it with `comment_issue`, and move
+> it to In review with `move_issue` when you report Complete.
+
+## The MCP tools
+
+Eight tools, on **both** the coding surface and the project surface:
+
+`list_issues`, `get_issue`, `create_issue`, `comment_issue`, `assign_issue`,
+`move_issue`, `close_issue`, `link_issue`.
+
+Each is a thin wrapper over the verb of the same shape. The bridge knows who is
+calling, so:
+
+- **no tool takes a project**. The scope is the project the calling agent's
+  conversation owner is bound to — a coding agent's workspace's project, a
+  project agent's own. A call carrying a project id is parsed as though it had
+  not, exactly as the project surface's tools already are.
+- **no tool takes an author or an actor**. The calling agent is the author of
+  every comment it writes and the actor of every event it causes.
+- an issue in another project is `unknown issue_id`, and an assignee in another
+  project is refused by name. The gate is on the socket (`allowed_on`) as well
+  as in the tool list a session is shown, so a harness writing its own frames
+  reaches no further than one that reads the list.
+
+`assign_issue` takes the same five assignee kinds the verb does, so an agent can
+hand work to a named agent, to the project's agent, back to the user, or to a
+workspace and agent it asks Build to create.
+
+`move_issue {issue_id, status}` is `issues.update` narrowed to one field,
+because moving a card is what an agent does and offering it the whole update
+would invite it to rewrite a title it was not asked about.
+
+### The prompt note
+
+One shared block appended to every template that carries these tools, the way
+`MESSAGE_AGENT_NOTE` is appended (`bridge/src/templates.rs`) — so the wording
+cannot drift between surfaces and a project that overrides one template
+overrides only that one. It says:
+
+- when a message hands you an issue, that issue is the work: comment your
+  progress on it rather than only reporting at the end;
+- move it to **In review** when you report Complete — you are saying the work is
+  ready to be looked at, not that it is accepted;
+- hand work off by **assigning** the issue, not by messaging: an assignment
+  delivers the issue and starts the agent, and leaves a record on the issue that
+  a message does not;
+- file an issue for follow-up work you find and do not do. An issue is cheap and
+  the thing you noticed is otherwise only in your conversation.
+
+## Push
+
+Issues push over the existing changes subscription
+(`bridge/src/changes.rs`) as a new `Kind::Issues`, wire-spelled `"issues"`,
+scoped to the **project** entity:
+
+```json
+{ "subscription_id": "s-inbox",
+  "scope": { "kind": "entity", "id": "proj-1" },
+  "kinds": ["issues"],
+  "mode": "realtime" }
+```
+
+An item names the issues that moved:
+
+```json
+{ "entity_id": "proj-1", "issues": { "issue_ids": ["issue-01K5Z…"], "truncated": false } }
+```
+
+Content-free beyond the ids, like every other signal Build sends about work it
+cannot read: a client refetches `issues.list` or `issues.get`. Past 200 ids in
+one un-flushed window the item is `truncated` and the ids are dropped, which
+means "refetch the list", exactly as a `files` item's truncation does.
+
+`issues` is not a worktree kind: it is not paced by the settle window, it needs
+no filesystem watcher, and it never makes a subscription answer `polled`.
+
+Every mutation — create, update, assign, comment, link, move, close, reopen, and
+each automatic activity below — notes its project once, after the write lands.
+A `changes` subscriber also keeps hearing `thread` on the conversation an issue
+was delivered into: that is the same message arriving, seen from the other side.
+
+## Automatic activity
+
+Two things happen without anyone asking.
+
+**An agent that holds a dispatched issue reports Complete.** Its report's body
+is added to the issue as a comment authored by that agent, and the issue moves
+to `in_review` with a `moved` event whose payload says `{"by": "report"}`. It
+holds the issue when the issue's `assignee` is `{"kind":"agent"}` naming that
+agent, or the issue's `links.conversation_ids` holds that agent's conversation
+owner and nobody else holds it. A Blocked or Failed report adds the comment and
+does **not** move the issue: blocked is not ready to look at. One report
+comments on at most one issue — the one most recently dispatched to that agent —
+so an agent that has held three issues does not write the same report on all of
+them.
+
+**A workspace linked to an issue is finished.** `workspace.finish` closes every
+open issue that links that workspace, with a `closed` event whose payload is
+`{"reason": "workspace_finished", "workspace_id": …}`. It happens when Done is
+accepted — after the eligibility measure that proves every commit is already in
+the remote it pushes to — rather than after the folder is gone: eligibility is
+what proves the work is somewhere else, and a removal that later fails on disk
+does not make the work un-done.
+
+Neither of these moves the inbox anchor or crosses a dismissal line. They are
+the work happening, not somebody speaking to the human.
+
+## Storage
+
+Three tables, added to `bridge/src/store/schema.rs`, taking `SCHEMA_VERSION`
+from 7 to 8. They are all `CREATE TABLE IF NOT EXISTS`, so a store written by an
+older bridge gains them on the next open with no `ALTER` and no backfill.
+
+```sql
+CREATE TABLE IF NOT EXISTS tracker_issues (
+    id          TEXT PRIMARY KEY,
+    project_key TEXT NOT NULL,
+    number      INTEGER NOT NULL,
+    state       TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    record      TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS tracker_issues_number
+    ON tracker_issues(project_key, number);
+CREATE INDEX IF NOT EXISTS tracker_issues_by_project
+    ON tracker_issues(project_key, number DESC);
+
+CREATE TABLE IF NOT EXISTS tracker_comments (
+    id         TEXT PRIMARY KEY,
+    issue_id   TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    record     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tracker_comments_by_issue
+    ON tracker_comments(issue_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS tracker_events (
+    id       TEXT PRIMARY KEY,
+    issue_id TEXT NOT NULL,
+    at       TEXT NOT NULL,
+    record   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tracker_events_by_issue
+    ON tracker_events(issue_id, at, id);
+```
+
+The design rules the rest of the store follows, applied here:
+
+- **A record is a record.** An issue, a comment and an event are each small,
+  bounded, and read and written whole, so each keeps its serde shape in a
+  `record` column. Only what is queried is hoisted into a column of its own:
+  the project key and number (the list read and the number mint), the state and
+  status (the filters), and the timestamps (the ordering).
+- **Scoped by project path, answered by project id.** `project_key` is the
+  project's canonical repository path, not its `proj-N` id — the same choice
+  `PersistedPlan` and `PersistedRun` make and for the same reason: a `proj-N` id
+  is minted per boot from the config that restored it, and two boots can spell
+  the same repository differently. The wire only ever carries `project_id`; the
+  store resolves it to a path on the way in and back on the way out.
+- **The number is minted in the insert's own transaction**, as
+  `MAX(number) + 1` over the project, under the `IMMEDIATE` transaction every
+  store write already takes. The unique index is the backstop.
+- **Nothing is deleted in phase 1.** An issue is closed, not removed, so a
+  number is never reused and a timeline never loses an entry. Deleting a project
+  deletes its issues, the way it deletes its plans and runs.
+
+### A different backing store later
+
+The store surface is eight methods, all of them whole-record:
+`create_tracker_issue`, `save_tracker_issue`, `load_tracker_issue`,
+`list_tracker_issues`, `append_tracker_comment`, `append_tracker_event`,
+`load_tracker_timeline`, `delete_tracker_issues_of_project`. None of them takes
+SQL, a connection, or a row. Replacing SQLite with something else — a service,
+a file per issue, a git-backed store — is implementing those eight against
+something else; nothing above this line knows what is underneath it.
+
+## Scope rules, in one place
+
+1. An issue belongs to exactly one project and never moves between projects.
+2. An agent reaches only its own project's issues. Which project that is comes
+   from its conversation owner's binding, never from a tool argument.
+3. An assignee must be of the issue's project: an agent on one of its
+   workspaces, its project agent, or the user.
+4. A link must be of the issue's project: a workspace of it, a conversation
+   owner bound to it, a parent issue in it.
+5. A comment's typed refs are fenced twice — shape, then ownership by the issue.
+6. The user, over the wire, may act on any project's issues; `project_id` is a
+   param there because the browser is not scoped to a project the way an agent
+   is.
+
+## What the SPA phase builds
+
+Four surfaces, all under the project (`#/project/<project_id>`), which is
+already where a project's workspaces live.
+
+**The list.** Rows of `#<number>  title`, with the assignee, the labels, the
+priority and the status column on each. Filters for state, status, assignee and
+label, matching `issues.list`'s params one for one so a filter is a param and
+not a client-side pass over everything. A new-issue composer: title, markdown
+body, and the assignee picker.
+
+**The kanban.** The same issues laid out in columns from `issues.columns`, in
+that order, each card the compact form of a row. Dragging a card between columns
+is `issues.update {status}`; the card moves optimistically and the column
+repaints from the push. A column is not a filter the user typed — it is what
+`status` says — so an empty column is still drawn.
+
+**The issue page.** The title, the markdown body, the state and status, the
+labels, the priority, the assignee, the links, and the timeline: comments and
+events interleaved, ascending, each stamped with its actor and time. A comment
+composer at the bottom. A delivered issue's conversation is one press away
+through `links.conversation_ids`.
+
+**The assignee picker.** One control over all five kinds — the user, the
+project's agent, any agent on any workspace of the project (grouped by
+workspace, from `workspace.list` plus `agent.list`), a new agent on an existing
+workspace, or a new workspace. Choosing one of the last two is where the
+harness/model/effort selects appear. The control says what it is about to do —
+"cut a workspace and start an agent on it" — because assigning starts work and
+the user should not discover that afterwards.
+
+**Push.** The project page subscribes `{scope: {kind: "entity", id: project_id},
+kinds: ["issues"]}` and refetches on an item. An issue page open on an issue
+named in an item refetches that issue.
+
+**On a message.** A conversation message carrying `from_issue` draws as an issue
+card — `#12`, the title, a fold for the body — linking the issue page. It is
+still a message and still reads in sequence; the card is how it is drawn, not a
+separate kind of thing.
+
+## Boundaries
+
+Issues do not replace the plan flow's documents and they do not become one. They
+hold no stages, no approvals, no diff and no review state. An issue says what
+should be done and where the doing is happening; the doing itself is a
+workspace, a conversation and a diff, each of which already has a surface.
+
+Assigning starts an agent. Nothing else here does: closing an issue stops
+nothing, moving a card stops nothing, and unassigning stops nothing. Stopping an
+agent is `agent.remove` and `workspace.delete`, which say what they take with
+them.

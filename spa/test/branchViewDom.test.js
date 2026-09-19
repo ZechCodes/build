@@ -22,6 +22,24 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
+/** One pass of the sync layer, with the feed reading what it wrote. What
+ *  `refreshFeed` did when the feed read the wire itself: the board, the two
+ *  lists and a row per work item, on disk and delivered. */
+async function readTheBoard() {
+  const { startCacheSync } = await import("../src/core/cacheSync.js");
+  const { startFeed } = await import("../src/core/taskFeed.js");
+  startCacheSync();
+  await startFeed();
+  for (let index = 0; index < 20; index += 1) await flush();
+}
+
+async function stopReaders() {
+  const { stopCacheSync } = await import("../src/core/cacheSync.js");
+  const { stopFeed } = await import("../src/core/taskFeed.js");
+  stopCacheSync();
+  stopFeed();
+}
+
 const row = {
   kind: "branch",
   project_id: "p1",
@@ -86,7 +104,8 @@ beforeEach(async () => {
   document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await stopReaders();
   resetDeviceContexts();
   if (App.poll) clearInterval(App.poll);
   App.poll = null;
@@ -102,7 +121,7 @@ describe("the branch surface", () => {
   });
 
   it("browses a plain folder without calling branch or git RPCs", async () => {
-    const { stopFeed } = await import("../src/core/taskFeed.js");
+
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "files" };
     bridge.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: [] };
@@ -119,11 +138,10 @@ describe("the branch surface", () => {
     await vi.waitFor(() => expect(document.querySelector("#tabbody .fpbody")?.textContent).toContain("folder notes"));
     expect(bridge.call.mock.calls.some(([method]) => method === "branch.get" || method.startsWith("git."))).toBe(false);
     expect(document.querySelector('[data-tab="files"]').classList.contains("active")).toBe(true);
-    stopFeed();
+    await stopReaders();
   });
 
   it("offers Git initialization in Changes and remounts Git after it succeeds", async () => {
-    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
     let initialized = false;
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async (method) => {
@@ -138,22 +156,23 @@ describe("the branch surface", () => {
       if (method === "git.log") return { commits: [] };
       return {};
     });
-    await refreshFeed();
+    await readTheBoard();
     await renderBranch();
     await flush();
     expect(document.querySelector("#init-git")).toBeTruthy();
     expect(bridge.call.mock.calls.some(([method]) => method.startsWith("git."))).toBe(false);
 
     document.querySelector("#init-git").click();
-    await flush();
-    await flush();
+    // The pass the initialization asks for is what tells the surface the
+    // project is a repository now, so the remount waits on the cache.
+    for (let index = 0; index < 20; index += 1) await flush();
     expect(bridge.call).toHaveBeenCalledWith("project.init_git", { project_id: "p1" });
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
-    stopFeed();
+    await stopReaders();
   });
 
   it("shows initialization failures and leaves a retry enabled", async () => {
-    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: [] };
@@ -161,14 +180,14 @@ describe("the branch surface", () => {
       if (method === "project.init_git") throw new Error("disk is read-only");
       return {};
     });
-    await refreshFeed();
+    await readTheBoard();
     await renderBranch();
     document.querySelector("#init-git").click();
     await flush();
     const status = document.querySelector('[role="status"]');
     expect(status.textContent).toContain("disk is read-only");
     expect(document.querySelector("#init-git").disabled).toBe(false);
-    stopFeed();
+    await stopReaders();
   });
 
   it("does not mount after navigation while project metadata is loading", async () => {
@@ -188,7 +207,7 @@ describe("the branch surface", () => {
 
   it("detects Git initialized by another client and replaces the folder prompt", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+
     let initialized = false;
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async (method) => {
@@ -199,31 +218,31 @@ describe("the branch surface", () => {
       if (method === "git.log") return { commits: [] };
       return {};
     });
-    await refreshFeed();
+    await readTheBoard();
     await renderBranch();
     expect(document.querySelector("#init-git")).toBeTruthy();
     initialized = true;
     await vi.advanceTimersByTimeAsync(2000);
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
-    stopFeed();
+    await stopReaders();
     vi.useRealTimers();
   });
 
   // The reviewer's complaint: switching branches showed a bare loading frame
   // for the length of a round trip. The feed row stands the surface up first.
   it("stands the surface up from the feed row before the first read answers", async () => {
-    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+
     bridge.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: [finishableRow({ run_id: "run-1" })] };
       if (method === "project.list") return { projects: [] };
       if (method === "branch.get") return new Promise(() => {});
       return {};
     });
-    await refreshFeed();
+    await readTheBoard();
     renderBranch(); // never resolves here — the first read is still in flight
     await flush();
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
-    stopFeed();
+    await stopReaders();
   });
 
   it("polls the row once mounted", async () => {
@@ -401,7 +420,7 @@ describe("a branch on another device", () => {
   });
 
   it("stands the surface up from the route device's row, not the home device's", async () => {
-    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+
     theirCall.mockImplementation(async (method) => {
       if (method === "board.list") return { items: [theirRow] };
       if (method === "project.list") return { projects: [{ project_id: "p1", name: "their notes", is_git: true }] };
@@ -410,14 +429,14 @@ describe("a branch on another device", () => {
       if (method === "git.log") return { commits: [] };
       return {};
     });
-    await refreshFeed();
+    await readTheBoard();
 
     renderBranch();
     await flush();
 
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     expect(document.querySelector("#init-git")).toBeNull();
-    stopFeed();
+    await stopReaders();
   });
 
   it("Done finishes on the route's device", async () => {
@@ -741,12 +760,12 @@ describe("closing the branch out", () => {
     doneButton().click();
     await answerConfirm(true);
 
-    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
-    await refreshFeed();
+
+    await readTheBoard();
     const { mountInboxList } = await import("../src/core/inboxView.js");
     mountInboxList();
     expect(document.querySelector('#inbox-list .inbox-entry[data-key="run-1"]')).toBeNull();
-    stopFeed();
+    await stopReaders();
   });
 
   it("reads the branch it deleted only after the deletion answers", async () => {

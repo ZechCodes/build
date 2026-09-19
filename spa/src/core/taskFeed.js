@@ -1,22 +1,46 @@
-// One board.list-feed poller per device, and one snapshot out of all of them —
-// for the surfaces that live on every page (the sidebar, the nav badge); views
-// keep their own detail polls. The plan/run split means the feed carries both
-// collections; consumers read `plans` and `runs` separately.
+// One snapshot of every device's board, read off the cache and nothing else —
+// for the surfaces that live on every page (the sidebar, the nav badge) and for
+// the inbox itself. The plan/run split means the feed carries both collections;
+// consumers read `plans` and `runs` separately.
 //
-// The reading of a device's wire and the merge are pure and live in
-// core/feedMerge.js. What is here is the polling: which contexts answer, what
-// their answers are kept in, and who is told when one of them moves.
+// NOTHING HERE READS A BRIDGE. The sync layer is the one reader of the wire
+// (core/cacheSync.js) and it writes what it reads; this module holds each
+// device's records as a snapshot and re-reads them when the cache announces
+// that one of them moved. There is no timer: a push lands in the cache within a
+// second for the workspace on screen and within the background cooldown for the
+// rest, and the announcement behind that write is what moves the rail.
+//
+// A device's rows are the `feed` record's list with each row's OWN record laid
+// over it. Both, because neither is the whole answer: the board pushes deltas,
+// so a workspace made since the last pass rode in on its own `state` item and
+// lives as a row record and nowhere else — and a bare checkout nobody has
+// claimed names no entity at all, so it has no record of its own and lives in
+// the board's list and nowhere else. The legacy collections the board still
+// carries (plans, runs, external worktrees, and the lifecycle verbs running
+// right now) come from the `feed` record, which is the only place they are.
+//
+// The merge is pure and lives in core/feedMerge.js.
 
 import { App } from "../app.js";
-import { canAnswer, contextFor, liveContexts } from "./deviceContexts.js";
-import { watchChanges } from "./changeEvents.js";
-import { liveFeedSnapshot, mergeFeeds, withoutProject } from "./feedMerge.js";
-import { DEVICES_ADDRESS, readCached, readCachedMany } from "./localCache.js";
+import { liveContexts } from "./deviceContexts.js";
+import { cachedFeedView } from "./cachedRows.js";
+import { entityIdOf } from "./entityId.js";
+import { mergeFeeds, withoutProject } from "./feedMerge.js";
+import { syncDevice } from "./cacheSync.js";
+import { DEVICES_ADDRESS, readCached, subscribeCache } from "./localCache.js";
 
 const subscribers = new Set();
 const byDevice = new Map(); // deviceId → that device's last snapshot
-const watchers = new Map(); // deviceId → the board watcher polling it
-let cadenceMs = null; // the interval the feed is running at, or null while stopped
+const watchers = new Map(); // deviceId → the cache subscription behind it
+const readers = new Map(); // deviceId → the read queued or running for it
+let running = false; // whether startFeed has been called and not stopped
+let unwatchDevices = null;
+
+/** The record kinds a device's snapshot is made of. Everything else under a
+ *  device — a status, a diff, a conversation — moves several times a second
+ *  while an agent works and says nothing about the rail, so an announcement
+ *  naming one of those is not a re-read. */
+const FEED_KINDS = new Set(["feed", "projects", "workspaces", "row"]);
 
 /** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
  *  pending, projects, devices}); the current snapshot (if any) is delivered
@@ -29,82 +53,117 @@ export function subscribeFeed(fn) {
 
 const merged = () => mergeFeeds(byDevice, App.devices.map((device) => device.id));
 
-/** Hand every subscriber the merge as it stands, with nothing asked of any
- *  bridge. The polls deliver after they read; this is for the other reason a
- *  surface's answer changes — the home device moved, so the slice each
- *  here-surface keeps is about a different machine now. */
+/** Hand every subscriber the merge as it stands, with nothing read. The cache
+ *  reads deliver after they land; this is for the other reason a surface's
+ *  answer changes — the home device moved, so the slice each here-surface keeps
+ *  is about a different machine now. */
 export function deliverFeed() {
   const snapshot = merged();
   subscribers.forEach((fn) => fn(snapshot));
 }
 
-/** Read one device — if it can be asked anything at all. A machine that is away,
- *  or whose bridge answers in a shape this tab cannot read, is not read: the
- *  rows it last gave stay in the merge, greyed by the rail, until it can answer
- *  again. A context that was retired (or whose scope stopped addressing the
- *  cache) while its answer was in flight has nothing to say about now, so its
- *  answer is dropped rather than merged.
+// ─── One device's snapshot ───────────────────────────────────────────────────
+
+/**
+ * One device's view, out of its records.
  *
- *  This is the one read that goes out on the session rather than through the
- *  context's caller, so it is also the one that has to wait: a bridge says which
- *  API major it speaks in its greeting, and until that has settled asking it
- *  anything is asking for an answer in a shape this tab may not be able to read.
- *  `context.greeted` is that machine's greeting and no other's (connection.js),
- *  so a slow bridge holds up its own device and nobody else's. */
-async function tick(context) {
-  const greeting = context?.greeted;
-  await greeting;
-  // A reconnect landed while this one waited: what to wait for now is the
-  // greeting of the session the device is on, and the watcher asks again.
-  if (greeting !== context?.greeted) return;
-  if (!canAnswer(context) || !context.active()) return;
+ * `cached` says this is the boot paint — the records as the last session left
+ * them, with nobody having written to them since this tab opened. Whoever is
+ * waiting for a device to speak reads it (views/resolving.js), and the sync
+ * layer reads it as "not my own echo". A write heard through the cache clears
+ * it, whichever tab made the write.
+ *
+ * `pending` is the lifecycle verbs a board read found running. Those settled
+ * long ago in a record nobody has rewritten, so a boot paint carries none; once
+ * a pass has written the record, what it says is about now.
+ */
+function feedSnapshot(held, view, live) {
+  if (!held && !view.items.length && !view.projects.length && !view.workspaces.length) return null;
+  return {
+    ...(held || {}),
+    items: rowsOverBoard(held?.items, view.items),
+    projects: view.projects,
+    workspaces: view.workspaces,
+    pending: live ? held?.pending || [] : [],
+    cached: !live,
+  };
+}
+
+/** The board's list, with every row the cache holds a record of replaced by
+ *  that record, and the records the list does not name after it. The records
+ *  are the fresher of the two — a push rewrites one the moment an agent moves
+ *  — and the list is the wider: a row naming no entity has no record. */
+function rowsOverBoard(listed, rows) {
+  const byEntity = new Map(rows.map((row) => [entityIdOf(row), row]));
+  const items = (listed || []).map((item) => byEntity.get(entityIdOf(item)) || item);
+  const named = new Set(items.map(entityIdOf).filter(Boolean));
+  return [...items, ...rows.filter((row) => !named.has(entityIdOf(row)))];
+}
+
+async function readDeviceOnce(deviceId, live) {
+  const [record, view] = await Promise.all([
+    readCached({ deviceId, entityId: "", kind: "feed" }),
+    cachedFeedView(deviceId),
+  ]);
+  if (!watchers.has(deviceId)) return;
+  const snapshot = feedSnapshot(record?.value, view, live);
+  if (!snapshot) return;
+  byDevice.set(deviceId, snapshot);
+  deliverFeed();
+}
+
+/** A read per device, one at a time, with the announcements that arrive while
+ *  one is running collapsed into the read that follows it. A pass writes the
+ *  two lists, the feed and a row per work item; without this the rail would
+ *  walk the device's records once per write. */
+async function drainReads(deviceId, state) {
+  state.busy = true;
   try {
-    const [board, projectList, workspaceList] = await Promise.all([
-      context.call("board.list"),
-      context.call("project.list"),
-      // A workspace-list failure must not take that device's board and agent
-      // rails down with it — a bridge that does not serve the verb still feeds
-      // the board — so it answers none and the next tick asks again.
-      Promise.resolve(context.call("workspace.list")).catch(() => ({ workspaces: [] })),
-    ]);
-    if (!context.active()) return;
-    byDevice.set(context.deviceId, liveFeedSnapshot(board, projectList, workspaceList, context.deviceId));
-    deliverFeed();
-  } catch {
-    /* offline / transient — the next tick retries */
+    do {
+      state.again = false;
+      await readDeviceOnce(deviceId, state.live);
+    } while (state.again && watchers.has(deviceId));
+  } finally {
+    state.busy = false;
   }
 }
 
-// Refocusing a tab refreshes immediately instead of waiting out the interval —
-// the visible counterpart of hidden tabs skipping their ticks.
-const onVisibilityChange = () => {
-  if (!document.hidden) refreshFeed();
-};
+function readDevice(deviceId, live) {
+  const state = readers.get(deviceId) || { busy: false, again: false, live: false, done: null };
+  readers.set(deviceId, state);
+  state.live = state.live || live;
+  if (state.busy) {
+    state.again = true;
+    return state.done;
+  }
+  state.done = drainReads(deviceId, state);
+  return state.done;
+}
 
-/** The last snapshot the syncer persisted for a device, painted while that
- *  bridge is still being asked. Marked `cached: true` so the sync layer does not
- *  treat its own echo as news; a live answer that gets there first wins
- *  outright.
+/** Whether an announcement is one the rail is made of. An eviction names a
+ *  prefix and no kind — everything under an entity went — and that always is. */
+const movesTheFeed = (address) => address.kind === undefined || FEED_KINDS.has(address.kind);
+
+/**
+ * Read one device's records and hear every later write to them.
  *
- *  The board's collections come from the `feed` record a whole pass wrote; the
- *  two lists come from their own records, because a board push writes those
- *  and not the feed. One transaction, so the paint is one read of the disk. */
-async function seedDeviceFromCache(deviceId) {
-  if (byDevice.has(deviceId)) return;
-  const [feed, projects, workspaces] = await readCachedMany(
-    ["feed", "projects", "workspaces"].map((kind) => ({ deviceId, entityId: "", kind })),
+ * Idempotent, and a no-op before `startFeed` — the seam a device joining or
+ * resuming after the feed started comes in through, so a bridge that arrives
+ * late is painted as soon as its pass writes anything.
+ */
+export function joinFeed(context) {
+  return watchDevice(context?.deviceId);
+}
+
+function watchDevice(deviceId) {
+  if (!running || !deviceId || watchers.has(deviceId)) return undefined;
+  watchers.set(
+    deviceId,
+    subscribeCache({ deviceId }, (address) => {
+      if (movesTheFeed(address)) void readDevice(deviceId, true);
+    }),
   );
-  if (!feed || byDevice.has(deviceId)) return;
-  // Nothing in flight survives a reload: the verbs the last session watched
-  // settled long ago, and the live answer names whatever is running now.
-  byDevice.set(deviceId, {
-    ...feed.value,
-    ...(projects ? { projects: projects.value } : null),
-    ...(workspaces ? { workspaces: workspaces.value } : null),
-    pending: [],
-    cached: true,
-  });
-  deliverFeed();
+  return readDevice(deviceId, false);
 }
 
 /** Every device the account knows paints from its own cache — the rail is the
@@ -113,79 +172,49 @@ async function seedDeviceFromCache(deviceId) {
  *  Which machines those are is read off disk as well as off the app: the boot
  *  paint runs before `GET /api/devices` has answered, so `App.devices` is
  *  still empty while the list the last read left is not. */
-async function seedFromCache() {
+async function watchKnownDevices() {
   const cached = (await readCached(DEVICES_ADDRESS))?.value || [];
   const ids = [...new Set([...cached, ...App.devices].map((device) => device?.id).filter(Boolean))];
-  return Promise.all(ids.map(seedDeviceFromCache));
+  return Promise.all(ids.map((deviceId) => watchDevice(deviceId)));
 }
 
-/**
- * Poll a device the feed is not already polling: read it once, and register the
- * board watcher that keeps reading it.
- *
- * Idempotent, and a no-op before `startFeed` — the seam a device joining or
- * resuming after the feed started comes in through, so a bridge that arrives
- * late still has something listening for its `board.changed`.
- */
-export function joinFeed(context) {
-  if (cadenceMs === null || !context || watchers.has(context.deviceId)) return;
-  // The feed is the board, so `board.changed` is its event and this interval is
-  // the safety poll behind it. It owns its own visible-again catch-up above —
-  // which reads whether or not anything was pushed — so the registry leaves
-  // that alone rather than reading twice. Board tier (wire spec step 1.6):
-  // feed-level state, realtime, foreground — the only kind board scope carries.
-  watchers.set(
-    context.deviceId,
-    watchChanges({
-      refresh: () => tick(context),
-      intervalMs: cadenceMs,
-      deviceId: context.deviceId,
-      catchUpOnVisible: false,
-      kinds: ["state"],
-      mode: "realtime",
-    }),
-  );
-  tick(context);
-}
-
-/** Start reading. Answers when the cache has been read, so a caller painting
- *  a shell off disk can put the rail's rows in the same frame as the shell;
- *  the live reads below it are not waited for by anybody. */
-export function startFeed(intervalMs = 2000) {
+/** Start reading the cache. Answers when every known device's records have been
+ *  read, so a caller painting a shell off disk can put the rail's rows in the
+ *  same frame as the shell. */
+export function startFeed() {
   stopFeed();
-  cadenceMs = intervalMs;
-  const seeded = seedFromCache();
-  liveContexts().forEach((context) => joinFeed(context));
-  if (typeof document !== "undefined") {
-    document.addEventListener("visibilitychange", onVisibilityChange);
-  }
-  return seeded;
+  running = true;
+  unwatchDevices = subscribeCache(DEVICES_ADDRESS, () => void watchKnownDevices());
+  liveContexts().forEach((context) => watchDevice(context.deviceId));
+  return watchKnownDevices();
 }
 
 export function stopFeed() {
-  watchers.forEach((watcher) => watcher.dispose());
+  watchers.forEach((unsubscribe) => unsubscribe());
   watchers.clear();
-  cadenceMs = null;
-  if (typeof document !== "undefined") {
-    document.removeEventListener("visibilitychange", onVisibilityChange);
-  }
+  readers.clear();
+  running = false;
+  if (unwatchDevices) unwatchDevices();
+  unwatchDevices = null;
 }
 
-/** Forget a device: its watcher stops, its rows leave the merge, and everyone
- *  is told what is left. Called when its context is retired. */
+/** Forget a device: its records stop being heard, its rows leave the merge, and
+ *  everyone is told what is left. Called when its context is retired. */
 export function dropFeedDevice(deviceId) {
-  watchers.get(deviceId)?.dispose();
+  watchers.get(deviceId)?.();
   watchers.delete(deviceId);
+  readers.delete(deviceId);
   if (byDevice.delete(deviceId)) deliverFeed();
 }
 
 /**
  * Take one project's rows out of a device's snapshot, and tell everyone.
  *
- * The other half of hiding a project (core/projectHide.js): the cache on disk is
- * where a gone machine's rows live between sessions, but the snapshot in memory
- * is where they live right now — and a hide that only cleared the disk would
- * repaint the block from memory before the reader's finger left the button.
+ * The other half of hiding a project (core/projectHide.js): the records on disk
+ * are where a gone machine's rows live between sessions, but the snapshot in
+ * memory is what the rail is painting right now — and a hide that only cleared
+ * the disk would repaint the block from memory before the reader's finger left
+ * the button.
  *
  * Hands back the device's view AS IT STOOD, so the caller can read the entity
  * ids it is about to evict off the rows it just removed. Null when that device
@@ -199,9 +228,10 @@ export function dropFeedProject(deviceId, projectKey) {
   return view;
 }
 
-/** Force an immediate refresh (after adding a project, adopting, …) — every
- *  live device, or just the one named. */
+/** Ask for a pass now (after adding a project, adopting, …) — every live
+ *  device, or just the one named. The pass is the sync layer's; what it writes
+ *  comes back here as an announcement, the same way a push does. */
 export function refreshFeed(deviceId = null) {
-  const contexts = deviceId === null ? liveContexts() : [contextFor(deviceId)];
-  return Promise.all(contexts.map((context) => tick(context)));
+  const ids = deviceId === null ? liveContexts().map((context) => context.deviceId) : [deviceId];
+  return Promise.all(ids.map((id) => syncDevice(id)));
 }

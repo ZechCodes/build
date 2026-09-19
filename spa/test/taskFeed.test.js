@@ -1,471 +1,346 @@
 // @vitest-environment jsdom
-// The shared feed: one poller per device, one snapshot out.
+// The shared feed: a cache view, one snapshot out.
 //
-// Each device's snapshot normalizes that device's wire (the daemon's
-// project.list rows carry `project_id`, while every consumer reads `id`) and is
-// stamped with the device that answered — two machines both call their first
-// project `proj-1`. The merge is what subscribers get, with every device's own
-// view beside it under `devices`.
+// Nothing here reads a bridge. Each device's rows, projects and workspaces are
+// read off the cache and re-read when the cache announces that one of them
+// moved; the merge is what subscribers get, with every device's own view beside
+// it under `devices`. Asking for a refresh asks the sync layer for a pass — the
+// one reader of the wire — and the pass's writes come back as announcements.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
+const syncDevice = vi.fn(async () => true);
+vi.mock("../src/core/cacheSync.js", () => ({ syncDevice: (deviceId) => syncDevice(deviceId) }));
+
 let App;
-let subscribeFeed, refreshFeed, startFeed, stopFeed, joinFeed, dropFeedDevice;
+let subscribeFeed, refreshFeed, startFeed, stopFeed, joinFeed, dropFeedDevice, dropFeedProject;
 let adoptBridgeSelection, adoptDeviceSession, retireDeviceContext, resetDeviceContexts;
-let armChangeEvents, dispatchChangeEvent, resetChangeEvents, SAFETY_POLL_MS;
+let writeCached, DEVICES_ADDRESS;
 
 beforeEach(async () => {
   vi.resetModules();
+  syncDevice.mockClear();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ App } = await import("../src/app.js"));
-  ({ subscribeFeed, refreshFeed, startFeed, stopFeed, joinFeed, dropFeedDevice } = await import(
+  ({ subscribeFeed, refreshFeed, startFeed, stopFeed, joinFeed, dropFeedDevice, dropFeedProject } = await import(
     "../src/core/taskFeed.js"
   ));
   ({ adoptBridgeSelection, adoptDeviceSession, retireDeviceContext, resetDeviceContexts } = await import(
     "../src/core/deviceContexts.js"
   ));
-  ({ armChangeEvents, dispatchChangeEvent, resetChangeEvents, SAFETY_POLL_MS } = await import(
-    "../src/core/changeEvents.js"
-  ));
+  ({ writeCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js"));
   App.devices = [];
 });
 
 afterEach(() => {
   stopFeed();
-  resetChangeEvents();
   resetDeviceContexts();
   App.devices = [];
   vi.useRealTimers();
 });
 
 /** A device the account knows and a live session on it whose bridge has
- *  greeted, which is what the feed polls: contexts, not the App's fields. The
- *  greeting is what says which API major the bridge speaks, and connection.js
- *  settles it for every machine it lands — the feed reads none before it has. */
-function device(deviceId, call) {
+ *  greeted. The feed asks it nothing; a refresh asks the sync layer, which is
+ *  what the call counter below stands for. */
+function device(deviceId, call = vi.fn(async () => ({}))) {
   App.devices = [...App.devices, { id: deviceId, name: deviceId, status: "online" }];
   const context = adoptDeviceSession({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
   adoptBridgeSelection(context, { major: 1, version: "1.0.0" }, {});
   return context;
 }
 
-/** An empty board and project list, answered by whichever device asks. */
-const emptyCall = () =>
-  vi.fn(async (method) => (method === "project.list" ? { projects: [] } : { items: [] }));
+/** The records one pass writes for a device: the feed's own collections, the
+ *  two lists, and a row per work item. */
+async function writeDevice(deviceId, { items = [], projects = [], workspaces = [], ...rest } = {}) {
+  await writeCached(
+    { deviceId, entityId: "", kind: "feed" },
+    { items, plans: [], runs: [], externalWorktrees: [], pending: [], projects, workspaces, ...rest },
+  );
+  await writeCached({ deviceId, entityId: "", kind: "projects" }, projects);
+  await writeCached({ deviceId, entityId: "", kind: "workspaces" }, workspaces);
+  for (const item of items) await writeRow(deviceId, item);
+}
 
-/** The feed's reads, counted: one tick is a board.list and a project.list. */
-const countingCall = (deviceId = "dev-1") => {
-  const call = emptyCall();
-  device(deviceId, call);
-  return () => call.mock.calls.filter(([method]) => method === "board.list").length;
+const rowId = (item) => item.entity_id || item.run_id || item.issue_id || item.worktree_id || item.id;
+
+const writeRow = (deviceId, item) => writeCached({ deviceId, entityId: rowId(item), kind: "row" }, item);
+
+const branchRow = (over = {}) => ({
+  kind: "branch",
+  project_id: "proj-1",
+  branch: "build/x",
+  entity_id: "run-1",
+  deviceId: "dev-1",
+  projectKey: "dev-1/proj-1",
+  ...over,
+});
+
+/** Long enough for a read and the announcement behind it to settle. */
+const settle = async () => {
+  for (let index = 0; index < 20; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-/** startFeed's own first read, awaited, so a test counts only what follows. */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+describe("the feed as a cache view", () => {
+  it("delivers every known device's cached rows with nothing asked of any bridge", async () => {
+    await writeDevice("dev-a", { items: [branchRow({ entity_id: "run-a", deviceId: "dev-a" })] });
+    await writeDevice("dev-b", { items: [branchRow({ entity_id: "run-b", deviceId: "dev-b" })] });
+    const call = vi.fn(async () => ({}));
+    device("dev-a", call);
+    device("dev-b", call);
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
 
-describe("the shared feed", () => {
-  it("joins board work summaries onto their workspace rows, stamped with the device that answered", async () => {
-    device(
-      "dev-1",
-      vi.fn(async (method) => {
-        if (method === "project.list") return { projects: [] };
-        if (method === "workspace.list") {
-          return {
-            workspaces: [
-              { id: "ws-1", project_id: "proj-1" },
-              { workspace_id: "ws-2", project_id: "proj-1" },
-              { id: "ws-3", project_id: "proj-2" },
-            ],
-          };
-        }
-        return {
-          items: [],
-          workspace_summaries: [
-            {
-              workspace_id: "ws-1",
-              work_summary: { pushes: 2, additions: 8, deletions: 3 },
-              can_finish: false,
-              finish_blockers: ["unpushed"],
-            },
-            { workspace_id: "ws-2", work_summary: null, can_finish: true, finish_blockers: [] },
-          ],
-        };
-      }),
-    );
-    let snapshot = null;
-    subscribeFeed((feed) => {
-      snapshot = feed;
-    });
+    await startFeed();
+    await settle();
 
-    await refreshFeed();
-
-    expect(snapshot.workspaces).toEqual([
-      {
-        id: "ws-1",
-        project_id: "proj-1",
-        deviceId: "dev-1",
-        projectKey: "dev-1/proj-1",
-        workspaceKey: "dev-1/ws-1",
-        work_summary: { pushes: 2, additions: 8, deletions: 3 },
-        can_finish: false,
-        finish_blockers: ["unpushed"],
-      },
-      {
-        id: "ws-2",
-        workspace_id: "ws-2",
-        project_id: "proj-1",
-        deviceId: "dev-1",
-        projectKey: "dev-1/proj-1",
-        workspaceKey: "dev-1/ws-2",
-        work_summary: null,
-        can_finish: true,
-        finish_blockers: [],
-      },
-      {
-        id: "ws-3",
-        project_id: "proj-2",
-        deviceId: "dev-1",
-        projectKey: "dev-1/proj-2",
-        workspaceKey: "dev-1/ws-3",
-      },
-    ]);
+    const last = seen[seen.length - 1];
+    expect(last.items.map((item) => item.entity_id).sort()).toEqual(["run-a", "run-b"]);
+    expect(call).not.toHaveBeenCalled();
+    expect(syncDevice).not.toHaveBeenCalled();
   });
 
-  it("gives every project row the id consumers read, from the wire's project_id", async () => {
-    device(
-      "dev-1",
-      vi.fn(async (method) =>
-        method === "project.list"
-          ? { projects: [{ project_id: "proj-1", name: "relaydb", path: "/r" }] }
-          : { items: [] },
-      ),
-    );
-    let snapshot = null;
-    subscribeFeed((feed) => {
-      snapshot = feed;
-    });
-    await refreshFeed();
-    expect(snapshot.projects).toEqual([
-      {
-        id: "proj-1",
-        project_id: "proj-1",
-        name: "relaydb",
-        path: "/r",
-        deviceId: "dev-1",
-        projectKey: "dev-1/proj-1",
-      },
-    ]);
+  it("delivers on a feed announcement, and asks no bridge for the board", async () => {
+    const call = vi.fn(async () => ({}));
+    device("dev-1", call);
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    await startFeed();
+    await settle();
+
+    await writeDevice("dev-1", { items: [branchRow()], projects: [{ id: "proj-1", deviceId: "dev-1" }] });
+    await settle();
+
+    const last = seen[seen.length - 1];
+    expect(last.items.map((item) => item.branch)).toEqual(["build/x"]);
+    expect(last.projects.map((project) => project.id)).toEqual(["proj-1"]);
+    expect(call.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(0);
   });
 
-  it("merges two devices' answers, stamped with their ids in App.devices order", async () => {
-    const boardOf = (deviceId) =>
-      vi.fn(async (method) =>
-        method === "project.list"
-          ? { projects: [{ project_id: "proj-1", name: deviceId }] }
-          : { items: [{ kind: "branch", project_id: "proj-1", branch: deviceId }] },
-      );
-    device("dev-a", boardOf("dev-a"));
-    device("dev-b", boardOf("dev-b"));
+  it("takes a row that rode in on its own push, with no pass behind it", async () => {
+    await writeDevice("dev-1", { items: [] });
+    device("dev-1");
     let snapshot = null;
-    subscribeFeed((feed) => {
-      snapshot = feed;
-    });
-    await refreshFeed();
+    subscribeFeed((next) => (snapshot = next));
+    await startFeed();
+    await settle();
 
-    expect(snapshot.items.map((item) => item.deviceId)).toEqual(["dev-a", "dev-b"]);
-    expect(snapshot.projects.map((project) => project.projectKey)).toEqual(["dev-a/proj-1", "dev-b/proj-1"]);
+    await writeRow("dev-1", branchRow({ entity_id: "run-new", branch: "build/new" }));
+    await settle();
+
+    expect(snapshot.items.map((item) => item.branch)).toEqual(["build/new"]);
+  });
+
+  it("takes a row's own record over the board list it was last read with", async () => {
+    await writeDevice("dev-1", { items: [branchRow({ state: "building" })] });
+    device("dev-1");
+    let snapshot = null;
+    subscribeFeed((next) => (snapshot = next));
+    await startFeed();
+    await settle();
+    expect(snapshot.items.map((item) => item.state)).toEqual(["building"]);
+
+    await writeRow("dev-1", branchRow({ state: "review" }));
+    await settle();
+
+    expect(snapshot.items.map((item) => item.state)).toEqual(["review"]);
+  });
+
+  // A bare checkout nobody has claimed holds no conversation and so has no
+  // entity to be addressed by. It is on the board and nowhere else, and the
+  // rail lists it all the same.
+  it("keeps a board row that names no entity of its own", async () => {
+    await writeCached(
+      { deviceId: "dev-1", entityId: "", kind: "feed" },
+      { items: [{ kind: "branch", project_id: "proj-1", branch: "build/loose", deviceId: "dev-1" }] },
+    );
+    device("dev-1");
+    let snapshot = null;
+    subscribeFeed((next) => (snapshot = next));
+    await startFeed();
+    await settle();
+
+    expect(snapshot.items.map((item) => item.branch)).toEqual(["build/loose"]);
+  });
+
+  it("runs on no timer at all", async () => {
+    vi.useFakeTimers();
+    const call = vi.fn(async () => ({}));
+    device("dev-1", call);
+    subscribeFeed(() => {});
+    startFeed();
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+    expect(call).not.toHaveBeenCalled();
+    expect(syncDevice).not.toHaveBeenCalled();
+  });
+
+  it("seeds from the cached device list before the account list has answered", async () => {
+    await writeCached(DEVICES_ADDRESS, [{ id: "dev-a" }, { id: "dev-b" }]);
+    await writeDevice("dev-a", { items: [branchRow({ entity_id: "run-a", branch: "a", deviceId: "dev-a" })] });
+    await writeDevice("dev-b", { items: [branchRow({ entity_id: "run-b", branch: "b", deviceId: "dev-b" })] });
+    App.devices = [];
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
+
+    await startFeed();
+    await settle();
+
+    const last = seen[seen.length - 1];
+    expect(last.items.map((item) => item.branch).sort()).toEqual(["a", "b"]);
   });
 
   it("holds each device's own view under devices[id]", async () => {
-    device("dev-a", emptyCall());
-    device(
-      "dev-b",
-      vi.fn(async (method) => (method === "project.list" ? { projects: [] } : { items: [{ id: "b-only" }] })),
-    );
+    await writeDevice("dev-a", { items: [] });
+    await writeDevice("dev-b", { items: [branchRow({ entity_id: "run-b", deviceId: "dev-b" })] });
+    device("dev-a");
+    device("dev-b");
     let snapshot = null;
-    subscribeFeed((feed) => {
-      snapshot = feed;
-    });
-    await refreshFeed();
+    subscribeFeed((next) => (snapshot = next));
+    await startFeed();
+    await settle();
 
     expect(snapshot.devices["dev-a"].items).toEqual([]);
     expect(snapshot.devices["dev-b"].items).toHaveLength(1);
   });
 
-  it("drops a late answer from a retired context", async () => {
-    const releases = [];
-    device("dev-a", vi.fn((method) => new Promise((resolve) => releases.push([method, resolve]))));
+  it("paints nothing for a device the cache holds nothing for", async () => {
+    device("dev-1");
     const seen = [];
-    subscribeFeed((feed) => seen.push(feed));
-    const stale = refreshFeed();
-
-    retireDeviceContext("dev-a");
-    for (const [method, resolve] of releases) {
-      resolve(method === "project.list" ? { projects: [{ project_id: "old" }] } : { items: [{ id: "old" }] });
-    }
-    await stale;
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    await startFeed();
+    await settle();
 
     expect(seen).toEqual([]);
   });
 
-  // A bridge speaking an API major no adapter here claims is answering, in a
-  // shape this tab cannot read: every answer off it would be a guess. The rows
-  // it gave while it was readable stay in the merge — the rail greys them —
-  // and nothing asks it for more.
-  it("stops reading a device whose bridge speaks an API this app cannot read", async () => {
-    const call = vi.fn(async (method) => (method === "project.list" ? { projects: [] } : { items: [{ id: "a" }] }));
-    const context = device("dev-a", call);
-    const reads = () => call.mock.calls.filter(([method]) => method === "board.list").length;
+  it("paints nothing in flight from the boot read, and takes it from a live write", async () => {
+    await writeCached(
+      { deviceId: "dev-1", entityId: "", kind: "feed" },
+      { items: [], pending: [{ entity_id: "wt-old", title: "gone", state: "creating" }] },
+    );
+    device("dev-1");
     let snapshot = null;
-    subscribeFeed((feed) => (snapshot = feed));
-    startFeed();
+    subscribeFeed((next) => (snapshot = next));
+    await startFeed();
     await settle();
-    expect(reads()).toBe(1);
+    expect(snapshot.pending).toEqual([]);
+    expect(snapshot.cached).toBe(true);
 
-    adoptBridgeSelection(context, { version: "2.0.0", unsupported: "app" }, null);
+    await writeCached(
+      { deviceId: "dev-1", entityId: "", kind: "feed" },
+      { items: [], pending: [{ entity_id: "wt-new", title: "making", state: "creating" }] },
+    );
+    await settle();
+
+    expect(snapshot.pending.map((row) => row.entity_id)).toEqual(["wt-new"]);
+    expect(snapshot.cached).toBe(false);
+  });
+});
+
+describe("asking the feed to refresh", () => {
+  it("asks the sync layer for a pass rather than reading the board itself", async () => {
+    const call = vi.fn(async () => ({}));
+    device("dev-1", call);
+    await startFeed();
+    await settle();
+
     await refreshFeed();
-    await refreshFeed("dev-a");
 
-    expect(reads()).toBe(1);
-    expect(snapshot.items.map((item) => item.id)).toEqual(["a"]);
+    expect(syncDevice).toHaveBeenCalledWith("dev-1");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("asks for one named device's pass and no other's", async () => {
+    device("dev-a");
+    device("dev-b");
+    await startFeed();
+    await settle();
+
+    await refreshFeed("dev-b");
+
+    expect(syncDevice.mock.calls).toEqual([["dev-b"]]);
+  });
+});
+
+describe("devices coming and going", () => {
+  it("watches a device that joins after the feed started", async () => {
+    device("dev-a");
+    await startFeed();
+    await settle();
+    const contextB = device("dev-b");
+    await writeDevice("dev-b", { items: [branchRow({ entity_id: "run-b", deviceId: "dev-b" })] });
+
+    joinFeed(contextB);
+    await settle();
+
+    let snapshot = null;
+    subscribeFeed((next) => (snapshot = next));
+    expect(snapshot.items.map((item) => item.entity_id)).toEqual(["run-b"]);
   });
 
   it("takes a retired device's rows out of the merge and delivers what is left", async () => {
-    device("dev-a", vi.fn(async (method) => (method === "project.list" ? { projects: [] } : { items: [{ id: "a" }] })));
-    device("dev-b", vi.fn(async (method) => (method === "project.list" ? { projects: [] } : { items: [{ id: "b" }] })));
+    await writeDevice("dev-a", { items: [branchRow({ entity_id: "run-a", deviceId: "dev-a" })] });
+    await writeDevice("dev-b", { items: [branchRow({ entity_id: "run-b", deviceId: "dev-b" })] });
+    device("dev-a");
+    device("dev-b");
     const seen = [];
-    subscribeFeed((feed) => seen.push(feed));
-    await refreshFeed();
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    await startFeed();
+    await settle();
 
     dropFeedDevice("dev-a");
 
     const last = seen[seen.length - 1];
-    expect(last.items.map((item) => item.id)).toEqual(["b"]);
+    expect(last.items.map((item) => item.entity_id)).toEqual(["run-b"]);
     expect(last.devices["dev-a"]).toBeUndefined();
   });
-});
 
-describe("a device that joins after the feed started", () => {
-  it("gets its own board watcher and reads at once", async () => {
-    armChangeEvents({ push_events: true }, "dev-a");
-    armChangeEvents({ push_events: true }, "dev-b");
-    const callA = emptyCall();
-    device("dev-a", callA);
-    const readsA = () => callA.mock.calls.filter(([method]) => method === "board.list").length;
-    startFeed();
+  it("stops hearing the cache for a device it dropped", async () => {
+    await writeDevice("dev-1", { items: [branchRow()] });
+    device("dev-1");
+    let snapshot = null;
+    subscribeFeed((next) => (snapshot = next));
+    await startFeed();
     await settle();
 
-    const callB = emptyCall();
-    const contextB = device("dev-b", callB);
-    const readsB = () => callB.mock.calls.filter(([method]) => method === "board.list").length;
-    joinFeed(contextB);
+    dropFeedDevice("dev-1");
+    await writeRow("dev-1", branchRow({ entity_id: "run-2" }));
     await settle();
-    expect(readsB()).toBe(1); // the join reads straight away
 
-    dispatchChangeEvent({ type: "board.changed" }, "dev-b");
-    await settle();
-    expect(readsB()).toBe(2);
-    expect(readsA()).toBe(1); // B's event is not A's
+    expect(snapshot.devices["dev-1"]).toBeUndefined();
   });
 
-  it("joins a device only once, however often it is offered", async () => {
-    const call = emptyCall();
-    const context = device("dev-a", call);
-    const reads = () => call.mock.calls.filter(([method]) => method === "board.list").length;
-    startFeed();
+  it("drops a retired context's device without waiting for a read", async () => {
+    await writeDevice("dev-a", { items: [branchRow({ entity_id: "run-a", deviceId: "dev-a" })] });
+    device("dev-a");
+    let snapshot = null;
+    subscribeFeed((next) => (snapshot = next));
+    await startFeed();
     await settle();
-    joinFeed(context);
-    joinFeed(context);
+
+    retireDeviceContext("dev-a");
     await settle();
-    expect(reads()).toBe(1);
+
+    expect(snapshot.devices["dev-a"]).toBeUndefined();
   });
 });
 
-describe("the feed against a bridge that pushes", () => {
-  it("reads once per board.changed, and no more", async () => {
-    const reads = countingCall();
-    armChangeEvents({ push_events: true }, "dev-1");
-    startFeed();
+describe("hiding a project", () => {
+  it("takes that project's rows out of the device's view at once", async () => {
+    await writeDevice("dev-1", {
+      items: [branchRow(), branchRow({ entity_id: "run-2", project_id: "proj-2", projectKey: "dev-1/proj-2" })],
+    });
+    device("dev-1");
+    let snapshot = null;
+    subscribeFeed((next) => (snapshot = next));
+    await startFeed();
     await settle();
-    expect(reads()).toBe(1); // startFeed's own first read
 
-    dispatchChangeEvent({ type: "board.changed" }, "dev-1");
-    await settle();
-    expect(reads()).toBe(2);
-  });
+    const view = dropFeedProject("dev-1", "dev-1/proj-1");
 
-  it("ignores an entity's event — the board's own event covers the feed", async () => {
-    const reads = countingCall();
-    armChangeEvents({ push_events: true }, "dev-1");
-    startFeed();
-    await settle();
-    dispatchChangeEvent({ type: "entity.changed", id: "run-7" }, "dev-1");
-    await settle();
-    expect(reads()).toBe(1);
-  });
-
-  it("stands its fast poll down to the safety poll", async () => {
-    vi.useFakeTimers();
-    const reads = countingCall();
-    armChangeEvents({ push_events: true }, "dev-1");
-    startFeed(2000);
-    await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS - 1000);
-    expect(reads()).toBe(1);
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(reads()).toBe(2);
-  });
-});
-
-describe("the feed against a bridge that does not", () => {
-  it("keeps polling at its own cadence", async () => {
-    vi.useFakeTimers();
-    const reads = countingCall();
-    startFeed(2000);
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(reads()).toBe(2);
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(reads()).toBe(3);
-  });
-
-  it("does not read on a change event it was never told to expect", async () => {
-    const reads = countingCall();
-    startFeed();
-    await settle();
-    dispatchChangeEvent({ type: "board.changed" }, "dev-1");
-    await settle();
-    expect(reads()).toBe(1);
-  });
-});
-
-// ---- the cached boot paint -----------------------------------------------------
-// The last snapshot the syncer persisted paints the inbox before the bridges
-// answer — every device the account knows, not just the one creation goes to.
-// It is marked `cached: true` so the sync layer does not treat its own echo as
-// news, and a live answer always wins the race.
-describe("the feed's cached boot paint", () => {
-  const writeFeed = async (deviceId, value) => {
-    const { writeCached } = await import("../src/core/localCache.js");
-    await writeCached({ deviceId, entityId: "", kind: "feed" }, value);
-  };
-
-  /** The account's machines as the presence read last left them on disk. */
-  const writeDevices = async (ids) => {
-    const { writeCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js");
-    await writeCached(DEVICES_ADDRESS, ids.map((id) => ({ id, name: id, status: "online" })));
-  };
-
-  const cachedFeed = (over = {}) => ({
-    items: [],
-    plans: [],
-    runs: [],
-    externalWorktrees: [],
-    pending: [],
-    projects: [],
-    ...over,
-  });
-
-  it("delivers the cached snapshot while the bridge is still being asked", async () => {
-    await writeFeed("dev-1", cachedFeed({ items: [{ kind: "branch", branch: "build/x" }] }));
-    device("dev-1", vi.fn(() => new Promise(() => {}))); // the bridge never answers
-    const seen = [];
-    subscribeFeed((snapshot) => seen.push(snapshot));
-    startFeed();
-    for (let i = 0; i < 15; i++) await settle();
-    expect(seen).toHaveLength(1);
-    expect(seen[0].cached).toBe(true);
-    expect(seen[0].items).toHaveLength(1);
-  });
-
-  it("paints every device the account knows, not only the home one", async () => {
-    await writeFeed("dev-a", cachedFeed({ items: [{ kind: "branch", branch: "a" }] }));
-    await writeFeed("dev-b", cachedFeed({ items: [{ kind: "branch", branch: "b" }] }));
-    device("dev-a", vi.fn(() => new Promise(() => {})));
-    device("dev-b", vi.fn(() => new Promise(() => {})));
-    const seen = [];
-    subscribeFeed((snapshot) => seen.push(snapshot));
-    startFeed();
-    for (let i = 0; i < 15; i++) await settle();
-    const last = seen[seen.length - 1];
-    expect(last.cached).toBe(true);
-    expect(last.items.map((item) => item.branch)).toEqual(["a", "b"]);
-  });
-
-  // What a verb was doing last time this browser was open is not a fact about
-  // now: those verbs settled long ago, and the live answer names whatever is
-  // running today.
-  it("paints nothing in flight from the cache", async () => {
-    await writeFeed(
-      "dev-1",
-      cachedFeed({ pending: [{ entity_id: "wt-old", project_id: "p1", title: "gone", state: "creating" }] }),
-    );
-    device("dev-1", vi.fn(() => new Promise(() => {})));
-    const seen = [];
-    subscribeFeed((snapshot) => seen.push(snapshot));
-    startFeed();
-    for (let i = 0; i < 15; i++) await settle();
-    expect(seen[0].cached).toBe(true);
-    expect(seen[0].pending).toEqual([]);
-  });
-
-  it("never paints the cache over a live answer", async () => {
-    await writeFeed("dev-1", cachedFeed({ items: [{ kind: "branch", branch: "stale" }] }));
-    device("dev-1", emptyCall());
-    const seen = [];
-    subscribeFeed((snapshot) => seen.push(snapshot));
-    startFeed();
-    for (let i = 0; i < 15; i++) await settle();
-    // A cached paint may land first (the mirror answers in a microtask); what
-    // must hold is that the live answer ends the sequence and nothing cached
-    // ever paints after it.
-    const lastLive = seen.map((snapshot) => !snapshot.cached).lastIndexOf(true);
-    expect(lastLive).toBe(seen.length - 1);
-    expect(seen[seen.length - 1].items).toEqual([]);
-  });
-
-  it("paints nothing from the cache when the account knows no device", async () => {
-    App.devices = [];
-    const seen = [];
-    subscribeFeed((snapshot) => seen.push(snapshot));
-    startFeed();
-    for (let i = 0; i < 15; i++) await settle();
-    expect(seen).toHaveLength(0);
-  });
-
-  // The boot paint happens before `GET /api/devices` answers, so `App.devices`
-  // is still empty when the feed is asked for its first snapshot. Which
-  // machines the account has is on disk too, and that is the list the seed
-  // walks.
-  it("seeds from the cached device list before the account list has answered", async () => {
-    await writeDevices(["dev-a", "dev-b"]);
-    await writeFeed("dev-a", cachedFeed({ items: [{ kind: "branch", branch: "a" }] }));
-    await writeFeed("dev-b", cachedFeed({ items: [{ kind: "branch", branch: "b" }] }));
-    App.devices = [];
-    const seen = [];
-    subscribeFeed((snapshot) => seen.push(snapshot));
-    startFeed();
-    for (let i = 0; i < 15; i++) await settle();
-    const last = seen[seen.length - 1];
-    expect(last.items.map((item) => item.branch)).toEqual(["a", "b"]);
-  });
-
-  // The `feed` record is written by a whole pass; a board push writes the two
-  // lists and not that record. So the lists a boot paints are the records'
-  // own, not the ones the last pass happened to fold into the feed.
-  it("takes the project and workspace lists from their own records", async () => {
-    await writeDevices(["dev-1"]);
-    await writeFeed("dev-1", cachedFeed({ projects: [{ id: "stale", deviceId: "dev-1" }], workspaces: [] }));
-    const { writeCached } = await import("../src/core/localCache.js");
-    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [{ id: "fresh", deviceId: "dev-1" }]);
-    await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [{ id: "ws-1", deviceId: "dev-1" }]);
-    App.devices = [];
-    const seen = [];
-    subscribeFeed((snapshot) => seen.push(snapshot));
-    startFeed();
-    for (let i = 0; i < 15; i++) await settle();
-    const last = seen[seen.length - 1];
-    expect(last.projects.map((project) => project.id)).toEqual(["fresh"]);
-    expect(last.workspaces.map((workspace) => workspace.id)).toEqual(["ws-1"]);
+    expect(view.items).toHaveLength(2); // the view as it stood, for the caller to evict off
+    expect(snapshot.items.map((item) => item.entity_id)).toEqual(["run-2"]);
   });
 });

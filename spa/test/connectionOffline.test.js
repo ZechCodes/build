@@ -24,6 +24,10 @@ vi.mock("../src/core/session.js", () => ({
   openSession: (options) => wire.openSession(options),
 }));
 vi.mock("../src/core/peerLink.js", () => ({ openPeerLink: (options) => wire.openPeerLink(options) }));
+// The rail paints from the cache and the sync layer fills it. IndexedDB
+// settles on the event loop this suite has faked, so the store is the
+// in-memory double instead — same addresses, same announcements.
+vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
 const account = vi.hoisted(() => ({ fetchDevices: null }));
 vi.mock("../src/api.js", () => ({
   fetchGatewayToken: async () => "tok",
@@ -71,7 +75,9 @@ const {
   syncHome,
 } = await import("../src/connection.js");
 const { initDevicePicker, paintDevicePicker, stopWatchingPresence } = await import("../src/devices.js");
+const { resetMemoryCache } = await import("./memoryCache.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
+const { startCacheSync, stopCacheSync, syncDevice } = await import("../src/core/cacheSync.js");
 const { allDevicesOfflineText, deviceUnreachableText, devicesBlockedText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
@@ -189,6 +195,7 @@ let unsubscribe = () => {};
 
 beforeEach(() => {
   vi.useFakeTimers();
+  resetMemoryCache();
   localStorage.clear();
   resetApplication();
   stopFeed();
@@ -244,6 +251,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  stopCacheSync();
   unmountRecoveryBanners();
   delete globalThis.RTCPeerConnection;
   stopWatchingPresence();
@@ -253,6 +261,15 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
 });
+
+/** Stand the cache-first client up where a test did not come in through the
+ *  gate: the sync layer reads every device that can answer, and the feed
+ *  paints what lands on disk. The feed itself reads nothing. */
+async function paintFeed() {
+  startCacheSync();
+  startFeed();
+  for (let index = 0; index < 12; index += 1) await flush();
+}
 
 /** Open the composer's manual panel, read the projects it offers, and close it
  *  again — the box takes its destinations from the home device's slice of the
@@ -316,8 +333,7 @@ describe("per-device connections", () => {
     greetings.set("dev-a", () => new Promise((settle) => { greet = settle; }));
     openDeviceSessions();
     await flush();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
 
     expect(boardReads("dev-a")).toBe(0);
     expect(boardReads("dev-b")).toBeGreaterThan(0); // the other machine is not held up
@@ -342,18 +358,20 @@ describe("per-device connections", () => {
   });
 
   // A bridge that predates `session.hello` refuses the verb, and that refusal is
-  // the whole of the feature detection: it has answered. Waiting on a greeting
-  // must not be waiting on a greeting that can never arrive.
-  it("reads a machine whose bridge refuses the greeting", async () => {
+  // the whole of the feature detection: it has answered. A pass waits for that
+  // machine's greeting before it asks it anything, and waiting on a greeting
+  // must not be waiting on one that can never arrive — so the pass answers,
+  // and the machine that did greet is read whatever this one did.
+  it("does not leave a pass waiting on a greeting that can never arrive", async () => {
     greetings.set("dev-a", async () => {
       throw new Error("unknown method: session.hello");
     });
 
     await connectEveryDevice();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
 
-    expect(boardReads("dev-a")).toBeGreaterThan(0);
+    await expect(syncDevice("dev-a")).resolves.toBe(false);
+    expect(boardReads("dev-b")).toBeGreaterThan(0);
   });
 
   it("gives every machine one rendezvous, and closes it once the channels carry", async () => {
@@ -369,8 +387,7 @@ describe("per-device connections", () => {
 
   it("keeps a lost device known and blocked while another device answers", async () => {
     await connectEveryDevice();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
 
     unlinkable.add("dev-a");
     await loseTheLink("dev-a");
@@ -407,8 +424,7 @@ describe("per-device connections", () => {
   it("keeps painting a lost device's rows, greyed the moment it goes", async () => {
     await connectEveryDevice();
     mountInboxList();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
     const rowOn = (deviceId) =>
       [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
     expect(rowOn("dev-a")).toBeTruthy();
@@ -425,8 +441,7 @@ describe("per-device connections", () => {
   it("ungreys a device's rows the moment a retry lands it", async () => {
     await connectEveryDevice();
     mountInboxList();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
     const rowOn = (deviceId) =>
       [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
 
@@ -636,8 +651,7 @@ describe("per-device connections", () => {
 
   it("preserves the mounted view while online devices reconnect", async () => {
     await connectEveryDevice();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
     const poll = { dispose: vi.fn() };
     const viewDispose = vi.fn();
     App.poll = poll;
@@ -657,8 +671,7 @@ describe("per-device connections", () => {
   // a reader can do about it.
   it("lays the waiting screen's foot out as one row", async () => {
     await connectEveryDevice();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
     devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     syncDeviceRecoveryPresence(devices);
@@ -681,8 +694,7 @@ describe("per-device connections", () => {
   // standing in it.
   it("stops the gate's watch when a device lands another way", async () => {
     await connectEveryDevice();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
     devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     syncDeviceRecoveryPresence(devices);
@@ -716,8 +728,7 @@ describe("per-device connections", () => {
   it("hands the app back the moment one device answers again", async () => {
     initDevicePicker();
     await connectEveryDevice();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
     devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
     App.devices = devices;
     syncDeviceRecoveryPresence(devices);
@@ -739,8 +750,7 @@ describe("per-device connections", () => {
 
   it("does not misreport revoked online rows as an all-offline account", async () => {
     await connectEveryDevice();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
 
     retireDevice("dev-a");
     expect(held()).toBe(false); // dev-b still answers
@@ -1170,8 +1180,7 @@ describe("per-device connections", () => {
   // device the user just moved away from.
   it("delivers a snapshot when home moves, so the surfaces about here follow", async () => {
     await connectEveryDevice();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
     let here = null;
     const stop = subscribeFeed((snapshot) => (here = deviceFeedView(snapshot)));
     expect(here.items.map((item) => item.deviceId)).toEqual(["dev-a"]);
@@ -1186,8 +1195,7 @@ describe("per-device connections", () => {
   it("offers the new home device's projects the moment home moves", async () => {
     await connectEveryDevice();
     initCompose();
-    startFeed(60000);
-    await flush();
+    await paintFeed();
     expect(projectsOffered()).toEqual(["dev-a repo"]);
 
     rememberSelectedDevice("dev-b");

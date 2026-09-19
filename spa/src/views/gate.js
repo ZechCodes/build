@@ -60,6 +60,14 @@ function setGate(on) {
  *  read the disk, so a caller painting a shell can put the rows in with it. */
 function startCacheReaders() {
   if (cacheReadersUp) return undefined;
+  return restartCacheReaders();
+}
+
+/** Both readers, from the top: a pass per device and a fresh set of
+ *  subscriptions, with the feed reading the disk behind them. What a machine
+ *  answering after nothing could is worth — the gap the hold covered announced
+ *  nothing, so the cache is filled again rather than trusted. */
+function restartCacheReaders() {
   cacheReadersUp = true;
   startCacheSync();
   return startFeed();
@@ -145,20 +153,22 @@ async function connectToApp(asked) {
 }
 
 /** Give the page back to the reader: the shell is theirs again, the picker says
- *  what the rail is showing, and the devices are read on their cadence.
+ *  what the rail is showing, and the cache is read and filled again.
+ *
+ *  Both readers, because the gate took both away: the feed paints from the
+ *  cache and the sync layer is the only thing that fills it, so a hand-back
+ *  that started the feed alone would paint whatever the disk last held and
+ *  never hear another word from any bridge.
  *
  *  The bridges are already greeted: connection.js greets every device as it
- *  lands it, which is before the first one answers here — so the surfaces mount
- *  on the cadence each bridge has earned. A bridge that pushes lets them stand
- *  down to the safety poll; one that does not leaves every interval exactly
- *  where it has always been. */
+ *  lands it, which is before the first one answers here. */
 function handBackToReader() {
   holding = false;
   gatedDeviceId = null;
   setGate(false);
   markNothingAnswers(false); // something answered; the picker stops saying nothing does
   paintDevicePicker();
-  startFeed();
+  restartCacheReaders();
   // Which machines the account has, and which of them are up, is read from the
   // api from here on: a late device joins on it, and a machine whose bridge has
   // gone is marked away on it (spec rule 6).

@@ -22,7 +22,8 @@
         "choice_revision": 4,
         "has_terminal": true,
         "can_interrupt": true,
-        "created_at": "2026-09-13T09:40:00Z"
+        "created_at": "2026-09-13T09:40:00Z",
+        "title": "Fix the flaky login test"
       }
     ]
   },

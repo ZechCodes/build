@@ -483,6 +483,11 @@ pub struct AgentDigest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_error: Option<String>,
     pub created_at: String,
+    /// What to CALL this conversation in a list: the agent's own topic, or —
+    /// until it sets one — the first line the human opened with. Null for a
+    /// conversation nothing has been said in yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surfaces: Option<AgentSurfaces>,
 }

@@ -7,7 +7,54 @@
       "items": [
         {
           "entity_id": "run-7",
-          "state": { "run": "working", "agents": 1, "attention": "none" },
+          "state": {
+            "kind": "branch",
+            "title": "Push the shapes a client would have pulled",
+            "state": "working",
+            "project_id": "proj-1",
+            "project": "build",
+            "branch": "build/cache-first",
+            "run_id": "run-7",
+            "issue_id": null,
+            "worktree_id": "wt-d8b221956672",
+            "worktree_path": "/home/dev/worktrees/cache-first",
+            "muted": false,
+            "dismissed": false,
+            "unread": true,
+            "unread_count": 1,
+            "unread_reason": "message",
+            "anchor": "2026-09-18T10:09:00Z",
+            "resume_at": null,
+            "last_activity": "2026-09-18T10:10:00Z",
+            "agents": [
+              {
+                "id": "agent-3",
+                "conversation_id": "conversation-3",
+                "ordinal": 1,
+                "provider": "claude",
+                "model": "sonnet",
+                "effort": "medium",
+                "active_model": "sonnet",
+                "state": "live",
+                "unread_count": 1,
+                "unread_reason": "message",
+                "read_through_sequence": 410,
+                "working": true,
+                "working_time": { "since": "2026-09-18T10:09:46Z", "seconds": 14 },
+                "choice_revision": 1,
+                "has_terminal": true,
+                "can_interrupt": true,
+                "created_at": "2026-09-18T09:40:00Z",
+                "topic": null,
+                "title": "ship it"
+              }
+            ],
+            "working": true,
+            "working_time": { "since": "2026-09-18T10:09:46Z", "seconds": 14 },
+            "can_finish": true,
+            "finish": { "warnings": [] },
+            "stat": { "files_changed": 1, "insertions": 12, "deletions": 3 }
+          },
           "thread": [
             {
               "agent_id": "agent-3",

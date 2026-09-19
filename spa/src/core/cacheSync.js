@@ -363,13 +363,17 @@ async function syncLog(context, entityId, scope, priority) {
  * hash this checkout has never heard of — so the answer replaces what was
  * held rather than being prepended to it. Anything else is the commits since
  * the cursor, in front of the ones already there, deduplicated by hash.
+ *
+ * The flag itself is what one answer said and does not go into the record: a
+ * reader finding it there later would read it as news about the record.
  */
 export function mergedLog(held, answer) {
+  const { reset, ...rest } = answer;
   const arriving = answer.commits || [];
-  const previous = answer.reset ? [] : (held?.commits || []);
+  const previous = reset ? [] : (held?.commits || []);
   const arrived = new Set(arriving.map((commit) => commit.hash));
   const commits = [...arriving, ...previous.filter((commit) => !arrived.has(commit.hash))];
-  return { ...answer, commits, newest: answer.newest || commits[0]?.hash || held?.newest || null };
+  return { ...rest, commits, newest: answer.newest || commits[0]?.hash || held?.newest || null };
 }
 
 /** The unpushed commits, without the patch that rides with them: the Records

@@ -241,6 +241,8 @@ describe("the cursors", () => {
     script["git.log"] = () => ({ commits: [{ hash: "r1" }], newest: "r1", reset: true });
     await boot([branchItem()]);
     expect((await read("run-1", "log")).value.commits.map((one) => one.hash)).toEqual(["r1"]);
+    // `reset` is what one answer said, not something the record goes on being.
+    expect((await read("run-1", "log")).value.reset).toBeUndefined();
   });
 
   it("reads a conversation forward from the sequence it holds", async () => {

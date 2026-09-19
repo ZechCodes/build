@@ -23,18 +23,31 @@ vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 // view over those records (core/taskFeed.js); what it is holding here is
 // whatever this file's scripted machine says the workspace is.
 let feedWorkspaces = [];
+let feedSubscribers = null;
+// Whether a pass this tab asked for actually ran. A tab that holds no sync
+// lock, or one whose pass was already running, is told nothing.
+let passRan = true;
+const feedSnapshot = () => ({ devices: { "dev-1": { items: [], projects: [], workspaces: feedWorkspaces } } });
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    fn({ devices: { "dev-1": { items: [], projects: [], workspaces: feedWorkspaces } } });
-    return () => {};
+    feedSubscribers.add(fn);
+    fn(feedSnapshot());
+    return () => feedSubscribers.delete(fn);
   },
   startFeed: () => {},
   stopFeed: () => {},
-  refreshFeed: async () => {},
+  refreshFeed: async () => [passRan],
   deliverFeed: () => {},
   dropFeedDevice: () => {},
   joinFeed: () => {},
 }));
+
+/** The machine's checkout list moving, the way a pass or a board push moves
+ *  it: the records are rewritten and everyone holding them hears it. */
+const deliverWorkspaces = (workspaces) => {
+  feedWorkspaces = workspaces;
+  [...feedSubscribers].forEach((fn) => fn(feedSnapshot()));
+};
 
 import { App } from "../src/app.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
@@ -103,6 +116,8 @@ beforeEach(() => {
   elsewhere = device("dev-2");
   scripted = null;
   feedWorkspaces = [];
+  feedSubscribers = new Set();
+  passRan = true;
 });
 
 afterEach(() => {
@@ -123,6 +138,53 @@ describe("workspace surface", () => {
 
     expect(renderFilesTab).toHaveBeenCalled();
     expect(call).not.toHaveBeenCalledWith("workspace.get", expect.anything());
+  });
+
+  // Create workspace answers and navigates on the spot: the record naming
+  // what it just made is written by the pass or the board push that follows,
+  // which is a round trip behind the frame. A list that does not name it yet
+  // is a list that is about to.
+  it("waits for a checkout the list does not name yet, and stands up when it lands", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async () => workspace);
+    passRan = false; // another tab holds the sync lock; nothing to establish here
+
+    await renderWorkspace();
+    await flush();
+
+    expect(document.querySelector("#root").textContent).not.toContain("unknown workspace_id");
+    expect(renderFilesTab).not.toHaveBeenCalled();
+
+    deliverWorkspaces([workspace]);
+    await flush();
+
+    expect(renderFilesTab).toHaveBeenCalled();
+  });
+
+  it("says the name is unknown once a pass has answered without it", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-9", sourceId: "assets", tab: "files" };
+    device("dev-1", async () => workspace);
+
+    await renderWorkspace();
+    await flush();
+
+    expect(document.querySelector("#root").textContent).toContain("unknown workspace_id: ws-9");
+  });
+
+  // The message is what this frame knows, not a verdict on the link: the
+  // machine listing the workspace afterwards stands the surface up over it.
+  it("stands up over that message when the checkout arrives after all", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async () => workspace);
+
+    await renderWorkspace();
+    await flush();
+    expect(document.querySelector("#root").textContent).toContain("unknown workspace_id: ws-1");
+
+    deliverWorkspaces([workspace]);
+    await flush();
+
+    expect(renderFilesTab).toHaveBeenCalled();
   });
 
   it("scopes Files to a directory while terminals stay workspace scoped", async () => {

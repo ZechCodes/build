@@ -19,6 +19,8 @@ import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitializat
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { deviceFeedNow } from "../core/feedRows.js";
+import { cachedFeedView } from "../core/cachedRows.js";
+import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import "../styles/surfaces.css";
 
 function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection }) {
@@ -336,7 +338,7 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { selection: createAgentSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [] };
+  const state = { selection: createAgentSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [], unwatchFeed: null };
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   // This machine answers now. If it goes while the workspace is open, what was
   // read stays on screen and the strip says whose state that is — but only once
@@ -345,6 +347,10 @@ export async function renderWorkspace() {
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => Boolean(state.workspace) });
   App.viewDispose = () => {
     state.disposed = true;
+    // The view stops hearing the feed rather than trusting the shell to clear
+    // the slot it put it in.
+    state.unwatchFeed?.();
+    state.unwatchFeed = null;
     // The rail is the shell's column, lent to whichever surface is standing on
     // it: leaving hands it back empty rather than leaving this workspace's
     // faces up over the next view.
@@ -361,12 +367,72 @@ export async function renderWorkspace() {
   // board push rewrites them, so the surface stands on the list rather than
   // asking for the one row again. Its conversation is the rail's, and the rail
   // pages that out of the cache for itself.
-  const workspace = (deviceFeedNow(route.deviceId)?.workspaces || []).find(
-    (candidate) => candidate.id === route.workspaceId,
-  );
-  if (!workspace) {
-    if (!state.disposed) $("#tabbody").innerHTML = errorHtml(`unknown workspace_id: ${route.workspaceId}`);
+  await standOnWorkspace(state);
+}
+
+/** This machine's checkout under the routed id, out of the feed's slice of the
+ *  workspace records, or null while nothing there names it. */
+const workspaceNow = (deviceId, workspaceId) =>
+  (deviceFeedNow(deviceId)?.workspaces || []).find((candidate) => candidate.id === workspaceId) || null;
+
+/**
+ * Stand the surface up on the machine's checkout list, and keep listening
+ * until that list names this workspace.
+ *
+ * A list the workspace is not in yet is not a wrong link. Both things that
+ * write it — a pass and a board push — are round trips, and the commonest way
+ * into this surface is the one that outruns them: Create workspace answers,
+ * navigates here on the spot, and the record naming what it just made lands
+ * after the frame. The same holds for a deep link opened against a cold cache,
+ * where the first pass is still running. So the list is subscribed to, and the
+ * delivery that carries the workspace is what mounts it.
+ *
+ * The name is only wrong once a pass this tab asked for has answered and the
+ * records still do not carry it. Where no pass ran — another tab holds the
+ * sync lock, or one was already running — nothing has been established, so the
+ * frame keeps waiting and the subscription mounts it when that pass writes.
+ * Either way the subscription stays up: a later push can still name it.
+ */
+async function standOnWorkspace(state) {
+  const take = () => {
+    if (state.disposed || state.workspace) return;
+    const workspace = workspaceNow(state.route.deviceId, state.route.workspaceId);
+    if (!workspace) return;
+    stopWatchingFeed(state);
+    mountWorkspace(workspace, state);
+  };
+  state.unwatchFeed = subscribeFeed(take);
+  if (state.workspace || state.disposed) {
+    // The replay mounted it inside `subscribeFeed`, before the handle above
+    // existed to be let go of.
+    stopWatchingFeed(state);
     return;
   }
-  mountWorkspace(workspace, state);
+  if (await passAnsweredWithoutIt(state)) sayUnknownWorkspace(state);
+}
+
+/** Whether a pass this tab asked for has answered and the machine's checkouts
+ *  still do not name this workspace — the one thing that makes the link wrong
+ *  rather than early.
+ *
+ *  Off the records rather than off the feed: the pass has written, and the
+ *  announcement behind that write reaches the feed a turn later. Reading the
+ *  disk is what makes "not there" an answer instead of a race with it. */
+async function passAnsweredWithoutIt(state) {
+  const { route } = state;
+  const [passed] = await refreshFeed(route.deviceId);
+  if (state.workspace || state.disposed || !passed) return false;
+  const workspaces = (await cachedFeedView(route.deviceId)).workspaces || [];
+  if (state.workspace || state.disposed) return false;
+  return !workspaces.some((candidate) => candidate.id === route.workspaceId);
+}
+
+function sayUnknownWorkspace(state) {
+  const body = $("#tabbody");
+  if (body) body.innerHTML = errorHtml(`unknown workspace_id: ${state.route.workspaceId}`);
+}
+
+function stopWatchingFeed(state) {
+  state.unwatchFeed?.();
+  state.unwatchFeed = null;
 }

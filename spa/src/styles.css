@@ -901,6 +901,7 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
    against the bar rather than against the window. */
 @container (max-width: 600px) {
   .gittoolbar .gtsync .btn:not(.caret), .gittoolbar .gtstash .btn:not(.caret) { gap:0; font-size:0; }
+  .gittoolbar .gtfetch { align-self:stretch; }
   .gittoolbar .gtrest .btn:not(.caret)::before { margin-right:0; font-size:12px; }
   .gittoolbar .gtrest { column-gap:4px; }
   .gtrest:has(.selbar) .gtsync, .gtrest:has(.selbar) .gtstash,

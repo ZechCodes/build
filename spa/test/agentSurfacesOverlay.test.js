@@ -85,6 +85,10 @@ const flush = async () => {
 const panel = () => document.getElementById("rail-panel");
 const menuCaret = () => panel().querySelector(".rail-surface-menu .caret");
 const menuItems = () => [...panel().querySelectorAll(".rail-surface-menu .mi")];
+/// The menu's SURFACE half. Its other half is the detail levels the
+/// conversation is read at (core/conversationDetail.js), which are always
+/// there — and so are not what these tests are about.
+const surfaceMenuItems = () => menuItems().filter((item) => !item.dataset.action.startsWith("detail:"));
 const menuItem = (kind) => panel().querySelector(`.rail-surface-menu .mi[data-action="${kind}"]`);
 const openMenuElement = () => panel().querySelector(".rail-surface-menu .splitmenu");
 const overlay = () => document.querySelector(".modal-surface");
@@ -287,7 +291,7 @@ describe("openSurfaceOverlay", () => {
 describe("the conversation header's menu", () => {
   it("offers one option per kind the agent has content in", async () => {
     await mount();
-    expect(menuItems().map((item) => item.dataset.action)).toEqual([WORKFLOW_ENTRY_KIND, SHELL_ENTRY_KIND]);
+    expect(surfaceMenuItems().map((item) => item.dataset.action)).toEqual([WORKFLOW_ENTRY_KIND, SHELL_ENTRY_KIND]);
     expect(menuItem(SHELL_ENTRY_KIND).textContent).toContain("Shells");
     expect(menuItem(SHELL_ENTRY_KIND).textContent).toContain("1 running");
   });
@@ -330,11 +334,12 @@ describe("the conversation header's menu", () => {
     expect(overlay()).not.toBe(null);
   });
 
-  it("is absent while the agent has no surfaces at all", async () => {
+  it("still opens on the detail levels while the agent has no surfaces at all", async () => {
     payload = branchRow({ surfaces: null });
     await mount();
-    expect(menuCaret()).toBe(null);
-    expect(panel().querySelector(".rail-surface-menu")).not.toBe(null);
+    expect(menuCaret()).not.toBe(null);
+    expect(surfaceMenuItems()).toEqual([]);
+    expect(menuItems().map((item) => item.dataset.action)).toEqual(["detail:all", "detail:messages", "detail:agent"]);
   });
 
   it("leaves an open menu open through a read that lists the same options", async () => {
@@ -357,20 +362,21 @@ describe("the conversation header's menu", () => {
 
     await poll(gained);
 
-    expect(menuItems().map((item) => item.dataset.action)).toEqual([
+    expect(surfaceMenuItems().map((item) => item.dataset.action)).toEqual([
       WORKFLOW_ENTRY_KIND,
       SHELL_ENTRY_KIND,
       "checklist",
     ]);
   });
 
-  it("goes away when the agent's last surface does", async () => {
+  it("loses its surface rows when the agent's last surface does, and keeps the levels", async () => {
     await mount();
-    expect(menuCaret()).not.toBe(null);
+    expect(surfaceMenuItems()).not.toEqual([]);
 
     await poll(branchRow({ surfaces: {} }));
 
-    expect(menuCaret()).toBe(null);
+    expect(menuCaret()).not.toBe(null);
+    expect(surfaceMenuItems()).toEqual([]);
   });
 });
 

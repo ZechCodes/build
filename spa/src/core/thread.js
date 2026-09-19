@@ -1497,8 +1497,10 @@ export function threadHtml(thread, options = {}) {
 /// nothing at all: the window's delivery point and how many items it holds,
 /// what the daemon said each run totals, which runs are open and which of them
 /// have their items in hand, whose conversation it is and what that agent is
-/// called, the offer state riding the last message, and where the unread line
-/// is ruled.
+/// called, the offer state riding the last message, where the unread line is
+/// ruled, and how much of the conversation the reader asked to see
+/// (core/conversationDetail.js) — a level is a different timeline off the same
+/// items, so a tick that changes only the level still has to build.
 export function chatPaintFingerprint({
   deliveredSequence,
   itemCount,
@@ -1510,6 +1512,7 @@ export function chatPaintFingerprint({
   sending,
   choiceState,
   unreadFrom,
+  detailLevel,
 }) {
   return [
     deliveredSequence,
@@ -1522,6 +1525,7 @@ export function chatPaintFingerprint({
     sending || "",
     choiceState || "",
     unreadFrom ?? "",
+    detailLevel || "",
   ].join("|");
 }
 

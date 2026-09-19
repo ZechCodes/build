@@ -126,6 +126,14 @@ import { mountAgentObservation } from "./agentObservation.js";
 import { createTaskCompletionTracker } from "./taskCompletionModel.js";
 import { mountTaskCompletionToast } from "./taskCompletionToast.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
+import {
+  detailLevelMenuOptions,
+  detailLevelOfOptionId,
+  itemsAtDetailLevel,
+  readDetailLevel,
+  readThroughHiddenItems,
+  writeDetailLevel,
+} from "./conversationDetail.js";
 import { surfaceSessionGeneration } from "./surfacesCache.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
@@ -974,6 +982,28 @@ function mountRailOnContext(host, context, swap) {
   const controllerInFocus = () => controllerForAgent(agentInFocus()) || provisionalController();
   const conversationKey = (controller = controllerInFocus()) => {
     return `${controller.identity.entityId || key}:${controller.identity.agentId || controller.identity.draftId || AGENT_NOT_YET_BORN}`;
+  };
+
+  /** What a detail level is remembered against: the conversation's own id, or —
+   *  for an agent that has not been born yet, and so has no conversation to
+   *  have an id — the key its draft is held under, which the real id replaces
+   *  the moment the daemon answers with one. */
+  const conversationDetailId = (controller = controllerInFocus()) =>
+    controller.identity.conversationId || conversationKey(controller);
+
+  /** How much of each conversation this panel has been asked to draw.
+   *
+   *  Held as well as stored, because the toggle has to take effect on the press
+   *  rather than on whatever tick reads storage next — and because the rail
+   *  moves between conversations without being torn down, so one variable
+   *  would carry the last conversation's choice into the next one.
+   */
+  const chosenDetailLevels = new Map();
+
+  const detailLevel = () => {
+    const id = conversationDetailId();
+    if (!chosenDetailLevels.has(id)) chosenDetailLevels.set(id, readDetailLevel(id, entity.kind));
+    return chosenDetailLevels.get(id);
   };
 
   // ---- the agent that does not exist yet -------------------------------------
@@ -1941,6 +1971,7 @@ function mountRailOnContext(host, context, swap) {
       selectedAgentId: selectedId,
       agentLabel,
       unreadFrom,
+      detailLevel: detailLevel(),
       ...threadOfferState(threadState),
     });
   };
@@ -1964,7 +1995,9 @@ function mountRailOnContext(host, context, swap) {
     // The conversation an option reply is keyed under: the controller's, since
     // the record holds the window and not the name of the thread it is over.
     const conversationId = controllerInFocus().identity.conversationId || null;
-    const built = timelineEntries(threadItems(thread), agentLabel, conversationId, paintedDigests, {
+    // The level reads the cached thread; it never changes what was cached.
+    const shown = itemsAtDetailLevel(threadItems(thread), detailLevel());
+    const built = timelineEntries(shown, agentLabel, conversationId, paintedDigests, {
       openRuns: runs.openKeys(),
       runItemsOf: fetchedRunItems,
       threadState: controllerInFocus().threadState,
@@ -2281,7 +2314,15 @@ function mountRailOnContext(host, context, swap) {
     return { surfaces: null, generation, at: Date.now() };
   };
 
-  const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesSeen().surfaces);
+  /** Everything the conversation's ⋮ offers: how much of the thread to draw,
+   *  then whichever surfaces this agent has opened. The levels are always
+   *  there, which is what makes the menu itself always there — it used to
+   *  vanish with the last surface, and the toggle has to be reachable from a
+   *  conversation that has none. */
+  const surfaceMenuOptionsInFocus = () => [
+    ...detailLevelMenuOptions(detailLevel()),
+    ...surfaceMenuOptions(surfacesSeen().surfaces),
+  ];
 
   const mountSurfaces = (panel) => {
     const pillHost = panel.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
@@ -2321,8 +2362,31 @@ function mountRailOnContext(host, context, swap) {
     const region = host.querySelector(SURFACE_MENU_SELECTOR);
     if (!region) return;
     closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuOptionsInFocus()), {
-      onChoose: openSurfaceOverlayForKind,
+      onChoose: chooseFromSurfaceMenu,
     });
+  };
+
+  /** One menu, two kinds of choice: a level is a way of reading what is already
+   *  here, a surface kind opens what the agent made. */
+  const chooseFromSurfaceMenu = (optionId) => {
+    const level = detailLevelOfOptionId(optionId);
+    if (level) chooseDetailLevel(level);
+    else openSurfaceOverlayForKind(optionId);
+  };
+
+  /** Read this conversation at a different level: remembered for it alone, and
+   *  the timeline redrawn from the same cached items.
+   *
+   *  The menu's own tick is repainted after the press has finished shutting it
+   *  — remounting the menu mid-animation would swap the closing box for a fresh
+   *  one and lose the movement. */
+  const chooseDetailLevel = (level) => {
+    const id = conversationDetailId();
+    if (chosenDetailLevels.get(id) === level) return;
+    chosenDetailLevels.set(id, level);
+    writeDetailLevel(id, level);
+    paintChat();
+    motionSettled().then(paintSurfaceMenu);
   };
 
   const openSurfaceOverlayForKind = (kind) => {
@@ -2370,8 +2434,18 @@ function mountRailOnContext(host, context, swap) {
   const reportRead = (body) => {
     if (!chatIsVisible()) return;
     const agent = agentInFocus();
-    const read = readThroughSequence(body);
-    unreadFrom = unreadLineFor(threadFor(), read);
+    const thread = threadFor();
+    // The drawn rows are all `readThroughSequence` can ask, so the items this
+    // level left out are folded back in: a reader who has scrolled past where a
+    // hidden item would have been has read it, and without this the cursor
+    // would stall under a conversation whose tail is activity.
+    //
+    // One reading serves both the marker and the report: they are the same
+    // question. The marker still anchors on agent MESSAGES alone, and the walk
+    // stops at the first drawn row the reader has not reached, so nothing a
+    // level hides can carry the line past something they have yet to read.
+    const read = readThroughHiddenItems(readThroughSequence(body), threadItems(thread), detailLevel());
+    unreadFrom = unreadLineFor(thread, read);
     if (!agent || !agent.unread_count) return;
     const controller = controllerForAgent(agent);
     if (!controller.identity.entityId || !controller.identity.agentId) return;

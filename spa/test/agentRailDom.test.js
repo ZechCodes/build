@@ -3095,8 +3095,12 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   };
   const savedSurfaces = (sub) => readCached(surfacesAddress(sub));
   const savedDescription = async (sub) => (await savedSurfaces(sub)).value.surfaces.shells[0].description;
+  /// The SURFACE rows of the conversation's ⋮, which also carries the detail
+  /// levels the thread is read at (core/conversationDetail.js).
   const menuKinds = () =>
-    [...railHost().querySelectorAll(".rail-surface-menu .mi")].map((item) => item.dataset.action);
+    [...railHost().querySelectorAll(".rail-surface-menu .mi")]
+      .map((item) => item.dataset.action)
+      .filter((action) => !action.startsWith("detail:"));
   const pillKinds = () =>
     [...railStatusPills().querySelectorAll(".surface-pill")].map((pill) => pill.dataset.surfaceKind);
   const pillCount = (kind) =>

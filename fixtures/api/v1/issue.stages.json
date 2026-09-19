@@ -22,11 +22,6 @@
         "start_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
         "completion_sha": "0f1e2d3c4b5a69788796a5b4c3d2e1f001234567",
         "publication": "local",
-        "validation": {
-          "passed": true,
-          "findings": "Matches the stage doc.",
-          "notes_for_next_stage": ""
-        },
         "comments": []
       },
       {

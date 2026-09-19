@@ -1,23 +1,9 @@
-use crate::app::{
-    announce_isolation_downgrade, err, record_session_death_in_thread, AppState, PendingAgentTurn,
-};
-use crate::mcp::{DonePhase, DoneReport, DoneStatus};
-use crate::orchestrator::{ActivePlan, ActiveRun, ReportConsumed, ReportOutcome};
+use crate::app::{announce_isolation_downgrade, err, record_session_death_in_thread, AppState};
+use crate::mcp::{DoneReport, DoneStatus};
+use crate::orchestrator::{ActivePlan, ActiveRun, ReportOutcome};
 use crate::plan::StageDoc;
 use crate::run::StageProgressState;
 use crate::store::now_rfc3339;
-use crate::worktree::Worktree;
-
-/// How a report is written down.
-///
-/// An outcome the agent reported is a status on the agent's own message: it
-/// said this, so there is one record of it and the conversation carries it.
-/// An event is Build's own reading of the report — a triage pass nobody has to
-/// answer, a validation Build judged — which has no agent message to hang on.
-pub(in crate::app) enum ReportRecord {
-    Outcome(crate::thread::MessageOutcome, String),
-    Event(crate::thread::ThreadEventKind, String),
-}
 
 /// How a harness's session ended, as the idle sweep saw it: the exit code, and
 /// the last thing it painted. A crash's only explanation is usually on its own
@@ -57,42 +43,6 @@ pub(in crate::app) fn append_plan_stage_announcements(
             &now,
         );
     }
-}
-
-pub(in crate::app) fn recovery_agent_prompt(
-    recovery_id: &str,
-    issue_id: &str,
-    run_id: &str,
-    requested_stage_id: &str,
-    worktree: &Worktree,
-    restore_error: &str,
-    stages: &[StageDoc],
-) -> String {
-    let catalog = if stages.is_empty() {
-        "- No stage plans exist yet.".to_string()
-    } else {
-        stages
-            .iter()
-            .enumerate()
-            .map(|(index, stage)| {
-                format!(
-                    "{}. {} — {} — {} — {:?}",
-                    index + 1,
-                    stage.id,
-                    stage.title,
-                    stage.path,
-                    stage.state
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    format!(
-        "You are a RECOVERY agent for an Issue implementation. Work read-only except for restoring the exact persisted branch ref and its registered worktree.\n\nRecovery nonce: {recovery_id}\nIssue: {issue_id}\nImplementation: {run_id}\nRequested stage: {requested_stage_id}\nExact branch: {}\nExpected worktree path: {}\nInitial restore error: {restore_error}\n\nOrdered Issue stage-plan catalog (authoritative order):\n{catalog}\n\nInspect local refs, configured remotes, reflogs, and reachable commits. Never recreate from the moving base. If you can restore the exact branch lineage, do so, then call `post_thread_message` with phase=\"recover\", status=\"Complete\", body=\"<what was recovered and how it was verified>\", and outputs.recovery={{\"recovery_id\":\"{recovery_id}\",\"recovered\":true,\"branch\":\"{}\",\"head_sha\":\"<40 lowercase hex>\",\"findings\":\"verified evidence\"}}. If exact lineage cannot be recovered, send status=\"Blocked\" with recovered=false, the same nonce, and verified findings.",
-        worktree.recorded_branch,
-        worktree.path.display(),
-        worktree.recorded_branch,
-    )
 }
 
 pub(in crate::app) fn record_current_stage_started(
@@ -285,72 +235,33 @@ pub(in crate::app) fn record_report_in_thread(
     orchestration_error: Option<&str>,
 ) {
     let now = now_rfc3339();
-    let recorded = match orchestration_error {
+    // A report is a status on the agent's own message: it said this, so there
+    // is one record of it and the conversation carries it.
+    let (outcome, summary) = match orchestration_error {
         // Still the agent's report, and still its outcome: Build's note about
         // why it could not be applied rides the same body.
-        Some(error) => ReportRecord::Outcome(
+        Some(error) => (
             crate::thread::MessageOutcome::Failed,
             format!(
                 "{}\n\nBuild could not apply the report: {error}",
                 report.summary
             ),
         ),
-        None if report.status == DoneStatus::Blocked => ReportRecord::Outcome(
-            crate::thread::MessageOutcome::Blocked,
-            report.summary.clone(),
-        ),
-        // A finished triage pass is not an agent handing work back: nothing
-        // waits on it and nobody has to answer it. It updates the review
-        // surface, and says so quietly.
-        None if report.phase == DonePhase::Triage => ReportRecord::Event(
-            crate::thread::ThreadEventKind::Triaged,
-            report.summary.clone(),
-        ),
-        None if report.status == DoneStatus::Failed => ReportRecord::Outcome(
-            crate::thread::MessageOutcome::Failed,
-            report.summary.clone(),
-        ),
-        None if report
-            .outputs
-            .validation
-            .as_ref()
-            .is_some_and(|validation| !validation.passed) =>
-        {
-            ReportRecord::Event(
-                crate::thread::ThreadEventKind::ReviewBlocked,
-                report
-                    .outputs
-                    .validation
-                    .as_ref()
-                    .map(|validation| validation.findings.clone())
-                    .unwrap_or_else(|| report.summary.clone()),
-            )
-        }
-        _ => ReportRecord::Outcome(
-            crate::thread::MessageOutcome::Completed,
+        None => (
+            match report.status {
+                DoneStatus::Blocked => crate::thread::MessageOutcome::Blocked,
+                DoneStatus::Failed => crate::thread::MessageOutcome::Failed,
+                DoneStatus::Completed => crate::thread::MessageOutcome::Completed,
+            },
             report.summary.clone(),
         ),
     };
-    match recorded {
-        ReportRecord::Outcome(outcome, summary) => {
-            if report
-                .outputs
-                .message_id
-                .as_deref()
-                .is_some_and(|message_id| {
-                    thread.mark_agent_message_outcome(message_id, outcome, &summary, None)
-                })
-            {
-                return;
-            }
-            // The summary is the whole report now; nothing structured rides
-            // beside it. The slot stays for threads written when it did.
-            thread.post_outcome(outcome, summary, None, &now);
-        }
-        ReportRecord::Event(event, summary) => {
-            thread.push_event(event, Some(summary), None, None, &now);
-        }
+    if report.message_id.as_deref().is_some_and(|message_id| {
+        thread.mark_agent_message_outcome(message_id, outcome, &summary, None)
+    }) {
+        return;
     }
+    thread.post_outcome(outcome, summary, None, &now);
 }
 
 /// An entity went quiet (or its agent exited) without reporting: record the
@@ -393,12 +304,102 @@ impl HarnessExit {
     }
 }
 
+/// The stage a failed report leaves behind, for its `StageFailed` event:
+/// `(stage id, stage doc path, what went wrong)`.
+type StageFailure = (String, String, String);
+/// The stage a report just completed, for its `StageCompleted` event:
+/// `(stage id, completion sha, stage doc path)`.
+type StageCompletion = (String, Option<String>, Option<String>);
+
+fn failed_stage_event(
+    active: &ActiveRun,
+    plan_docs: &[StageDoc],
+    report: &DoneReport,
+    rejected: bool,
+) -> Option<StageFailure> {
+    if report.status != DoneStatus::Failed && !rejected {
+        return None;
+    }
+    let stage_id = active.current_stage_id.as_deref()?;
+    let doc = plan_docs.iter().find(|doc| doc.id == stage_id)?;
+    Some((
+        stage_id.to_string(),
+        doc.path.clone(),
+        report.summary.clone(),
+    ))
+}
+
+fn completed_stage_event(active: &ActiveRun, plan_docs: &[StageDoc]) -> Option<StageCompletion> {
+    let stage_id = active.current_stage_id.as_deref()?;
+    let progress = active
+        .stage_progress(stage_id)
+        .filter(|progress| progress.state == StageProgressState::Completed)?;
+    Some((
+        stage_id.to_string(),
+        progress.completion_sha.clone(),
+        plan_docs
+            .iter()
+            .find(|doc| doc.id == stage_id)
+            .map(|doc| doc.path.clone()),
+    ))
+}
+
+fn record_stage_events(
+    conversation: &mut crate::thread::Thread,
+    issue_id: &str,
+    run_id: &str,
+    failed: Option<StageFailure>,
+    completed: Option<StageCompletion>,
+) {
+    let implementation = crate::thread::ThreadLink::Implementation {
+        issue_id: issue_id.to_string(),
+        implementation_id: run_id.to_string(),
+    };
+    if let Some((stage_id, stage_path, summary)) = failed {
+        conversation.push_event_with_links(
+            crate::thread::ThreadEventKind::StageFailed,
+            Some(summary),
+            None,
+            None,
+            vec![
+                crate::thread::ThreadLink::IssueStage {
+                    issue_id: issue_id.to_string(),
+                    stage_id,
+                    path: stage_path,
+                },
+                implementation.clone(),
+            ],
+            now_rfc3339(),
+        );
+    }
+    if let Some((stage_id, completion_sha, stage_path)) = completed {
+        let mut links = vec![implementation];
+        if let Some(path) = stage_path {
+            links.push(crate::thread::ThreadLink::IssueStage {
+                issue_id: issue_id.to_string(),
+                stage_id: stage_id.clone(),
+                path,
+            });
+        }
+        if let Some(sha) = completion_sha {
+            links.push(crate::thread::ThreadLink::Commit { sha });
+        }
+        conversation.push_event_with_links(
+            crate::thread::ThreadEventKind::StageCompleted,
+            Some(format!("Completed stage {stage_id}")),
+            None,
+            None,
+            links,
+            now_rfc3339(),
+        );
+    }
+}
+
 impl AppState {
     /// A run agent reported `done`. A mid-run stage-doc revision (revising_stage_id
     /// set) is a cross-entity store write-back to the owning plan; every other
-    /// report advances the run on `on_run_done`, and a validation pass may then
+    /// report advances the run on `on_run_done`, and a completed stage may then
     /// auto-advance the next approved stage when run-all is armed.
-    #[allow(clippy::cognitive_complexity)] // ratchet: on_run_agent_done is at 20, threshold 15 — bring it under, then remove
     pub(in crate::app) fn on_run_agent_done(
         &mut self,
         run_id: &str,
@@ -408,57 +409,19 @@ impl AppState {
         let Some(mut active) = self.runs.remove(run_id) else {
             return;
         };
-        if report.phase == DonePhase::Recover {
-            self.consume_recovery_report(run_id, reporting_agent_id, active, report);
-            return;
-        }
-        let is_stage_revision = active.revising_stage_id.is_some()
-            && report.phase == DonePhase::Revise
-            && report.status == DoneStatus::Completed;
-        if is_stage_revision {
+        if active.revising_stage_id.is_some() && report.status == DoneStatus::Completed {
             self.consume_run_stage_revision(run_id, reporting_agent_id, active, report);
             return;
         }
         let plan_docs = self.owning_plan_stage_docs(&active);
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let report_for_thread = report.clone();
-        let mut triage_due = false;
-        let consumed = (|| -> Result<ReportConsumed, String> {
-            let project_id = self.project_of(run_id)?;
-            self.orch_for(&project_id)?
-                .on_run_done(&mut active, &plan_docs, report)
-                .map_err(err)
-        })();
-        let outcome = match consumed {
-            Err(e) => {
-                eprintln!("on_agent_done {run_id}: {e}");
-                Err(e)
-            }
-            // Build's agents are persistent and a branch carries several, so a
-            // report arrives whenever any of them finishes a turn — a turn the
-            // human started at a review gate, or one a dispatch handed a second
-            // agent. No lifecycle event accepts those, and none should:
-            // enforcement is by observation, so the report is recorded on the
-            // conversation below and the branch's own state stays put.
-            Ok(ReportConsumed { outcome, next }) => {
-                if let ReportOutcome::OutOfPhase(illegal) = &outcome {
-                    eprintln!("{}", out_of_phase_log(run_id, illegal));
-                }
-                // A stage that built hands itself to validation: the same
-                // agent, a new turn. Queued rather than written here — the done
-                // socket holds the state lock and a cold delivery needs it free.
-                triage_due = self.triage_enabled
-                    && crate::orchestrator::triage_is_due(&report_for_thread, next.is_some());
-                if let Some(turn) = next {
-                    self.delivery_queue.enqueue(PendingAgentTurn::for_run(
-                        run_id,
-                        &mut active,
-                        turn,
-                    ));
-                }
-                Ok(outcome)
-            }
-        };
+        let stage_before = active
+            .current_stage_id
+            .as_deref()
+            .and_then(|stage_id| active.stage_progress(stage_id))
+            .map(|progress| progress.state);
+        let outcome = self.apply_run_report(run_id, &mut active, &plan_docs, report);
         let diff_revision = if outcome.is_ok() && report_for_thread.status == DoneStatus::Completed
         {
             self.project_of(run_id).ok().and_then(|project_id| {
@@ -470,49 +433,12 @@ impl AppState {
         } else {
             None
         };
-        let failed_stage_event = (report_for_thread.status == DoneStatus::Failed
-            || report_for_thread
-                .outputs
-                .validation
-                .as_ref()
-                .is_some_and(|validation| !validation.passed)
-            || outcome.is_err())
-        .then(|| {
-            active.current_stage_id.as_deref().and_then(|stage_id| {
-                plan_docs.iter().find(|doc| doc.id == stage_id).map(|doc| {
-                    let summary = report_for_thread
-                        .outputs
-                        .validation
-                        .as_ref()
-                        .filter(|validation| !validation.passed)
-                        .map(|validation| validation.findings.clone())
-                        .unwrap_or_else(|| report_for_thread.summary.clone());
-                    (stage_id.to_string(), doc.path.clone(), summary)
-                })
-            })
-        })
-        .flatten();
+        let failed_stage_event =
+            failed_stage_event(&active, &plan_docs, &report_for_thread, outcome.is_err());
         let completed_stage_event = if matches!(outcome, Ok(ReportOutcome::Applied))
-            && report_for_thread.phase == DonePhase::Validate
-            && report_for_thread.status == DoneStatus::Completed
+            && stage_before == Some(StageProgressState::Building)
         {
-            active.current_stage_id.as_deref().and_then(|stage_id| {
-                active
-                    .stage_progress(stage_id)
-                    .filter(|progress| {
-                        progress.state == StageProgressState::Validated { passed: true }
-                    })
-                    .map(|progress| {
-                        (
-                            stage_id.to_string(),
-                            progress.completion_sha.clone(),
-                            plan_docs
-                                .iter()
-                                .find(|doc| doc.id == stage_id)
-                                .map(|doc| doc.path.clone()),
-                        )
-                    })
-            })
+            completed_stage_event(&active, &plan_docs)
         } else {
             None
         };
@@ -526,92 +452,17 @@ impl AppState {
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
-        if let (Some(issue_id), Some((stage_id, stage_path, summary))) =
-            (issue_id.as_deref(), failed_stage_event)
-        {
-            conversation.push_event_with_links(
-                crate::thread::ThreadEventKind::StageFailed,
-                Some(summary),
-                None,
-                None,
-                vec![
-                    crate::thread::ThreadLink::IssueStage {
-                        issue_id: issue_id.to_string(),
-                        stage_id,
-                        path: stage_path,
-                    },
-                    crate::thread::ThreadLink::Implementation {
-                        issue_id: issue_id.to_string(),
-                        implementation_id: run_id.to_string(),
-                    },
-                ],
-                now_rfc3339(),
+        if let Some(issue_id) = issue_id.as_deref() {
+            record_stage_events(
+                conversation,
+                issue_id,
+                run_id,
+                failed_stage_event,
+                completed_stage_event,
             );
         }
-        if let (Some(issue_id), Some((stage_id, completion_sha, stage_path))) =
-            (issue_id.as_deref(), completed_stage_event)
-        {
-            let mut links = vec![crate::thread::ThreadLink::Implementation {
-                issue_id: issue_id.to_string(),
-                implementation_id: run_id.to_string(),
-            }];
-            if let Some(path) = stage_path {
-                links.push(crate::thread::ThreadLink::IssueStage {
-                    issue_id: issue_id.to_string(),
-                    stage_id: stage_id.clone(),
-                    path,
-                });
-            }
-            if let Some(sha) = completion_sha {
-                links.push(crate::thread::ThreadLink::Commit { sha });
-            }
-            conversation.push_event_with_links(
-                crate::thread::ThreadEventKind::StageCompleted,
-                Some(format!("Completed stage {stage_id}")),
-                None,
-                None,
-                links,
-                now_rfc3339(),
-            );
-        }
-        // The revision names the diff the reviewer will see, and the triage
-        // pass is asked to classify THAT revision — so the pass is rendered
-        // from the same patch the revision was minted from, and its `based_on`
-        // is what makes a later diff visibly move out from under it.
-        let triage_seed = diff_revision.map(|patch| {
-            let revision = conversation.add_revision(
-                crate::thread::ArtifactKind::Diff,
-                &patch,
-                &now_rfc3339(),
-            );
-            (patch, revision.content_hash)
-        });
-        // A revision that has already been triaged is not triaged again: the
-        // agent's turn is worth more than a second opinion on an unchanged diff.
-        let already_triaged = |revision_sha: &String| {
-            active
-                .triage
-                .as_ref()
-                .is_some_and(|triage| triage.based_on == *revision_sha)
-        };
-        if triage_due {
-            if let Some((patch, revision_sha)) = triage_seed
-                .as_ref()
-                .filter(|(_, revision_sha)| !already_triaged(revision_sha))
-            {
-                let turn = self.project_of(run_id).ok().and_then(|project_id| {
-                    self.orch_for(&project_id).ok().and_then(|orch| {
-                        orch.triage_turn(&active, patch, revision_sha, &report_for_thread.summary)
-                    })
-                });
-                if let Some(turn) = turn {
-                    self.delivery_queue.enqueue(PendingAgentTurn::for_run(
-                        run_id,
-                        &mut active,
-                        turn,
-                    ));
-                }
-            }
+        if let Some(patch) = diff_revision {
+            conversation.add_revision(crate::thread::ArtifactKind::Diff, &patch, &now_rfc3339());
         }
         let persisted = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(e) = persisted {
@@ -634,6 +485,34 @@ impl AppState {
                 eprintln!("issue scheduler {issue_id}: {error}");
             }
         }
+    }
+
+    /// Hand the report to the run's lifecycle. Build's agents are persistent
+    /// and a branch carries several, so a report arrives whenever any of them
+    /// finishes a turn — a turn the human started at a review gate, or one a
+    /// dispatch handed a second agent. No lifecycle event accepts those, and
+    /// none should: enforcement is by observation, so the report is recorded
+    /// on the conversation and the branch's own state stays put.
+    fn apply_run_report(
+        &mut self,
+        run_id: &str,
+        active: &mut ActiveRun,
+        plan_docs: &[StageDoc],
+        report: DoneReport,
+    ) -> Result<ReportOutcome, String> {
+        let outcome = self.project_of(run_id).and_then(|project_id| {
+            self.orch_for(&project_id)?
+                .on_run_done(active, plan_docs, report)
+                .map_err(err)
+        });
+        match &outcome {
+            Err(e) => eprintln!("on_agent_done {run_id}: {e}"),
+            Ok(ReportOutcome::OutOfPhase(illegal)) => {
+                eprintln!("{}", out_of_phase_log(run_id, illegal))
+            }
+            Ok(ReportOutcome::Applied) => {}
+        }
+        outcome
     }
 
     /// Consume a mid-run stage-doc revision's `done`: it writes the revised docs

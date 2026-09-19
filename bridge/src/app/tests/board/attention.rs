@@ -296,12 +296,7 @@ fn a_reported_outcome_is_news_on_the_run() {
 
     state.on_agent_done(
         &run_id,
-        DoneReport {
-            phase: DonePhase::Build,
-            status: DoneStatus::Blocked,
-            summary: "Needs production credentials".into(),
-            outputs: DoneOutputs::default(),
-        },
+        DoneReport::new(DoneStatus::Blocked, "Needs production credentials"),
     );
 
     let run_thread = &state.runs[&run_id].agents.sole_thread();

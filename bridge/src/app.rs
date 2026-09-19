@@ -71,7 +71,7 @@ pub(in crate::app) use self::runs::reporting::run_outcome_mirrors_to_issue;
 pub(in crate::app) use self::runs::reporting::{
     abandoned_branch_summary, append_plan_stage_announcements, close_abandoned_run_conversations,
     open_session_id, record_current_stage_started, record_idle_in_thread, record_report_in_thread,
-    recovery_agent_prompt, run_report_conversation, HarnessExit,
+    HarnessExit,
 };
 #[cfg(test)]
 pub(in crate::app) use self::runs::review::{merge_cleanup_from, MergeCleanup};
@@ -201,7 +201,7 @@ use crate::isolation::Isolation;
 #[cfg(test)]
 use crate::lifecycle::BranchDispatchStep;
 #[cfg(test)]
-use crate::mcp::{BridgeAction, DoneOutputs, DonePhase, DoneReport, DoneStatus};
+use crate::mcp::{BridgeAction, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{ActivePlan, ActiveRun, Agent, ResumeIdProbe, SessionLocatorFactory};
@@ -216,7 +216,7 @@ use crate::pty::HarnessSpec;
 use crate::rtc::{NoPeerFactory, SessionPeers};
 #[cfg(test)]
 #[cfg(test)]
-use crate::run::{RunId, RunState, StageProgress, StageProgressState, StagePublication};
+use crate::run::{RunId, RunState, StagePublication};
 #[cfg(test)]
 use crate::screen::ScreenHandle;
 #[cfg(test)]
@@ -277,9 +277,6 @@ pub struct AppState {
     /// every project that names no isolation of its own. Spent at creation,
     /// like `default_harness`: an existing checkout says what it is itself.
     isolation: Isolation,
-    /// Whether completed diffs automatically receive a review-prioritization pass.
-    /// Missing from older configs means off, so upgrading never starts new agent work.
-    triage_enabled: bool,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
     #[cfg(test)]
@@ -512,7 +509,6 @@ impl AppState {
             project_agent: crate::models::ProjectAgentChoice::default(),
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
-            triage_enabled: false,
             config_path: None,
             #[cfg(test)]
             config_persist_failure: None,

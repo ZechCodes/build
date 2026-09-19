@@ -195,5 +195,4 @@ fn an_in_flight_agent_holds_its_followup_while_another_agent_proceeds() {
 // Runtime integration retains these existing tests because a callback-free core
 // cannot itself prove SettlingHandle behavior:
 // - a_delivery_that_panics_gives_its_in_flight_marks_back
-// - disabling_triage_stops_a_pass_already_drained_for_delivery
 // - requeue-before-settle on Store claim error and DeliveryOutcome::Deferred

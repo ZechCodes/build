@@ -19,7 +19,6 @@ impl AppState {
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
             "isolation": self.isolation,
-            "triage_enabled": self.triage_enabled,
             "isolation_available": self.account_availability(),
         })
     }
@@ -83,24 +82,17 @@ impl AppState {
         };
         let default_harness = patch.default_harness.unwrap_or(self.default_harness);
         let isolation = patch.isolation.unwrap_or(self.isolation);
-        let triage_enabled = patch.triage_enabled.unwrap_or(self.triage_enabled);
         let project_agent =
             self.accepted_project_agent(patch.project_agent.as_ref(), default_harness)?;
         let mut config = self.config_value(&projects_dir, default_harness, isolation);
         config["agent_modes"] = json!(agent_modes);
-        config["triage_enabled"] = json!(triage_enabled);
         config["project_agent"] = json!(project_agent);
         self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
         self.agent_modes = agent_modes;
         self.isolation = isolation;
-        self.triage_enabled = triage_enabled;
         self.project_agent = project_agent;
-        if !triage_enabled {
-            self.delivery_queue
-                .retain_queued(|turn| turn.phase != "triage");
-        }
         Ok(self.settings_get())
     }
 }

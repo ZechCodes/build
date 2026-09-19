@@ -3,14 +3,8 @@ use super::*;
 #[test]
 fn marking_the_posted_message_complete_emits_an_incremental_update() {
     let mut thread = Thread::new("run-1");
-    let message_id = thread.post_agent_offering(
-        "Shipped it.",
-        None,
-        Vec::new(),
-        Vec::new(),
-        "2026-09-17T12:00:00Z",
-        false,
-    );
+    let message_id =
+        thread.post_agent_offering("Shipped it.", Vec::new(), "2026-09-17T12:00:00Z", false);
     let original_sequence = thread.items[0].latest_sequence();
 
     assert!(thread.mark_agent_message_outcome(

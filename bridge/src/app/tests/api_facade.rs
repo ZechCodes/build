@@ -125,7 +125,6 @@ const INTERNAL_REFUSALS: &[(&str, usize)] = &[
     ("issue.diff", 1),
     ("issue.stage_diff", 1),
     ("entity.dismiss", 1),
-    ("triage.override", 1),
 ];
 
 /// Verbs whose fixture params reach outside the state under test — a path

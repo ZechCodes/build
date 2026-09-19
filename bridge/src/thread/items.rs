@@ -162,6 +162,8 @@ pub struct MessageAnchor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ThreadLink {
+    /// Legacy: agents used to attach file links to their messages. Nothing
+    /// writes one now; the variant stays so stored conversations still load.
     File {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -193,7 +195,8 @@ pub enum ThreadLink {
     Worktree { worktree_id: String },
     /// Exact immutable commit boundary.
     Commit { sha: String },
-    /// One verified recovery attempt/session.
+    /// Legacy: the retired branch-recovery agent's attempt. Nothing writes
+    /// one now; the variant stays so stored conversations still load.
     Recovery { recovery_id: String },
 }
 
@@ -880,6 +883,8 @@ pub enum ThreadEventKind {
     RunStarted,
     RunFailed,
     Blocked,
+    /// Legacy: a stage's validation failed. The validation gate is retired;
+    /// the kind stays so stored conversations still load.
     ReviewBlocked,
     IdleUnreported,
     Done,
@@ -896,8 +901,13 @@ pub enum ThreadEventKind {
     WorktreeRecreated,
     /// Legacy recovery event retained for persisted compatibility.
     WorktreeRecovered,
+    /// Legacy: the retired branch-recovery agent started. Retained for
+    /// persisted compatibility.
     RecoveryStarted,
+    /// Legacy: the retired branch-recovery agent succeeded. Retained for
+    /// persisted compatibility.
     RecoverySucceeded,
+    /// Build could not restore an implementation's worktree.
     RecoveryFailed,
     WorktreeDeleted,
     StageCompleted,
@@ -907,13 +917,11 @@ pub enum ThreadEventKind {
     Pushed,
     Merged,
     Abandoned,
-    /// A triage pass classified the diff. Status, never attention: triage
-    /// orders what the reviewer reads and asks nothing of them.
+    /// Legacy: a triage pass classified the diff. Triage is retired; the
+    /// kind stays so stored conversations still load.
     Triaged,
-    /// The reviewer disagreed with how a hunk was classified. Status: the
-    /// agent is told, because miscalibration is only visible if it is said out
-    /// loud, but nothing is being asked of anyone — the reviewer has already
-    /// done the thing they wanted to do.
+    /// Legacy: the reviewer overrode a triage level. Retained for persisted
+    /// compatibility.
     TriageOverridden,
     /// A daemon restart killed the session mid-work. The entity is parked and
     /// waiting for the human to restart it.

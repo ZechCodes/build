@@ -61,7 +61,6 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) default_harness: Option<AgentProvider>,
     pub(in crate::app) agent_modes: Option<Value>,
     pub(in crate::app) isolation: Option<Isolation>,
-    pub(in crate::app) triage_enabled: Option<bool>,
     pub(in crate::app) project_agent: Option<ProjectAgentPatch>,
 }
 
@@ -69,7 +68,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 8] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 7] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -112,14 +111,6 @@ impl SettingsPatch {
                 value.as_str().unwrap_or_default(),
                 available,
             )?);
-            Ok(())
-        }),
-        ("triage_enabled", |patch, value, _| {
-            patch.triage_enabled = Some(
-                value
-                    .as_bool()
-                    .ok_or_else(|| "triage_enabled must be a boolean".to_string())?,
-            );
             Ok(())
         }),
         ("project_agent", |patch, value, _| {
@@ -323,10 +314,6 @@ impl AppState {
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;
         }
-        self.triage_enabled = config
-            .get("triage_enabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         self.apply_router_config(config);
         self.restore_configured_projects(config);
     }

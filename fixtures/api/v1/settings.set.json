@@ -6,7 +6,6 @@
     "agent_modes": {
       "codex": "tui"
     },
-    "triage_enabled": true,
     "project_agent": {
       "model": "gpt-5.6-sol",
       "effort": "high"
@@ -27,7 +26,6 @@
     "claude_mode": "headless",
     "codex_mode": "tui",
     "isolation": "worktree",
-    "triage_enabled": true,
     "isolation_available": {
       "rift": false,
       "reason": "rift is not installed on this device"

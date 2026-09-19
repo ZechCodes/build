@@ -389,12 +389,6 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub isolation: Named<String>,
-    #[serde(
-        default,
-        deserialize_with = "named",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub triage_enabled: Named<bool>,
     /// What a project's agent starts on. Partial like the set around it: a
     /// word the object leaves out stands, a `null` word clears that one, and a
     /// `null` object clears all three.
@@ -788,7 +782,6 @@ pub struct SettingsResult {
     /// Deprecated alias, as `claude_mode` is.
     pub codex_mode: String,
     pub isolation: String,
-    pub triage_enabled: bool,
     pub isolation_available: IsolationAvailabilityView,
 }
 
@@ -1222,11 +1215,11 @@ mod tests {
     #[test]
     fn a_settings_patch_carries_only_what_it_named() {
         let params: SettingsSetParams =
-            serde_json::from_value(serde_json::json!({ "triage_enabled": false, "unknown": 1 }))
+            serde_json::from_value(serde_json::json!({ "isolation": "worktree", "unknown": 1 }))
                 .expect("an unknown field is ignored");
         assert_eq!(
             params.wire(),
-            serde_json::json!({ "triage_enabled": false })
+            serde_json::json!({ "isolation": "worktree" })
         );
     }
 
@@ -1236,12 +1229,12 @@ mod tests {
     #[test]
     fn a_settings_patch_keeps_a_null_the_client_named() {
         let params: SettingsSetParams = serde_json::from_value(
-            serde_json::json!({ "agent_modes": null, "triage_enabled": true }),
+            serde_json::json!({ "agent_modes": null, "isolation": "worktree" }),
         )
         .expect("a named null parses");
         assert_eq!(
             params.wire(),
-            serde_json::json!({ "agent_modes": null, "triage_enabled": true })
+            serde_json::json!({ "agent_modes": null, "isolation": "worktree" })
         );
     }
 

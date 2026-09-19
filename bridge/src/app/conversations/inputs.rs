@@ -75,7 +75,6 @@ pub(in crate::app) const MAX_OPERATION_ID_BYTES: usize = 128;
 
 pub(in crate::app) fn apply_thread_action(
     thread: &mut crate::thread::Thread,
-    artifact: crate::thread::ArtifactKind,
     action: BridgeAction,
     now: &str,
 ) -> Result<Value, String> {
@@ -99,8 +98,6 @@ pub(in crate::app) fn apply_thread_action(
         }
         BridgeAction::PostThreadMessage {
             body,
-            anchor,
-            links,
             still_working,
             options,
         } => {
@@ -111,24 +108,7 @@ pub(in crate::app) fn apply_thread_action(
             if body.len() > 32_000 {
                 return Err("message body exceeds 32000 bytes".to_string());
             }
-            if anchor.as_ref().is_some_and(|anchor| {
-                anchor.artifact != artifact
-                    && !thread.items.iter().any(|item| {
-                        matches!(
-                            item,
-                            crate::thread::ThreadItem::Message(message)
-                                if message.anchor.as_ref().is_some_and(|existing| existing.artifact == anchor.artifact)
-                        )
-                    })
-            }) {
-                return Err(format!(
-                    "anchor artifact must be {} for this conversation",
-                    artifact.as_str()
-                ));
-            }
-            validate_thread_links(&links)?;
-            let message_id =
-                thread.post_agent_offering(body, anchor, links, options, now, still_working);
+            let message_id = thread.post_agent_offering(body, options, now, still_working);
             Ok(json!({ "message_id": message_id }))
         }
         // A search spans every conversation the agent may read, which one
@@ -150,92 +130,6 @@ pub(in crate::app) fn apply_thread_action(
             elsewhere.surface_name()
         )),
     }
-}
-
-pub(in crate::app) fn validate_thread_links(
-    links: &[crate::thread::ThreadLink],
-) -> Result<(), String> {
-    if links.len() > 20 {
-        return Err("message links must contain at most 20 entries".to_string());
-    }
-    for link in links {
-        match link {
-            crate::thread::ThreadLink::File {
-                path,
-                line_start,
-                line_end,
-            } => {
-                if path.is_empty() || !crate::plan::is_worktree_contained_path(path) {
-                    return Err("file link path escapes the worktree".to_string());
-                }
-                if line_start.is_some_and(|line| line == 0)
-                    || line_end.is_some_and(|line| line == 0)
-                    || matches!((line_start, line_end), (Some(start), Some(end)) if start > end)
-                {
-                    return Err("file link line range is invalid".to_string());
-                }
-            }
-            crate::thread::ThreadLink::PlanStage {
-                plan_id,
-                stage_id,
-                path,
-            } => {
-                if plan_id.is_empty()
-                    || stage_id.is_empty()
-                    || !path.starts_with(".build/plan/")
-                    || !crate::plan::is_worktree_contained_path(path)
-                {
-                    return Err("plan stage link is invalid".to_string());
-                }
-            }
-            crate::thread::ThreadLink::IssueStage {
-                issue_id,
-                stage_id,
-                path,
-            } => {
-                if issue_id.is_empty()
-                    || stage_id.is_empty()
-                    || !path.starts_with(".build/plan/")
-                    || !crate::plan::is_worktree_contained_path(path)
-                {
-                    return Err("Issue stage link is invalid".to_string());
-                }
-            }
-            crate::thread::ThreadLink::Run { run_id } if run_id.is_empty() => {
-                return Err("run link is invalid".to_string());
-            }
-            crate::thread::ThreadLink::Run { .. } => {}
-            crate::thread::ThreadLink::Implementation {
-                issue_id,
-                implementation_id,
-            } if issue_id.is_empty() || implementation_id.is_empty() => {
-                return Err("implementation link is invalid".to_string());
-            }
-            crate::thread::ThreadLink::Implementation { .. } => {}
-            crate::thread::ThreadLink::Worktree { worktree_id }
-                if !worktree_id.starts_with("wt-") || worktree_id.len() != 15 =>
-            {
-                return Err("worktree link is invalid".to_string());
-            }
-            crate::thread::ThreadLink::Worktree { .. } => {}
-            crate::thread::ThreadLink::Commit { sha }
-                if sha.len() != 40
-                    || !sha
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) =>
-            {
-                return Err("commit link is invalid".to_string());
-            }
-            crate::thread::ThreadLink::Commit { .. } => {}
-            crate::thread::ThreadLink::Recovery { recovery_id }
-                if !recovery_id.starts_with("recovery-") || recovery_id.len() > 80 =>
-            {
-                return Err("recovery link is invalid".to_string());
-            }
-            crate::thread::ThreadLink::Recovery { .. } => {}
-        }
-    }
-    Ok(())
 }
 
 pub(in crate::app) fn parse_thread_inputs(

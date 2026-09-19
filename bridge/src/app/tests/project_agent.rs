@@ -297,8 +297,6 @@ fn a_project_agents_message_lands_on_its_own_conversation() {
             BridgeAction::PostThreadMessage {
                 still_working: false,
                 body: "one workspace, nobody in it".to_string(),
-                anchor: None,
-                links: Vec::new(),
                 options: Vec::new(),
             },
         )
@@ -723,12 +721,7 @@ fn last_user_message(state: &AppState, entity_id: &str) -> Option<String> {
 /// A terminal report, the one the MCP server makes from a Complete or Blocked
 /// `post_thread_message`.
 pub(super) fn terminal(status: DoneStatus, summary: &str) -> DoneReport {
-    DoneReport {
-        phase: DonePhase::Build,
-        status,
-        summary: summary.to_string(),
-        outputs: DoneOutputs::default(),
-    }
+    DoneReport::new(status, summary)
 }
 
 /// A terminal message reports to the user, and reaches no agent. The workspace
@@ -891,8 +884,6 @@ fn a_mid_turn_message_reaches_no_agent_either() {
                 BridgeAction::PostThreadMessage {
                     still_working: body == "still reading",
                     body: body.to_string(),
-                    anchor: None,
-                    links: Vec::new(),
                     options: Vec::new(),
                 },
             )

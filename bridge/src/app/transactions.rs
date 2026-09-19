@@ -104,8 +104,6 @@ impl AppState {
             revising_stage_id: active.revising_stage_id.clone(),
             auto_advance: active.auto_advance,
             adopted: active.adopted,
-            triage: active.triage.clone(),
-            recovery: active.recovery.clone(),
             publication_attempt: active.publication_attempt.clone(),
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),

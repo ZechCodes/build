@@ -278,3 +278,30 @@ describe("a checkout the cache has never spoken for", () => {
     expect(region().querySelector(".console-new")).not.toBeNull();
   });
 });
+
+// A branch whose run is over is off the board's list, so the route resolves no
+// entity for it — while the branch page is still reachable and the shells in
+// its checkout are still running. With no entity there is no address, so there
+// is no record to read; reading that silence as an empty strip is how a console
+// holding running shells is emptied by a write that had nothing to do with it.
+describe("a checkout the board names no entity for", () => {
+  const seedUnlisted = async (deviceId = "dev-1") => {
+    const row = branchRow(deviceId, { state: "merged" });
+    await writeCached({ deviceId, entityId: "", kind: "projects" }, []);
+    await writeCached({ deviceId, entityId: "", kind: "workspaces" }, []);
+    await writeCached({ deviceId, entityId: row.run_id, kind: "row" }, row);
+  };
+
+  it("keeps the shells it listed when an unrelated record lands", async () => {
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
+    await seedUnlisted();
+    await mountAndOpen();
+    expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
+
+    await writeCached({ deviceId: "dev-1", entityId: "run-8", kind: "status" }, { branch: "main" });
+    await flush();
+
+    expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
+    expect(manager.listTerminals).toHaveBeenCalledTimes(1);
+  });
+});

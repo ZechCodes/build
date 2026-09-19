@@ -277,6 +277,23 @@ export function mountConsole(host, context) {
     unreachable = false;
   };
 
+  /** The strip, off the record — where there is a record to read.
+   *
+   *  A checkout the board names no entity for addresses none, so there is no
+   *  record and never will be: a branch whose run is over is off the list the
+   *  route resolves against, while its page is still reachable and its shells
+   *  are still running. The strip there is whatever the one list answered, and
+   *  seeding it with the empty answer of an address that cannot be read would
+   *  empty a console holding running shells every time an unrelated record
+   *  landed under the device. */
+  const seedFromRecord = async () => {
+    if (!entityId) return;
+    const strip = await cachedValue(TERMINALS_RECORD_KIND);
+    if (disposed) return;
+    if (strip) tabsKnown = true;
+    terms.seed(strip?.tabs || []);
+  };
+
   /** Read what the cache says and paint it: the checkout, the tab strip, and
    *  the tab this console was left on. */
   const readCacheOnce = async () => {
@@ -293,10 +310,8 @@ export function mountConsole(host, context) {
     standOnScope(place.scope);
     await readSavedSelection();
     if (disposed) return;
-    const strip = await cachedValue(TERMINALS_RECORD_KIND);
+    await seedFromRecord();
     if (disposed) return;
-    if (strip) tabsKnown = true;
-    terms.seed(strip?.tabs || []);
     pickSelected();
     remember();
     paint();

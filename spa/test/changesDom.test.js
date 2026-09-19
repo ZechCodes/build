@@ -223,7 +223,7 @@ describe("the rail's paint", () => {
         tree.write("src/a.js", "the agent moved on");
         served.status = dirtyStatus({ head: "e".repeat(40) });
         refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(0);
         await settle();
       });
       expect(container.textContent).toContain("the agent moved on"); // the pane did repaint
@@ -247,7 +247,7 @@ describe("the rail's paint", () => {
       const records = await churn(rail, async () => {
         served.log = { ...log(), commits: [landed, ...log().commits] };
         refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(0);
         await settle();
       });
       const fresh = rail.querySelector(`.crow[data-hash="${"b".repeat(40)}"]`);
@@ -541,7 +541,7 @@ describe("a poll preserves a review in progress", () => {
       tree.write("src/a.js", "the agent moved on");
       served = dirtyStatus({ head: "e".repeat(40) });
       refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
       await settle();
       expect(container.querySelector(".pcomment").textContent).toContain("hold this thought");
       expect(container.textContent).toContain("the agent moved on");
@@ -581,7 +581,7 @@ describe("the poll freeze holds an open menu", () => {
 
       served = dirtyStatus({ head: "e".repeat(40) });
       refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
       await settle();
 
       expect(container.querySelector(".csbox-actions .splitmenu"), "the poll replaced the menu").toBe(menu);
@@ -619,7 +619,7 @@ describe("re-review memory on every stack", () => {
       tree.write("src/a.js", "the agent moved on");
       served = dirtyStatus();
       refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
       await settle();
       const changed = container.querySelector('.file[data-key$=":src/a.js"] .fchanged');
       expect(changed.textContent).toContain("changed since your review");
@@ -665,7 +665,7 @@ describe("re-review memory on every stack", () => {
       tree.write("src/a.js", "the agent moved after review");
       served = dirtyStatus();
       refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
       await settle();
       await click(container.querySelector('.rrow[data-sel="uncommitted"]'));
 

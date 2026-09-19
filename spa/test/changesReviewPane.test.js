@@ -233,6 +233,31 @@ describe("the aggregate over a filled cache", () => {
     pane.dispose();
   });
 
+  // The triage pass is read off the run, not off any push, so a record whose
+  // body has moved under it carries no pass for the body it now holds. The
+  // surface must not draw the old one over the new body, and must be the thing
+  // that asks for the new one — nothing else is left to.
+  it("reads once for a run whose record holds no pass for the body it holds", async () => {
+    const held = { patch: PATCH.replace("+new", "+from the record"), commentable: true, triageEnabled: true };
+    const { container, pane, fetchDiff } = await mountOverDiff({ held });
+    expect(fetchDiff).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("off the wire");
+    pane.dispose();
+  });
+
+  it("asks for nothing where the record's pass is about the body it holds", async () => {
+    const held = {
+      patch: PATCH.replace("+new", "+from the record"),
+      commentable: true,
+      triageEnabled: true,
+      triage: null,
+    };
+    const { container, pane, fetchDiff } = await mountOverDiff({ held });
+    expect(fetchDiff).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("from the record");
+    pane.dispose();
+  });
+
   it("asks once, and only once, when the cache holds no diff", async () => {
     const { container, pane, fetchDiff } = await mountOverDiff();
     expect(container.textContent).toContain("off the wire");

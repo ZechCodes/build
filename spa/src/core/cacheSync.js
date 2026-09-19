@@ -594,17 +594,25 @@ async function pullWorkingDiff(context, entityId, row, priority) {
 }
 
 /** The diff record after a new body, wherever the body came from. The body
- *  replaces what was held; the two fields the review surface keeps beside it —
- *  which project the diff belongs to, and what the reviewer has triaged in it —
- *  are nothing the wire knows about and stay where they were put. A body in
- *  hand is the end of whatever staleness put the record here. */
-const diffRecord = (held, diff, row) => ({
-  ...held,
-  ...diff,
-  stale: false,
-  triage: held?.triage || null,
-  projectId: row?.project_id || held?.projectId || null,
-});
+ *  replaces what was held; which project the diff belongs to is nothing the
+ *  wire knows about and stays where it was put. A body in hand is the end of
+ *  whatever staleness put the record here. */
+const diffRecord = (held, diff, row) => {
+  const record = { ...held, ...diff, stale: false, projectId: row?.project_id || held?.projectId || null };
+  if (!triageStillHolds(held, diff)) delete record.triage;
+  return record;
+};
+
+/** Whether the triage pass held is a pass about the body arriving.
+ *
+ *  The pass is not a wire field of the diff — it is read off the run, and no
+ *  push carries one — so it is kept here or it is gone. It is only true of the
+ *  body it was read against: kept beside a body that has moved, it would have
+ *  the reviewer shown an ordering and a set of verdicts computed against a
+ *  diff that is no longer on screen. The key is DROPPED rather than nulled,
+ *  because the surface reads a missing key as "no pass for this body" and asks
+ *  for one, where null is a pass that is missing and nothing asks. */
+const triageStillHolds = (held, diff) => Boolean(held) && held.patch === diff.patch;
 
 /** The record after a push that HAD a diff and could not send it: too big for
  *  the cap. The body held is the last one anybody saw, so it stays on screen —

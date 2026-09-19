@@ -432,7 +432,7 @@ export function createReviewPlug({
     responseDiffKey = value.diff_key || null;
     commentableNow = value.commentable !== false && Boolean(commentLayer);
     triageEnabled = value.triageEnabled === true;
-    triageReport = triageEnabled ? value.triage || null : undefined;
+    triageReport = triageEnabled && Object.hasOwn(value, "triage") ? value.triage || null : undefined;
     if (!value.projectId || value.projectId === triageProject) return;
     triageProject = value.projectId;
     trustDial = loadTrustDial(triageProject);
@@ -442,6 +442,15 @@ export function createReviewPlug({
     const address = diffAddress();
     return address ? (await readCached(address))?.value : undefined;
   };
+
+  /** Whether the record is a run whose pass this surface has yet to be told.
+   *
+   *  The pass is read off the run and rides no push, so the layer that writes
+   *  a pushed body drops the pass it was holding rather than carry one read
+   *  against a body that has since moved. The body still paints off the
+   *  record; the pass is the one thing left to read, and this surface is what
+   *  is left to read it. */
+  const triageUnread = (record) => record.triageEnabled === true && !Object.hasOwn(record, "triage");
 
   /** What the plug draws on mount: the record, and one read of the wire only
    *  where there is no record to draw, where the push that wrote it said it
@@ -455,7 +464,7 @@ export function createReviewPlug({
       applyCachedDiff(record);
       render();
     }
-    if (!record || record.stale || readsForItself) paint();
+    if (!record || record.stale || readsForItself || triageUnread(record)) paint();
   };
 
   /** The record moved — a `git` push carried a new working tree, or another
@@ -475,6 +484,7 @@ export function createReviewPlug({
     applyCachedDiff(record);
     diffKey = null; // the stack is being rebuilt from a body that moved
     render();
+    if (triageUnread(record)) paint();
   };
 
   const watchDiffRecord = () => {

@@ -58,27 +58,43 @@ const EMPTY_WINDOW = Object.freeze({
 
 const withItems = (held, items) => ({ ...EMPTY_WINDOW, ...held, items });
 
+/** One of the three writes below, made while the post that goes with it is in
+ *  flight and waited on by nobody: what paints is the announcement the write
+ *  makes, and the send itself is already on the wire.
+ *
+ *  So a disk that will not take one is a warning and nothing more. Letting it
+ *  reject would put an unhandled rejection at the top of an ordinary send, and
+ *  there is nothing for the sender to do about it either way: the message is
+ *  posted, and the item that comes back writes the record properly. */
+const sendTimeWrite = (merging) =>
+  merging.then(
+    () => undefined,
+    (error) => {
+      console.warn("this conversation's record could not be written:", error);
+    },
+  );
+
 /** Put a message the reader has just sent into the conversation, under the
  *  operation carrying it. Merged under the address, because the sync layer is
  *  writing the same record from the other side. */
 export const writeProvisionalMessage = (address, operationId, message) =>
-  mergeCached(address, (held) =>
-    withItems(held, mergeThreadItems(held?.items || [], [provisionalThreadItem({ operationId, message })])));
+  sendTimeWrite(mergeCached(address, (held) =>
+    withItems(held, mergeThreadItems(held?.items || [], [provisionalThreadItem({ operationId, message })]))));
 
 /** The post was taken: stamp the sequence it was written at onto the message
  *  waiting for it, so it sits where the conversation will put it. */
 export const acknowledgeProvisionalMessage = (address, operationId, sequence, deliveryStatus) =>
-  mergeCached(address, (held) => {
+  sendTimeWrite(mergeCached(address, (held) => {
     const items = acknowledgeProvisionalItem(held?.items || [], operationId, sequence, deliveryStatus);
     return held && items !== held.items ? withItems(held, items) : null;
-  });
+  }));
 
 /** The post was refused: take the message back out. */
 export const withdrawProvisionalMessage = (address, operationId) =>
-  mergeCached(address, (held) => {
+  sendTimeWrite(mergeCached(address, (held) => {
     const items = withoutProvisionalItem(held?.items || [], operationId);
     return held && items !== held.items ? withItems(held, items) : null;
-  });
+  }));
 
 export function createConversationCache({ addressOf, threadCache, onThreadSeeded, onSurfacesSeeded }) {
   let opened = false;

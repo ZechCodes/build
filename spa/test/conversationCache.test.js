@@ -216,6 +216,28 @@ describe("a message sent from this panel", () => {
     expect((await sentItems()).map((entry) => entry.data.body)).toEqual(["m-4"]);
   });
 
+  // Nothing waits on these writes: the send is already on its way and the
+  // announcement the write makes is what paints. So a disk that will not take
+  // one has to come back as a warning and stop there — a rejection nobody is
+  // holding is an unhandled rejection at the top of an ordinary send.
+  it("warns rather than throws at a send when the disk will not take the write", async () => {
+    vi.resetModules();
+    vi.doMock("../src/core/localCache.js", async () => ({
+      ...(await vi.importActual("../src/core/localCache.js")),
+      mergeCached: () => Promise.reject(new Error("the cache is gone")),
+    }));
+    const writes = await import("../src/core/conversationCache.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(writes.writeProvisionalMessage(threadAddress, "op-1", { body: "ship it" })).resolves.toBeUndefined();
+    await expect(writes.acknowledgeProvisionalMessage(threadAddress, "op-1", 5, "sent")).resolves.toBeUndefined();
+    await expect(writes.withdrawProvisionalMessage(threadAddress, "op-1")).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledTimes(3);
+    warn.mockRestore();
+    vi.doUnmock("../src/core/localCache.js");
+  });
+
   it("leaves the record alone when there is nothing of that operation on it", async () => {
     await cache.writeCached(threadAddress, savedWindow);
     const before = await cache.readCached(threadAddress);

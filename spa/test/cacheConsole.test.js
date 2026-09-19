@@ -257,6 +257,19 @@ describe("a checkout the cache has never spoken for", () => {
     expect(region().querySelector(".console-new")).toBeNull();
   });
 
+  it("takes a scope the machine cannot list for as a checkout holding none", async () => {
+    // The machine answered — it just has nothing to say about this scope. That
+    // is a checkout with no shells, and the `+` opens the first one.
+    manager.listTerminals.mockRejectedValue(new Error("unknown worktree_id"));
+    await seedRowOnly();
+    await mountAndOpen();
+
+    expect(tabs()).toEqual([]);
+    expect(region().querySelector(".console-new")).not.toBeNull();
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
+    expect(record.value.tabs).toEqual([]);
+  });
+
   it("asks nothing of a checkout whose record says, in so many words, none", async () => {
     await seedDevice("dev-1", { tabs: [] });
     await mountAndOpen();

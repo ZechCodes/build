@@ -87,7 +87,16 @@ export function terminalTabsController(scope) {
      *  source; this is the one question, asked where no record has ever
      *  answered for this checkout at all. */
     async load() {
-      terms = (await manager.listTerminals(scope)).filter((tab) => tab && tab.term_id);
+      try {
+        terms = (await manager.listTerminals(scope)).filter((tab) => tab && tab.term_id);
+      } catch (error) {
+        // A machine we cannot reach has not answered the question — reading its
+        // silence as "no terminals" is how a shut-looking console gets a shell
+        // opened next to the ones already running in that checkout. A machine
+        // that DID answer, and cannot list this scope, is saying there are none.
+        if (isTerminalSocketLost(error)) throw error;
+        terms = [];
+      }
       return terms;
     },
     /** The tab descriptors for the console head: ordinal-labeled, all closable. */
@@ -309,8 +318,8 @@ export function mountConsole(host, context) {
     listing = true;
     try {
       await asked.load();
-    } catch (error) {
-      listFailed(error, asked);
+    } catch {
+      listLost(asked); // the socket, and only the socket: `load` answers for the rest
       return;
     }
     listAnswered(asked);
@@ -319,12 +328,11 @@ export function mountConsole(host, context) {
   /** Still unknown. Say the machine is out of reach, keep the `+` back —
    *  creating a shell needs the socket anyway — and ask again when it is back,
    *  on the socket's own reconnect rather than a timer of this console's. */
-  const listFailed = (error, asked) => {
+  const listLost = (asked) => {
     listing = false;
     if (disposed || terms !== asked) return;
     unreachable = true;
     paint();
-    if (!isTerminalSocketLost(error)) return;
     retryWhenReconnected(() => {
       unreachable = false;
       void listOnce();

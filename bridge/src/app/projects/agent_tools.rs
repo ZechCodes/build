@@ -1,9 +1,9 @@
-//! What a project's agent may read.
+//! What an agent may read of its project.
 //!
 //! Two reads, both of the project the agent belongs to, both through the code
 //! path the client verb uses. Which project that is comes from the agent's
-//! owner binding and never from an argument, so a project agent cannot be
-//! talked into reading a project it is not the agent for.
+//! owner binding and never from an argument, so no agent can be talked into
+//! reading a project it is not bound to.
 
 use crate::app::AppState;
 use serde_json::{json, Value};
@@ -61,10 +61,12 @@ impl AppState {
         )
     }
 
-    /// The project a project agent is the agent of. It is the one its owner is
-    /// bound to — the binding `project.ensure_conversation` wrote — so the
-    /// scope of every project tool, read or write, is fixed when the agent is
-    /// created.
+    /// The project an agent's owner is bound to: the binding
+    /// `project.ensure_conversation` wrote for a project agent, and the one
+    /// `workspace.ensure_conversation` (or a run's dispatch) wrote for an agent
+    /// working in a checkout. Either way the scope of every project-scoped
+    /// tool, read or write, is fixed when the agent is created and no argument
+    /// can widen it.
     pub(super) fn project_agent_project(&self, owner_id: &str) -> Result<String, String> {
         self.projects
             .project_id_of(owner_id)

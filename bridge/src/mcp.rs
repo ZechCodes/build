@@ -291,9 +291,10 @@ impl BridgeAction {
     /// session that sent it, so a harness cannot reach another surface's tools
     /// by writing the frame itself.
     ///
-    /// A conversation tool is on every surface that HAS a conversation, which
-    /// is why this is a list; a work verb belongs to exactly one surface, and
-    /// is what [`surface_name`](Self::surface_name) names.
+    /// A conversation tool is on every surface that HAS a conversation, and
+    /// the workspace tools are on every surface whose agent is bound to a
+    /// project — which is why this is a list. What belongs to exactly one
+    /// surface is what [`surface_name`](Self::surface_name) names.
     pub fn surfaces(&self) -> &'static [McpSurface] {
         match self {
             BridgeAction::ReadUnreadMessages | BridgeAction::ReadOperationMessages { .. } => {
@@ -317,10 +318,16 @@ impl BridgeAction {
             | BridgeAction::RemoveWorkspaceAgent { .. }
             | BridgeAction::MessageWorkspaceAgent { .. }
             | BridgeAction::DeleteWorkspace { .. }
-            | BridgeAction::AddProjectSource { .. }
-            | BridgeAction::RemoveProjectSource { .. }
             | BridgeAction::AddWorkspaceDirectory { .. }
-            | BridgeAction::RemoveWorkspaceDirectory { .. } => &[McpSurface::Project],
+            | BridgeAction::RemoveWorkspaceDirectory { .. } => {
+                &[McpSurface::Project, McpSurface::Coding]
+            }
+            // The folders a project is cut FROM stay with the project agent: an
+            // agent in a checkout changes what its workspace holds, never what
+            // the next workspace will be made of.
+            BridgeAction::AddProjectSource { .. } | BridgeAction::RemoveProjectSource { .. } => {
+                &[McpSurface::Project]
+            }
         }
     }
 
@@ -344,14 +351,16 @@ impl BridgeAction {
 ///
 /// Not a permission flag on one server: three surfaces, and a session is on
 /// exactly one of them for its whole life. A coding agent never sees the
-/// router's tools, a router never sees a coding agent's, and a project agent
-/// sees neither's — so none of them can reach another's by asking.
+/// router's tools and a router never sees a coding agent's, so neither can
+/// reach the other's by asking. The coding and project surfaces do share the
+/// workspace tools, because both agents are bound to a project — and each is
+/// held to its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpSurface {
     Coding,
     Router,
     /// The agent of a project's conversation owner: it reads the project's
-    /// workspaces and talks, and holds no checkout to change.
+    /// workspaces, staffs them and talks, and holds no checkout to change.
     Project,
 }
 
@@ -487,36 +496,43 @@ impl DoneServer {
         }])
     }
 
-    /// The coding agent's tools: its conversation, and nothing about anyone
-    /// else's work.
+    /// The coding agent's tools: its conversation, and the workspaces of the
+    /// project its checkout belongs to.
     fn coding_tools() -> Value {
-        json!([{
-            "name": "post_thread_message",
-            // MUST agree with the "Build conversation protocol"
-            // block in `conversation_prompt` (orchestrator.rs),
-            // which is canonical — change both together.
-            //
-            // Deliberately self-contained rather than a pointer at
-            // that block: this description is re-sent on every
-            // tools/list and so outlives context compaction, which
-            // means it is the ONE statement guaranteed to still be
-            // in context when an ambiguous message actually arrives.
-            // A pointer would resolve to nothing exactly then.
-            "description": "Send a message to the user. This tool is the only way the user can see your messages; terminal output and ordinary assistant responses are not visible to them. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
-            "inputSchema": Self::message_input_schema()
-        }, {
-            "name": "message_agent",
-            "description": MESSAGE_AGENT_DESCRIPTION,
-            "inputSchema": Self::message_agent_input_schema()
-        }, {
-            "name": "search_conversation",
-            "description": SEARCH_CONVERSATION_DESCRIPTION,
-            "inputSchema": Self::search_conversation_input_schema()
-        }, {
-            "name": "set_topic",
-            "description": SET_TOPIC_DESCRIPTION,
-            "inputSchema": Self::set_topic_input_schema()
-        }])
+        let mut tools = vec![
+            json!({
+                "name": "post_thread_message",
+                // MUST agree with the "Build conversation protocol"
+                // block in `conversation_prompt` (orchestrator.rs),
+                // which is canonical — change both together.
+                //
+                // Deliberately self-contained rather than a pointer at
+                // that block: this description is re-sent on every
+                // tools/list and so outlives context compaction, which
+                // means it is the ONE statement guaranteed to still be
+                // in context when an ambiguous message actually arrives.
+                // A pointer would resolve to nothing exactly then.
+                "description": "Send a message to the user. This tool is the only way the user can see your messages; terminal output and ordinary assistant responses are not visible to them. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
+                "inputSchema": Self::message_input_schema()
+            }),
+            json!({
+                "name": "message_agent",
+                "description": MESSAGE_AGENT_DESCRIPTION,
+                "inputSchema": Self::message_agent_input_schema()
+            }),
+            json!({
+                "name": "search_conversation",
+                "description": SEARCH_CONVERSATION_DESCRIPTION,
+                "inputSchema": Self::search_conversation_input_schema()
+            }),
+            json!({
+                "name": "set_topic",
+                "description": SET_TOPIC_DESCRIPTION,
+                "inputSchema": Self::set_topic_input_schema()
+            }),
+        ];
+        tools.extend(Self::workspace_tools());
+        Value::Array(tools)
     }
 
     /// Who to write to and what to say — the whole of `message_agent`. There
@@ -608,87 +624,138 @@ impl DoneServer {
         })
     }
 
-    /// The project agent's tools. Read this project's workspaces and the agents
-    /// on them, change what the project is made of, and talk. Every one of them
-    /// is about the agent's OWN project: none takes a project, and the binding
-    /// the agent was minted with is the only thing that says which it is.
+    /// The workspace tools, in the order every surface that carries them shows
+    /// them.
     ///
-    /// What is deliberately missing: nothing here deletes a workspace or adds a
-    /// directory to one. Both are how a project loses work, and they stay with
-    /// the human.
+    /// One inventory, shared by the project agent and by the agents working in
+    /// a checkout, because the scope rule is the same for both: the project is
+    /// the one the ASKING agent is bound to, no tool takes a project, and a
+    /// workspace outside that project is refused before anything runs. That is
+    /// why none of these descriptions names a project — there is nothing for
+    /// the caller to name.
+    fn workspace_tools() -> Vec<Value> {
+        vec![
+            json!({
+                "name": "list_workspaces",
+                "description": "Every workspace in your project: its id and name, the branch it stands on and how its checkout is doing. Which project is read comes from who you are — there is nothing to pass, and no other project is reachable from here.",
+                "inputSchema": { "type": "object", "properties": {} }
+            }),
+            json!({
+                "name": "list_workspace_agents",
+                "description": "The agents on one workspace's conversation, in rail order: who each one is, what it runs on, and whether it is working right now. Read-only — you cannot post to them.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." }
+                    },
+                    "required": ["workspace_id"]
+                }
+            }),
+            json!({
+                "name": "create_workspace",
+                "description": "Cut a new workspace in your project: its own checkout of every source, on a branch of its own. It is cut in your project — there is nothing to name — and nobody is working in it until you add an agent.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "What the workspace is for, in the user's words. It names the branch too." },
+                        "isolation": { "type": "string", "enum": ["worktree", "rift"], "description": "How the checkout is made. Omit for the project's own setting." }
+                    },
+                    "required": ["name"]
+                }
+            }),
+            json!({
+                "name": "add_workspace_agent",
+                "description": "Put a new agent on one of your workspaces, in its own conversation there. The workspace gets a conversation of its own if it has none yet. Nothing is said to the agent until you message it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                        "harness": { "type": "string", "description": "What the agent runs on. Omit for the user's default." },
+                        "model": { "type": "string", "description": "The model, for a harness that takes one. Omit for its default." },
+                        "effort": { "type": "string", "description": "The reasoning effort, for a model that takes one. Omit for its default." }
+                    },
+                    "required": ["workspace_id"]
+                }
+            }),
+            json!({
+                "name": "remove_workspace_agent",
+                "description": "Take an agent off one of your workspaces. Its session ends and its conversation goes with it; the workspace and its files are untouched.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                        "agent_id": { "type": "string", "description": "From list_workspace_agents." }
+                    },
+                    "required": ["workspace_id", "agent_id"]
+                }
+            }),
+            json!({
+                "name": "message_workspace_agent",
+                "description": "Say something to an agent on one of your workspaces: what to work on, or a question about what it is doing. It arrives knowing you sent it and not the user, and its reply comes back to you. Use post_thread_message to talk to the user; this one talks to an agent.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                        "agent_id": { "type": "string", "description": "From list_workspace_agents. Omit for the workspace's first agent." },
+                        "body": { "type": "string", "description": "What to say, in full. The agent has none of your conversation, so say what it needs rather than pointing at what you were told." }
+                    },
+                    "required": ["workspace_id", "body"]
+                }
+            }),
+            json!({
+                "name": "delete_workspace",
+                "description": "Take one of your workspaces away: its agents and terminals stop, its checkouts are handed back to the repositories they were cut from, and the folder goes. Anything in it that is not committed and pushed is gone with it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." }
+                    },
+                    "required": ["workspace_id"]
+                }
+            }),
+            json!({
+                "name": "add_workspace_directory",
+                "description": "Put one more directory into a workspace that is already standing. A Git source arrives as its own checkout on the workspace's branch; anything else is copied in. Name exactly one of source_id, path or remote.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                        "source_id": { "type": "string", "description": "A source of your project this workspace was not cut with." },
+                        "path": { "type": "string", "description": "A folder on this device, for a directory that is nobody's project source." },
+                        "remote": { "type": "string", "description": "A clone url. The clone lands in the workspace and is its own repository." },
+                        "name": { "type": "string", "description": "What to call it, and the folder it mounts under." }
+                    },
+                    "required": ["workspace_id"]
+                }
+            }),
+            json!({
+                "name": "remove_workspace_directory",
+                "description": "Take one directory out of a workspace: its checkout is handed back to the repository it was cut from and the folder goes. The workspace and its other directories stay. Uncommitted work in that directory is gone with it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
+                        "directory_id": { "type": "string", "description": "From list_workspaces' directories." }
+                    },
+                    "required": ["workspace_id", "directory_id"]
+                }
+            }),
+        ]
+    }
+
+    /// The project agent's tools: the workspaces every project-bound agent
+    /// shares, the two verbs that change what the project itself is made of,
+    /// and the conversation. Every one of them is about the agent's OWN
+    /// project: none takes a project, and the binding the agent was minted with
+    /// is the only thing that says which it is.
+    ///
+    /// What is deliberately here and nowhere else: `add_project_source` and
+    /// `remove_project_source`. They change the template every NEXT workspace
+    /// is cut from, which is the project agent's business and no coding
+    /// agent's.
     fn project_tools() -> Value {
-        json!([{
-            "name": "list_workspaces",
-            "description": "Every workspace in your project: its id and name, the branch it stands on and how its checkout is doing. Which project is read comes from who you are — there is nothing to pass, and no other project is reachable from here.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }, {
-            "name": "list_workspace_agents",
-            "description": "The agents on one workspace's conversation, in rail order: who each one is, what it runs on, and whether it is working right now. Read-only — you cannot post to them.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." }
-                },
-                "required": ["workspace_id"]
-            }
-        }, {
-            "name": "create_workspace",
-            "description": "Cut a new workspace in your project: its own checkout of every source, on a branch of its own. It is cut in your project — there is nothing to name — and nobody is working in it until you add an agent.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "What the workspace is for, in the user's words. It names the branch too." },
-                    "isolation": { "type": "string", "enum": ["worktree", "rift"], "description": "How the checkout is made. Omit for the project's own setting." }
-                },
-                "required": ["name"]
-            }
-        }, {
-            "name": "add_workspace_agent",
-            "description": "Put a new agent on one of your workspaces, in its own conversation there. The workspace gets a conversation of its own if it has none yet. Nothing is said to the agent until you message it.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
-                    "harness": { "type": "string", "description": "What the agent runs on. Omit for the user's default." },
-                    "model": { "type": "string", "description": "The model, for a harness that takes one. Omit for its default." },
-                    "effort": { "type": "string", "description": "The reasoning effort, for a model that takes one. Omit for its default." }
-                },
-                "required": ["workspace_id"]
-            }
-        }, {
-            "name": "remove_workspace_agent",
-            "description": "Take an agent off one of your workspaces. Its session ends and its conversation goes with it; the workspace and its files are untouched.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
-                    "agent_id": { "type": "string", "description": "From list_workspace_agents." }
-                },
-                "required": ["workspace_id", "agent_id"]
-            }
-        }, {
-            "name": "message_workspace_agent",
-            "description": "Say something to an agent on one of your workspaces: what to work on, or a question about what it is doing. It arrives knowing you sent it and not the user, and its reply comes back to you. Use post_thread_message to talk to the user; this one talks to an agent.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
-                    "agent_id": { "type": "string", "description": "From list_workspace_agents. Omit for the workspace's first agent." },
-                    "body": { "type": "string", "description": "What to say, in full. The agent has none of your conversation, so say what it needs rather than pointing at what you were told." }
-                },
-                "required": ["workspace_id", "body"]
-            }
-        }, {
-            "name": "delete_workspace",
-            "description": "Take one of your workspaces away: its agents and terminals stop, its checkouts are handed back to the repositories they were cut from, and the folder goes. Anything in it that is not committed and pushed is gone with it.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." }
-                },
-                "required": ["workspace_id"]
-            }
-        }, {
+        let mut tools = Self::workspace_tools();
+        tools.extend([json!({
             "name": "add_project_source",
             "description": "Add a folder to your project. The project is the template every new workspace is cut from, so this changes what the NEXT workspace gets; use add_workspace_directory to put the folder into a workspace that already exists. Name exactly one of path or remote.",
             "inputSchema": {
@@ -700,7 +767,7 @@ impl DoneServer {
                     "base_branch": { "type": "string", "description": "The branch workspaces are cut from. The repository's own when omitted." }
                 }
             }
-        }, {
+        }), json!({
             "name": "remove_project_source",
             "description": "Take a folder off your project. Nothing on disk moves and no workspace loses a directory: new workspaces stop being cut from it. A project keeps at least one source.",
             "inputSchema": {
@@ -710,48 +777,24 @@ impl DoneServer {
                 },
                 "required": ["source_id"]
             }
-        }, {
-            "name": "add_workspace_directory",
-            "description": "Put one more directory into a workspace that is already standing. A Git source arrives as its own checkout on the workspace's branch; anything else is copied in. Name exactly one of source_id, path or remote.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
-                    "source_id": { "type": "string", "description": "A source of your project this workspace was not cut with." },
-                    "path": { "type": "string", "description": "A folder on this device, for a directory that is nobody's project source." },
-                    "remote": { "type": "string", "description": "A clone url. The clone lands in the workspace and is its own repository." },
-                    "name": { "type": "string", "description": "What to call it, and the folder it mounts under." }
-                },
-                "required": ["workspace_id"]
-            }
-        }, {
-            "name": "remove_workspace_directory",
-            "description": "Take one directory out of a workspace: its checkout is handed back to the repository it was cut from and the folder goes. The workspace and its other directories stay. Uncommitted work in that directory is gone with it.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
-                    "directory_id": { "type": "string", "description": "From list_workspaces' directories." }
-                },
-                "required": ["workspace_id", "directory_id"]
-            }
-        }, {
+        }), json!({
             "name": "post_thread_message",
             "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete when you have answered, Blocked when you cannot, Waiting when you need the user, or Working for a progress update while you keep reading.",
             "inputSchema": Self::project_message_input_schema()
-        }, {
+        }), json!({
             "name": "message_agent",
             "description": MESSAGE_AGENT_DESCRIPTION,
             "inputSchema": Self::message_agent_input_schema()
-        }, {
+        }), json!({
             "name": "search_conversation",
             "description": SEARCH_CONVERSATION_DESCRIPTION,
             "inputSchema": Self::search_conversation_input_schema()
-        }, {
+        }), json!({
             "name": "set_topic",
             "description": SET_TOPIC_DESCRIPTION,
             "inputSchema": Self::set_topic_input_schema()
-        }])
+        })]);
+        Value::Array(tools)
     }
 
     /// The coding agent's message: what it says, how its turn stands, and the
@@ -849,67 +892,10 @@ impl DoneServer {
     /// anyway is parsed as though it had not: the scope is the owner binding
     /// the daemon holds, and there is nothing here for an argument to widen.
     fn handle_project_tools_call(id: Value, name: &str, params: Option<&Value>) -> Handled {
+        if let Some(handled) = workspace_tool_call(id.clone(), name, params) {
+            return handled;
+        }
         match name {
-            "list_workspaces" => acted(id, BridgeAction::ListWorkspaces),
-            "list_workspace_agents" => match required_argument(params, "workspace_id") {
-                Ok(workspace_id) => acted(id, BridgeAction::ListWorkspaceAgents { workspace_id }),
-                Err(message) => refused(id, message),
-            },
-            "create_workspace" => match required_argument(params, "name") {
-                Ok(name) => acted(
-                    id,
-                    BridgeAction::CreateWorkspace {
-                        name,
-                        isolation: optional_argument(params, "isolation"),
-                    },
-                ),
-                Err(message) => refused(id, message),
-            },
-            "add_workspace_agent" => match required_argument(params, "workspace_id") {
-                Ok(workspace_id) => acted(
-                    id,
-                    BridgeAction::AddWorkspaceAgent {
-                        workspace_id,
-                        harness: optional_argument(params, "harness"),
-                        model: optional_argument(params, "model"),
-                        effort: optional_argument(params, "effort"),
-                    },
-                ),
-                Err(message) => refused(id, message),
-            },
-            "message_workspace_agent" => {
-                match required_argument(params, "workspace_id")
-                    .and_then(|workspace_id| Ok((workspace_id, required_argument(params, "body")?)))
-                {
-                    Ok((workspace_id, body)) => acted(
-                        id,
-                        BridgeAction::MessageWorkspaceAgent {
-                            workspace_id,
-                            agent_id: optional_argument(params, "agent_id"),
-                            body,
-                        },
-                    ),
-                    Err(message) => refused(id, message),
-                }
-            }
-            "remove_workspace_agent" => {
-                match required_argument(params, "workspace_id").and_then(|workspace_id| {
-                    Ok((workspace_id, required_argument(params, "agent_id")?))
-                }) {
-                    Ok((workspace_id, agent_id)) => acted(
-                        id,
-                        BridgeAction::RemoveWorkspaceAgent {
-                            workspace_id,
-                            agent_id,
-                        },
-                    ),
-                    Err(message) => refused(id, message),
-                }
-            }
-            "delete_workspace" => match required_argument(params, "workspace_id") {
-                Ok(workspace_id) => acted(id, BridgeAction::DeleteWorkspace { workspace_id }),
-                Err(message) => refused(id, message),
-            },
             "add_project_source" => acted(
                 id,
                 BridgeAction::AddProjectSource {
@@ -923,33 +909,6 @@ impl DoneServer {
                 Ok(source_id) => acted(id, BridgeAction::RemoveProjectSource { source_id }),
                 Err(message) => refused(id, message),
             },
-            "add_workspace_directory" => match required_argument(params, "workspace_id") {
-                Ok(workspace_id) => acted(
-                    id,
-                    BridgeAction::AddWorkspaceDirectory {
-                        workspace_id,
-                        source_id: optional_argument(params, "source_id"),
-                        path: optional_argument(params, "path"),
-                        remote: optional_argument(params, "remote"),
-                        name: optional_argument(params, "name"),
-                    },
-                ),
-                Err(message) => refused(id, message),
-            },
-            "remove_workspace_directory" => {
-                match required_argument(params, "workspace_id").and_then(|workspace_id| {
-                    Ok((workspace_id, required_argument(params, "directory_id")?))
-                }) {
-                    Ok((workspace_id, directory_id)) => acted(
-                        id,
-                        BridgeAction::RemoveWorkspaceDirectory {
-                            workspace_id,
-                            directory_id,
-                        },
-                    ),
-                    Err(message) => refused(id, message),
-                }
-            }
             "message_agent" => message_agent_action(id, params),
             "search_conversation" => search_action(id, params),
             "set_topic" => topic_action(id, params),
@@ -958,8 +917,12 @@ impl DoneServer {
         }
     }
 
-    /// The coding surface's `tools/call`.
+    /// The coding surface's `tools/call`: its conversation, and the workspace
+    /// tools it shares with the project surface.
     fn handle_coding_tools_call(&self, id: Value, name: &str, params: Option<&Value>) -> Handled {
+        if let Some(handled) = workspace_tool_call(id.clone(), name, params) {
+            return handled;
+        }
         if name == "search_conversation" {
             return search_action(id, params);
         }
@@ -1294,6 +1257,86 @@ fn required_argument(params: Option<&Value>, field: &str) -> Result<String, Stri
         .ok_or_else(|| format!("{field} is required"))
 }
 
+/// One workspace tool call, on whichever surface asked for it. `None` is "not
+/// one of theirs", which is how each surface goes on to its own tools.
+///
+/// The surfaces share this parser so that a tool a surface gains is parsed the
+/// one way: the arguments a workspace tool takes, and the refusals for the ones
+/// it was not given, cannot come out different depending on who called.
+fn workspace_tool_call(id: Value, name: &str, params: Option<&Value>) -> Option<Handled> {
+    Some(match workspace_tool_action(name, params)? {
+        Ok(action) => acted(id, action),
+        Err(message) => refused(id, message),
+    })
+}
+
+/// The typed action behind one workspace tool name, or the argument the call is
+/// missing. `None` when the name is not a workspace tool at all.
+fn workspace_tool_action(
+    name: &str,
+    params: Option<&Value>,
+) -> Option<Result<BridgeAction, String>> {
+    let parsed = match name {
+        "list_workspaces" => Ok(BridgeAction::ListWorkspaces),
+        "list_workspace_agents" => required_argument(params, "workspace_id")
+            .map(|workspace_id| BridgeAction::ListWorkspaceAgents { workspace_id }),
+        "create_workspace" => {
+            required_argument(params, "name").map(|name| BridgeAction::CreateWorkspace {
+                name,
+                isolation: optional_argument(params, "isolation"),
+            })
+        }
+        "add_workspace_agent" => required_argument(params, "workspace_id").map(|workspace_id| {
+            BridgeAction::AddWorkspaceAgent {
+                workspace_id,
+                harness: optional_argument(params, "harness"),
+                model: optional_argument(params, "model"),
+                effort: optional_argument(params, "effort"),
+            }
+        }),
+        "remove_workspace_agent" => {
+            required_argument(params, "workspace_id").and_then(|workspace_id| {
+                Ok(BridgeAction::RemoveWorkspaceAgent {
+                    workspace_id,
+                    agent_id: required_argument(params, "agent_id")?,
+                })
+            })
+        }
+        "message_workspace_agent" => {
+            required_argument(params, "workspace_id").and_then(|workspace_id| {
+                Ok(BridgeAction::MessageWorkspaceAgent {
+                    workspace_id,
+                    agent_id: optional_argument(params, "agent_id"),
+                    body: required_argument(params, "body")?,
+                })
+            })
+        }
+        "delete_workspace" => required_argument(params, "workspace_id")
+            .map(|workspace_id| BridgeAction::DeleteWorkspace { workspace_id }),
+        "add_workspace_directory" => {
+            required_argument(params, "workspace_id").map(|workspace_id| {
+                BridgeAction::AddWorkspaceDirectory {
+                    workspace_id,
+                    source_id: optional_argument(params, "source_id"),
+                    path: optional_argument(params, "path"),
+                    remote: optional_argument(params, "remote"),
+                    name: optional_argument(params, "name"),
+                }
+            })
+        }
+        "remove_workspace_directory" => {
+            required_argument(params, "workspace_id").and_then(|workspace_id| {
+                Ok(BridgeAction::RemoveWorkspaceDirectory {
+                    workspace_id,
+                    directory_id: required_argument(params, "directory_id")?,
+                })
+            })
+        }
+        _ => return None,
+    };
+    Some(parsed)
+}
+
 /// `search_conversation`, on every surface that has a conversation.
 fn search_action(id: Value, params: Option<&Value>) -> Handled {
     let arguments = params
@@ -1451,7 +1494,7 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 4 + WORKSPACE_TOOLS.len());
         assert_eq!(tools[0]["name"], "post_thread_message");
         assert_eq!(tools[1]["name"], "message_agent");
         assert_eq!(tools[2]["name"], "search_conversation");
@@ -1886,9 +1929,24 @@ mod tests {
         assert_eq!(DoneServer::new("router-abc").surface(), McpSurface::Coding);
     }
 
-    /// Every surface shares the message tool and nothing else it is not meant
-    /// to have: a coding agent never sees a router tool, a router never sees a
-    /// coding one, and a project agent sees neither surface's work verbs.
+    /// The workspace tools are the ONE inventory shared between two surfaces:
+    /// the same names in the same order on the coding surface and the project
+    /// one, because both agents are bound to a project. Everything else is a
+    /// surface's own — a coding agent never sees a router tool, a router never
+    /// sees a coding one, and the two verbs that change what a project is made
+    /// of are the project agent's alone.
+    const WORKSPACE_TOOLS: [&str; 9] = [
+        "list_workspaces",
+        "list_workspace_agents",
+        "create_workspace",
+        "add_workspace_agent",
+        "remove_workspace_agent",
+        "message_workspace_agent",
+        "delete_workspace",
+        "add_workspace_directory",
+        "remove_workspace_directory",
+    ];
+
     #[test]
     fn every_surface_advertises_its_exact_tool_inventory() {
         assert_eq!(
@@ -1902,36 +1960,71 @@ mod tests {
                 "post_thread_message",
             ]
         );
+        let conversation = [
+            "post_thread_message",
+            "message_agent",
+            "search_conversation",
+            "set_topic",
+        ];
         assert_eq!(
             tool_names(&server()),
-            vec![
-                "post_thread_message",
-                "message_agent",
-                "search_conversation",
-                "set_topic",
-            ],
-            "the coding surface is unchanged by the router's arrival"
+            [&conversation[..], &WORKSPACE_TOOLS[..]].concat(),
+            "a coding agent has its conversation and the workspaces of its project"
         );
         assert_eq!(
             tool_names(&project()),
-            vec![
-                "list_workspaces",
-                "list_workspace_agents",
-                "create_workspace",
-                "add_workspace_agent",
-                "remove_workspace_agent",
-                "message_workspace_agent",
-                "delete_workspace",
-                "add_project_source",
-                "remove_project_source",
-                "add_workspace_directory",
-                "remove_workspace_directory",
-                "post_thread_message",
-                "message_agent",
-                "search_conversation",
-                "set_topic",
+            [
+                &WORKSPACE_TOOLS[..],
+                &["add_project_source", "remove_project_source"][..],
+                &conversation[..],
             ]
+            .concat(),
+            "and the project agent has the same workspaces, plus the project's own sources"
         );
+        for surface in [McpSurface::Coding, McpSurface::Project] {
+            for tool in WORKSPACE_TOOLS {
+                assert!(
+                    DoneServer::tool_names_of(surface).contains(&tool.to_string()),
+                    "{tool} missing from {surface:?}"
+                );
+            }
+        }
+        for project_only in ["add_project_source", "remove_project_source"] {
+            assert!(
+                !tool_names(&server()).contains(&project_only.to_string()),
+                "{project_only} is the project agent's alone"
+            );
+        }
+    }
+
+    /// A workspace tool call parses to the same action whoever sent it: one
+    /// parser, so the arguments and the refusals cannot drift between surfaces.
+    #[test]
+    fn a_workspace_tool_parses_the_same_way_on_both_surfaces() {
+        for tool in WORKSPACE_TOOLS {
+            assert!(
+                workspace_tool_action(tool, None).is_some(),
+                "{tool} is not parsed as a workspace tool"
+            );
+        }
+        assert!(workspace_tool_action("add_project_source", None).is_none());
+
+        let arguments = r#"{"workspace_id":"ws-1","body":"start on the rail"}"#;
+        let frame = format!(
+            r#"{{"jsonrpc":"2.0","id":73,"method":"tools/call","params":{{"name":"message_workspace_agent","arguments":{arguments}}}}}"#
+        );
+        let from_project = project().handle_message(&frame).action;
+        let from_coding = server().handle_message(&frame).action;
+        assert_eq!(
+            format!("{from_project:?}"),
+            format!("{from_coding:?}"),
+            "the surfaces disagree about what the call means"
+        );
+        assert!(matches!(
+            from_coding,
+            Some(BridgeAction::MessageWorkspaceAgent { ref workspace_id, agent_id: None, ref body })
+                if workspace_id == "ws-1" && body == "start on the rail"
+        ));
     }
 
     // ==== the project surface ===============================================
@@ -2325,7 +2418,8 @@ mod tests {
         for (server, tool) in [
             (project(), "dispatch_branch"),
             (project(), "list_projects"),
-            (server(), "list_workspaces"),
+            (server(), "add_project_source"),
+            (server(), "remove_project_source"),
             (router(), "list_workspace_agents"),
         ] {
             let refused = server.handle_message(&format!(
@@ -2344,8 +2438,9 @@ mod tests {
     /// each action to say which surface it belongs to.
     #[test]
     fn every_action_names_its_tool_and_its_surface() {
-        // A conversation tool is on every surface that has a conversation; a
-        // work verb is on exactly one.
+        // A conversation tool is on every surface that has a conversation, and
+        // a workspace tool on every surface whose agent is bound to a project;
+        // what is on exactly one surface is the rest.
         for (action, surface, allowed) in [
             (
                 BridgeAction::SetTopic { topic: "T".into() },
@@ -2363,7 +2458,28 @@ mod tests {
                 false,
             ),
             (BridgeAction::ListWorkspaces, McpSurface::Project, true),
-            (BridgeAction::ListWorkspaces, McpSurface::Coding, false),
+            (BridgeAction::ListWorkspaces, McpSurface::Coding, true),
+            (BridgeAction::ListWorkspaces, McpSurface::Router, false),
+            (
+                BridgeAction::AddProjectSource {
+                    path: None,
+                    remote: None,
+                    name: None,
+                    base_branch: None,
+                },
+                McpSurface::Project,
+                true,
+            ),
+            (
+                BridgeAction::AddProjectSource {
+                    path: None,
+                    remote: None,
+                    name: None,
+                    base_branch: None,
+                },
+                McpSurface::Coding,
+                false,
+            ),
             (BridgeAction::ListProjects, McpSurface::Project, false),
         ] {
             assert_eq!(

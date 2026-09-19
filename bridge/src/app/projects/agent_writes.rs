@@ -1,10 +1,16 @@
-//! What a project's agent may change.
+//! What an agent may change about its project.
 //!
 //! Each tool is a thin wrapper over the verb the client calls: the same code
 //! path, the same refusals, the same record afterwards. What the wrapper adds
-//! is the scope. The project comes from the agent's owner binding and the
-//! workspace is checked against it before anything runs, so a tool call cannot
-//! reach a project this agent is not the agent of however it is spelled.
+//! is the scope. The project comes from the calling agent's owner binding and
+//! the workspace is checked against it before anything runs, so a tool call
+//! cannot reach a project that agent is not bound to however it is spelled.
+//!
+//! The project agent is not the only caller. An agent working in a checkout
+//! carries the workspace tools too and lands here, scoped by its own run's
+//! binding — which is why nothing below reads WHO is asking, only what they are
+//! bound to. Adding and removing the project's own sources stays the project
+//! agent's, and the surface map in `mcp.rs` is what holds that line.
 
 use crate::app::AppState;
 use serde_json::{json, Value};
@@ -272,9 +278,10 @@ impl AppState {
     }
 
     /// One workspace of this agent's project, or why it is none of its
-    /// business. The one gate every workspace tool passes through: the id in
-    /// the call is checked against the binding before anything runs, so a
-    /// workspace in another project is refused rather than acted on.
+    /// business. The one gate every workspace tool passes through, on every
+    /// surface that has them: the id in the call is checked against the caller's
+    /// binding before anything runs, so a workspace in another project is
+    /// refused rather than acted on.
     pub(super) fn project_agent_workspace(
         &self,
         owner_id: &str,

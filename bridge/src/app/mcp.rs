@@ -353,13 +353,16 @@ impl AppState {
         }
     }
 
-    /// The project surface's tools, each a thin wrapper over the verb the
-    /// client calls. `None` is "not one of mine", which is every action the
-    /// coding and router surfaces answer.
+    /// The project-scoped tools, each a thin wrapper over the verb the client
+    /// calls. `None` is "not one of mine", which is every conversation tool and
+    /// everything the router surface answers.
     ///
-    /// Which project is read or written comes from the agent's owner binding
+    /// Not the project agent's alone: an agent working in a checkout carries
+    /// most of these too, and reaches the same handlers. Which project is read
+    /// or written comes from the CALLING agent's own binding — a project
+    /// conversation for the project agent, its run for an agent in a checkout —
     /// and never from a tool argument, so none of these carries a project id.
-    fn project_surface_action(
+    fn project_scoped_action(
         &mut self,
         entity_id: &str,
         agent_id: &str,
@@ -482,7 +485,7 @@ impl AppState {
             };
             return self.agent_message_agent(sender, target, body);
         }
-        if let Some(answered) = self.project_surface_action(entity_id, agent_id, &action) {
+        if let Some(answered) = self.project_scoped_action(entity_id, agent_id, &action) {
             return answered;
         }
         if let BridgeAction::ReadOperationMessages { operation_id } = &action {

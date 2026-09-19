@@ -180,7 +180,7 @@ fn a_project_agent_is_refused_a_workspace_outside_its_project() {
 
 /// The socket enforces the surface on the frames themselves: a project agent
 /// cannot write its way onto the router's surface, and a coding agent cannot
-/// write its way onto the project's.
+/// write its way onto the two verbs that stay the project agent's.
 #[test]
 fn a_project_session_reaches_no_other_surfaces_tools() {
     let (_home, repo) = init_repo();
@@ -214,11 +214,16 @@ fn a_project_session_reaches_no_other_surfaces_tools() {
         .on_agent_mcp_action(
             &workspace_owner,
             &coding_agent,
-            BridgeAction::ListWorkspaces,
+            BridgeAction::AddProjectSource {
+                path: Some("/tmp/elsewhere".to_string()),
+                remote: None,
+                name: None,
+                base_branch: None,
+            },
         )
         .unwrap_err();
     assert!(
-        reaching_in.contains("list_workspaces")
+        reaching_in.contains("add_project_source")
             && reaching_in.contains("project tool")
             && reaching_in.contains("coding surface"),
         "{reaching_in}"
@@ -275,7 +280,187 @@ fn a_project_agents_cold_prompt_is_its_own_and_not_a_coding_agents() {
     let coding_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
     let coding = state.cold_prompt_with_catch_up(&workspace_owner, &coding_agent, &cold);
     assert!(coding.contains("Build conversation protocol"), "{coding}");
-    assert!(!coding.contains("list_workspaces"), "{coding}");
+    assert!(
+        !coding.contains("agent for the project"),
+        "the project agent's own prompt is not a coding agent's: {coding}"
+    );
+}
+
+/// An agent working in a checkout is bound to a project too — the one its run
+/// stands in — so the workspace tools are its as well, scoped by that binding
+/// and by nothing the call says.
+///
+/// This is the whole of what commit 2 promised: it reads and cuts workspaces in
+/// its own project, a workspace of another project is refused exactly as it is
+/// for the project agent, and the two verbs that change what a project is made
+/// of are not on its surface at all.
+#[test]
+fn a_coding_agent_works_the_workspaces_of_its_own_project_and_no_others() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let (_other_home, other_repo) = init_repo();
+    let other_repo = std::fs::canonicalize(&other_repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let mine = added_project(&mut state, &repo);
+    let theirs = added_project(&mut state, &other_repo);
+    let standing_on = workspace(&mut state, &mine, "one");
+    let elsewhere = workspace(&mut state, &theirs, "theirs");
+
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": standing_on }),
+    ));
+    let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+    let coding_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    assert!(
+        !crate::agent::is_project_agent(&coding_agent),
+        "{coding_agent}"
+    );
+    assert_eq!(
+        crate::mcp::McpSurface::for_owner(&coding_agent),
+        crate::mcp::McpSurface::Coding
+    );
+
+    // It reads its own project's workspaces, naming no project — there is
+    // nowhere in the call for one to come from.
+    let listed = state
+        .on_agent_mcp_action(&run_id, &coding_agent, BridgeAction::ListWorkspaces)
+        .expect("a coding agent reads the workspaces of the project it stands in");
+    let ids: Vec<&str> = listed["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["workspace_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&standing_on.as_str()), "{listed:?}");
+    assert!(
+        !ids.contains(&elsewhere.as_str()),
+        "the other project's workspace is not in its list: {listed:?}"
+    );
+
+    // And cuts one there, through the same verb the project agent's tool calls.
+    let created = state
+        .agent_action(
+            &run_id,
+            &coding_agent,
+            BridgeAction::CreateWorkspace {
+                name: "the other half".to_string(),
+                isolation: Some("worktree".to_string()),
+            },
+        )
+        .expect("a coding agent cuts a workspace in its own project");
+    let cut = created["workspace_id"].as_str().unwrap().to_string();
+    let ours = state.handle(req("workspace.list", json!({ "project_id": mine })));
+    let names: Vec<&str> = ours["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"the other half"), "{ours:?}");
+    let not_theirs = state.handle(req("workspace.list", json!({ "project_id": theirs })));
+    let their_ids: Vec<&str> = not_theirs["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workspace| workspace["workspace_id"].as_str().unwrap())
+        .collect();
+    assert!(!their_ids.contains(&cut.as_str()), "{not_theirs:?}");
+
+    // Every workspace argument is checked against that binding, read or write,
+    // the same way and with the same words the project agent is refused with.
+    for action in [
+        BridgeAction::ListWorkspaceAgents {
+            workspace_id: elsewhere.clone(),
+        },
+        BridgeAction::DeleteWorkspace {
+            workspace_id: elsewhere.clone(),
+        },
+        BridgeAction::AddWorkspaceAgent {
+            workspace_id: elsewhere.clone(),
+            harness: None,
+            model: None,
+            effort: None,
+        },
+        BridgeAction::MessageWorkspaceAgent {
+            workspace_id: elsewhere.clone(),
+            agent_id: None,
+            body: "start on the rail".to_string(),
+        },
+        BridgeAction::AddWorkspaceDirectory {
+            workspace_id: elsewhere.clone(),
+            source_id: None,
+            path: Some("/tmp".to_string()),
+            remote: None,
+            name: None,
+        },
+    ] {
+        let tool = action.tool_name();
+        let refused = state
+            .agent_action(&run_id, &coding_agent, action)
+            .unwrap_err();
+        assert!(
+            refused.contains(&elsewhere) && refused.contains(&mine),
+            "{tool}: {refused}"
+        );
+    }
+    let still_theirs = state.handle(req("workspace.list", json!({ "project_id": theirs })));
+    assert_eq!(
+        still_theirs["result"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "nothing was done to the other project: {still_theirs:?}"
+    );
+
+    // What stays the project agent's: the folders the NEXT workspace is cut
+    // from. Refused on the frame, and never advertised in the first place.
+    let refused = state
+        .on_agent_mcp_action(
+            &run_id,
+            &coding_agent,
+            BridgeAction::AddProjectSource {
+                path: Some(other_repo.display().to_string()),
+                remote: None,
+                name: None,
+                base_branch: None,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        refused.contains("add_project_source")
+            && refused.contains("project tool")
+            && refused.contains("coding surface"),
+        "{refused}"
+    );
+
+    let coding_tools = crate::mcp::DoneServer::tool_names_of(crate::mcp::McpSurface::Coding);
+    for workspace_tool in [
+        "list_workspaces",
+        "list_workspace_agents",
+        "create_workspace",
+        "delete_workspace",
+        "add_workspace_directory",
+        "remove_workspace_directory",
+        "add_workspace_agent",
+        "remove_workspace_agent",
+        "message_workspace_agent",
+    ] {
+        assert!(
+            coding_tools.contains(&workspace_tool.to_string()),
+            "{workspace_tool} missing from the coding surface: {coding_tools:?}"
+        );
+    }
+    for project_only in ["add_project_source", "remove_project_source"] {
+        assert!(
+            !coding_tools.contains(&project_only.to_string()),
+            "{project_only} is the project agent's alone: {coding_tools:?}"
+        );
+    }
 }
 
 /// A project agent's message reaches its own conversation, which is what makes

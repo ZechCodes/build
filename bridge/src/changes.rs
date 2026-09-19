@@ -723,11 +723,10 @@ impl Subscription {
         if self.spec.scope != Scope::All || !due.contains_key(BOARD_ITEM_ID) {
             return Vec::new();
         }
-        let departed = match self.covered_last.replace(covered.clone()) {
+        match self.covered_last.replace(covered.clone()) {
             Some(before) => before.difference(covered).cloned().collect(),
             None => Vec::new(),
-        };
-        departed
+        }
     }
 
     fn held_by_settle(&self, entity_id: &str, now: Instant) -> bool {

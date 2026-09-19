@@ -15,11 +15,11 @@ const freshFactory = () => {
   globalThis.IDBKeyRange = IDBKeyRange;
 };
 
-/** A database in the v1 format, holding one record, closed again — what a
- *  browser that ran the previous build has on disk. */
-const seedVersionOne = (key, record) =>
+/** A database in an earlier format, holding one record, closed again — what a
+ *  browser that ran a previous build has on disk. */
+const seedVersion = (version, key, record) =>
   new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(DB_NAME, version);
     request.onupgradeneeded = () => request.result.createObjectStore(STORE);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
@@ -136,16 +136,24 @@ describe("a write that fails", () => {
 });
 
 describe("the format version", () => {
-  it("clears a database the previous format wrote, rather than reading its shapes", async () => {
-    vi.resetModules();
-    freshFactory();
-    await seedVersionOne("dev-1|run-1|status|", { at: 1, value: { head: "from v1" } });
-    const upgraded = await import("../src/core/localCache.js");
-    expect(await upgraded.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).toBeUndefined();
-    // And the store is usable afterwards: a cold start, not a broken cache.
-    await upgraded.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "v2" });
-    expect((await upgraded.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.head).toBe("v2");
-  });
+  // v2 is as stale as v1 here: it has the records but not the write-time
+  // index the lifetime sweeps walk, and a store missing an index a reader
+  // asks for would stand the cache down for good.
+  for (const version of [1, 2]) {
+    it(`clears a database v${version} wrote, rather than reading its shapes`, async () => {
+      vi.resetModules();
+      freshFactory();
+      await seedVersion(version, "dev-1|run-1|status|", { at: 1, value: { head: `from v${version}` } });
+      const upgraded = await import("../src/core/localCache.js");
+      expect(await upgraded.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).toBeUndefined();
+      // And the store is usable afterwards: a cold start, not a broken cache.
+      await upgraded.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "now" });
+      expect((await upgraded.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.head).toBe("now");
+      // Including the sweeps, which need the index the old format lacks.
+      expect(await upgraded.cachedAddressesWrittenBefore({ deviceId: "dev-1", entityId: "run-1" }, Date.now() + 1))
+        .toEqual([{ deviceId: "dev-1", entityId: "run-1", kind: "status", sub: "" }]);
+    });
+  }
 });
 
 describe("readCachedMany", () => {

@@ -18,11 +18,20 @@
 // The store is read directly, and every writer announces what it changed.
 
 const DB_NAME = "build-cache";
-// v2: the cache-first client's shapes. A format change is a cold start by
-// design — the records a previous version wrote are not this version's shapes,
-// and one sync pass refills what the reader is looking at.
-const DB_VERSION = 2;
+// v3: the cache-first client's shapes, and the write-time index the lifetime
+// rules sweep. A format change is a cold start by design — the records a
+// previous version wrote are not this version's shapes, and one sync pass
+// refills what the reader is looking at.
+const DB_VERSION = 3;
 const STORE = "records";
+
+/** The index on each record's write time. It exists so "how old is what this
+ *  workspace holds" can be answered from index keys alone: a key cursor
+ *  yields (`at`, record key) pairs and never the record, and a workspace's
+ *  records are where the megabytes are — file bodies, patches, a
+ *  working-tree diff. Reading those to look at a timestamp would clone tens
+ *  of megabytes onto the main thread and discard every byte. */
+const AT_INDEX = "at";
 
 /** After the first failure the cache stands down for the session: a cache that
  *  errors on every call is worse than none, and nothing above this module is
@@ -46,7 +55,7 @@ function openDb() {
     request.onupgradeneeded = () => {
       const db = request.result;
       if (db.objectStoreNames.contains(STORE)) db.deleteObjectStore(STORE);
-      db.createObjectStore(STORE);
+      db.createObjectStore(STORE).createIndex(AT_INDEX, "at");
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => {
@@ -280,9 +289,38 @@ export async function cachedSubKeys(deviceId, entityId, kind) {
   return keys.map((key) => decodeURIComponent(String(key).slice(prefix.length)));
 }
 
+/** Every address under a prefix — record keys only, so nothing a workspace
+ *  holds is deserialized to list what it holds. */
+export async function cachedAddresses(prefixAddress) {
+  const prefix = `${keyOfParts(addressParts(prefixAddress))}|`;
+  const keys = (await inStore("readonly", (store) => store.getAllKeys(prefixRange(prefix)))) || [];
+  return keys.map((key) => addressOfParts(partsOfKey(key)));
+}
+
+/** Every address under a prefix last written before a moment, oldest first —
+ *  what the expiry sweep drops. Walked over the write-time index's keys and
+ *  bounded to the stale end of it, so a sweep reads neither the bodies it is
+ *  dropping nor the ones it is keeping. */
+export async function cachedAddressesWrittenBefore(prefixAddress, writtenBefore) {
+  const prefix = `${keyOfParts(addressParts(prefixAddress))}|`;
+  const stale = [];
+  await inStore("readonly", (store) => {
+    const walk = store.index(AT_INDEX).openKeyCursor(IDBKeyRange.upperBound(writtenBefore, true));
+    walk.onsuccess = () => {
+      const cursor = walk.result;
+      if (!cursor) return;
+      const key = String(cursor.primaryKey);
+      if (key.startsWith(prefix)) stale.push(addressOfParts(partsOfKey(key)));
+      cursor.continue();
+    };
+    return null;
+  });
+  return stale;
+}
+
 /** Every record under an address prefix: its full address, when it was
- *  written, and its value — what the lifetime rules read to decide what has
- *  aged out and what a workspace is holding too much of. */
+ *  written, and its value. For the one reader whose question is about the
+ *  value itself — everything that only wants addresses or ages asks above. */
 export async function cachedRecords(prefixAddress) {
   const prefix = `${keyOfParts(addressParts(prefixAddress))}|`;
   const range = prefixRange(prefix);

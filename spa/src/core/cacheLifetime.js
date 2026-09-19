@@ -14,7 +14,7 @@
 // inbox until the feed stops naming it. Nothing here decides which workspaces
 // are active or recent — the caller knows that, and calls accordingly.
 
-import { cachedRecords, deleteCached } from "./localCache.js";
+import { cachedAddresses, cachedAddressesWrittenBefore, cachedRecords, deleteCached } from "./localCache.js";
 
 export const WORKSPACE_DATA_TTL_MS = 72 * 60 * 60 * 1000;
 
@@ -30,27 +30,31 @@ const KEPT_KINDS = new Set(["row"]);
 
 export const isWorkspaceDataKind = (kind) => !KEPT_KINDS.has(kind);
 
-const workspaceData = async (deviceId, entityId) =>
-  (await cachedRecords({ deviceId, entityId })).filter((record) => isWorkspaceDataKind(record.address.kind));
+const workspaceData = (addresses) => addresses.filter((address) => isWorkspaceDataKind(address.kind));
 
-/** Drop what this workspace holds, and answer the addresses dropped. */
-const drop = async (records) => {
-  const addresses = records.map((record) => record.address);
+/** Drop these addresses, and answer them. */
+const drop = async (addresses) => {
   await deleteCached(addresses);
   return addresses;
 };
 
 /** Age out one recent workspace's data: everything last written more than the
- *  TTL ago. Called for a workspace the board still lists but nobody is on. */
+ *  TTL ago. Called for a workspace the board still lists but nobody is on.
+ *
+ *  The read and the delete are two transactions, so a record rewritten in
+ *  between is dropped on the age it had when the sweep started. That costs
+ *  the reader a cold read of something just synced, which the next sync pass
+ *  refills — the other way round, holding a readwrite transaction open over
+ *  the whole sweep, would block the writers this cache exists to serve. */
 export async function expireWorkspaceData(deviceId, entityId, now = Date.now()) {
-  const records = await workspaceData(deviceId, entityId);
-  return drop(records.filter((record) => now - record.at > WORKSPACE_DATA_TTL_MS));
+  const stale = await cachedAddressesWrittenBefore({ deviceId, entityId }, now - WORKSPACE_DATA_TTL_MS);
+  return drop(workspaceData(stale));
 }
 
 /** Let go of one workspace's data at once — it is done, or deleted. The feed
  *  row stays: the board is what removes a row. */
 export async function evictWorkspaceData(deviceId, entityId) {
-  return drop(await workspaceData(deviceId, entityId));
+  return drop(workspaceData(await cachedAddresses({ deviceId, entityId })));
 }
 
 /** When a file body was last opened — the writer stamps it; a record written
@@ -64,5 +68,5 @@ export async function trimRecentFiles(deviceId, entityId) {
   const files = await cachedRecords({ deviceId, entityId, kind: FILE_RECORD_KIND });
   if (files.length <= RECENT_FILES) return [];
   const newestFirst = [...files].sort((one, other) => openedAt(other) - openedAt(one));
-  return drop(newestFirst.slice(RECENT_FILES));
+  return drop(newestFirst.slice(RECENT_FILES).map((record) => record.address));
 }

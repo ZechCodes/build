@@ -110,6 +110,50 @@ describe("done and deleted", () => {
   });
 });
 
+describe("what a sweep reads", () => {
+  /** Watch the ways a record body can leave the store. `getAll`, `get` and a
+   *  value cursor each deserialize one; `getAllKeys` and an index key cursor
+   *  do not. The spies sit on the store's prototype, so they see every
+   *  transaction the module opens. */
+  const watchBodyReads = async () => {
+    await cache.readCached(address("ws-1", "status")); // the module opens its connection
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("build-cache");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const prototype = Object.getPrototypeOf(db.transaction("records", "readonly").objectStore("records"));
+    db.close();
+    const read = [];
+    const spies = ["get", "getAll", "openCursor"].map((method) => {
+      const original = prototype[method];
+      return vi.spyOn(prototype, method).mockImplementation(function spy(...args) {
+        read.push(method);
+        return original.apply(this, args);
+      });
+    });
+    return { read, stop: () => spies.forEach((spy) => spy.mockRestore()) };
+  };
+
+  it("never deserializes a record body to decide what has aged out or must go", async () => {
+    // A workspace holds up to five file bodies of 1 MB, a 256 KB working-tree
+    // diff and twenty patches. A sweep that read them would structured-clone
+    // tens of megabytes onto the main thread and throw all of it away — on
+    // boot and on tab return, the two frames this plan exists to protect.
+    await writeAt(address("ws-1", "file", "src/big.js"), { content: "x".repeat(64) }, NOW - 100 * HOUR);
+    await writeAt(address("ws-1", "status"), {}, NOW);
+    const watch = await watchBodyReads();
+
+    await lifetime.expireWorkspaceData("dev-1", "ws-1", NOW);
+    await lifetime.evictWorkspaceData("dev-1", "ws-1");
+
+    watch.stop();
+    expect(watch.read).toEqual([]);
+    expect(await held(address("ws-1", "file", "src/big.js"))).toBe(false);
+    expect(await held(address("ws-1", "status"))).toBe(false);
+  });
+});
+
 describe("the recent files", () => {
   it("keeps 5", () => {
     expect(lifetime.RECENT_FILES).toBe(5);

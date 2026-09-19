@@ -106,6 +106,10 @@ export function renderArchive(options = {}) {
   // cache-first brief and holds no records of its own, so this is the whole of
   // what wakes it — and a re-read that lands the same history repaints nothing
   // (`draw` above).
-  unwatch = subscribeBoardWrites(() => void load());
+  //
+  // The read itself is handed over rather than fired and forgotten: a pass
+  // writes a board and every row on it, and what keeps that from being a read
+  // per row is the wake knowing when this one is still out (core/feedRows.js).
+  unwatch = subscribeBoardWrites(load);
   if (!options.registerDispose) App.poll = { dispose };
 }

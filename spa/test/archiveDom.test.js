@@ -17,6 +17,14 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
+// The page reads at most once a frame and never while its last read is still
+// out (core/feedRows.js), so what follows a write here is frames rather than
+// turns.
+const frame = () => new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)));
+const settle = async () => {
+  for (let turn = 0; turn < 3; turn += 1) await frame();
+};
+
 // The account's archive spans the account: every machine is asked what it
 // filed away, and the rows come back in one list, newest first, each carrying
 // the machine that answered for it.
@@ -65,11 +73,33 @@ let resetDeviceContexts;
 // What each machine says it has filed away, as the test writes it.
 let filed;
 
-const answering = (deviceId) => ({
-  deviceId,
-  close: () => {},
-  call: vi.fn(async (method) => (method === "archived.list" ? { items: filed[deviceId] } : {})),
-});
+// The sessions this suite adopted, by machine, so a test can count what one
+// of them was asked.
+let sessions;
+
+// While this holds a promise, every machine's archive read waits on it — the
+// suite's way of standing a read up on the wire and leaving it there.
+let answerGate;
+
+const answering = (deviceId) => {
+  const session = {
+    deviceId,
+    close: () => {},
+    call: vi.fn(async (method) => {
+      if (method !== "archived.list") return {};
+      if (answerGate) await answerGate;
+      return { items: filed[deviceId] };
+    }),
+  };
+  sessions[deviceId] = session;
+  return session;
+};
+
+/** How many times the machines were asked for their archive, across them. */
+const archiveReads = () =>
+  Object.values(sessions)
+    .map((session) => session.call.mock.calls.filter(([method]) => method === "archived.list").length)
+    .reduce((total, count) => total + count, 0);
 
 beforeEach(async () => {
   vi.resetModules();
@@ -84,6 +114,8 @@ beforeEach(async () => {
     { id: "dev-2", name: "laptop", status: "online" },
   ];
   filed = { "dev-1": [workspaceItem, issueItem], "dev-2": [branchItem] };
+  sessions = {};
+  answerGate = null;
   adoptDeviceSession(answering("dev-1"));
   adoptDeviceSession(answering("dev-2"));
 });
@@ -202,7 +234,7 @@ describe("the account archive page", () => {
     const record = document.querySelector(".archive-record");
 
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
-    for (let index = 0; index < 20; index += 1) await flush();
+    await settle();
 
     expect(rows()[2], "the rows were rebuilt by a read that changed nothing").toBe(row);
     expect(document.querySelector(".archive-record")).toBe(record);
@@ -218,7 +250,7 @@ describe("the account archive page", () => {
     // A pass wrote that machine's board. Nothing here polls; the announcement
     // behind that write is what says the archive may have moved.
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
-    for (let index = 0; index < 20; index += 1) await flush();
+    await settle();
 
     expect(rows()).toHaveLength(2);
   });
@@ -238,9 +270,57 @@ describe("the account archive page", () => {
       { deviceId: "dev-1", entityId: "workspace-1", kind: "row" },
       { ...workspaceItem, state: "finished" },
     );
-    for (let index = 0; index < 20; index += 1) await flush();
+    await settle();
 
     expect(rows()).toHaveLength(2);
+  });
+
+  // A pass writes a machine's board and then every row on it, each write its
+  // own announcement. A page that read on each of them would ask every machine
+  // on the account for its whole archive a dozen times over for one pass.
+  it("reads each machine once for a pass that writes a board and every row on it", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    await renderAccount();
+    await flush();
+    const before = archiveReads();
+
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
+    for (const entityId of ["run-1", "run-2", "run-3", "run-4", "run-5"]) {
+      await writeCached({ deviceId: "dev-1", entityId, kind: "row" }, { entityId });
+    }
+    await settle();
+
+    expect(archiveReads() - before).toBe(App.devices.length);
+  });
+
+  // Rows keep landing while the account's machines are still answering the
+  // last read. Reading again per row would put a read per machine per row on
+  // the wire, all of them answering the same history.
+  it("does not read again while its last read is still out on the wire", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    await renderAccount();
+    await settle();
+    const before = archiveReads();
+    const perRead = App.devices.length;
+
+    let answer;
+    answerGate = new Promise((done) => {
+      answer = done;
+    });
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
+    await settle();
+    expect(archiveReads() - before, "the board write put one read on the wire").toBe(perRead);
+
+    for (const entityId of ["run-1", "run-2", "run-3"]) {
+      await writeCached({ deviceId: "dev-1", entityId, kind: "row" }, { entityId });
+    }
+    await settle();
+    expect(archiveReads() - before, "nothing joined the read that was already out").toBe(perRead);
+
+    answerGate = null;
+    answer();
+    await settle();
+    expect(archiveReads() - before, "what landed under it is one further read").toBe(perRead * 2);
   });
 
   it("keeps the machines that did answer when one of them will not", async () => {

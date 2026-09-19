@@ -28,7 +28,10 @@ export function renderCaptureDecision() {
   // actually is. Captures were not in the cache-first brief and carry no
   // record of their own, so this is the whole of what wakes the page. If it
   // proves too little it is a follow-up here, not a poll back.
-  const unwatch = subscribeBoardWrites(() => void surface.load());
+  // The read is handed over rather than fired and forgotten: what keeps a
+  // pass's dozen row writes from being a dozen reads is the wake knowing when
+  // this one is still out (core/feedRows.js).
+  const unwatch = subscribeBoardWrites(() => surface.load());
   App.poll = { dispose: unwatch };
   App.viewDispose = () => {
     unwatch();

@@ -20,11 +20,68 @@ import { deviceFeedHeld, deviceFeedView } from "./deviceContexts.js";
  *  the last pass's answer while the row they are about has already moved. */
 const BOARD_WRITES = new Set(["feed", "row"]);
 
-/** Hear every write that can move a machine's board. Returns unsubscribe. */
-export const subscribeBoardWrites = (read) =>
-  subscribeCache({}, (address) => {
-    if (BOARD_WRITES.has(address.kind)) read();
+/** The next frame, or the next turn where there are no frames to wait for —
+ *  a test environment, a worker. A hidden tab is given no frames until it
+ *  comes back, which is exactly when a page nobody is looking at needs to have
+ *  read again. */
+const nextFrame = (run) =>
+  typeof requestAnimationFrame === "function" ? requestAnimationFrame(run) : setTimeout(run, 0);
+
+/**
+ * A read that runs at most once a frame and at most one deep.
+ *
+ * A pass writes the board record and then every row on it, each write its own
+ * announcement — so a page reading on each of them reads a dozen times for one
+ * pass, and every read is a round trip per machine. Two rules make that one
+ * read: every announcement in a frame is one wake, and a read already in
+ * flight is not joined but noted, so whatever landed under it is one further
+ * read once it lands rather than one per write.
+ *
+ * The trailing read is what keeps this from dropping news: a write that
+ * arrives mid-read may be exactly the row the read will not carry.
+ */
+function readOnceAFrame(read) {
+  let framed = false; // a frame is queued
+  let running = false; // a read is out
+  let again = false; // something landed under it
+
+  const wake = () => {
+    if (running) {
+      again = true;
+      return;
+    }
+    if (framed) return;
+    framed = true;
+    nextFrame(start);
+  };
+
+  const done = () => {
+    running = false;
+    if (!again) return;
+    again = false;
+    wake();
+  };
+
+  const start = () => {
+    framed = false;
+    running = true;
+    // Through a promise, so a `read` that throws where it stands is the same
+    // as one whose promise rejects: either way the page is left able to read
+    // again rather than stuck reporting a read that is for ever in flight.
+    Promise.resolve().then(read).then(done, done);
+  };
+
+  return wake;
+}
+
+/** Hear every write that can move a machine's board, coalesced. Returns
+ *  unsubscribe. */
+export function subscribeBoardWrites(read) {
+  const wake = readOnceAFrame(read);
+  return subscribeCache({}, (address) => {
+    if (BOARD_WRITES.has(address.kind)) wake();
   });
+}
 
 /** One machine's slice of the feed as it stands right now, or null while the
  *  feed holds nothing FOR THAT MACHINE — it has nothing to replay at all, or

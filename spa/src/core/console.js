@@ -36,7 +36,7 @@ import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { terminalManager } from "../terminal/manager.js";
 import { branchRowIn } from "./feedRows.js";
-import { cachedFeedView } from "./cachedRows.js";
+import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
 import { routedEntityId } from "./inbox.js";
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
@@ -203,6 +203,7 @@ export function mountConsole(host, context) {
   let disposed = false;
   let unwatchCache = null;
   let watchedEntity; // the entity the cache watch is pointed at
+  let place = null; // where this console stands, re-read only when a row moves
 
   /** Do this again once the terminal socket is back. Only one wait at a time:
    *  the list and the pane are steps of the same mount, so the later one
@@ -240,6 +241,15 @@ export function mountConsole(host, context) {
     return { entityId: routedEntityId(consoleFeedRoute(context), view), scope: consoleScope(context, row) };
   };
 
+  /** Whether a record that moved is one the place is read off. Resolving the
+   *  place walks every row the device holds, and one sync pass writes a dozen
+   *  records under this entity — a status, a log, a thread, this console's own
+   *  two — none of which can move where this console stands. Only the rows and
+   *  the two lists a route is named by can, and an announcement that does not
+   *  say what moved is taken as one that could. */
+  const movesPlace = (changed) =>
+    !changed?.kind || changed.kind === ROW_RECORD_KIND || changed.kind === "projects" || changed.kind === "workspaces";
+
   const pickSelected = () => {
     const ids = terms.ids();
     selected = (wantedHere && ids.includes(wantedHere) ? wantedHere : null) || (ids.includes(selected) ? selected : ids[0]) || null;
@@ -265,7 +275,7 @@ export function mountConsole(host, context) {
     if (!address) return;
     watchedEntity = at;
     unwatchCache?.();
-    unwatchCache = subscribeCache(address, () => void takeUpCache());
+    unwatchCache = subscribeCache(address, (changed) => void takeUpCache(changed));
   };
 
   const standOnScope = (liveScope) => {
@@ -296,8 +306,8 @@ export function mountConsole(host, context) {
 
   /** Read what the cache says and paint it: the checkout, the tab strip, and
    *  the tab this console was left on. */
-  const readCacheOnce = async () => {
-    const place = await readPlace();
+  const readCacheOnce = async (placeMoved) => {
+    if (!place || placeMoved) place = await readPlace();
     if (disposed) return;
     entityId = place.entityId;
     unresolved = !place.scope;
@@ -372,7 +382,9 @@ export function mountConsole(host, context) {
   // burst, and resolving the route walks every row the device holds.
   let reading = null;
   let readAgain = false;
-  const takeUpCache = () => {
+  let placeMoved = false; // a row or a list moved since the place was last read
+  const takeUpCache = (changed) => {
+    if (movesPlace(changed)) placeMoved = true;
     if (reading) {
       readAgain = true;
       return reading;
@@ -380,7 +392,9 @@ export function mountConsole(host, context) {
     reading = (async () => {
       do {
         readAgain = false;
-        await readCacheOnce();
+        const moved = placeMoved;
+        placeMoved = false;
+        await readCacheOnce(moved);
       } while (readAgain && !disposed);
     })().finally(() => {
       reading = null;

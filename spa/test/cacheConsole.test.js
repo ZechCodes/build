@@ -35,6 +35,20 @@ vi.mock("../src/terminal/manager.js", () => ({
   resetTerminalManager: () => {},
   provideTerminalSessions: () => {},
 }));
+// Every read of the device's board, counted: resolving where the console
+// stands walks every row the device holds, and one sync pass announces a dozen
+// records under its entity.
+const board = vi.hoisted(() => ({ reads: 0 }));
+vi.mock("../src/core/cachedRows.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    cachedFeedView: (...args) => {
+      board.reads += 1;
+      return actual.cachedFeedView(...args);
+    },
+  };
+});
 vi.mock("../src/terminal/pane.js", () => ({
   mountTerminalPane: async (host, opts) => {
     await opts.attach({ cols: 80, rows: 24, onSnapshot: () => {}, onOutput: () => {}, onClosed: () => {} });
@@ -135,6 +149,24 @@ describe("the tab strip", () => {
     await flush();
 
     expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
+  });
+
+  it("walks the board again when a row moves, and for nothing else under it", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }] });
+    await mountAndOpen();
+    const walked = board.reads;
+
+    // A sync pass writes a status, a log and a thread under this entity. None
+    // of them can move where the console stands.
+    await writeCached({ deviceId: "dev-1", entityId: "run-3", kind: "status" }, { branch: "main" });
+    await writeCached({ deviceId: "dev-1", entityId: "run-3", kind: "log" }, { commits: [] });
+    await flush();
+    expect(board.reads).toBe(walked);
+
+    // The row itself is another matter: it is what the place is read off.
+    await writeCached({ deviceId: "dev-1", entityId: "run-3", kind: "row" }, branchRow("dev-1"));
+    await flush();
+    expect(board.reads).toBeGreaterThan(walked);
   });
 
   it("drops a tab the push stopped naming", async () => {

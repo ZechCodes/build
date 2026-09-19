@@ -760,8 +760,10 @@ describe("the board item", () => {
     expect(await read("run-1", "status")).toBeTruthy();
     await deliver([{ entity_id: "board", state: { revision: 4, removed: ["run-1"] } }]);
     expect(await read("run-1", "status")).toBeUndefined();
-    // The row is the board's to remove; the next pass finds it unnamed.
-    expect(await read("run-1", "row")).toBeTruthy();
+    // The row goes with it. The board item is the board removing the row, and
+    // a rail painting one whose entity is gone offers verbs against nothing.
+    expect(await read("run-1", "row")).toBeUndefined();
+    expect((await read("", "feed")).value.items).toEqual([]);
   });
 
   it("writes the lists it carries, stamped with the device that sent them", async () => {

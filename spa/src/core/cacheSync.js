@@ -31,7 +31,7 @@ import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
-import { liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
+import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { mergeActivityDigests } from "./activityDigest.js";
 import { THREAD_RECORD_KIND, mergeThreadItems, windowFromThreadPayload } from "./thread.js";
 import {
@@ -813,13 +813,10 @@ async function applyItem(context, item) {
 
 /** The board item: which entities left the board, and the two lists when they
  *  moved. An entity that finished, was deleted, or was cleared away appears in
- *  `removed`, and its data goes at once — the row stays until the next pass
- *  finds the board no longer naming it. */
+ *  `removed`, and everything it had goes at once — its data and its row. */
 async function applyBoard(context, state) {
-  for (const entityId of state.removed || []) {
-    if (!context.active()) return;
-    await evictWorkspaceData(context.deviceId, String(entityId));
-  }
+  const removed = (state.removed || []).map((entityId) => String(entityId)).filter(Boolean);
+  if (removed.length) await dropRemovedRows(context, removed);
   if (state.projects) {
     await writeCached(
       addressOf(context, "", "projects"),
@@ -836,6 +833,46 @@ async function applyBoard(context, state) {
       state.workspaces.map((workspace) => stampWorkspace(workspace, context.deviceId, summaries)),
     );
   }
+}
+
+/** The `feed` record's own collections: the board's five. The project and
+ *  workspace lists ride the same item and are written whole. */
+const BOARD_COLLECTIONS = FEED_COLLECTIONS.filter((field) => field !== "projects" && field !== "workspaces");
+
+/**
+ * The rows the board item says left, out of both halves of the rail.
+ *
+ * The rail is the `feed` record's list with each row's own record laid over it
+ * (core/taskFeed.js), so a row survives until BOTH are gone. A row whose work
+ * finished rides its own `state` item and is filtered by what that says; a row
+ * that was DELETED — a branch removed from another machine, a workspace thrown
+ * away — has no state to report and is named here and nowhere else. Dropping
+ * only its data would leave the rail painting a row whose Done and Clear act
+ * on something that is not there.
+ *
+ * The list first, then the entities under it: every write is announced and the
+ * rail re-reads on the announcement, so evicting first would send it to a feed
+ * that still names the row and paint it again between the two halves of its
+ * own removal.
+ */
+async function dropRemovedRows(context, removed) {
+  const gone = new Set(removed);
+  const held = await heldValue(context, "", "feed");
+  if (held) await writeCached(addressOf(context, "", "feed"), withoutEntities(held, gone));
+  for (const entityId of removed) {
+    if (!context.active()) return;
+    await evictEntity(context.deviceId, entityId);
+  }
+}
+
+/** One device's snapshot with those entities taken out of every collection the
+ *  board fills. A row naming no entity is nobody's departure and stays. */
+function withoutEntities(view, gone) {
+  const pruned = { ...view };
+  for (const field of BOARD_COLLECTIONS) {
+    pruned[field] = (view[field] || []).filter((row) => !gone.has(entityIdOf(row)));
+  }
+  return pruned;
 }
 
 /** Whether a `state` item is a feed row at all.

@@ -138,6 +138,19 @@ describe("a flush arriving at the real subscriptions", () => {
     expect(await read("run-1", "status")).toBeUndefined();
   });
 
+  // The rail is the `feed` record's list with each row's own record laid over
+  // it (core/taskFeed.js), so a row survives in it until BOTH are gone. A
+  // branch deleted on another machine is named in `removed` and in no `state`
+  // item — there is no finished state to report for something that is not
+  // there — so the push is the only word this tab gets.
+  it("takes the row off the rail when the board item says the entity left", async () => {
+    await boot();
+    expect((await read("run-1", "row")).value).toBeTruthy();
+    await flush([{ entity_id: "board", state: { revision: 4, removed: ["run-1"] } }]);
+    expect(await read("run-1", "row")).toBeUndefined();
+    expect((await read("", "feed")).value.items).toEqual([]);
+  });
+
   it("applies it once, though all three subscriptions cover the workspace", async () => {
     await boot([branchItem()], BRANCH_ROUTE);
     bridge.call.mockClear();

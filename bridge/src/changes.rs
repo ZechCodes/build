@@ -1018,11 +1018,29 @@ fn state_payload(
         .and_then(|f| f.state.as_ref())
         .and_then(Value::as_object);
     for list in frame.lists.names() {
-        if let Some(value) = looked_up.and_then(|answer| answer.get(list)) {
+        if let Some(value) = answered_list(looked_up, list) {
             state.insert(list.into(), value.clone());
         }
     }
     Value::Object(state)
+}
+
+/// The list this lookup answered under `name`, when it answered one.
+///
+/// The board item's lists are arrays by contract. A key the lookup could not
+/// fill — and a key it filled with a null, which is what a failed
+/// `workspace.list` reads as — is not an answer: the client is left holding
+/// the list it has rather than handed something it cannot iterate.
+fn answered_list<'a>(answer: Option<&'a Map<String, Value>>, name: &str) -> Option<&'a Value> {
+    answer?.get(name).filter(|value| value.is_array())
+}
+
+/// Which of the lists a frame was owed its lookup did not answer with one.
+fn unanswered_lists(owed: BoardLists, answer: Option<&Map<String, Value>>) -> BoardLists {
+    BoardLists {
+        projects: owed.projects && answered_list(answer, "projects").is_none(),
+        workspaces: owed.workspaces && answered_list(answer, "workspaces").is_none(),
+    }
 }
 
 /// The paths that moved, and the worktree's top level as the lookup listed
@@ -1544,6 +1562,7 @@ impl ChangeBus {
             if frame.session.push(frame.payload(&by_entity, revision)) {
                 frames += 1;
                 self.stamp_thread_tips(frame, &by_entity);
+                self.rearm_unanswered_lists(frame, &by_entity);
             } else {
                 dead.push(frame.session.session_id().to_string());
             }
@@ -1552,6 +1571,35 @@ impl ChangeBus {
             self.unsubscribe(&session_id);
         }
         sent + frames
+    }
+
+    /// Put back what this frame was owed and could not carry.
+    ///
+    /// The latch is taken when the frame is built, BEFORE the lookup runs,
+    /// so a lookup that answered no list must leave the subscription still
+    /// knowing its client's cached list is stale. Nothing else would re-arm
+    /// it: the note that moved the list is long gone.
+    ///
+    /// Re-armed, not re-noted. A lookup that keeps failing would otherwise
+    /// pin the flusher at the coalesce window forever, sending a board item
+    /// a second that carries nothing. The list rides the next board item
+    /// instead, and every entity change notes one.
+    fn rearm_unanswered_lists(&self, frame: &DueFrame, facts: &BTreeMap<&str, &EntityFacts>) {
+        let answer = facts
+            .get(BOARD_ITEM_ID)
+            .and_then(|fact| fact.state.as_ref())
+            .and_then(Value::as_object);
+        let missing = unanswered_lists(frame.lists, answer);
+        if missing.is_empty() {
+            return;
+        }
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        if let Some(sub) = subscriptions
+            .iter_mut()
+            .find(|sub| sub.is(frame.session.session_id(), &frame.subscription_id))
+        {
+            sub.pending_lists.merge(missing);
+        }
     }
 
     /// Record the conversations this frame just carried, so the next one
@@ -3412,6 +3460,111 @@ mod subscriptions {
         assert_eq!(
             sent[0]["items"][0]["state"]["projects"], listed,
             "the batch tab is told the list moved too: {sent:?}"
+        );
+    }
+
+    /// A board item's lists, from a lookup that answers a different thing
+    /// each time it is asked. The first answer is the state a flush hits
+    /// when the lookup cannot do its job; the second is the ordinary one.
+    fn bus_answering_lists(first: Value, then: Value) -> Arc<ChangeBus> {
+        let asked = Arc::new(AtomicU64::new(0));
+        ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(move |requests: &[FactsRequest]| {
+                let answer = match asked.fetch_add(1, Ordering::SeqCst) {
+                    0 => first.clone(),
+                    _ => then.clone(),
+                };
+                requests
+                    .iter()
+                    .map(|request| EntityFacts {
+                        entity_id: request.entity_id.clone(),
+                        state: (!request.lists.is_empty()).then(|| answer.clone()),
+                        ..EntityFacts::default()
+                    })
+                    .collect()
+            }),
+        )
+    }
+
+    /// One `all`-scope subscription over the board, on a bus a test drives
+    /// by hand.
+    fn board_watcher(
+        bus: &Arc<ChangeBus>,
+    ) -> (
+        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+        String,
+    ) {
+        let (sender, rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::State].into_iter().collect(),
+                ..spec("s-all", Scope::All, Mode::Realtime, Priority::Foreground)
+            },
+        );
+        (rx, key)
+    }
+
+    /// The latch is taken when the frame is built, BEFORE the lookup runs.
+    /// A lookup that cannot answer — the state gone, the board fact missing
+    /// — would otherwise swallow the only news the client was going to get
+    /// that its cached list is stale, and nothing would re-arm it. The list
+    /// stays latched and rides the next board item instead.
+    #[tokio::test(start_paused = true)]
+    async fn a_list_the_lookup_could_not_answer_stays_latched() {
+        let listed = json!([{ "project_id": "proj-1" }]);
+        let bus = bus_answering_lists(json!({}), json!({ "projects": listed.clone() }));
+        let (mut rx, key) = board_watcher(&bus);
+
+        bus.note_board_lists(BoardLists::PROJECTS);
+        bus.flush();
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["state"],
+            json!({ "revision": 1 }),
+            "the lookup had nothing to carry"
+        );
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        // A row moved. No list was noted this time — the one carried here is
+        // the one the failed lookup owes.
+        bus.note_board();
+        bus.flush();
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["state"],
+            json!({ "revision": 2, "projects": listed })
+        );
+    }
+
+    /// A list answered with something that is not a list is not one. The
+    /// board item's `projects` and `workspaces` are arrays by contract, and
+    /// a null on the wire is a client's `for (const w of …)` throwing rather
+    /// than a client learning its cache is stale. The key is left off, and
+    /// the latch stays up for an answer that is a list.
+    #[tokio::test(start_paused = true)]
+    async fn a_list_answered_with_a_null_is_not_shipped_as_one() {
+        let listed = json!([{ "workspace_id": "ws-1" }]);
+        let bus = bus_answering_lists(
+            json!({ "workspaces": Value::Null }),
+            json!({ "workspaces": listed.clone() }),
+        );
+        let (mut rx, key) = board_watcher(&bus);
+
+        bus.note_board_lists(BoardLists::WORKSPACES);
+        bus.flush();
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["state"],
+            json!({ "revision": 1 }),
+            "a null is not the list the client was promised"
+        );
+
+        settle(DEFAULT_COALESCE_WINDOW).await;
+        bus.note_board();
+        bus.flush();
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["state"],
+            json!({ "revision": 2, "workspaces": listed })
         );
     }
 

@@ -342,10 +342,16 @@ impl AppState {
     ) -> BoardListFacts {
         BoardListFacts {
             projects: lists.projects.then(|| self.project_list_rows()),
-            workspaces: lists.workspaces.then(|| {
-                let listed = self.workspace_list(&json!({})).unwrap_or_default();
-                json!(listed["workspaces"])
-            }),
+            workspaces: lists
+                .workspaces
+                .then(|| self.workspace_list(&json!({})).ok())
+                .flatten()
+                .map(|listed| listed["workspaces"].clone())
+                // A list this could not read is left UNSAID rather than said
+                // to be null: the board item's lists are arrays by contract,
+                // and the bus keeps the subscription's latch up for a list
+                // nothing answered.
+                .filter(Value::is_array),
         }
     }
 

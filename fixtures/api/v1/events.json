@@ -93,7 +93,17 @@
             },
             "diff_bytes": 12345
           },
-          "files": { "paths": ["src/lib.rs", "src/app/rpc.rs"], "truncated": false },
+          "files": {
+            "paths": ["src/lib.rs", "src/app/rpc.rs"],
+            "truncated": false,
+            "root": {
+              "path": "",
+              "entries": [
+                { "name": "src", "kind": "dir" },
+                { "name": "Cargo.toml", "kind": "file", "size": 1841 }
+              ]
+            }
+          },
           "terminals": {
             "tabs": [
               {

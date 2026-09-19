@@ -376,6 +376,8 @@ pub struct FactsRequest {
     pub state: bool,
     /// The checkout's open tabs.
     pub terminals: bool,
+    /// The worktree's root listing.
+    pub files: bool,
     /// The last sequence already sent for each agent, so a thread item
     /// carries what was said after it. An agent named here is one some
     /// subscription has heard about; one that is not gets its tip alone.
@@ -433,6 +435,10 @@ pub struct EntityFacts {
     /// How big that diff's patch is. `None` when the diff could not be read
     /// at all, which leaves both fields off the item.
     pub diff_bytes: Option<u64>,
+    /// The worktree's top level, as `fs.tree` lists it for `path: ""`.
+    /// Deeper directories are re-listed by the client: the bridge cannot know
+    /// which ones a reader has walked into.
+    pub root_listing: Option<Value>,
 }
 
 /// How a flush answers a batch of [`FactsRequest`]s. Runs on the flusher's
@@ -738,10 +744,7 @@ fn item_payload(
         out.insert("git".into(), git_payload(facts));
     }
     if item.kinds.contains(Kind::Files) {
-        out.insert(
-            "files".into(),
-            json!({ "paths": item.paths, "truncated": item.truncated }),
-        );
+        out.insert("files".into(), files_payload(item, facts));
     }
     if item.kinds.contains(Kind::Terminals) {
         out.insert("terminals".into(), terminals_payload(facts));
@@ -804,6 +807,19 @@ fn state_payload(entity_id: &str, facts: Option<&EntityFacts>, board_revision: u
     facts
         .and_then(|f| f.state.clone())
         .unwrap_or_else(|| json!({}))
+}
+
+/// The paths that moved, and the worktree's top level as the lookup listed
+/// it. A root the lookup could not read is left off, which a client answers
+/// the way it always has — by listing the tree itself.
+fn files_payload(item: &PendingItem, facts: Option<&EntityFacts>) -> Value {
+    let mut files = Map::new();
+    files.insert("paths".into(), json!(item.paths));
+    files.insert("truncated".into(), json!(item.truncated));
+    if let Some(root) = facts.and_then(|f| f.root_listing.clone()) {
+        files.insert("root".into(), root);
+    }
+    Value::Object(files)
 }
 
 /// The tab list the facts source read, or an empty object where it read
@@ -1482,12 +1498,14 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
                 thread: false,
                 state: false,
                 terminals: false,
+                files: false,
                 thread_after: Vec::new(),
             });
             entry.git |= item.kinds.contains(Kind::Git);
             entry.thread |= item.kinds.contains(Kind::Thread);
             entry.state |= item.kinds.contains(Kind::State);
             entry.terminals |= item.kinds.contains(Kind::Terminals);
+            entry.files |= item.kinds.contains(Kind::Files);
             if item.kinds.contains(Kind::Thread) {
                 merge_thread_after(&mut entry.thread_after, &frame.thread_after);
             }
@@ -1495,7 +1513,9 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
     }
     wanted
         .into_values()
-        .filter(|request| request.git || request.thread || request.state || request.terminals)
+        .filter(|request| {
+            request.git || request.thread || request.state || request.terminals || request.files
+        })
         .collect()
 }
 
@@ -2778,6 +2798,51 @@ mod subscriptions {
             json!({
                 "diff": null,
                 "diff_bytes": WORKING_TREE_DIFF_MAX_BYTES + 1,
+            })
+        );
+    }
+
+    /// A `files` item carries the root listing beside the paths that moved:
+    /// the client repaints the file tree's top level off the push, and
+    /// re-lists only the deeper directories it is holding open.
+    #[test]
+    fn a_files_item_carries_the_root_listing() {
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(|requests: &[FactsRequest]| {
+                vec![EntityFacts {
+                    entity_id: requests[0].entity_id.clone(),
+                    root_listing: requests[0].files.then(
+                        || json!({ "path": "", "entries": [{ "name": "src", "kind": "dir" }] }),
+                    ),
+                    ..EntityFacts::default()
+                }]
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                kinds: [Kind::Files].into_iter().collect(),
+                ..spec(
+                    "s-files",
+                    Scope::Entity("run-7".into()),
+                    Mode::Realtime,
+                    Priority::Foreground,
+                )
+            },
+        );
+
+        bus.note_files("run-7", &["src/lib.rs".to_string()]);
+        bus.flush();
+
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["files"],
+            json!({
+                "paths": ["src/lib.rs"],
+                "truncated": false,
+                "root": { "path": "", "entries": [{ "name": "src", "kind": "dir" }] },
             })
         );
     }

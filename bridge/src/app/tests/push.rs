@@ -574,6 +574,62 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
     );
 }
 
+/// A `files` item carries the worktree's root listing beside the paths that
+/// moved — the same body `fs.tree` answers for `path: ""` — so a client
+/// repaints its file tree's top level off the push and re-lists only the
+/// deeper directories it is holding open.
+#[tokio::test]
+async fn a_files_item_carries_the_root_listing() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-files",
+                "scope": { "kind": "entity", "id": project_id },
+                "kinds": ["files"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    std::fs::write(repo.join("listed.txt"), "in the root\n").unwrap();
+    state
+        .lock()
+        .unwrap()
+        .changes()
+        .note_files(&project_id, &["listed.txt".to_string()]);
+
+    let pushes = settled_pushes(&mut rx, &key).await;
+    let files = pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["entity_id"] == project_id && item.get("files").is_some())
+        .map(|item| item["files"].clone())
+        .unwrap_or_else(|| panic!("no files item: {pushes:?}"));
+
+    assert_eq!(files["paths"], json!(["listed.txt"]), "{files:?}");
+    let listed = call(
+        &handler,
+        "fs.tree",
+        json!({ "project_id": project_id, "path": "" }),
+    );
+    assert_eq!(files["root"], listed["result"], "{files:?}");
+    assert!(
+        files["root"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "listed.txt"),
+        "{files:?}"
+    );
+}
+
 /// A `git` item carries the surfaces themselves: the status shape, the
 /// latest commits, what is unpublished, and the working tree's diff — the
 /// same bodies `git.status`, `git.log`, `git.unpushed` and the diff verbs

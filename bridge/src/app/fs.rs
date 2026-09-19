@@ -71,6 +71,49 @@ pub(in crate::app) const FS_READ_MAX_BYTES: u64 = 1_048_576;
 
 pub(in crate::app) const FS_MEDIA_READ_MAX_BYTES: u64 = 32 * 1_048_576;
 
+/// One directory level of a resolved scope: the shared fence, `.git` skipped,
+/// dirs before files and symlinks, each group case-insensitive.
+///
+/// The body of `fs.tree`, and what a `files` push item carries for the root —
+/// one listing, so a client painting from a push and a client painting from a
+/// read are looking at the same thing.
+pub(in crate::app) fn directory_listing(
+    root: &std::path::Path,
+    path: &str,
+) -> Result<Value, String> {
+    let target = fenced_scope_path(root, path)?;
+    if !target.is_dir() {
+        return Err("not a directory".to_string());
+    }
+    let reader = std::fs::read_dir(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let mut dirs: Vec<(String, Value)> = Vec::new();
+    let mut rest: Vec<(String, Value)> = Vec::new();
+    for entry in reader.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == ".git" {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            dirs.push((name.clone(), json!({ "name": name, "kind": "dir" })));
+        } else if file_type.is_symlink() {
+            rest.push((name.clone(), json!({ "name": name, "kind": "symlink" })));
+        } else {
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            rest.push((
+                name.clone(),
+                json!({ "name": name, "kind": "file", "size": size }),
+            ));
+        }
+    }
+    dirs.sort_by_key(|(name, _)| name.to_lowercase());
+    rest.sort_by_key(|(name, _)| name.to_lowercase());
+    let entries: Vec<Value> = dirs.into_iter().chain(rest).map(|(_, v)| v).collect();
+    Ok(json!({ "path": path, "entries": entries }))
+}
+
 impl AppState {
     /// Browse host directories so the user can pick a repo without typing a path.
     /// Returns the canonical path, its parent (for "up"), whether it is itself a git
@@ -154,37 +197,7 @@ impl AppState {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let target = fenced_scope_path(&root, &path)?;
-        if !target.is_dir() {
-            return Err("not a directory".to_string());
-        }
-        let reader = std::fs::read_dir(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
-        let mut dirs: Vec<(String, Value)> = Vec::new();
-        let mut rest: Vec<(String, Value)> = Vec::new();
-        for entry in reader.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name == ".git" {
-                continue;
-            }
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                dirs.push((name.clone(), json!({ "name": name, "kind": "dir" })));
-            } else if file_type.is_symlink() {
-                rest.push((name.clone(), json!({ "name": name, "kind": "symlink" })));
-            } else {
-                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                rest.push((
-                    name.clone(),
-                    json!({ "name": name, "kind": "file", "size": size }),
-                ));
-            }
-        }
-        dirs.sort_by_key(|(name, _)| name.to_lowercase());
-        rest.sort_by_key(|(name, _)| name.to_lowercase());
-        let entries: Vec<Value> = dirs.into_iter().chain(rest).map(|(_, v)| v).collect();
-        Ok(json!({ "path": path, "entries": entries }))
+        directory_listing(&root, &path)
     }
 
     /// Read one file from a worktree-backed scope, base64 always, capped at the

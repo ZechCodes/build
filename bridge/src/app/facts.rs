@@ -137,10 +137,15 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
         (subjects, facts)
     };
     for (request, fact) in requests.iter().zip(facts.iter_mut()) {
-        let Some(subject) = subjects.get(&request.entity_id).filter(|_| request.git) else {
+        let Some(subject) = subjects.get(&request.entity_id) else {
             continue;
         };
-        read_git(subject, fact);
+        if request.git {
+            read_git(subject, fact);
+        }
+        if request.files {
+            fact.root_listing = super::fs::directory_listing(&subject.root, "").ok();
+        }
     }
     facts
 }

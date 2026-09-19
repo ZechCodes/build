@@ -231,6 +231,13 @@ fn check_files(entity_id: &str, files: &Value) {
         files["truncated"].is_boolean(),
         "{entity_id}: files.truncated is a bool"
     );
+    if let Some(root) = files.get("root") {
+        assert!(root["path"].is_string(), "{entity_id}: files.root.path");
+        assert!(
+            root["entries"].is_array(),
+            "{entity_id}: files.root.entries"
+        );
+    }
 }
 
 /// The `state` item: an object always, and the board's own row carries the

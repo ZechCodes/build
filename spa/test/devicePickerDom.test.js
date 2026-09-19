@@ -25,8 +25,9 @@ vi.mock("../src/connection.js", () => ({
   openDeviceSettingsSession: vi.fn(),
 }));
 vi.mock("../src/core/inboxView.js", () => ({ inboxListRouteChanged: vi.fn(), mountInboxList: vi.fn(), setInboxView: vi.fn() }));
-import { initDevicePicker, paintDevicePicker } from "../src/devices.js";
+import { initDevicePicker, markNothingAnswers, paintDevicePicker } from "../src/devices.js";
 import { rememberDeviceFilter } from "../src/core/deviceFilter.js";
+import { nothingAnswersMark } from "../src/core/text.js";
 import { adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
 
 const choices = () => [...document.querySelectorAll(".device-picker-choice")];
@@ -44,9 +45,13 @@ beforeEach(() => {
     { id: "a", name: "Laptop", status: "online" }, { id: "b", name: "Desktop", status: "offline" },
   ] });
   resetDeviceContexts();
+  markNothingAnswers(false);
   initDevicePicker();
   paintDevicePicker();
 });
+
+/** The mark the picker wears while nothing the account has can answer. */
+const offlineMark = () => document.querySelector(".device-picker-unreachable");
 
 /** A paired device this client has open. */
 const deviceAnswering = (deviceId) =>
@@ -211,5 +216,31 @@ describe("custom device picker", () => {
     // static offline icon is absent from this tab sequence.
     document.activeElement.click();
     expect(App.deviceFilter).toBe("b");
+  });
+});
+
+// Nothing can answer, and the app is standing on its cache rather than on a
+// screen that has taken the reader's page away (plan stage 6). The picker is
+// where the account's machines live, so it is where that is said.
+describe("the picker while no device answers", () => {
+  it("wears no mark while a machine is answering", () => {
+    expect(offlineMark()).toBeNull();
+  });
+
+  it("marks the account unreachable, and repaints itself to say so", () => {
+    markNothingAnswers(true);
+    expect(offlineMark()).not.toBeNull();
+    expect(offlineMark().getAttribute("title")).toBe(nothingAnswersMark);
+  });
+
+  it("takes the mark off again when a machine answers", () => {
+    markNothingAnswers(true);
+    markNothingAnswers(false);
+    expect(offlineMark()).toBeNull();
+  });
+
+  it("keeps the toggle saying which machines the rail is showing", () => {
+    markNothingAnswers(true);
+    expect(toggleLabel()).toBe("All devices");
   });
 });

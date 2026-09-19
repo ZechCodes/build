@@ -10,7 +10,7 @@
 // faster signal, and it is the connection layer's (connection.js).
 
 import { $ } from "./dom.js";
-import { esc } from "./core/text.js";
+import { esc, nothingAnswersMark } from "./core/text.js";
 import { canAnswer, contextFor, knownContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
@@ -133,6 +133,20 @@ function markWhatTheAccountNoLongerLists() {
 
 const ALL_DEVICES = "All devices";
 
+/** Whether nothing the account has can answer right now. The app does not take
+ *  the reader's page away for that any more — it stands on its cache and says
+ *  so here, on the one control that is about the account's machines. */
+let nothingAnswers = false;
+
+/** Say it, or stop saying it. The gate sets this: it is the gate that knows
+ *  the difference between a machine that has not answered yet and an account
+ *  with nothing left to ask. */
+export function markNothingAnswers(on) {
+  if (nothingAnswers === Boolean(on)) return;
+  nothingAnswers = Boolean(on);
+  paintDevicePicker();
+}
+
 export function paintDevicePicker() {
   const picker = $("#devpick");
   if (!picker) return;
@@ -146,7 +160,7 @@ export function paintDevicePicker() {
   const label = deviceNameOf(App.devices, App.deviceFilter) || ALL_DEVICES;
   picker.innerHTML = `
     <button class="device-picker-toggle" type="button" aria-expanded="false" aria-controls="device-picker-menu" title="Which devices the inbox shows">
-      <span>${esc(label)}</span><span aria-hidden="true">${ICON_CHEVRON_DOWN}</span>
+      <span>${esc(label)}</span>${unreachableMarkHtml()}<span aria-hidden="true">${ICON_CHEVRON_DOWN}</span>
     </button>
     <div class="device-picker-menu" id="device-picker-menu" aria-label="Devices" hidden>
       ${pickerRowsHtml()}
@@ -154,6 +168,13 @@ export function paintDevicePicker() {
   setPickerOpen(picker, wasOpen);
   restorePickerFocus(picker, focused);
 }
+
+/** The mark on the toggle while nothing can answer. Inside the toggle, because
+ *  it is about every machine the toggle stands for, not about one row. */
+const unreachableMarkHtml = () =>
+  nothingAnswers
+    ? `<span class="device-picker-unreachable" role="img" aria-label="${esc(nothingAnswersMark)}" title="${esc(nothingAnswersMark)}">${ICON_WIFI_OFF}</span>`
+    : "";
 
 /** Which picker control had focus before a repaint. Keeping this as data rather
  * than an element lets a state change replace a stale settings cog with that

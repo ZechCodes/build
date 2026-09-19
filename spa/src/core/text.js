@@ -59,6 +59,11 @@ export const workspaceFailedText = (reason) => {
  *  for surfaces with room for one. */
 export const deviceOfflineMark = "Device offline";
 
+/** And the mark the account's own control wears while none of its machines can
+ *  answer at all. The app keeps the page — it is standing on its cache — so
+ *  this is what says that what is on screen is the last thing Build saw. */
+export const nothingAnswersMark = "No device is answering — showing what Build last saw";
+
 /** And the marks for the two version gaps: the machine is answering, so saying
  *  it is offline would be a lie. Which side is out of date is the whole of what
  *  a control has room to say; the sentences above say what to do about it. */

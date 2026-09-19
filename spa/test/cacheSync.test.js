@@ -1,21 +1,15 @@
-// The cache's sync layer: one tab holds the lock and follows the feed —
-// persisting the snapshot, evicting entities the active set stops naming, and
-// keeping every active branch's git status, commit list and file bodies warm.
+// @vitest-environment jsdom
+// The ordered sync: the one read of the wire this client makes.
+//
+// A pass is bounded and in a fixed order — the lists, then the workspace the
+// reader is standing in, then the rest — and everything past the lists is
+// either a small whole shape or a cursored delta. Nothing here is a timer, and
+// nothing here reads a conversation or a commit list whole when the cache
+// already holds part of it.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
-import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
-/** The one bridge this file's device answers through: a test that hands over
- *  a new `call` is that bridge answering differently, not another machine. */
-const bridge = { call: null };
-
-/** Every read this layer makes is a warm-up, and rides the wire stamped so. */
-const BACKGROUND = { priority: "background" };
-
-// Real clock, not a frozen one: the syncer partitions active-vs-Recent with
-// Date.now(), so the items' ages must be relative to the same now.
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
 const branchItem = (over = {}) => ({
@@ -28,24 +22,19 @@ const branchItem = (over = {}) => ({
   worktree_id: "wt-1",
   run_id: "run-1",
   issue_id: null,
-  primary: false,
+  agents: [],
   ...over,
 });
 
-let feedSubscriber = null;
-vi.mock("../src/core/taskFeed.js", () => ({
-  subscribeFeed: (fn) => {
-    feedSubscriber = fn;
-    return () => {
-      feedSubscriber = null;
-    };
-  },
-}));
+/** The one bridge this file's device answers through. */
+const bridge = { call: null };
+
+/** Where the reader is standing. The routed workspace leads every pass and is
+ *  the only one read in front of the foreground. */
+const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
+vi.mock("../src/app.js", () => ({ App }));
 
 let registeredWatchers = [];
-// Everything in this file is the legacy contract: a bridge that serves no
-// subscriptions, and the 60 s per-entity loop that is this layer's whole
-// cadence there. The background tier has its own file.
 vi.mock("../src/core/changeEvents.js", () => ({
   watchChanges: (registration) => {
     const watcher = { ...registration, disposed: false };
@@ -56,24 +45,25 @@ vi.mock("../src/core/changeEvents.js", () => ({
       },
     };
   },
-  subscriptionsActive: () => false,
-  onSubscriptionsChange: () => () => {},
 }));
 
-const App = {};
-vi.mock("../src/app.js", () => ({ App }));
-
-// The syncer works a device through its context, so this file registers them.
-// A device's call is its own; the one this file mostly talks to answers through
-// bridge.call, which every case scripts.
 const contexts = new Map();
-vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: (deviceId) => contexts.get(deviceId) || null }));
+const stateListeners = new Set();
+vi.mock("../src/core/deviceContexts.js", () => ({
+  contextFor: (deviceId) => contexts.get(deviceId) || null,
+  liveContexts: () => [...contexts.values()],
+  onDeviceStateChanged: (fn) => {
+    stateListeners.add(fn);
+    return () => stateListeners.delete(fn);
+  },
+}));
 
 const registerDevice = (deviceId, call = (...args) => bridge.call(...args)) => {
   const context = {
     deviceId,
-    // The registry hands out the device's caller, not one session's.
     rpc: call,
+    session: { device: deviceId },
+    greeted: Promise.resolve(),
     cacheScope: { deviceId, active: () => true },
     active: () => contexts.get(deviceId) === context,
   };
@@ -83,25 +73,50 @@ const registerDevice = (deviceId, call = (...args) => bridge.call(...args)) => {
 
 let cache, sync;
 
-const flush = async () => {
-  // Generous: a refresh is an RPC pair, then two IndexedDB transactions, each
-  // settling on its own macrotask under fake-indexeddb — and the file bodies
-  // are warmed a turn behind that.
-  for (let i = 0; i < 40; i++) await new Promise((done) => setTimeout(done, 0));
+/** What the board answers with, per case. */
+let board = [];
+
+/** Whatever a case wants said instead of the shapes below. */
+let script = {};
+
+const ANSWERS = {
+  "board.list": () => ({ items: board }),
+  "project.list": () => ({ projects: [{ project_id: "p1", name: "build" }] }),
+  "workspace.list": () => ({ workspaces: [] }),
+  "git.status": () => ({ head: "abc", status_key: "key-1", files: [] }),
+  "git.log": () => ({ commits: [{ hash: "c1" }], newest: "c1", reset: false }),
+  "git.unpushed": () => ({ base: { label: "origin/main" }, commits: [], diff_key: "d1" }),
+  "git.show": (params) => ({ hash: params.hash, patch: "diff --git", truncated: false }),
+  "term.list": () => ({ terminals: [] }),
+  "fs.tree": (params) => ({ path: params.path, entries: [] }),
+  "thread.page": () => ({ items: [], has_more: false }),
+  "run.diff": () => ({ patch: "the whole diff", diff_key: "d1" }),
+  "worktree.diff": () => ({ patch: "the whole diff", diff_key: "d1" }),
 };
 
-const warmTree = worktreeOf({ "src/a.js": "new line" });
-const warmStatus = () => warmTree.status({ head: "abc", stat: { insertions: 1, deletions: 0 } });
+const answer = (method, params) => (script[method] || ANSWERS[method] || (() => ({})))(params || {});
 
-const snapshot = (items) => ({ items, plans: [], runs: [], externalWorktrees: [], projects: [] });
-
-/** What subscribers get: the merge, with every device's own view beside it. */
-const merged = (byDevice) => ({ ...snapshot(Object.values(byDevice).flatMap((view) => view.items)), devices: byDevice });
-
-const feed = async (items) => {
-  feedSubscriber(merged({ "dev-1": snapshot(items) }));
-  await flush();
+/** Run every queued turn until the wire goes quiet. A pass is a chain of RPCs
+ *  and IndexedDB transactions, each settling on its own macrotask. */
+const settle = async () => {
+  let before = -1;
+  while (before !== bridge.call.mock.calls.length) {
+    before = bridge.call.mock.calls.length;
+    for (let turn = 0; turn < 12; turn += 1) await new Promise((done) => setTimeout(done, 0));
+  }
 };
+
+/** One device comes up, is synced, and the wire falls quiet. */
+const boot = async (items, route = { name: "inbox" }) => {
+  board = items;
+  App.route = route;
+  sync.startCacheSync();
+  await settle();
+};
+
+const calls = (method) => bridge.call.mock.calls.filter(([name]) => name === method);
+const paramsOf = (method) => calls(method).map(([, params]) => params);
+const read = (entityId, kind, sub = "") => cache.readCached({ deviceId: "dev-1", entityId, kind, sub });
 
 beforeEach(async () => {
   vi.resetModules();
@@ -109,14 +124,13 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   delete globalThis.navigator?.locks;
   registeredWatchers = [];
-  feedSubscriber = null;
+  stateListeners.clear();
   contexts.clear();
+  board = [];
+  script = {};
+  App.route = { name: "inbox" };
   registerDevice("dev-1");
-  bridge.call = vi.fn(async (method) => {
-    if (method === "git.status") return warmStatus();
-    if (method === "git.log") return { commits: [{ hash: "abc" }], more: false };
-    return {};
-  });
+  bridge.call = vi.fn(async (method, params) => answer(method, params));
   cache = await import("../src/core/localCache.js");
   sync = await import("../src/core/cacheSync.js");
 });
@@ -126,436 +140,314 @@ afterEach(() => {
   delete globalThis.requestIdleCallback;
 });
 
-describe("following the feed", () => {
-  it("persists each snapshot under the session's device", async () => {
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" });
-    expect(record.value.items).toHaveLength(1);
+describe("the order a pass reads in", () => {
+  const two = [
+    branchItem(),
+    branchItem({ branch: "build/search", run_id: "run-2", worktree_id: "wt-2" }),
+  ];
+  const routeTo = (branch) => ({ name: "branch", deviceId: "dev-1", projectId: "p1", branch });
+
+  it("reads the three lists before it reads any workspace", async () => {
+    await boot(two);
+    const order = bridge.call.mock.calls.map(([method]) => method);
+    const lists = ["board.list", "project.list", "workspace.list"];
+    expect(order.slice(0, 3).sort()).toEqual([...lists].sort());
+    expect(order.slice(3).some((method) => lists.includes(method))).toBe(false);
   });
 
-  it("keeps active entities' records and evicts what the active set stops naming", async () => {
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, {});
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" }, {});
+  it("reads the routed workspace's shapes before the other's", async () => {
+    await boot(two, routeTo("build/search"));
+    const entities = bridge.call.mock.calls
+      .map(([, params]) => params?.run_id)
+      .filter(Boolean);
+    expect(entities[0]).toBe("run-2");
+    expect(entities.lastIndexOf("run-2")).toBeLessThan(entities.indexOf("run-1"));
+  });
+
+  it("reads only the routed workspace ahead of the foreground", async () => {
+    await boot(two, routeTo("build/search"));
+    const ahead = bridge.call.mock.calls
+      .filter(([, , envelope]) => envelope?.priority !== "background")
+      .map(([, params]) => params?.run_id || "list");
+    expect([...new Set(ahead)]).toEqual(["run-2"]);
+  });
+
+  it("puts every read behind the foreground when nothing is routed", async () => {
+    await boot(two);
+    const ahead = bridge.call.mock.calls.filter(([, , envelope]) => envelope?.priority !== "background");
+    expect(ahead).toEqual([]);
+  });
+});
+
+describe("what a pass writes", () => {
+  it("writes the three lists and one row per feed item", async () => {
+    script["workspace.list"] = () => ({ workspaces: [{ id: "ws-1", project_id: "p1", name: "wire" }] });
+    await boot([branchItem()]);
+    expect((await read("", "feed")).value.items).toHaveLength(1);
+    expect((await read("", "projects")).value[0].id).toBe("p1");
+    expect((await read("", "workspaces")).value[0].id).toBe("ws-1");
+    expect((await read("run-1", "row")).value.branch).toBe("build/login");
+  });
+
+  it("writes the status, the tree root, the tabs, the log and the unpushed commits", async () => {
+    script["term.list"] = () => ({ terminals: [{ term_id: "term-1" }] });
+    await boot([branchItem()]);
+    expect((await read("run-1", "status")).value.status_key).toBe("key-1");
+    expect((await read("run-1", "tree", "")).value.entries).toEqual([]);
+    expect((await read("run-1", "terminals")).value.tabs).toEqual([{ term_id: "term-1" }]);
+    expect((await read("run-1", "log")).value.newest).toBe("c1");
+    expect((await read("run-1", "unpushed")).value.diff_key).toBe("d1");
+  });
+
+  it("keeps the unpushed commits' patch out of the record it holds them in", async () => {
+    script["git.unpushed"] = () => ({ base: {}, commits: [], diff_key: "d1", patch: "megabytes" });
+    await boot([branchItem()]);
+    expect((await read("run-1", "unpushed")).value.patch).toBeUndefined();
+  });
+
+  it("asks nothing of git for an issue, and still lists its shells and its conversations", async () => {
+    await boot([{
+      kind: "issue",
+      project_id: "p2",
+      issue_id: "iss-1",
+      state: "plan_review",
+      anchor: ago(2),
+      last_activity: ago(2),
+      agents: [{ id: "ag-1" }],
+    }]);
+    expect(calls("git.status")).toEqual([]);
+    expect(paramsOf("term.list")).toEqual([{ project_id: "p2" }]);
+    expect(paramsOf("thread.page")[0]).toMatchObject({ entity_id: "iss-1", agent_id: "ag-1" });
+  });
+});
+
+describe("the cursors", () => {
+  it("reads the log forward from the newest hash it holds", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, { commits: [{ hash: "c0" }], newest: "c0" });
+    script["git.log"] = () => ({ commits: [{ hash: "c1" }], newest: "c1", reset: false });
+    await boot([branchItem()]);
+    expect(paramsOf("git.log")).toEqual([{ run_id: "run-1", since: "c0" }]);
+    expect((await read("run-1", "log")).value.commits.map((one) => one.hash)).toEqual(["c1", "c0"]);
+  });
+
+  it("asks for the latest twenty when it holds no cursor", async () => {
+    await boot([branchItem()]);
+    expect(paramsOf("git.log")).toEqual([{ run_id: "run-1", limit: sync.LATEST_COMMITS }]);
+    expect(sync.LATEST_COMMITS).toBe(20);
+  });
+
+  it("replaces the log outright when the answer says the history moved", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, { commits: [{ hash: "c0" }], newest: "c0" });
+    script["git.log"] = () => ({ commits: [{ hash: "r1" }], newest: "r1", reset: true });
+    await boot([branchItem()]);
+    expect((await read("run-1", "log")).value.commits.map((one) => one.hash)).toEqual(["r1"]);
+  });
+
+  it("reads a conversation forward from the sequence it holds", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 7 } }], deliveredSequence: 7, olderItemsRemain: true },
+    );
+    script["thread.page"] = () => ({ items: [{ id: "m-2", data: { sequence: 8 } }], has_more: false });
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    expect(paramsOf("thread.page")).toEqual([
+      { entity_id: "run-1", agent_id: "ag-1", after_sequence: 7, limit: sync.LATEST_THREAD_ITEMS },
+    ]);
+    const record = await read("run-1", "thread", "ag-1");
+    expect(record.value.items.map((one) => one.id)).toEqual(["m-1", "m-2"]);
+    expect(record.value.deliveredSequence).toBe(8);
+    // How far back the window reaches is not what a forward page answers.
+    expect(record.value.olderItemsRemain).toBe(true);
+  });
+
+  it("asks for the latest hundred when it holds no sequence, and remembers what is behind them", async () => {
+    script["thread.page"] = () => ({ items: [{ id: "m-1", data: { sequence: 40 } }], has_more: true, thread_total: 900 });
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    expect(paramsOf("thread.page")).toEqual([
+      { entity_id: "run-1", agent_id: "ag-1", limit: sync.LATEST_THREAD_ITEMS },
+    ]);
+    expect(sync.LATEST_THREAD_ITEMS).toBe(100);
+    const record = await read("run-1", "thread", "ag-1");
+    expect(record.value.olderItemsRemain).toBe(true);
+    expect(record.value.deliveredSequence).toBe(40);
+  });
+
+  it("stores a conversation under its conversation id where it has one", async () => {
+    script["thread.page"] = () => ({ items: [{ id: "m-1", data: { sequence: 1 } }], has_more: false });
+    await boot([branchItem({ agents: [{ id: "ag-1", conversation_id: "conv-9" }] })]);
+    expect(await read("run-1", "thread", "conv-9")).toBeTruthy();
+    expect(await read("run-1", "thread", "ag-1")).toBeUndefined();
+  });
+
+  it("never asks for a whole conversation or a whole log on a warm cache", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, { commits: [{ hash: "c0" }], newest: "c0" });
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 7 } }], deliveredSequence: 7 },
+    );
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    expect(paramsOf("git.log").every((params) => params.since)).toBe(true);
+    expect(paramsOf("thread.page").every((params) => params.after_sequence)).toBe(true);
+  });
+});
+
+describe("the two bodies that never ride a push", () => {
+  const unpushed = (hashes) => ({ base: {}, commits: hashes.map((hash) => ({ hash })), diff_key: "d1" });
+
+  it("reads the patch behind each unpushed commit it does not hold, under the cap", async () => {
+    script["git.unpushed"] = () => unpushed(["h1", "h2"]);
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "h1" }, { hash: "h1" });
+    await boot([branchItem()]);
+    expect(paramsOf("git.show")).toEqual([
+      { run_id: "run-1", hash: "h2", max_bytes: sync.COMMIT_PATCH_MAX_BYTES },
+    ]);
+    expect(sync.COMMIT_PATCH_MAX_BYTES).toBe(262144);
+    expect((await read("run-1", "patch", "h2")).value.patch).toBe("diff --git");
+  });
+
+  it("reads the patches of at most twenty commits", async () => {
+    script["git.unpushed"] = () => unpushed(Array.from({ length: 30 }, (_unused, index) => `h${index}`));
+    await boot([branchItem()]);
+    expect(calls("git.show")).toHaveLength(sync.UNPUSHED_COMMITS_MAX);
+  });
+
+  it("refuses a patch over the cap, whatever the bridge answered", async () => {
+    script["git.unpushed"] = () => unpushed(["h1"]);
+    script["git.show"] = () => ({ hash: "h1", patch: "x".repeat(sync.COMMIT_PATCH_MAX_BYTES + 1) });
+    await boot([branchItem()]);
+    expect(await read("run-1", "patch", "h1")).toBeUndefined();
+  });
+
+  it("lets go of the patch of a commit that is no longer unpushed", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "gone" }, { hash: "gone" });
+    script["git.unpushed"] = () => unpushed([]);
+    await boot([branchItem()]);
+    expect(await read("run-1", "patch", "gone")).toBeUndefined();
+  });
+
+  it("reads the working-tree diff only where the cache holds none", async () => {
+    await boot([branchItem()]);
+    expect(paramsOf("run.diff")).toEqual([{ run_id: "run-1" }]);
+    expect((await read("run-1", "diff")).value.patch).toBe("the whole diff");
+
+    bridge.call.mockClear();
+    sync.stopCacheSync();
     sync.startCacheSync();
-    // run-2 went quiet (Recent) — its cache leaves with it, run-1 stays.
-    await feed([
+    await settle();
+    expect(calls("run.diff")).toEqual([]);
+  });
+});
+
+describe("the lifetime rules a pass applies", () => {
+  it("ages a Recent workspace's data out, and reads what survived", async () => {
+    const old = Date.now() - 100 * 3600 * 1000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(old);
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" }, { head: "stale" });
+    clock.mockRestore();
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-3", kind: "status" }, { head: "warm" });
+
+    const quiet = { anchor: ago(40), last_activity: ago(30) };
+    await boot([
       branchItem(),
-      branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2", anchor: ago(40), last_activity: ago(30) }),
+      branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2", ...quiet }),
+      branchItem({ branch: "b3", run_id: "run-3", worktree_id: "wt-3", ...quiet }),
     ]);
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).toBeTruthy();
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" })).toBeUndefined();
+
+    // run-2's data aged out, so it is cold and nothing was read for it.
+    expect(await read("run-2", "status")).toBeUndefined();
+    expect(paramsOf("git.status").map((params) => params.run_id)).toEqual(["run-1", "run-3"]);
+  });
+
+  it("takes everything from an entity the board has stopped naming", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-9", kind: "status" }, {});
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-9", kind: "row" }, {});
+    await boot([branchItem()]);
+    expect(await read("run-9", "status")).toBeUndefined();
+    expect(await read("run-9", "row")).toBeUndefined();
+    expect(await read("run-1", "row")).toBeTruthy();
   });
 });
 
-// ---- more than one device --------------------------------------------------
-// Every device answers for itself: its own snapshot, its own cache, its own
-// eviction. Two machines both call their first project `proj-1` and can even
-// name the same entity, so nothing about one device's rows may reach another's.
-describe("following every device's feed", () => {
-  const twoDevices = async (dev2Call) => {
-    registerDevice("dev-2", dev2Call);
-    const one = snapshot([branchItem()]);
-    const two = snapshot([branchItem({ branch: "build/search" })]);
-    sync.startCacheSync();
-    feedSubscriber(merged({ "dev-1": one, "dev-2": two }));
-    await flush();
-  };
-
-  it("persists each device's snapshot under its own device", async () => {
-    await twoDevices(vi.fn(async () => ({})));
-    const first = await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" });
-    const second = await cache.readCached({ deviceId: "dev-2", entityId: "", kind: "feed" });
-    expect(first.value.items[0].branch).toBe("build/login");
-    expect(second.value.items[0].branch).toBe("build/search");
-  });
-
-  it("keys active rows by device and entity, so two devices' rows never collide", async () => {
-    const secondCall = vi.fn(async (method) => {
-      if (method === "git.status") return warmStatus();
-      if (method === "git.log") return { commits: [{ hash: "def" }], more: false };
-      return {};
-    });
-    await twoDevices(secondCall);
-    // The same run id on two machines is two rows, each read through its own
-    // device's call and written under its own device.
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" }, BACKGROUND);
-    expect(secondCall).toHaveBeenCalledWith("git.status", { run_id: "run-1" }, BACKGROUND);
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" })).toBeTruthy();
-    expect((await cache.readCached({ deviceId: "dev-2", entityId: "run-1", kind: "log" })).value.commits[0].hash).toBe("def");
-  });
-
-  it("evicts within one device only what that device's view stops naming", async () => {
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" }, {});
-    await cache.writeCached({ deviceId: "dev-2", entityId: "run-2", kind: "status" }, {});
-    registerDevice("dev-2", vi.fn(async () => ({})));
-    const one = snapshot([branchItem()]);
-    const two = snapshot([branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2" })]);
-    sync.startCacheSync();
-    feedSubscriber(merged({ "dev-1": one, "dev-2": two }));
-    await flush();
-
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-2", kind: "status" })).toBeUndefined();
-    expect(await cache.readCached({ deviceId: "dev-2", entityId: "run-2", kind: "status" })).toBeTruthy();
-  });
-
-  it("lets a retired device's watchers go when it leaves the feed", async () => {
-    registerDevice("dev-2", vi.fn(async () => ({})));
-    const one = snapshot([branchItem()]);
-    const two = snapshot([branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2" })]);
-    sync.startCacheSync();
-    feedSubscriber(merged({ "dev-1": one, "dev-2": two }));
-    await flush();
-
-    // dev-2 is retired: it is no longer in the merge at all.
-    feedSubscriber(merged({ "dev-1": one }));
-    await flush();
-    expect(registeredWatchers.find((watcher) => watcher.entity === "run-2").disposed).toBe(true);
-    expect(registeredWatchers.find((watcher) => watcher.entity === "run-1").disposed).toBe(false);
-  });
-
-  it("leaves a device with no context alone — nothing can be read for it", async () => {
-    const one = snapshot([branchItem()]);
-    sync.startCacheSync();
-    feedSubscriber(merged({ "dev-9": one }));
-    await flush();
-    expect(await cache.readCached({ deviceId: "dev-9", entityId: "", kind: "feed" })).toBeUndefined();
-  });
-});
-
-describe("keeping active branches warm", () => {
-  it("conditionally refreshes a cached status and keeps the full held shape on an unchanged answer", async () => {
-    const held = warmStatus();
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, held);
-    bridge.call = vi.fn(async (method, params) => {
-      if (method === "git.status") return { unchanged: true, status_key: held.status_key };
-      if (method === "git.log") return { commits: [], more: false };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: held.status_key }, BACKGROUND);
-    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.files).toEqual(held.files);
-  });
-
-  it("syncs git status and the commit list for an active branch, run-scoped", async () => {
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" }, BACKGROUND);
-    expect(bridge.call).toHaveBeenCalledWith("git.log", { run_id: "run-1" }, BACKGROUND);
-    const log = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" });
-    expect(log.value.commits).toHaveLength(1);
-  });
-
-  it("stores the status shape as received — there is no patch on it to strip", async () => {
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    const status = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" });
-    expect(status.value.head).toBe("abc");
-    expect(status.value.status_key).toBe(warmStatus().status_key);
-    expect(status.value.files).toHaveLength(1);
-  });
-
-  it("prefetches the changed files' bodies in idle time, so expanding one is instant", async () => {
-    const idle = [];
-    globalThis.requestIdleCallback = (work) => idle.push(work);
-    bridge.call = vi.fn(async (method, params) => {
-      if (method === "git.status") return warmStatus();
-      if (method === "git.diff") return warmTree.diff(params);
-      if (method === "git.log") return { commits: [], more: false };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(bridge.call).not.toHaveBeenCalledWith("git.diff", expect.anything(), expect.anything());
-
-    idle.forEach((work) => work());
-    await flush();
-    // A warm-up rides the background queue, and says so on the envelope.
-    expect(bridge.call).toHaveBeenCalledWith("git.diff", { run_id: "run-1", paths: ["src/a.js"] }, { priority: "background" });
-    const body = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: "src/a.js" });
-    expect(body.value.patch).toBe(patchFor("src/a.js", "new line"));
-  });
-
-  it("keeps syncing an entity whose idle turn never comes", async () => {
-    const idleNeverRun = [];
-    globalThis.requestIdleCallback = (work) => idleNeverRun.push(work);
-    bridge.call = vi.fn(async (method, params) => {
-      if (method === "git.status") return warmStatus();
-      if (method === "git.diff") return warmTree.diff(params);
-      if (method === "git.log") return { commits: [], more: false };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(idleNeverRun.length).toBeGreaterThan(0);
-
+describe("no timers", () => {
+  it("issues nothing in an hour of wall clock", async () => {
+    await boot([branchItem()]);
     bridge.call.mockClear();
-    registeredWatchers.find((watcher) => watcher.entity === "run-1").refresh();
-    await flush();
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key }, BACKGROUND);
+    vi.useFakeTimers();
+    try {
+      vi.advanceTimersByTime(60 * 60 * 1000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+    expect(bridge.call).not.toHaveBeenCalled();
   });
 
-  it("warms only the leading viewport budget instead of every offscreen body", async () => {
-    const many = Object.fromEntries(Array.from({ length: 60 }, (_unused, index) => [`f${index}.js`, "line"]));
-    const big = worktreeOf(many);
-    bridge.call = vi.fn(async (method, params) => {
-      if (method === "git.status") return big.status();
-      if (method === "git.diff") return big.diff(params);
-      if (method === "git.log") return { commits: [], more: false };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    await flush();
-    const asked = bridge.call.mock.calls.filter(([method]) => method === "git.diff");
-    expect(asked).toHaveLength(1);
-    expect(asked[0][1].paths).toHaveLength(3);
-  });
-
-  it("scopes a checkout Build does not own by project and worktree", async () => {
-    sync.startCacheSync();
-    await feed([branchItem({ run_id: null })]);
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { project_id: "p1", worktree_id: "wt-1" }, BACKGROUND);
-  });
-
-  it("registers one change watcher per active branch and refreshes on delivery", async () => {
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    const watcher = registeredWatchers.find((w) => w.entity === "run-1");
-    expect(watcher).toBeTruthy();
-    bridge.call.mockClear();
-    watcher.refresh();
-    await flush();
-    expect(bridge.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key }, BACKGROUND);
-  });
-
-  it("lets a watcher go, disposed, when its entity leaves the active set", async () => {
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    await feed([]);
-    const watcher = registeredWatchers.find((w) => w.entity === "run-1");
-    expect(watcher.disposed).toBe(true);
-  });
-
-  it("does not stack refreshes for an entity already being fetched", async () => {
-    let settle;
-    bridge.call = vi.fn(() => new Promise((resolve) => (settle = resolve)));
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    const watcher = registeredWatchers.find((w) => w.entity === "run-1");
-    watcher.refresh();
-    watcher.refresh();
-    await flush();
-    expect(bridge.call.mock.calls.length).toBe(2); // one status + one log, not four
-    settle({});
-  });
-
-  it("asks nothing of git for an issue, but keeps its cache from eviction", async () => {
-    await cache.writeCached({ deviceId: "dev-1", entityId: "iss-1", kind: "thread" }, {});
-    sync.startCacheSync();
-    await feed([
-      { kind: "issue", project_id: "p2", issue_id: "iss-1", state: "plan_review", anchor: ago(2), last_activity: ago(2) },
-    ]);
-    expect(bridge.call).not.toHaveBeenCalledWith("git.status", expect.anything());
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "iss-1", kind: "thread" })).toBeTruthy();
+  it("registers no watcher that polls", async () => {
+    await boot([branchItem()]);
+    expect(registeredWatchers.map((watcher) => watcher.intervalMs)).toEqual([undefined, undefined]);
   });
 });
 
-describe("one syncer per browser", () => {
+describe("when a pass runs", () => {
+  it("runs once for a session, however often the device's state is announced", async () => {
+    await boot([branchItem()]);
+    const first = calls("board.list").length;
+    stateListeners.forEach((fn) => fn());
+    stateListeners.forEach((fn) => fn());
+    await settle();
+    expect(calls("board.list")).toHaveLength(first);
+  });
+
+  it("runs again for the session a reconnect brought", async () => {
+    await boot([branchItem()]);
+    contexts.get("dev-1").session = { device: "dev-1", again: true };
+    stateListeners.forEach((fn) => fn());
+    await settle();
+    expect(calls("board.list")).toHaveLength(2);
+  });
+
+  it("runs again when the tab comes back", async () => {
+    await boot([branchItem()]);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(calls("board.list")).toHaveLength(2);
+  });
+
   it("leaves the whole job to the tab that holds the lock", async () => {
     vi.stubGlobal("navigator", { locks: { request: vi.fn(async () => undefined) } }); // never granted
     vi.resetModules();
     cache = await import("../src/core/localCache.js");
     sync = await import("../src/core/cacheSync.js");
-    sync.startCacheSync();
-    await feed([branchItem()]);
+    await boot([branchItem()]);
     expect(bridge.call).not.toHaveBeenCalled();
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" })).toBeUndefined();
+    expect(await read("", "feed")).toBeUndefined();
     vi.unstubAllGlobals();
   });
 });
 
-describe("the boot echo", () => {
-  it("ignores the snapshot the cache itself painted", async () => {
-    sync.startCacheSync();
-    const view = { ...snapshot([branchItem()]), cached: true };
-    feedSubscriber({ ...merged({ "dev-1": view }), cached: true });
-    await flush();
-    expect(bridge.call).not.toHaveBeenCalled();
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" })).toBeUndefined();
-  });
-});
-
-describe("keeping warmed conversations fresh", () => {
-  it("re-reads a persisted branch thread on the entity's refresh", async () => {
-    await cache.writeCached(
-      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
-      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
-    );
-    bridge.call = vi.fn(async (method) => {
-      if (method === "git.status") return { head: "abc", patch: "p" };
-      if (method === "git.log") return { commits: [] };
-      if (method === "branch.get")
-        return { run: { thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 } } };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith(
-      "branch.get",
-      { project_id: "p1", branch: "build/login", agent_id: "ag-1", thread_limit: FIRST_PAGE_ITEMS },
-      BACKGROUND,
-    );
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" });
-    expect(record.value.deliveredSequence).toBe(2);
+describe("every device answers for itself", () => {
+  it("reads each device through its own caller and writes under its own id", async () => {
+    const second = vi.fn(async (method, params) =>
+      method === "git.log" ? { commits: [{ hash: "other" }], newest: "other" } : answer(method, params));
+    registerDevice("dev-2", second);
+    await boot([branchItem()]);
+    expect((await read("run-1", "log")).value.commits[0].hash).toBe("c1");
+    expect(
+      (await cache.readCached({ deviceId: "dev-2", entityId: "run-1", kind: "log" })).value.commits[0].hash,
+    ).toBe("other");
   });
 
-  it("re-reads an issue's persisted thread through issue.get", async () => {
-    await cache.writeCached(
-      { deviceId: "dev-1", entityId: "iss-1", kind: "thread", sub: "" },
-      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
-    );
-    bridge.call = vi.fn(async (method) =>
-      method === "issue.get"
-        ? { issue_id: "iss-1", thread: { items: [{ id: "m-3", data: { sequence: 3 } }], has_more: false, thread_total: 3 } }
-        : {},
-    );
+  it("evicts within one device only what that device's board stopped naming", async () => {
+    registerDevice("dev-2", vi.fn(async (method, params) => answer(method, params)));
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-9", kind: "status" }, {});
+    await cache.writeCached({ deviceId: "dev-2", entityId: "run-9", kind: "status" }, {});
+    board = [branchItem({ branch: "b9", run_id: "run-9", worktree_id: "wt-9" })];
+    // dev-1 is asked for a board that no longer names run-9; dev-2's does.
+    bridge.call = vi.fn(async (method, params) =>
+      method === "board.list" ? { items: [branchItem()] } : answer(method, params));
     sync.startCacheSync();
-    await feed([
-      { kind: "issue", project_id: "p2", issue_id: "iss-1", state: "plan_review", anchor: ago(2), last_activity: ago(2) },
-    ]);
-    expect(bridge.call).toHaveBeenCalledWith("issue.get", { issue_id: "iss-1", thread_limit: FIRST_PAGE_ITEMS }, BACKGROUND);
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "iss-1", kind: "thread", sub: "" });
-    expect(record.value.deliveredSequence).toBe(3);
-  });
-
-  it("writes a surfaces record for each agent in the detail payload that carries one", async () => {
-    await cache.writeCached(
-      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
-      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
-    );
-    bridge.call = vi.fn(async (method) => {
-      if (method === "branch.get")
-        return {
-          run: {
-            thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
-            agents: [
-              { id: "ag-1", surface_session_generation: "session-1", surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running" }] } },
-              { id: "ag-2" },
-            ],
-          },
-        };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-1" });
-    expect(record.value.surfaces.shells).toHaveLength(1);
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-2" })).toBeUndefined();
-  });
-
-  it("writes the surfaces of an agent whose own conversation was never warmed", async () => {
-    await cache.writeCached(
-      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
-      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
-    );
-    bridge.call = vi.fn(async (method) => {
-      if (method === "branch.get")
-        return {
-          run: {
-            thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
-            agents: [
-              { id: "ag-1", surface_session_generation: "session-1", surfaces: { shells: [{ id: "sh-1", state: "running" }] } },
-              { id: "ag-2", surface_session_generation: "session-2", surfaces: { checklist: [{ id: "t-1", subject: "ship it", state: "pending" }] } },
-            ],
-          },
-        };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-2" });
-    expect(record.value.surfaces.checklist).toHaveLength(1);
-  });
-
-  it("rewrites nothing for a snapshot that stood still", async () => {
-    const surfaces = { shells: [{ id: "sh-1", description: "cargo test", state: "running" }] };
-    const address = { deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-1" };
-    await cache.writeCached(
-      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
-      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
-    );
-    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
-    await cache.writeCached(address, { surfaces, generation: "session-1" });
-    clock.mockRestore();
-    bridge.call = vi.fn(async (method) => {
-      if (method === "branch.get")
-        return {
-          run: {
-            thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
-            agents: [{ id: "ag-1", surface_session_generation: "session-1", surfaces }],
-          },
-        };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect((await cache.readCached(address)).at).toBe(1000);
-  });
-
-  it("asks for no conversation that was never opened", async () => {
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(bridge.call).not.toHaveBeenCalledWith("branch.get", expect.anything());
-  });
-});
-
-describe("keeping file listings warm", () => {
-  it("syncs the top-level directory for an active branch", async () => {
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "" }, BACKGROUND);
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" });
-    expect(record).toBeTruthy();
-  });
-
-  it("re-lists the directories the reader walked into", async () => {
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" }, { path: "src", entries: [] });
-    bridge.call = vi.fn(async (method, params) => {
-      if (method === "fs.tree") return { path: params.path, entries: [{ name: "fresh.js", kind: "file" }] };
-      if (method === "git.status") return { head: "abc" };
-      if (method === "git.log") return { commits: [] };
-      return {};
-    });
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(bridge.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "src" }, BACKGROUND);
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" });
-    expect(record.value.entries).toHaveLength(1);
-  });
-});
-
-describe("keeping a warmed review diff fresh", () => {
-  it("re-reads run.diff only where the All-changes view was opened before", async () => {
-    sync.startCacheSync();
-    await feed([branchItem()]);
-    expect(bridge.call).not.toHaveBeenCalledWith("run.diff", expect.anything());
-
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: "old" });
-    bridge.call.mockClear();
-    const watcher = registeredWatchers.find((w) => w.entity === "run-1" && !w.disposed);
-    bridge.call.mockImplementation(async (method) => {
-      if (method === "run.diff") return { patch: "diff --git fresh" };
-      if (method === "git.status") return { head: "abc" };
-      if (method === "git.log") return { commits: [] };
-      if (method === "fs.tree") return { path: "", entries: [] };
-      return {};
-    });
-    watcher.refresh();
-    await flush();
-    expect(bridge.call).toHaveBeenCalledWith("run.diff", { run_id: "run-1" }, BACKGROUND);
-    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" });
-    expect(record.value.patch).toBe("diff --git fresh");
+    await settle();
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-9", kind: "status" })).toBeUndefined();
+    expect(await cache.readCached({ deviceId: "dev-2", entityId: "run-9", kind: "status" })).toBeTruthy();
   });
 });

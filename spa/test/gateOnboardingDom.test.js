@@ -101,7 +101,7 @@ vi.mock("../src/app.js", () => ({
   unmountView: () => {},
 }));
 vi.mock("../src/core/taskFeed.js", () => ({ startFeed: () => {}, stopFeed: () => {} }));
-vi.mock("../src/core/cacheSync.js", () => ({ startCacheSync: () => {} }));
+vi.mock("../src/core/cacheSync.js", () => ({ startCacheSync: () => {}, stopCacheSync: () => {}, routeChanged: () => {} }));
 vi.mock("../src/core/inboxShell.js", () => ({ initInboxRail: () => {} }));
 vi.mock("../src/core/toolbar.js", () => ({ initToolbar: () => {} }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));

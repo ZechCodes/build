@@ -41,13 +41,13 @@ const EMPTY_VIEW = Object.freeze({
 /** A row as the account sees it: whose device answered, and which project on
  *  that device it belongs to. A row that names no project gets no key — there
  *  is nothing to name. */
-const stampRow = (row, deviceId) =>
+export const stampRow = (row, deviceId) =>
   row.project_id ? { ...row, deviceId, projectKey: deviceKey(deviceId, row.project_id) } : { ...row, deviceId };
 
 /** The wire names a project by `project_id`; consumers of the snapshot (the
  *  toolbar's scope and menu) read `id`. Bridge the key here, and stamp the
  *  account-wide name beside it. */
-function stampProject(project, deviceId) {
+export function stampProject(project, deviceId) {
   const id = project.project_id || project.id;
   return { ...project, id, deviceId, projectKey: deviceKey(deviceId, id) };
 }

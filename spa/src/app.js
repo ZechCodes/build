@@ -16,6 +16,7 @@ import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
+import { routeChanged } from "./core/cacheSync.js";
 import { resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
 import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "./connection.js";
@@ -128,6 +129,10 @@ function mayLeaveRoute() {
 function standOn(route) {
   App.viewingContext.clear();
   App.route = withDeviceOrResolve(route);
+  // Every route the app takes up comes through here — a navigation and a move
+  // within a surface alike — and either can change which workspace is on
+  // screen. The sync layer's realtime subscription follows it (core/cacheSync).
+  routeChanged();
   return hashFromRoute(route);
 }
 

@@ -133,6 +133,10 @@ export const GETTING_STARTED = "Getting started";
 /** The states that mean the work is over. Nothing marked done is ever a row. */
 const FINISHED_STATES = new Set(["merged", "abandoned", "archived"]);
 
+/** Whether a row's state means the work is over. The cache asks it of a pushed
+ *  row: a workspace nobody can come back to keeps none of its data. */
+export const isFinishedState = (state) => FINISHED_STATES.has(state);
+
 /** Three states, one glance. Unread wins over working: an entry that asked you
  *  something while it kept going is still asking. Working is "any agent is
  *  running on it" — the bridge resolves that for every kind of row. */

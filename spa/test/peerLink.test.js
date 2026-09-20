@@ -2,8 +2,9 @@
 // the offer and the trickle both ways, settled once both channels are open.
 // A failure anywhere leaves the caller on the relay, with no retry loop.
 
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { openPeerLink } from "../src/core/peerLink.js";
+import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../src/core/connectionDiagnostics.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -149,6 +150,60 @@ async function upgrade(options) {
   peer.emit("connectionstatechange");
   return { ...stood, peer, resolved: await stood.link };
 }
+
+/** A pair in a stats report, and the two candidates it is made of. */
+const pairEntries = (id, { localType, remoteType, state = "succeeded", nominated = false }) => [
+  { id, type: "candidate-pair", state, nominated, localCandidateId: `${id}-l`, remoteCandidateId: `${id}-r` },
+  { id: `${id}-l`, type: "local-candidate", candidateType: localType },
+  { id: `${id}-r`, type: "remote-candidate", candidateType: remoteType },
+];
+
+/** A session that landed on TURN, over a check list the case chooses. The
+ *  interesting one is Zech's: a direct pair that ALSO succeeded, which the relay
+ *  pair merely beat to nomination. */
+const asReport = (entries) => new Map(entries.map((entry) => [entry.id, entry]));
+
+async function landed({ report, path }) {
+  const stood = stand();
+  await vi.advanceTimersByTimeAsync(0);
+  const peer = stood.peer();
+  peer.getStats = report;
+  peer.channels.get("app").open();
+  peer.channels.get("term").open();
+  peer.connectionState = "connected";
+  peer.emit("connectionstatechange");
+  await vi.advanceTimersByTimeAsync(0);
+  const resolved = await stood.link;
+  expect(resolved.transportPath()).toBe(path);
+  return { ...stood, peer, resolved };
+}
+
+/** A session that landed on TURN, over a check list the case chooses. The
+ *  interesting one is Zech's: a direct pair that ALSO succeeded, which the relay
+ *  pair merely beat to nomination. */
+const landedOnRelay = ({ alsoDirect = "succeeded" } = {}) =>
+  landed({
+    path: "turn",
+    report: async () =>
+      asReport([
+        ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+        ...(alsoDirect ? pairEntries("direct", { localType: "host", remoteType: "host", state: alsoDirect }) : []),
+      ]),
+  });
+
+const landedDirect = () =>
+  landed({
+    path: "direct",
+    report: async () => asReport(pairEntries("direct", { localType: "host", remoteType: "host", nominated: true })),
+  });
+
+const offers = (signalled) => signalled.filter(([method]) => method === "rtc.offer").length;
+
+/** What the connection recorded under one event, in order — point 3's half of
+ *  #31: the diagnostics say which pair type a session landed on and whether it
+ *  was ever re-nominated. */
+const diagnosticsOf = (event) =>
+  connectionDiagnosticHistory().filter((entry) => entry.event === event).map((entry) => entry.state);
 
 describe("openPeerLink", () => {
   it("offers two negotiated channels with the ICE servers it fetched, and settles when both open", async () => {
@@ -528,5 +583,106 @@ describe("openPeerLink", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// #31 point 2: ICE never re-nominates, so a session that lost the race on a
+// network where a direct pair also works is billed for TURN for its whole life.
+// The only lever after nomination is an ICE restart, which re-runs the race — and
+// it is worth the disturbance only where the browser has already PROVED a direct
+// pair carries.
+describe("a session that landed on a relayed pair", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    clearConnectionDiagnosticHistory();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("tries once for a direct pair, after it has been steady, and says what it landed on", async () => {
+    const { peer, signalled, resolved } = await landedOnRelay();
+    const before = offers(signalled);
+
+    // Not early: an ICE restart re-gathers and re-checks everything, and a
+    // session still settling must not pay for it.
+    await vi.advanceTimersByTimeAsync(19000);
+    expect(offers(signalled)).toBe(before);
+
+    // The reading the attempt is decided on comes first, then the restart
+    // re-nominates and the next reading is the direct pair.
+    let asked = 0;
+    peer.getStats = async () => {
+      asked += 1;
+      if (asked === 1) {
+        return asReport([
+          ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+          ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+        ]);
+      }
+      return asReport(pairEntries("direct", { localType: "host", remoteType: "host", nominated: true }));
+    };
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(offers(signalled)).toBeGreaterThan(before);
+    expect(resolved.transportPath()).toBe("direct");
+    expect(diagnosticsOf("direct-pair")).toEqual(["trying", "renominated"]);
+  });
+
+  it("does not try when the check list holds no direct pair that worked", async () => {
+    // A symmetric NAT, which is what TURN exists for. Disturbing a working
+    // relayed path on a guess is worse than paying for it.
+    const { signalled } = await landedOnRelay({ alsoDirect: "failed" });
+    const before = offers(signalled);
+
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(offers(signalled)).toBe(before);
+  });
+
+  it("does not try when there is no direct pair in the report at all", async () => {
+    const { signalled } = await landedOnRelay({ alsoDirect: null });
+    const before = offers(signalled);
+
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(offers(signalled)).toBe(before);
+  });
+
+  it("asks once and only once, however long the session runs", async () => {
+    const { peer, signalled } = await landedOnRelay();
+    const before = offers(signalled);
+
+    await vi.advanceTimersByTimeAsync(21000);
+    const afterFirst = offers(signalled);
+    expect(afterFirst).toBeGreaterThan(before);
+    // The restart never becomes usable, so the attempt fails and the session is
+    // left where it was.
+    peer.connectionState = "connected";
+    await vi.advanceTimersByTimeAsync(120000);
+
+    expect(offers(signalled)).toBe(afterFirst);
+  });
+
+  it("stays on relay when the attempt does not land, rather than costing the connection", async () => {
+    const { peer, resolved, signalled } = await landedOnRelay();
+
+    await vi.advanceTimersByTimeAsync(21000);
+    expect(offers(signalled)).toBeGreaterThan(1);
+    // The restart times out inside openTimeoutMs and the peer is still connected.
+    await vi.advanceTimersByTimeAsync(20000);
+
+    expect(peer.closed).toBe(false);
+    expect(resolved.transportPath()).toBe("turn");
+  });
+
+  it("is never asked of a session that is already direct", async () => {
+    const { signalled } = await landedDirect();
+    const before = offers(signalled);
+
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(offers(signalled)).toBe(before);
   });
 });

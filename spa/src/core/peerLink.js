@@ -1,10 +1,20 @@
 import { openCarrier, peerFrames } from "./carrier.js";
 import { classifyTransportPath, TURN } from "./transportPath.js";
-import { createRelayHold } from "./iceCandidates.js";
+import { createRelayHold, directPairWorthTrying } from "./iceCandidates.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 const CHANNELS = [["app", 0], ["term", 1]];
 const OPEN_TIMEOUT_MS = 15000;
+
+/** How long a relayed session runs before it is worth one attempt at a direct
+ *  pair (issue #31).
+ *
+ *  Late on purpose. An ICE restart on a live connection re-gathers and re-checks
+ *  everything, and doing it early would put the cost on every session that
+ *  happened to land on TURN during a slow first connect — including one that is
+ *  still settling. Twenty seconds is past anything the connect sequence itself
+ *  does, so what is left is a session that is simply on the wrong path. */
+const RELAY_UPGRADE_AFTER_MS = 20000;
 const blockedBy = (reason, message) => Object.assign(new Error(message), { blockedReason: reason });
 const safeState = (state) => (["new", "connecting", "connected", "disconnected", "failed", "closed"].includes(state) ? state : "unknown");
 const safeIceState = (state) => (["new", "checking", "connected", "completed", "disconnected", "failed", "closed"].includes(state) ? state : "unknown");
@@ -45,9 +55,19 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // restart, because a restart is where a path that was direct becomes a
   // relayed one. Null until the first sample answers.
   let transportPath = null;
+  /** This connection's stats, or null when the peer cannot be asked. Two readings
+   *  are taken off them — which path is carrying, and whether a direct pair is
+   *  worth trying — and neither may throw at its caller. */
+  const peerStats = async () => {
+    try {
+      return await peer.getStats?.();
+    } catch {
+      return null;
+    }
+  };
   const sampleTransportPath = async () => {
     try {
-      const path = classifyTransportPath(await peer.getStats?.());
+      const path = classifyTransportPath(await peerStats());
       if (torn || !path) return;
       transportPath = path;
       diagnostic("carrying", { path });
@@ -60,6 +80,15 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   let tornBecause = "closed by the client";
   let cancelWait = () => {};
   let stopWatching = () => {};
+  /** Whether a negotiation is running. One at a time: two `createOffer` calls
+   *  over one peer would race each other's local description, and the failure
+   *  watcher and the direct-pair attempt can both want one. */
+  let renegotiating = false;
+  /** The timer that will ask whether this relayed session could be direct, and
+   *  whether it has already been asked. Once per connection: a session that has
+   *  had its second run at the race does not get a third. */
+  let upgradeTimer = null;
+  let upgradeAsked = false;
   const observed = [];
   const observe = (target, type, listener) => {
     target.addEventListener(type, listener);
@@ -131,6 +160,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     tornBecause = reason;
     cancelWait();
     stopWatching();
+    clearTimeout(upgradeTimer);
     recovery.clear();
     holdInbound.close();
     holdOutbound.close();
@@ -142,6 +172,93 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     peer.close();
     diagnostic("closed", { reason: tornBecause });
     signal("rtc.close", {}).catch(() => {});
+  };
+
+  /**
+   * This session landed on TURN. Is there a direct pair it could have had?
+   *
+   * Asked once, late, and only on evidence (issue #31). ICE nominates the first
+   * pair that connects and never re-nominates, so a session that lost the race on
+   * a network where a direct pair also works is billed for TURN egress for its
+   * whole life — and the only lever left after nomination is an ICE restart,
+   * which re-runs the race.
+   *
+   * The bar for asking is that a non-relay pair has ALREADY SUCCEEDED in this
+   * connection's own check list (`directPairWorthTrying`). That is what makes the
+   * disturbance defensible: the browser has proved the direct pair carries, so
+   * this is a second run at a race the relay merely answered first, not a gamble
+   * on a path that might work. A symmetric NAT — which is what TURN is for — has
+   * no such pair, is not asked, and is left alone.
+   *
+   * A failure costs nothing but the attempt: the session stays on relay. The one
+   * exception is a restart that left the path itself broken, which is torn down,
+   * because sitting on a dead peer is worse than reconnecting.
+   */
+  /** Whether there is anything here worth an ICE restart, on evidence. A
+   *  connection that is already direct, already asked, or already renegotiating
+   *  is not asked; nor is one whose check list holds no direct pair that worked,
+   *  and that answer is final — the list is settled by now and will not become
+   *  yes by waiting. */
+  const directPairIsWorthTrying = async () => {
+    if (upgradeAsked || torn || renegotiating || transportPath !== TURN) return false;
+    const stats = await peerStats();
+    if (torn) return false;
+    if (directPairWorthTrying(stats)) return true;
+    diagnostic("direct-pair", { state: "none-to-try" });
+    return false;
+  };
+
+  /** What the second run at the race landed on. */
+  const reportDirectPair = () =>
+    diagnostic("direct-pair", {
+      state: transportPath === TURN ? "stayed-relayed" : "renominated",
+      path: transportPath,
+    });
+
+  /** The attempt did not land. The session stays on relay, which is the whole
+   *  point of it being optional — unless the restart left the path itself
+   *  broken, because sitting on a dead peer is worse than reconnecting. */
+  const directPairFailed = (error) => {
+    diagnostic("direct-pair", { state: "failed", reason: error?.blockedReason === "timeout" ? "timeout" : "failed" });
+    if (!torn && ["failed", "disconnected"].includes(peer.connectionState)) {
+      tearDown("the direct-pair attempt left the path failed");
+    }
+  };
+
+  /** Let go of what the attempt took, whichever way it went. `onConnected` is
+   *  the rendezvous lease `renegotiate` acquired: a lease held after a failed
+   *  attempt would keep a relay socket open for the life of the session, which
+   *  rule 1 does not allow. */
+  const directPairFinished = async () => {
+    renegotiating = false;
+    if (torn) return;
+    recovery.end();
+    await onConnected();
+  };
+
+  const attemptDirectPair = async () => {
+    if (!(await directPairIsWorthTrying())) return;
+    upgradeAsked = true;
+    renegotiating = true;
+    diagnostic("direct-pair", { state: "trying" });
+    recovery.begin();
+    try {
+      await renegotiate("direct-pair");
+      readIceState();
+      await sampleTransportPath();
+      reportDirectPair();
+    } catch (error) {
+      directPairFailed(error);
+    } finally {
+      await directPairFinished();
+    }
+  };
+
+  /** Arm the one attempt, if this session landed anywhere worth asking about. */
+  const armDirectPairAttempt = () => {
+    if (upgradeAsked || torn || transportPath !== TURN) return;
+    clearTimeout(upgradeTimer);
+    upgradeTimer = setTimeout(() => void attemptDirectPair(), RELAY_UPGRADE_AFTER_MS);
   };
 
   try {
@@ -164,19 +281,34 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     throw error;
   }
 
+  /**
+   * Put this connection through an ICE restart: a fresh set of servers, a fresh
+   * gather, a fresh set of checks, over a rendezvous the caller reopens for it.
+   *
+   * Shared by the two things that ask for one, which differ only in what a
+   * failure costs: a connection that already failed has nothing to keep, and an
+   * optional attempt at a better path has a working connection to keep. So this
+   * negotiates and reports, and the caller decides.
+   */
+  const renegotiate = async (phase) => {
+    await withinDeadline(openTimeoutMs, async (remaining) => {
+      await onFailed();
+      if (torn) return;
+      diagnostic("restarting", { phase });
+      const freshServers = await fetchIceServers();
+      ensureActive();
+      peer.setConfiguration?.({ iceServers: freshServers });
+      await offer(peer, signal, freshServers, { iceRestart: true }, ensureActive);
+      await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive);
+    }, (cancel) => (cancelWait = cancel));
+  };
+
   stopWatching = watchForFailure(peer, diagnostic, async () => {
+    if (renegotiating) return; // one negotiation at a time; see `attemptDirectPair`
+    renegotiating = true;
     recovery.begin();
     try {
-      await withinDeadline(openTimeoutMs, async (remaining) => {
-        await onFailed();
-        if (torn) return;
-        diagnostic("restarting");
-        const freshServers = await fetchIceServers();
-        ensureActive();
-        peer.setConfiguration?.({ iceServers: freshServers });
-        await offer(peer, signal, freshServers, { iceRestart: true }, ensureActive);
-        await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive);
-      }, (cancel) => (cancelWait = cancel));
+      await renegotiate("restart");
       if (torn) return;
       readIceState();
       diagnostic("connected", { phase: "restart" });
@@ -186,8 +318,11 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     } catch (error) {
       diagnostic("restart-failed", { reason: error?.blockedReason === "timeout" ? "timeout" : "failed" });
       tearDown("the ICE restart did not land");
+    } finally {
+      renegotiating = false;
     }
   });
+  armDirectPairAttempt();
   const [app, term] = carriers;
   return { app, term, recovery, transportPath: () => transportPath, close: tearDown };
 }

@@ -41,32 +41,33 @@ describe("the line", () => {
   it("reads as one sentence in the agent's voice", () => {
     const line = paint([acted()]);
     expect(line.textContent.replace(/\s+/g, " ").trim())
-      // Capitalised: this line has no actor in front of it — it IS the agent
-      // speaking — so it opens its own sentence (#40).
-      .toBe("Commented on #14 Activity entry for issues in the conversation");
+      // #49: the number leads, then what was done. No title — it is the
+      // heading of the page the link opens — and no actor, because this line
+      // IS the agent speaking in its own conversation.
+      .toBe("#14 commented on");
   });
 
   // Zech's four, plus the rest of the board's verbs. A bare token and a past
   // tense both read, because the bridge may send either.
   it("renders each action", () => {
-    const said = (name) => paint([acted({ action: name })]).textContent.replace(/\s+/g, " ").trim().split(" #")[0];
-    expect(said("created")).toBe("Created");
-    expect(said("create")).toBe("Created");
-    expect(said("assigned")).toBe("Assigned");
+    const said = (name) => paint([acted({ action: name })]).textContent.replace(/\s+/g, " ").trim().replace(/^#\d+\s*/, "");
+    expect(said("created")).toBe("created");
+    expect(said("create")).toBe("created");
+    expect(said("assigned")).toBe("assigned");
     // The wire says `update`; a reader calls it an edit (#40).
-    expect(said("updated")).toBe("Edited");
-    expect(said("commented")).toBe("Commented on");
+    expect(said("updated")).toBe("edited");
+    expect(said("commented")).toBe("commented on");
     // The token the bridge actually sends, underscore and all.
-    expect(said("commented_on")).toBe("Commented on");
-    expect(said("moved")).toBe("Moved");
-    expect(said("closed")).toBe("Closed");
+    expect(said("commented_on")).toBe("commented on");
+    expect(said("moved")).toBe("moved");
+    expect(said("closed")).toBe("closed");
   });
 
   // A later verb should leave a legible line, not a blank one — and never one
   // with an underscore still in it, which is the defect #40 was filed for.
   it("says an action it has never heard of as itself", () => {
-    expect(actionWord("escalated")).toBe("Escalated");
-    expect(actionWord("hurled_at_wall")).toBe("Hurled at wall");
+    expect(actionWord("escalated")).toBe("escalated");
+    expect(actionWord("hurled_at_wall")).toBe("hurled at wall");
     expect(actionWord("")).toBe("");
   });
 

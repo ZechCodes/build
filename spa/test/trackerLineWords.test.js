@@ -59,10 +59,11 @@ describe("what was done", () => {
     expect(actionPhrase(null)).toBe("");
   });
 
-  // The action line begins a sentence; the notice line has the actor in front.
-  it("can lead a sentence", () => {
-    expect(actionPhrase("comment", { leading: true })).toBe("Commented on");
-    expect(actionPhrase("moved to In review", { leading: true })).toBe("Moved to In review");
+  // Always mid-sentence since #49: the number leads every line, so nothing
+  // here ever opens one and nothing is capitalised.
+  it("never leads a sentence, so it never capitalises", () => {
+    expect(actionPhrase("comment")).toBe("commented on");
+    expect(actionPhrase("moved to In review")).toBe("moved to In review");
   });
 });
 

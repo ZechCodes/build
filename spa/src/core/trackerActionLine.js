@@ -22,9 +22,9 @@ import { actionPhrase } from "./trackerLineWords.js";
 
 export const ACTION_LINE_CLASS = "thread-issue-action";
 
-/** The verb, leading its own sentence: this line has no actor in front of it
- *  — it IS the agent speaking — so it opens with what it did (#40). */
-export const actionWord = (action) => actionPhrase(action, { leading: true });
+/** The verb. Mid-sentence now: the number leads the line (#49), so what
+ *  happened is no longer opening it. */
+export const actionWord = (action) => actionPhrase(action);
 
 /**
  * Where the line goes: the issue's page, and the comment itself when the
@@ -53,12 +53,19 @@ export function actionHref(action, place) {
  */
 export function issueActionLineHtml(action, { place = null } = {}) {
   if (!action || !action.issue_id) return "";
+  // The number first, then what was done (#49). No actor: this line IS the
+  // agent speaking in its own conversation, so "by …" would name the voice
+  // already saying it. No title either — it was the longest part of the line
+  // and the first to be cut off, and it is the heading of the page the link
+  // opens. Hover carries it, where length costs nothing.
+  //
   // The spaces between the spans are for the reader, not for the layout: flex
   // drops whitespace-only nodes and `gap` does the spacing, but they stay in
   // the text a screen reader speaks and a copy takes.
-  const said = `<span class="thread-issue-said">${esc(actionWord(action.action))}</span> <span class="thread-issue-number">#${esc(String(action.number ?? ""))}</span> <span class="thread-issue-line-title">${esc(action.title || "")}</span>`;
+  const said = `<span class="thread-issue-number">#${esc(String(action.number ?? ""))}</span> <span class="thread-issue-said">${esc(actionWord(action.action))}</span>`;
+  const hover = action.title ? ` title="${esc(action.title)}"` : "";
   const href = actionHref(action, place);
   return href
-    ? `<a class="${ACTION_LINE_CLASS}" href="${esc(href)}" data-issue-action="${esc(action.issue_id)}">${said}</a>`
-    : `<span class="${ACTION_LINE_CLASS}" data-issue-action="${esc(action.issue_id)}">${said}</span>`;
+    ? `<a class="${ACTION_LINE_CLASS}" href="${esc(href)}"${hover} data-issue-action="${esc(action.issue_id)}">${said}</a>`
+    : `<span class="${ACTION_LINE_CLASS}"${hover} data-issue-action="${esc(action.issue_id)}">${said}</span>`;
 }

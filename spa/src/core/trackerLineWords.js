@@ -48,8 +48,6 @@ const ACTION_WORDS = Object.freeze({
   "tracked": "tracked",
 });
 
-const capitalised = (said) => (said ? said[0].toUpperCase() + said.slice(1) : "");
-
 /**
  * The verb, in the sentence the line is.
  *
@@ -62,16 +60,14 @@ const capitalised = (said) => (said ? said[0].toUpperCase() + said.slice(1) : ""
  * token, because the underscore on screen is the defect being fixed and a new
  * verb from a later bridge must not reintroduce it.
  *
- * `leading` capitalises it, for the action line — which has no actor in front
- * of it and so begins its own sentence.
+ * Always mid-sentence: since #49 the number leads every line, so nothing here
+ * ever opens one.
  */
-export function actionPhrase(action, { leading = false } = {}) {
+export function actionPhrase(action) {
   const said = String(action || "").trim();
   if (!said) return "";
   const words = said.replace(/_/g, " ");
-  const known = ACTION_WORDS[words.toLowerCase()];
-  const phrase = known || words;
-  return leading ? capitalised(phrase) : phrase;
+  return ACTION_WORDS[words.toLowerCase()] || words;
 }
 
 /** What Build's own agent for a project is called, when nothing names the

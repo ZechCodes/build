@@ -80,10 +80,17 @@ const issuePartOf = (envelope, stated) => ({
  *  the comment, which is the right page either way. */
 function actPartOf(stated, body) {
   if (stated) {
-    return { actor: stated.actor || "", action: stated.action || "", comment_id: stated.comment_id || null };
+    return {
+      actor: stated.actor || "",
+      action: stated.action || "",
+      // Who it was handed to. The verb needs it to say anything useful —
+      // "assigned" alone leaves the reader asking the obvious question.
+      assignee: stated.assignee || null,
+      comment_id: stated.comment_id || null,
+    };
   }
   const parsed = noticeFromBody(body) || {};
-  return { actor: parsed.actor || "", action: parsed.action || "", comment_id: null };
+  return { actor: parsed.actor || "", action: parsed.action || "", assignee: null, comment_id: null };
 }
 
 export function issueNoticeOf(message) {
@@ -113,27 +120,67 @@ export function noticeHref(notice, place) {
  * than being guessed at or left as an empty gap — "#32 Title" is a true
  * sentence about an issue, and "acted on #32" is a claim nothing backs.
  */
-/** "issues-spa · Agent 1 commented on", or nothing where neither source named
- *  both. Both halves or neither: "commented on #39" with nobody in front of it
- *  reads as the reader having done it. */
-function openingHtml(notice, reading) {
-  const who = actorName(notice.actor, reading);
-  const did = actionPhrase(notice.action);
-  return who && did ? `<span class="thread-issue-said">${esc(who)} ${esc(did)}</span>` : "";
+/**
+ * What happened, with the detail the verb needs.
+ *
+ * "assigned" on its own leaves the reader asking the obvious question, and the
+ * notice already carries the answer. Every other verb either needs nothing or
+ * arrives as a phrase that carries its own ("moved to In review").
+ */
+export function noticeAction(notice, reading = {}) {
+  const did = actionPhrase(notice?.action);
+  if (!did || !notice?.assignee) return did;
+  // A phrase the bridge wrote already says who; saying it twice is worse than
+  // not saying it at all.
+  if (/\bto\b/.test(did)) return did;
+  const toWhom = actorName(notice.assignee, reading);
+  return toWhom ? `${did} to ${toWhom.toLowerCase() === "you" ? "you" : toWhom}` : did;
 }
 
-const issueSaidHtml = (notice) =>
-  `<span class="thread-issue-number">#${esc(String(notice.number ?? ""))}</span> <span class="thread-issue-line-title">${esc(notice.title || "")}</span>`;
+/** The whole line as words, which is also what the hover text is built from. */
+export function noticeLineText(notice, reading = {}) {
+  const did = noticeAction(notice, reading);
+  const who = actorName(notice?.actor, reading);
+  return [`#${notice?.number ?? ""}`, did, who ? `by ${who}` : ""].filter(Boolean).join(" ");
+}
 
+/** The number, what happened, and who did it — each its own span so the
+ *  stylesheet can hold the number fixed and let nothing else push it away. */
+const noticeSpansHtml = (notice, did, who) =>
+  [
+    `<span class="thread-issue-number">#${esc(String(notice.number ?? ""))}</span>`,
+    did ? `<span class="thread-issue-said">${esc(did)}</span>` : "",
+    who ? `<span class="thread-issue-by">by ${esc(who)}</span>` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+/**
+ * The line: `#41 moved to In review by transport-liveness · Agent 1`.
+ *
+ * Zech, on the lines as #40 shipped them: "Relevant info is getting pushed out
+ * of view … Move what happened first and don't show the issue title."
+ *
+ * So the number leads — it is the deep link and the thing a person says out
+ * loud — then what happened, then who did it. The title is gone from the line
+ * entirely: it was the longest part and the first to be cut off, and it is the
+ * heading of the page the link opens. It stays as hover text, where length
+ * costs nothing.
+ */
 export function issueNoticeLineHtml(notice, { place = null, agentLabels = {}, projectName = "" } = {}) {
   if (!notice?.issue_id) return "";
+  const reading = { agentLabels, projectName };
+  const did = noticeAction(notice, reading);
+  const who = actorName(notice.actor, reading);
   // The spaces between the spans are for the reader, not for the layout: flex
   // drops whitespace-only nodes and `gap` does the spacing, but they stay in
   // the text a screen reader speaks and a copy takes.
-  const opening = openingHtml(notice, { agentLabels, projectName });
-  const said = `${opening ? `${opening} ` : ""}${issueSaidHtml(notice)}`;
+  const said = noticeSpansHtml(notice, did, who);
+  // The title the line no longer shows. Hover costs nothing and a reader who
+  // wants to know which issue #41 is can ask without opening it.
+  const hover = notice.title ? ` title="${esc(notice.title)}"` : "";
   const href = noticeHref(notice, place);
   return href
-    ? `<a class="${NOTICE_CLASS}" href="${esc(href)}" data-issue-notice="${esc(notice.issue_id)}">${said}</a>`
-    : `<span class="${NOTICE_CLASS}" data-issue-notice="${esc(notice.issue_id)}">${said}</span>`;
+    ? `<a class="${NOTICE_CLASS}" href="${esc(href)}"${hover} data-issue-notice="${esc(notice.issue_id)}">${said}</a>`
+    : `<span class="${NOTICE_CLASS}"${hover} data-issue-notice="${esc(notice.issue_id)}">${said}</span>`;
 }

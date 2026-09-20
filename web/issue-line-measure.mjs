@@ -116,13 +116,15 @@ async function measure(width, label) {
         messageTextLeft: messages[0] ? textLeft(messages[0]) : null,
         lines: lines.map((el) => {
           const anchor = el.querySelector("a, span");
-          const title = el.querySelector(".thread-issue-line-title");
           return {
             text: el.textContent.replace(/\s+/g, " ").trim(),
             left: Math.round(box(el).left - timeline.left),
             height: Math.round(box(el).height),
             rows: Math.round(box(el).height / parseFloat(getComputedStyle(anchor).lineHeight)),
-            titleClipped: title ? title.scrollWidth > title.clientWidth : false,
+            // #49 took the title off the line so it would fit: whether it
+            // actually does is the thing to measure now, and a clipped span is
+            // the line not fitting.
+            clipped: [...el.querySelectorAll("span")].some((one) => one.scrollWidth > one.clientWidth + 1),
             overflows: anchor ? anchor.scrollWidth > Math.ceil(box(anchor).width) + 1 : false,
           };
         }),
@@ -171,7 +173,11 @@ async function measure(width, label) {
       `${label}: a real message either side keeps its gap — ${found.gapsToMessages.join(", ")}`,
     );
     record(!found.lines.some((l) => l.overflows), `${label}: nothing overflows its row`);
-    record(found.lines.some((l) => l.titleClipped), `${label}: a long title is ellipsised rather than wrapped`);
+    // The point of #49: with the title gone the whole line fits, even at 390.
+    record(
+      !found.lines.some((l) => l.clipped),
+      `${label}: every line fits whole, nothing clipped — ${found.lines.map((l) => l.text.slice(0, 28)).join(" | ")}`,
+    );
   } finally {
     // Always, whatever threw: a browser context left open holds the run alive
     // and the next one inherits its cookies.

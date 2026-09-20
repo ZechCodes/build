@@ -56,25 +56,27 @@ describe("the line, from the structured field", () => {
   const stated = (over = {}) =>
     notice({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented", comment_id: "ic-9", ...over } });
 
-  it("reads actor, action, then the issue", () => {
-    expect(text(stated())).toBe("Agent 01M2 commented on #32 Kanban drag does not persist");
+  // #49. Zech: "Relevant info is getting pushed out of view … Move what
+  // happened first and don't show the issue title."
+  it("reads number, action, then who did it — and no title", () => {
+    expect(text(stated())).toBe("#32 commented on by Agent 01M2");
   });
 
   it("uses the bridge's own phrase for an action it has never heard of", () => {
-    expect(text(stated({ action: "moved to In review" }))).toContain("moved to In review #32");
-    expect(text(stated({ action: "assigned to Agent 2" }))).toContain("assigned to Agent 2 #32");
+    expect(text(stated({ action: "moved to In review" }))).toBe("#32 moved to In review by Agent 01M2");
+    expect(text(stated({ action: "assigned to Agent 2" }))).toBe("#32 assigned to Agent 2 by Agent 01M2");
   });
 
   // A bare token from a sender that sends one, turned into the words a reader
   // says. `comment` carries its own preposition because the sentence has none.
   it("puts a bare token into the words a reader says", () => {
     for (const [token, said] of [["comment", "commented on"], ["close", "closed"], ["reopen", "reopened"], ["edit", "edited"], ["link", "linked"], ["update", "edited"]]) {
-      expect(text(stated({ action: token }))).toBe(`Agent 01M2 ${said} #32 Kanban drag does not persist`);
+      expect(text(stated({ action: token }))).toBe(`#32 ${said} by Agent 01M2`);
     }
   });
 
   it("says You for the user", () => {
-    expect(text(stated({ actor: { kind: "user" } }))).toContain("You commented on");
+    expect(text(stated({ actor: { kind: "user" } }))).toBe("#32 commented on by You");
   });
 
   it("uses the name this client has for an agent when it has one", () => {
@@ -82,13 +84,13 @@ describe("the line, from the structured field", () => {
       place: PLACE,
       agentLabels: { "agent-01M2XXGQ": "issues-spa · Agent 1" },
     });
-    expect(line).toContain("issues-spa · Agent 1 commented on");
+    expect(line).toContain("by issues-spa · Agent 1");
   });
 });
 
 describe("the line, parsed from the body", () => {
   it("reads the actor and the action out of the first line", () => {
-    expect(text(notice())).toBe("Agent 01M2 commented on #32 Kanban drag does not persist");
+    expect(text(notice())).toBe("#32 commented on by Agent 01M2");
   });
 
   // The comment body is carried but never drawn: the press is what opens it.
@@ -108,14 +110,14 @@ describe("the line, parsed from the body", () => {
       from_issue: { issue_id: "issue-9", number: 9, title: "Board — on a phone" },
       body: "#9 Board — on a phone — agent-01M2XXGQ closed: done.",
     });
-    expect(text(dashed)).toBe("Agent 01M2 closed #9 Board — on a phone");
+    expect(text(dashed)).toBe("#9 closed by Agent 01M2");
   });
 
   // The whole point of the fallback degrading rather than failing: the issue
   // comes from the envelope, so the LINK never depends on the parse.
   it("says the issue alone when the prose says nothing it can read", () => {
     const opaque = notice({ body: "something else entirely" });
-    expect(text(opaque)).toBe("#32 Kanban drag does not persist");
+    expect(text(opaque)).toBe("#32");
     expect(html(opaque).getAttribute("href")).toBe("#/device/dev-1/project/proj-1/issues/issue-32");
   });
 });
@@ -196,7 +198,7 @@ describe("the row, in the timeline", () => {
       { place: PLACE, agentLabels: { "agent-01M2XXGQ": "issues-spa · Agent 1" } },
     );
     expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())
-      .toBe("issues-spa · Agent 1 commented on #32 Kanban drag does not persist");
+      .toBe("#32 commented on by issues-spa · Agent 1");
   });
 
   // Not a blank where a name should be: an agent this client cannot name is
@@ -204,7 +206,7 @@ describe("the row, in the timeline", () => {
   it("falls back to the agent's short name when the feed has none for it", () => {
     expect(paint([item({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented" } })])
       .textContent.replace(/\s+/g, " ").trim())
-      .toBe("Agent 01M2 commented on #32 Kanban drag does not persist");
+      .toBe("#32 commented on by Agent 01M2");
   });
 
   it("carries its sequence, so it reads in order and counts as unread", () => {
@@ -259,15 +261,23 @@ describe("the shape of the row", () => {
 
   // The title is the part that can be any length, so it is the part that
   // gives; nothing else on the row is allowed to wrap.
-  it("gives the title the ellipsis and nothing a wrap", () => {
+  // #49: the title was the longest part of the line and the first to be cut
+  // off, so it is not on the line at all any more — it is the heading of the
+  // page the link opens, and it stays as hover text where length costs
+  // nothing.
+  it("leads with the number and carries no title on the line", () => {
     for (const row of [said(notice_()), said(action_())]) {
       const line = row.querySelector("a, span");
-      expect(line.querySelector(".thread-issue-line-title")).not.toBeNull();
-      expect(line.querySelector(".thread-issue-number")).not.toBeNull();
-      // The old markup put the title in a span that wrapped anywhere.
-      expect(row.querySelector(".thread-issue-action-title")).toBeNull();
-      expect(row.querySelector(".thread-issue-notice-title")).toBeNull();
+      expect(line.firstElementChild.classList.contains("thread-issue-number")).toBe(true);
+      expect(line.querySelector(".thread-issue-line-title")).toBeNull();
+      expect(line.textContent).not.toContain("Kanban drag does not persist");
+      expect(line.textContent).not.toContain("A title");
     }
+  });
+
+  it("keeps the title as hover text, so a number can still be identified", () => {
+    const line = said(notice_()).querySelector("a, span");
+    expect(line.getAttribute("title")).toBe("Kanban drag does not persist");
   });
 
   it("carries no indent of its own, so it starts where message text starts", () => {
@@ -294,6 +304,6 @@ describe("the shape of the row", () => {
       { place: { ...PLACE, projectName: "Build" } },
     );
     expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())
-      .toBe("Build agent commented on #32 Kanban drag does not persist");
+      .toBe("#32 commented on by Build agent");
   });
 });

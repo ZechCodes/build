@@ -123,6 +123,7 @@ import { wireExpansionReveal } from "./revealExpanded.js";
 import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
+import { mountAgentIssues } from "./trackerAgentIssuesEntry.js";
 import { mountAgentObservation } from "./agentObservation.js";
 import { createTaskCompletionTracker } from "./taskCompletionModel.js";
 import { mountTaskCompletionToast } from "./taskCompletionToast.js";
@@ -169,6 +170,7 @@ const RAIL_STATUS_PILLS_ID = "rail-status-pills";
 const RAIL_STATUS_GIT_ID = "rail-status-git";
 const RAIL_VIEWER_ID = "rail-surfaces-viewer";
 const RAIL_OBSERVATION_ID = "rail-observation";
+const RAIL_ISSUES_ID = "rail-issues";
 const WORKING_WORD_SELECTOR = ".rail-status-working-word";
 const STATUS_TEXT_SELECTOR = ".rail-status-text";
 const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
@@ -553,6 +555,13 @@ const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_V
 
 const railObservationHostHtml = () =>
   `<div class="agent-observation-host" id="${RAIL_OBSERVATION_ID}" hidden></div>`;
+
+/// What this agent is carrying on the issue board, under what it is doing right
+/// now. Its own host rather than a fifth surface kind: the surfaces beside it
+/// are drawn from the agent digest's own payload, and these come off the
+/// project's cached issue list and a different push
+/// (core/trackerAgentIssuesEntry.js). Hidden until there is something in it.
+const railIssuesHostHtml = () => `<div class="agent-issues-host" id="${RAIL_ISSUES_ID}" hidden></div>`;
 
 function surfaceMenuHtml(options) {
   return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE, icon: true }) : "";
@@ -966,6 +975,7 @@ function mountRailOnContext(host, context, swap) {
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
   let observationBlock = null;
+  let issuesBlock = null;
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
@@ -2131,6 +2141,7 @@ function mountRailOnContext(host, context, swap) {
     `<div class="rail-composer" id="rail-composer">
       ${railViewerHostHtml()}
       ${railObservationHostHtml()}
+      ${railIssuesHostHtml()}
       ${railStatusRowHtml()}
       <div class="chat-recovery" id="rail-chat-recovery"></div>
       ${composerHtml({
@@ -2370,6 +2381,10 @@ function mountRailOnContext(host, context, swap) {
     const observationHost = panel.querySelector(`#${RAIL_OBSERVATION_ID}`);
     if (!pillHost || !viewerHost || !observationHost) return;
     observationBlock = mountAgentObservation(observationHost);
+    const issuesHost = panel.querySelector(`#${RAIL_ISSUES_ID}`);
+    if (issuesHost) {
+      issuesBlock = mountAgentIssues(issuesHost, { deviceId: context.deviceId, projectId: context.projectId });
+    }
     surfacesBlock = mountAgentSurfaces({
       pillHost,
       viewerHost,
@@ -2381,6 +2396,8 @@ function mountRailOnContext(host, context, swap) {
 
   const disposeSurfaces = () => {
     closeSurfaceOverlay();
+    issuesBlock?.dispose();
+    issuesBlock = null;
     observationBlock?.dispose();
     observationBlock = null;
     if (!surfacesBlock) return;
@@ -2396,6 +2413,7 @@ function mountRailOnContext(host, context, swap) {
       generation: seen.generation,
       working: agentInFocus()?.working === true,
     });
+    issuesBlock?.set(agentInFocus()?.id || null);
   };
 
   const paintSurfaceMenu = () => {

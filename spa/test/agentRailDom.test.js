@@ -3030,6 +3030,10 @@ describe("the agent's surfaces, carried by the status row", () => {
     expect([...block.children].map((child) => child.id)).toEqual([
       "rail-surfaces-viewer",
       "rail-observation",
+      // What this agent is carrying on the issue board, under what it is doing
+      // right now and above the status row (core/trackerAgentIssuesEntry.js).
+      // Hidden until it has something in it.
+      "rail-issues",
       "rail-status",
       "rail-chat-recovery",
       "",

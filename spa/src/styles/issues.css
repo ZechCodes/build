@@ -395,22 +395,6 @@
 /* An empty count is no pill at all rather than an empty one. */
 .tb-issues-count:empty { display:none; }
 
-.modal-workspace-issues { width:min(560px, calc(100vw - 32px)); }
-.workspace-issues-body { max-height:min(60vh, 520px); overflow-y:auto; display:flex; flex-direction:column; gap:14px; }
-.workspace-issues-agent-head {
-  margin:0 0 6px; font-size:11px; font-weight:700; letter-spacing:.05em;
-  text-transform:uppercase; color:var(--dim);
-}
-/* The groups inside a section are the conversation entry's own, so they keep
-   their panel fill; the section around them is only a heading. */
-.workspace-issues-agent .agent-issues { gap:5px; }
-.workspace-issues-body .empty { padding:18px 2px; }
-
-@media (max-width: 760px) {
-  .modal-workspace-issues { width:calc(100vw - 20px); }
-  .workspace-issues-body { max-height:70vh; }
-}
-
 /* ---- an agent acting on an issue, in its own conversation ----------------
    The agent's voice at reduced weight: a footnote that happens to be
    clickable, not a bubble. No avatar — an avatar would give a line of

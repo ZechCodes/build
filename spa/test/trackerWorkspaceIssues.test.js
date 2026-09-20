@@ -1,13 +1,12 @@
-// What a workspace's agents are carrying: the same grouping as an agent's own
-// conversation entry, asked of each agent in the workspace.
+// How many open issues a workspace's agents are holding: the number on the
+// icon beside the cog.
+//
+// The grouping this file used to test went with the #16 overlay (#29): the
+// issues are a tab of the workspace now, drawn by the tracker's own list and
+// board, and what those show is tested in workspaceIssuesTab(Dom).
 
 import { describe, expect, it } from "vitest";
-import {
-  agentLabel,
-  workspaceAgentIds,
-  workspaceIssueGroups,
-  workspaceOpenIssueCount,
-} from "../src/core/trackerWorkspaceIssues.js";
+import { workspaceAgentIds, workspaceOpenIssueCount } from "../src/core/trackerWorkspaceIssues.js";
 import { issue } from "./trackerWireFixture.js";
 
 const ONE = "agent-01M2ONE";
@@ -16,9 +15,6 @@ const ELSEWHERE = "agent-01M2ELSE";
 
 const agents = [{ id: ONE, ordinal: 1 }, { id: TWO, ordinal: 2 }];
 const held = (agentId, over = {}) => issue({ assignee: { kind: "agent", agent_id: agentId }, ...over });
-
-const sections = (issues, list = agents) => workspaceIssueGroups(issues, list);
-const sectionFor = (issues, agentId) => sections(issues).find((one) => one.agentId === agentId);
 
 describe("the workspace's agents", () => {
   it("are the ids its row carries", () => {
@@ -30,52 +26,6 @@ describe("the workspace's agents", () => {
   it("are none for a workspace with no conversation yet", () => {
     expect(workspaceAgentIds(null)).toEqual([]);
     expect(workspaceAgentIds([{ ordinal: 1 }])).toEqual([]);
-  });
-
-  // An agent has no name of its own, only a place on the strip — the same
-  // place the rail's bubbles read across.
-  it("are named by their place on the strip", () => {
-    expect(agentLabel({ id: ONE, ordinal: 2 }, 0)).toBe("Agent 2");
-    expect(agentLabel({ id: ONE }, 1)).toBe("Agent 2");
-  });
-});
-
-describe("grouping by agent", () => {
-  it("gives each agent the same groups its own conversation shows", () => {
-    const issues = [
-      held(ONE, { number: 1, status: "in_progress" }),
-      held(ONE, { number: 2, status: "ready" }),
-      held(ONE, { number: 3, status: "done" }),
-    ];
-    expect(sectionFor(issues, ONE).groups.map((one) => one.id)).toEqual(["working", "holding", "finished"]);
-  });
-
-  it("keeps the agents in the order the row lists them", () => {
-    const issues = [held(TWO, { number: 1, status: "in_progress" }), held(ONE, { number: 2, status: "in_progress" })];
-    expect(sections(issues).map((one) => one.label)).toEqual(["Agent 1", "Agent 2"]);
-  });
-
-  // The view answers "what is being worked here"; an agent with nothing to
-  // show is not part of that answer.
-  it("leaves out an agent holding nothing", () => {
-    const issues = [held(ONE, { number: 1, status: "in_progress" })];
-    expect(sections(issues).map((one) => one.agentId)).toEqual([ONE]);
-  });
-
-  it("leaves out an issue held by an agent of another workspace", () => {
-    expect(sections([held(ELSEWHERE, { number: 9, status: "in_progress" })])).toEqual([]);
-  });
-
-  // An issue somebody else holds is not this workspace's work, however many
-  // of its agents are following it. Tracking belongs in a conversation.
-  it("never shows what an agent merely tracks", () => {
-    const issues = [issue({ number: 9, assignee: { kind: "agent", agent_id: ELSEWHERE }, trackers: [ONE] })];
-    expect(sections(issues)).toEqual([]);
-  });
-
-  it("has nothing to say about a workspace with no agents", () => {
-    expect(sections([held(ONE, { number: 1 })], [])).toEqual([]);
-    expect(workspaceIssueGroups(null, agents)).toEqual([]);
   });
 });
 

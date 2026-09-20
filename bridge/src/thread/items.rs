@@ -90,6 +90,24 @@ pub struct IssueEnvelope {
     pub links: crate::tracker::IssueLinks,
 }
 
+/// What an agent did to an issue, on the message it posted saying so (spec:
+/// Issues → An agent says what it did).
+///
+/// Distinct from [`IssueEnvelope`], which says an issue was HANDED to somebody.
+/// This says the agent acted on one. `action` is a slug rather than a label so
+/// the client renders the wording and the bridge does not decide it twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueAction {
+    pub action: String,
+    pub issue_id: String,
+    pub number: u64,
+    pub title: String,
+    /// Present only on `commented_on`, and what lets a client deep-link the
+    /// comment rather than the issue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageRole {
@@ -529,6 +547,10 @@ pub struct ThreadMessage {
     /// links must not cost the rest of them a word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_issue: Option<Box<IssueEnvelope>>,
+    /// What this agent did to an issue, when the message is the agent saying
+    /// so. Boxed for the reason `from_issue` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_action: Option<Box<IssueAction>>,
     /// Client mutation whose durable delivery owns this reviewer message.
     /// Managed messages are read through that exact operation and never by
     /// the legacy catch-all unread mailbox.

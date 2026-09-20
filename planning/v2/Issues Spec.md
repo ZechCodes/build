@@ -560,17 +560,24 @@ The message carries:
 }
 ```
 
-`action` is one of `created`, `created_and_assigned`, `assigned`, `moved`,
-`closed`, `reopened`, `commented_on`, `linked`, `updated` — a slug, the way a
-column is, so a client renders the label and the bridge does not decide the
-wording twice. `comment_id` is present only on `commented_on`, and is what lets
-a client deep-link the comment rather than the issue.
+`action` is one of `created`, `assigned`, `moved`, `closed`, `reopened`,
+`commented_on`, `linked`, `updated` — a slug, the way a column is, so a client
+renders the label and the bridge does not decide the wording twice. `comment_id`
+is present only on `commented_on`, and is what lets a client deep-link the
+comment rather than the issue.
 
-**One message per write, never two.** A create that also assigns is one message
-with `created_and_assigned`, because it was one call and one thing the agent
-did. This is why the message is posted in `commit_issue_write` — the one funnel
-every tracker write already goes through — rather than in each verb, where a
-call that changes three things would post three times.
+**One message per write, never two.** A call that relabels and moves is one
+thing the agent did, and two messages about it would be two lines in a
+conversation for one action. This is why the message is posted in
+`commit_issue_write` — the one funnel every tracker write already goes through —
+rather than in each verb.
+
+A create is the one write that does not pass through that funnel, because its
+number is minted inside the insert's own transaction; the create path calls the
+same hook by hand, and the rule is unchanged. There is no
+`created_and_assigned`: a create and an assignment are two separate writes, and
+`create_issue` takes no assignee at all, so no agent can reach the pair in one
+call.
 
 **Only when the actor is an agent with a conversation.** A human moving a card
 on the board is already looking at the board; posting into a conversation nobody

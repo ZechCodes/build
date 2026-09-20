@@ -17,6 +17,7 @@ mod edits;
 mod notices;
 mod refs;
 mod reminder;
+mod said;
 mod tools;
 mod tracking;
 mod views;
@@ -282,6 +283,8 @@ impl AppState {
         // change landed, and a conversation that could not be written must not
         // turn it back into a refusal.
         self.notify_trackers(&write);
+        // And the agent says, in its own conversation, what it just did.
+        self.say_what_the_agent_did(&write);
         Ok(json!({ "issue": issue_json(project_id, &write.issue) }))
     }
 

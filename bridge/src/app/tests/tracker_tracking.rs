@@ -716,3 +716,188 @@ fn a_second_complete_reminds_again() {
         "it holds the same issue, so it is told again"
     );
 }
+
+// ------------------------------------------ the agent says what it did ---
+
+/// The `issue_action` messages on one agent's own conversation.
+fn said(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> {
+    let page = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": entity_id, "agent_id": agent_id, "limit": 50 }),
+    ));
+    page["result"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| item["type"] == "message")
+        .map(|item| item["data"].clone())
+        .filter(|message| message["issue_action"].is_object())
+        .collect()
+}
+
+/// Every tool an agent writes with posts exactly one message saying what it
+/// did, authored by the agent and not marked as Build's.
+#[test]
+fn each_tool_posts_one_message_saying_what_the_agent_did() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "here");
+
+    let filed_by_agent = state
+        .on_agent_mcp_action(
+            &who.0,
+            &who.1,
+            crate::mcp::BridgeAction::TrackerCreateIssue {
+                title: "Kanban drag".into(),
+                body: None,
+                status: None,
+                labels: Vec::new(),
+                priority: None,
+            },
+        )
+        .expect("an agent files an issue");
+    let id = filed_by_agent["issue"]["id"].as_str().unwrap().to_string();
+
+    for (action, expected) in [
+        (
+            crate::mcp::BridgeAction::TrackerMoveIssue {
+                issue_id: id.clone(),
+                status: "in_review".into(),
+            },
+            "moved",
+        ),
+        (
+            crate::mcp::BridgeAction::TrackerCommentIssue {
+                issue_id: id.clone(),
+                body: "Reproduced it.".into(),
+                refs: Vec::new(),
+            },
+            "commented_on",
+        ),
+        (
+            crate::mcp::BridgeAction::TrackerCloseIssue {
+                issue_id: id.clone(),
+                reason: None,
+            },
+            "closed",
+        ),
+    ] {
+        state
+            .on_agent_mcp_action(&who.0, &who.1, action)
+            .unwrap_or_else(|why| panic!("{expected}: {why}"));
+    }
+
+    let messages = said(&mut state, &who.0, &who.1);
+    let actions: Vec<&str> = messages
+        .iter()
+        .map(|message| message["issue_action"]["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        actions,
+        vec!["created", "moved", "commented_on", "closed"],
+        "one message per write, in the order they happened"
+    );
+
+    let first = &messages[0];
+    assert_eq!(first["role"], "agent", "the agent's own words");
+    assert!(
+        first["from_build"] != true,
+        "not Build's sentence: {first:?}"
+    );
+    assert_eq!(first["issue_action"]["issue_id"], id.as_str());
+    assert_eq!(first["issue_action"]["number"], 1);
+    assert_eq!(first["issue_action"]["title"], "Kanban drag");
+    assert_eq!(first["body"], "Created #1 Kanban drag");
+}
+
+/// A comment's message carries the id that deep-links the comment itself.
+#[test]
+fn a_comment_message_carries_its_comment_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "here");
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+
+    let commented = state
+        .on_agent_mcp_action(
+            &who.0,
+            &who.1,
+            crate::mcp::BridgeAction::TrackerCommentIssue {
+                issue_id: id.clone(),
+                body: "Reproduced it.".into(),
+                refs: Vec::new(),
+            },
+        )
+        .expect("an agent comments");
+    let comment_id = commented["comment"]["id"].as_str().unwrap().to_string();
+
+    let messages = said(&mut state, &who.0, &who.1);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(
+        messages[0]["issue_action"]["comment_id"],
+        comment_id.as_str(),
+        "the id that links the comment rather than the issue"
+    );
+    assert_eq!(messages[0]["body"], "Commented on #1 one");
+}
+
+/// The api path posts nothing: a human moving a card is already looking at
+/// the board.
+#[test]
+fn the_api_path_posts_no_action_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "here");
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+
+    state.handle(req(
+        "issues.update",
+        json!({ "issue_id": id, "status": "in_review" }),
+    ));
+    state.handle(req(
+        "issues.comment",
+        json!({ "issue_id": id, "body": "from the board" }),
+    ));
+
+    assert!(
+        said(&mut state, &who.0, &who.1).is_empty(),
+        "the human is already looking at the board"
+    );
+}
+
+/// The message is in the ACTING agent's conversation, not the assignee's.
+#[test]
+fn the_message_lands_on_the_actor_and_not_on_the_assignee() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let actor = coding_agent(&mut state, &project_id, "actor");
+    let target = coding_agent(&mut state, &project_id, "target");
+    let id = issue_id(&filed(&mut state, &project_id, "hand this over"));
+
+    state
+        .on_agent_mcp_action(
+            &actor.0,
+            &actor.1,
+            crate::mcp::BridgeAction::TrackerAssignIssue {
+                issue_id: id.clone(),
+                assignee: json!({ "kind": "agent", "agent_id": target.1 }),
+                note: None,
+            },
+        )
+        .expect("an agent hands work over");
+
+    let by_actor = said(&mut state, &actor.0, &actor.1);
+    assert_eq!(by_actor.len(), 1, "{by_actor:?}");
+    assert_eq!(by_actor[0]["issue_action"]["action"], "assigned");
+    assert_eq!(by_actor[0]["body"], "Assigned #1 hand this over");
+
+    assert!(
+        said(&mut state, &target.0, &target.1).is_empty(),
+        "the assignee gets the ISSUE, not a note about somebody assigning it"
+    );
+}

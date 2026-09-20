@@ -314,6 +314,27 @@ impl Thread {
     /// An issue is not a sender: the human assigning one IS the human speaking,
     /// and a row they cleared should come back for it. Where an AGENT did the
     /// assigning, the sender it also wears is what moves the line.
+    /// Say what the agent did to an issue, on the message just posted.
+    ///
+    /// Role `agent` and no `from_build` mark: this is the agent's own sentence
+    /// about its own work, and a reader should see it among the agent's other
+    /// words rather than as something the system interjected.
+    pub fn post_agent_issue_action(
+        &mut self,
+        body: impl Into<String>,
+        action: super::IssueAction,
+        now: impl Into<String>,
+    ) -> String {
+        // `still_working: true`: the agent is saying what it did on the way to
+        // something, not handing the turn back. A false here would read as the
+        // agent finishing, and a card moved mid-turn is not an agent finishing.
+        let id = self.post_agent_offering(body, Vec::new(), now, true);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.issue_action = Some(Box::new(action));
+        }
+        id
+    }
+
     pub fn wear_issue(&mut self, from_issue: super::IssueEnvelope) {
         let Some(ThreadItem::Message(message)) = self.items.last_mut() else {
             return;
@@ -733,6 +754,7 @@ impl Thread {
             sent_to: None,
             from_build: false,
             from_issue: None,
+            issue_action: None,
             done: false,
             outcome: None,
             completion_report: None,

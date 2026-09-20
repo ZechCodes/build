@@ -27,9 +27,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
   joinFeed: () => {},
 }));
 
-const go = vi.fn();
-vi.mock("../src/app.js", async (importOriginal) => ({ ...(await importOriginal()), go: (...args) => go(...args) }));
-
 import { App } from "../src/app.js";
 import { renderTrackerIssue } from "../src/views/trackerIssueView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
@@ -50,7 +47,6 @@ beforeEach(() => {
   document.body.innerHTML =
     '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside>';
   mountIssuePage.mockClear();
-  go.mockClear();
   subscribers = [];
   snapshot = { items: [], projects: [], workspaces: [], pending: [], devices: {} };
   App.viewDispose = null;
@@ -100,9 +96,13 @@ describe("the issue route", () => {
     await flush();
     const [workspaces, issues] = document.querySelectorAll("#project-tabs .t");
     issues.click();
-    expect(go).toHaveBeenLastCalledWith({ name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" });
-    workspaces.click();
-    expect(go).toHaveBeenLastCalledWith({ name: "project", deviceId: "dev-1", projectId: "proj-1" });
+    expect(App.route).toEqual({ name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" });
+    App.route = { name: "trackerIssue", deviceId: "dev-1", projectId: "proj-1", issueId: "issue-1" };
+    await renderTrackerIssue();
+    await flush();
+    workspaces.isConnected || (workspaces.textContent = "");
+    document.querySelector("#project-tabs .t").click();
+    expect(App.route).toEqual({ name: "project", deviceId: "dev-1", projectId: "proj-1" });
   });
 
   it("hands over the feed the links and the assignee names are read off", async () => {

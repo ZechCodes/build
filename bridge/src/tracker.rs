@@ -32,19 +32,49 @@ pub const MAX_LABEL_BYTES: usize = 40;
 /// How many entries one of an issue's four link lists holds.
 pub const MAX_LINKS_PER_KIND: usize = 20;
 
-/// A fresh, time-ordered issue id: the ULID rule every other Build id uses,
-/// under this record's own prefix. Ids minted later sort later, which is what
-/// makes them a stable tie-break for two things stamped in the same second.
+/// A fresh id: the ULID rule every other Build id uses, under this record's
+/// own prefix, and **monotonic within this process**.
+///
+/// The plain rule is only time-ordered to the millisecond, and that is not
+/// enough here. A timeline is ordered by `(when, id)`, and one write routinely
+/// produces several events sharing one timestamp — an update that relabels and
+/// moves stamps both with the same `now`. With 80 random bits as the tie-break,
+/// those two would come back in a different order on different reads of the
+/// same database, and a reader told not to re-sort would draw the move before
+/// the relabel.
+///
+/// So a mint that lands in a millisecond already used keeps that millisecond
+/// and increments the random half instead, which is the standard monotonic
+/// ULID rule: ids minted later in this process always sort later, and the
+/// tie-break is real.
+fn mint_id(prefix: &str) -> String {
+    use std::sync::Mutex;
+    static LAST: Mutex<(u128, u128)> = Mutex::new((0, 0));
+    let now = crate::agent::now_ms();
+    let fresh = uuid::Uuid::new_v4().as_u128() & ((1u128 << 80) - 1);
+    let mut last = LAST.lock().unwrap_or_else(|held| held.into_inner());
+    let (at, randomness) = match *last {
+        // Same millisecond, or a clock that stepped back: keep the reading the
+        // last id used and take the next value after it, so the order a caller
+        // minted in is the order the ids sort in either way.
+        (stamped, previous) if now <= stamped => (stamped, previous.saturating_add(1)),
+        _ => (now, fresh),
+    };
+    *last = (at, randomness);
+    drop(last);
+    format!("{prefix}{}", crate::agent::ulid_body_of(at, randomness))
+}
+
 pub fn new_issue_id() -> String {
-    format!("{ISSUE_ID_PREFIX}{}", crate::agent::new_ulid_body())
+    mint_id(ISSUE_ID_PREFIX)
 }
 
 pub fn new_comment_id() -> String {
-    format!("{COMMENT_ID_PREFIX}{}", crate::agent::new_ulid_body())
+    mint_id(COMMENT_ID_PREFIX)
 }
 
 pub fn new_event_id() -> String {
-    format!("{EVENT_ID_PREFIX}{}", crate::agent::new_ulid_body())
+    mint_id(EVENT_ID_PREFIX)
 }
 
 /// Whether an issue is still open. Independent of [`Issue::status`]: one says
@@ -470,6 +500,32 @@ mod tests {
         assert!(!first.starts_with("plan-"), "{first}");
         assert!(first < second, "{first} then {second}");
         assert_ne!(new_comment_id()[..3].to_string(), new_event_id()[..3]);
+    }
+
+    /// The property a timeline's tie-break rests on: a burst minted inside one
+    /// millisecond still sorts in the order it was minted. Without it, two
+    /// events stamped with the same `now` come back in a different order on
+    /// different reads of the same database.
+    #[test]
+    fn a_burst_of_ids_minted_in_one_millisecond_still_sorts_in_mint_order() {
+        let burst: Vec<String> = (0..500).map(|_| new_event_id()).collect();
+        let mut sorted = burst.clone();
+        sorted.sort();
+        assert_eq!(burst, sorted, "ids minted later must sort later");
+        let unique: std::collections::BTreeSet<&String> = burst.iter().collect();
+        assert_eq!(unique.len(), burst.len(), "and none of them repeats");
+    }
+
+    /// The rule holds across the three prefixes too: a comment and an event
+    /// written in one breath interleave by the order they were minted in.
+    #[test]
+    fn comments_and_events_minted_together_interleave_in_mint_order() {
+        let comment = new_comment_id();
+        let event = new_event_id();
+        assert!(
+            comment[COMMENT_ID_PREFIX.len()..] < event[EVENT_ID_PREFIX.len()..],
+            "{comment} then {event}"
+        );
     }
 
     #[test]

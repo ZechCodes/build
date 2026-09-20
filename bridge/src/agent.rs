@@ -579,7 +579,8 @@ pub fn new_ulid_body() -> String {
     ulid_body(now_ms(), uuid::Uuid::new_v4().as_u128())
 }
 
-fn now_ms() -> u128 {
+/// Milliseconds since the epoch, as a ULID's time half reads them.
+pub(crate) fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_millis())
@@ -590,6 +591,13 @@ fn now_ms() -> u128 {
 /// test: 48 bits of milliseconds, then 80 bits of randomness.
 pub fn mint_agent_id(now_ms: u128, randomness: u128) -> String {
     format!("{AGENT_ID_PREFIX}{}", ulid_body(now_ms, randomness))
+}
+
+/// The ULID body of an exact reading, for a mint that supplies its own —
+/// a record whose ids must sort in the order they were minted rather than
+/// only to the millisecond (`crate::tracker`).
+pub(crate) fn ulid_body_of(now_ms: u128, randomness: u128) -> String {
+    ulid_body(now_ms, randomness)
 }
 
 fn ulid_body(now_ms: u128, randomness: u128) -> String {

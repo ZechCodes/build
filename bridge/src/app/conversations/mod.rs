@@ -16,7 +16,7 @@ pub use attachments::ATTACHMENT_MAX_BYTES;
 pub(in crate::app) use attachments::{media_mime_hint, mime_hint};
 pub(in crate::app) use inputs::{
     append_user_thread_messages, apply_thread_action, parse_thread_inputs, parse_viewing_context,
-    with_post_receipt,
+    validate_thread_links, with_post_receipt,
 };
 pub use read::LATEST_THREAD_ITEMS;
 pub(in crate::app) use read::{thread_cursor, thread_detail, view_thread_detail, ReadReport};

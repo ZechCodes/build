@@ -26,6 +26,7 @@ mod rtc;
 mod runs;
 mod runtime;
 mod streams;
+mod tracker;
 mod transactions;
 mod watchers;
 mod workspaces;
@@ -247,7 +248,7 @@ mod qa;
 use conversations::{
     append_user_thread_messages, apply_thread_action, locate_conversations, media_mime_hint,
     mime_hint, parse_thread_inputs, parse_viewing_context, thread_cursor, thread_detail,
-    view_thread_detail, with_post_receipt, AgentSender, ReadReport,
+    validate_thread_links, view_thread_detail, with_post_receipt, AgentSender, ReadReport,
 };
 pub use conversations::{ATTACHMENT_MAX_BYTES, LATEST_THREAD_ITEMS};
 

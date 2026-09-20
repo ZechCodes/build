@@ -31,11 +31,14 @@
 //! (`changes.subscribe/unsubscribe/list`), [`git`] (`git.*`, `fs.*`,
 //! and the diff reads), [`lifecycle`] (`issue.*`, `plan.*`, `run.*`,
 //! `branch.*`, `worktree.create/finish`, `entity.*`),
-//! [`workspace`] (`workspace.*`).
+//! [`workspace`] (`workspace.*`), [`issues`] (`issues.*`, the per-project
+//! tracker — NOT `lifecycle`'s singular `issue.*`, which is the retired plan
+//! flow).
 
 pub mod board;
 pub mod changes;
 pub mod git;
+pub mod issues;
 pub mod lifecycle;
 pub mod thread;
 pub mod workspace;
@@ -261,12 +264,13 @@ pub fn call_typed<P: DeserializeOwned, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 6] {
+fn families() -> [&'static [(&'static str, Handler)]; 7] {
     [
         board::methods(),
         changes::methods(),
         thread::methods(),
         git::methods(),
+        issues::methods(),
         lifecycle::methods(),
         workspace::methods(),
     ]

@@ -307,6 +307,20 @@ mod tests {
         fn git_notes(&self) -> usize {
             *self.git.lock().unwrap()
         }
+
+        /// Forget everything recorded so far.
+        ///
+        /// Called once the watcher is up, so a test asserts on what the
+        /// watcher decided about ITS OWN writes. Building the fixture touches
+        /// the tree — `git init`, `src/`, `.gitignore` — and those events are
+        /// only reliably ahead of the watcher on an idle machine. Under load
+        /// they arrive after it registers, and a test that says "this churn is
+        /// dropped" then fails holding `.gitignore`, which no assertion here
+        /// is about.
+        fn forget(&self) {
+            self.files.lock().unwrap().clear();
+            *self.git.lock().unwrap() = 0;
+        }
     }
 
     impl ChangeSink for Recorder {
@@ -337,6 +351,9 @@ mod tests {
         // notify's backend registers asynchronously on some platforms; give it
         // a beat so the write under test is not missed.
         std::thread::sleep(Duration::from_millis(150));
+        // Then drop whatever building the fixture produced: the beat above
+        // makes the watcher ready, not the setup's events gone.
+        sink.forget();
         (watcher, sink)
     }
 

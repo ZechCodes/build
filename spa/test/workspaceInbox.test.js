@@ -161,6 +161,61 @@ describe("workspace inbox rows", () => {
     expect(workspaceEntries(view.workspaces, view.projects, view.items).map((row) => row.workspaceId)).toEqual(["workspace-1"]);
   });
 
+  // A checkout Build only adopted is somebody else's folder: it has no
+  // conversation, so there is no work to summarize and nothing for Done to
+  // remove. Saying the summary is unavailable made a row the user never asked
+  // for look like a reporting fault; the row says what it is, and the branch
+  // it is standing on.
+  it("says an adopted checkout and its branch rather than an unavailable summary", () => {
+    const [adopted] = entriesOf([
+      {
+        id: "wt-abc123",
+        project_id: "project-1",
+        name: "build-issue-rail",
+        root: "/work/checkouts/build-issue-rail",
+        status: "ready",
+        managed: false,
+        directories: [{ id: "root", source_id: "source-1", is_git: true, branch: "build-issue-rail" }],
+      },
+    ]);
+    expect(adopted.facts).toBe("Adopted checkout · build-issue-rail");
+    expect(inboxRowHtml(adopted)).not.toMatch(/data-workspace-done/);
+
+    const [nameless] = entriesOf([
+      { id: "wt-def456", project_id: "project-1", root: "/work/checkouts/loose", status: "ready", managed: false },
+    ]);
+    expect(nameless.facts).toBe("Adopted checkout");
+  });
+
+  // Only a row with no conversation: an adopted checkout an agent is working
+  // in has a conversation to speak for it, a work summary and a Done, and is
+  // an ordinary row.
+  it("leaves an adopted checkout with a conversation an ordinary row", () => {
+    const [entry] = entriesOf(
+      [
+        {
+          id: "wt-abc123",
+          project_id: "project-1",
+          root: "/work/checkout",
+          status: "ready",
+          managed: false,
+          can_finish: true,
+          work_summary: { pushes: 1, additions: 2, deletions: 3 },
+        },
+      ],
+      [{ kind: "branch", project_id: "project-1", run_id: "run-1", worktree_path: "/work/checkout", branch: "main" }],
+    );
+    expect(entry.facts).toBe("↑1 +2 −3");
+    expect(inboxRowHtml(entry)).toMatch(/data-workspace-done/);
+  });
+
+  // A bridge too old to say which workspaces it manages says nothing about
+  // any of them, and a row is never called adopted on a guess.
+  it("does not call a workspace adopted when the bridge says nothing about it", () => {
+    const [entry] = entriesOf([{ id: "workspace-1", project_id: "project-1", status: "ready" }]);
+    expect(entry.facts).toBe("Work summary unavailable");
+  });
+
   it("does not turn an unknown workspace work summary into zero work", () => {
     const [entry] = entriesOf([{ id: "workspace-1", project_id: "project-1", work_summary: null }]);
     expect(entry.facts).toBe("Work summary unavailable");

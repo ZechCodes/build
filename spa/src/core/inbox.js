@@ -55,6 +55,14 @@ function workspaceFacts(workspace) {
   return [`↑${summary.pushes}`, hasBehind ? `↓${summary.behind}` : "", `+${summary.additions}`, `−${summary.deletions}`].filter(Boolean).join(" ");
 }
 
+/** Line two of a row standing on a checkout Build does not own: that it is
+ *  adopted, and the branch it has out. A summary would say what the work
+ *  weighs, and nobody here has said what the work is. */
+function adoptedCheckoutFacts(workspace) {
+  const branch = (workspace.directories || []).map((directory) => directory.branch).find(Boolean);
+  return branch ? `Adopted checkout · ${branch}` : "Adopted checkout";
+}
+
 const firstText = (...values) => values.find(Boolean) || "";
 
 /** How a workspace row is named in the rail's DOM and in every set the wiring
@@ -64,6 +72,11 @@ export const workspaceEntryKey = (workspace) => `workspace:${workspace.workspace
 
 function toWorkspaceEntry(workspace, projectNames, conversation) {
   const activity = conversation || { working: workspace.status === "active" };
+  const entityId = entityIdOf(conversation);
+  // A checkout Build only adopted, with nobody talking in it: somebody else's
+  // folder, listed so it can be opened. There is no work to summarize and
+  // nothing for Done to remove, so the row says what it is instead.
+  const adopted = workspace.managed === false && !entityId;
   return {
     key: workspaceEntryKey(workspace),
     kind: "workspace",
@@ -79,7 +92,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     // a longer version of the name.
     name: workspaceDisplayName(workspace),
     title: workspaceDisplayName(workspace),
-    entityId: entityIdOf(conversation),
+    entityId,
     state: entryState(activity),
     unreadCount: activity.unread_count || 0,
     reason: unreadReasonText(activity.unread_reason, "branch"),
@@ -97,7 +110,8 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     ready: workspace.status === "ready",
     canFinish: workspace.status === "ready" && workspace.can_finish === true,
     finishBlockers: workspace.finish_blockers || [],
-    facts: workspaceFacts(workspace),
+    adopted,
+    facts: adopted ? adoptedCheckoutFacts(workspace) : workspaceFacts(workspace),
     route: workspaceRoute(workspace),
     // The conversation owns the inbox anchor whenever there is one: this is
     // the same user-pickup ordering used by ordinary work rows. The workspace
@@ -743,10 +757,11 @@ export const finishBlockerHint = (blockers = []) =>
  * record and the conversation — so it is offered only once the bridge says the
  * work is somewhere else, and until then the button is there and shut, wearing
  * the reason. A workspace that is not ready is not a workspace to finish and
- * shows nothing. Asks the wiring whether this one is already being finished, so
- * the row painter does not have to. */
+ * shows nothing. Neither is an adopted checkout: that folder is not Build's
+ * to remove, and the bridge refuses Done on one. Asks the wiring whether this
+ * one is already being finished, so the row painter does not have to. */
 function workspaceDoneHtml(entry, ui) {
-  if (entry.kind !== "workspace" || !entry.ready) return "";
+  if (entry.kind !== "workspace" || !entry.ready || entry.adopted) return "";
   const pending = ui.finishingWorkspaces?.has(entry.key);
   const hint = finishBlockerHint(entry.finishBlockers);
   const shut = pending || !entry.canFinish;

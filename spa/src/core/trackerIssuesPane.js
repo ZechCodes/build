@@ -16,7 +16,6 @@ import { hashFromRoute } from "./router.js";
 import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
-import { ICON_PLUS } from "./icons.js";
 import { issuesRecordAt, readIssuesRecord } from "./trackerCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceWatch } from "./deviceReconnect.js";
@@ -24,7 +23,6 @@ import {
   DEFAULT_FILTERS,
   filterIssues,
   filterOptions,
-  filtersAreSet,
   issueListParams,
   narrowsTheRead,
   sortIssues,
@@ -32,23 +30,10 @@ import {
 import { actorLabel, columnsOf } from "./trackerModel.js";
 import { boardColumns, moveParams, nextColumn, withMovedIssue } from "./trackerBoardModel.js";
 import { agentLabels, assigneeOptions, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
-import { boardHtml } from "./trackerBoardRender.js";
-import { filterBarHtml, issueListHtml } from "./trackerListRender.js";
+import { BOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
+import { paintIssueBoard, paintIssueRows } from "./trackerIssuesBody.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openCreateIssue } from "./trackerCreate.js";
-
-const LIST_VIEW = "list";
-const BOARD_VIEW = "board";
-
-const viewButtonHtml = (view, id, label) =>
-  `<button class="btn mini issue-view${view === id ? " active" : ""}" type="button" data-issue-view="${id}" aria-pressed="${view === id}">${label}</button>`;
-
-const headerHtml = (state) => `<div class="issue-head">
-    <div class="issue-views" role="group" aria-label="How to lay the issues out">
-      ${viewButtonHtml(state.view, LIST_VIEW, "List")}${viewButtonHtml(state.view, BOARD_VIEW, "Board")}
-    </div>
-    <button class="btn mini primary issue-new" type="button" data-issue-new>${ICON_PLUS}<span>New issue</span></button>
-  </div>`;
 
 export function mountIssuesPane(host, options) {
   const state = {
@@ -104,6 +89,34 @@ export function mountIssuesPane(host, options) {
 
   // ---- painting ------------------------------------------------------------
 
+  // Once. The header and the four filters are made here and are the same DOM
+  // nodes for the life of the pane; only the body below them is ever repainted
+  // (#43). Nothing that follows can take the reader's focus, their caret or
+  // the menu they have open, because nothing that follows touches a control.
+  const chrome = mountIssuesChrome(host, {
+    onView: (view) => {
+      if (state.view === view) return;
+      state.view = view;
+      state.onViewChange?.(state.view);
+      paint();
+      void refresh();
+    },
+    onNew: () => fileIssue(),
+    onFilter: (name, value) => {
+      state.filters = { ...state.filters, [name]: value };
+      state.shown = filterIssues(state.all, shownFilters());
+      paint();
+      void refresh();
+    },
+    onClear: () => {
+      // Back to what the tab opens on, not to everything: Clear undoes the
+      // reader's narrowing, and closed issues were never part of it.
+      state.filters = { ...DEFAULT_FILTERS };
+      paint();
+      void refresh();
+    },
+  });
+
   const paintContext = () => ({
     columns: state.columns,
     agentLabels: labelsOfAgents(),
@@ -111,60 +124,24 @@ export function mountIssuesPane(host, options) {
     href: hrefOf,
   });
 
-  const bodyHtml = () => {
-    const context = paintContext();
-    if (state.view === BOARD_VIEW) return boardHtml(boardColumns(state.columns, state.shown), context);
-    return issueListHtml(state.shown, context);
-  };
-
-  /** What the tab last drew. A paint that would draw the same thing again is
-   *  skipped: the feed moves whenever any agent's state does, and a redraw
-   *  that changes nothing on screen would still take the reader's focus out
-   *  of a filter or off a card. */
-  let painted = null;
-
-  /** The control the reader is on when the tab is about to be redrawn, named
-   *  well enough to find again: by id, else by name, else by the first data-
-   *  attribute it wears. Put back after the redraw, caret included. */
-  const controlSnapshot = () => {
-    const active = document.activeElement;
-    if (!active || !host.contains(active)) return null;
-    const dataKey = [...active.attributes].find((attribute) => attribute.name.startsWith("data-"));
-    const selector = active.id
-      ? `#${active.id}`
-      : active.name
-        ? `${active.tagName.toLowerCase()}[name="${active.name}"]`
-        : dataKey
-          ? `[${dataKey.name}="${dataKey.value}"]`
-          : null;
-    if (!selector) return null;
-    return { selector, start: active.selectionStart, end: active.selectionEnd };
-  };
-  const restoreControl = (snapshot) => {
-    const control = snapshot && host.querySelector(snapshot.selector);
-    if (!control) return;
-    control.focus({ preventScroll: true });
-    if (typeof snapshot.start === "number" && control.setSelectionRange) {
-      try {
-        control.setSelectionRange(snapshot.start, snapshot.end);
-      } catch {
-        // a control that holds a caret but will not place it (a select) is fine as focused
-      }
-    }
+  /** The two drawings of one read, each as what it paints, what it paints from
+   *  and what has to be wired onto an entry it had to make. Chosen by name
+   *  rather than asked about: a view is a thing this tab HAS, not a branch. */
+  const VIEWS = {
+    [LIST_VIEW]: { paint: paintIssueRows, entries: () => state.shown, wire: wireRow },
+    [BOARD_VIEW]: { paint: paintIssueBoard, entries: () => boardColumns(state.columns, state.shown), wire: wireCard },
   };
 
   const paint = () => {
     if (state.disposed) return;
-    const html = `${headerHtml(state)}
-      ${filterBarHtml(filterOptions(state.all, state.columns, nameActor), state.filters)}
-      <div class="issue-body">${bodyHtml()}</div>`;
-    if (html === painted && host.firstChild) return;
-    const focused = controlSnapshot();
-    painted = html;
-    host.innerHTML = html;
-    wire();
-    reads.mark(); // the host was just rewritten; the mark lives among its children
-    restoreControl(focused);
+    chrome.update({
+      view: state.view,
+      options: filterOptions(state.all, state.columns, nameActor),
+      filters: state.filters,
+    });
+    const view = VIEWS[state.view] || VIEWS[LIST_VIEW];
+    view.paint(chrome.body, view.entries(), paintContext(), view.wire);
+    wireColumnDrops();
   };
 
   // ---- reading -------------------------------------------------------------
@@ -322,67 +299,44 @@ export function mountIssuesPane(host, options) {
 
   // ---- wiring --------------------------------------------------------------
 
-  function wireFilters() {
-    host.querySelectorAll("[data-issue-filter]").forEach((control) => {
-      control.onchange = () => {
-        state.filters = { ...state.filters, [control.dataset.issueFilter]: control.value };
-        state.shown = filterIssues(state.all, shownFilters());
-        paint();
-        void refresh();
-      };
-    });
-    const clear = host.querySelector("[data-issue-filter-clear]");
-    if (clear) {
-      clear.onclick = () => {
-        // Back to what the tab opens on, not to everything: Clear undoes the
-        // reader's narrowing, and closed issues were never part of it.
-        state.filters = { ...DEFAULT_FILTERS };
-        paint();
-        void refresh();
-      };
-    }
+  // Once per element that had to be MADE. patchList keeps a row that is still
+  // there, so a handler attached here survives every later paint; a handler
+  // attached on a patch is a handler attached twice.
+
+  /** The one press on a row: the assignee. */
+  function wireRow(element) {
+    const assign = element.querySelector("[data-issue-assign]");
+    if (!assign) return;
+    assign.onclick = (event) => {
+      event.preventDefault();
+      openPicker(assign.dataset.issueAssign);
+    };
   }
 
-  function wireViews() {
-    host.querySelectorAll("[data-issue-view]").forEach((button) => {
-      button.onclick = () => {
-        if (state.view === button.dataset.issueView) return;
-        state.view = button.dataset.issueView;
-        state.onViewChange?.(state.view);
-        paint();
-        void refresh();
-      };
-    });
-    host.querySelector("[data-issue-new]").onclick = fileIssue;
+  /** A card is a row that can also be moved — dragged, or walked left and
+   *  right from the keyboard. Neither is the accessible afterthought of the
+   *  other, so both are wired on every card. */
+  function wireCard(card) {
+    wireRow(card);
+    card.ondragstart = (event) => event.dataTransfer?.setData("text/plain", card.dataset.issue);
+    card.onkeydown = (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      moveByKey(card, event.key);
+    };
   }
 
-  function wireDrag() {
-    host.querySelectorAll(".issue-card").forEach((card) => {
-      card.ondragstart = (event) => event.dataTransfer?.setData("text/plain", card.dataset.issue);
-      card.onkeydown = (event) => {
-        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-        event.preventDefault();
-        moveByKey(card, event.key);
-      };
-    });
+  /** The other half of the drag: where a card can be let go of. The columns
+   *  outlive their cards — the board's frame is patched, not rebuilt — so this
+   *  runs per paint and writes the same two handlers onto the same lists. The
+   *  list has none of these, and finds none. */
+  function wireColumnDrops() {
     host.querySelectorAll("[data-column-drop]").forEach((column) => {
       column.ondragover = (event) => event.preventDefault();
       column.ondrop = (event) => {
         event.preventDefault();
         const issueId = event.dataTransfer?.getData("text/plain");
         if (issueId) void moveIssue(issueId, column.dataset.columnDrop);
-      };
-    });
-  }
-
-  function wire() {
-    wireFilters();
-    wireViews();
-    wireDrag();
-    host.querySelectorAll("[data-issue-assign]").forEach((button) => {
-      button.onclick = (event) => {
-        event.preventDefault();
-        openPicker(button.dataset.issueAssign);
       };
     });
   }

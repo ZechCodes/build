@@ -1,4 +1,4 @@
-// The Issues tab's list view: the filter bar, and one row per issue.
+// The Issues tab's list view: one row per issue.
 //
 // Two lines, and the split is the whole design (#28). Line one is `#12 Title`
 // and nothing else, so the title has the row's full width and a column of
@@ -17,7 +17,9 @@
 // row in the stylesheet instead, so the row is still one thing to press and
 // the button sits above it.
 //
-// Pure: HTML in, no DOM, no app imports. core/trackerIssuesPane.js mounts it.
+// Pure: HTML in, no DOM, no app imports. core/trackerIssuesBody.js paints the
+// rows this gives it, by key, into a list it keeps; the filter bar above them
+// is mounted once and lives in core/trackerPaneChrome.js.
 
 import { esc } from "./text.js";
 import { filtersAreSet } from "./trackerFilters.js";
@@ -31,34 +33,6 @@ import {
   rowAssigneeHtml,
   statusChipHtml,
 } from "./trackerChips.js";
-
-const optionHtml = (option, chosen) =>
-  `<option value="${esc(option.value)}"${option.value === chosen ? " selected" : ""}>${esc(option.label)}</option>`;
-
-/** One filter. The select carries its own accessible name — the bar has no room
- *  for four visible labels, and a name said twice is a name read twice. */
-const selectHtml = (name, label, options, chosen) =>
-  `<select class="issue-filter" data-issue-filter="${esc(name)}" aria-label="${esc(label)}">${options
-    .map((option) => optionHtml(option, chosen))
-    .join("")}</select>`;
-
-/**
- * The filter bar.
- *
- * Every control here is a param of `issues.list`, one for one — a filter is a
- * question put to the bridge and not a pass over what happens to be in hand.
- * The Clear press is offered only once something is narrowed, so the bar does
- * not carry a dead control most of the time.
- */
-export function filterBarHtml(options, filters) {
-  return `<div class="issue-filters" role="group" aria-label="Filter issues">
-    ${selectHtml("state", "State", options.states, filters.state)}
-    ${selectHtml("status", "Column", options.statuses, filters.status)}
-    ${selectHtml("assignee", "Assignee", options.assignees, filters.assignee)}
-    ${selectHtml("label", "Label", options.labels, filters.label)}
-    ${filtersAreSet(filters) ? `<button class="btn mini" type="button" data-issue-filter-clear>Clear</button>` : ""}
-  </div>`;
-}
 
 /** Line two, in the order Zech asked for it. Anything with nothing to say is
  *  left out rather than drawn empty — a priority of `none`, a stamp that does
@@ -102,8 +76,3 @@ export const emptyListHtml = (filters) =>
   filtersAreSet(filters)
     ? `<div class="empty issue-empty"><p>No issue matches these filters.</p></div>`
     : `<div class="empty issue-empty"><h2>No issues yet</h2><p>An issue is where you and the agents working this project agree on what is being done. New issue files the first one.</p></div>`;
-
-export function issueListHtml(issues, context) {
-  if (!issues.length) return emptyListHtml(context.filters || {});
-  return `<ul class="issue-rows">${issues.map((issue) => issueRowHtml(issue, context)).join("")}</ul>`;
-}

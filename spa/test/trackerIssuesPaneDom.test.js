@@ -101,6 +101,21 @@ const mount = async (over = {}) => {
 };
 
 const listed = (method) => call.mock.calls.filter(([name]) => name === method);
+/** The Clear press, when it is being offered. It is mounted once like every
+ *  other control on the bar (#43) and hidden rather than removed — taking a
+ *  button out from under the reader takes whatever focus was on it too — so
+ *  "is it offered" is a question about `hidden` and not about the DOM. */
+const clearPress = () => {
+  const press = host.querySelector("[data-issue-filter-clear]");
+  return press && !press.hidden ? press : null;
+};
+/** Choose one filter, the way a reader does: the select's own change event. */
+const chooseFilter = async (name, value) => {
+  const control = host.querySelector(`[data-issue-filter="${name}"]`);
+  control.value = value;
+  control.dispatchEvent(new Event("change"));
+  await flush();
+};
 const titles = () => [...host.querySelectorAll(".issue-title")].map((one) => one.textContent);
 const columnNames = () => [...host.querySelectorAll(".issue-column-head h3")].map((one) => one.textContent);
 const cardsIn = (columnId) =>
@@ -240,12 +255,12 @@ describe("the filters", () => {
 
   it("offers a clear only once something is narrowed", async () => {
     await mount();
-    expect(host.querySelector("[data-issue-filter-clear]")).toBeNull();
+    expect(clearPress()).toBeNull();
     const label = host.querySelector('[data-issue-filter="label"]');
     label.value = "bug";
     label.dispatchEvent(new Event("change"));
     await flush();
-    expect(host.querySelector("[data-issue-filter-clear]")).not.toBeNull();
+    expect(clearPress()).not.toBeNull();
   });
 
   it("says the filter is why the list is empty, not the project", async () => {
@@ -458,10 +473,91 @@ describe("the two presses", () => {
   });
 });
 
+describe("the filter bar, mounted once", () => {
+  // #43. The bar is not redrawn — ever. Not on a push, not on a feed move, not
+  // on a re-read that changes the list, not on a filter change, and not when
+  // switching to the board and back. Zech: "The inputs/selects really
+  // shouldn't be redrawing ever."
+  const controls = () => [...host.querySelectorAll(".issue-filters select, .issue-filters button")];
+
+  it("is the same DOM nodes through ten paints and a push", async () => {
+    await mount();
+    const before = controls();
+    expect(before).toHaveLength(5); // four filters and the Clear press
+    for (let i = 0; i < 5; i++) pane.feedMoved();
+    call.mockImplementation(async (method) =>
+      method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh" })], columns: columns() } : {});
+    for (let i = 0; i < 5; i++) {
+      watchers[0].refresh();
+      await flush();
+    }
+    expect(titles()).toEqual(["Fresh"]);
+    expect(controls()).toEqual(before);
+  });
+
+  it("keeps a focused control's focus and value through a body repaint", async () => {
+    await mount();
+    const label = host.querySelector('[data-issue-filter="label"]');
+    label.value = "bug";
+    label.dispatchEvent(new Event("change"));
+    await flush();
+    label.focus();
+    call.mockImplementation(async (method) =>
+      method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh", labels: ["bug"] })], columns: columns() } : {});
+    watchers[0].refresh();
+    await flush();
+    expect(titles()).toEqual(["Fresh"]);
+    expect(host.querySelector('[data-issue-filter="label"]')).toBe(label);
+    expect(document.activeElement).toBe(label);
+    expect(label.value).toBe("bug");
+  });
+
+  // The options are the one thing about a control that a read may change. They
+  // are patched by value: a label nobody had filed before is an inserted
+  // `<option>`, and the select around it is the select it already was.
+  it("adds a newly filed label to the options without re-creating the select", async () => {
+    await mount();
+    const label = host.querySelector('[data-issue-filter="label"]');
+    const values = () => [...label.options].map((one) => one.value);
+    const anyLabel = label.options[0];
+    expect(values()).toEqual(["", "bug"]);
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", {
+      issues: [issue({ number: 13, id: "issue-13", labels: ["bug", "spa"] })],
+      columns: columns(),
+    });
+    // A narrowed read is what sends the tab back to the cache for the whole
+    // list, which is where the menus are built from.
+    await chooseFilter("state", "closed");
+    expect(values()).toEqual(["", "bug", "spa"]);
+    expect(host.querySelector('[data-issue-filter="label"]')).toBe(label);
+    expect(label.options[0]).toBe(anyLabel);
+  });
+
+  // The Clear press is a control on the bar like the other four, so it is
+  // hidden rather than taken away: removing a button takes the focus on it.
+  it("hides the Clear press rather than removing it", async () => {
+    await mount();
+    const press = host.querySelector("[data-issue-filter-clear]");
+    expect(press.hidden).toBe(true);
+    await chooseFilter("label", "bug");
+    expect(press.hidden).toBe(false);
+    expect(host.querySelector("[data-issue-filter-clear]")).toBe(press);
+  });
+
+  it("survives a switch to the board and back", async () => {
+    await mount();
+    const before = controls();
+    host.querySelector('[data-issue-view="board"]').click();
+    await flush();
+    host.querySelector('[data-issue-view="list"]').click();
+    await flush();
+    expect(controls()).toEqual(before);
+  });
+});
+
 describe("the push", () => {
   // The feed moves whenever any agent's state does, and most of those moves
-  // change nothing on this tab. A tab that redrew for each one would take the
-  // reader's focus out of the filter they were using.
+  // change nothing on this tab. Nothing about a filter can move with one.
   it("does not redraw or drop focus when the feed moves without changing what it shows", async () => {
     await mount();
     const filter = host.querySelector("select");
@@ -472,18 +568,26 @@ describe("the push", () => {
     expect(document.activeElement).toBe(filter);
   });
 
-  it("puts the focus back on the same control when a re-read does change the list", async () => {
+  // The rows are keyed, so a re-read that leaves an issue where it was leaves
+  // its row the element it was — and only the row that changed is written.
+  it("keeps the rows a re-read did not change, and patches the one it did", async () => {
     await mount();
-    const filter = host.querySelector("select");
-    filter.focus();
-    const name = filter.name || filter.id;
-    call.mockImplementation(async (method) => (method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh" })], columns: columns() } : {}));
+    const kept = host.querySelector('[data-issue="issue-11"]');
+    const changed = host.querySelector('[data-issue="issue-12"]');
+    call.mockImplementation(async (method) =>
+      method === "issues.list"
+        ? {
+            issues: [
+              issue({ number: 12, id: "issue-12", title: "Renamed", status: "in_progress", labels: ["bug"], assignee: { kind: "user" } }),
+              issue({ number: 11, id: "issue-11", title: "Board is unreadable on a phone", state: "closed", status: "done" }),
+            ],
+          }
+        : {});
     watchers[0].refresh();
     await flush();
-    expect(host.textContent).toContain("Fresh");
-    const after = host.querySelector("select");
-    expect(after.name || after.id).toBe(name);
-    expect(document.activeElement).toBe(after);
+    expect(host.querySelector('[data-issue="issue-11"]')).toBe(kept);
+    expect(host.querySelector('[data-issue="issue-12"]')).toBe(changed);
+    expect(changed.querySelector(".issue-title").textContent).toBe("Renamed");
   });
 
   it("subscribes this project for issues, and nothing else", async () => {
@@ -649,9 +753,9 @@ describe("what the tab opens on", () => {
   it("offers no Clear until the reader narrows something themselves", async () => {
     call = listing();
     await mount();
-    expect(host.querySelector("[data-issue-filter-clear]")).toBeNull();
+    expect(clearPress()).toBeNull();
     await chooseState("closed");
-    expect(host.querySelector("[data-issue-filter-clear]")).not.toBeNull();
+    expect(clearPress()).not.toBeNull();
   });
 
   it("goes back to open issues on Clear, not to everything", async () => {
@@ -659,10 +763,10 @@ describe("what the tab opens on", () => {
     await mount();
     await chooseState("");
     expect(titles()).toEqual(["Still open", "Finished with"]);
-    host.querySelector("[data-issue-filter-clear]").click();
+    clearPress().click();
     await flush();
     expect(titles()).toEqual(["Still open"]);
-    expect(host.querySelector("[data-issue-filter-clear]")).toBeNull();
+    expect(clearPress()).toBeNull();
   });
 
   // A project with nothing in it is at its first state, not looking at a

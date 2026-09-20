@@ -16,6 +16,7 @@
 // Pure: HTML in, no DOM, no app imports.
 
 import { esc } from "./text.js";
+import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
 import { assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, stateDotHtml } from "./trackerChips.js";
 import { columnNote } from "./trackerModel.js";
 
@@ -61,8 +62,15 @@ const columnWhyHtml = (column, note) => `<details class="issue-column-why">
       <p class="issue-column-note" role="note">${esc(note)}</p>
     </details>`;
 
-/** One column. The count is on the head because a board is read column by
- *  column, and "how much is in review" is the question a board is for. */
+/**
+ * One column, with no cards in it.
+ *
+ * The count is on the head because a board is read column by column, and "how
+ * much is in review" is the question a board is for. The cards themselves are
+ * painted into the list by key (core/trackerIssuesBody.js), which is what
+ * `data-keyed-list` says: this frame is patched on every paint, and the patch
+ * stops at the list rather than rebuilding cards that did not change.
+ */
 const columnHtml = (column, context) => {
   const note = columnNote(context.columns, column.id);
   return `<section class="issue-column" data-column="${esc(column.id)}" aria-label="${esc(column.name)}">
@@ -71,21 +79,19 @@ const columnHtml = (column, context) => {
       ${columnWhyHtml(column, note)}
       <span class="issue-column-count">${column.issues.length}</span>
     </header>
-    <ul class="issue-column-cards" role="list" data-column-drop="${esc(column.id)}">
-      ${column.issues.map((issue) => issueCardHtml(issue, context)).join("")}
-    </ul>
+    <ul class="issue-column-cards" role="list" data-column-drop="${esc(column.id)}" ${KEYED_LIST_ATTRIBUTE}></ul>
   </section>`;
 };
 
 /**
- * The board.
+ * The board, as the frame its cards are painted into.
  *
  * It scrolls sideways rather than reflowing: a column that wraps under another
  * is not a column any more, and on a phone the reader would lose the one thing
  * the layout is for. The sheet gives it that scroll under 760px and lets it sit
  * as a row above.
  */
-export function boardHtml(board, context) {
+export function boardFrameHtml(board, context) {
   // A group rather than a list: its children are the COLUMNS, and a column is
   // a region with a heading and a list inside it, not a list item.
   return `<div class="issue-board" role="group" aria-label="Issues by column">

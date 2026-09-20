@@ -110,9 +110,13 @@ export const sortIssues = (issues) =>
 
 /** Every label any of these issues wears, alphabetically — the label filter's
  *  offer. Built from the project's whole list rather than from the narrowed
- *  one, so choosing a label never empties the menu it was chosen from. */
+ *  one, so choosing a label never empties the menu it was chosen from.
+ *
+ *  A blank label is dropped: it is nothing a reader can ask for, and the empty
+ *  string is already spoken for by "Any label" — two offers with one value is
+ *  a menu whose second entry can never be reached. */
 export const labelsOf = (issues) =>
-  [...new Set((issues || []).flatMap((issue) => issue.labels || []))].sort();
+  [...new Set((issues || []).flatMap((issue) => issue.labels || []).filter(Boolean))].sort();
 
 /** Every assignee any of these issues has, as filter values. The caller names
  *  them (core/trackerAssignee.js knows the project's agents); this only says

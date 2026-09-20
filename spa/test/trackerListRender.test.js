@@ -9,7 +9,9 @@
 // between them.
 
 import { describe, expect, it } from "vitest";
-import { issueRowHtml, issueListHtml } from "../src/core/trackerListRender.js";
+import { issueRowHtml } from "../src/core/trackerListRender.js";
+import { paintIssueRows } from "../src/core/trackerIssuesBody.js";
+import { DEFAULT_FILTERS } from "../src/core/trackerFilters.js";
 import { columns, issue } from "./trackerWireFixture.js";
 
 const NOW = Date.parse("2026-08-21T12:00:00Z");
@@ -165,15 +167,61 @@ describe("the assignee", () => {
 });
 
 describe("the list around the rows", () => {
-  it("draws one row per issue, in the order it is handed them", () => {
-    const host = document.createElement("div");
-    host.innerHTML = issueListHtml([issue({ number: 12, id: "i12" }), issue({ number: 11, id: "i11" })], {
+  const paintInto = (host, issues, filters = DEFAULT_FILTERS) =>
+    paintIssueRows(host, issues, {
       columns: columns(),
       agentLabels: {},
       href: (one) => `#/issues/${one.id}`,
-      filters: {},
+      filters,
       nowMs: NOW,
     });
-    expect([...host.querySelectorAll(".issue-number")].map((one) => one.textContent)).toEqual(["#12", "#11"]);
+
+  const paint = (issues, filters) => {
+    const host = document.createElement("div");
+    paintInto(host, issues, filters);
+    return host;
+  };
+
+  const numbers = (host) => [...host.querySelectorAll(".issue-number")].map((one) => one.textContent);
+
+  it("draws one row per issue, in the order it is handed them", () => {
+    expect(numbers(paint([issue({ number: 12, id: "i12" }), issue({ number: 11, id: "i11" })]))).toEqual(["#12", "#11"]);
+  });
+
+  // The rows are patched by key (core/patchList.js), the way the timeline is:
+  // a row that is still there is still the same element after a paint, so the
+  // press on it keeps the handler it was wired with and the keyboard keeps its
+  // place. An insert above it is an insert, not a rebuild of everything below.
+  it("keeps the element of a row that is still there when one is inserted above it", () => {
+    const host = paint([issue({ number: 11, id: "i11" })]);
+    const kept = host.querySelector('[data-issue="i11"]');
+    paintInto(host, [issue({ number: 12, id: "i12" }), issue({ number: 11, id: "i11" })]);
+    expect(numbers(host)).toEqual(["#12", "#11"]);
+    expect(host.querySelector('[data-issue="i11"]')).toBe(kept);
+  });
+
+  it("wires each row it had to make, once, and never one it kept", () => {
+    const wired = [];
+    const wire = (element) => wired.push(element.dataset.issue);
+    const host = document.createElement("div");
+    paintIssueRows(host, [issue({ number: 11, id: "i11" })], { columns: columns(), agentLabels: {}, href: () => "#", filters: DEFAULT_FILTERS, nowMs: NOW }, wire);
+    paintIssueRows(host, [issue({ number: 12, id: "i12" }), issue({ number: 11, id: "i11" })], { columns: columns(), agentLabels: {}, href: () => "#", filters: DEFAULT_FILTERS, nowMs: NOW }, wire);
+    expect(wired).toEqual(["i11", "i12"]);
+  });
+
+  it("says the project is empty, and says a filter is why when one is set", () => {
+    expect(paint([]).querySelector(".issue-empty h2").textContent).toBe("No issues yet");
+    expect(paint([], { ...DEFAULT_FILTERS, state: "closed" }).querySelector(".issue-empty").textContent)
+      .toContain("No issue matches these filters");
+  });
+
+  it("takes the empty line away once there is a row, and puts it back", () => {
+    const host = paint([]);
+    paintInto(host, [issue({ number: 12, id: "i12" })]);
+    expect(host.querySelector(".issue-empty")).toBeNull();
+    expect(numbers(host)).toEqual(["#12"]);
+    paintInto(host, []);
+    expect(host.querySelector(".issue-empty")).not.toBeNull();
+    expect(numbers(host)).toEqual([]);
   });
 });

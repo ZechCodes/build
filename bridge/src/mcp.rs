@@ -234,6 +234,70 @@ pub enum BridgeAction {
         workspace_id: String,
         directory_id: String,
     },
+
+    // ---------------------------------------------------- issue tracker ---
+    // The per-project issue tracker (spec: Issues), on the coding and project
+    // surfaces alike. Every one of them is `Tracker`-prefixed so it cannot be
+    // read as `CreateIssue` above, which is the ROUTER's and belongs to the
+    // retired plan flow — the two share a tool NAME on disjoint surfaces, the
+    // way `post_thread_message` already does, and nothing else.
+    //
+    // None of these takes a project or an author. The scope is the calling
+    // agent's own project, and the author is the calling agent; a call that
+    // carries either anyway is parsed as though it had not.
+    /// The issues of this agent's project, narrowed.
+    TrackerListIssues {
+        state: Option<String>,
+        status: Option<String>,
+        label: Option<String>,
+    },
+    /// One issue and its whole timeline.
+    TrackerGetIssue {
+        issue_id: String,
+    },
+    /// File one.
+    TrackerCreateIssue {
+        title: String,
+        body: Option<String>,
+        status: Option<String>,
+        labels: Vec<String>,
+        priority: Option<String>,
+    },
+    /// Say something on one, with typed references fenced by what it is about.
+    TrackerCommentIssue {
+        issue_id: String,
+        body: String,
+        refs: Vec<crate::thread::ThreadLink>,
+    },
+    /// Hand one over, which starts whoever gets it.
+    ///
+    /// The assignee is carried whole rather than as five sets of fields: the
+    /// five kinds have different shapes, and the daemon's own parse is the one
+    /// place that reads them and names each refusal.
+    TrackerAssignIssue {
+        assignee: Value,
+        issue_id: String,
+        note: Option<String>,
+    },
+    /// Move one to another column.
+    TrackerMoveIssue {
+        issue_id: String,
+        status: String,
+    },
+    /// Close one.
+    TrackerCloseIssue {
+        issue_id: String,
+        reason: Option<String>,
+    },
+    /// Record what one is about.
+    TrackerLinkIssue {
+        issue_id: String,
+        workspace_id: Option<String>,
+        branch: Option<String>,
+        commit: Option<String>,
+        conversation_id: Option<String>,
+        parent_issue_id: Option<String>,
+    },
 }
 
 /// The choices an `ask_user` call offered beside its question. Absent reads as
@@ -284,6 +348,15 @@ impl BridgeAction {
             BridgeAction::RemoveProjectSource { .. } => "remove_project_source",
             BridgeAction::AddWorkspaceDirectory { .. } => "add_workspace_directory",
             BridgeAction::RemoveWorkspaceDirectory { .. } => "remove_workspace_directory",
+            // The issue tracker's eight, on both working surfaces.
+            BridgeAction::TrackerListIssues { .. } => "list_issues",
+            BridgeAction::TrackerGetIssue { .. } => "get_issue",
+            BridgeAction::TrackerCreateIssue { .. } => "create_issue",
+            BridgeAction::TrackerCommentIssue { .. } => "comment_issue",
+            BridgeAction::TrackerAssignIssue { .. } => "assign_issue",
+            BridgeAction::TrackerMoveIssue { .. } => "move_issue",
+            BridgeAction::TrackerCloseIssue { .. } => "close_issue",
+            BridgeAction::TrackerLinkIssue { .. } => "link_issue",
         }
     }
 
@@ -328,6 +401,17 @@ impl BridgeAction {
             BridgeAction::AddProjectSource { .. } | BridgeAction::RemoveProjectSource { .. } => {
                 &[McpSurface::Project]
             }
+            // The tracker is on every surface that WORKS a project: a coding
+            // agent files and moves the issues it is given, and a project
+            // agent runs the board. The router has no project to be scoped to.
+            BridgeAction::TrackerListIssues { .. }
+            | BridgeAction::TrackerGetIssue { .. }
+            | BridgeAction::TrackerCreateIssue { .. }
+            | BridgeAction::TrackerCommentIssue { .. }
+            | BridgeAction::TrackerAssignIssue { .. }
+            | BridgeAction::TrackerMoveIssue { .. }
+            | BridgeAction::TrackerCloseIssue { .. }
+            | BridgeAction::TrackerLinkIssue { .. } => &[McpSurface::Coding, McpSurface::Project],
         }
     }
 
@@ -532,6 +616,7 @@ impl DoneServer {
             }),
         ];
         tools.extend(Self::workspace_tools());
+        tools.extend(Self::issue_tools());
         Value::Array(tools)
     }
 
@@ -574,6 +659,253 @@ impl DoneServer {
                 "topic": { "type": "string", "description": "The objective, in 2-4 words. Title-case the first word, no trailing period. Examples: \"Unify prompt delivery\", \"Fix login redirect\"." }
             },
             "required": ["topic"]
+        })
+    }
+
+    // -------------------------------------------------- issue tracker ---
+    // The per-project issue tracker (spec: Issues). One block, shown by both
+    // working surfaces, so a coding agent and a project agent are offered the
+    // same eight tools with the same words.
+
+    /// The tracker's eight, appended to whichever surface is being built.
+    ///
+    /// None takes a project: the scope is the calling agent's own, read off
+    /// the session, so there is nothing to pass and no other project reachable.
+    /// None takes an author either — the bridge knows who is calling, so a
+    /// comment is signed by whoever wrote it and an event by whoever caused it.
+    fn issue_tools() -> Vec<Value> {
+        let issue_id = json!({
+            "type": "string",
+            "description": "From list_issues, or the issue you were handed."
+        });
+        let status = json!({
+            "type": "string",
+            "enum": ["backlog", "ready", "in_progress", "in_review", "done"],
+            "description": "A column of the board."
+        });
+        vec![
+            json!({
+                "name": "list_issues",
+                "description": "The issues of your project, newest first: what each one is, who holds it, which column it is in and what it is about. Which project is read comes from who you are — there is nothing to pass, and no other project is reachable from here.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "state": { "type": "string", "enum": ["open", "closed"], "description": "Omit for both." },
+                        "status": status,
+                        "label": { "type": "string" }
+                    }
+                }
+            }),
+            json!({
+                "name": "get_issue",
+                "description": "One issue and its whole timeline: every comment and everything that has happened to it, oldest first. Read this before you act on an issue somebody handed you — the body says what is wanted and the timeline says what has already been tried.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "issue_id": issue_id },
+                    "required": ["issue_id"]
+                }
+            }),
+            json!({
+                "name": "create_issue",
+                "description": "File an issue in your project. Use it for work you have found and are NOT doing: an issue is cheap, and something you noticed and did not write down exists only in this conversation. It is filed, not started — assign it to start anyone on it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "One line saying what is wanted, in the user's terms." },
+                        "body": { "type": "string", "description": "Markdown. What you know: what happens, where you saw it, what you think is behind it." },
+                        "status": status,
+                        "labels": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+                        "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] }
+                    },
+                    "required": ["title"]
+                }
+            }),
+            json!({
+                "name": "comment_issue",
+                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "issue_id": issue_id,
+                        "body": { "type": "string", "description": "Markdown." },
+                        "refs": {
+                            "type": "array",
+                            "maxItems": 20,
+                            "description": "Typed references. A file needs the issue to link the workspace it is in; a commit must be one the issue links.",
+                            "items": { "type": "object", "properties": {
+                                "kind": { "type": "string", "enum": ["file", "commit", "worktree"] },
+                                "path": { "type": "string" },
+                                "line_start": { "type": "integer", "minimum": 1 },
+                                "line_end": { "type": "integer", "minimum": 1 },
+                                "sha": { "type": "string" },
+                                "worktree_id": { "type": "string" }
+                            }, "required": ["kind"] }
+                        }
+                    },
+                    "required": ["issue_id", "body"]
+                }
+            }),
+            json!({
+                "name": "assign_issue",
+                "description": "Hand an issue to somebody. Assigning IS dispatching: it delivers the issue into that agent's conversation and starts it. This is how you hand work off — an issue assigned leaves a record on the issue that a message does not, and the agent that gets it knows what it is working on.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "issue_id": issue_id,
+                        "assignee": {
+                            "type": "object",
+                            "description": "Who gets it, and where the work runs. Pass null to unassign.",
+                            "properties": {
+                                "kind": { "type": "string", "enum": ["user", "project_agent", "agent", "new_workspace", "new_agent"] },
+                                "agent_id": { "type": "string", "description": "With kind=agent. An agent of your project; one outside it is refused." },
+                                "workspace_id": { "type": "string", "description": "With kind=new_agent: the workspace the new agent works in." },
+                                "name": { "type": "string", "description": "With kind=new_workspace. The issue's title when omitted." },
+                                "isolation": { "type": "string", "enum": ["worktree", "rift"], "description": "With kind=new_workspace. Omit for the project's own setting." },
+                                "harness": { "type": "string", "description": "What a new agent runs on. Omit for the user's default." },
+                                "model": { "type": "string" },
+                                "effort": { "type": "string" }
+                            },
+                            "required": ["kind"]
+                        },
+                        "note": { "type": "string", "description": "Extra instruction delivered under the issue. The issue's body is the issue; this is what you would have said in a message." }
+                    },
+                    "required": ["issue_id", "assignee"]
+                }
+            }),
+            json!({
+                "name": "move_issue",
+                "description": "Move an issue to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "issue_id": issue_id, "status": status },
+                    "required": ["issue_id", "status"]
+                }
+            }),
+            json!({
+                "name": "close_issue",
+                "description": "Close an issue. Closing is not the Done column: one says whether anyone is still expected to act, the other says where the card is. Closing an issue that is already closed is refused.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "issue_id": issue_id, "reason": { "type": "string", "description": "One line on why." } },
+                    "required": ["issue_id"]
+                }
+            }),
+            json!({
+                "name": "link_issue",
+                "description": "Record what an issue is about: the workspace being worked in, the branch, a commit, or the conversation working it. A link has to name something of your own project. Name at least one.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "issue_id": issue_id,
+                        "workspace_id": { "type": "string" },
+                        "branch": { "type": "string", "description": "Spelled exactly as it is." },
+                        "commit": { "type": "string", "description": "A full 40-character sha." },
+                        "conversation_id": { "type": "string", "description": "A conversation owner id of your project." },
+                        "parent_issue_id": { "type": "string", "description": "The issue this one is part of. A cycle is refused." }
+                    },
+                    "required": ["issue_id"]
+                }
+            }),
+        ]
+    }
+
+    /// The tracker's `tools/call` arms, shared by both working surfaces.
+    /// `None` is "not one of mine", which every other tool is.
+    fn handle_issue_tools_call(id: &Value, name: &str, params: Option<&Value>) -> Option<Handled> {
+        let issue = || required_argument(params, "issue_id");
+        Some(match name {
+            "list_issues" => acted(
+                id.clone(),
+                BridgeAction::TrackerListIssues {
+                    state: optional_argument(params, "state"),
+                    status: optional_argument(params, "status"),
+                    label: optional_argument(params, "label"),
+                },
+            ),
+            "get_issue" => match issue() {
+                Ok(issue_id) => acted(id.clone(), BridgeAction::TrackerGetIssue { issue_id }),
+                Err(message) => refused(id.clone(), message),
+            },
+            "create_issue" => match required_argument(params, "title") {
+                Ok(title) => acted(
+                    id.clone(),
+                    BridgeAction::TrackerCreateIssue {
+                        title,
+                        body: optional_argument(params, "body"),
+                        status: optional_argument(params, "status"),
+                        labels: string_list_argument(params, "labels"),
+                        priority: optional_argument(params, "priority"),
+                    },
+                ),
+                Err(message) => refused(id.clone(), message),
+            },
+            "comment_issue" => {
+                match issue()
+                    .and_then(|issue_id| Ok((issue_id, required_argument(params, "body")?)))
+                {
+                    Ok((issue_id, body)) => match issue_refs(params) {
+                        Ok(refs) => acted(
+                            id.clone(),
+                            BridgeAction::TrackerCommentIssue {
+                                issue_id,
+                                body,
+                                refs,
+                            },
+                        ),
+                        Err(message) => refused(id.clone(), message),
+                    },
+                    Err(message) => refused(id.clone(), message),
+                }
+            }
+            "assign_issue" => match issue() {
+                Ok(issue_id) => acted(
+                    id.clone(),
+                    BridgeAction::TrackerAssignIssue {
+                        issue_id,
+                        // Absent and null are both unassignment, which is a
+                        // legible thing to ask for.
+                        assignee: argument(params, "assignee").unwrap_or(Value::Null),
+                        note: optional_argument(params, "note"),
+                    },
+                ),
+                Err(message) => refused(id.clone(), message),
+            },
+            "move_issue" => {
+                match issue()
+                    .and_then(|issue_id| Ok((issue_id, required_argument(params, "status")?)))
+                {
+                    Ok((issue_id, status)) => acted(
+                        id.clone(),
+                        BridgeAction::TrackerMoveIssue { issue_id, status },
+                    ),
+                    Err(message) => refused(id.clone(), message),
+                }
+            }
+            "close_issue" => match issue() {
+                Ok(issue_id) => acted(
+                    id.clone(),
+                    BridgeAction::TrackerCloseIssue {
+                        issue_id,
+                        reason: optional_argument(params, "reason"),
+                    },
+                ),
+                Err(message) => refused(id.clone(), message),
+            },
+            "link_issue" => match issue() {
+                Ok(issue_id) => acted(
+                    id.clone(),
+                    BridgeAction::TrackerLinkIssue {
+                        issue_id,
+                        workspace_id: optional_argument(params, "workspace_id"),
+                        branch: optional_argument(params, "branch"),
+                        commit: optional_argument(params, "commit"),
+                        conversation_id: optional_argument(params, "conversation_id"),
+                        parent_issue_id: optional_argument(params, "parent_issue_id"),
+                    },
+                ),
+                Err(message) => refused(id.clone(), message),
+            },
+            _ => return None,
         })
     }
 
@@ -794,6 +1126,7 @@ impl DoneServer {
             "description": SET_TOPIC_DESCRIPTION,
             "inputSchema": Self::set_topic_input_schema()
         })]);
+        tools.extend(Self::issue_tools());
         Value::Array(tools)
     }
 
@@ -892,6 +1225,11 @@ impl DoneServer {
     /// anyway is parsed as though it had not: the scope is the owner binding
     /// the daemon holds, and there is nothing here for an argument to widen.
     fn handle_project_tools_call(id: Value, name: &str, params: Option<&Value>) -> Handled {
+        // The tracker first, then the workspace tools: both are shared by
+        // the two working surfaces, so each is parsed in one place.
+        if let Some(handled) = Self::handle_issue_tools_call(&id, name, params) {
+            return handled;
+        }
         if let Some(handled) = workspace_tool_call(id.clone(), name, params) {
             return handled;
         }
@@ -920,6 +1258,11 @@ impl DoneServer {
     /// The coding surface's `tools/call`: its conversation, and the workspace
     /// tools it shares with the project surface.
     fn handle_coding_tools_call(&self, id: Value, name: &str, params: Option<&Value>) -> Handled {
+        // The tracker first, then the workspace tools: both are shared by
+        // the two working surfaces, so each is parsed in one place.
+        if let Some(handled) = Self::handle_issue_tools_call(&id, name, params) {
+            return handled;
+        }
         if let Some(handled) = workspace_tool_call(id.clone(), name, params) {
             return handled;
         }
@@ -1337,6 +1680,45 @@ fn workspace_tool_action(
     Some(parsed)
 }
 
+// ------------------------------------------------------ issue tracker ---
+// Three argument readers the tracker's tools need and the ones above do not:
+// a whole value, a list of words, and a list of typed references.
+
+/// One argument whole, for a tool whose argument is not a string.
+fn argument(params: Option<&Value>, field: &str) -> Option<Value> {
+    params
+        .and_then(|p| p.get("arguments"))
+        .and_then(|arguments| arguments.get(field))
+        .cloned()
+}
+
+/// A list of words, with anything that is not one dropped. Absent is empty:
+/// a tool that was given no labels was given no labels.
+fn string_list_argument(params: Option<&Value>, field: &str) -> Vec<String> {
+    argument(params, field)
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A comment's typed references, parsed here so a malformed one refuses the
+/// call rather than reaching the daemon as an empty list.
+fn issue_refs(params: Option<&Value>) -> Result<Vec<crate::thread::ThreadLink>, String> {
+    match argument(params, "refs") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(values)) => values
+            .into_iter()
+            .map(|value| serde_json::from_value(value).map_err(|error| format!("refs: {error}")))
+            .collect(),
+        Some(_) => Err("refs must be an array".to_string()),
+    }
+}
+
 /// `search_conversation`, on every surface that has a conversation.
 fn search_action(id: Value, params: Option<&Value>) -> Handled {
     let arguments = params
@@ -1494,7 +1876,7 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4 + WORKSPACE_TOOLS.len());
+        assert_eq!(tools.len(), 4 + WORKSPACE_TOOLS.len() + ISSUE_TOOLS.len());
         assert_eq!(tools[0]["name"], "post_thread_message");
         assert_eq!(tools[1]["name"], "message_agent");
         assert_eq!(tools[2]["name"], "search_conversation");
@@ -1947,6 +2329,20 @@ mod tests {
         "remove_workspace_directory",
     ];
 
+    /// The issue tracker's eight, the OTHER inventory shared between the two
+    /// working surfaces — and for the same reason: both agents are bound to a
+    /// project, and a project has one board.
+    const ISSUE_TOOLS: [&str; 8] = [
+        "list_issues",
+        "get_issue",
+        "create_issue",
+        "comment_issue",
+        "assign_issue",
+        "move_issue",
+        "close_issue",
+        "link_issue",
+    ];
+
     #[test]
     fn every_surface_advertises_its_exact_tool_inventory() {
         assert_eq!(
@@ -1968,8 +2364,8 @@ mod tests {
         ];
         assert_eq!(
             tool_names(&server()),
-            [&conversation[..], &WORKSPACE_TOOLS[..]].concat(),
-            "a coding agent has its conversation and the workspaces of its project"
+            [&conversation[..], &WORKSPACE_TOOLS[..], &ISSUE_TOOLS[..]].concat(),
+            "a coding agent has its conversation, the workspaces of its project, and its board"
         );
         assert_eq!(
             tool_names(&project()),
@@ -1977,12 +2373,13 @@ mod tests {
                 &WORKSPACE_TOOLS[..],
                 &["add_project_source", "remove_project_source"][..],
                 &conversation[..],
+                &ISSUE_TOOLS[..],
             ]
             .concat(),
-            "and the project agent has the same workspaces, plus the project's own sources"
+            "and the project agent has the same three, plus the project's own sources"
         );
         for surface in [McpSurface::Coding, McpSurface::Project] {
-            for tool in WORKSPACE_TOOLS {
+            for tool in WORKSPACE_TOOLS.iter().chain(ISSUE_TOOLS.iter()) {
                 assert!(
                     DoneServer::tool_names_of(surface).contains(&tool.to_string()),
                     "{tool} missing from {surface:?}"
@@ -1993,6 +2390,15 @@ mod tests {
             assert!(
                 !tool_names(&server()).contains(&project_only.to_string()),
                 "{project_only} is the project agent's alone"
+            );
+        }
+        // The router works no project, so it carries no board. `create_issue`
+        // is the exception it always was: the router's own, and the plan
+        // flow's, sharing a name on a surface nothing else here reaches.
+        for tool in ISSUE_TOOLS.iter().filter(|tool| **tool != "create_issue") {
+            assert!(
+                !tool_names(&router()).contains(&tool.to_string()),
+                "the router is shown {tool}"
             );
         }
     }

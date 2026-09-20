@@ -4,15 +4,17 @@
 //! message's links (controls 8 and 9), with the ownership half scoped to the
 //! ISSUE rather than to a conversation:
 //!
-//! 1. **Shape** — `validate_thread_links`, unchanged and shared, so a path that
-//!    escapes a checkout or a commit that is not a sha is refused in exactly
-//!    the same words wherever it arrives.
+//! 1. **Shape** — [`validate_shape`], which is the check `post_thread_message`
+//!    carried until agent-attached links were dropped from it. Nothing else
+//!    writes a `ThreadLink` now, so the rule lives beside its one caller rather
+//!    than in the conversation module it no longer has anything to do with. The
+//!    refusals keep their old words: a path that escapes a checkout and a
+//!    commit that is not a sha read the same as they always did.
 //! 2. **Ownership** — a reference must name something this issue is about.
 //!
 //! A reference that fails either half refuses the whole call. Nothing partially
 //! lands: half a comment is a comment whose references lie about what it read.
 
-use crate::app::validate_thread_links;
 use crate::thread::ThreadLink;
 use crate::tracker::Issue;
 use serde_json::Value;
@@ -29,7 +31,7 @@ pub(super) fn fenced_refs(
     checkouts: &BTreeSet<String>,
 ) -> Result<Vec<ThreadLink>, String> {
     let links = parse_refs(params)?;
-    validate_thread_links(&links)?;
+    validate_shape(&links)?;
     for link in &links {
         owned_by_issue(link, issue, checkouts)?;
     }
@@ -96,3 +98,54 @@ fn owned_worktree(worktree_id: &str, checkouts: &BTreeSet<String>) -> Result<(),
         "worktree reference {worktree_id} is not a checkout of a workspace this issue links"
     ))
 }
+
+/// The shape half of the fence: how many, and whether each is built the way
+/// its kind is built.
+///
+/// Only the three kinds the tracker accepts are checked in detail. The plan
+/// flow's five are refused outright by [`owned_by_issue`] whatever they hold,
+/// so a second opinion on their internals here would be a rule nothing reads.
+fn validate_shape(links: &[ThreadLink]) -> Result<(), String> {
+    if links.len() > MAX_REFS {
+        return Err(format!("refs must contain at most {MAX_REFS} entries"));
+    }
+    for link in links {
+        match link {
+            ThreadLink::File {
+                path,
+                line_start,
+                line_end,
+            } => {
+                if path.is_empty() || !crate::plan::is_worktree_contained_path(path) {
+                    return Err("file link path escapes the worktree".to_string());
+                }
+                if line_start.is_some_and(|line| line == 0)
+                    || line_end.is_some_and(|line| line == 0)
+                    || matches!((line_start, line_end), (Some(start), Some(end)) if start > end)
+                {
+                    return Err("file link line range is invalid".to_string());
+                }
+            }
+            ThreadLink::Commit { sha }
+                if sha.len() != 40
+                    || !sha
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) =>
+            {
+                return Err("commit link is invalid".to_string());
+            }
+            ThreadLink::Worktree { worktree_id }
+                if !worktree_id.starts_with("wt-") || worktree_id.len() != 15 =>
+            {
+                return Err("worktree link is invalid".to_string());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// How many references one comment may carry — the bound a thread message's
+/// links carried, kept because the reason for it is unchanged: a reference
+/// list long enough to be a document is not a reference list.
+const MAX_REFS: usize = 20;

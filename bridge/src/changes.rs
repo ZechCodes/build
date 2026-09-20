@@ -2890,6 +2890,7 @@ mod subscriptions {
 
     /// The spec as the wire spells it, both ways.
     #[test]
+    #[test]
     fn a_subscription_spec_round_trips_through_the_wire_form() {
         let wire = json!({
             "subscription_id": "s-focus",

@@ -208,6 +208,19 @@ Notes on each:
   writes a `created` event, and — when it was given an `assignee` — runs the
   whole of `issues.assign` before answering. So `dispatch` on the result is the
   same shape `issues.assign` answers, and `null` when nothing was dispatched.
+  The assignee is read BEFORE the issue is written: one this bridge cannot make
+  sense of refuses the whole call rather than leaving a filed issue nobody asked
+  for. `note` is accepted and delivered; a form need not offer one, because on a
+  create the body IS the issue.
+
+  A client should check `issue.assignee` on the answer when it sent one. The v1
+  facade parses params into the typed struct and hands the implementation the
+  struct serialised BACK, which drops any field this bridge does not know — so
+  a bridge older than this verb's `assignee` files the issue unassigned and
+  answers `ok`, with nothing in the refusal to say the choice went nowhere. That
+  is true of every optional param on every v1 verb; it matters here because
+  assignment is dispatch, and a dropped assignee means somebody walks away
+  believing an agent is on it.
 - **`issues.update`** applies only the fields present. Each one that actually
   changes something writes its own event: `moved` for `status`, `labelled` for
   `labels`, `closed`/`reopened` for `state`. A `title`/`body`/`priority` change

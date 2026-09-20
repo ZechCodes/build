@@ -339,6 +339,46 @@ Neither can take the ground out from under you: Build refuses to delete the
 workspace you are standing in, or to remove the directory your own checkout is
 in.";
 
+/// What every agent with the issue tools is told about them (spec: Issues →
+/// The prompt note).
+///
+/// Appended rather than written into each template, for the reason
+/// [`MESSAGE_AGENT_NOTE`] is: the wording cannot drift between the coding
+/// surface and the project surface, and a project overriding one template
+/// still overrides only that one.
+///
+/// It says the four things an agent gets wrong without being told. An issue
+/// handed over is the WORK, not a note about it, so progress belongs on the
+/// issue and not only in a conversation nobody else reads. In review is what
+/// Complete means on a board — ready to be looked at, not accepted — and an
+/// agent that moves its own issue to Done is marking its own homework. A
+/// hand-off is an assignment, because an assignment delivers the issue and
+/// leaves a record while a message leaves only words. And work an agent
+/// notices and does not do exists nowhere unless it is filed.
+const ISSUE_TOOLS_NOTE: &str = "\
+Your project has an issue tracker, and the issue tools reach it: `list_issues`,
+`get_issue`, `create_issue`, `comment_issue`, `assign_issue`, `move_issue`,
+`close_issue` and `link_issue`. They are about YOUR project — there is nothing
+to pass and no other project is reachable — and the bridge knows who you are, so
+what you write is signed by you.
+
+When a message hands you an issue, that issue is the work. Read it with
+`get_issue` first: the body says what is wanted and the timeline says what has
+already been tried. Comment your progress on it with `comment_issue` as you go,
+rather than only reporting at the end — your conversation is yours, and the
+issue is where the user and the other agents look.
+
+Move it to In review with `move_issue` when you report Complete. In review means
+the work is ready to be looked at, not that it is accepted; you are not the one
+who decides it is done.
+
+Hand work off by ASSIGNING the issue, not by messaging. `assign_issue` delivers
+the issue into that agent's conversation and starts it, and leaves a record on
+the issue that a message does not. Assigning is what dispatching is here.
+
+File an issue for follow-up work you find and do not do. An issue is cheap, and
+something you noticed and did not write down exists only in this conversation.";
+
 fn phase_template(base: &str) -> String {
     base.to_string()
 }
@@ -347,7 +387,7 @@ fn phase_template(base: &str) -> String {
 /// agents on its project, and it can cut a checkout of its own to put one of
 /// them on.
 fn coding_template(base: &str) -> String {
-    format!("{base}\n\n{MESSAGE_AGENT_NOTE}\n\n{WORKSPACE_NOTE}")
+    format!("{base}\n\n{MESSAGE_AGENT_NOTE}\n\n{WORKSPACE_NOTE}\n\n{ISSUE_TOOLS_NOTE}")
 }
 
 /// A template whose phase ends in changed code, so its terminal message body is the
@@ -385,7 +425,11 @@ impl Default for Templates {
             review_changes: reporting_template(REVIEW_CHANGES),
             message: coding_template(MESSAGE),
             router: phase_template(ROUTER),
-            project_agent: phase_template(PROJECT_AGENT),
+            // The project agent gets the issue note and not the message note:
+            // its own prompt already says what messaging another agent means,
+            // in its own words, and the tracker is the one thing it has that
+            // that prompt predates.
+            project_agent: format!("{PROJECT_AGENT}\n\n{ISSUE_TOOLS_NOTE}"),
         }
     }
 }

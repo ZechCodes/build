@@ -485,6 +485,12 @@ impl AppState {
             };
             return self.agent_message_agent(sender, target, body);
         }
+        // The issue tracker, before the per-surface tables: it is the one
+        // family both working surfaces carry, so it is answered in one place
+        // rather than once in each.
+        if let Some(answered) = self.issue_surface_action(entity_id, agent_id, &action) {
+            return answered;
+        }
         if let Some(answered) = self.project_scoped_action(entity_id, agent_id, &action) {
             return answered;
         }

@@ -10,7 +10,12 @@
       "bug",
       "ui"
     ],
-    "priority": "high"
+    "priority": "high",
+    "assignee": {
+      "kind": "new_agent",
+      "workspace_id": "ws-3f2a91c4"
+    },
+    "note": "The drop handler is the place to start."
   },
   "result": {
     "issue": {
@@ -51,6 +56,13 @@
       "created_at": "2026-09-19T09:00:00Z",
       "updated_at": "2026-09-19T10:12:00Z",
       "closed_at": null
+    },
+    "dispatch": {
+      "kind": "new_agent",
+      "workspace_id": null,
+      "entity_id": "run-5d90b1e7",
+      "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+      "operation_id": "op-5f1c9a02-7d4e-4b61-9c38-2ea7f0b6d514"
     }
   },
   "errors": [

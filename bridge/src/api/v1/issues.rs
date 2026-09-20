@@ -34,7 +34,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             "issues.create",
             issues_create,
             IssuesCreateParams,
-            IssueAnswer
+            IssueAssigned
         ),
         v1_method!(
             "issues.update",
@@ -111,6 +111,13 @@ pub struct IssuesCreateParams {
     pub labels: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
+    /// Who to hand it to. The same five kinds `issues.assign` takes, and the
+    /// same consequence: filing an issue for somebody starts them on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<Value>,
+    /// Extra instruction delivered under the issue, when it is assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Only the fields present are applied. An absent field is not "set this to
@@ -379,8 +386,12 @@ fn issues_get(app: &mut AppState, params: IssueIdParams) -> Result<Answer<IssueD
 fn issues_create(
     app: &mut AppState,
     params: IssuesCreateParams,
-) -> Result<Answer<IssueAnswer>, ApiError> {
-    answer(app.issues_create(&params.wire())).map_err(refine)
+) -> Result<Answer<IssueAssigned>, ApiError> {
+    answer(
+        app.issues_create(&params.wire())
+            .map(super::deferral_placeholder),
+    )
+    .map_err(refine)
 }
 
 fn issues_update(

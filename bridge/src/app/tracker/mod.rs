@@ -14,8 +14,10 @@
 mod dispatch;
 mod edits;
 mod refs;
+mod tools;
 mod views;
 
+pub(in crate::app) use dispatch::AssignTarget;
 pub(in crate::app) use views::{columns_json, issue_json, issue_with_timeline_json};
 
 use crate::app::{require_str, AppState};
@@ -121,16 +123,31 @@ impl AppState {
 
     // ------------------------------------------------------------ writes ---
 
-    /// `issues.create` — file one, mint its number, say it was created.
+    /// `issues.create` — file one, mint its number, say it was created, and
+    /// hand it over when it was filed with an assignee.
+    ///
+    /// Filing and assigning are one call because they are one thought: most
+    /// issues an agent files are for somebody, and making the client do two
+    /// round trips would leave an issue assigned to nobody in between for every
+    /// failure of the second. The assignment is the WHOLE of `issues.assign` —
+    /// the same delivery, the same events, the same deferral when it cuts a
+    /// checkout — so there is one answer to what assigning means.
     pub(crate) fn issues_create(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project_path = self.tracker_project_path(&project_id)?;
         let actor = Actor::User;
         let now = crate::store::now_rfc3339();
         let draft = edits::drafted_issue(params, &project_path, actor.clone(), &now)?;
+        // Read BEFORE the issue is written: an assignee this bridge cannot make
+        // sense of must refuse the whole call rather than leave a filed issue
+        // nobody asked for.
+        let target = match params.get("assignee") {
+            None | Some(Value::Null) => None,
+            Some(assignee) => Some(AssignTarget::parse(Some(assignee))?),
+        };
         let created = IssueEvent::new(
             &draft.id,
-            actor,
+            actor.clone(),
             IssueEventKind::Created,
             json!({ "title": draft.title }),
             &now,
@@ -139,7 +156,14 @@ impl AppState {
             .tracker_store()?
             .create_tracker_issue(draft, &[created])
             .stored()?;
-        Ok(json!({ "issue": issue_json(&project_id, &issue) }))
+        let Some(target) = target else {
+            return Ok(json!({
+                "issue": issue_json(&project_id, &issue),
+                "dispatch": Value::Null,
+            }));
+        };
+        let note = crate::app::optional_nonempty_string(params, "note")?.map(str::to_string);
+        self.assign_issue_to(&project_id, issue, target, note, actor, None)
     }
 
     /// `issues.update` — title, body, labels, priority, status, state.

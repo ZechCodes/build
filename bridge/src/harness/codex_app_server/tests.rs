@@ -3727,10 +3727,25 @@ fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
         !enabled_tools.contains("read_unread_messages"),
         "{enabled_tools}"
     );
-    assert!(
-        !enabled_tools.contains("create_issue"),
-        "{enabled_tools}: a coding owner gets no router tools"
-    );
+    // Not `create_issue`: the tracker gave the coding surface a `create_issue`
+    // of its own, so that name is no longer router-only and says nothing about
+    // surface bleed. These four are.
+    //
+    // Quoted, because the allow-list is one string and a bare `list_work`
+    // matches inside `list_workspaces` — which the coding surface legitimately
+    // has. An unquoted sentinel here fails on a tool that is not the one it is
+    // about.
+    for router_only in [
+        "dispatch_branch",
+        "ask_user",
+        "list_work",
+        "read_conversation",
+    ] {
+        assert!(
+            !enabled_tools.contains(&format!("\"{router_only}\"")),
+            "{enabled_tools}: a coding owner gets no router tools"
+        );
+    }
 }
 
 #[test]

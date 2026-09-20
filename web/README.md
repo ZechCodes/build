@@ -91,6 +91,15 @@ npm run e2e        # one encrypted round-trip over the `app` channel
 npm run qa         # workspaces, files, git and the terminal, end to end
 node wire-check.mjs  # the 1.1 wire surface, by hand from the host
 
+# The issue lines and the three incoming kinds, measured under the real
+# stylesheet at 390 px and on a desktop: gutter, row height, the gap between
+# consecutive lines and the gap a real message keeps. jsdom has no layout, so
+# this is the only thing that can check a claim about SPACE — it is what found
+# a 90px gutter, rows wrapping to three lines, and a rhythm 4px out. Reads the
+# committed fixture, which spa/test/issueLineFixture.test.js holds to the
+# renderer; needs a seed from live-seed.mjs; exits non-zero on a failed check.
+ISSUES_REPO=$PWD/.. node issue-line-measure.mjs
+
 # A dropped session over an open surface: the cached copy is kept and marked,
 # and the read lands again on reconnect (#24). PAUSES the bridge rather than
 # stopping it — a stopped container deregisters the device, and a machine that

@@ -21,7 +21,9 @@
 //! this module decides any of it.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -260,6 +262,28 @@ pub fn trickle_candidate(signaling: &SessionSender, candidate: Value) -> bool {
 /// unbounded, so parking a writer trades the channel's send buffer for device
 /// heap while a client that will not drain is attached.
 const DC_BUFFERED_HIGH: usize = 1024 * 1024;
+
+/// How long the app channel may hold undrained bytes with SCTP releasing none of
+/// them before the path under it is dead (issue #30).
+///
+/// The fault this measures: a session whose client had gone carried an admission
+/// receipt and an `ok` into an SCTP association with no far end. ICE called the
+/// path connected — its consent checks were being answered — and SCTP spent 105
+/// seconds retransmitting before it gave up and closed the channel. For those
+/// 105 seconds the bridge had bytes to send and was sending none, which is the
+/// one thing it can measure about the path without asking the client anything.
+///
+/// Twenty seconds is chosen against what it must not catch. It must not catch a
+/// slow link: a phone on a relayed path pulling a 789 KB screenshot is the exact
+/// shape of a full send buffer that is perfectly healthy. So the reading is not
+/// "the buffer is full" and not even "the buffer has not shrunk" — a writer
+/// refilling behind a draining buffer keeps the level flat — it is "SCTP has
+/// released no bytes at all", which no moving link does for twenty seconds.
+const DC_STALL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How often the stall watch reads the send counters. Cheap: two atomics and one
+/// channel accessor, ten times inside the timeout it is measuring.
+const DC_STALL_POLL: Duration = Duration::from_secs(2);
 
 /// The two channels every peer carries, created identically on both sides with
 /// explicit ids so no in-band open handshake is needed (spec §DataChannels).
@@ -761,6 +785,11 @@ fn field_or_empty(offered: &Value, field: &str) -> String {
 struct DataChannelCarrier {
     writer: tokio::task::JoinHandle<()>,
     reader: tokio::task::JoinHandle<()>,
+    /// The stall watch, on the channel that gets one (issue #30). The term
+    /// channel carries a stream whose buffer is meant to be full, and both
+    /// channels share one SCTP association, so a path that stops moving stops
+    /// moving under the app channel too — one watch answers for the peer.
+    stall: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl DataChannelCarrier {
@@ -771,26 +800,173 @@ impl DataChannelCarrier {
         label: &'static str,
     ) -> Self {
         let (carrier, envelopes) = CarrierHandle::open_channel();
+        let send = Arc::new(ChannelSend::default());
         DataChannelCarrier {
             writer: tokio::spawn(write_envelopes(
                 channel.clone(),
                 envelopes,
                 session_id.clone(),
                 label,
+                send.clone(),
             )),
+            stall: watches_for_stalls(label).then(|| {
+                tokio::spawn(watch_for_stall(
+                    channel.clone(),
+                    session_id.clone(),
+                    label,
+                    send.clone(),
+                ))
+            }),
             reader: tokio::spawn(pump_channel_events(
-                channel, intake, carrier, session_id, label,
+                channel, intake, carrier, session_id, label, send,
             )),
         }
     }
 }
 
-/// Dropping the carrier is the channel no longer carrying: both its tasks stop,
-/// and the reader stopping is what releases the wire the intake's sessions ride.
+/// Dropping the carrier is the channel no longer carrying: every task stops, and
+/// the reader stopping is what releases the wire the intake's sessions ride.
 impl Drop for DataChannelCarrier {
     fn drop(&mut self) {
         self.writer.abort();
         self.reader.abort();
+        if let Some(stall) = self.stall.take() {
+            stall.abort();
+        }
+    }
+}
+
+/// Which of [`NEGOTIATED_CHANNELS`] carries the stall watch.
+///
+/// The app channel, and only it. The term channel carries a stream whose send
+/// buffer is MEANT to be full — that is what backpressure on a terminal flood
+/// looks like — and both channels ride one SCTP association, so a path that has
+/// stopped moving has stopped moving under the app channel too. One watch
+/// answers for the peer, on the channel whose silence is never normal.
+fn watches_for_stalls(label: &str) -> bool {
+    label == "app"
+}
+
+/// What one channel's three tasks know about its send side, shared between them.
+///
+/// `handed` is every byte the writer has given the channel; `opened_at` is when
+/// the wire actually came up, which the reader learns and the other two report.
+/// Both are here rather than passed separately because they are one subject: how
+/// this channel's outbound half has been doing, which is the whole of what the
+/// stall watch and the `write_failed` line have to say.
+#[derive(Default)]
+struct ChannelSend {
+    handed: AtomicU64,
+    opened_at: OnceLock<Instant>,
+}
+
+impl ChannelSend {
+    /// Bytes this channel has taken from the writer since it was created.
+    fn handed(&self) -> u64 {
+        self.handed.load(Ordering::Relaxed)
+    }
+
+    fn took(&self, bytes: usize) {
+        self.handed.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    /// How long this channel had been open, for a line about something that went
+    /// wrong on it. `None` before the open event: a channel that failed during
+    /// negotiation has no age to report, and reporting zero would read as one.
+    fn age_ms(&self) -> Option<u128> {
+        self.opened_at.get().map(|at| at.elapsed().as_millis())
+    }
+}
+
+/// One reading of a channel's send side: what the writer has handed over, and
+/// what SCTP has not released yet.
+///
+/// `outstanding` is the crate's `outstanding_bytes` rather than the browser's
+/// `bufferedAmount`: it counts bytes still in the send pipeline as well as the
+/// packetized ones, which is the number that actually drives this channel's
+/// backpressure, so it is the number a stall is about.
+#[derive(Clone, Copy)]
+struct SendReading {
+    handed: u64,
+    outstanding: usize,
+}
+
+/// Whether the path under a channel is still moving bytes.
+///
+/// Kept as a value with one method so the rule can be tested without a peer
+/// connection, a network, or twenty seconds of anybody's time.
+#[derive(Default)]
+struct StallWatch {
+    /// Bytes SCTP had released as of the last reading.
+    released: u64,
+    /// How long it has released none.
+    stalled_for: Duration,
+}
+
+impl StallWatch {
+    /// One reading, `since_last` after the one before it. `Some(stalled_for)`
+    /// when the path has moved nothing for the whole of [`DC_STALL_TIMEOUT`].
+    ///
+    /// Progress is measured as bytes RELEASED, cumulatively — not as the level
+    /// in the buffer. The level is no use: a writer refilling behind a draining
+    /// buffer holds it flat at the backpressure limit, and a phone pulling a
+    /// 789 KB screenshot over a relayed path would look identical to a dead one.
+    /// Released bytes only ever go up, and on a path that carries anything at
+    /// all they go up inside two seconds.
+    fn sample(&mut self, reading: SendReading, since_last: Duration) -> Option<Duration> {
+        let released = reading.handed.saturating_sub(reading.outstanding as u64);
+        let moved = released > self.released;
+        self.released = released;
+        // Nothing queued is not a stall, it is an idle channel — and an idle app
+        // channel says nothing about the path either way. The browser's own probe
+        // is what covers that case (spa/src/core/pathProbe.js).
+        if reading.outstanding == 0 || moved {
+            self.stalled_for = Duration::ZERO;
+            return None;
+        }
+        self.stalled_for += since_last;
+        (self.stalled_for >= DC_STALL_TIMEOUT).then_some(self.stalled_for)
+    }
+}
+
+/// Watch this channel's send side, and close it when the path under it has
+/// stopped carrying (issue #30).
+///
+/// Closing is the sever: the app channel IS the connection as far as the browser
+/// is concerned, so its close ends the session there and the client's recovery
+/// mints a new one — the same edge a path that ICE noticed produces, five
+/// seconds after the fault instead of a hundred and five.
+async fn watch_for_stall(
+    channel: Arc<dyn DataChannel>,
+    session_id: String,
+    label: &'static str,
+    send: Arc<ChannelSend>,
+) {
+    let mut watch = StallWatch::default();
+    loop {
+        tokio::time::sleep(DC_STALL_POLL).await;
+        // A channel that cannot be asked is a channel that has gone; its own
+        // close is the report, and this watch has nothing left to watch.
+        let Ok(outstanding) = channel.outstanding_bytes().await else {
+            return;
+        };
+        let reading = SendReading {
+            handed: send.handed(),
+            outstanding,
+        };
+        let Some(stalled_for) = watch.sample(reading, DC_STALL_POLL) else {
+            continue;
+        };
+        diagnostic(
+            &session_id,
+            &format!(
+                "channel={label} write_stalled buffered_bytes={outstanding} stalled_ms={} channel_age_ms={}",
+                stalled_for.as_millis(),
+                send.age_ms().unwrap_or_default(),
+            ),
+        );
+        let _ = channel.close().await;
+        return;
     }
 }
 
@@ -803,6 +979,7 @@ async fn write_envelopes(
     mut envelopes: mpsc::UnboundedReceiver<OutboundEnvelope>,
     session_id: String,
     label: &'static str,
+    send: Arc<ChannelSend>,
 ) {
     while let Some(outbound) = envelopes.recv().await {
         let Some(json) = as_channel_text(&outbound) else {
@@ -810,9 +987,26 @@ async fn write_envelopes(
         };
         for message in chunk::split(&json) {
             if channel.send_text(&message).await.is_err() {
-                diagnostic(&session_id, &format!("channel={label} write_failed"));
+                // What the frame was and how long the channel had carried, not
+                // just that a write failed: the line that closed issue #30's
+                // session said neither, so the log could not say whether a
+                // 789 KB attachment had been half-written into a dead path or a
+                // 200-byte receipt had failed on a channel that never opened.
+                diagnostic(
+                    &session_id,
+                    &format!(
+                        "channel={label} write_failed frame_bytes={} part_bytes={} channel_age_ms={}",
+                        json.len(),
+                        message.len(),
+                        send.age_ms().unwrap_or_default(),
+                    ),
+                );
                 return;
             }
+            // Handed over, not delivered: what the stall watch measures is how
+            // much of this SCTP releases, and it can only know the denominator
+            // from here.
+            send.took(message.len());
         }
     }
 }
@@ -841,12 +1035,18 @@ async fn pump_channel_events(
     carrier: CarrierHandle,
     session_id: String,
     label: &'static str,
+    send: Arc<ChannelSend>,
 ) {
     let riding = RidingChannel { intake, carrier };
     let mut reassembler = chunk::Reassembler::default();
     while let Some(event) = channel.poll().await {
         match event {
-            DataChannelEvent::OnOpen => diagnostic(&session_id, &format!("channel={label} opened")),
+            DataChannelEvent::OnOpen => {
+                // The one place that knows when the wire actually came up, which
+                // is what "how long had it been open" is measured from.
+                let _ = send.opened_at.set(Instant::now());
+                diagnostic(&session_id, &format!("channel={label} opened"));
+            }
             DataChannelEvent::OnMessage(message) => {
                 if riding
                     .accept(&mut reassembler, &message.data)
@@ -1388,5 +1588,128 @@ mod negotiated_path_tests {
             NegotiatedPath::new("unknown", "unknown").to_string(),
             "unknown/unknown candidates"
         );
+    }
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::*;
+
+    /// One reading, in the two numbers the watch is given.
+    fn reading(handed: u64, outstanding: usize) -> SendReading {
+        SendReading {
+            handed,
+            outstanding,
+        }
+    }
+
+    /// Feed the watch a series of readings one poll apart, and answer with the
+    /// first verdict it reaches.
+    fn watched(readings: &[SendReading]) -> Option<Duration> {
+        let mut watch = StallWatch::default();
+        for one in readings {
+            if let Some(stalled) = watch.sample(*one, DC_STALL_POLL) {
+                return Some(stalled);
+            }
+        }
+        None
+    }
+
+    /// The fault: bytes handed over, none released, for the whole timeout. This
+    /// is what issue #30's session looked like for 105 seconds while ICE called
+    /// the path connected.
+    #[test]
+    fn a_buffer_that_releases_nothing_is_a_dead_path() {
+        let polls = (DC_STALL_TIMEOUT.as_secs() / DC_STALL_POLL.as_secs()) as usize;
+        let stuck: Vec<_> = (0..polls).map(|_| reading(4096, 4096)).collect();
+
+        assert_eq!(watched(&stuck), Some(DC_STALL_TIMEOUT));
+    }
+
+    /// And not one poll sooner: the timeout is the whole point of the number.
+    #[test]
+    fn nineteen_seconds_of_silence_is_not_yet_a_verdict() {
+        let polls = (DC_STALL_TIMEOUT.as_secs() / DC_STALL_POLL.as_secs()) as usize - 1;
+        let stuck: Vec<_> = (0..polls).map(|_| reading(4096, 4096)).collect();
+
+        assert_eq!(watched(&stuck), None);
+    }
+
+    /// The false positive this must never produce: a phone on a relayed path
+    /// pulling a 789 KB screenshot. The buffer sits pinned at the backpressure
+    /// limit for the whole download — the level never falls, because the writer
+    /// refills it the instant SCTP releases anything — and the path is perfectly
+    /// healthy. Only the RELEASED count can tell this from a dead wire.
+    #[test]
+    fn a_full_buffer_that_is_draining_is_a_slow_link_and_not_a_dead_one() {
+        let limit = DC_BUFFERED_HIGH;
+        let mut handed = limit as u64;
+        let mut readings = Vec::new();
+        // Two minutes of a link moving 32 KB per poll with the buffer never
+        // dropping below the limit.
+        for _ in 0..60 {
+            handed += 32 * 1024;
+            readings.push(reading(handed, limit));
+        }
+
+        assert_eq!(watched(&readings), None);
+    }
+
+    /// An app channel with nothing queued says nothing about the path either
+    /// way, so it is never a stall. The browser's own probe covers that case.
+    #[test]
+    fn an_idle_channel_is_never_a_stall() {
+        let idle: Vec<_> = (0..120).map(|_| reading(900, 0)).collect();
+
+        assert_eq!(watched(&idle), None);
+    }
+
+    /// A stall that clears is forgotten: the clock is about the path now, not
+    /// about the worst minute it ever had.
+    #[test]
+    fn a_path_that_starts_moving_again_starts_the_clock_over() {
+        let polls = (DC_STALL_TIMEOUT.as_secs() / DC_STALL_POLL.as_secs()) as usize;
+        let mut readings: Vec<_> = (0..polls - 1).map(|_| reading(4096, 4096)).collect();
+        readings.push(reading(4096, 0)); // it drained
+        readings.extend((0..polls - 1).map(|_| reading(8192, 4096)));
+
+        assert_eq!(watched(&readings), None);
+    }
+
+    /// The watch rides the app channel alone: the term channel's full buffer is
+    /// backpressure working, and one SCTP association means one verdict.
+    #[test]
+    fn only_the_app_channel_is_watched() {
+        let watched: Vec<_> = NEGOTIATED_CHANNELS
+            .iter()
+            .filter(|(label, _)| watches_for_stalls(label))
+            .map(|(label, _)| *label)
+            .collect();
+
+        assert_eq!(watched, vec!["app"]);
+    }
+
+    /// A channel that failed before it ever opened has no age to report, and
+    /// reporting zero would read as one.
+    #[test]
+    fn a_channel_that_never_opened_reports_no_age() {
+        let send = ChannelSend::default();
+        assert_eq!(send.age_ms(), None);
+
+        let _ = send.opened_at.set(Instant::now());
+        assert!(send.age_ms().is_some());
+    }
+
+    /// Every part the writer hands over counts, because the stall watch's
+    /// denominator is what the channel was given.
+    #[test]
+    fn handing_bytes_over_counts_them() {
+        let send = ChannelSend::default();
+        assert_eq!(send.handed(), 0);
+
+        send.took(1200);
+        send.took(800);
+
+        assert_eq!(send.handed(), 2000);
     }
 }

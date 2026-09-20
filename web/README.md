@@ -106,6 +106,36 @@ ISSUES_REPO=$PWD/.. node issue-line-measure.mjs
 # is gone is a different case from one being reconnected to. Needs a seed from
 # live-seed.mjs; exits non-zero on a failed check.
 ISSUES_REPO=$PWD/.. node dropped-read-check.mjs
+
+# A session whose path died with ICE still calling it connected (#30): the probe
+# asks the wire, judges it dead in ~15 s where SCTP took ~105 s, and the reconnect
+# settles the uncertain post and re-fetches the attachment on its own. PINS
+# `RTCPeerConnection` to keep reporting a reached state, because a paused
+# container stops answering ICE's consent checks too and the browser would
+# otherwise notice on its own — which is the symptom, not the fault.
+ISSUES_REPO=$PWD/.. node dead-path-check.mjs
+
+# The bridge noticing its OWN frames are not leaving (#41). A paused bridge
+# cannot exercise this — a frozen container runs no code — so the fault is made
+# from the other end: a multi-megabyte attachment fetch in flight, then SIGSTOP on
+# the browser's whole process tree, so it stops draining its sockets while the
+# bridge writes. Seeds its own 4 MiB file and removes it. Thaws on any exit.
+ISSUES_REPO=$PWD/.. node stall-watch-check.mjs
+
+# The hold making a direct pair win a race a relay pair would have won (#31).
+# Builds the race the stack does not have: a coturn on the host, and every
+# non-relay candidate delayed in BOTH directions. Runs its own control with a skew
+# PAST the hold window, where the relay pair must win — without that, "direct won"
+# in the other phase would prove nothing.
+#
+# On this machine the control does not hold, and the check says so with exit 3
+# rather than pretending either way: the bridge is directly reachable and offers
+# only host candidates, and ICE forms a direct pair from peer-reflexive candidates
+# its own checks discover, so candidate ORDER is not what decides the race here.
+# Making the direct PATH slow (tc netem, or a NAT'd second bridge) is what this
+# would need, and both want root. Exit 0 the hold won, 1 it did not, 3 the
+# experiment could not be set up. Takes coturn down on any exit.
+ISSUES_REPO=$PWD/.. node relay-wins-check.mjs
 ```
 
 `PREFER_DEVICE_ID` pins one machine when the account has several

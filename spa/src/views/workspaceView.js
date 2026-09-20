@@ -6,7 +6,7 @@
 import { $ } from "../dom.js";
 import { App, go, markRoute } from "../app.js";
 import { esc } from "../core/text.js";
-import { DIRECTORY_TABS, WORKSPACE_TABS, paintDirectoryRail } from "../core/directoryRail.js";
+import { DIRECTORY_TABS, paintDirectoryRail } from "../core/directoryRail.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { shellSelection } from "../core/shell.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
@@ -247,13 +247,13 @@ function directoryTabsPainter(body, state, sourceId) {
   return () => {
     const directory = selectedDirectory(state.workspace, sourceId);
     if (!directory) return false;
-    // The issues tab is the workspace's own and is offered whatever the
-    // selected directory is — a checkout with no Git in it still has agents
-    // standing in it, and they still hold issues.
+    // This rail is DIRECTORY scoped: Changes and Files are two faces of the
+    // checkout open in it. The workspace's issues are not a face of a directory
+    // — they belong to the workspace, beside its name — so they are in the bar
+    // now, with the directory tabs (#47, core/toolbarRender.js).
     const faces = directory.is_git === false ? DIRECTORY_TABS.filter((entry) => entry.id === "files") : DIRECTORY_TABS;
-    const tabs = [...faces, ...WORKSPACE_TABS.filter((entry) => entry.id === ISSUES_TAB)];
     paintDirectoryRail($("#dir-rail"), {
-      tabs,
+      tabs: faces,
       active: App.route.tab,
       onSelect: (tab) => go({ ...App.route, tab }),
     });

@@ -17,23 +17,14 @@
 // the whole rail, the arrows walking within it, which is what a rail of two
 // controls owes the keyboard.
 
-import { ICON_CIRCLE_DOT, ICON_FOLDER, ICON_GIT_GRAPH } from "./icons.js";
-import { changesTabLabel, esc, filesTabLabel, issuesTabLabel } from "./text.js";
+import { ICON_FOLDER, ICON_GIT_GRAPH } from "./icons.js";
+import { changesTabLabel, esc, filesTabLabel } from "./text.js";
 
 /** The rail's faces, in reading order: what moved, then what is there. */
 export const DIRECTORY_TABS = [
   { id: "changes", label: changesTabLabel, icon: ICON_GIT_GRAPH },
   { id: "files", label: filesTabLabel, icon: ICON_FOLDER },
 ];
-
-/** A WORKSPACE's faces: the checkout's two, and the issues its agents hold
- *  (#29). Here rather than in the workspace view because this rail is the
- *  shell's column — it stands at every width, which is what makes the issues
- *  tab reachable on a phone, where a toolbar overlay was not.
- *
- *  A branch keeps `DIRECTORY_TABS` alone: it is a checkout with no agents
- *  standing in it, so there are no issues that are ITS issues. */
-export const WORKSPACE_TABS = [...DIRECTORY_TABS, { id: "issues", label: issuesTabLabel, icon: ICON_CIRCLE_DOT }];
 
 /** Where an arrow takes the highlight, as steps along the rail. Home and End
  *  are the same question asked absolutely, so they answer from one table too. */

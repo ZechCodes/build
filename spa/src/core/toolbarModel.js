@@ -120,6 +120,11 @@ const STANDING = {
         workspaceId: route.workspaceId,
         workspace,
         directories: workspaceDirectoryModel(workspace, route.sourceId),
+        // The workspace's own Issues, beside its directory tabs rather than in
+        // the directory rail: a directory scopes Changes and Files, and it does
+        // not scope these (#47). Current on the tab and on an issue opened from
+        // it, both of which are `tab: "issues"` on a workspace route (#29).
+        workspaceIssues: { current: route.tab === "issues" },
       };
     },
   },

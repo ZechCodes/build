@@ -235,6 +235,76 @@ describe("the project's pages in the bar", () => {
   });
 });
 
+// #47. Zech, on the workspace page: "The bar with the workspace name, tabs, and
+// icons is workspace scoped. The rail on the left is directory scoped (tabs).
+// Issues are workspace scoped so shouldn't be in the left rail. Also the issues
+// icon in the workspace bar is too large. Might be better to just show the text
+// 'Issues' with a counter bubble."
+describe("the workspace's Issues, in the bar", () => {
+  const issues = () => bar().querySelector("[data-workspace-issues]");
+
+  // A CSS fact a jsdom case cannot see: the entry sets `display`, which beats
+  // the UA's [hidden] rule, so it needs its own — otherwise a bridge carrying
+  // no issues would still draw one.
+  it("is hidden by its own rule, because it sets display", () => {
+    const css = readFileSync(resolve("src/styles/shell.css"), "utf8");
+    expect(css).toMatch(/\.tb-issues \{[^}]*display:flex/);
+    expect(css).toMatch(/\.tb-issues\[hidden\] \{[^}]*display:none/);
+  });
+
+  it("is the word and a bubble, with no icon", async () => {
+    await standOnWorkspace();
+    const entry = issues();
+    expect(entry).not.toBeNull();
+    expect(entry.textContent.trim()).toBe("Issues");
+    expect(entry.querySelector("svg")).toBeNull();
+    // The same count bubble the inbox rows wear.
+    expect(entry.querySelector(".badge.tb-issues-count")).not.toBeNull();
+  });
+
+  it("sits with the tabs rather than with the cog", async () => {
+    await standOnWorkspace();
+    // Not in the right-hand cluster, which is the gear and the verb slot.
+    expect(bar().querySelector(".tb-right [data-workspace-issues]")).toBeNull();
+    // …and after the directory tabs, which it follows in the bar.
+    const row = [...bar().querySelectorAll(".tb-directories, [data-workspace-issues]")];
+    expect(row.map((node) => (node.dataset.workspaceIssues === "" ? "issues" : "directories")))
+      .toEqual(["directories", "issues"]);
+  });
+
+  // It is deliberately NOT inside .tb-directories, which collapses into a menu
+  // on a phone — the issues stay reachable at every width.
+  it("stands outside the directory tabs, so the phone's collapse leaves it", async () => {
+    await standOnWorkspace();
+    expect(bar().querySelector(".tb-directories [data-workspace-issues]")).toBeNull();
+  });
+
+  it("is marked while the reader is on the tab, and on an issue opened from it", async () => {
+    await standOnWorkspace();
+    expect(issues().classList.contains("current")).toBe(false);
+
+    App.route = { ...App.route, tab: "issues" };
+    toolbarRouteChanged();
+    await flush();
+    expect(issues().classList.contains("current")).toBe(true);
+    expect(issues().getAttribute("aria-current")).toBe("page");
+
+    App.route = { ...App.route, tab: "issues", issueId: "issue-1" };
+    toolbarRouteChanged();
+    await flush();
+    expect(issues().classList.contains("current")).toBe(true);
+  });
+
+  it("is the workspace's alone — no other identity carries one", async () => {
+    for (const route of [{ name: "project", deviceId: "dev-1", projectId: "p1" }, { name: "inbox" }]) {
+      App.route = route;
+      toolbarRouteChanged();
+      await flush();
+      expect([route.name, bar().querySelector("[data-workspace-issues]")]).toEqual([route.name, null]);
+    }
+  });
+});
+
 // Main's workspace toolbar, on the per-device model: the workspaces of the
 // project the route is standing in are read from that project's own machine.
 describe("the workspace toolbar", () => {

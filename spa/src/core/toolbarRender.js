@@ -6,7 +6,7 @@
 // says what the bar looks like for one identity.
 
 import { esc } from "./text.js";
-import { ICON_CHEVRON_LEFT, ICON_CIRCLE_DOT, ICON_SETTINGS } from "./icons.js";
+import { ICON_CHEVRON_LEFT, ICON_SETTINGS } from "./icons.js";
 
 /** One of the bar's popup triggers. The workspace switcher, the project
  *  selector and the collapsed directory menu are the same control wearing a
@@ -81,12 +81,18 @@ function projectTabsHtml(projectTabs) {
 /** What this workspace's agents are carrying on the issue board, beside the
  *  cog. Drawn hidden and shown by whoever mounts it
  *  (core/trackerWorkspaceIssuesView.js): a bridge that does not carry issues
- *  gets no icon at all rather than one reading zero. The count lives in its own
- *  span so the push can move it without repainting the bar — the verb slot
- *  beside it can be holding an open menu. */
-const issuesButtonHtml = (kind) =>
+ *  gets nothing at all rather than an entry reading zero. The count lives in
+ *  its own span so the push can move it without repainting the bar — the verb
+ *  slot can be holding an open menu.
+ *
+ *  A word rather than an icon, and beside the directory tabs rather than by the
+ *  cog (#47): it belongs to the workspace the way the name and the tabs do, and
+ *  the cog's corner is for settings. It is not inside `.tb-directories`, which
+ *  collapses into a menu on a phone — the issues are reachable at every width,
+ *  which is what putting them in the rail had bought. */
+const issuesTabHtml = (kind, { current = false } = {}) =>
   kind === "workspace"
-    ? `<button class="iconbtn tb-issues" data-workspace-issues type="button" aria-label="Issues in this workspace" title="Issues in this workspace" hidden>${ICON_CIRCLE_DOT}<span class="tb-issues-count"></span></button>`
+    ? `<button class="tb-directory tb-issues${current ? " current" : ""}" data-workspace-issues type="button" aria-label="Issues in this workspace" title="Issues in this workspace"${current ? ' aria-current="page"' : ""} hidden>Issues<span class="badge tb-issues-count"></span></button>`
     : "";
 
 /** The cog at the far right, opposite the switcher at the far left: what this
@@ -100,12 +106,13 @@ const settingsButtonHtml = (kind) =>
 
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
-export function toolbarHtml({ project, kind, label, directories = [], projectTabs = [] }) {
+export function toolbarHtml({ project, kind, label, directories = [], projectTabs = [], workspaceIssues = {} }) {
   return `<div class="toolbar">
     ${identityHtml({ project, kind, label })}
     ${projectTabsHtml(projectTabs)}
     ${directoryTabsHtml(directories)}
-    <div class="tb-right">${issuesButtonHtml(kind)}${settingsButtonHtml(kind)}<span class="tb-verb" id="tb-verb"></span></div>
+    ${issuesTabHtml(kind, workspaceIssues)}
+    <div class="tb-right">${settingsButtonHtml(kind)}<span class="tb-verb" id="tb-verb"></span></div>
   </div>`;
 }
 

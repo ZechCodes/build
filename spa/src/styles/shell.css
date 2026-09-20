@@ -659,6 +659,19 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    words fit a phone, where they are the way back to the list from an issue
    with the chat open over the page. */
 .tb-project-tabs { display:flex; flex:none; align-self:stretch; align-items:stretch; margin-left:10px; }
+/* The workspace's own Issues, beside the directory tabs rather than by the cog
+   (#47). It is a `.tb-directory` — the same tab, the same current underline —
+   with the count bubble the inbox rows wear, and no icon. Outside
+   `.tb-directories` deliberately: that collapses into a menu on a phone, and
+   the issues stay reachable at every width. */
+.tb-issues { flex:none; display:flex; align-items:center; gap:6px; margin-left:4px; }
+/* Setting `display` here would beat the UA's [hidden] rule, and a bridge that
+   carries no issues hides this entry rather than drawing one (see
+   core/trackerWorkspaceIssuesView.js). The old icon button set none and so
+   needed no such line. */
+.tb-issues[hidden] { display:none; }
+/* Nothing waiting says nothing: an empty bubble would still draw its pill. */
+.tb-issues-count:empty { display:none; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
 /* The pack ships 24x24, which is twice this row's font — size it here, once. */
 .tb-settings { flex:none; display:flex; align-items:center; padding:4px; border-radius:6px; }

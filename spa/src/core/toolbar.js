@@ -341,6 +341,9 @@ const shownIdentity = (standing) => ({
   label: standing.label,
   directories: standing.directories || [],
   projectTabs: standing.projectTabs || [],
+  // In the signature, so moving onto the Issues tab repaints the bar and the
+  // mark moves with the reader (#47).
+  workspaceIssues: standing.workspaceIssues || {},
 });
 
 /** Out of the workspace, back to the project it was cut from — the project's

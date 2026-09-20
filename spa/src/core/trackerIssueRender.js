@@ -12,7 +12,8 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
 import { hashFromRoute } from "./router.js";
-import { actorInitials, actorLabel, columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
+import { actorLabel, columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
+import { issueAvatarHtml } from "./issueAvatar.js";
 import { eventSentence } from "./trackerTimeline.js";
 import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateDotHtml } from "./trackerChips.js";
 import { attachmentGlyphHtml, formatAttachmentSize, isImageAttachment } from "./composer.js";
@@ -80,10 +81,10 @@ const whenHtml = (row) => (row.at ? `<span class="issue-when" title="${esc(row.a
 
 /// The id an action line in a conversation lands on: a comment is linked as
 /// `#comment-<id>` (core/trackerActionLine.js), so the row has to answer to it.
-const commentHtml = (row, agentLabels) => `<li class="issue-entry issue-comment" id="comment-${esc(row.key)}">
-    <span class="issue-avatar" aria-hidden="true">${esc(actorInitials(row.actor))}</span>
+const commentHtml = (row, context) => `<li class="issue-entry issue-comment" id="comment-${esc(row.key)}">
+    ${issueAvatarHtml(row.actor, context)}
     <div class="issue-comment-card">
-      <div class="issue-entry-head"><strong>${esc(actorLabel(row.actor, agentLabels))}</strong>${whenHtml(row)}</div>
+      <div class="issue-entry-head"><strong>${esc(actorLabel(row.actor, context.agentLabels))}</strong>${whenHtml(row)}</div>
       <div class="issue-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(row.body)}</div>
     </div>
   </li>`;
@@ -102,7 +103,7 @@ const eventHtml = (row, { agentLabels, columns }) => `<li class="issue-entry iss
 export function timelineHtml(rows, context) {
   if (!rows.length) return `<p class="empty issue-empty">Nothing has happened on this issue yet.</p>`;
   return `<ul class="issue-timeline">${rows
-    .map((row) => (row.type === "comment" ? commentHtml(row, context.agentLabels) : eventHtml(row, context)))
+    .map((row) => (row.type === "comment" ? commentHtml(row, context) : eventHtml(row, context)))
     .join("")}</ul>`;
 }
 

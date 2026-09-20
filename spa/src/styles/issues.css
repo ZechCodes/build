@@ -370,6 +370,20 @@
   display:flex; align-items:center; justify-content:center;
   font-size:11px; font-weight:700;
 }
+/* What wrote the comment, as a picture (#54). The box above is untouched —
+   same size, same place in the card — and only what sits in it changes.
+
+   The harness mark carries no plate behind it: the artwork is the identity and
+   a circle around it reads as a second shape. The icon is the rail's own
+   (core/harnessIcon.js), cut down from the 20px the conversation header gives
+   it to the 18px this box holds. */
+.issue-avatar.is-harness { background:none; }
+.issue-avatar .rail-harness-icon,
+.issue-avatar .rail-harness-icon svg { width:18px; height:18px; }
+/* The project's own agent wears the project's initial in a squared-off box —
+   the same face the rail gives its bubble (.rail-bubble-project), so the page
+   and the strip agree about whose agent this is. */
+.issue-avatar.is-project { border-radius:8px; }
 .issue-comment-card {
   flex:1; min-width:0;
   background:var(--panel); border:1px solid var(--line2); border-radius:10px; padding:9px 12px;

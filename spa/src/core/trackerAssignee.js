@@ -76,6 +76,20 @@ export function agentLabels(groups) {
   return labels;
 }
 
+/** Every agent of the project by the harness it runs on, for the pictures the
+ *  issue page draws beside comments (core/issueAvatar.js). Off the same list
+ *  `agentLabels` is cut from, so an agent is drawn by the record it is named
+ *  by; an agent whose record names no harness is left out rather than entered
+ *  as an empty one, because "unknown harness" and "no such agent" both mean
+ *  the generic mark and only one of them is worth a key. */
+export function agentProviders(groups) {
+  const providers = {};
+  for (const group of groups || []) {
+    for (const agent of group.agents) if (agent.provider) providers[agent.id] = agent.provider;
+  }
+  return providers;
+}
+
 /** The two options that need more asked before they can run, and the controls
  *  each one opens. Nothing else opens any. */
 export const WORKSPACE_FORM = "workspace";

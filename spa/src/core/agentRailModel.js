@@ -185,7 +185,7 @@ export const RAIL_SEPARATOR_ENTRY = Object.freeze({
 /** The project's mark: its initial, because the project agent is the project's
  *  and a face off the same five tilings would read as one more agent on this
  *  work item. */
-const projectInitial = (name) => (String(name || "").trim().slice(0, 1) || "?").toUpperCase();
+export const projectInitial = (name) => (String(name || "").trim().slice(0, 1) || "?").toUpperCase();
 
 /** What the project's bubble is waiting on, in the same order an agent's is
  *  (core/agentRailModel.js `bubbleNews`): unread over working. */

@@ -28,6 +28,7 @@ import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { workspaceAgents } from "./trackerAssignee.js";
 import { WORKSPACE_ISSUES_SELECTOR, mountWorkspaceIssues } from "./trackerWorkspaceIssuesView.js";
+import { collapseChatOverPage } from "./shell.js";
 import { workspaceIssuesPlace } from "./workspaceIssuesTab.js";
 import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
@@ -112,6 +113,11 @@ export function clearProjectTabHandler(handler) {
 
 export function pressProjectTab(tab) {
   if (App.route.name === "project" && projectTabHandler) {
+    // The one tab press that is deliberately NOT a navigation: the page swaps
+    // its own body and rewrites the hash in place, so the shell's route rule
+    // never sees it (#62, core/shell.js). It still covers the page on a phone,
+    // so it still has to get out of the way.
+    collapseChatOverPage();
     projectTabHandler(tab);
     paint();
     return;

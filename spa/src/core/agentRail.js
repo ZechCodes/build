@@ -27,6 +27,7 @@
 // the other beside it, so the strip says what both are doing.
 
 import { wireReaderMotion } from "./paintKeepingPlace.js";
+import { chatOverlaysPage, panelDocksByDefault } from "./railLayout.js";
 import { App, go } from "../app.js";
 import { createPatternRenderer } from "./agentCanvas.js";
 import { hashString } from "./patternMotion.js";
@@ -423,9 +424,7 @@ export function resetAgentRailMemory() {
   forgetRevisionBodies();
 }
 
-/** The width the panel stops sitting beside the work and is laid over it
- *  instead (styles/shell.css, `@media (max-width: 760px)`). */
-const PANEL_OVERLAYS_BELOW = 761;
+
 
 /** Whether the panel is docked before anyone has said. Beside the work it is:
  *  the conversation and the work are both on screen and neither costs the other
@@ -440,7 +439,7 @@ const readPinned = () => {
   } catch {
     /* private mode: the default below is the whole answer */
   }
-  return window.innerWidth >= PANEL_OVERLAYS_BELOW;
+  return panelDocksByDefault();
 };
 
 const writePinned = (on) => {
@@ -453,7 +452,7 @@ const writePinned = (on) => {
 
 /** Which way the popover faces, which is which way the strip runs: down the
  *  view's right edge on a desktop, across its foot on a phone. */
-const stripRunsAcross = () => window.innerWidth < PANEL_OVERLAYS_BELOW;
+const stripRunsAcross = () => chatOverlaysPage();
 
 /** The count over a bubble's face, hidden while nothing is waiting. The `+` is
  *  a control rather than a conversation, so nothing is ever waiting on it. */
@@ -737,6 +736,9 @@ export function mountAgentRail(host, context) {
   // half of the strip is the side that stands the rail there.
   stand(workItemContext(context, known, { openAgentId: context.openAgentId || null }), projectSide());
   return {
+    collapse() {
+      live?.collapse();
+    },
     dispose() {
       live?.dispose();
       live = null;
@@ -3105,6 +3107,15 @@ function mountRailOnContext(host, context, swap) {
   window.addEventListener("resize", cancelPanelMotion);
 
   return {
+    /** Put the panel away without touching the docked/card preference — what a
+     *  toolbar tab press means on a phone, where the chat covers the page it
+     *  is about to change (#62). Unlike `dismissPopover` this does not spare a
+     *  PINNED panel: the pin is remembered across widths, so a reader who
+     *  docked the chat on a desktop would otherwise never get it out of the
+     *  way on a phone. The preference itself is left exactly as it was. */
+    collapse() {
+      closePanel();
+    },
     dispose() {
       disposed = true;
       for (const marker of unreadMarkers.values()) marker.leave();

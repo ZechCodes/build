@@ -23,10 +23,12 @@
 import { $ } from "../dom.js";
 import { App } from "../app.js";
 import { mountAgentRail } from "./agentRail.js";
+import { chatOverlaysPage } from "./railLayout.js";
 import { mountConsole } from "./console.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { canAnswer, routeContext } from "./deviceContexts.js";
 import { deviceKey } from "./deviceKey.js";
+import { hashFromRoute } from "./router.js";
 import { notifyError } from "./notify.js";
 import { readCached, subscribeCache } from "./localCache.js";
 
@@ -165,6 +167,7 @@ export function shellSelection() {
  * selection it has to share. Returns that selection.
  */
 export function standShell(route) {
+  collapseChatOnNavigation(route);
   const parts = shellPartsForRoute(route);
   const context = parts ? routeContext(route) : null;
   // A machine that cannot answer — never opened here, or gone since — has
@@ -330,6 +333,52 @@ function adoptingSupplier(descriptor) {
   return { adopting: () => held.adopting?.() || null };
 }
 
+/**
+ * Put the chat away when it is covering the page, and say whether it was.
+ *
+ * On a phone the chat is laid OVER the page, so a press that changes the page
+ * changes something the reader cannot see: they tap Issues, or an issue line
+ * inside the conversation, and the same chat is still there (#62). Beside the
+ * page — any desktop width — the chat costs the page nothing and stays.
+ *
+ * The rail is not remounted, only collapsed: the bubbles stay, so the same
+ * conversation is one press away at the place it was left.
+ */
+export function collapseChatOverPage() {
+  if (!chatOverlaysPage()) return false;
+  live?.rail?.collapse?.();
+  return true;
+}
+
+// The place the shell last stood, as the URL names it. Two routes that write
+// one hash are one place, which is the question being asked: did the reader go
+// somewhere, or is this the same page painting again?
+let stoodAt = null;
+
+/**
+ * The chat gets out of the way of a NAVIGATION, whatever made it.
+ *
+ * Enforced here rather than on each link because the links are not a list
+ * anybody can keep: a notice line, an action line, an issue card, a surfaces
+ * pill, whatever the markdown renderer produced (#56). One rule at the one
+ * place every route change passes through means a link nobody thought of
+ * behaves like the rest.
+ *
+ * The live rail is collapsed BEFORE the new standing is reconciled, which is
+ * what keeps a link that names a conversation working: `?agent=…` mounts its
+ * own rail with the panel out (core/agentRail.js `panelStartsOut`), and that
+ * mount comes after this.
+ *
+ * Not on the first stand — there is nothing open to put away, and a URL that
+ * arrived naming an agent is asking for exactly the panel this would shut.
+ */
+function collapseChatOnNavigation(route) {
+  const here = hashFromRoute(route);
+  const moved = stoodAt !== null && stoodAt !== here;
+  stoodAt = here;
+  if (moved) collapseChatOverPage();
+}
+
 /** A fact only the standing page knows, handed to the shell part that needs it.
  *  Read lazily by the rail, so this may land after the mount — which it does:
  *  the page paints after the shell stands. */
@@ -358,5 +407,6 @@ function teardown() {
 
 /** Teardown for tests and for a gate that tears the session down. */
 export function stopShell() {
+  stoodAt = null;
   teardown();
 }

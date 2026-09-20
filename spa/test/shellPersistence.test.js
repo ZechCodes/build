@@ -18,14 +18,40 @@ const indexSource = readFileSync(resolve("index.html"), "utf8");
 const bodyHtml = indexSource.match(/<body>([\s\S]*)<\/body>/)[1];
 
 const feedItems = [];
+// The machine's checkout list, as a pass leaves it. The workspace page stands
+// on the RECORD rather than on a read (views/workspaceView.js), and it is found
+// through the per-device slice — so the snapshot has to carry a `devices` entry
+// for dev-1, not just the flat lists. Without one the workspace page sat at
+// "loading…" for the whole of this file and the directory case below changed
+// no directory.
+const feedWorkspace = {
+  id: "w-1",
+  project_id: "p-1",
+  directories: [
+    { source_id: "s-1", name: "Build", is_git: true },
+    { source_id: "s-2", name: "Assets", is_git: true },
+  ],
+};
+const feedSnapshot = () => ({
+  items: feedItems, plans: [], runs: [], externalWorktrees: [], projects: [], workspaces: [feedWorkspace],
+  devices: { "dev-1": { items: feedItems, projects: [], workspaces: [feedWorkspace] } },
+});
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    fn({ items: feedItems, plans: [], runs: [], externalWorktrees: [], projects: [], workspaces: [], devices: {} });
+    fn(feedSnapshot());
     return () => {};
   },
   startFeed: () => {},
   stopFeed: () => {},
-  refreshFeed: async () => {},
+  // An ARRAY, which is what the real one answers with — refreshFeed is a
+  // Promise.all over the devices it synced, and views/workspaceView.js takes
+  // the first element straight out of it (`const [passed] = await
+  // refreshFeed(...)`). Answering `undefined` made that destructure throw on
+  // every workspace visit, which was the seven unhandled rejections the suite
+  // reported and this file caused (#32). `false` stands for "a pass ran and
+  // established nothing", leaving the page waiting on the records rather than
+  // calling the workspace unknown.
+  refreshFeed: async () => [false],
   deliverFeed: () => {},
   joinFeed: () => {},
   dropFeedDevice: () => {},
@@ -180,7 +206,7 @@ describe("a page swapping inside the shell", () => {
     await visit(PLACES.workspace);
     const held = strip();
     expect(held).toBeTruthy();
-    await visit({ ...PLACES.workspace, sourceId: "s-1", tab: "files" });
+    await visit({ ...PLACES.workspace, sourceId: "s-2", tab: "files" });
     expect(strip()).toBe(held);
   });
 

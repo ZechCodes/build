@@ -21,9 +21,9 @@ pub use items::{
     numbered_message_options, AgentIdentity, AgentOwnerKind, AgentOwnerRef, ArtifactKind,
     DiffViewingMode, DocAnchor, DocComment, DocCommentState, EventClass, IssueAction,
     IssueEnvelope, IssueNotice, MessageAnchor, MessageAttachment, MessageDeliveryStatus,
-    MessageOption, MessageOptionDraft, MessageOutcome, MessageRole, MessageSource, OptionChoice,
-    SelectionSide, ThreadDetail, ThreadEvent, ThreadEventDraft, ThreadEventKind, ThreadItem,
-    ThreadLink, ThreadMessage, ToolCallOutcome, ViewingContext, ViewingContextItem,
+    MessageOption, MessageOptionDraft, MessageOutcome, MessageRole, MessageSource, NoticeActor,
+    OptionChoice, SelectionSide, ThreadDetail, ThreadEvent, ThreadEventDraft, ThreadEventKind,
+    ThreadItem, ThreadLink, ThreadMessage, ToolCallOutcome, ViewingContext, ViewingContextItem,
     AGENT_MESSAGE_REASON, EVENT_ROLE, MAX_MESSAGE_OPTIONS, MAX_OPTION_LABEL_CHARS,
     MAX_OPTION_MESSAGE_BYTES,
 };

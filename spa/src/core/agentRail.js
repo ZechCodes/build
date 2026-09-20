@@ -1090,7 +1090,20 @@ function mountRailOnContext(host, context, swap) {
    *  default stands where nothing was said. */
   const newAgentParams = (choice = newAgentChoice()) => {
     const { models } = catalogForProvider(catalog || {}, choice.provider);
-    return modelParams(models || [], choice.model || choice.requestedModel, choice.effort, choice.provider);
+    const params = modelParams(models || [], choice.model || choice.requestedModel, choice.effort, choice.provider);
+    // Omitted when the reader typed nothing, so the bridge's own rule stands:
+    // an unnamed agent is asked to name itself the first time it is written to.
+    const name = newAgentName();
+    return name ? { ...params, name } : params;
+  };
+
+  /** What the reader typed into the new-agent name field, if anything. Kept on
+   *  the rail rather than in the choice, because it belongs to the one agent
+   *  about to be made and not to the harness that will run it. */
+  let pendingAgentName = "";
+  const newAgentName = () => pendingAgentName.trim();
+  const writeNewAgentName = (word) => {
+    pendingAgentName = String(word || "").slice(0, 24);
   };
 
   /** The adopting caller for a checkout Build owns nothing in — an external
@@ -1909,8 +1922,18 @@ function mountRailOnContext(host, context, swap) {
     body.innerHTML = `<div class="rail-newagent">
       <p>Start a new conversation</p>
       <div class="rail-harness-picker" role="group" aria-label="Agent harness">${choices}</div>
+      <label class="rail-newagent-name">
+        <span>Name <em>optional</em></span>
+        <input type="text" data-new-agent-name maxlength="24" autocomplete="off"
+          placeholder="Rail scroll" aria-label="What to call this agent" value="${esc(newAgentName())}">
+      </label>
     </div>`;
     body.dataset.newAgent = chosen;
+    // Held outside the repaint: the picker rewrites itself when the harness
+    // highlight moves, and a name half-typed must not go with it.
+    body.querySelector("[data-new-agent-name]").oninput = (event) => {
+      writeNewAgentName(event.target.value);
+    };
     body.querySelector(".rail-newagent").onclick = (event) => {
       const card = event.target.closest(".rail-harness-choice");
       if (!card) return;

@@ -853,6 +853,16 @@ impl AppState {
     /// same provider.
     pub(crate) fn agent_add(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        // Named at creation when the caller knows what it is making, which is
+        // the usual case: whoever cuts an agent for a piece of work can say
+        // what that work is better than the agent can before it has read
+        // anything. Checked before anything is made, so a name that cannot be
+        // had refuses rather than leaving an agent wearing an ordinal nobody
+        // asked for.
+        let name = match optional_nonempty_string(params, "name")? {
+            Some(word) => Some(crate::agent::agent_name_from(word)?),
+            None => None,
+        };
         let creation_id = optional_nonempty_string(params, "creation_id")?.map(str::to_string);
         if creation_id.as_ref().is_some_and(|id| id.len() > 128) {
             return Err("agent.add: creation_id is too long".to_string());
@@ -901,6 +911,19 @@ impl AppState {
                 ),
             }));
         }
+        if let Some(name) = &name {
+            let taken = self.entity_agents(&entity_id)?.iter().any(|agent| {
+                agent
+                    .name
+                    .as_deref()
+                    .is_some_and(|theirs| crate::agent::same_agent_name(theirs, name))
+            });
+            if taken {
+                return Err(format!(
+                    "Another agent on this conversation is already called \"{name}\". Pick a different name."
+                ));
+            }
+        }
         let before_agents = self.runs[&entity_id].agents.clone();
         let before_entity_choice = self.runs[&entity_id].model_choice.clone();
         let owner = self.agent_owner(&entity_id);
@@ -918,6 +941,19 @@ impl AppState {
                 true,
             ),
         };
+        if let Some(name) = name {
+            if let Some(agent) = active.agents.iter_mut().find(|agent| agent.id == added.id) {
+                agent.name = Some(name.clone());
+                // Given a name, so never asked for one.
+                agent.name_asked = true;
+            }
+        }
+        let added = active
+            .agents
+            .iter()
+            .find(|agent| agent.id == added.id)
+            .cloned()
+            .unwrap_or(added);
         let persisted = self.finish_run_mutation(entity_id.clone(), active);
         if let Err(error) = persisted {
             let restored = self
@@ -1280,6 +1316,11 @@ impl AppState {
             // place of the harness name. Null until it has, which the client
             // shows as "Starting".
             "topic": agent.topic,
+            // What to CALL it, everywhere it used to be "Agent 1". Null until
+            // somebody names it, and a client that has never heard of the
+            // field — or is looking at an agent that has no name yet — falls
+            // back to the ordinal, which has not moved.
+            "name": agent.name,
             // What to CALL this conversation in a list: the agent's own topic,
             // or — until it sets one — the first line the human opened with.
             // Null for a conversation with neither, which is one nothing has

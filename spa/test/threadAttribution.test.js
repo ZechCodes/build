@@ -62,6 +62,20 @@ describe("a message another agent sent into this conversation", () => {
       .toBe(`#/device/device-1/project/proj-9?agent=${PROJECT_SENDER.id}`);
   });
 
+  // A named agent is named. The topic is what the conversation is about and
+  // the name is who wrote, and "who wrote" is the question a reader scanning
+  // senders is asking.
+  it("says the sender's name when it has one, and its topic when it does not", () => {
+    document.body.innerHTML = arrived({ ...WORKSPACE_SENDER, name: "Rail scroll" });
+    expect(document.querySelector(".thread-from").textContent.replace(/\s+/g, " ").trim())
+      .toBe("wire-facade › Rail scroll");
+
+    // Unnamed — every message written before names existed — reads as it did.
+    document.body.innerHTML = arrived(WORKSPACE_SENDER);
+    expect(document.querySelector(".thread-from").textContent.replace(/\s+/g, " ").trim())
+      .toBe("wire-facade › Retry path");
+  });
+
   it("writes a workspace sender against the project whose page the rail is on", () => {
     document.body.innerHTML = arrived(WORKSPACE_SENDER);
 

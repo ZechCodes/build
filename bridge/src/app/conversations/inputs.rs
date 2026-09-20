@@ -452,6 +452,9 @@ pub(in crate::app) fn append_operation_reviewer_messages(
             end_sequence,
             messages,
             prior_context,
+            // Decided by whoever queues the delivery, which is where the
+            // agent record can be read.
+            ask_to_name: false,
         }
     });
     (posted_sequence, payload)

@@ -9,6 +9,7 @@ use crate::app::{
     named_agent_id, plan_state_str, require_str, run_state_str, ImplementationTarget,
     PendingAgentTurn, PlanDraftingStarted, TurnText, NEW_THREAD_MESSAGES_PROMPT,
 };
+use crate::operation::OperationPayload;
 use crate::operation::{
     thread_post_request_hash, DeliveryIntent, OperationReceipt, OperationRequester,
     OperationStatus, THREAD_POST_METHOD,
@@ -608,6 +609,39 @@ impl AppState {
         Ok(Some(receipt))
     }
 
+    /// Whether this delivery should also ask the agent to name itself.
+    ///
+    /// Three things have to hold. The agent has no name and has not been asked
+    /// for one — asking twice is nagging, and asking a named agent is asking
+    /// for what it already gave. And the turn carries something the USER said:
+    /// an agent woken by another agent's hand-off is being given work, not
+    /// greeted, and the ask exists because a name the user will read should be
+    /// chosen the first time the user is in the room.
+    fn should_ask_for_a_name(&mut self, delivery: &DeliveryIntent) -> bool {
+        let Some(payload) = delivery.payload.as_ref() else {
+            return false;
+        };
+        let from_the_user = payload.messages.iter().any(|message| {
+            message.role == crate::thread::MessageRole::User
+                && message.from_agent.is_none()
+                && !message.from_build
+        });
+        if !from_the_user {
+            return false;
+        }
+        self.entity_agents(&delivery.owner_id)
+            .ok()
+            .and_then(|agents| agents.by_id(&delivery.agent_id).cloned())
+            .is_some_and(|agent| agent.name.is_none() && !agent.name_asked)
+    }
+
+    /// Remember that the ask went out, so it goes out once.
+    fn mark_agent_name_asked(&mut self, owner: &str, agent_id: &str) {
+        self.edit_agent_record("ask_agent_to_name_itself", owner, agent_id, |agent| {
+            agent.name_asked = true;
+        });
+    }
+
     pub(in crate::app) fn queue_message_delivery(
         &mut self,
         delivery: &DeliveryIntent,
@@ -635,20 +669,38 @@ impl AppState {
                     .map(|address| address.conversation_id)
             })
             .unwrap_or_default();
+        // The first thing the user says to an agent with no name carries the
+        // ask to pick one. Decided here because this is where the agent record
+        // is readable, and marked here for the same reason — an ask that was
+        // sent has been asked whatever the agent does with it.
+        let asks_a_name = self.should_ask_for_a_name(delivery);
         let operation_prompt = receipt.and_then(|receipt| {
-            delivery.payload.as_ref().map(|payload| TurnText {
-                cold: payload.delivery_prompt(
-                    &receipt.operation_id,
-                    true,
-                    delivery.model_choice.provider,
-                ),
-                warm: payload.delivery_prompt(
-                    &receipt.operation_id,
-                    false,
-                    delivery.model_choice.provider,
-                ),
+            delivery.payload.as_ref().map(|payload| {
+                let payload = if asks_a_name {
+                    OperationPayload {
+                        ask_to_name: true,
+                        ..payload.clone()
+                    }
+                } else {
+                    payload.clone()
+                };
+                TurnText {
+                    cold: payload.delivery_prompt(
+                        &receipt.operation_id,
+                        true,
+                        delivery.model_choice.provider,
+                    ),
+                    warm: payload.delivery_prompt(
+                        &receipt.operation_id,
+                        false,
+                        delivery.model_choice.provider,
+                    ),
+                }
             })
         });
+        if asks_a_name && operation_prompt.is_some() {
+            self.mark_agent_name_asked(&delivery.owner_id, &delivery.agent_id);
+        }
         self.delivery_queue.enqueue(PendingAgentTurn {
             operation_id,
             root,

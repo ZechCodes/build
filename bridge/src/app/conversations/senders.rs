@@ -22,7 +22,18 @@ impl AppState {
             id: agent_id.to_string(),
             owner: self.conversation_owner_ref(entity_id),
             topic: Some(self.agent_topic(entity_id, agent_id)),
+            name: self.agent_name(entity_id, agent_id),
         }
+    }
+
+    /// What this agent is called, when it has been named. `None` rather than
+    /// empty: a topic that has not been set was still read from a conversation
+    /// that exists, but an unnamed agent has no name to report and the reader
+    /// falls back to the ordinal.
+    fn agent_name(&self, entity_id: &str, agent_id: &str) -> Option<String> {
+        self.entity_agents(entity_id)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id).and_then(|agent| agent.name.clone()))
     }
 
     /// What the agent last called its conversation, or the empty string for one

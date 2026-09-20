@@ -46,10 +46,17 @@ pub(in crate::app) enum AssignTarget {
         name: Option<String>,
         isolation: Option<String>,
         choice: OwnedChoice,
+        /// What to call the AGENT. Spelled `agent_name` on the wire because
+        /// `name` on this kind is the workspace's, and one key meaning two
+        /// things is how a caller names the wrong one.
+        agent_name: Option<String>,
     },
     NewAgent {
         workspace_id: String,
         choice: OwnedChoice,
+        /// The same key on both creating kinds, so a caller that learned it
+        /// once has learned it.
+        agent_name: Option<String>,
     },
 }
 
@@ -95,6 +102,15 @@ impl OwnedChoice {
     }
 }
 
+/// The agent's name off a creating assignee, checked here so a name that
+/// cannot be had refuses before a checkout is cut for it.
+fn agent_name_of(value: &Value) -> Result<Option<String>, String> {
+    match value.get("agent_name").and_then(Value::as_str) {
+        Some(word) => crate::agent::agent_name_from(word).map(Some),
+        None => Ok(None),
+    }
+}
+
 impl AssignTarget {
     /// Read an `assignee` off a verb's params. `null` is unassignment, which is
     /// a legible thing to ask for and not a missing param.
@@ -132,10 +148,12 @@ impl AssignTarget {
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 choice: OwnedChoice::from_wire(value),
+                agent_name: agent_name_of(value)?,
             }),
             "new_agent" => Ok(AssignTarget::NewAgent {
                 workspace_id: named("workspace_id")?,
                 choice: OwnedChoice::from_wire(value),
+                agent_name: agent_name_of(value)?,
             }),
             other => Err(format!(
                 "unknown assignee kind: {other} — one of user, project_agent, agent, \
@@ -211,10 +229,19 @@ impl AppState {
             name,
             isolation,
             choice,
+            agent_name,
         } = &target
         {
             return self.dispatch_into_a_new_workspace(
-                project_id, issue, name, isolation, choice, note, actor, sender,
+                project_id,
+                issue,
+                name,
+                isolation,
+                choice,
+                agent_name.clone(),
+                note,
+                actor,
+                sender,
             );
         }
         let mut write = IssueWrite::by(actor.clone(), issue);
@@ -340,8 +367,14 @@ impl AppState {
             AssignTarget::NewAgent {
                 workspace_id,
                 choice,
+                agent_name,
             } => {
-                let added = self.add_agent_for_issue(project_id, workspace_id, choice.args())?;
+                let added = self.add_agent_for_issue(
+                    project_id,
+                    workspace_id,
+                    choice.args(),
+                    agent_name.as_deref(),
+                )?;
                 return self
                     .hand_over(issue, &added.1, &added.0, note, sender)
                     .map(Some);
@@ -382,6 +415,7 @@ impl AppState {
         project_id: &str,
         workspace_id: &str,
         choice: AgentChoiceArgs<'_>,
+        agent_name: Option<&str>,
     ) -> Result<(String, String), String> {
         let workspace = self
             .workspaces
@@ -401,6 +435,11 @@ impl AppState {
             .ok_or("the workspace conversation has no owner")?
             .to_string();
         params["entity_id"] = json!(entity_id);
+        // After the conversation is ensured: `name` is the workspace's to the
+        // verbs above and the agent's to `agent.add`.
+        if let Some(agent_name) = agent_name {
+            params["name"] = json!(agent_name);
+        }
         let added = self.agent_add(&params)?;
         let agent_id = added["agent"]["id"]
             .as_str()
@@ -521,6 +560,8 @@ pub(in crate::app) struct DispatchPlan {
     issue_id: String,
     workspace_id: String,
     choice: OwnedChoice,
+    /// What to call the agent the drain will make, carried across the git.
+    agent_name: Option<String>,
     note: Option<String>,
     actor: Actor,
     /// The agent that asked, as its two ids — [`crate::app::AgentSender`]
@@ -586,6 +627,7 @@ impl AppState {
         name: &Option<String>,
         isolation: &Option<String>,
         choice: &OwnedChoice,
+        agent_name: Option<String>,
         note: Option<String>,
         actor: Actor,
         sender: Option<crate::app::AgentSender<'_>>,
@@ -609,6 +651,7 @@ impl AppState {
             issue_id: issue.id.clone(),
             workspace_id: workspace_id.clone(),
             choice: choice.clone(),
+            agent_name,
             note,
             actor,
             sender: sender
@@ -648,8 +691,12 @@ impl AppState {
             .load_tracker_issue(&plan.issue_id)
             .stored()?
             .ok_or_else(|| format!("unknown issue_id: {}", plan.issue_id))?;
-        let (agent_id, entity_id) =
-            self.add_agent_for_issue(&plan.project_id, &plan.workspace_id, plan.choice.args())?;
+        let (agent_id, entity_id) = self.add_agent_for_issue(
+            &plan.project_id,
+            &plan.workspace_id,
+            plan.choice.args(),
+            plan.agent_name.as_deref(),
+        )?;
         let sender = plan
             .sender
             .as_ref()
@@ -670,6 +717,7 @@ impl AppState {
             name: None,
             isolation: None,
             choice: plan.choice.clone(),
+            agent_name: None,
         };
         self.settle_assignment(&mut write, &target, &Some(delivered), &plan.actor, &now)?;
         let answered = self.commit_issue_write(&plan.project_id, write, &now)?;

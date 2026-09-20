@@ -397,6 +397,7 @@ impl AppState {
                 harness,
                 model,
                 effort,
+                name,
             } => self.project_agent_add_workspace_agent(
                 entity_id,
                 workspace_id,
@@ -405,6 +406,7 @@ impl AppState {
                     model: model.as_deref(),
                     effort: effort.as_deref(),
                 },
+                name.as_deref(),
             ),
             BridgeAction::RemoveWorkspaceAgent {
                 workspace_id,
@@ -518,6 +520,12 @@ impl AppState {
         // the bubble reads it from.
         if let BridgeAction::SetTopic { topic } = &action {
             return self.set_agent_topic(entity_id, agent_id, topic);
+        }
+        // And its name, which is the agent itself rather than its current
+        // work. Refusable where the topic is not: two agents on one
+        // conversation cannot both be "Tracker".
+        if let BridgeAction::SetName { name } = &action {
+            return self.set_agent_name(entity_id, agent_id, name);
         }
         let posted_still_working = match &action {
             BridgeAction::PostThreadMessage { still_working, .. } => Some(*still_working),

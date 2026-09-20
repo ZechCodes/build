@@ -209,6 +209,69 @@ pub struct Agent {
     /// says "Starting" until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
+    /// What to CALL this agent: one or two meaningful words, set when it was
+    /// created or chosen by the agent itself over MCP (`set_name`).
+    ///
+    /// Not the topic. A topic is a subject line and moves with the work — an
+    /// agent that finished one thing and started another sets a new one. A
+    /// name is who the agent IS, it is unique among the agents of its
+    /// conversation, and everything that used to say "Agent 1" says this
+    /// instead. `None` until somebody sets one, and the ordinal is the
+    /// fallback for exactly as long as that lasts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Whether this agent has already been asked to name itself.
+    ///
+    /// The ask rides the first turn the user sends to an unnamed agent, and
+    /// once only: an agent that was asked and did not do it is one that
+    /// decided, and asking again every time the user speaks would be nagging
+    /// with the user's own words. Never set for an agent that has a name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub name_asked: bool,
+}
+
+/// The longest a name may be, and the most words it may have. Both are about
+/// the rail: a name is drawn in a bubble and read in a line beside other
+/// names, and one that does not fit is one the reader never sees whole.
+pub const MAX_AGENT_NAME_CHARS: usize = 24;
+pub const MAX_AGENT_NAME_WORDS: usize = 3;
+pub const MIN_AGENT_NAME_CHARS: usize = 2;
+
+/// A name as it will be stored, or a plain sentence saying why not.
+///
+/// Trimmed, and inner runs of whitespace collapsed, so "Rail   scroll" and
+/// "Rail scroll" are the one name and cannot both be taken. Counted in
+/// characters rather than bytes, because the limit is about what fits in a
+/// bubble and a two-character name is two characters in any script.
+pub fn agent_name_from(word: &str) -> Result<String, String> {
+    let name = word.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.chars().count() < MIN_AGENT_NAME_CHARS {
+        return Err(format!(
+            "An agent's name needs at least {MIN_AGENT_NAME_CHARS} characters."
+        ));
+    }
+    if name.chars().count() > MAX_AGENT_NAME_CHARS {
+        return Err(format!(
+            "An agent's name can be at most {MAX_AGENT_NAME_CHARS} characters, and that one is {}.",
+            name.chars().count()
+        ));
+    }
+    let words = name.split(' ').count();
+    if words > MAX_AGENT_NAME_WORDS {
+        return Err(format!(
+            "An agent's name is one or two words — at most {MAX_AGENT_NAME_WORDS} — and that one is {words}."
+        ));
+    }
+    Ok(name)
+}
+
+/// Whether two names are the same name. Case and spacing are not what make a
+/// name different: "Rail scroll" and "rail  scroll" name one agent, and a rail
+/// showing both would be a rail nobody can use.
+pub fn same_agent_name(one: &str, other: &str) -> bool {
+    one.split_whitespace()
+        .map(str::to_lowercase)
+        .eq(other.split_whitespace().map(str::to_lowercase))
 }
 
 impl Agent {
@@ -240,6 +303,8 @@ impl Agent {
             working_since: None,
             start_error: None,
             topic: None,
+            name: None,
+            name_asked: false,
         }
     }
 
@@ -1059,5 +1124,81 @@ mod roster_tests {
             serde_json::from_value::<AgentRoster>(wire).expect("a roster reloads"),
             roster
         );
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    /// A name is what a rail bubble and a notice line wear, so it is trimmed
+    /// and its inner spacing collapsed — otherwise "Rail  scroll" and "Rail
+    /// scroll" are two names for one agent and a reader cannot tell them apart.
+    #[test]
+    fn a_name_is_stored_as_it_will_be_read() {
+        assert_eq!(agent_name_from("  Rail   scroll  ").unwrap(), "Rail scroll");
+        assert_eq!(agent_name_from("Tracker").unwrap(), "Tracker");
+        assert_eq!(agent_name_from("\tTransport\n").unwrap(), "Transport");
+    }
+
+    /// Every refusal is a sentence the user could read, because it is one an
+    /// agent repeats to them.
+    #[test]
+    fn a_name_that_will_not_fit_is_refused_in_a_sentence() {
+        for (word, expected) in [
+            ("", "at least 2 characters"),
+            ("  ", "at least 2 characters"),
+            ("x", "at least 2 characters"),
+            (
+                "Rail scroll and the composer clearance",
+                "at most 24 characters",
+            ),
+            ("one two three four", "one or two words"),
+        ] {
+            let refusal = agent_name_from(word).expect_err(word);
+            assert!(refusal.contains(expected), "{word}: {refusal}");
+            assert!(refusal.ends_with('.'), "reads as a sentence: {refusal}");
+            assert!(
+                refusal.starts_with("An agent's name"),
+                "names the thing rather than the verb: {refusal}"
+            );
+        }
+    }
+
+    /// Three words is the cap rather than two: "Rail scroll fix" is a name
+    /// somebody would reasonably choose, and refusing it would be refusing
+    /// the shape of the thing being asked for.
+    #[test]
+    fn three_words_fit_and_four_do_not() {
+        assert_eq!(
+            agent_name_from("Rail scroll fix").unwrap(),
+            "Rail scroll fix"
+        );
+        assert!(agent_name_from("Rail scroll fix now").is_err());
+    }
+
+    /// Case and spacing do not make a second agent.
+    #[test]
+    fn the_same_name_said_differently_is_the_same_name() {
+        assert!(same_agent_name("Rail scroll", "rail  scroll"));
+        assert!(same_agent_name("Tracker", "TRACKER"));
+        assert!(!same_agent_name("Tracker", "Trackers"));
+        assert!(!same_agent_name("Rail scroll", "Rail"));
+    }
+
+    /// The two fields are absent on the wire until they are set, so a client
+    /// that has never heard of either reads an agent exactly as it did.
+    #[test]
+    fn an_unnamed_agent_carries_neither_field() {
+        let agent = Agent::new(
+            "agent-1",
+            "run-1",
+            ModelChoice::default(),
+            1,
+            "2026-09-20T21:00:00Z",
+        );
+        let wire = serde_json::to_value(&agent).unwrap();
+        assert!(wire.get("name").is_none(), "{wire:?}");
+        assert!(wire.get("name_asked").is_none(), "{wire:?}");
     }
 }

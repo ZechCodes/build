@@ -50,7 +50,8 @@
               "id": "proj-1",
               "name": "build"
             },
-            "topic": "Staffing the rail"
+            "topic": "Staffing the rail",
+            "name": "Build"
           },
           "body": "take the retry path next",
           "created_at": "2026-09-13T10:04:10Z"
@@ -98,12 +99,12 @@
             }
           },
           "issue_notice": {
-            "actor": { "kind": "agent", "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E" },
+            "actor": { "kind": "agent", "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E", "name": "Rail scroll" },
             "action": "moved",
             "from": "in_progress",
             "to": "in_review"
           },
-          "body": "The wire-facade agent moved #13 Kanban drag does not persist to In review",
+          "body": "Rail scroll moved #13 Kanban drag does not persist to In review",
           "created_at": "2026-09-20T15:04:00Z"
         }
       },

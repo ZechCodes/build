@@ -99,6 +99,7 @@ impl AppState {
             end_sequence,
             messages,
             prior_context: String::new(),
+            ask_to_name: false,
         }))
     }
 

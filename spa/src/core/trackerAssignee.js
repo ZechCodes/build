@@ -14,6 +14,7 @@
 //
 // No DOM, no app imports.
 
+import { agentDisplayName } from "./agentName.js";
 import { entityIdOf } from "./entityId.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
 import { assigneeKey } from "./trackerModel.js";
@@ -34,10 +35,11 @@ function conversationsByOwner(items) {
   return rows;
 }
 
-/** What an agent is called in this project: its workspace and its place on
- *  that workspace's strip. An agent has no name of its own — it has an ordinal
- *  and a pattern — so the workspace is what makes one agent tell from another. */
-const agentName = (workspaceName, agent, index) => `${workspaceName} · Agent ${agent.ordinal || index + 1}`;
+/** What an agent is called in this project: its workspace, and its own name.
+ *  An agent nobody has named has only an ordinal and a pattern, and then the
+ *  workspace and the place on its strip are what tell one from another. */
+const agentLabel = (workspaceName, agent, index) =>
+  `${workspaceName} · ${agentDisplayName(agent, index + 1)}`;
 
 /**
  * Every workspace of one project, with the agents standing in it.
@@ -58,7 +60,8 @@ export function workspaceAgents(feed, projectKey) {
         name,
         agents: (row?.agents || []).map((agent, index) => ({
           id: agent.id,
-          label: agentName(name, agent, index),
+          label: agentLabel(name, agent, index),
+          name: agent.name || "",
           provider: agent.provider || "",
         })),
       };

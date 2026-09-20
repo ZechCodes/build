@@ -108,6 +108,7 @@ fn a_stamped_sender_names_its_owner_and_its_topic() {
             name: "wire-facade".to_string(),
         }),
         topic: Some(String::new()),
+        name: None,
     };
 
     let raw = serde_json::to_value(&sender).unwrap();

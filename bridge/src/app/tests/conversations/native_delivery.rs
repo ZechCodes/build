@@ -292,6 +292,7 @@ fn legacy_native_receipt_preserves_unlisted_messages_between_its_sequences() {
                 end_sequence: middle.sequence,
                 messages: vec![middle.clone()],
                 prior_context: String::new(),
+                ask_to_name: false,
             },
             MessageDeliveryStatus::Uncertain,
         )

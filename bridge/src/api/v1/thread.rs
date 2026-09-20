@@ -262,6 +262,12 @@ pub struct AgentAddParams {
     /// the first one made rather than making a second.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creation_id: Option<String>,
+    /// What to CALL the agent: one or two meaningful words, replacing "Agent
+    /// 1" everywhere it is drawn. Optional — an agent nobody names is asked to
+    /// name itself the first time the user writes to it — and refused when
+    /// another agent on the conversation already has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(flatten)]
     pub choice: ModelChoiceParams,
 }
@@ -488,6 +494,15 @@ pub struct AgentDigest {
     /// conversation nothing has been said in yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The agent's own word for what this conversation is about, which the
+    /// header wears in place of the harness name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// What to CALL this agent, everywhere it used to be "Agent 1". Absent
+    /// until somebody names it, and the ordinal is the fallback for exactly
+    /// that long.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surfaces: Option<AgentSurfaces>,
 }

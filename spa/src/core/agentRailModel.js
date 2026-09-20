@@ -14,6 +14,7 @@
 // stand against upstream" actually live — the per-agent payload only carries
 // a working boolean, with no stamp to clock it by.
 
+import { agentInitials, agentName } from "./agentName.js";
 import { entityIdOf } from "./entityId.js";
 import { gitStatusCells } from "./gitStatusCells.js";
 import { unreadReasonText } from "./inbox.js";
@@ -36,14 +37,18 @@ export function agentHeading(agent) {
   return topic ? { text: topic, starting: false } : { text: STARTING_HEADING, starting: true };
 }
 
-/** Which agent this is, in words — the topic it named its work with, and its
- *  harness while it has not named one.
+/** Which agent this is, in words — its NAME when it has one, else the topic it
+ *  named its work with, and its harness while it has neither.
  *
- *  The ordinal is deliberately absent. It is the agent's place on the strip,
- *  and the strip already says it in the face the bubble wears; read out as
- *  "Codex TUI 2" it named a harness and a number over work the agent had
- *  already named better than the client can. */
+ *  The name comes first because it is the one of the three that is about the
+ *  agent rather than about what the agent is doing: a topic moves with the
+ *  work and a harness is shared by every agent running on it.
+ *
+ *  The ordinal stays deliberately absent. It is the agent's place on the
+ *  strip, and the strip already says it in the face the bubble wears. */
 export function agentWho(agent) {
+  const name = agentName(agent);
+  if (name) return name;
   const heading = agentHeading(agent);
   return heading.starting ? providerLabel(agent && agent.provider) : heading.text;
 }
@@ -153,7 +158,11 @@ function bubbleNews(agent, heading) {
  *  same harness, and it is their painted faces that tell them apart. */
 export function bubbleTip(agent) {
   const heading = agentHeading(agent);
-  const title = heading.starting ? `${STARTING_HEADING} · ${providerLabel(agent && agent.provider)}` : heading.text;
+  const said = heading.starting ? `${STARTING_HEADING} · ${providerLabel(agent && agent.provider)}` : heading.text;
+  // A named agent leads with its name and keeps what it is doing after it:
+  // the reader hovering a bubble is asking which agent this is first.
+  const name = agentName(agent);
+  const title = name ? `${name} · ${said}` : said;
   const news = bubbleNews(agent, heading);
   return news ? `${title} — ${news}` : title;
 }
@@ -287,6 +296,9 @@ function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd
     type: "agent",
     id: agent.id,
     ...face(agentPattern(agent.ordinal)),
+    // A named agent wears its initials; an unnamed one keeps the painted
+    // pattern, which says as much as a letter cut from an ordinal would.
+    initials: agentInitials(agent),
     title: bubbleTip(agent),
     active: !addingAgent && agent.id === selectedId,
     unread: agent.unread_count || 0,

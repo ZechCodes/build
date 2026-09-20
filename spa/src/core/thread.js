@@ -1,3 +1,4 @@
+import { agentName } from "./agentName.js";
 import { isAgentMessage } from "./unreadAnchor.js";
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
@@ -747,7 +748,12 @@ function avatarHtml(user) {
 /// reference is always something a reader can aim at.
 const UNTITLED_CONVERSATION = "Untitled conversation";
 
-const topicLabel = (reference) => String(reference.topic || "").trim() || UNTITLED_CONVERSATION;
+/// What the second link says: the sender's NAME when it has one, else the topic
+/// its conversation carries. A name tells the reader which agent wrote; a topic
+/// tells them what that agent is on, and the name is the better answer to "who
+/// is this".
+const topicLabel = (reference) =>
+  agentName(reference) || String(reference.topic || "").trim() || UNTITLED_CONVERSATION;
 
 /// Where the other end of an agent-to-agent message lives: the page its owner
 /// is, and the conversation itself.

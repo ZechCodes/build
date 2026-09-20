@@ -212,6 +212,7 @@ impl AppState {
         owner_id: &str,
         workspace_id: &str,
         choice: AgentChoiceArgs<'_>,
+        name: Option<&str>,
     ) -> Result<Value, String> {
         self.project_agent_workspace(owner_id, workspace_id)?;
         let mut params = choice.params();
@@ -222,6 +223,11 @@ impl AppState {
             .ok_or("the workspace conversation has no owner")?
             .to_string();
         params["entity_id"] = json!(entity_id);
+        // Set after the conversation is ensured, not before: `name` means the
+        // WORKSPACE's name to the verbs above, and the agent's to `agent.add`.
+        if let Some(name) = name {
+            params["name"] = json!(name);
+        }
         let mut added = self.agent_add(&params)?;
         added["workspace_id"] = json!(workspace_id);
         Ok(added)

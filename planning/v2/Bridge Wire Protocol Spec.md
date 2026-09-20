@@ -678,7 +678,8 @@ say they did.
 from_agent: {
   id: string,
   owner?: { kind: "workspace" | "project", id: string, name: string },
-  topic?: string
+  topic?: string,
+  name?: string
 }
 ```
 
@@ -686,9 +687,46 @@ from_agent: {
 when it is `project`; `owner.name` is that workspace's or project's display
 name. `topic` is what the sending agent last called its own conversation
 (`set_topic`), and it may be the empty string — a conversation that was read and
-has not named itself yet. Both are stamped by the bridge at POST time, from what
-it knew then: a workspace can be renamed and a topic changes with the work, and
-what the message says is what was true when it was sent.
+has not named itself yet. `name` is what the agent is CALLED (**1.7.0**; see
+Agent names below), absent until somebody names it. All are stamped by the
+bridge at POST time, from what it knew then: a workspace can be renamed, a topic
+changes with the work, and what the message says is what was true when it was
+sent.
+
+### Agent names (1.7.0)
+
+Every agent was labelled by ordinal — "Agent 1", "Agent 2" — which says where it
+sits in a rail and nothing about what it is. An agent now carries a **`name`**:
+one or two meaningful words ("Tracker", "Rail scroll", "Transport"), on the
+agent digest (`agent.add`, `agent.list`, `workspace.agents`,
+`list_workspace_agents`), on `from_agent`, and on `issue_notice.actor`. It is
+absent until somebody sets one, and a client falls back to the ordinal for
+exactly that long — which is also what an older client does with it.
+
+A name is not a topic. A topic is a subject line that moves with the work; a
+name is who the agent is, and it is unique among the agents of one conversation.
+
+**Set three ways.** `agent.add` and `add_workspace_agent` take an optional
+`name`. `issues.assign` with `{kind:"new_agent"}` or `{kind:"new_workspace"}`
+takes an optional **`agent_name`** — spelled differently because `name` on
+`new_workspace` is already the workspace's, and one key meaning two things is
+how a caller names the wrong one. And the agent names itself with the
+**`set_name`** MCP tool, which the project agent is not offered: it is named by
+its project.
+
+**Validation**, in the same words wherever it is refused, because an agent reads
+the refusal and repeats it to the user: 2 to 24 characters, at most three words,
+trimmed with inner whitespace collapsed, and not a name another agent on that
+conversation already has — compared case- and spacing-insensitively, so "Rail
+scroll" and "rail  scroll" are one name. An agent re-stating its own name is not
+a clash.
+
+**The ask.** The first message the USER sends to an agent that has no name
+carries one instruction with it: name yourself with `set_name` before answering.
+Once per agent and never again — an agent that was asked and did not do it has
+decided, and asking on every message would be nagging in the user's own voice. An
+agent woken by another agent's hand-off is not asked: it is being given work, not
+greeted, and a name the user will read should be chosen while the user is there.
 
 Every message carrying `from_agent` is one an agent sent on purpose — a router
 dispatch or a `message_agent`. The bridge writes none of its own: it used to

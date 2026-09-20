@@ -33,6 +33,7 @@ pub(super) fn queued_operation(operation_id: &str, posted_sequence: u64) -> Oper
                 end_sequence: posted_sequence,
                 messages: Vec::new(),
                 prior_context: String::new(),
+                ask_to_name: false,
             }),
         }),
         requested_by: None,

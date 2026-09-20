@@ -29,7 +29,8 @@ impl AppState {
         if told.is_empty() {
             return;
         }
-        let Some(notice) = notice_of(write) else {
+        let called = self.agent_display_name(&write.actor);
+        let Some(notice) = notice_of(write, called.clone()) else {
             // A write that changed nothing the timeline records is not news.
             return;
         };
@@ -50,6 +51,19 @@ impl AppState {
         }
     }
 
+    /// What an acting agent is CALLED, when it has been named. `None` for the
+    /// user and for an agent nobody has named.
+    fn agent_display_name(&self, actor: &Actor) -> Option<String> {
+        let Actor::Agent { agent_id } = actor else {
+            return None;
+        };
+        let entity_id = self.entity_of_agent(agent_id)?;
+        self.entity_agents(&entity_id)
+            .ok()?
+            .by_id(agent_id)
+            .and_then(|agent| agent.name.clone())
+    }
+
     /// Who a notice says did it, in the words the conversation uses.
     ///
     /// The same naming an assignment notice uses: an agent is named by the
@@ -59,6 +73,11 @@ impl AppState {
         let Actor::Agent { agent_id } = actor else {
             return "The user".to_string();
         };
+        // A name is what the agent is called, so it is what the line says.
+        // The workspace is the fallback, and the id the fallback's fallback.
+        if let Some(name) = self.agent_display_name(actor) {
+            return name;
+        }
         let Some(entity_id) = self.entity_of_agent(agent_id) else {
             return format!("Agent {agent_id}");
         };
@@ -150,9 +169,12 @@ fn notice_envelope(issue: &Issue) -> IssueEnvelope {
 /// made it, so the notice and the timeline cannot disagree about what
 /// happened: they are reading the same record. `None` is a write the timeline
 /// records nothing for — which is not news.
-fn notice_of(write: &IssueWrite) -> Option<IssueNotice> {
+fn notice_of(write: &IssueWrite, actor_name: Option<String>) -> Option<IssueNotice> {
     let plain = |action: &str| IssueNotice {
-        actor: write.actor.clone(),
+        actor: crate::thread::NoticeActor {
+            who: write.actor.clone(),
+            name: actor_name.clone(),
+        },
         action: action.to_string(),
         comment_id: None,
         from: None,
@@ -267,7 +289,7 @@ mod tests {
     }
 
     fn body_of(write: &IssueWrite, who: &str) -> String {
-        let notice = notice_of(write).unwrap();
+        let notice = notice_of(write, None).unwrap();
         notice_body(
             &notice,
             &write.issue,
@@ -287,11 +309,12 @@ mod tests {
             json!({ "from": "backlog", "to": "in_review" }),
             "2026-09-20T15:01:00Z",
         );
-        let notice = notice_of(&write).unwrap();
+        let notice = notice_of(&write, None).unwrap();
         assert_eq!(notice.action, "moved");
         assert_eq!(notice.from.as_deref(), Some("backlog"));
         assert_eq!(notice.to.as_deref(), Some("in_review"));
-        assert_eq!(notice.actor, Actor::User);
+        assert_eq!(notice.actor.who, Actor::User);
+        assert_eq!(notice.actor.name, None, "nobody has named the user");
         assert_eq!(
             body_of(&write, "The user"),
             "The user moved #13 Kanban drag to In review"
@@ -315,7 +338,7 @@ mod tests {
             refs: Vec::new(),
             created_at: "2026-09-20T15:01:00Z".into(),
         });
-        let notice = notice_of(&write).unwrap();
+        let notice = notice_of(&write, None).unwrap();
         assert_eq!(notice.action, "commented");
         assert_eq!(
             notice.comment_id.as_deref(),
@@ -341,7 +364,7 @@ mod tests {
             json!({ "agent_id": "agent-2" }),
             "2026-09-20T15:01:00Z",
         );
-        assert!(notice_of(&write).is_none());
+        assert!(notice_of(&write, None).is_none());
     }
 
     /// An assignment names who got it, including the two assignee kinds that
@@ -360,7 +383,7 @@ mod tests {
                 json!({ "assignee": assignee }),
                 "2026-09-20T15:01:00Z",
             );
-            let notice = notice_of(&write).unwrap();
+            let notice = notice_of(&write, None).unwrap();
             assert_eq!(notice.action, "assigned");
             assert_eq!(
                 notice.assignee,

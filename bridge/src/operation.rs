@@ -59,6 +59,13 @@ pub struct OperationPayload {
     pub messages: Vec<ThreadMessage>,
     /// Bounded conversation context as it stood immediately before acceptance.
     pub prior_context: String,
+    /// Whether this turn also asks the agent to name itself.
+    ///
+    /// Decided where the agent record is readable rather than here — this
+    /// carries the answer to the prompt. Absent on every payload written
+    /// before names existed, which is what `default` is for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ask_to_name: bool,
 }
 
 impl OperationPayload {
@@ -111,13 +118,14 @@ impl OperationPayload {
         let issue = self.issue_note();
         let watched = self.watched_issue_note();
         let looking = self.viewing_issue_note();
+        let naming = self.name_note();
         let user_prompt = self
             .messages
             .first()
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}{issue}{watched}{looking}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}{issue}{watched}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -228,6 +236,22 @@ impl OperationPayload {
             .map_or_else(String::new, |(workspace_id, name)| {
                 format!("\nThe user sent this from workspace \"{name}\" ({workspace_id}).\n")
             })
+    }
+
+    /// Ask the agent to name itself, on the one turn that asks.
+    ///
+    /// The first thing the user says to an agent that has no name, and only
+    /// then: an agent that was asked and did not do it has decided, and asking
+    /// again on every message would be nagging in the user's voice.
+    fn name_note(&self) -> String {
+        if !self.ask_to_name {
+            return String::new();
+        }
+        "\nYou have no name yet. Before you answer, call set_name with one or two meaningful \
+         words for what you are working on — \"Tracker\", \"Rail scroll\", \"Transport\". It is \
+         what the user sees instead of \"Agent 1\" everywhere you are named, so pick something \
+         they would recognise from across a list. Then answer normally.\n"
+            .to_string()
     }
 
     /// One line naming the issue the user was LOOKING at, when the message
@@ -420,6 +444,7 @@ mod tests {
             }))
             .unwrap()],
             prior_context: "The previous revision changed the parser.".into(),
+            ask_to_name: false,
         }
     }
 
@@ -459,7 +484,10 @@ mod tests {
             links: crate::tracker::IssueLinks::default(),
         };
         let notice = crate::thread::IssueNotice {
-            actor: crate::tracker::Actor::User,
+            actor: crate::thread::NoticeActor {
+                who: crate::tracker::Actor::User,
+                name: None,
+            },
             action: "moved".into(),
             comment_id: None,
             from: Some("in_progress".into()),

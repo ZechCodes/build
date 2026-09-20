@@ -51,6 +51,12 @@ pub struct AgentIdentity {
     pub owner: Option<AgentOwnerRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
+    /// What to CALL this agent — one or two words it or its maker chose. What
+    /// a reader sees instead of "Agent 1" on every message it sent. Absent for
+    /// an agent that has not been named, and for every message written before
+    /// names existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl AgentIdentity {
@@ -61,6 +67,7 @@ impl AgentIdentity {
             id: id.into(),
             owner: None,
             topic: None,
+            name: None,
         }
     }
 }
@@ -99,8 +106,9 @@ pub struct IssueEnvelope {
 /// party did, and the actor is therefore part of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueNotice {
-    /// Who did it. `{kind: "user"}` or `{kind: "agent", agent_id}`.
-    pub actor: crate::tracker::Actor,
+    /// Who did it: `{kind: "user"}` or `{kind: "agent", agent_id}`, and the
+    /// agent's `name` beside them when it has one.
+    pub actor: NoticeActor,
     /// What they did: one of `commented`, `moved`, `assigned`, `unassigned`,
     /// `closed`, `reopened`, `edited`, `linked`. A slug, the way a column is,
     /// so a client renders the wording and the bridge does not decide it
@@ -118,6 +126,24 @@ pub struct IssueNotice {
     /// Who an `assigned` handed it to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<crate::tracker::Assignee>,
+}
+
+/// Who a notice says did the thing, as a client draws it.
+///
+/// The stored [`crate::tracker::Actor`] flattened, plus the agent's name. The
+/// name is not on the Actor itself on purpose: an Actor is written into every
+/// event and comment the tracker stores, and a name copied into all of them
+/// would be a hundred stale copies the first time an agent renames itself.
+/// Here it is resolved when the notice is written and read once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoticeActor {
+    #[serde(flatten)]
+    pub who: crate::tracker::Actor,
+    /// What to call them, when they have a name. Absent for the user, and for
+    /// an agent nobody has named — a client falls back to the ordinal or the
+    /// id, as it did before names existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// What an agent did to an issue, on the message it posted saying so (spec:

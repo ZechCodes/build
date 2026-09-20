@@ -11,6 +11,7 @@ fn recipient() -> AgentIdentity {
             name: "two".to_string(),
         }),
         topic: Some("Reading the router".to_string()),
+        name: None,
     }
 }
 

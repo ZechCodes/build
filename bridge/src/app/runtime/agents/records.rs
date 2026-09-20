@@ -485,6 +485,50 @@ impl AppState {
         Ok(serde_json::json!({ "topic": topic }))
     }
 
+    /// What to call this agent, written onto its record once it is nobody
+    /// else's name.
+    ///
+    /// Unique among the agents of this conversation, case- and
+    /// spacing-insensitively: the name exists to tell two agents apart in a
+    /// rail, and two agents wearing one name would be worse than the ordinals
+    /// it replaces. An agent renaming itself to what it is already called is
+    /// not a clash — it is a no-op somebody asked for twice.
+    ///
+    /// The refusal is a sentence, because the agent reads it and repeats it to
+    /// the user.
+    pub(in crate::app) fn set_agent_name(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        name: &str,
+    ) -> Result<serde_json::Value, String> {
+        let taken = self.entity_agents(owner)?.iter().any(|agent| {
+            agent.id != agent_id
+                && agent
+                    .name
+                    .as_deref()
+                    .is_some_and(|theirs| crate::agent::same_agent_name(theirs, name))
+        });
+        if taken {
+            return Err(format!(
+                "Another agent on this conversation is already called \"{name}\". Pick a different name."
+            ));
+        }
+        let mut found = false;
+        self.edit_agent_record("set_name", owner, agent_id, |agent| {
+            found = true;
+            agent.name = Some(name.to_string());
+            // Named is named: the ask has nothing left to ask for, and a
+            // record that still wanted it would ask an agent to name what it
+            // just called itself.
+            agent.name_asked = true;
+        });
+        if !found {
+            return Err(format!("agent {agent_id} is not on {owner}"));
+        }
+        Ok(serde_json::json!({ "name": name }))
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn record_agent_active_model(
         &mut self,

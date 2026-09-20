@@ -126,6 +126,13 @@ pub enum BridgeAction {
     SetTopic {
         topic: String,
     },
+    /// Say what to CALL this agent: one or two meaningful words that replace
+    /// "Agent 1" everywhere it is drawn. Already normalized — trimmed, one
+    /// space between words — by the tool boundary; the daemon still has the
+    /// last word on whether it is taken.
+    SetName {
+        name: String,
+    },
     /// Every project on this device. Router only.
     ListProjects,
     /// The branches and issues in flight, as a digest. Router only.
@@ -184,6 +191,9 @@ pub enum BridgeAction {
         harness: Option<String>,
         model: Option<String>,
         effort: Option<String>,
+        /// What to call it. Whoever cuts an agent for a piece of work can name
+        /// that work better than the agent can before it has read anything.
+        name: Option<String>,
     },
     /// Take an agent off one of this project's workspaces. Project only.
     RemoveWorkspaceAgent {
@@ -347,6 +357,7 @@ impl BridgeAction {
             BridgeAction::PostThreadMessage { .. } => "post_thread_message",
             BridgeAction::SearchConversation { .. } => "search_conversation",
             BridgeAction::SetTopic { .. } => "set_topic",
+            BridgeAction::SetName { .. } => "set_name",
             BridgeAction::ListProjects => "list_projects",
             BridgeAction::ListWork => "list_work",
             BridgeAction::ReadConversation { .. } => "read_conversation",
@@ -396,6 +407,7 @@ impl BridgeAction {
             BridgeAction::PostThreadMessage { .. }
             | BridgeAction::SearchConversation { .. }
             | BridgeAction::SetTopic { .. }
+            | BridgeAction::SetName { .. }
             | BridgeAction::MessageAgent { .. } => &[McpSurface::Coding, McpSurface::Project],
             BridgeAction::ListProjects
             | BridgeAction::ListWork
@@ -638,6 +650,11 @@ impl DoneServer {
                 "description": SET_TOPIC_DESCRIPTION,
                 "inputSchema": Self::set_topic_input_schema()
             }),
+            json!({
+                "name": "set_name",
+                "description": SET_NAME_DESCRIPTION,
+                "inputSchema": Self::set_name_input_schema()
+            }),
         ];
         tools.extend(Self::workspace_tools());
         tools.extend(Self::issue_tools());
@@ -683,6 +700,19 @@ impl DoneServer {
                 "topic": { "type": "string", "description": "The objective, in 2-4 words. Title-case the first word, no trailing period. Examples: \"Unify prompt delivery\", \"Fix login redirect\"." }
             },
             "required": ["topic"]
+        })
+    }
+
+    /// The name schema. Separate from the topic's for the reason the tools are
+    /// separate: they are asked for different things and refused on different
+    /// grounds.
+    fn set_name_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "One or two meaningful words for what you are: \"Tracker\", \"Rail scroll\", \"Transport\". At most three words and 24 characters, and not a name another agent on this conversation already has." }
+            },
+            "required": ["name"]
         })
     }
 
@@ -1077,7 +1107,8 @@ impl DoneServer {
                         "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
                         "harness": { "type": "string", "description": "What the agent runs on. Omit for the user's default." },
                         "model": { "type": "string", "description": "The model, for a harness that takes one. Omit for its default." },
-                        "effort": { "type": "string", "description": "The reasoning effort, for a model that takes one. Omit for its default." }
+                        "effort": { "type": "string", "description": "The reasoning effort, for a model that takes one. Omit for its default." },
+                        "name": { "type": "string", "description": "What to call this agent: one or two meaningful words for the work you are putting it on, like \"Rail scroll\". It is what you and the user will see instead of \"Agent 2\". Omit and the agent names itself when the user first writes to it." }
                     },
                     "required": ["workspace_id"]
                 }
@@ -1323,6 +1354,7 @@ impl DoneServer {
             "message_agent" => message_agent_action(id, params),
             "search_conversation" => search_action(id, params),
             "set_topic" => topic_action(id, params),
+            "set_name" => name_action(id, params),
             "post_thread_message" => project_message(id, params),
             other => refused(id, format!("unknown tool: {other}")),
         }
@@ -1708,6 +1740,7 @@ fn workspace_tool_action(
                 harness: optional_argument(params, "harness"),
                 model: optional_argument(params, "model"),
                 effort: optional_argument(params, "effort"),
+                name: optional_argument(params, "name"),
             }
         }),
         "remove_workspace_agent" => {
@@ -1837,6 +1870,21 @@ fn topic_action(id: Value, params: Option<&Value>) -> Handled {
     }
 }
 
+/// `set_name`, on every surface that has a conversation. Shape is checked
+/// here; whether the name is already taken is the daemon's, because only it
+/// knows who else is on the conversation.
+fn name_action(id: Value, params: Option<&Value>) -> Handled {
+    let name = params
+        .and_then(|p| p.get("arguments"))
+        .and_then(|arguments| arguments.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match crate::agent::agent_name_from(name) {
+        Ok(name) => acted(id, BridgeAction::SetName { name }),
+        Err(message) => refused(id, message),
+    }
+}
+
 /// A project agent's message: a status and a sentence, and no phase to report.
 /// Complete and Blocked end the turn the way they do everywhere else; they end
 /// no phase, because a project agent runs none.
@@ -1882,6 +1930,8 @@ const SUMMARY_DESCRIPTION: &str = "The full report of this turn, in markdown, wr
 const MESSAGE_AGENT_DESCRIPTION: &str = "Say something to another agent working this project: a question for whoever is on the piece you depend on, or work to hand over. It arrives knowing you sent it and not the user, and when that agent finishes the turn its report comes back to you as a message. You cannot message yourself, and no agent outside this project is reachable. This talks to an agent; post_thread_message talks to the user, and is still the only thing the user sees.";
 
 const SEARCH_CONVERSATION_DESCRIPTION: &str = "Search your Build conversation history — every past message and event, including the ones from sessions before yours. Use it whenever you need context you do not have: what was decided about a file, why a commit was made, what the reviewer already asked for. Search rather than replay: never scroll the terminal or re-read the whole conversation to find something. Filters combine, results are newest first, and each hit is an excerpt with its sequence number, not the full item.";
+
+const SET_NAME_DESCRIPTION: &str = "Say what to call you: one or two meaningful words for what you are working on — \"Tracker\", \"Rail scroll\", \"Transport\". This is your NAME, not your topic: the topic is what you are doing now and changes with the work, the name is who you are and replaces \"Agent 1\" in the rail, in every message you send and everywhere else you are named. Pick something the user would recognise from across a list of agents, and set it once.";
 
 const SET_TOPIC_DESCRIPTION: &str = "Name what this conversation is about, in 2-4 words: the objective you are setting out to achieve, not the steps. The conversation header shows it in place of the harness name, and says \"Starting\" until you call this. Call it first thing in a new conversation, and again if the objective changes.";
 
@@ -1959,11 +2009,12 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4 + WORKSPACE_TOOLS.len() + ISSUE_TOOLS.len());
+        assert_eq!(tools.len(), 5 + WORKSPACE_TOOLS.len() + ISSUE_TOOLS.len());
         assert_eq!(tools[0]["name"], "post_thread_message");
         assert_eq!(tools[1]["name"], "message_agent");
         assert_eq!(tools[2]["name"], "search_conversation");
         assert_eq!(tools[3]["name"], "set_topic");
+        assert_eq!(tools[4]["name"], "set_name");
         assert_eq!(
             tools[0]["inputSchema"]["properties"]["status"]["enum"],
             json!(["Complete", "Blocked", "Waiting", "Working"])
@@ -2528,7 +2579,15 @@ mod tests {
         ];
         assert_eq!(
             tool_names(&server()),
-            [&conversation[..], &WORKSPACE_TOOLS[..], &ISSUE_TOOLS[..]].concat(),
+            [
+                &conversation[..],
+                // A coding agent names ITSELF; the project's agent is named by
+                // its project and is offered no such tool.
+                &["set_name"][..],
+                &WORKSPACE_TOOLS[..],
+                &ISSUE_TOOLS[..]
+            ]
+            .concat(),
             "a coding agent has its conversation, the workspaces of its project, and its board"
         );
         assert_eq!(
@@ -2758,7 +2817,7 @@ mod tests {
         ));
         assert!(matches!(
             call("add_workspace_agent", r#"{"workspace_id":"ws-1","harness":"codex","project_id":"proj-9"}"#).action,
-            Some(BridgeAction::AddWorkspaceAgent { ref workspace_id, ref harness, model: None, effort: None })
+            Some(BridgeAction::AddWorkspaceAgent { ref workspace_id, ref harness, model: None, effort: None, name: None })
                 if workspace_id == "ws-1" && harness.as_deref() == Some("codex")
         ));
     }

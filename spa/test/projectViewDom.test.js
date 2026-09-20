@@ -46,9 +46,19 @@ import { App } from "../src/app.js";
 import { renderProject } from "../src/views/projectView.js";
 import { pressProjectTab } from "../src/core/toolbar.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
+import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Open the page the way the app opens it. The rail beside it is the SHELL's
+ *  now (core/shell.js) — `render()` stands it on the route before the page
+ *  paints — so a case that goes straight to the view would be testing a page
+ *  in a shell that was never stood. */
+const openProject = async () => {
+  standShell(App.route);
+  await renderProject();
+};
 
 const workspace = (id, extra = {}) => ({
   id,
@@ -103,6 +113,7 @@ afterEach(() => {
   expect(elsewhere).not.toHaveBeenCalled();
   App.viewDispose?.();
   App.viewDispose = null;
+  stopShell();
   resetDeviceContexts();
 });
 
@@ -110,7 +121,7 @@ const rows = () => [...document.querySelectorAll("[data-workspace]")];
 
 describe("the project surface", () => {
   it("lists the project's workspaces, each opening its own surface", async () => {
-    await renderProject();
+    await openProject();
     await flush();
 
     expect(rows().map((row) => row.querySelector(".stitle").textContent)).toEqual(["ws-1", "docs"]);
@@ -120,7 +131,7 @@ describe("the project surface", () => {
   });
 
   it("repaints when the feed moves", async () => {
-    await renderProject();
+    await openProject();
     await flush();
     expect(rows()).toHaveLength(2);
 
@@ -134,7 +145,7 @@ describe("the project surface", () => {
   // the page says what to do about it rather than looking broken.
   it("says there are no workspaces yet and points at the +", async () => {
     snapshot = { ...snapshot, workspaces: [] };
-    await renderProject();
+    await openProject();
     await flush();
 
     expect(rows()).toHaveLength(0);
@@ -146,7 +157,7 @@ describe("the project surface", () => {
   // scratch directory — never in the project's checkout — and the page asks for
   // it exactly the way a workspace asks for its own.
   it("mounts the rail on the owner project.ensure_conversation answers with", async () => {
-    await renderProject();
+    await openProject();
     await flush();
 
     expect(here).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" });
@@ -163,14 +174,14 @@ describe("the project surface", () => {
   // the route: the page opens with the rail standing on that conversation.
   it("opens the rail on the agent the route names", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", agent: "ag-2" };
-    await renderProject();
+    await openProject();
     await flush();
 
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe("ag-2");
   });
 
   it("names no agent where the route names none", async () => {
-    await renderProject();
+    await openProject();
     await flush();
 
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe(null);
@@ -184,7 +195,7 @@ describe("the project surface", () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({
       provider: "codex", harnesses: { codex: { model: "gpt-5.6-sol", effort: "medium" } },
     }));
-    await renderProject();
+    await openProject();
     await flush();
 
     const ensured = here.mock.calls.filter(([method]) => method === "project.ensure_conversation");
@@ -195,7 +206,7 @@ describe("the project surface", () => {
   // The verb slot is where this page's two verbs live, and both say which
   // project they are about: the bar names one project, and so do they.
   it("offers the project's own verbs on the toolbar, named for it", async () => {
-    await renderProject();
+    await openProject();
     await flush();
 
     const create = document.querySelector("[data-project-create]");
@@ -212,7 +223,7 @@ describe("the project surface", () => {
   });
 
   it("hands the verb slot back when the surface goes", async () => {
-    await renderProject();
+    await openProject();
     await flush();
     expect(document.querySelector("[data-project-create]")).toBeTruthy();
 
@@ -226,7 +237,7 @@ describe("the project surface", () => {
   // it rather than standing a frame up over calls that can only be refused.
   it("names the machine instead when it cannot answer", async () => {
     App.route = { name: "project", deviceId: "dev-9", projectId: "proj-1" };
-    await renderProject();
+    await openProject();
     await flush();
 
     expect(mountAgentRail).not.toHaveBeenCalled();
@@ -243,7 +254,7 @@ describe("the project surface", () => {
 // page); a press on them is handed to this page to switch in place.
 describe("the project's two tabs", () => {
   it("opens on the workspaces, which is what a project URL has always opened on", async () => {
-    await renderProject();
+    await openProject();
     await flush();
     expect(document.querySelector(".project-rows")).not.toBeNull();
     expect(mountIssuesPane).not.toHaveBeenCalled();
@@ -251,7 +262,7 @@ describe("the project's two tabs", () => {
 
   it("mounts the Issues tab on the machine the project is on", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
-    await renderProject();
+    await openProject();
     await flush();
     const [host, given] = mountIssuesPane.mock.calls[0];
     expect(host.id).toBe("project-pane");
@@ -262,7 +273,7 @@ describe("the project's two tabs", () => {
   // the one arriving is built.
   it("tears the Issues tab down on the way back to the workspaces", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
-    await renderProject();
+    await openProject();
     await flush();
     const pane = mountIssuesPane.mock.results[0].value;
     pressProjectTab("workspaces");
@@ -273,7 +284,7 @@ describe("the project's two tabs", () => {
 
   // The page is the same page: a navigation would remount the rail beside it.
   it("rewrites the hash rather than navigating", async () => {
-    await renderProject();
+    await openProject();
     await flush();
     mountAgentRail.mockClear();
     pressProjectTab("issues");
@@ -284,14 +295,14 @@ describe("the project's two tabs", () => {
 
   it("keeps a board link a board link", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues", view: "board" };
-    await renderProject();
+    await openProject();
     await flush();
     expect(mountIssuesPane.mock.calls[0][1].view).toBe("board");
   });
 
   it("writes the view the tab moved to into the hash", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
-    await renderProject();
+    await openProject();
     await flush();
     mountIssuesPane.mock.calls[0][1].onViewChange("board");
     expect(location.hash).toBe("#/device/dev-1/project/proj-1/issues?view=board");
@@ -299,7 +310,7 @@ describe("the project's two tabs", () => {
 
   it("takes the Issues tab down with the page", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
-    await renderProject();
+    await openProject();
     await flush();
     const pane = mountIssuesPane.mock.results[0].value;
     App.viewDispose();

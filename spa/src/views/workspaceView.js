@@ -8,9 +8,7 @@ import { App, go, markRoute } from "../app.js";
 import { esc } from "../core/text.js";
 import { DIRECTORY_TABS, paintDirectoryRail } from "../core/directoryRail.js";
 import { mountGitPane } from "../core/gitPane.js";
-import { mountConsole } from "../core/console.js";
-import { mountAgentRail } from "../core/agentRail.js";
-import { createAgentSelection } from "../core/agentSelection.js";
+import { shellSelection } from "../core/shell.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { renderFilesTab } from "./files.js";
 import { directoryId, directoryTab, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
@@ -259,44 +257,6 @@ function refreshWorkspacePane(state, workspace) {
   return { directory, canonical, body };
 }
 
-/** The console is the workspace's, not a directory's: moving between
- *  directories or refs never replaces the sessions it is holding. */
-const mountWorkspaceConsole = (state) =>
-  mountConsole($("#console-region"), {
-    kind: "workspace",
-    workspaceId: state.route.workspaceId,
-    deviceId: state.context.deviceId,
-  });
-
-/** The rail a workspace stands on: this workspace's agents, and the project's
- *  own above them.
- *
- *  The project agent is reachable from every workspace in the project — that is
- *  what makes it the project's rather than a workspace's — so the rail carries
- *  it here as well as on the project's page, and pressing it shows the project's
- *  conversation in this same panel without leaving the workspace.
- *
- *  The route may name the agent whose conversation to open (`?agent=…`,
- *  core/router.js `conversationRoute`) — the workspace's own, or the project's
- *  from across the line, which the rail stands itself on. */
-function mountWorkspaceAgentRail(workspace, state, sourceId) {
-  const { route, context } = state;
-  const projectId = workspace.project_id || route.projectId;
-  return mountAgentRail($("#agent-rail"), {
-    kind: "workspace",
-    workspaceId: route.workspaceId,
-    sourceId,
-    projectId,
-    projectAgent: { projectId },
-    deviceId: context.deviceId,
-    callRpc: context.rpc,
-    cacheScope: context.cacheScope,
-    chatRepository: context.chatRepository,
-    selection: state.selection,
-    openAgentId: route.agent || null,
-  });
-}
-
 function mountWorkspace(workspace, state) {
   if (state.disposed) return;
   const { route, callRpc } = state;
@@ -304,10 +264,8 @@ function mountWorkspace(workspace, state) {
   installWorkspaceAction(state, workspace);
   const directory = selectedDirectory(workspace, route.sourceId);
   const sourceId = directoryId(directory);
-  state.agentRail = mountWorkspaceAgentRail(workspace, state, sourceId);
   if (!sourceId) {
     $("#tabbody").innerHTML = errorHtml("This workspace has no source directories.");
-    state.consolePanel = mountWorkspaceConsole(state);
     return;
   }
 
@@ -323,7 +281,6 @@ function mountWorkspace(workspace, state) {
 
   state.paintTabs = directoryTabsPainter(mounted.body, state, sourceId);
   App.viewDispose = observeTabs(mounted.body, state, state.paintTabs, App.viewDispose);
-  state.consolePanel = mountWorkspaceConsole(state);
 }
 
 export async function renderWorkspace() {
@@ -345,7 +302,7 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { selection: createAgentSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [], unwatchFeed: null };
+  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [], unwatchFeed: null };
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   // This machine answers now. If it goes while the workspace is open, what was
   // read stays on screen and the strip says whose state that is — but only once
@@ -365,8 +322,6 @@ export async function renderWorkspace() {
     deviceStrip();
     if (App.routeLeaveGuard === state.pane?.canLeave) App.routeLeaveGuard = null;
     state.pane?.dispose?.();
-    state.consolePanel?.dispose?.();
-    state.agentRail?.dispose?.();
     state.gitInitialization.forEach((controller) => controller.dispose());
     clearToolbarVerb(state.toolbarAction);
   };

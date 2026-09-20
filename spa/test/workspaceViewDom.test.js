@@ -52,9 +52,19 @@ const deliverWorkspaces = (workspaces) => {
 import { App } from "../src/app.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
+import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Open the page the way the app opens it. The rail and the console beside it
+ *  are the SHELL's now (core/shell.js) — `render()` stands them on the route
+ *  before the page paints — so a case that went straight to the view would be
+ *  testing a page in a shell that was never stood. */
+const openWorkspace = async () => {
+  standShell(App.route);
+  await renderWorkspace();
+};
 const workspace = {
   id: "ws-1",
   project_id: "p-1",
@@ -95,7 +105,7 @@ const standUp = async () => {
   const answer = (await scripted("workspace.get", { workspace_id: App.route.workspaceId })) || {};
   const held = answer.workspace || answer;
   feedWorkspaces = held.id ? [held] : [];
-  await renderWorkspace();
+  await openWorkspace();
 };
 
 let elsewhere;
@@ -126,6 +136,7 @@ afterEach(() => {
   expect(elsewhere).not.toHaveBeenCalled();
   App.viewDispose?.();
   App.viewDispose = null;
+  stopShell();
   resetDeviceContexts();
 });
 
@@ -149,7 +160,7 @@ describe("workspace surface", () => {
     device("dev-1", async () => workspace);
     passRan = false; // another tab holds the sync lock; nothing to establish here
 
-    await renderWorkspace();
+    await openWorkspace();
     await flush();
 
     expect(document.querySelector("#root").textContent).not.toContain("unknown workspace_id");
@@ -165,7 +176,7 @@ describe("workspace surface", () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-9", sourceId: "assets", tab: "files" };
     device("dev-1", async () => workspace);
 
-    await renderWorkspace();
+    await openWorkspace();
     await flush();
 
     expect(document.querySelector("#root").textContent).toContain("unknown workspace_id: ws-9");
@@ -177,7 +188,7 @@ describe("workspace surface", () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", async () => workspace);
 
-    await renderWorkspace();
+    await openWorkspace();
     await flush();
     expect(document.querySelector("#root").textContent).toContain("unknown workspace_id: ws-1");
 
@@ -195,7 +206,13 @@ describe("workspace surface", () => {
     expect(App.routeLeaveGuard).toBe(renderFilesTab.mock.results[0].value.canLeave);
     renderFilesTab.mock.calls[0][1].onFileOpen("logo.svg");
     expect(App.route.file).toBe("logo.svg");
-    expect(mountConsole).toHaveBeenCalledWith(expect.anything(), { kind: "workspace", workspaceId: "ws-1", deviceId: "dev-1" });
+    expect(mountConsole).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      kind: "workspace", workspaceId: "ws-1", deviceId: "dev-1",
+    }));
+    // …and it is told nothing about the directory open beside it. That is the
+    // whole point: moving between directories must not replace the sessions the
+    // console is holding, and it cannot if it never hears which one is open.
+    expect(mountConsole.mock.calls[0][1].sourceId).toBeUndefined();
     expect(mountAgentRail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       kind: "workspace", workspaceId: "ws-1", projectId: "p-1",
     }));
@@ -586,7 +603,7 @@ describe("workspace surface", () => {
     const { setContextOffline } = await import("../src/core/deviceContexts.js");
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", () => new Promise(() => {}));
-    renderWorkspace();
+    openWorkspace();
     await flush();
 
     setContextOffline("dev-1");
@@ -607,7 +624,7 @@ describe("workspace surface", () => {
     feedWorkspaces = [workspace];
     setContextOffline("dev-1");
 
-    await renderWorkspace();
+    await openWorkspace();
     await flush();
 
     expect(document.getElementById("root").textContent).not.toContain("Connecting to");
@@ -624,7 +641,7 @@ describe("workspace surface", () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     feedWorkspaces = [workspace];
 
-    await renderWorkspace();
+    await openWorkspace();
     await flush();
 
     expect(document.getElementById("root").textContent).not.toContain("Connecting to");
@@ -638,7 +655,7 @@ describe("workspace surface", () => {
   it("names the machine when the route's device has no context, and asks nothing", async () => {
     App.route = { name: "workspace", deviceId: "dev-3", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
 
-    await renderWorkspace();
+    await openWorkspace();
 
     expect(document.querySelector("#root .empty").textContent).toContain("workshop");
     expect(renderFilesTab).not.toHaveBeenCalled();

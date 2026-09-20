@@ -15,6 +15,13 @@ vi.mock("../src/core/deviceContexts.js", () => ({ onDeviceStateChanged: (listene
 } }));
 import { isSettingsRoute, renderSettingsModal } from "../src/views/settingsModal.js";
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+// The modal hands its teardown BACK rather than claiming App.viewDispose: that
+// slot belongs to the page underneath, which stays mounted while settings are
+// open. So each case holds the handle the app holds.
+let closeModal = null;
+const openModal = (returnRoute) => {
+  closeModal = renderSettingsModal(returnRoute);
+};
 beforeEach(() => {
   vi.clearAllMocks();
   document.body.innerHTML = '<div id="shell"><main id="root">Workspace content</main></div><div id="scrim"></div>';
@@ -24,11 +31,11 @@ beforeEach(() => {
   device.mockImplementation(async ({ root, deviceId }) => { root.textContent = deviceId; });
   archive.mockImplementation(({ root }) => { root.innerHTML = '<h1>Archive</h1>'; });
 });
-afterEach(() => { App.viewDispose?.(); App.viewDispose = null; });
+afterEach(() => { closeModal?.(); closeModal = null; App.viewDispose?.(); App.viewDispose = null; });
 describe("settings modal", () => {
   it("lists local settings and devices over the existing surface, returning on close", async () => {
     const returnRoute = { name: "workspace", deviceId: "a", workspaceId: "w1" };
-    renderSettingsModal(returnRoute);
+    openModal(returnRoute);
     await flush();
     expect(document.querySelector('[role="dialog"]').textContent).toContain("Local settings");
     expect(document.querySelectorAll('[data-settings-device]')).toHaveLength(2);
@@ -36,7 +43,7 @@ describe("settings modal", () => {
     expect(document.querySelector('#shell').inert).toBe(true);
     document.querySelector('[data-settings-close]').click();
     expect(go).toHaveBeenCalledWith(returnRoute);
-    App.viewDispose(); App.viewDispose = null;
+    closeModal(); closeModal = null;
     expect(document.querySelector('.settings-scrim')).toBeNull();
     expect(document.querySelector('#shell').inert).toBeFalsy();
     expect(listeners.size).toBe(0);
@@ -53,7 +60,7 @@ describe("settings modal", () => {
       root.textContent = `Device ${deviceId}`;
       registerDispose(dispose);
     });
-    renderSettingsModal();
+    openModal();
     document.querySelector('[data-settings-device="b"]').click();
     await flush();
     expect(localOptions.isCurrent()).toBe(false);
@@ -66,7 +73,7 @@ describe("settings modal", () => {
   });
   it("opens device deep links and lets nested sheets own Escape", () => {
     App.route = { name: "device", id: "b" };
-    renderSettingsModal();
+    openModal();
     expect(device.mock.calls[0][0].deviceId).toBe("b");
     document.querySelector('#scrim').classList.add("show");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -76,7 +83,7 @@ describe("settings modal", () => {
     expect(go).toHaveBeenCalledWith({ name: "inbox" });
   });
   it("keeps keyboard focus in a nested sheet", () => {
-    renderSettingsModal();
+    openModal();
     const sheet = document.querySelector('#scrim');
     sheet.classList.add('show');
     sheet.innerHTML = '<button id="first">Cancel</button><button id="last">Choose</button>';
@@ -97,7 +104,7 @@ describe("settings modal", () => {
       registerDispose(dispose);
     });
     App.route = { name: "account", page: "archive" };
-    renderSettingsModal();
+    openModal();
     await flush();
 
     expect(document.querySelector('[role="dialog"] h1').textContent).toBe("Archive");
@@ -109,7 +116,7 @@ describe("settings modal", () => {
   });
 
   it("keeps focus on Archive while marking it selected", async () => {
-    renderSettingsModal();
+    openModal();
     await flush();
     const link = document.querySelector('.settings-archive');
     link.focus();
@@ -123,7 +130,7 @@ describe("settings modal", () => {
   it("returns from a direct archive route to the surface beneath the modal", async () => {
     const returnRoute = { name: "workspace", deviceId: "a", projectId: "p1", workspaceId: "w1" };
     App.route = { name: "account", page: "archive" };
-    renderSettingsModal(returnRoute);
+    openModal(returnRoute);
     await flush();
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

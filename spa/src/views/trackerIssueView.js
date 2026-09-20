@@ -12,6 +12,11 @@
 // The project's two tabs, with Issues open, are the toolbar's (core/toolbar.js
 // draws them for this route): an issue is a page OF the issues tab, and the
 // bar is where they stay reachable with the chat open over the page.
+//
+// The conversation beside it is the shell's too (core/shell.js), which is the
+// whole of why this file no longer has to remember one. It used to forget: this
+// page mounted no rail at all, so opening an issue on a phone lost the bubble
+// strip and the bar with it.
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";

@@ -55,6 +55,11 @@ const STANDING = {
     route.workspaceId &&
     route.projectId && {
       key: `workspace:${route.workspaceId}`,
+      // A workspace page paints from the records even when its machine cannot
+      // answer, and so does the rail — every read it makes is the cache's. So
+      // the bubbles stay beside a checkout read off disk, with the device strip
+      // over the page saying whose state that is.
+      paintsFromRecords: true,
       // The project's agent is a bubble above the line here, not the thing the
       // page stands on. A rail that minted one to paint that bubble would give
       // every workspace page a project agent, a scratch directory and a run
@@ -111,6 +116,7 @@ export function shellPartsForRoute(route = {}) {
   return {
     key: parts.key,
     mintsProjectConversation: parts.mintsProjectConversation,
+    paintsFromRecords: parts.paintsFromRecords === true,
     // The agent a conversation link names (`?agent=…`, core/router.js): the
     // rail comes up standing on it, whichever kind of page it landed on.
     rail: { ...parts.rail, deviceId, openAgentId: route.agent || null },
@@ -144,10 +150,12 @@ export function standShell(route) {
   const parts = shellPartsForRoute(route);
   const context = parts ? routeContext(route) : null;
   // A machine that cannot answer — never opened here, or gone since — has
-  // nothing under this link to read or write, so the shell stands the reader
-  // nowhere rather than beside a rail whose every call can only be refused.
-  // The page says so on the surface (core/deviceNotice.js).
-  const key = parts && canAnswer(context) ? parts.key : null;
+  // nothing under this link to WRITE, so the shell stands the reader nowhere
+  // rather than beside a rail whose every call can only be refused. The page
+  // says so on the surface (core/deviceNotice.js). What that machine's records
+  // already hold can still be READ, though, so a kind that paints from them
+  // keeps its bubbles: only never having opened the machine at all takes them.
+  const key = parts && standable(parts, context) ? parts.key : null;
   if (live && live.key === key && key) return live.selection;
   teardown();
   live = { key, selection: createAgentSelection(), late: {}, rail: null, console: null };
@@ -155,6 +163,9 @@ export function standShell(route) {
   mountShellParts(parts, context);
   return live.selection;
 }
+
+const standable = (parts, context) =>
+  Boolean(context) && (canAnswer(context) || parts.paintsFromRecords);
 
 function mountShellParts(parts, context) {
   const mine = ++generation;

@@ -25,10 +25,8 @@ import { esc } from "../core/text.js";
 import { App, go, markRoute } from "../app.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { paintDirectoryRail } from "../core/directoryRail.js";
-import { mountConsole } from "../core/console.js";
 import { setToolbarVerb, clearToolbarVerb } from "../core/toolbar.js";
-import { mountAgentRail } from "../core/agentRail.js";
-import { createAgentSelection } from "../core/agentSelection.js";
+import { dropShell, refineShell, shellSelection } from "../core/shell.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { renderFilesTab } from "./files.js";
 import { createTaskReview } from "./taskReview.js";
@@ -112,8 +110,6 @@ export async function renderBranch() {
   // Consumed once: only the navigation the toolbar's create form just fired
   // means it, and a later revisit to this same branch must not keep stealing
   // focus back to the composer.
-  const autofocusComposer = App.focusComposerOnMount;
-  App.focusComposerOnMount = false;
   const openAt = openPlaceOf(App.route);
   root.className = "surface";
   // A machine that cannot answer — never opened here, or gone since — has
@@ -139,15 +135,13 @@ export async function renderBranch() {
     });
   };
   paintTabs();
-  // The basement, at the bottom of the view column: this branch's checkout, as
-  // terminals. Shut unless the last visit left it open.
-  let consolePanel = null;
-  // The agents beside the work, not instead of it: the rail belongs to this
-  // branch, so it is mounted with the surface and torn down with it. Which
-  // bubble is open is the whole surface's business — the row this view reads
-  // carries that agent's conversation, and the review comments Changes sends go
-  // into it — so the choice lives in a handle they share.
-  const agentSelection = createAgentSelection();
+  // Which bubble is open is the whole surface's business — the row this view
+  // reads carries that agent's conversation, and the review comments Changes
+  // sends go into it — so the choice lives in a handle they share. The rail
+  // itself is the shell's, so the handle is taken from there rather than minted
+  // here: a page that minted its own would be talking to a rail that never
+  // heard of it.
+  const agentSelection = shellSelection();
 
   let disposed = false;
   let row = null; // the cached feed row, with the run's own body on it
@@ -177,28 +171,12 @@ export async function renderBranch() {
   const adopterFor = createAdopters(callRpc);
   const adoptingHere = () => adopterFor(branchScope(row, projectId));
 
-  let rail = null;
-  // The work item and the machine it is on — the address the console and the
-  // rail are both mounted at, minted once so the two cannot drift apart.
-  const workAddress = {
-    kind: "branch",
-    deviceId,
-    projectId,
-    branch,
-    call: callRpc,
-    cacheScope: context.cacheScope,
-  };
-  const ensureBranchChrome = () => {
-    if (!consolePanel) consolePanel = mountConsole($("#console-region"), { ...workAddress });
-    if (!rail)
-      rail = mountAgentRail($("#agent-rail"), {
-        ...workAddress,
-        selection: agentSelection,
-        adopting: adoptingHere,
-        autofocusComposer,
-        chatRepository: context.chatRepository,
-      });
-  };
+  // The rail and the console beside this page are the shell's (core/shell.js),
+  // standing on the branch the route names. The one fact the shell cannot know
+  // is who claims the checkout under them: this page holds the single adopter
+  // the rail's first message and the review's first comment both take theirs
+  // from, so it is handed over rather than built a second time.
+  const ensureBranchChrome = () => refineShell({ adopting: adoptingHere });
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:
    *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
@@ -494,8 +472,6 @@ export async function renderBranch() {
     clearToolbarVerb(paintFinish);
     if (pane) pane.dispose();
     pane = null;
-    rail?.dispose();
-    consolePanel?.dispose();
     deviceStrip();
   };
   // The cache already carries this branch's row — ids, scope, agents, and the
@@ -512,9 +488,11 @@ export async function renderBranch() {
       paintFinish();
     }
   }
-  if (!row || row.is_git !== false) {
-    ensureBranchChrome();
-  }
+  // A folder that is not a repository yet has no conversation to hold and no
+  // checkout to open terminals in, so the shell's parts come down rather than
+  // standing empty over the Initialize Git offer.
+  if (!row || row.is_git !== false) ensureBranchChrome();
+  else dropShell();
   refresh();
   if (disposed) return;
   // A deep link can land before this machine has any records — a reload, a

@@ -10,7 +10,15 @@ export function isSettingsRoute(route) {
   return route.name === "device" || route.name === "account";
 }
 
-/** Settings owns an overlay; the previous work surface remains behind it. */
+/**
+ * Settings owns an overlay; the page behind it stays mounted and running.
+ *
+ * "Over" has to mean it. The reader pressed Settings from somewhere, and that
+ * somewhere — its rail, its console sessions, its scroll, every read it holds —
+ * is still theirs when they close. So this returns its own teardown rather than
+ * claiming `App.viewDispose`: that slot belongs to the page underneath, which
+ * never went away and must not be torn down by a modal opening over it.
+ */
 export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   const previousFocus = document.activeElement;
   const background = document.querySelector("#shell") || document.querySelector("#root");
@@ -127,7 +135,7 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   };
   document.addEventListener("keydown", onKeydown, true);
   const unsubscribe = onDeviceStateChanged(paintSidebar);
-  App.viewDispose = () => {
+  const dispose = () => {
     generation += 1;
     disposePanel?.();
     unsubscribe();
@@ -139,6 +147,7 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   };
   void select(selected);
   scrim.querySelector("[data-settings-close]").focus();
+  return dispose;
 }
 
 function trapFocus(container, event) {

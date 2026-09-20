@@ -3,8 +3,10 @@
 //
 // Thin by design — the surface itself is core/issueView.js, which owns its
 // poll, its repaint freeze, the doc-comment layer and the worktree/agent
-// assignment control. This file is the route's host: it names the issue, keeps
-// the URL on the open stage, and mounts the rail and the console beside it.
+// assignment control. This file is the route's host: it names the issue and
+// keeps the URL on the open stage. The rail and the console beside it are the
+// shell's (core/shell.js) — this page reads the selection it has to share with
+// them and mounts neither.
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
@@ -14,9 +16,7 @@ import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
 import { mountIssueView } from "../core/issueView.js";
-import { mountConsole } from "../core/console.js";
-import { mountAgentRail } from "../core/agentRail.js";
-import { createAgentSelection } from "../core/agentSelection.js";
+import { shellSelection } from "../core/shell.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
 
@@ -60,22 +60,11 @@ export async function renderIssue() {
     history.replaceState(null, "", hashFromRoute(App.route));
   };
 
-  // The work item and the machine it is on — the address the console and the
-  // rail are both mounted at, minted once so the two cannot drift apart.
-  const workAddress = { kind: "issue", deviceId, projectId, issueId: id, call: callRpc, cacheScope: context.cacheScope };
-  // An issue's agent runs in the project's own checkout, so that is the
-  // directory its console opens terminals in.
-  const consolePanel = mountConsole($("#console-region"), { ...workAddress });
-  // An issue carries exactly one agent session, and this is where you talk to
-  // it — including the first message, which is what starts it. The surface
-  // beside the rail reads and writes that same conversation, so both are given
-  // the one handle that says which agent it is.
-  const agentSelection = createAgentSelection();
-  const rail = mountAgentRail($("#agent-rail"), {
-    ...workAddress,
-    selection: agentSelection,
-    chatRepository: context.chatRepository,
-  });
+  // An issue carries exactly one agent session, and the rail beside this page is
+  // where you talk to it — including the first message, which is what starts it.
+  // The surface below reads and writes that same conversation, so it takes the
+  // shell's handle for which agent it is rather than minting a second one.
+  const agentSelection = shellSelection();
 
   const view = mountIssueView($("#tabbody"), {
     issueId: id,
@@ -111,8 +100,6 @@ export async function renderIssue() {
   App.poll = view.poll;
   App.viewDispose = () => {
     view.dispose();
-    rail.dispose();
-    consolePanel.dispose();
     deviceStrip();
   };
 }

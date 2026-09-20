@@ -15,6 +15,7 @@ import { renderResolving } from "./views/resolving.js";
 import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
+import { standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
 import { routeChanged } from "./core/cacheSync.js";
@@ -83,6 +84,9 @@ export const App = {
 export function resetApplication() {
   App.accountEpoch += 1;
   settingsReturnRoute = { name: "inbox" };
+  modalDispose?.();
+  modalDispose = null;
+  mountedRoute = null;
   routeAttempt += 1;
   pendingLeaveDecision = null;
   App.routeLeaveGuard = null;
@@ -290,6 +294,7 @@ function followRouteDevice() {
  */
 export function unmountView() {
   App.routeLeaveGuard = null;
+  mountedRoute = null;
   if (App.poll) {
     App.poll.dispose();
     App.poll = null;
@@ -305,20 +310,68 @@ export function unmountView() {
 }
 
 let settingsReturnRoute = { name: "inbox" };
+// The page standing in #root, as the route that built it. Null when nothing is
+// mounted; the answer to "is the reader already here?", which is what closing a
+// modal has to ask before it rebuilds a page that never went away.
+let mountedRoute = null;
+// The open modal's teardown, which is NOT App.viewDispose: that slot belongs to
+// the page underneath, and a modal that claimed it would tear that page down.
+let modalDispose = null;
+
+const sameRoute = (a, b) => Boolean(a) && Boolean(b) && JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Settings, the account and a device's settings are configuration rather than
+ * a place to stand, so they open OVER the page the reader was on.
+ *
+ * A URL may still name one for a deep link. Landing on one cold has no page
+ * under it, so the page it will close back to is stood up first: closing lands
+ * somewhere real, and the frame behind the scrim is never bare.
+ */
+function openSettingsOver() {
+  if (!mountedRoute) {
+    const opened = App.route;
+    App.route = settingsReturnRoute;
+    renderPage();
+    App.route = opened;
+  }
+  if (modalDispose) return; // already open — the modal owns which section shows
+  modalDispose = renderSettingsModal(settingsReturnRoute);
+}
+
+/** Shut the modal, and say whether there was one. */
+function closeSettings() {
+  if (!modalDispose) return false;
+  modalDispose();
+  modalDispose = null;
+  return true;
+}
 
 export function render() {
-  unmountView();
   if (isSettingsRoute(App.route)) {
-    renderSettingsModal(settingsReturnRoute);
+    openSettingsOver();
     return;
   }
+  // Closing a modal is not a navigation: the page under it never left, so it is
+  // not built again around the same rail, the same reads and the same scroll.
+  if (closeSettings() && sameRoute(mountedRoute, App.route)) return;
+  renderPage();
+}
+
+function renderPage() {
+  unmountView();
   settingsReturnRoute = { ...App.route };
   inboxRouteChanged(); // keep the rail tracking the route
   toolbarRouteChanged(); // …and the toolbar naming where you are standing
+  // …and the conversation rail and console standing on what this route is OF
+  // (core/shell.js). Before the page paints, not after and not by the page: a
+  // page that mounted its own rail could forget one, and the issue page did.
+  standShell(App.route);
   followRouteDevice(); // …and the terminals typing at the machine it names
   // The shell's grid owns the columns; #root is one cell. A view states its own
   // chrome (`surface` for a full-height work surface, nothing for a reading
   // page), so the outgoing view's never leaks into the incoming one.
   $("#root").className = "";
+  mountedRoute = { ...App.route };
   (VIEWS[App.route.name] || renderInbox)();
 }

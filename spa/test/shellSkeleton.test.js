@@ -291,10 +291,30 @@ describe("render dispatch", () => {
     render();
     await flush();
     expect(document.querySelector("#dir-rail").children.length).toBeGreaterThan(0);
-    App.route = { name: "account", page: "settings" };
+    App.route = { name: "inbox" };
     render();
     expect(document.getElementById("console-region").innerHTML).toBe("");
+    expect(document.querySelector("#dir-rail").children.length).toBe(0);
     expect(App.poll).toBeNull();
+  });
+
+  // Settings is configuration, not a place: it opens OVER the branch and the
+  // branch keeps running underneath. The teardown above is what a NAVIGATION
+  // does; opening a modal is not one, and the console's sessions, the rail and
+  // every read the page holds are still there when it closes.
+  it("opens settings over the standing page without taking it down", async () => {
+    openDevice();
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
+    render();
+    await flush();
+    const console = document.getElementById("console-region").innerHTML;
+    expect(console).not.toBe("");
+    App.route = { name: "account", page: "settings" };
+    render();
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(document.getElementById("console-region").innerHTML).toBe(console);
+    expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
   });
 });
 

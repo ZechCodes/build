@@ -19,8 +19,7 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { esc } from "../core/text.js";
-import { mountProjectAgentRail } from "../core/projectAgentRail.js";
-import { createAgentSelection } from "../core/agentSelection.js";
+import { shellSelection } from "../core/shell.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { clearProjectTabHandler, clearToolbarVerb, setProjectTabHandler, setToolbarVerb } from "../core/toolbar.js";
@@ -28,7 +27,6 @@ import { openCreateWork } from "../core/createWork.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { projectPageModel } from "../core/projectPageModel.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
-import { notifyError } from "../core/notify.js";
 import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { mountIssuesPane } from "../core/trackerIssuesPane.js";
@@ -176,18 +174,6 @@ function openWorkspace(state, workspaceKey) {
   if (row?.route) go(row.route);
 }
 
-/** The project's agent beside the page — the same rail an issue's page mounts
- *  (core/projectAgentRail.js), because it is the shell's, not this page's. */
-async function mountProjectRail(state) {
-  state.rail = await mountProjectAgentRail({
-    context: state.context,
-    route: state.route,
-    selection: state.selection,
-    projectName: state.page.name,
-    disposed: () => state.disposed,
-  });
-}
-
 export async function renderProject() {
   const root = $("#root");
   const route = App.route;
@@ -201,7 +187,7 @@ export async function renderProject() {
     return;
   }
   const state = {
-    route, context, disposed: false, rail: null, selection: createAgentSelection(),
+    route, context, disposed: false, selection: shellSelection(),
     page: projectPageModel(null, route), verb: null,
     tab: tabOf(route), view: route.view || "list", feed: null, issues: null, openTab: null,
   };
@@ -230,9 +216,7 @@ export async function renderProject() {
     unsubscribe();
     deviceStrip();
     state.issues?.dispose();
-    state.rail?.dispose?.();
     clearToolbarVerb(state.verb);
     clearProjectTabHandler(state.openTab);
   };
-  await mountProjectRail(state);
 }

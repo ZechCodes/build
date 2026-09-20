@@ -40,11 +40,35 @@ export const priorityChipHtml = (priority) =>
     ? `<span class="issue-priority issue-priority-${esc(priority)}">${esc(priorityLabel(priority))}</span>`
     : "";
 
-/** Who holds it. Unassigned is a state worth showing rather than a blank: an
- *  issue nobody holds is the one most likely to need somebody. */
+/** Who holds it. Unassigned is a state worth showing rather than a blank: on a
+ *  card and on the issue's own page, where one issue is the subject and "who
+ *  has this" is a question being answered. */
 export const assigneeHtml = (assignee, agentLabels) => {
   const label = assignee ? actorLabel(assignee, agentLabels) : "Unassigned";
   return `<span class="issue-assignee${assignee ? "" : " issue-unassigned"}">${esc(label)}</span>`;
+};
+
+/**
+ * Who holds it, on a LIST row, where the same word on every unheld row is a
+ * word the reader learns to skip.
+ *
+ * So an unheld row says nothing about its assignee and offers the press
+ * instead — quiet until the row is reached, which the stylesheet does rather
+ * than this: an affordance that is not in the markup is one the keyboard and
+ * a screen reader cannot find either.
+ */
+export const rowAssigneeHtml = (assignee, agentLabels) =>
+  assignee
+    ? `<span class="issue-assignee">${esc(actorLabel(assignee, agentLabels))}</span>`
+    : `<span class="issue-assign-cue">Assign</span>`;
+
+/** What the press is called where it cannot be seen. It names the holder when
+ *  there is one, because a control whose visible words are missing from its
+ *  accessible name is one a speech-control user cannot say out loud. */
+export const assignPressLabel = (issue, agentLabels) => {
+  const named = `#${issue?.number ?? ""}`;
+  if (!issue?.assignee) return `Assign ${named}`;
+  return `${named} is assigned to ${actorLabel(issue.assignee, agentLabels)}. Assign it to somebody else`;
 };
 
 /** When it last moved, in the app's own human scale. An unparseable or absent

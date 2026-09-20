@@ -168,22 +168,42 @@ describe("the list", () => {
     expect([...host.querySelectorAll(".issue-number")].map((one) => one.textContent)).toEqual(["#12", "#11"]);
   });
 
-  // Open/closed is independent of the Done column, so a row shows both.
-  it("shows the state and the column as two separate facts", async () => {
+  // #28: the number and the title have line one to themselves, and everything
+  // else is on line two in one order.
+  it("puts the number and the title on the first line, alone", async () => {
     await mount();
-    const closed = host.querySelectorAll(".issue-row")[1];
-    expect(closed.querySelector(".issue-state").classList.contains("issue-state-closed")).toBe(true);
-    expect(closed.querySelector(".issue-status").textContent).toBe("Done");
-    const open = host.querySelectorAll(".issue-row")[0];
-    expect(open.querySelector(".issue-state").classList.contains("issue-state-open")).toBe(true);
-    expect(open.querySelector(".issue-status").textContent).toBe("In progress");
+    const line = host.querySelector(".issue-row .issue-row-open");
+    expect([...line.children].map((one) => one.classList[0])).toEqual(["issue-number", "issue-title"]);
+    expect(line.querySelector(".issue-title").textContent).toBe("Kanban drag does not persist");
   });
 
-  it("draws the labels and who holds it", async () => {
+  it("puts the column, the age, the labels and the holder on the second", async () => {
     await mount();
-    expect(host.querySelector(".issue-label").textContent).toBe("bug");
-    expect(host.querySelector(".issue-assign").textContent.trim()).toBe("You");
-    expect(host.querySelectorAll(".issue-assign")[1].textContent.trim()).toBe("Unassigned");
+    const facts = host.querySelector(".issue-row .issue-row-facts");
+    expect([...facts.children].map((one) => one.classList[0]))
+      .toEqual(["issue-status", "issue-age", "issue-label", "issue-assign"]);
+    expect(facts.querySelector(".issue-status").textContent).toBe("In progress");
+    expect(facts.querySelector(".issue-label").textContent).toBe("bug");
+    expect(facts.querySelector(".issue-assign").textContent.trim()).toBe("You");
+  });
+
+  // The coloured state dot went with the dots (#28). The board card, the
+  // agent's entry and the issue's own page still carry it.
+  it("draws no state dot and no separators on a row", async () => {
+    await mount();
+    const rows = host.querySelectorAll(".issue-row");
+    expect([...rows].some((one) => one.querySelector(".issue-state"))).toBe(false);
+    expect([...rows].some((one) => one.querySelector(".issue-sep"))).toBe(false);
+  });
+
+  // An unheld row says nothing rather than saying "Unassigned" — but the press
+  // is still there, offering the word it would act on.
+  it("says nothing about an assignee nobody is, and still offers the press", async () => {
+    await mount();
+    const unheld = host.querySelectorAll(".issue-row")[1];
+    expect(unheld.textContent).not.toContain("Unassigned");
+    expect(unheld.querySelector(".issue-assignee")).toBeNull();
+    expect(unheld.querySelector(".issue-assign").textContent.trim()).toBe("Assign");
   });
 
   it("opens each row on that issue's page, on the machine the project is on", async () => {
@@ -290,10 +310,13 @@ describe("the board", () => {
   });
 
   // The other half of the complaint: five columns and an open/closed mark with
-  // no legend.
+  // no legend. The list row dropped its mark with the dots (#28), so the board
+  // — where the mark still is — is where this is now asked.
   it("says on the open/closed mark that it moves independently of the column", async () => {
     await mount();
-    expect(host.querySelector(".issue-state").getAttribute("title"))
+    host.querySelector('[data-issue-view="board"]').click();
+    await flush();
+    expect(host.querySelector(".issue-card .issue-state").getAttribute("title"))
       .toContain("The two move independently");
   });
 

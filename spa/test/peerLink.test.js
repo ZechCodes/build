@@ -180,6 +180,68 @@ describe("openPeerLink", () => {
     expect(peer.remoteCandidates).toEqual([fromTheBridge]);
   });
 
+  // #31: a relay pair should not win the race on the same network. ICE nominates
+  // the first pair that connects and never re-nominates, and the browser is the
+  // offerer — so the browser is the controlling agent and this check list is
+  // where the race is lost. The only lever a browser has is WHEN a candidate
+  // enters a check list, at both doors.
+  it("holds relay candidates behind the direct ones, in both directions, while the race is on", async () => {
+    vi.useFakeTimers();
+    try {
+      const { peer: peerOf, signalled, candidateSinks } = stand();
+      await vi.advanceTimersByTimeAsync(0);
+      const peer = peerOf();
+      const rtcIce = () => signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params.candidate.candidate);
+
+      const host = "candidate:1 1 udp 1 10.0.0.2 5000 typ host";
+      const relay = "candidate:2 1 udp 1 203.0.113.9 3478 typ relay raddr 0.0.0.0 rport 0";
+      peer.gather({ type: "relay", candidate: relay, toJSON: () => ({ candidate: relay }) });
+      peer.gather({ type: "host", candidate: host, toJSON: () => ({ candidate: host }) });
+      candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: relay, sdpMid: "0" } });
+      candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: host, sdpMid: "0" } });
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The direct candidate is on the wire and in the check list; the relay one
+      // is in neither, though it was gathered and received first.
+      expect(rtcIce()).toEqual([host]);
+      expect(peer.remoteCandidates.map((one) => one.candidate)).toEqual([host]);
+
+      // Nothing is dropped: TURN is what makes a symmetric NAT reachable at all,
+      // and a browser that withheld it would turn a billed connection into none.
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(rtcIce()).toEqual([host, relay]);
+      expect(peer.remoteCandidates.map((one) => one.candidate)).toEqual([host, relay]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops holding once something is carrying: a late relay candidate is not delayed", async () => {
+    vi.useFakeTimers();
+    try {
+      const stood = stand();
+      await vi.advanceTimersByTimeAsync(0);
+      const peer = stood.peer();
+      peer.channels.get("app").open();
+      peer.channels.get("term").open();
+      peer.connectionState = "connected";
+      peer.emit("connectionstatechange");
+      await vi.advanceTimersByTimeAsync(0);
+      await stood.link;
+
+      const relay = "candidate:9 1 udp 1 203.0.113.9 3478 typ relay";
+      peer.gather({ type: "relay", candidate: relay, toJSON: () => ({ candidate: relay }) });
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The race is decided; delaying a relay candidate now buys nothing, and a
+      // session that later needs TURN to survive a restart wants all of them.
+      expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Which way the connection ended up carrying is the one thing about it the
   // reader cannot see, and the bridge writes the same classification on its
   // own side, so the two ends can be read against each other.

@@ -1,5 +1,6 @@
 import { openCarrier, peerFrames } from "./carrier.js";
-import { classifyTransportPath } from "./transportPath.js";
+import { classifyTransportPath, TURN } from "./transportPath.js";
+import { createRelayHold } from "./iceCandidates.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 const CHANNELS = [["app", 0], ["term", 1]];
@@ -67,14 +68,35 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const ensureActive = () => {
     if (torn) throw blockedBy("failed", "the peer connection closed");
   };
+  // Relay candidates are held behind the direct ones at BOTH doors (issue #31).
+  // One hold per direction, because the two check lists are different lists: ours
+  // is built from the candidates the bridge sends us, and the bridge's from the
+  // ones we send it. Holding only our own outgoing candidates would tidy the
+  // bridge's race and leave the browser's — and the browser is the offerer, so
+  // the browser is the controlling agent, and nomination is the browser's.
+  const holdInbound = createRelayHold({
+    deliver: (candidate) => {
+      if (torn) return;
+      peer.addIceCandidate(candidate).catch(() => diagnostic("candidate-failed", { direction: "remote" }));
+    },
+  });
+  const holdOutbound = createRelayHold({
+    deliver: (gathered) => {
+      if (torn) return;
+      // Held as the RTCIceCandidate — that is the shape whose `type` the hold
+      // reads — and serialised only on the way out, because `toJSON` does not
+      // carry it.
+      const candidate = gathered.toJSON ? gathered.toJSON() : gathered;
+      signal("rtc.ice", { candidate }).catch(() => diagnostic("candidate-failed", { direction: "local" }));
+    },
+  });
   const unsubscribe = onPush((push) => {
     if (push.type !== "rtc.ice" || torn) return;
-    peer.addIceCandidate(push.candidate).catch(() => diagnostic("candidate-failed", { direction: "remote" }));
+    holdInbound.offer(push.candidate);
   });
   const outgoingCandidate = (event) => {
     if (!event.candidate || torn) return;
-    const candidate = event.candidate.toJSON ? event.candidate.toJSON() : event.candidate;
-    signal("rtc.ice", { candidate }).catch(() => diagnostic("candidate-failed", { direction: "local" }));
+    holdOutbound.offer(event.candidate);
   };
   peer.addEventListener("icecandidate", outgoingCandidate);
   /** What ICE says about this path, for everything riding it to read. The
@@ -110,6 +132,8 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     cancelWait();
     stopWatching();
     recovery.clear();
+    holdInbound.close();
+    holdOutbound.close();
     unsubscribe();
     for (const stopObserving of observed.splice(0)) stopObserving();
     peer.removeEventListener("icecandidate", outgoingCandidate);
@@ -127,6 +151,12 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive, true);
     }, (cancel) => (cancelWait = cancel));
     readIceState();
+    // The race this hold was protecting is decided: a relay candidate arriving
+    // now cannot displace what is already nominated, so there is nothing left to
+    // buy by delaying it — and a session that later needs TURN to survive an ICE
+    // restart wants every candidate it can get.
+    holdInbound.stopHolding();
+    holdOutbound.stopHolding();
     diagnostic("connected", { phase: "initial" });
     await sampleTransportPath();
   } catch (error) {

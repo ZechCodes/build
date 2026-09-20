@@ -53,6 +53,20 @@ function delimiterAlignments(line) {
   return alignments;
 }
 
+/**
+ * The class every fenced block this renderer emits wears.
+ *
+ * Stamped here rather than styled through whichever wrapper a view happens to
+ * use, because the views do not agree: some wrap the output in `.markdown` and
+ * some do not, and a rule hung on that class would fix the chat and miss the
+ * issue page's docs. A bare `pre` rule would reach further than markdown — the
+ * terminal, the diff view, the revision pane all use one.
+ *
+ * So the renderer marks its own output (#50). Wherever it is rendered, the
+ * block scrolls; nothing else does.
+ */
+export const CODE_BLOCK_CLASS = "md-code";
+
 // eslint-disable-next-line complexity -- ratchet: renderMarkdown is at 18, cap 10 — reduce it, then drop this line
 export function renderMarkdown(markdown) {
   const lines = (markdown || "").split("\n");
@@ -105,7 +119,7 @@ export function renderMarkdown(markdown) {
     const line = lines[lineIndex];
     if (line.startsWith("```")) {
       inCode = !inCode;
-      html += inCode ? "<pre><code>" : "</code></pre>";
+      html += inCode ? `<pre class="${CODE_BLOCK_CLASS}"><code>` : "</code></pre>";
       continue;
     }
     if (inCode) {

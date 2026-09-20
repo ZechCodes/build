@@ -49,7 +49,7 @@ describe("renderMarkdown", () => {
 
   it("renders fenced code blocks verbatim (escaped)", () => {
     const html = renderMarkdown("```\n<script>alert(1)</script>\n```");
-    expect(html).toContain("<pre><code>");
+    expect(html).toContain('<pre class="md-code"><code>');
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain("<script>");
   });

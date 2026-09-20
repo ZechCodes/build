@@ -235,6 +235,7 @@
 .issue-page-title { margin:0 0 8px; font-size:20px; line-height:1.25; color:var(--ink); }
 .issue-page-labels { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px; }
 .issue-page-body {
+  min-width:0;
   background:var(--panel2); border-radius:10px; padding:12px 14px; margin:0 0 20px;
 }
 .issue-page-body.empty { color:var(--dim); font-style:italic; }
@@ -252,7 +253,9 @@
   background:var(--panel); border:1px solid var(--line2); border-radius:10px; padding:9px 12px;
 }
 .issue-entry-head { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; font-size:12px; color:var(--ink2); }
-.issue-comment-body { color:var(--ink); }
+/* min-width:0 so a fenced block inside scrolls instead of widening the
+   column it is in (#50). */
+.issue-comment-body { min-width:0; color:var(--ink); }
 
 /* History is drawn quieter than a comment — but never hidden: "the board moved
    and nobody said anything" is exactly what a timeline is for. */

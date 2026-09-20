@@ -77,6 +77,18 @@ export const ISSUE_LINE_ITEMS = [
   action(44, "A short one", "created"),
   notice(45, "Workspace issues as a tab of the workspace page, with the workspace rail beside it", { actor: "user", action: "closed" }),
   message(9, "A normal message after the run."),
+  // #50: a fenced block far wider than a phone. The block must scroll; the
+  // bubble and the column it is in must not grow by a pixel.
+  message(
+    10,
+    [
+      "A message carrying code:",
+      "",
+      "```rust",
+      "let manifest = Manifest::from_parts(&workspace_id, &source_id, &revision).expect(\"the manifest was just built\");",
+      "```",
+    ].join("\n"),
+  ),
 ];
 
 const rendered = () => threadHtml({ id: "c-1", items: ISSUE_LINE_ITEMS }, { place, agentLabels });
@@ -102,6 +114,15 @@ describe("the markup the browser measurement is taken over", () => {
 
   // #42: one screenshot has to show all four, or it cannot show that no two
   // of them look alike.
+  // #50's subject: the measurement needs a line wider than any phone.
+  it("holds a fenced block too wide for a phone", () => {
+    const host = document.createElement("div");
+    host.innerHTML = rendered();
+    const block = host.querySelector("pre.md-code");
+    expect(block).not.toBeNull();
+    expect(block.textContent.split("\n")[0].length).toBeGreaterThan(100);
+  });
+
   it("holds all four kinds at once", () => {
     const host = document.createElement("div");
     host.innerHTML = rendered();

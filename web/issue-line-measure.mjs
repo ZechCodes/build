@@ -134,6 +134,20 @@ async function measure(width, label) {
         // the plain messages sit — they do not all bracket the run, and an
         // earlier version of this measured two rows that were nowhere near
         // each other and reported -455.
+        // #50: a fenced block scrolls; nothing around it grows. `scrollWidth`
+        // past `clientWidth` on the block is it scrolling; the same on any
+        // ancestor is it having escaped instead.
+        code: [...host.querySelectorAll("pre.md-code")].map((block) => {
+          const card = block.closest(".thread-comment-card") || block.parentElement;
+          const grew = (el) => (el ? el.scrollWidth > el.clientWidth + 1 : false);
+          return {
+            scrolls: grew(block),
+            blockWidth: Math.round(box(block).width),
+            cardGrew: grew(card),
+            columnGrew: grew(host),
+            widerThanColumn: Math.round(box(block).right) > Math.round(timeline.right) + 1,
+          };
+        }),
         gapsToMessages: [...host.children].flatMap((el, index, all) => {
           const next = all[index + 1];
           if (!next) return [];
@@ -173,6 +187,15 @@ async function measure(width, label) {
       `${label}: a real message either side keeps its gap — ${found.gapsToMessages.join(", ")}`,
     );
     record(!found.lines.some((l) => l.overflows), `${label}: nothing overflows its row`);
+    record(found.code.length > 0, `${label}: there is a code block to measure — ${found.code.length}`);
+    record(
+      found.code.every((c) => c.scrolls),
+      `${label}: the code block scrolls — ${found.code.map((c) => `${c.blockWidth}px`).join(", ")}`,
+    );
+    record(
+      found.code.every((c) => !c.cardGrew && !c.columnGrew && !c.widerThanColumn),
+      `${label}: and nothing around it grew — card ${found.code.map((c) => c.cardGrew)}, column ${found.code.map((c) => c.columnGrew)}, past the edge ${found.code.map((c) => c.widerThanColumn)}`,
+    );
     // The point of #49: with the title gone the whole line fits, even at 390.
     record(
       !found.lines.some((l) => l.clipped),

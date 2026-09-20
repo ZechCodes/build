@@ -78,15 +78,18 @@ if (!existsSync(`${REPO}/deploy/compose.real.yml`)) {
 const timing = (() => {
   const rpc = readFileSync(`${REPO}/spa/src/core/sessionRpc.js`, "utf8");
   const liveness = readFileSync(`${REPO}/spa/src/core/pathLiveness.js`, "utf8");
-  const read = (source, name) => {
-    const found = source.match(new RegExp(`${name}\\s*=\\s*(\\d+)`));
+  // One literal pattern per constant rather than one built from its name: a
+  // regex assembled from a variable is a finding even when the variable is a
+  // constant three lines up, and three literals are no harder to read.
+  const read = (source, name, pattern) => {
+    const found = source.match(pattern);
     if (!found) throw new Error(`no ${name} in the SPA — this check needs it`);
     return Number(found[1]);
   };
   return {
-    pathDeadline: read(rpc, "DEFAULT_RPC_TIMEOUT_MS"),
-    ping: read(liveness, "PING_TIMEOUT_MS"),
-    frameProof: read(liveness, "FRAME_PROOF_OF_LIFE_MS"),
+    pathDeadline: read(rpc, "DEFAULT_RPC_TIMEOUT_MS", /DEFAULT_RPC_TIMEOUT_MS\s*=\s*(\d+)/),
+    ping: read(liveness, "PING_TIMEOUT_MS", /PING_TIMEOUT_MS\s*=\s*(\d+)/),
+    frameProof: read(liveness, "FRAME_PROOF_OF_LIFE_MS", /FRAME_PROOF_OF_LIFE_MS\s*=\s*(\d+)/),
   };
 })();
 /** What the old behaviour cost: SCTP gave up on its retransmits after about

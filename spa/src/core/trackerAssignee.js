@@ -209,3 +209,38 @@ export function assignParams(issueId, option, extras = {}) {
  *  option that dispatches says so; the two that do not say that too, because
  *  "nothing starts" is the fact a reader most needs before pressing. */
 export const optionConsequence = (option) => option?.hint || "";
+
+/**
+ * Whether choosing this option makes the caller WAIT on real work.
+ *
+ * Cutting a workspace is git on a real repository, and an agent cannot exist
+ * until the checkout is ready — so `issues.assign` with `new_workspace` defers
+ * and its reply arrives once the cut, the agent and the delivery have all
+ * happened. Seconds on a small repository, minutes on a large one. Every other
+ * kind is a write and a lookup and answers in milliseconds.
+ *
+ * The answer's shape does not change either way, so this is a fact about how
+ * the control should LOOK while it waits, and nothing else reads it.
+ */
+export const optionWaitsOnAWorkspace = (option) => option?.kind === "new_workspace";
+
+/**
+ * A refusal, in words the reader can act on.
+ *
+ * `new_workspace` goes down `workspace.create`'s own path, so that call's
+ * refusals surface here — and one of them is worth saying differently. The
+ * machine holding its filesystem for something else is not a mistake anybody
+ * made: nothing was written, the issue is untouched, and pressing again is the
+ * whole of the fix. So it says that, rather than handing over a sentence about
+ * filesystem operations that the reader has to decode into "try again".
+ *
+ * Everything else is the bridge's own words, which are written for a reader
+ * already.
+ */
+export function assignRefusalText(message) {
+  const said = String(message || "").trim();
+  if (/another filesystem operation is still running/i.test(said)) {
+    return "This machine is busy with another checkout. Nothing was assigned — try again in a moment.";
+  }
+  return said;
+}

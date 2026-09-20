@@ -213,6 +213,10 @@
 }
 /* Assigning starts work. The reader is told which before they press. */
 .issue-assignee-hint { margin:2px 0 6px; font-size:11px; color:var(--dim); min-height:1.2em; }
+/* And while the slow one runs, what is being waited on: cutting a checkout is
+   minutes on a large repository, and a dialog that says nothing for minutes
+   reads as a hung one. */
+.issue-assign-waiting { margin:6px 0 0; font-size:11px; color:var(--ink2); }
 
 .modal-issue-new textarea {
   font:inherit; width:100%; resize:vertical;

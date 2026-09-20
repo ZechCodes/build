@@ -14,10 +14,12 @@
 import { esc, messageOf } from "./text.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 import { PRIORITIES } from "./trackerModel.js";
+import { assignRefusalText } from "./trackerAssignee.js";
 import {
   assigneeControlHtml,
   draftAssignee,
   draftStartsWork,
+  draftWaitsOnAWorkspace,
   emptyAssigneeDraft,
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
@@ -36,10 +38,21 @@ const priorityOptionsHtml = (chosen) =>
     (priority) => `<option value="${esc(priority.id)}"${priority.id === chosen ? " selected" : ""}>${esc(priority.label)}</option>`,
   ).join("");
 
+/** Filing is instant; the workspace an assignee may ask for is not — and
+ *  `issues.create` runs the whole of `issues.assign` inside its own
+ *  transaction, so a create that cuts a checkout waits for it exactly as the
+ *  picker does. The press says which of the two is happening. */
 const pressLabel = (state) => {
-  if (state.busy) return "filing…";
+  if (state.busy) return waitingOnAWorkspace(state) ? "cutting the workspace…" : "filing…";
   return draftStartsWork(state.options, state.draft) ? "File and start" : "File issue";
 };
+
+const waitingOnAWorkspace = (state) => draftWaitsOnAWorkspace(state.options, state.draft);
+
+const waitingHtml = (state) =>
+  state.busy && waitingOnAWorkspace(state)
+    ? `<p class="sub issue-assign-waiting" role="status">Filing the issue, cutting the checkout and starting the agent. This can take a minute on a large repository.</p>`
+    : "";
 
 export function createIssueBodyHtml(state) {
   return `<h3>New issue in ${esc(state.projectName)}</h3>
@@ -53,6 +66,7 @@ export function createIssueBodyHtml(state) {
     <select id="${PREFIX}-priority"${state.busy ? " disabled" : ""}>${priorityOptionsHtml(state.priority)}</select>
     ${assigneeControlHtml(state.options, state.draft, { prefix: PREFIX, catalog: state.catalog })}
     <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
+    ${waitingHtml(state)}
     <div class="row create-row">
       <button class="btn" data-create-cancel type="button"${state.busy ? " disabled" : ""}>Cancel</button>
       <button class="btn primary" data-create-go type="button"${state.busy ? " disabled" : ""}>${esc(pressLabel(state))}</button>
@@ -138,7 +152,7 @@ export function openCreateIssue({ projectId, projectName, options, catalog = nul
     } catch (error) {
       if (dismissed) return;
       state.busy = false;
-      state.error = messageOf(error);
+      state.error = assignRefusalText(messageOf(error));
       paint();
     }
   };

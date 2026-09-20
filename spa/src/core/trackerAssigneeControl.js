@@ -14,7 +14,7 @@
 import { esc } from "./text.js";
 import { NO_AGENT_CHOICE, agentChoicePanelHtml, agentChoiceParams, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { isolationOptionsHtml } from "./isolation.js";
-import { WORKSPACE_FORM, assignParams } from "./trackerAssignee.js";
+import { WORKSPACE_FORM, assignParams, optionWaitsOnAWorkspace } from "./trackerAssignee.js";
 
 /** Nothing chosen: the control opens on whatever the caller says is current. */
 export const emptyAssigneeDraft = (optionId = "none") => ({
@@ -156,3 +156,8 @@ export const draftStartsWork = (options, draft) => {
   const option = optionOf(options, draft.optionId);
   return Boolean(option) && option.kind !== "unassign" && option.kind !== "user";
 };
+
+/** Whether this draft is the one that makes the caller wait on a checkout
+ *  being cut. What tells a dialog doing minutes of real work from a hung one. */
+export const draftWaitsOnAWorkspace = (options, draft) =>
+  optionWaitsOnAWorkspace(optionOf(options, draft.optionId));

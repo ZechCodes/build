@@ -12,10 +12,12 @@
 
 import { esc, messageOf } from "./text.js";
 import { modalDialogHtml, openModal } from "./modal.js";
+import { assignRefusalText } from "./trackerAssignee.js";
 import {
   assigneeControlHtml,
   draftAssignParams,
   draftStartsWork,
+  draftWaitsOnAWorkspace,
   emptyAssigneeDraft,
   readAssigneeDraft,
   wireAssigneeControl,
@@ -23,10 +25,30 @@ import {
 
 const PREFIX = "issue-assign";
 
+/**
+ * What the press says.
+ *
+ * Idle, it says what it is about to do. Working, it says what is actually
+ * being waited on: cutting a checkout is the slowest thing in the tracker —
+ * seconds on a small repository, minutes on a large one — and a button that
+ * says "assigning…" for two minutes reads as a hung dialog rather than as
+ * work happening. Every other kind answers in milliseconds and nobody reads
+ * its label at all.
+ */
 const pressLabel = (state) => {
-  if (state.busy) return "assigning…";
+  if (state.busy) return waitingOnAWorkspace(state) ? "cutting the workspace…" : "assigning…";
   return draftStartsWork(state.options, state.draft) ? "Assign and start" : "Assign";
 };
+
+const waitingOnAWorkspace = (state) => draftWaitsOnAWorkspace(state.options, state.draft);
+
+/** The line under a press that is going to be held for a while. It says what
+ *  is happening and that leaving is safe, because the two questions a reader
+ *  asks of a dialog that has not moved are "is it stuck" and "can I go". */
+const waitingHtml = (state) =>
+  state.busy && waitingOnAWorkspace(state)
+    ? `<p class="sub issue-assign-waiting" role="status">Cutting the checkout and starting the agent. This can take a minute on a large repository.</p>`
+    : "";
 
 const titleOf = (issue) => `Assign #${issue.number ?? ""}`;
 
@@ -37,6 +59,7 @@ export function assigneePickerBodyHtml(state) {
     <label class="create-label" for="${PREFIX}-note">Note <span class="sub">(delivered with the issue, not stored on it)</span></label>
     <textarea id="${PREFIX}-note" rows="2" placeholder="Anything the issue itself does not say">${esc(state.note)}</textarea>
     <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
+    ${waitingHtml(state)}
     <div class="row create-row">
       <button class="btn" data-assign-cancel type="button"${state.busy ? " disabled" : ""}>Cancel</button>
       <button class="btn primary" data-assign-go type="button"${state.busy ? " disabled" : ""}>${esc(pressLabel(state))}</button>
@@ -95,7 +118,10 @@ export function openAssigneePicker({ issue, options, current = "none", catalog =
     } catch (error) {
       if (dismissed) return;
       state.busy = false;
-      state.error = messageOf(error);
+      // Nothing was written: a failed cut leaves the issue unassigned, in its
+      // old column, with no events. There is nothing to reconcile — the dialog
+      // stays up with the draft intact, so pressing again IS the retry.
+      state.error = assignRefusalText(messageOf(error));
       paint();
     }
   };

@@ -7,7 +7,7 @@
 // open the harness/model/effort selects.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assigneeOptions, workspaceAgents } from "../src/core/trackerAssignee.js";
+import { assignRefusalText, assigneeOptions, workspaceAgents } from "../src/core/trackerAssignee.js";
 import { openAssigneePicker } from "../src/core/trackerAssigneePicker.js";
 import { createIssueParams, labelsFromText, openCreateIssue } from "../src/core/trackerCreate.js";
 import { issue } from "./trackerWireFixture.js";
@@ -268,5 +268,133 @@ describe("the create params on their own", () => {
   it("leaves the default priority off, because the verb's default is the record's", () => {
     const state = { projectId: "p1", title: "x", body: "", labels: "", priority: "none" };
     expect(createIssueParams(state, null)).toEqual({ project_id: "p1", title: "x" });
+  });
+});
+
+// `issues.assign` with `new_workspace` defers: cutting a checkout is real git,
+// and the agent cannot exist until it is ready. The reply shape is unchanged —
+// every id filled in, no pending placeholder — but the wait is seconds to
+// minutes, where every other kind answers in milliseconds.
+describe("the one kind that makes you wait", () => {
+  /** A call that never settles, so the dialog can be read mid-flight. */
+  const held = () => {
+    let settle;
+    const call = vi.fn(() => new Promise((resolve) => { settle = resolve; }));
+    return { call, settle: (answer) => settle(answer) };
+  };
+
+  const open = (over = {}) => {
+    handle = openAssigneePicker({
+      issue: issue({ id: "issue-1", number: 12 }),
+      options: options(),
+      current: "none",
+      catalog: CATALOG,
+      callRpc: call,
+      ...over,
+    });
+    return handle;
+  };
+
+  const pressText = () => document.querySelector("[data-assign-go]").textContent;
+
+  it("says what it is waiting on rather than just that it is busy", async () => {
+    const wire = held();
+    open({ callRpc: wire.call });
+    await choose("new_workspace");
+    press("[data-assign-go]");
+    await flush();
+    expect(pressText()).toBe("cutting the workspace…");
+    expect(document.querySelector(".issue-assign-waiting").textContent)
+      .toContain("This can take a minute on a large repository");
+  });
+
+  // Every other kind is a write and a lookup; nobody reads its label.
+  it("says only that it is assigning for the kinds that answer at once", async () => {
+    const wire = held();
+    open({ callRpc: wire.call });
+    await choose("project_agent");
+    press("[data-assign-go]");
+    await flush();
+    expect(pressText()).toBe("assigning…");
+    expect(document.querySelector(".issue-assign-waiting")).toBeNull();
+  });
+
+  it("says nothing about waiting before the press", async () => {
+    open();
+    await choose("new_workspace");
+    expect(pressText()).toBe("Assign and start");
+    expect(document.querySelector(".issue-assign-waiting")).toBeNull();
+  });
+
+  // A failed cut writes nothing at all — the issue stays unassigned, in its old
+  // column, with no events — so there is nothing to reconcile and pressing
+  // again IS the retry.
+  it("keeps the draft and the dialog when the cut is refused", async () => {
+    call = vi.fn(async () => {
+      throw new Error("another filesystem operation is still running");
+    });
+    open({ callRpc: call });
+    await choose("new_workspace");
+    press("[data-assign-go]");
+    await flush();
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector("[data-assign-go]").disabled).toBe(false);
+    expect(pressText()).toBe("Assign and start");
+  });
+
+  it("puts that refusal in words the reader can act on", () => {
+    expect(assignRefusalText("another filesystem operation is still running"))
+      .toBe("This machine is busy with another checkout. Nothing was assigned — try again in a moment.");
+  });
+
+  // Everything else the bridge says is written for a reader already.
+  it("hands every other refusal over in the bridge's own words", () => {
+    expect(assignRefusalText("agent agent-1 is not in project proj-1"))
+      .toBe("agent agent-1 is not in project proj-1");
+  });
+});
+
+// Three things the picker must NOT do, which the dispatch's shape makes easy
+// to get wrong later.
+describe("what the picker leaves to the issue", () => {
+  const openOn = (over = {}) => {
+    handle = openAssigneePicker({
+      issue: issue({ id: "issue-1", number: 12 }),
+      options: options(),
+      current: "none",
+      catalog: CATALOG,
+      callRpc: call,
+      ...over,
+    });
+    return handle;
+  };
+
+  it("never reads workspace_id off the dispatch", async () => {
+    // It is null for every kind but `new_workspace` — only set when the
+    // dispatch MADE the workspace. What a surface wants is
+    // `issue.links.workspace_ids`, which records what was made OR used.
+    const onAssigned = vi.fn();
+    call = vi.fn(async () => ({
+      issue: issue({ id: "issue-1" }),
+      dispatch: { kind: "agent", workspace_id: null, entity_id: "run-1", agent_id: "agent-1", operation_id: "op-1" },
+    }));
+    openOn({ callRpc: call, onAssigned });
+    await choose("agent:agent-1");
+    press("[data-assign-go]");
+    await flush();
+    // The whole answer goes back untouched; nothing here reads into it.
+    expect(onAssigned.mock.calls[0][0].dispatch.workspace_id).toBeNull();
+    handle = null;
+  });
+
+  it("sends no status of its own, so a dispatch moves the card or does not", async () => {
+    // A dispatch moves an issue to In progress only from Backlog or Ready.
+    // The picker never says where the card should land — it assigns, and the
+    // re-read says where the issue ended up.
+    openOn();
+    await choose("project_agent");
+    press("[data-assign-go]");
+    await flush();
+    expect(call.mock.calls[0][1]).not.toHaveProperty("status");
   });
 });

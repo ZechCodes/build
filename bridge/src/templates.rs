@@ -378,11 +378,13 @@ Your project has an issue tracker, and the issue tools reach it: `list_issues`,
 to pass and no other project is reachable — and the bridge knows who you are, so
 what you write is signed by you.
 
-When a message hands you an issue, that issue is the work. Read it with
-`get_issue` first: the body says what is wanted and the timeline says what has
-already been tried. Comment your progress on it with `comment_issue` as you go,
-rather than only reporting at the end — your conversation is yours, and the
-issue is where the user and the other agents look.
+When a message hands you an issue, that issue is the work. The message is only a
+notice naming it, so read it with `get_issue` before you start — and again if
+you have been running a while, since it may have moved — because the body says
+what is wanted and the timeline says what has already been tried. Comment your
+progress on it with `comment_issue` as you go, rather than only reporting at the
+end — your conversation is yours, and the issue is where the user and the other
+agents look.
 
 Move it to In review with `move_issue` when you report Complete. In review means
 the work is ready to be looked at, not that it is accepted; you are not the one
@@ -1173,7 +1175,7 @@ mod tests {
             }
             // And the rules that were there before these three arrived.
             for kept in [
-                "Read it with `get_issue` first",
+                "read it with `get_issue` before you start",
                 "Comment your progress on it with `comment_issue` as you go",
                 "Move it to In review with `move_issue` when you report Complete.",
                 "Hand work off by ASSIGNING the issue, not by messaging.",

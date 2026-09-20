@@ -440,17 +440,22 @@ impl AppState {
     }
 }
 
-/// The issue as the agent reads it in the message body.
+/// What the assignment says: who handed over what, and anything they added.
 ///
-/// The envelope is for a client that can draw an issue card; this is for the
-/// harness, which gets prose or nothing. `#12` and the title first because that
-/// is how the issue is referred to everywhere else.
-pub(in crate::app) fn issue_as_prose(issue: &Issue, note: Option<&str>) -> String {
-    let mut body = format!("#{} {}", issue.number, issue.title);
-    if !issue.body.trim().is_empty() {
-        body.push_str("\n\n");
-        body.push_str(issue.body.trim());
-    }
+/// A notice and not the issue. Copying the issue's text into the conversation
+/// put a snapshot there that goes stale the moment anybody edits the issue —
+/// and that sits in the agent's context being compacted away before the work
+/// even begins. So the agent is told what it has and reads it with `get_issue`
+/// when it is ready to start, which is also when the issue is current.
+pub(in crate::app) fn assignment_notice(
+    issue: &Issue,
+    assigner: &str,
+    note: Option<&str>,
+) -> String {
+    let mut body = format!(
+        "{assigner} assigned you issue #{} — {}",
+        issue.number, issue.title
+    );
     if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
         body.push_str("\n\n");
         body.push_str(note);
@@ -458,13 +463,16 @@ pub(in crate::app) fn issue_as_prose(issue: &Issue, note: Option<&str>) -> Strin
     body
 }
 
-/// The issue as a message wears it.
+/// The issue as a message wears it: enough to name it and link it.
+///
+/// No body, for the reason the notice has none — a card draws the number and
+/// the title, and a copy of the text would be the same stale snapshot by
+/// another route.
 pub(in crate::app) fn envelope_of(issue: &Issue) -> IssueEnvelope {
     IssueEnvelope {
         issue_id: issue.id.clone(),
         number: issue.number,
         title: issue.title.clone(),
-        body: issue.body.clone(),
         links: issue.links.clone(),
     }
 }
@@ -668,6 +676,29 @@ impl AppState {
         Ok(json!({ "issue": answered["issue"], "dispatch": dispatch }))
     }
 
+    /// Who the notice says handed the work over.
+    ///
+    /// An agent is named the way its conversation is named — by the workspace
+    /// it works in, or as the project's agent — rather than by its id, because
+    /// the reader wants to know which of its colleagues is asking and an id is
+    /// something to go and look up. It falls back to the id when Build cannot
+    /// name the owner, which is the same fallback a client makes.
+    ///
+    /// `None` is the human, who the bridge knows no other name for.
+    fn assigner_name(&self, sender: Option<crate::app::AgentSender<'_>>) -> String {
+        let Some(sender) = sender else {
+            return "The user".to_string();
+        };
+        let identity = self.agent_identity(sender.entity_id, sender.agent_id);
+        match identity.owner {
+            Some(owner) if owner.kind == crate::thread::AgentOwnerKind::Project => {
+                format!("The {} project's agent", owner.name)
+            }
+            Some(owner) => format!("The {} agent", owner.name),
+            None => format!("Agent {}", identity.id),
+        }
+    }
+
     /// Deliver an issue into one conversation, with the envelope on it.
     fn post_issue_to_agent(
         &mut self,
@@ -678,6 +709,7 @@ impl AppState {
         operation_id: &str,
         sender: Option<crate::app::AgentSender<'_>>,
     ) -> Result<String, String> {
+        let assigner = self.assigner_name(sender);
         let requester = match sender {
             Some(sender) => Some(self.agent_requester(sender)?),
             None => None,
@@ -686,7 +718,7 @@ impl AppState {
             &json!({
                 "entity_id": entity_id,
                 "agent_id": agent_id,
-                "body": issue_as_prose(issue, note),
+                "body": assignment_notice(issue, &assigner, note),
                 "operation_id": operation_id,
             }),
             envelope_of(issue),

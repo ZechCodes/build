@@ -105,7 +105,6 @@ fn notice_envelope(issue: &Issue) -> IssueEnvelope {
         issue_id: issue.id.clone(),
         number: issue.number,
         title: issue.title.clone(),
-        body: String::new(),
         links: issue.links.clone(),
     }
 }
@@ -284,9 +283,9 @@ mod tests {
         }
     }
 
-    /// The envelope carries no body: a tracker has the issue already, and
-    /// thirty notices each carrying one is thirty copies of what did not
-    /// change.
+    /// The envelope names the issue and does not repeat it: a tracker has the
+    /// issue already, and thirty notices each carrying a copy is thirty copies
+    /// of what did not change.
     #[test]
     fn a_notice_envelope_identifies_the_issue_without_repeating_it() {
         let mut issue = issue();
@@ -294,6 +293,11 @@ mod tests {
         let envelope = notice_envelope(&issue);
         assert_eq!(envelope.number, 13);
         assert_eq!(envelope.title, "Kanban drag");
-        assert!(envelope.body.is_empty(), "the body is not repeated");
+        assert!(
+            !serde_json::to_string(&envelope)
+                .unwrap()
+                .contains("a long description"),
+            "the body is not carried"
+        );
     }
 }

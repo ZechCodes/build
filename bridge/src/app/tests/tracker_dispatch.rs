@@ -149,11 +149,12 @@ fn assigning_to_the_project_agent_records_where_the_work_went() {
     );
 }
 
-/// The delivered message carries the issue twice: as prose for the harness,
-/// which may never learn the field, and as the envelope for a client that can
-/// draw it as a card.
+/// An assignment is a NOTICE, not the issue. The body names who assigned what,
+/// and the envelope identifies it for a client's card — the issue text itself
+/// is never copied into the conversation, so it cannot be sitting there going
+/// stale, or being compacted away, before the work begins.
 #[test]
-fn the_delivered_message_carries_the_issue_as_prose_and_as_an_envelope() {
+fn the_delivered_message_is_a_notice_naming_the_issue_and_not_a_copy_of_it() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -176,9 +177,9 @@ fn the_delivered_message_carries_the_issue_as_prose_and_as_an_envelope() {
         handed["from_issue"]["title"],
         "Kanban drag does not persist"
     );
-    assert_eq!(
-        handed["from_issue"]["body"],
-        "Dragging a card puts it back."
+    assert!(
+        handed["from_issue"]["body"].is_null(),
+        "the envelope identifies the issue, it does not carry it: {handed:?}"
     );
     assert!(handed["from_issue"]["links"].is_object());
     assert_eq!(
@@ -189,12 +190,60 @@ fn the_delivered_message_carries_the_issue_as_prose_and_as_an_envelope() {
         handed["from_agent"].is_null(),
         "the human assigned it, so nobody signed it: {handed:?}"
     );
-    let body = handed["body"].as_str().unwrap();
-    assert!(
-        body.starts_with("#1 Kanban drag does not persist"),
-        "{body}"
+    assert_eq!(
+        handed["body"], "The user assigned you issue #1 — Kanban drag does not persist",
+        "one line, and the issue's own words are not in it"
     );
-    assert!(body.contains("Dragging a card puts it back."), "{body}");
+    assert!(
+        !handed["body"]
+            .as_str()
+            .unwrap()
+            .contains("Dragging a card puts it back."),
+        "the issue body is read with get_issue, not delivered: {handed:?}"
+    );
+}
+
+/// An agent that assigns is named the way the conversation names it, so the
+/// reader knows which of its colleagues is asking rather than being handed an
+/// id to go and look up.
+#[test]
+fn an_agent_that_assigns_is_named_in_the_notice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    let ws = workspace(&mut state, &project_id, "wire-facade");
+    let second = issue_id(&filed(&mut state, &project_id, "two"));
+    let made = assign(
+        &mut state,
+        &second,
+        json!({ "kind": "new_agent", "workspace_id": ws }),
+    );
+    let assigner = made["dispatch"]["agent_id"].as_str().unwrap().to_string();
+    let (owner, project_agent_id) = project_agent(&mut state, &project_id);
+
+    let from = made["dispatch"]["entity_id"].as_str().unwrap().to_string();
+    state
+        .on_agent_mcp_action(
+            &from,
+            &assigner,
+            crate::mcp::BridgeAction::TrackerAssignIssue {
+                issue_id: id.clone(),
+                assignee: json!({ "kind": "project_agent" }),
+                note: None,
+            },
+        )
+        .expect("an agent may assign");
+
+    let delivered = messages(&mut state, &owner, &project_agent_id);
+    let handed = delivered
+        .iter()
+        .find(|message| message["from_issue"].is_object())
+        .unwrap_or_else(|| panic!("no message wearing the issue: {delivered:?}"));
+    assert_eq!(
+        handed["body"], "The wire-facade agent assigned you issue #1 — Kanban drag",
+        "named by the workspace it works in: {handed:?}"
+    );
 }
 
 /// A note rides under the issue in the delivered message and is not stored on
@@ -225,12 +274,13 @@ fn a_hand_off_note_is_delivered_and_not_written_onto_the_issue() {
         dispatch["entity_id"].as_str().unwrap(),
         dispatch["agent_id"].as_str().unwrap(),
     );
-    assert!(
-        delivered.iter().any(|message| message["body"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Start with the drop handler.")),
-        "{delivered:?}"
+    let handed = delivered
+        .iter()
+        .find(|message| message["from_issue"].is_object())
+        .unwrap_or_else(|| panic!("no message wearing the issue: {delivered:?}"));
+    assert_eq!(
+        handed["body"], "The user assigned you issue #1 — one\n\nStart with the drop handler.",
+        "the note is what the notice has to say beyond naming the issue"
     );
 }
 
@@ -590,6 +640,34 @@ fn unassigning_does_not_unlink_the_workspace() {
         after["issue"]["links"], linked,
         "handing it back forgets nothing"
     );
+}
+
+/// The prompt says what an assignment IS now, because the notice no longer
+/// carries the issue and an agent that does not call `get_issue` would start
+/// on a title alone.
+#[test]
+fn the_prompt_says_an_assignment_is_a_notice_to_be_read_with_get_issue() {
+    let templates = crate::templates::Templates::default();
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (name, text) in [
+        ("build", &templates.build),
+        ("plan", &templates.plan),
+        ("project_agent", &templates.project_agent),
+    ] {
+        let text = flat(text);
+        assert!(
+            text.contains("The message is only a notice naming it"),
+            "{name} does not say what arrives"
+        );
+        assert!(
+            text.contains("read it with `get_issue` before you start"),
+            "{name} does not say to read it"
+        );
+        assert!(
+            text.contains("again if you have been running a while"),
+            "{name} does not say to re-read a stale one"
+        );
+    }
 }
 
 /// The prompt asks for the self-assignment that does the linking. What

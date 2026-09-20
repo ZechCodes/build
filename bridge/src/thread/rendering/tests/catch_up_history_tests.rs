@@ -236,3 +236,26 @@ fn the_packet_names_the_agent_a_message_was_sent_to() {
         "- agent [sent to agent agent-2]: rebase on main\n- agent: on it"
     );
 }
+
+/// A message written before the hand-off became a notice still carries the
+/// issue in its body. It is rendered once, the way any other body is: the
+/// packet renders `body`, and nothing re-derives prose from the envelope.
+#[test]
+fn an_old_hand_off_with_the_issue_in_its_body_renders_once() {
+    let mut thread = Thread::for_agent("agent-a");
+    thread.post_user("#9 Kanban drag\n\nDragging a card puts it back.", None, NOW);
+    thread.wear_issue(crate::thread::IssueEnvelope {
+        issue_id: "issue-01K5Z".into(),
+        number: 9,
+        title: "Kanban drag".into(),
+        links: crate::tracker::IssueLinks::default(),
+    });
+
+    let prompt = thread.catch_up_markdown(10);
+    assert_eq!(
+        prompt.matches("Dragging a card puts it back.").count(),
+        1,
+        "{prompt}"
+    );
+    assert_eq!(prompt.matches("Kanban drag").count(), 1, "{prompt}");
+}

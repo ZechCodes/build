@@ -157,15 +157,15 @@ impl OperationPayload {
         )
     }
 
-    /// One line naming the issue this turn was handed, when assigning one is
+    /// What to do about the issue this turn was handed, when assigning one is
     /// what sent it. Empty for every other message.
     ///
-    /// The issue rides the message as `from_issue`, and the body already
-    /// carries it as prose — but the payload is JSON inside a prompt written in
-    /// the user's voice, and what the agent actually reads is the sentence
-    /// around it. So the envelope says the thing an agent has to act on: this
-    /// is the work, and these are the two tools that keep the issue honest
-    /// about where the work got to.
+    /// The body already says who assigned what — it is the notice — so this
+    /// does not say it again. What it adds is the id, which the notice has no
+    /// room for and `get_issue` needs, and the two tools that keep the issue
+    /// honest about where the work got to. The payload is JSON inside a prompt
+    /// written in the user's voice, and the sentence around it is what an agent
+    /// actually acts on.
     fn issue_note(&self) -> String {
         self.messages
             .iter()
@@ -173,10 +173,10 @@ impl OperationPayload {
             .next()
             .map_or_else(String::new, |issue| {
                 format!(
-                    "\nThis message hands you issue #{} \"{}\" (`{}`). Comment your progress on it \
-                     with comment_issue, and move it to In review with move_issue when you report \
-                     Complete.\n",
-                    issue.number, issue.title, issue.issue_id
+                    "\nThe issue is `{}` — read it with get_issue before you start. Comment your \
+                     progress on it with comment_issue, and move it to In review with move_issue \
+                     when you report Complete.\n",
+                    issue.issue_id
                 )
             })
     }

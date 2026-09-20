@@ -392,12 +392,11 @@ carrying an **issue envelope** the way a hand-off carries `from_agent`:
     "issue_id": "issue-01K5Z…",
     "number": 12,
     "title": "Kanban drag does not persist",
-    "body": "Dragging a card to In review …",
     "links": { "workspace_ids": [], "branches": [], "commits": [],
                "conversation_ids": [], "parent_issue_id": null }
   },
   "from_agent": { "id": "agent-01K5Y…" },
-  "body": "…"
+  "body": "The wire-facade agent assigned you issue #12 — Kanban drag does not persist"
 }
 ```
 
@@ -405,18 +404,29 @@ carrying an **issue envelope** the way a hand-off carries `from_agent`:
 never heard of it reads the conversation exactly as it always has. `from_agent`
 is present when an agent did the assigning and absent when the user did.
 
-The message body is the issue rendered as prose — `#12 <title>`, then the body,
-then the note if one was given — so a harness that never learns about
-`from_issue` still receives the whole issue. The envelope is for the SPA, which
-draws the message as an issue card and links `#12`.
+**An assignment is a notice, not the issue.** The body is one line naming who
+assigned what — `{assigner} assigned you issue #12 — <title>` — with the note
+under it when one was given, and nothing else. The assigner is "The user" for a
+human, and for an agent the name its conversation goes by: `The wire-facade
+agent`, `The Build project's agent`, or `Agent <id>` when Build cannot name the
+owner.
+
+The issue's own text is never copied into the conversation. A copy goes stale
+the moment anybody edits the issue, and it sits in the agent's context being
+compacted away before the work has begun — so the agent reads the issue with
+`get_issue` when it is ready to start, which is also when the issue is current.
+The envelope carries no body for the same reason: it identifies the issue for a
+client's card, and the card draws the number and the title.
 
 The delivery prompt the harness actually reads gains one line, beside the
 existing "These messages came from agent `…`" and "The user sent this from
-workspace `…`" lines (`bridge/src/operation.rs`):
+workspace `…`" lines (`bridge/src/operation.rs`). It does not repeat the
+notice — the body is already the first thing in that prompt — so it carries
+what the notice has no room for, the id `get_issue` needs:
 
-> This message hands you issue #12 "Kanban drag does not persist"
-> (`issue-01K5Z…`). Comment your progress on it with `comment_issue`, and move
-> it to In review with `move_issue` when you report Complete.
+> The issue is `issue-01K5Z…` — read it with `get_issue` before you start.
+> Comment your progress on it with `comment_issue`, and move it to In review
+> with `move_issue` when you report Complete.
 
 ## The MCP tools
 
@@ -517,9 +527,9 @@ carrying:
 - **`from_build: true`**, the mark the restart notice already uses. It says the
   daemon wrote this and nobody is waiting on an answer to it. A client draws it
   as Build's own words rather than as the reader's.
-- **`from_issue`** — the same envelope a dispatched issue carries, narrowed to
-  what a notice needs: `{issue_id, number, title}`. It is what lets a client
-  draw the notice as a card on the issue and link `#13`.
+- **`from_issue`** — the same envelope a dispatched issue carries: `{issue_id,
+  number, title, links}`. It is what lets a client draw the notice as a card on
+  the issue and link `#13`.
 - **A one-line body** saying what changed and who changed it: `#13 moved to In
   review by agent-01K5Z…`. When the change is a comment, the comment's body
   follows on its own line, because the whole point of hearing about a comment
@@ -893,9 +903,10 @@ kinds: ["issues"]}` and refetches on an item. An issue page open on an issue
 named in an item refetches that issue.
 
 **On a message.** A conversation message carrying `from_issue` draws as an issue
-card — `#12`, the title, a fold for the body — linking the issue page. It is
-still a message and still reads in sequence; the card is how it is drawn, not a
-separate kind of thing.
+card — `#12` and the title — linking the issue page. There is no fold, because
+the envelope carries no body; what the reader wants beyond the title is the
+issue page, one click away. It is still a message and still reads in sequence;
+the card is how it is drawn, not a separate kind of thing.
 
 ## Boundaries
 

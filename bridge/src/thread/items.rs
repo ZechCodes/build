@@ -81,10 +81,6 @@ pub struct IssueEnvelope {
     /// Per-project and sequential — what `#12` is.
     pub number: u64,
     pub title: String,
-    /// The issue's markdown body as it stood when the issue was handed over.
-    /// A copy, deliberately: the message is the record of what the agent was
-    /// given, and an issue edited afterwards must not rewrite it.
-    pub body: String,
     /// What the issue is about, so the agent can reach the workspace, branch
     /// or conversation without asking.
     pub links: crate::tracker::IssueLinks,

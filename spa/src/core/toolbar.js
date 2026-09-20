@@ -88,6 +88,33 @@ export function clearToolbarVerb(render) {
   paintVerb();
 }
 
+// ---- the project's tabs ------------------------------------------------------
+
+/** The project page standing under the bar, where there is one: a press on
+ *  Workspaces or Issues is handed to it, so the page switches its tab in place
+ *  rather than being torn down and built again around the same rail. From any
+ *  other route — an issue's page — a press is a navigation to that tab. */
+let projectTabHandler = null;
+
+export function setProjectTabHandler(handler) {
+  projectTabHandler = handler;
+}
+
+/** Only the page that set it can clear it (see clearToolbarVerb). */
+export function clearProjectTabHandler(handler) {
+  if (projectTabHandler === handler) projectTabHandler = null;
+}
+
+export function pressProjectTab(tab) {
+  if (App.route.name === "project" && projectTabHandler) {
+    projectTabHandler(tab);
+    paint();
+    return;
+  }
+  const { deviceId, projectId } = App.route;
+  go({ ...projectRoute({ id: projectId, deviceId }), ...(tab === "issues" ? { tab: "issues" } : {}) });
+}
+
 function paintVerb() {
   const host = $("#tb-verb");
   if (!host) return;
@@ -205,12 +232,7 @@ function paint({ entering = false } = {}) {
   // a project link lands now, since a project's own checkout is not a surface
   // (core/router.js).
   if (entering) rememberScope(standing.projectKey || routeProjectKey(App.route));
-  const shown = {
-    project: standing.project || nameOf(scopedProject()),
-    kind: standing.kind,
-    label: standing.label,
-    directories: standing.directories || [],
-  };
+  const shown = shownIdentity(standing);
   const signature = JSON.stringify(shown);
   // A poll tick that says the same thing the bar already shows must leave the
   // DOM alone: the verb slot (setToolbarVerb) can carry a view's own open menu
@@ -241,6 +263,9 @@ function paint({ entering = false } = {}) {
     host.querySelectorAll("[data-directory]").forEach((control) => {
       control.onclick = () => openWorkspaceDirectory(control.dataset.directory);
     });
+    host.querySelectorAll("[data-project-tab]").forEach((control) => {
+      control.onclick = () => pressProjectTab(control.dataset.projectTab);
+    });
     const settings = host.querySelector("[data-workspace-settings]");
     if (settings) settings.onclick = () => openStandingWorkspaceSettings();
     const back = host.querySelector("[data-project-back]");
@@ -249,6 +274,17 @@ function paint({ entering = false } = {}) {
   paintVerb();
   if (open) paintMenu();
 }
+
+/** What the bar draws for where the route stands: the project (the scoped one
+ *  where the route names none), the kind, the work item's label, and the tabs
+ *  after it — a workspace's directories, or a project's two pages. */
+const shownIdentity = (standing) => ({
+  project: standing.project || nameOf(scopedProject()),
+  kind: standing.kind,
+  label: standing.label,
+  directories: standing.directories || [],
+  projectTabs: standing.projectTabs || [],
+});
 
 /** Out of the workspace, back to the project it was cut from — the project's
  *  own page, on the machine the workspace is on: the same place the project's

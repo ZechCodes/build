@@ -23,14 +23,13 @@ import { mountAgentRail } from "../core/agentRail.js";
 import { createAgentSelection } from "../core/agentSelection.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
-import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
+import { clearProjectTabHandler, clearToolbarVerb, setProjectTabHandler, setToolbarVerb } from "../core/toolbar.js";
 import { openCreateWork } from "../core/createWork.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { projectPageModel } from "../core/projectPageModel.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { notifyError } from "../core/notify.js";
 import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
-import { mountTabShell } from "../core/tabshell.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { mountIssuesPane } from "../core/trackerIssuesPane.js";
 import { hashFromRoute } from "../core/router.js";
@@ -139,7 +138,6 @@ function openTab(state, tab) {
   delete pane.dataset.rows;
   if (tab === ISSUES_TAB) mountIssues(state, pane);
   else paint(state);
-  state.tabs?.setActive(tab);
   writeTabHash(state);
 }
 
@@ -233,15 +231,15 @@ export async function renderProject() {
   const state = {
     route, context, disposed: false, rail: null, selection: createAgentSelection(),
     page: projectPageModel(null, route), verb: null,
-    tab: tabOf(route), view: route.view || "list", feed: null, issues: null, tabs: null,
+    tab: tabOf(route), view: route.view || "list", feed: null, issues: null, openTab: null,
   };
   state.verb = (host) => paintProjectVerbs(host, state);
-  root.innerHTML = `<div id="project-tabs"></div><div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
-  state.tabs = mountTabShell($("#project-tabs"), {
-    tabs: [{ id: WORKSPACES_TAB, label: "Workspaces" }, { id: ISSUES_TAB, label: "Issues" }],
-    active: state.tab,
-    onSelect: (tab) => openTab(state, tab),
-  });
+  root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
+  // The two tabs are the toolbar's (core/toolbar.js), so they stay reachable
+  // with the chat open over the page; a press is handed here to switch in
+  // place, because a navigation would remount the rail beside the page.
+  state.openTab = (tab) => openTab(state, tab === ISSUES_TAB ? ISSUES_TAB : WORKSPACES_TAB);
+  setProjectTabHandler(state.openTab);
   $("#project-pane").onclick = (event) => {
     const row = event.target.closest("[data-workspace]");
     if (row) openWorkspace(state, row.dataset.workspace);
@@ -262,6 +260,7 @@ export async function renderProject() {
     state.issues?.dispose();
     state.rail?.dispose?.();
     clearToolbarVerb(state.verb);
+    clearProjectTabHandler(state.openTab);
   };
   await mountProjectRail(state);
 }

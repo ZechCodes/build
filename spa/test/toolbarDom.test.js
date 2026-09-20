@@ -79,7 +79,7 @@ const openCreateWork = vi.fn();
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 
 const { App } = await import("../src/app.js");
-const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
+const { clearProjectTabHandler, initToolbar, setProjectTabHandler, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
 const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
 const { rememberDeviceFilter } = await import("../src/core/deviceFilter.js");
@@ -176,6 +176,55 @@ describe("the sentence the toolbar prints", () => {
     toolbarRouteChanged();
     expect(names()).toEqual(["relaydb"]);
     expect(bar().querySelector('[data-select="item"]')).toBeNull();
+  });
+});
+
+// The project's two pages ride the bar after its name, so they are reachable
+// from an issue's page too, with the chat open over it on a phone.
+describe("the project's pages in the bar", () => {
+  const projectTabs = () =>
+    [...bar().querySelectorAll("[data-project-tab]")].map((tab) => [tab.textContent, tab.getAttribute("aria-selected")]);
+  const standOn = (route) => {
+    App.route = route;
+    toolbarRouteChanged();
+  };
+
+  it("follows the project's name with Workspaces and Issues, marking the page you are on", () => {
+    standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
+    expect(names()).toEqual(["relaydb"]);
+    expect(projectTabs()).toEqual([["Workspaces", "true"], ["Issues", "false"]]);
+    standOn({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "issues" });
+    expect(projectTabs()).toEqual([["Workspaces", "false"], ["Issues", "true"]]);
+  });
+
+  it("keeps them over an issue's page with Issues open, and goes back to the list from either", () => {
+    standOn({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "issue-1" });
+    expect(projectTabs()).toEqual([["Workspaces", "false"], ["Issues", "true"]]);
+    bar().querySelector('[data-project-tab="issues"]').click();
+    expect(location.hash).toBe("#/device/dev-1/project/p1/issues");
+    standOn({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "issue-1" });
+    bar().querySelector('[data-project-tab="workspaces"]').click();
+    expect(location.hash).toBe("#/device/dev-1/project/p1");
+  });
+
+  // The page is the same page: a navigation would remount the rail beside it.
+  it("hands a press to the project page standing under it rather than navigating", () => {
+    standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
+    const hash = location.hash;
+    const opened = vi.fn((tab) => {
+      App.route = { ...App.route, tab: tab === "issues" ? "issues" : undefined };
+    });
+    setProjectTabHandler(opened);
+    bar().querySelector('[data-project-tab="issues"]').click();
+    clearProjectTabHandler(opened);
+    expect(opened).toHaveBeenCalledWith("issues");
+    expect(location.hash).toBe(hash);
+    expect(projectTabs()).toEqual([["Workspaces", "false"], ["Issues", "true"]]);
+  });
+
+  it("draws none over a workspace, whose tabs are its directories", async () => {
+    await standOnWorkspace();
+    expect(projectTabs()).toEqual([]);
   });
 });
 

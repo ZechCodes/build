@@ -64,6 +64,20 @@ function directoryTabsHtml(directories) {
        })}`;
 }
 
+/** The project's two pages as tabs after its name, the same tab a workspace's
+ *  directories are — and never collapsed into a menu: two short words fit a
+ *  phone, and on a phone they are the way back to the list from an issue. */
+function projectTabsHtml(projectTabs) {
+  if (!projectTabs.length) return "";
+  const tabs = projectTabs
+    .map(
+      (tab) =>
+        `<button class="tb-directory tb-project-tab${tab.current ? " current" : ""}" data-project-tab="${esc(tab.id)}" type="button" role="tab" aria-selected="${tab.current ? "true" : "false"}">${esc(tab.label)}</button>`,
+    )
+    .join("");
+  return `<div class="tb-project-tabs" role="tablist" aria-label="Project pages">${tabs}</div>`;
+}
+
 /** The cog at the far right, opposite the switcher at the far left: what this
  *  workspace is called, what its agents start on, and the one way to delete it.
  *  Only a route standing IN a workspace has one to settle, so only a workspace
@@ -75,9 +89,10 @@ const settingsButtonHtml = (kind) =>
 
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
-export function toolbarHtml({ project, kind, label, directories = [] }) {
+export function toolbarHtml({ project, kind, label, directories = [], projectTabs = [] }) {
   return `<div class="toolbar">
     ${identityHtml({ project, kind, label })}
+    ${projectTabsHtml(projectTabs)}
     ${directoryTabsHtml(directories)}
     <div class="tb-right">${settingsButtonHtml(kind)}<span class="tb-verb" id="tb-verb"></span></div>
   </div>`;

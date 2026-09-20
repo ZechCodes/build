@@ -80,31 +80,6 @@ describe("the issue route", () => {
     ]);
   });
 
-  // An issue is a page OF the issues tab, so the project's tabs stand over it
-  // as they do over the list: the way back to the list, and across to the
-  // workspaces, from a phone that has no other way back.
-  it("stands the project's tabs over the page, with Issues open", async () => {
-    await renderTrackerIssue();
-    await flush();
-    const tabs = [...document.querySelectorAll("#project-tabs .t")];
-    expect(tabs.map((tab) => tab.textContent.trim())).toEqual(["Workspaces", "Issues"]);
-    expect(tabs.find((tab) => tab.classList.contains("active"))?.textContent.trim()).toBe("Issues");
-  });
-
-  it("goes to the project's list from either tab, on the same machine and project", async () => {
-    await renderTrackerIssue();
-    await flush();
-    const [workspaces, issues] = document.querySelectorAll("#project-tabs .t");
-    issues.click();
-    expect(App.route).toEqual({ name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" });
-    App.route = { name: "trackerIssue", deviceId: "dev-1", projectId: "proj-1", issueId: "issue-1" };
-    await renderTrackerIssue();
-    await flush();
-    workspaces.isConnected || (workspaces.textContent = "");
-    document.querySelector("#project-tabs .t").click();
-    expect(App.route).toEqual({ name: "project", deviceId: "dev-1", projectId: "proj-1" });
-  });
-
   it("hands over the feed the links and the assignee names are read off", async () => {
     snapshot = { ...snapshot, projects: [{ id: "proj-1" }] };
     await renderTrackerIssue();

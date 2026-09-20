@@ -654,6 +654,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-directory.current::after { content:""; position:absolute; left:9px; right:9px;
   bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent-fill, var(--accent)); }
 .tb-directory-menu { display:none; }
+/* The project's two pages as tabs after its name (core/toolbarRender.js): the
+   same tab its workspaces' directories are, and never collapsed — two short
+   words fit a phone, where they are the way back to the list from an issue
+   with the chat open over the page. */
+.tb-project-tabs { display:flex; flex:none; align-self:stretch; align-items:stretch; margin-left:10px; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
 /* The pack ships 24x24, which is twice this row's font — size it here, once. */
 .tb-settings { flex:none; display:flex; align-items:center; padding:4px; border-radius:6px; }

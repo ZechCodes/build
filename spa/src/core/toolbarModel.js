@@ -141,11 +141,32 @@ const STANDING = {
   project: {
     // A project is the block the rows sit in rather than a row of its own, and
     // the page is about the project and nothing inside it: the bar says its
-    // name through the project selector, and there is nothing to say after it.
+    // name through the project selector, then the project's two pages as tabs.
     rowIs: () => () => false,
     label: () => "",
+    carries: (route) => ({ projectTabs: projectTabsModel(route.tab) }),
+  },
+  trackerIssue: {
+    // One issue of the tracker is a page OF the project's Issues tab: the bar
+    // says the project, and the tabs stand with Issues open, so the list is
+    // one press away from the issue — on a phone, the only press back.
+    rowIs: () => () => false,
+    label: () => "",
+    carries: () => ({ projectTabs: projectTabsModel("issues") }),
   },
 };
+
+/** The two pages a project has, as tabs after its name in the bar: the
+ *  workspaces cut from it and its issue tracker, marked with the one the route
+ *  is on. They live in the bar rather than over the page so they stay reachable
+ *  with the chat open over the page on a phone. */
+export function projectTabsModel(current) {
+  const onIssues = current === "issues";
+  return [
+    { id: "workspaces", label: "Workspaces", current: !onIssues },
+    { id: "issues", label: "Issues", current: onIssues },
+  ];
+}
 
 /** What the bar says when the route is no work item at all. */
 const NOWHERE = Object.freeze({ projectId: null, projectKey: null, project: "", kind: null, label: "", row: null });

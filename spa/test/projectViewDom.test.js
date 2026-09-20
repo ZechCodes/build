@@ -44,6 +44,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 
 import { App } from "../src/app.js";
 import { renderProject } from "../src/views/projectView.js";
+import { pressProjectTab } from "../src/core/toolbar.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 
@@ -237,15 +238,13 @@ describe("the project surface", () => {
 
 // A project holds two kinds of thing: the workspaces the work happens in, and
 // the issues that say what the work IS.
+// The two tabs themselves are the toolbar's (core/toolbar.js draws them after
+// the project's name, so they stay reachable with the chat open over the
+// page); a press on them is handed to this page to switch in place.
 describe("the project's two tabs", () => {
-  const tabs = () => [...document.querySelectorAll("#project-tabs .t[data-tab]")].map((tab) => tab.dataset.tab);
-  const activeTab = () => document.querySelector("#project-tabs .t.active")?.dataset.tab;
-
   it("opens on the workspaces, which is what a project URL has always opened on", async () => {
     await renderProject();
     await flush();
-    expect(tabs()).toEqual(["workspaces", "issues"]);
-    expect(activeTab()).toBe("workspaces");
     expect(document.querySelector(".project-rows")).not.toBeNull();
     expect(mountIssuesPane).not.toHaveBeenCalled();
   });
@@ -254,7 +253,6 @@ describe("the project's two tabs", () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
     await renderProject();
     await flush();
-    expect(activeTab()).toBe("issues");
     const [host, given] = mountIssuesPane.mock.calls[0];
     expect(host.id).toBe("project-pane");
     expect([given.projectId, given.deviceId, given.projectKey]).toEqual(["proj-1", "dev-1", "dev-1/proj-1"]);
@@ -267,7 +265,7 @@ describe("the project's two tabs", () => {
     await renderProject();
     await flush();
     const pane = mountIssuesPane.mock.results[0].value;
-    document.querySelector('#project-tabs .t[data-tab="workspaces"]').click();
+    pressProjectTab("workspaces");
     await flush();
     expect(pane.dispose).toHaveBeenCalled();
     expect(document.querySelector(".project-rows")).not.toBeNull();
@@ -278,7 +276,7 @@ describe("the project's two tabs", () => {
     await renderProject();
     await flush();
     mountAgentRail.mockClear();
-    document.querySelector('#project-tabs .t[data-tab="issues"]').click();
+    pressProjectTab("issues");
     await flush();
     expect(location.hash).toBe("#/device/dev-1/project/proj-1/issues");
     expect(mountAgentRail).not.toHaveBeenCalled();

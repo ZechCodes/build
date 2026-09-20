@@ -9,10 +9,9 @@
 // the project in the URL is the project — there is no lookup to do here beyond
 // the device one the router already parked on.
 //
-// The project's two tabs stand over the page exactly as they stand over the
-// project page, with Issues open: an issue is a page OF the issues tab, and
-// the tabs are how you get back to the list, or across to the workspaces,
-// from a phone that has no other way back.
+// The project's two tabs, with Issues open, are the toolbar's (core/toolbar.js
+// draws them for this route): an issue is a page OF the issues tab, and the
+// bar is where they stay reachable with the chat open over the page.
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
@@ -21,7 +20,6 @@ import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 import { mountIssuePage } from "../core/trackerIssuePage.js";
-import { mountTabShell } from "../core/tabshell.js";
 import "../styles/issues.css";
 import "../styles/surfaces.css";
 
@@ -37,12 +35,7 @@ export async function renderTrackerIssue() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  root.innerHTML = `<div id="project-tabs"></div><div id="tabbody" class="flush"><div id="issue-pane" class="issue-surface"></div></div>`;
-  const tabs = mountTabShell($("#project-tabs"), {
-    tabs: [{ id: WORKSPACES_TAB, label: "Workspaces" }, { id: ISSUES_TAB, label: "Issues" }],
-    active: ISSUES_TAB,
-    onSelect: (tab) => void go(projectTabRoute(route, tab)),
-  });
+  root.innerHTML = `<div id="tabbody" class="flush"><div id="issue-pane" class="issue-surface"></div></div>`;
   let feed = null;
   const page = mountIssuePage($("#issue-pane"), {
     projectId: route.projectId,
@@ -64,17 +57,6 @@ export async function renderTrackerIssue() {
     unsubscribe();
     deviceStrip();
     page.dispose();
-    tabs.dispose?.();
   };
 }
 
-const WORKSPACES_TAB = "workspaces";
-const ISSUES_TAB = "issues";
-
-/** The project page this issue is under, on the tab that was pressed: the
- *  same machine and project, the issue dropped, Issues named where that is
- *  the tab (core/router.js reads the tab off the route). */
-function projectTabRoute(route, tab) {
-  const { issueId: _issueId, ...project } = route;
-  return { ...project, name: "project", ...(tab === ISSUES_TAB ? { tab: ISSUES_TAB } : {}) };
-}

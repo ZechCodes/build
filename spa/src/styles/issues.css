@@ -269,4 +269,21 @@
   .issue-column { flex-basis:78vw; max-width:300px; scroll-snap-align:start; }
   .issue-head, .issue-filters { padding-left:var(--pane-gutter); padding-right:var(--pane-gutter); }
   .issue-filter select, .issue-filters select { max-width:46vw; }
+  /* A phone's row stacks. The number and the WHOLE title lead, wrapping onto
+     a second line when they must; the labels go under them, the facts under
+     those, and the assignee last — nothing beside the title takes its width,
+     because the title is what the row is for. */
+  .issue-row { flex-wrap:wrap; align-items:flex-start; row-gap:0; }
+  .issue-row-open { flex:1 1 100%; padding-bottom:4px; }
+  .issue-row-head { flex-wrap:wrap; gap:4px 8px; }
+  .issue-title {
+    flex:1 1 calc(100% - 4em); white-space:normal; overflow:visible;
+    text-overflow:clip; overflow-wrap:anywhere; line-height:1.3;
+  }
+  .issue-row-body { gap:5px; }
+  .issue-assign {
+    margin:0 0 8px 34px; padding:2px 8px 4px; align-self:flex-start;
+    border-color:var(--line2); font-size:11px;
+  }
+  .issue-assignee, .issue-unassigned { white-space:normal; }
 }

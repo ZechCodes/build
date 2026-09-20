@@ -34,7 +34,7 @@ impl AppState {
             Ok(scope) => scope,
             Err(refusal) => return is_an_issue_tool(action).then_some(Err(refusal)),
         };
-        Some(match action {
+        let answered = match action {
             BridgeAction::TrackerListIssues {
                 state,
                 status,
@@ -53,23 +53,26 @@ impl AppState {
                 status,
                 labels,
                 priority,
+                ..
             } => self.create_issue_as_agent(&scope, title, body, status, labels, priority),
             BridgeAction::TrackerCommentIssue {
                 issue_id,
                 body,
                 refs,
+                ..
             } => self.comment_issue_as_agent(&scope, issue_id, body, refs),
             BridgeAction::TrackerAssignIssue {
                 issue_id,
                 assignee,
                 note,
+                ..
             } => self.assign_issue_as_agent(&scope, issue_id, assignee, note.clone()),
-            BridgeAction::TrackerMoveIssue { issue_id, status } => {
-                self.move_issue_as_agent(&scope, issue_id, status)
-            }
-            BridgeAction::TrackerCloseIssue { issue_id, reason } => {
-                self.close_issue_as_agent(&scope, issue_id, reason.clone())
-            }
+            BridgeAction::TrackerMoveIssue {
+                issue_id, status, ..
+            } => self.move_issue_as_agent(&scope, issue_id, status),
+            BridgeAction::TrackerCloseIssue {
+                issue_id, reason, ..
+            } => self.close_issue_as_agent(&scope, issue_id, reason.clone()),
             BridgeAction::TrackerTrackIssue { issue_id } => {
                 self.set_tracking_as_agent(&scope, issue_id, true)
             }
@@ -83,6 +86,7 @@ impl AppState {
                 commit,
                 conversation_id,
                 parent_issue_id,
+                ..
             } => self.link_issue_as_agent(
                 &scope,
                 issue_id,
@@ -95,7 +99,39 @@ impl AppState {
                 ]),
             ),
             _ => return None,
-        })
+        };
+        Some(self.also_track(&scope, action, answered))
+    }
+
+    /// Honour `track` on a write that carried it (spec: Issues → Tracking).
+    ///
+    /// Once, here, rather than threaded through six handlers: the issue a
+    /// create tracks is one that did not exist when the call was made, so the
+    /// only place every write can name its issue is its answer. Each of them
+    /// answers `{"issue": …}`, and the tracked issue replaces it so the caller
+    /// reads its own `trackers` back without a second call.
+    ///
+    /// Quiet about its own failure, which can only be the tracker cap: the
+    /// write landed and is durable before this runs, and reporting the call as
+    /// failed would invite the agent to make it twice.
+    fn also_track(
+        &mut self,
+        scope: &IssueScope,
+        action: &BridgeAction,
+        answered: Result<Value, String>,
+    ) -> Result<Value, String> {
+        let mut answered = answered?;
+        if !wants_tracking(action) {
+            return Ok(answered);
+        }
+        let Some(issue_id) = answered["issue"]["id"].as_str().map(str::to_string) else {
+            return Ok(answered);
+        };
+        match self.set_tracking_as_agent(scope, &issue_id, true) {
+            Ok(tracked) => answered["issue"] = tracked["issue"].clone(),
+            Err(why) => eprintln!("track {issue_id} alongside the write: {why}"),
+        }
+        Ok(answered)
     }
 
     /// Which project's issues this agent reaches, and whose name goes on what
@@ -334,6 +370,25 @@ fn asked(fields: &[(&str, &Option<String>)]) -> Value {
 /// Asked only where the scope could not be resolved at all: an agent whose
 /// owner is bound to no project has no issues to reach, and must still be able
 /// to call every tool that is not about a project.
+/// Whether this write was asked to follow the issue it touched.
+///
+/// Absent means NO everywhere but `create_issue`, where it means yes. An agent
+/// that moves somebody else's card in passing has not asked to hear about it
+/// ever again; an agent that files an issue almost always wants to know how it
+/// goes, and the one that filed and assigned twelve in an afternoon heard
+/// nothing about any of them.
+fn wants_tracking(action: &BridgeAction) -> bool {
+    match action {
+        BridgeAction::TrackerCreateIssue { track, .. } => track.unwrap_or(true),
+        BridgeAction::TrackerCommentIssue { track, .. }
+        | BridgeAction::TrackerAssignIssue { track, .. }
+        | BridgeAction::TrackerMoveIssue { track, .. }
+        | BridgeAction::TrackerCloseIssue { track, .. }
+        | BridgeAction::TrackerLinkIssue { track, .. } => track.unwrap_or(false),
+        _ => false,
+    }
+}
+
 fn is_an_issue_tool(action: &BridgeAction) -> bool {
     matches!(
         action,

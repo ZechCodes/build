@@ -312,6 +312,7 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
             crate::mcp::BridgeAction::TrackerMoveIssue {
                 issue_id: id.clone(),
                 status: "in_review".into(),
+                track: None,
             },
         )
         .expect("the actor moves its issue");
@@ -858,6 +859,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 status: None,
                 labels: Vec::new(),
                 priority: None,
+                track: None,
             },
         )
         .expect("an agent files an issue");
@@ -868,6 +870,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
             crate::mcp::BridgeAction::TrackerMoveIssue {
                 issue_id: id.clone(),
                 status: "in_review".into(),
+                track: None,
             },
             "moved",
         ),
@@ -876,6 +879,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 issue_id: id.clone(),
                 body: "Reproduced it.".into(),
                 refs: Vec::new(),
+                track: None,
             },
             "commented_on",
         ),
@@ -883,6 +887,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
             crate::mcp::BridgeAction::TrackerCloseIssue {
                 issue_id: id.clone(),
                 reason: None,
+                track: None,
             },
             "closed",
         ),
@@ -932,6 +937,7 @@ fn a_comment_message_carries_its_comment_id() {
                 issue_id: id.clone(),
                 body: "Reproduced it.".into(),
                 refs: Vec::new(),
+                track: None,
             },
         )
         .expect("an agent comments");
@@ -990,6 +996,7 @@ fn the_message_lands_on_the_actor_and_not_on_the_assignee() {
                 issue_id: id.clone(),
                 assignee: json!({ "kind": "agent", "agent_id": target.1 }),
                 note: None,
+                track: None,
             },
         )
         .expect("an agent hands work over");
@@ -1002,5 +1009,141 @@ fn the_message_lands_on_the_actor_and_not_on_the_assignee() {
     assert!(
         said(&mut state, &target.0, &target.1).is_empty(),
         "the assignee gets the ISSUE, not a note about somebody assigning it"
+    );
+}
+
+// ------------------------------------------- track in the same call ---
+
+/// An issue an agent FILES tracks it, without being asked.
+///
+/// The default that matters (spec: Issues → Tracking). An agent that files an
+/// issue almost always wants to know how it goes, and the one that filed and
+/// assigned twelve in an afternoon heard nothing about any of them.
+#[test]
+fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let caller = coding_agent(&mut state, &project_id, "filer");
+
+    let filed = state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerCreateIssue {
+                title: "Kanban drag".into(),
+                body: None,
+                status: None,
+                labels: Vec::new(),
+                priority: None,
+                track: None,
+            },
+        )
+        .expect("an agent may file an issue");
+    let id = filed["issue"]["id"].as_str().unwrap().to_string();
+    assert_eq!(trackers(&mut state, &id), vec![caller.1.clone()]);
+    assert_eq!(
+        filed["issue"]["trackers"],
+        json!([caller.1]),
+        "and the answer says so, rather than making the caller read it back"
+    );
+
+    // Said otherwise, it does not.
+    let quiet = state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerCreateIssue {
+                title: "not my problem".into(),
+                body: None,
+                status: None,
+                labels: Vec::new(),
+                priority: None,
+                track: Some(false),
+            },
+        )
+        .expect("an agent may file one it does not want to hear about");
+    let quiet_id = quiet["issue"]["id"].as_str().unwrap().to_string();
+    assert_eq!(trackers(&mut state, &quiet_id), Vec::<String>::new());
+}
+
+/// Every other write takes `track: true` and defaults to false: an agent that
+/// moves somebody else's card in passing has not asked to follow it.
+#[test]
+fn any_other_write_can_start_tracking_in_the_same_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let caller = coding_agent(&mut state, &project_id, "caller");
+    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+
+    // Without the flag, nothing is followed.
+    state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerMoveIssue {
+                issue_id: id.clone(),
+                status: "ready".into(),
+                track: None,
+            },
+        )
+        .expect("a move");
+    assert_eq!(trackers(&mut state, &id), Vec::<String>::new());
+
+    // With it, once — and the answer carries the trackers as they now stand.
+    let moved = state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerMoveIssue {
+                issue_id: id.clone(),
+                status: "in_progress".into(),
+                track: Some(true),
+            },
+        )
+        .expect("a move that follows");
+    assert_eq!(moved["issue"]["trackers"], json!([caller.1]));
+    assert_eq!(trackers(&mut state, &id), vec![caller.1.clone()]);
+
+    // Idempotent, the way track_issue is: asking twice is not two trackers,
+    // and writes no second `tracked` event.
+    let before = event_kinds(&mut state, &id).len();
+    state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerCommentIssue {
+                issue_id: id.clone(),
+                body: "still on it".into(),
+                refs: Vec::new(),
+                track: Some(true),
+            },
+        )
+        .expect("a comment that follows");
+    assert_eq!(trackers(&mut state, &id), vec![caller.1.clone()]);
+    assert_eq!(
+        event_kinds(&mut state, &id).len(),
+        before,
+        "a set does not record being told twice"
+    );
+}
+
+/// The api path is a human on the board, who is not an agent and cannot be
+/// put on an issue's trackers. It carries no such field and is unaffected.
+#[test]
+fn the_api_path_tracks_nobody() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let made = state.handle(req(
+        "issues.create",
+        json!({ "project_id": project_id, "title": "filed by the user", "track": true }),
+    ));
+    assert_eq!(made["ok"], true, "{made:?}");
+    assert_eq!(
+        made["result"]["issue"]["trackers"],
+        json!([]),
+        "an unknown field is ignored, and the user is not a tracker"
     );
 }

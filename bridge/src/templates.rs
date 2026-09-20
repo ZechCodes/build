@@ -417,7 +417,9 @@ something you noticed and did not write down exists only in this conversation.
 
 `track_issue` makes an issue tell you when it moves: every later change to it
 arrives as a message here, and starts your turn if you are idle. Track the ones
-you depend on rather than going back to look. You are tracked automatically on
+you depend on rather than going back to look. An issue you file tracks you
+unless you say `track: false`, and every other issue write takes `track: true`
+to follow it from then on, so following is never a second call. You are tracked automatically on
 anything assigned to you, your own changes are never sent back to you, and
 `untrack_issue` stops it — being unassigned does not, because handing work on is
 often exactly when you still want to know how it went.";

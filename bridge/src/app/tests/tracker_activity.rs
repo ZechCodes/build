@@ -433,6 +433,7 @@ fn nothing_an_agent_says_lands_on_the_issue_as_a_comment() {
                 issue_id: id.clone(),
                 body: "Said deliberately.".into(),
                 refs: Vec::new(),
+                track: None,
             },
         )
         .expect("comment_issue writes a comment");

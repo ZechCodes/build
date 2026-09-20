@@ -113,6 +113,7 @@ fn a_coding_agent_files_an_issue_signed_by_itself() {
             status: None,
             labels: vec!["bug".into()],
             priority: Some("high".into()),
+            track: None,
         },
     )
     .expect("an agent files an issue in its own project");
@@ -154,6 +155,7 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
             issue_id: id.clone(),
             body: "Reproduced it.".into(),
             refs: Vec::new(),
+            track: None,
         },
     )
     .expect("an agent comments");
@@ -163,6 +165,7 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
         BridgeAction::TrackerMoveIssue {
             issue_id: id.clone(),
             status: "in_review".into(),
+            track: None,
         },
     )
     .expect("an agent moves its issue");
@@ -217,15 +220,18 @@ fn an_issue_of_another_project_is_unknown_to_this_agents_tools() {
         BridgeAction::TrackerMoveIssue {
             issue_id: theirs.clone(),
             status: "done".into(),
+            track: None,
         },
         BridgeAction::TrackerCloseIssue {
             issue_id: theirs.clone(),
             reason: None,
+            track: None,
         },
         BridgeAction::TrackerCommentIssue {
             issue_id: theirs.clone(),
             body: "mine now".into(),
             refs: Vec::new(),
+            track: None,
         },
     ] {
         let name = action.tool_name();
@@ -297,6 +303,7 @@ fn a_project_agent_runs_the_same_board_the_client_reads() {
             status: Some("ready".into()),
             labels: Vec::new(),
             priority: None,
+            track: None,
         },
     )
     .expect("the project agent files an issue");
@@ -333,6 +340,7 @@ fn an_agent_hands_an_issue_to_another_agent_of_its_project() {
             issue_id: id.clone(),
             assignee: json!({ "kind": "agent", "agent_id": them.1 }),
             note: Some("the parser is the part that matters".into()),
+            track: None,
         },
     )
     .expect("an agent assigns to another agent of its project");
@@ -394,6 +402,7 @@ fn an_agent_cannot_hand_an_issue_outside_its_own_project() {
             issue_id: id.clone(),
             assignee: json!({ "kind": "agent", "agent_id": foreign }),
             note: None,
+            track: None,
         },
     )
     .expect_err("an agent outside the project");
@@ -433,6 +442,7 @@ fn a_tools_harness_becomes_the_wires_provider() {
                 "harness": "codex",
             }),
             note: None,
+            track: None,
         },
     )
     .expect("a tool names a harness");

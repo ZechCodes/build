@@ -231,6 +231,7 @@ fn an_agent_that_assigns_is_named_in_the_notice() {
                 issue_id: id.clone(),
                 assignee: json!({ "kind": "project_agent" }),
                 note: None,
+                track: None,
             },
         )
         .expect("an agent may assign");
@@ -690,6 +691,29 @@ fn the_prompt_asks_an_agent_to_assign_itself_what_it_is_working_on() {
         assert!(
             text.contains("assigning records the workspace and conversation"),
             "{name} does not say what assigning yourself records"
+        );
+    }
+}
+
+/// The prompt says how following works, including the one default that is the
+/// other way round.
+#[test]
+fn the_prompt_says_an_issue_you_file_follows_you() {
+    let templates = crate::templates::Templates::default();
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (name, text) in [
+        ("build", &templates.build),
+        ("plan", &templates.plan),
+        ("project_agent", &templates.project_agent),
+    ] {
+        let text = flat(text);
+        assert!(
+            text.contains("An issue you file tracks you unless you say `track: false`"),
+            "{name} does not say the default"
+        );
+        assert!(
+            text.contains("every other issue write takes `track: true`"),
+            "{name} does not say the flag exists"
         );
     }
 }

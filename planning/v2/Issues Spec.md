@@ -516,6 +516,30 @@ Tracking an issue that is already tracked, and untracking one that is not, both
 answer the issue unchanged and write no event. This is a set, and saying a
 thing twice is not a second fact.
 
+### Following in the same call
+
+Every issue write an agent makes through its tools takes an optional
+`track` boolean: "and put me on this issue's trackers". Idempotent, like
+`track_issue` — asking twice is not two trackers and writes no second event.
+
+It defaults to **false** everywhere except `create_issue`, where it defaults to
+**true**. An agent that moves somebody else's card in passing has not asked to
+hear about it ever again; an agent that FILES an issue almost always wants to
+know how it goes, and the one that filed and assigned twelve in an afternoon
+heard nothing about any of them.
+
+The write's answer carries the issue with its `trackers` as they now stand, so
+following costs no second call and no second read. Honoured once, after the
+write, because the issue a create follows is one that did not exist when the
+call was made — the only place every write can name its issue is its answer.
+If the tracking fails where the write did not, the write still stands: it is
+durable before this runs, and reporting the call as failed would invite the
+agent to make it twice.
+
+**Tools only.** The `issues.*` wire verbs are the board, and the board is a
+human, who is not an agent and cannot be a tracker. They carry no such field
+and ignore one, the way they ignore any unknown field.
+
 ### What a change delivers
 
 Every change to a tracked issue delivers one notice per tracker: a status or

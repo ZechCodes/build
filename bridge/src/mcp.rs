@@ -262,12 +262,17 @@ pub enum BridgeAction {
         status: Option<String>,
         labels: Vec<String>,
         priority: Option<String>,
+        /// And put the caller on the issue's trackers. Absent means YES here
+        /// and nowhere else: an agent that files an issue almost always wants
+        /// to know how it goes.
+        track: Option<bool>,
     },
     /// Say something on one, with typed references fenced by what it is about.
     TrackerCommentIssue {
         issue_id: String,
         body: String,
         refs: Vec<crate::thread::ThreadLink>,
+        track: Option<bool>,
     },
     /// Hand one over, which starts whoever gets it.
     ///
@@ -278,16 +283,19 @@ pub enum BridgeAction {
         assignee: Value,
         issue_id: String,
         note: Option<String>,
+        track: Option<bool>,
     },
     /// Move one to another column.
     TrackerMoveIssue {
         issue_id: String,
         status: String,
+        track: Option<bool>,
     },
     /// Close one.
     TrackerCloseIssue {
         issue_id: String,
         reason: Option<String>,
+        track: Option<bool>,
     },
     /// Start or stop hearing about an issue. Which agent is the CALLER: a
     /// tool cannot subscribe somebody else, the way it cannot sign a comment
@@ -306,6 +314,7 @@ pub enum BridgeAction {
         commit: Option<String>,
         conversation_id: Option<String>,
         parent_issue_id: Option<String>,
+        track: Option<bool>,
     },
 }
 
@@ -698,6 +707,13 @@ impl DoneServer {
             "enum": ["backlog", "ready", "in_progress", "in_review", "done"],
             "description": "A column of the board."
         });
+        // Every write carries it, so following an issue is never a second
+        // call. `create_issue` describes its own default, which is the other
+        // way round.
+        let track = json!({
+            "type": "boolean",
+            "description": "And follow this issue from now on: every later change to it arrives as a message here. Defaults to false; asking twice is not two trackers."
+        });
         vec![
             json!({
                 "name": "list_issues",
@@ -730,7 +746,11 @@ impl DoneServer {
                         "body": { "type": "string", "description": "Markdown. What you know: what happens, where you saw it, what you think is behind it." },
                         "status": status,
                         "labels": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
-                        "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] }
+                        "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
+                        "track": {
+                            "type": "boolean",
+                            "description": "Follow this issue: every later change to it arrives as a message here. Defaults to TRUE — an issue you filed is one you almost always want to hear about. Pass false for one you are filing for somebody else."
+                        }
                     },
                     "required": ["title"]
                 }
@@ -743,6 +763,7 @@ impl DoneServer {
                     "properties": {
                         "issue_id": issue_id,
                         "body": { "type": "string", "description": "Markdown." },
+                        "track": track,
                         "refs": {
                             "type": "array",
                             "maxItems": 20,
@@ -782,7 +803,8 @@ impl DoneServer {
                             },
                             "required": ["kind"]
                         },
-                        "note": { "type": "string", "description": "Extra instruction delivered under the issue. The issue's body is the issue; this is what you would have said in a message." }
+                        "note": { "type": "string", "description": "Extra instruction delivered under the issue. The issue's body is the issue; this is what you would have said in a message." },
+                        "track": track
                     },
                     "required": ["issue_id", "assignee"]
                 }
@@ -792,7 +814,7 @@ impl DoneServer {
                 "description": "Move an issue to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "issue_id": issue_id, "status": status },
+                    "properties": { "issue_id": issue_id, "status": status, "track": track },
                     "required": ["issue_id", "status"]
                 }
             }),
@@ -801,7 +823,7 @@ impl DoneServer {
                 "description": "Close an issue. Closing is not the Done column: one says whether anyone is still expected to act, the other says where the card is. Closing an issue that is already closed is refused.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "issue_id": issue_id, "reason": { "type": "string", "description": "One line on why." } },
+                    "properties": { "issue_id": issue_id, "reason": { "type": "string", "description": "One line on why." }, "track": track },
                     "required": ["issue_id"]
                 }
             }),
@@ -816,7 +838,8 @@ impl DoneServer {
                         "branch": { "type": "string", "description": "Spelled exactly as it is." },
                         "commit": { "type": "string", "description": "A full 40-character sha." },
                         "conversation_id": { "type": "string", "description": "A conversation owner id of your project." },
-                        "parent_issue_id": { "type": "string", "description": "The issue this one is part of. A cycle is refused." }
+                        "parent_issue_id": { "type": "string", "description": "The issue this one is part of. A cycle is refused." },
+                        "track": track
                     },
                     "required": ["issue_id"]
                 }
@@ -868,6 +891,7 @@ impl DoneServer {
                         status: optional_argument(params, "status"),
                         labels: string_list_argument(params, "labels"),
                         priority: optional_argument(params, "priority"),
+                        track: optional_flag(params, "track"),
                     },
                 ),
                 Err(message) => refused(id.clone(), message),
@@ -883,6 +907,7 @@ impl DoneServer {
                                 issue_id,
                                 body,
                                 refs,
+                                track: optional_flag(params, "track"),
                             },
                         ),
                         Err(message) => refused(id.clone(), message),
@@ -899,6 +924,7 @@ impl DoneServer {
                         // legible thing to ask for.
                         assignee: argument(params, "assignee").unwrap_or(Value::Null),
                         note: optional_argument(params, "note"),
+                        track: optional_flag(params, "track"),
                     },
                 ),
                 Err(message) => refused(id.clone(), message),
@@ -909,7 +935,11 @@ impl DoneServer {
                 {
                     Ok((issue_id, status)) => acted(
                         id.clone(),
-                        BridgeAction::TrackerMoveIssue { issue_id, status },
+                        BridgeAction::TrackerMoveIssue {
+                            issue_id,
+                            status,
+                            track: optional_flag(params, "track"),
+                        },
                     ),
                     Err(message) => refused(id.clone(), message),
                 }
@@ -920,6 +950,7 @@ impl DoneServer {
                     BridgeAction::TrackerCloseIssue {
                         issue_id,
                         reason: optional_argument(params, "reason"),
+                        track: optional_flag(params, "track"),
                     },
                 ),
                 Err(message) => refused(id.clone(), message),
@@ -942,6 +973,7 @@ impl DoneServer {
                         commit: optional_argument(params, "commit"),
                         conversation_id: optional_argument(params, "conversation_id"),
                         parent_issue_id: optional_argument(params, "parent_issue_id"),
+                        track: optional_flag(params, "track"),
                     },
                 ),
                 Err(message) => refused(id.clone(), message),
@@ -1726,6 +1758,16 @@ fn workspace_tool_action(
 // a whole value, a list of words, and a list of typed references.
 
 /// One argument whole, for a tool whose argument is not a string.
+/// One optional boolean argument. Absent and a non-boolean are both `None`,
+/// so the caller's own default stands: a flag nobody set is not a flag set to
+/// false.
+fn optional_flag(params: Option<&Value>, field: &str) -> Option<bool> {
+    params
+        .and_then(|p| p.get("arguments"))
+        .and_then(|arguments| arguments.get(field))
+        .and_then(Value::as_bool)
+}
+
 fn argument(params: Option<&Value>, field: &str) -> Option<Value> {
     params
         .and_then(|p| p.get("arguments"))
@@ -2385,6 +2427,61 @@ mod tests {
         "track_issue",
         "untrack_issue",
     ];
+
+    /// Every write the tracker offers takes `track`, so following an issue is
+    /// never a second call — and `create_issue` says its default is the other
+    /// way round, because a flag that defaults differently in one place has to
+    /// say so where it is read.
+    #[test]
+    fn every_issue_write_offers_the_track_flag() {
+        let tools = server().tools().as_array().unwrap().clone();
+        let named = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is offered"))
+                .clone()
+        };
+        for name in [
+            "create_issue",
+            "comment_issue",
+            "assign_issue",
+            "move_issue",
+            "close_issue",
+            "link_issue",
+        ] {
+            let tool = named(name);
+            assert_eq!(
+                tool["inputSchema"]["properties"]["track"]["type"], "boolean",
+                "{name} does not offer it"
+            );
+            assert!(
+                !tool["inputSchema"]["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("track")),
+                "{name} must not require it"
+            );
+        }
+        let filing = named("create_issue")["inputSchema"]["properties"]["track"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(filing.contains("Defaults to TRUE"), "{filing}");
+        let moving = named("move_issue")["inputSchema"]["properties"]["track"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(moving.contains("Defaults to false"), "{moving}");
+
+        // The reads take no such flag: nothing to follow is written by them.
+        for name in ["list_issues", "get_issue"] {
+            assert!(
+                named(name)["inputSchema"]["properties"]["track"].is_null(),
+                "{name} offers a flag it cannot honour"
+            );
+        }
+    }
 
     /// `link_issue` says what assignment does NOT do for you, so an agent that
     /// read "assignment links your workspace" does not conclude the tool is

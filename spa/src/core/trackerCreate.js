@@ -73,6 +73,23 @@ export function createIssueBodyHtml(state) {
     </div>`;
 }
 
+/**
+ * Whether the assignee this form asked for went nowhere.
+ *
+ * A v1 handler parses params into its own typed struct and serialises THAT
+ * back before the implementation reads them, so a field the bridge predates is
+ * dropped at the facade rather than refused (`api/v1/mod.rs`). Filing with an
+ * assignee on a bridge whose `issues.create` does not take one therefore
+ * answers ok, with a filed and unassigned issue: no error, and nothing in the
+ * answer that says the reader's choice vanished.
+ *
+ * So the answer is read against the request. It is the one thing that can tell
+ * them, and "I picked an agent and nothing is running" is the worst way to
+ * find out — assignment is dispatch, so a dropped assignee is work the reader
+ * believes has started and has not.
+ */
+export const assigneeWentNowhere = (sent, answer) => Boolean(sent) && !answer?.issue?.assignee;
+
 /** The form as `issues.create` params. A field nobody filled in is left off:
  *  the verb's own defaults are the record's defaults, and sending an empty
  *  string instead would store one. */
@@ -93,7 +110,9 @@ export function createIssueParams(state, assignee) {
  *
  * `onFiled` is handed the whole answer — `{issue, dispatch}` — because the
  * caller's next act depends on which it was: an issue that dispatched has a
- * conversation to offer, and one that did not has only itself.
+ * conversation to offer, and one that did not has only itself. Beside it goes
+ * what the answer did not say for itself: whether the assignee that was asked
+ * for survived the trip.
  */
 export function openCreateIssue({ projectId, projectName, options, catalog = null, callRpc, onFiled = null }) {
   const state = {
@@ -148,7 +167,7 @@ export function openCreateIssue({ projectId, projectName, options, catalog = nul
       const answer = await callRpc("issues.create", createIssueParams(state, assignee));
       if (dismissed) return;
       await close();
-      onFiled?.(answer);
+      onFiled?.(answer, { assigneeWentNowhere: assigneeWentNowhere(assignee, answer) });
     } catch (error) {
       if (dismissed) return;
       state.busy = false;

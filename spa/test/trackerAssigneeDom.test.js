@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assignRefusalText, assigneeOptions, workspaceAgents } from "../src/core/trackerAssignee.js";
 import { openAssigneePicker } from "../src/core/trackerAssigneePicker.js";
-import { createIssueParams, labelsFromText, openCreateIssue } from "../src/core/trackerCreate.js";
+import { assigneeWentNowhere, createIssueParams, labelsFromText, openCreateIssue } from "../src/core/trackerCreate.js";
 import { issue } from "./trackerWireFixture.js";
 
 const PROJECT_KEY = "dev-1|proj-1";
@@ -418,5 +418,57 @@ describe("what the picker leaves to the issue", () => {
     press("[data-assign-go]");
     await flush();
     expect(call.mock.calls[0][1]).not.toHaveProperty("status");
+  });
+});
+
+// A v1 handler parses params into its own struct and serialises THAT back
+// before the implementation reads them, so a field the bridge predates is
+// dropped at the facade rather than refused. Filing with an assignee on a
+// bridge whose `issues.create` does not take one answers ok with an unassigned
+// issue — no error, and nothing in the answer that says so.
+describe("an assignee a bridge dropped on the floor", () => {
+  const filed = (over = {}) => ({ issue: issue({ id: "issue-1", number: 12, ...over }) });
+
+  it("reads the answer against the request", () => {
+    // Asked for somebody, came back held by nobody: dropped.
+    expect(assigneeWentNowhere({ kind: "project_agent" }, filed())).toBe(true);
+    // Asked for somebody and got them: fine.
+    expect(assigneeWentNowhere({ kind: "project_agent" }, filed({ assignee: { kind: "project_agent" } }))).toBe(false);
+    // Asked for nobody: an unassigned issue is what was wanted.
+    expect(assigneeWentNowhere(null, filed())).toBe(false);
+  });
+
+  // Assignment is dispatch, so a dropped assignee is work the reader believes
+  // has started and has not. That is the worst thing to leave unsaid.
+  it("says so after the file, rather than in a dialog that already succeeded", async () => {
+    const onFiled = vi.fn();
+    call = vi.fn(async () => filed());
+    handle = openCreateIssue({
+      projectId: "proj-1", projectName: "Build", options: options(), catalog: CATALOG, callRpc: call, onFiled,
+    });
+    const title = document.querySelector("#issue-new-title");
+    title.value = "Kanban drag";
+    title.dispatchEvent(new Event("input"));
+    await choose("project_agent");
+    document.querySelector("[data-create-go]").click();
+    await flush();
+    expect(onFiled.mock.calls[0][1]).toEqual({ assigneeWentNowhere: true });
+    handle = null;
+  });
+
+  it("says nothing when the assignee landed", async () => {
+    const onFiled = vi.fn();
+    call = vi.fn(async () => filed({ assignee: { kind: "project_agent" } }));
+    handle = openCreateIssue({
+      projectId: "proj-1", projectName: "Build", options: options(), catalog: CATALOG, callRpc: call, onFiled,
+    });
+    const title = document.querySelector("#issue-new-title");
+    title.value = "Kanban drag";
+    title.dispatchEvent(new Event("input"));
+    await choose("project_agent");
+    document.querySelector("[data-create-go]").click();
+    await flush();
+    expect(onFiled.mock.calls[0][1]).toEqual({ assigneeWentNowhere: false });
+    handle = null;
   });
 });

@@ -351,6 +351,30 @@ describe("the two presses", () => {
     host.querySelector("[data-issue-new]").click();
     expect(openCreateIssue.mock.calls[0][0].projectId).toBe("proj-1");
   });
+
+  // A bridge that predates `issues.create`'s assignee drops it at the facade
+  // and answers ok, so the issue is filed and nobody holds it. Assignment is
+  // dispatch, so that is work the reader believes has started and has not.
+  it("says when a filed issue's assignee went nowhere", async () => {
+    await mount();
+    host.querySelector("[data-issue-new]").click();
+    const { onFiled } = openCreateIssue.mock.calls[0][0];
+    onFiled({ issue: issue({ id: "issue-1", number: 12 }) }, { assigneeWentNowhere: true });
+    await flush();
+    expect(notifyError).toHaveBeenCalledWith(
+      "Filed #12 — but nobody was assigned",
+      expect.stringContaining("created unassigned and nothing was started"),
+    );
+  });
+
+  it("says nothing of the sort when the assignee landed", async () => {
+    await mount();
+    host.querySelector("[data-issue-new]").click();
+    const { onFiled } = openCreateIssue.mock.calls[0][0];
+    onFiled({ issue: issue({ id: "issue-1", number: 12 }) }, { assigneeWentNowhere: false });
+    await flush();
+    expect(notifyError).not.toHaveBeenCalled();
+  });
 });
 
 describe("the push", () => {

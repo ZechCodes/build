@@ -196,6 +196,16 @@ export function mountIssuesPane(host, options) {
     void state.refreshCatalog?.().then((catalog) => state.picker?.setCatalog(catalog));
   }
 
+  /** The issue was filed and the assignee was not. Said after the fact rather
+   *  than in the dialog, because the filing SUCCEEDED — keeping the form up
+   *  would invite a second one — and said persistently, because the reader
+   *  believes an agent is working and none is. */
+  const sayTheAssigneeWasDropped = (issue) =>
+    notifyError(
+      `Filed #${issue?.number ?? ""} — but nobody was assigned`,
+      "The Build on this machine cannot assign an issue as it is filed, so it was created unassigned and nothing was started. Assign it from the issue page.",
+    );
+
   function fileIssue() {
     openCreateIssue({
       projectId: state.projectId,
@@ -203,8 +213,9 @@ export function mountIssuesPane(host, options) {
       options: assigneeOptions(groups()),
       catalog: state.catalog(),
       callRpc: state.callRpc,
-      onFiled: (answer) => {
+      onFiled: (answer, outcome) => {
         void refresh();
+        if (outcome?.assigneeWentNowhere) sayTheAssigneeWasDropped(answer?.issue);
         if (answer?.issue) state.navigate?.({ name: "trackerIssue", projectId: state.projectId, deviceId: state.deviceId, issueId: answer.issue.id });
       },
     });

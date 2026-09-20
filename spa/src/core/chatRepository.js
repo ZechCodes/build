@@ -107,6 +107,26 @@ const messageSnapshot = ({ body = "", attachments = [], viewing_context, ...rest
 const deliveryMayHaveStarted = (error) =>
   error?.uncertain === true || (error?.timedOut === true && error?.uncertain !== false);
 
+/**
+ * Whether the bridge just said it has never heard of this operation.
+ *
+ * That is the one refusal that settles an uncertain post the other way: the
+ * ledger is durable and committed with the transcript mutation it acknowledges
+ * (bridge/src/operation.rs), so an id it cannot find is an id that never
+ * arrived, and re-sending it cannot duplicate anything. The code is what a 1.x
+ * bridge names (`not_found`); the sentence is the 1.0 fallback, where a refusal
+ * carries no code and the string is all there is.
+ */
+const neverReachedTheBridge = (error) =>
+  error?.code === "not_found"
+  || error?.error_code === "not_found"
+  || /unknown operation_id/i.test(error?.message || "");
+
+/** What one uncertain post's resolution amounts to, for the caller and the
+ *  diagnostics — never a throw: one post that cannot be resolved must not stop
+ *  the ones behind it in the queue. */
+const resolution = (operationId, outcome, extra = {}) => ({ operationId, outcome, ...extra });
+
 function assertAddress(identity) {
   if (!identity.entityId) throw new Error("Chat controller requires an entity id");
   if (!identity.agentId) throw new Error("Chat controller requires an agent id");
@@ -159,6 +179,9 @@ class ChatController {
   #listeners;
   #choices;
   #operations;
+  /** Every operation this controller has already re-sent unprompted, so the
+   *  automatic recovery is once per post and not once per reconnect. */
+  #resent;
   #threadState;
 
   constructor(repository, identity) {
@@ -183,6 +206,7 @@ class ChatController {
       onChange: (choice) => repository.writeControllerState(this.#identity, { choice }),
     });
     this.#operations = new Map();
+    this.#resent = new Set();
   }
 
   get identity() {
@@ -423,10 +447,67 @@ class ChatController {
   }
 
   async reconcileUncertain() {
-    const uncertain = [...this.#operations.values()].filter((operation) =>
+    const uncertain = this.#uncertainPosts();
+    return Promise.allSettled(uncertain.map((operation) => this.operationStatus(operation.submission)));
+  }
+
+  /** The posts this conversation is unsure about, oldest first — insertion
+   *  order is submission order, which is the order they have to be settled in. */
+  #uncertainPosts() {
+    return [...this.#operations.values()].filter((operation) =>
       operation.status === "uncertain" && operation.submission.threadPostOperations,
     );
-    return Promise.allSettled(uncertain.map((operation) => this.operationStatus(operation.submission)));
+  }
+
+  /**
+   * Settle every uncertain post in this conversation, without a press (#30).
+   *
+   * One at a time and in submission order: the answers are not independent —
+   * re-sending the second message of a pair before the first would land them
+   * out of order in the transcript, and a conversation is a sequence.
+   *
+   * Each answer is a resolution rather than a throw. A post that cannot be
+   * settled now stays uncertain and is tried again on the next reconnect, and
+   * it does not take the posts behind it down with it.
+   */
+  async resolveUncertain() {
+    const resolved = [];
+    for (const operation of this.#uncertainPosts()) {
+      resolved.push(await this.#resolveOne(operation));
+    }
+    return resolved;
+  }
+
+  async #resolveOne(operation) {
+    const { operationId } = operation.submission;
+    try {
+      const status = await this.operationStatus(operation.submission);
+      // The bridge has it. "uncertain" there is the bridge's own doubt about
+      // whether the provider took the turn, which a re-send would answer by
+      // writing the message twice — so it stays as it is and keeps its button.
+      return status.status === "uncertain"
+        ? resolution(operationId, "uncertain-at-bridge")
+        : resolution(operationId, "landed", { status: status.status });
+    } catch (error) {
+      if (!neverReachedTheBridge(error)) return resolution(operationId, "unresolved", { error: error?.message || "" });
+      return this.#resendOnce(operation);
+    }
+  }
+
+  /** The post never arrived, so send it again — once. A re-send that dies on
+   *  the wire leaves the post uncertain, and a second automatic attempt every
+   *  time the device reconnects is a message the reader never asked to send
+   *  four times. After one, it is theirs to retry. */
+  async #resendOnce(operation) {
+    const { operationId } = operation.submission;
+    if (this.#resent.has(operationId)) return resolution(operationId, "given-up");
+    this.#resent.add(operationId);
+    try {
+      await this.retry(operation.submission, operation.extra || {});
+      return resolution(operationId, "resent");
+    } catch (error) {
+      return resolution(operationId, "resend-failed", { error: error?.message || "" });
+    }
   }
 
   recoveries() {
@@ -795,6 +876,42 @@ export function createChatRepository({
       repository.assertActive();
       if (typeof nextCall !== "function") throw new Error("Chat repository requires an RPC call function");
       currentCall = nextCall;
+    },
+
+    /**
+     * Settle every post this device is unsure about, over the session it is on
+     * now (#30 point 2).
+     *
+     * Called when a reconnect has greeted its bridge, which is the first moment
+     * there is anything to ask: the repository outlives a session, so the posts
+     * a dead path stranded are still here, and the ledger that can answer them
+     * is reachable again. Every conversation, not only the one on screen — the
+     * rail reconciles the selected agent when it re-reads its row, and that left
+     * a post in an unopened conversation saying "Delivery uncertain" until
+     * somebody happened to look at it.
+     *
+     * Conversations are settled one after another rather than at once: the
+     * re-sends are writes to a transcript, and a device that has just come back
+     * should not be handed a burst of them.
+     *
+     * Never throws. A resolution that cannot be reached is reported and tried
+     * again on the next reconnect; a repository whose scope has gone, or a
+     * bridge with no operation ledger, has nothing to do here and says so with
+     * an empty list.
+     */
+    async resolveUncertainPosts() {
+      if (!active || !threadPostOperations) return [];
+      const resolved = [];
+      for (const controller of [...controllers.values()]) {
+        if (!active) break;
+        try {
+          resolved.push(...await controller.resolveUncertain());
+        } catch {
+          /* One conversation's failure is not the others': the posts behind it
+             are still worth settling, and this one is tried again next time. */
+        }
+      }
+      return resolved;
     },
 
     dispose() {

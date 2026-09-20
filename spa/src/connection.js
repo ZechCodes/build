@@ -551,6 +551,17 @@ export function greetLiveBridge(context, {
       adoptBridgeSelection(context, selection, adapter);
       return adapter;
     },
+  }).then((settled) => {
+    // #30: a greeting that landed is the first moment a reconnect can settle
+    // the posts the last session left uncertain — the repository outlived that
+    // session, and the bridge's operation ledger can be asked again. Not
+    // awaited: the app comes back the moment the bridge has said what it
+    // speaks, and the recovery announces itself through the controllers when it
+    // answers. `settled` passes through untouched.
+    if (isAuthoritative() && contextFor(session.deviceId)?.session === session) {
+      void repository?.resolveUncertainPosts();
+    }
+    return settled;
   }).catch((error) => {
     // Wake greeting-dependent reads only after this failed session is marked
     // unavailable; otherwise the feed can send a request between the rejected

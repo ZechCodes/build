@@ -123,3 +123,83 @@ describe("what a greeting settles on the device it greeted", () => {
     expect(replacement.installAdapter).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---- #30: the reconnect settles what the dead path left uncertain -----------
+
+describe("a reconnect's greeting resolving the posts the last session stranded", () => {
+  /** A device whose repository is holding one post uncertain, as a path that
+   *  died mid-send leaves it. */
+  const strandedDevice = async (deviceId = "dev-c") => {
+    const first = bridgeAnswering(deviceId, {
+      api_version: "1.2.0",
+      thread_post_operations: { version: 1, status_method: "thread.operation" },
+    });
+    const context = adoptDeviceSession(first);
+    await greetLiveBridge(context);
+    const controller = context.chatRepository.controller({
+      entityId: "run-1",
+      agentId: "agent-1",
+      conversationId: "conversation-1",
+    });
+    // The send goes out on a wire that stops carrying: the post is uncertain.
+    first.call.mockImplementation(async () => {
+      throw Object.assign(new Error("thread.post timed out"), { timedOut: true, uncertain: true, deadline: "path" });
+    });
+    const submission = controller.captureSubmission({ body: "stranded", attachments: [] });
+    await expect(controller.post(submission)).rejects.toThrow("timed out");
+    expect(controller.recoveries().map((one) => one.status)).toEqual(["uncertain"]);
+    return { context, controller };
+  };
+
+  it("asks the operation ledger about it without anybody pressing Check delivery", async () => {
+    const { context, controller } = await strandedDevice();
+    const asked = [];
+    const reconnected = bridgeAnswering("dev-c", {
+      api_version: "1.2.0",
+      thread_post_operations: { version: 1, status_method: "thread.operation" },
+    });
+    reconnected.call.mockImplementation(async (method, params = {}) => {
+      asked.push(method);
+      if (method === "session.hello") {
+        return { api_version: "1.2.0", thread_post_operations: { version: 1, status_method: "thread.operation" } };
+      }
+      return {
+        operation_id: params.operation_id,
+        entity_id: params.entity_id,
+        agent_id: params.agent_id,
+        conversation_id: "conversation-1",
+        choice_revision: 0,
+        posted_sequence: 4,
+        status: "delivered",
+      };
+    });
+    expect(adoptDeviceSession(reconnected)).toBe(context);
+
+    await greetLiveBridge(context);
+    await Promise.resolve(); // the resolution is not awaited by the greeting
+    await Promise.resolve();
+
+    expect(asked).toContain("thread.operation");
+    expect(controller.recoveries()).toEqual([]);
+  });
+
+  it("does not hold the app back on it: the greeting settles first", async () => {
+    const { context } = await strandedDevice("dev-d");
+    let releaseLedger;
+    const reconnected = bridgeAnswering("dev-d", {});
+    reconnected.call.mockImplementation(async (method) => {
+      if (method === "session.hello") {
+        return { api_version: "1.2.0", thread_post_operations: { version: 1, status_method: "thread.operation" } };
+      }
+      return new Promise((resolve) => { releaseLedger = resolve; });
+    });
+    expect(adoptDeviceSession(reconnected)).toBe(context);
+
+    // A ledger that never answers must not keep the machine from being usable.
+    await greetLiveBridge(context);
+
+    expect(context.apiVersion).toBe("1.2.0");
+    expect(canAnswer(context)).toBe(true);
+    releaseLedger?.({});
+  });
+});

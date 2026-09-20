@@ -224,6 +224,29 @@ describe("the bubble strip", () => {
 // The project's agent is reachable from every workspace in the project — that
 // is what makes it the PROJECT's — so a workspace's strip carries it above a
 // line, with the workspace's own agents below.
+describe("the project's own page", () => {
+  // The page and the strip agree about whose agent this is: on the project's
+  // own conversation the bubbles wear what the project's bubble wears above
+  // the line on a workspace — the initial, squared off — not a work item's face.
+  it("dresses the project's agents in the project's initial", () => {
+    const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "project", projectName: "build" });
+    expect(bubbles.map((bubble) => bubble.type)).toEqual(["agent"]);
+    expect(bubbles[0]).toMatchObject({ label: "B", pattern: null, project: true, active: true });
+  });
+
+  it("dresses the ghost the same way before the project's agent is born", () => {
+    const [ghost] = railBubbles({ agents: [], kind: "project", projectName: "build" });
+    expect(ghost).toMatchObject({ type: "ghost", label: "B", pattern: null, project: true });
+  });
+
+  it("leaves a work item's bubbles wearing their faces", () => {
+    const [bubble] = railBubbles({ agents: [agent()], kind: "workspace", projectName: "build" });
+    expect(bubble.label).toBe("");
+    expect(bubble.pattern).not.toBe(null);
+    expect(bubble.project).toBeUndefined();
+  });
+});
+
 describe("the project's agent on a workspace's strip", () => {
   const projectAgent = (over = {}) => ({ name: "build", entityId: null, agents: [], active: false, ...over });
 

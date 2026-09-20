@@ -204,6 +204,7 @@ async function mountProjectRail(state) {
     state.rail = mountAgentRail($("#agent-rail"), {
       kind: "project",
       projectId: state.route.projectId,
+      projectName: state.page.name,
       entityId: answer?.entity_id || answer?.run_id || null,
       deviceId: state.context.deviceId,
       callRpc: state.context.rpc,

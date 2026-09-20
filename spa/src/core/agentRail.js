@@ -470,6 +470,9 @@ const bubbleFaceHtml = (bubble) => {
 
 const bubbleClasses = (bubble) => {
   const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
+  // The project's own agent, on the project's own page: squared off and
+  // wearing the initial, the way it is above the line on a workspace's strip.
+  if (bubble.project && bubble.type !== "project") classes.push("rail-bubble-project");
   if (bubble.active) classes.push("active");
   if (bubble.working) classes.push("working");
   if (bubble.starting) classes.push("starting");
@@ -748,8 +751,21 @@ function projectAgentState(context) {
     projectAgent,
     standing,
     entityId: (standing ? context.entityId : projectAgent?.entityId) || null,
-    name: projectAgent?.name || "",
+    name: knownProjectName(context),
+    projectId: railProjectId(context),
   };
+}
+
+/** The name the view already knew, on a page that has one; the project list
+ *  read fills it in where the view mounted before its feed landed. */
+const knownProjectName = (context) => context.projectAgent?.name || context.projectName || "";
+
+/** The project this rail is about, on either kind of page: the one above the
+ *  work item, or the one whose own page this is. Null on a rail that has
+ *  neither — an issue's, say — which reads no project at all. */
+function railProjectId(context) {
+  if (context.projectAgent?.projectId) return context.projectAgent.projectId;
+  return context.kind === "project" ? context.projectId || null : null;
 }
 
 /** Which conversation the rail was asked to keep beside the one it stands on. */
@@ -810,7 +826,7 @@ function mountRailOnContext(host, context, swap) {
   // project's when this is the workspace, the workspace's when this is the
   // project. `alongside` is the one it is NOT standing on, read for the bubbles
   // of it the strip carries and for nothing else.
-  const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName } = projectAgentState(context);
+  const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
   let projectOwner = knownOwner;
   let projectName = knownName;
   let mintingProjectAgent = false;
@@ -1256,7 +1272,25 @@ function mountRailOnContext(host, context, swap) {
   /// The project's own row in the cached project list, or nothing when that
   /// machine has no such project.
   const listedProjectRow = (listed) =>
-    (listed || []).find((project) => project.project_id === projectAgent.projectId);
+    (listed || []).find((project) => project.project_id === projectId);
+
+  /// The project's row out of the cached project list — the one read that
+  /// names a project without minting anything on it.
+  const listedProject = async () => {
+    const address = cacheScope?.address({ entityId: "", kind: PROJECTS_RECORD_KIND });
+    return address ? listedProjectRow((await readCached(address))?.value) : null;
+  };
+
+  /// The project's own page asks that list for one thing only — the name its
+  /// bubbles cut their initial from. Its owner is the conversation this rail
+  /// is already standing on, and there is nothing beside it to refresh.
+  const readProjectPageName = async () => {
+    if (projectAgent || !projectId) return;
+    const row = await listedProject();
+    if (disposed || !row?.name) return;
+    projectName = row.name;
+    paint();
+  };
 
   /// What the project above this work item is called, and whether it has a
   /// conversation yet. The project list is the only read that answers the
@@ -1266,8 +1300,7 @@ function mountRailOnContext(host, context, swap) {
   /// to be started is a true thing to show until the press that mints one.
   const readProjectAgent = async () => {
     if (!projectAgent || (projectOwner && projectName)) return;
-    const address = cacheScope?.address({ entityId: "", kind: PROJECTS_RECORD_KIND });
-    const row = address && listedProjectRow((await readCached(address))?.value);
+    const row = await listedProject();
     if (disposed || !row) return;
     learnProjectFacts({ entityId: row.entity_id || row.run_id, name: row.name });
     paint();
@@ -1470,6 +1503,7 @@ function mountRailOnContext(host, context, swap) {
       addingAgent,
       canAdd: onProjectAgentRail ? below.canAdd : null,
       projectAgent: projectAgentEntry(),
+      projectName,
     }));
     let panel = host.querySelector("#rail-panel");
     if (panelOut() && !panel) {
@@ -2978,6 +3012,7 @@ function mountRailOnContext(host, context, swap) {
   paint();
   refresh();
   readProjectAgent();
+  readProjectPageName();
   // The harnesses and their models, asked of the machine this rail is mounted
   // on and held there (core/modelCatalog.js). The new-agent view leads with
   // that bridge's default, which is this answer's to give, so a paint that

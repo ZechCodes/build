@@ -241,11 +241,21 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
  * brings the agent into being — so the ghost wears the face that first agent
  * will. Nothing can be added beside an agent that is not there yet, so the `+`
  * waits for it.
+ *
+ * On the project's OWN page the rail stands on the project's conversation with
+ * nothing above the line, and its agents are the project's agent: they wear the
+ * project's initial and the squared-off bubble, the same face that conversation
+ * has on every workspace's strip, so the page and the strip agree about whose
+ * agent this is. `projectName` is what that initial is cut from.
  */
-export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false, canAdd = null, projectAgent = null } = {}) {
-  const own = ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd });
+export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false, canAdd = null, projectAgent = null, projectName } = {}) {
+  const own = ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd, projectName });
   return projectAgent ? underTheProject(own, projectAgent) : own;
 }
+
+/** The face a bubble on the project's own conversation wears: the project's
+ *  initial in place of a pattern, flagged so the strip squares it off. */
+const projectFace = (projectName) => ({ label: projectInitial(projectName), pattern: null, project: true });
 
 /** The work item's half of the strip, with the project's above it: the
  *  project's bubble, the line, and the work item's own below. The panel holds
@@ -257,14 +267,15 @@ function underTheProject(own, projectAgent) {
 }
 
 /** The bubbles of the work item the rail is standing on, and nothing else. */
-function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd }) {
+function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd, projectName }) {
+  const onProjectPage = kind === "project";
+  const face = (pattern) => (onProjectPage ? projectFace(projectName) : { label: "", pattern });
   if (!agents.length) {
     return [
       {
         type: "ghost",
         id: "",
-        label: "",
-        pattern: agentPattern(1),
+        ...face(agentPattern(1)),
         title: chatCapable ? "Send a message to start an agent here" : "No agent conversation is attached to this workspace",
         active: true,
         unread: 0,
@@ -275,8 +286,7 @@ function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd
   const bubbles = agents.map((agent) => ({
     type: "agent",
     id: agent.id,
-    label: "",
-    pattern: agentPattern(agent.ordinal),
+    ...face(agentPattern(agent.ordinal)),
     title: bubbleTip(agent),
     active: !addingAgent && agent.id === selectedId,
     unread: agent.unread_count || 0,

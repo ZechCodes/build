@@ -4363,6 +4363,39 @@ describe("what the conversation points at", () => {
 // agent is the one agent that talks about a project instead of working in a
 // checkout, and the harness for that job is often not the one coding work
 // leads with. The setting is persistent, so no browser is asked at first use.
+// On the project's own page the bubbles ARE the project's agent, so they wear
+// what that agent wears above the line on a workspace's strip: the project's
+// initial in a squared-off bubble, not a work item's pattern.
+describe("the project's own page", () => {
+  it("dresses the project's agent in the project's initial", async () => {
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      return method === "models.list" ? CATALOG : {};
+    });
+    payload = { entity_id: "run-project", project_id: "p1", agents: [agent({ id: "ag-project", ordinal: 1, state: "idle" })] };
+    await writeRailBoard({ items: [payload], projects: [{ project_id: "p1", name: "build" }] });
+    await mount({ kind: "project", projectId: "p1", entityId: "run-project" });
+    await flush();
+
+    const bubble = railHost().querySelector('[data-bubble="agent"]');
+    expect(bubble.classList.contains("rail-bubble-project")).toBe(true);
+    expect(bubble.querySelector(".rail-bubble-label").textContent).toBe("B");
+    expect(bubble.querySelector("canvas")).toBeNull();
+  });
+
+  it("dresses the ghost the same way before the agent is born", async () => {
+    bridge.call = vi.fn(async (method) => (method === "models.list" ? CATALOG : {}));
+    payload = { entity_id: "run-project", project_id: "p1", agents: [] };
+    await writeRailBoard({ items: [payload], projects: [{ project_id: "p1", name: "build" }] });
+    await mount({ kind: "project", projectId: "p1", entityId: "run-project" });
+    await flush();
+
+    const ghost = railHost().querySelector('[data-bubble="ghost"]');
+    expect(ghost.classList.contains("rail-bubble-project")).toBe(true);
+    expect(ghost.querySelector(".rail-bubble-label").textContent).toBe("B");
+  });
+});
+
 describe("a new agent on a project's rail", () => {
   const cards = () => [...railHost().querySelectorAll(".rail-newagent .rail-harness-choice")];
   const card = (provider) => cards().find((entry) => entry.dataset.provider === provider);

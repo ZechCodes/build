@@ -51,6 +51,7 @@ impl AppState {
             subject: ReadSubject::ProjectList { projects },
             issue_id: None,
             if_diff_key: None,
+            with_patch: true,
             #[cfg(test)]
             gate: self.off_lock_project_list_gate.clone(),
         })));

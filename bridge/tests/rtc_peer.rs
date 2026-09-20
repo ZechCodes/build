@@ -50,13 +50,15 @@ struct RelaySession {
 
 impl RelaySession {
     /// Send one request and wait for its own reply, skipping any reply that
-    /// belongs to a request trickling alongside it.
+    /// belongs to a request trickling alongside it — and the receipt the
+    /// intake sends on admission, which names this request and settles
+    /// nothing.
     async fn call(&self, method: &str, params: Value) -> Value {
         let id = self.ask(method, params).await;
         let mut replies = self.replies.lock().await;
         loop {
             let reply = within_patience(replies.recv()).await;
-            if reply["id"] == json!(id) {
+            if reply["id"] == json!(id) && reply.get("accepted").is_none() {
                 return reply;
             }
         }

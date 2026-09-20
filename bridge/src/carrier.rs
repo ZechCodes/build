@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::api::ApiError;
@@ -251,6 +251,40 @@ fn is_signaling(frame: &Frame) -> bool {
 /// The method namespace a relay carrier may carry (spec rule 1).
 const SIGNALING_PREFIX: &str = "rtc.";
 
+/// The verb that puts an attachment's bytes on the device.
+///
+/// One verb, named here rather than pattern-matched: what may skip the queue is
+/// a decision, and a prefix rule would hand the exemption to the next verb that
+/// happens to share a namespace.
+const ATTACHMENT_WRITE: &str = "thread.attach";
+
+fn writes_an_attachment(frame: &Frame) -> bool {
+    frame.payload.get("method").and_then(Value::as_str) == Some(ATTACHMENT_WRITE)
+}
+
+/// "This request is on the device", sent the moment it is admitted.
+///
+/// A client cannot tell a request that never arrived from one waiting behind
+/// eleven agents' work, so it has to assume the worst and give up on its own
+/// deadline — which is how a phone reported an attachment as failed while the
+/// bridge was busy storing it. The receipt separates the two questions: the
+/// deadline before it is about the PATH, and after it the client waits for an
+/// answer that is on its way.
+///
+/// It carries the request's id and nothing else. `ok` is deliberately absent —
+/// that field is what says a reply has settled a call, and a receipt settles
+/// nothing.
+fn receipt_for(frame: &Frame) -> Option<Value> {
+    // Only a request is receipted: a push or an answer riding the other way
+    // names no method, and nothing is waiting on it.
+    frame.payload.get("method").and_then(Value::as_str)?;
+    let id = frame.payload.get("id")?.clone();
+    if id.is_null() {
+        return None;
+    }
+    Some(json!({ "id": id, "accepted": true }))
+}
+
 /// The answer to a `ping`, built here rather than queued for a worker.
 ///
 /// A ping asks one question — "is this path alive" — and the answer is the
@@ -299,6 +333,10 @@ enum CarrierKind {
 /// One live wire — a relay socket generation, or a DataChannel — as everything
 /// above the wire sees it: somewhere to put envelopes for any session, since one
 /// wire carries every client session of the device.
+///
+/// `Clone` is the same wire in another hand, not a second wire: the id and the
+/// queue are what identify it, and both are shared.
+#[derive(Clone)]
 pub(crate) struct CarrierHandle {
     id: CarrierId,
     kind: CarrierKind,
@@ -693,8 +731,33 @@ impl FrameIntake {
             sender.push(pong);
             return Ok(());
         }
+        // The receipt goes out the moment the frame is admitted, before
+        // anything decides how long answering will take.
+        if let Some(receipt) = receipt_for(&frame) {
+            sender.push(receipt);
+        }
+        if writes_an_attachment(&frame) {
+            self.answer_without_queueing(sender, frame);
+            return Ok(());
+        }
         self.dispatcher.dispatch(sender, frame).await;
         Ok(())
+    }
+
+    /// Answer a frame on the spot, off the dispatcher's queues entirely.
+    ///
+    /// For the frames whose cost is their own and nobody else's: an attachment
+    /// is a write of bytes the client already holds, and waiting behind a
+    /// stranger's worktree scan is what turned a 15 KB upload into a timeout on
+    /// a phone. `spawn_blocking`, because the handler takes the app lock and
+    /// writes to disk and this runs on the channel's own reader task — which
+    /// has to go on reading, not least so the parts of the NEXT upload arrive.
+    fn answer_without_queueing(&self, sender: SessionSender, frame: Frame) {
+        let handler = self.dispatcher.handler();
+        tokio::task::spawn_blocking(move || {
+            let answer = handler.call(sender.clone(), frame);
+            sender.push(answer);
+        });
     }
 
     /// Rule 1 of the strict P2P transport spec, enforced here because this is
@@ -1513,15 +1576,14 @@ mod intake_tests {
     /// back, so it is answered before the queue.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_ping_answers_while_every_worker_and_the_queue_are_full() {
-        let wedged = Arc::new(std::sync::Barrier::new(2));
-        let held = Arc::clone(&wedged);
         let intake = FrameIntake::with_pool(
             FrameHandler::new(
                 crate::timing::FrameClock::new(),
-                move |_sender, _frame, _timer| {
-                    // One worker, held until the test lets it go: this is the pool
-                    // being full, which is the state the daemon reaches under load.
-                    held.wait();
+                |_sender, _frame, _timer| {
+                    // One worker, held long enough that nothing here is
+                    // explained by the pool draining — and bounded, so a failed
+                    // assertion cannot leave a thread parked for ever.
+                    std::thread::sleep(Duration::from_secs(2));
                     json!({ "ok": true })
                 },
             ),
@@ -1537,8 +1599,8 @@ mod intake_tests {
             .unwrap();
         out.try_recv().expect("the accept rode the carrier");
 
-        // The worker takes the first frame and stops on the barrier; the second
-        // fills the one queue slot behind it.
+        // The worker takes the first frame and holds it; the second fills the
+        // one queue slot behind it.
         for id in [1, 2] {
             intake
                 .accept(
@@ -1562,8 +1624,7 @@ mod intake_tests {
             .await
             .expect("the ping was admitted");
 
-        let answered = within_patience(out.recv()).await;
-        let pong = SessionSender::decrypt_push(&key, &answered);
+        let pong = answer_past_receipts(&key, &mut out).await;
         assert_eq!(
             pong["id"],
             json!(3),
@@ -1577,8 +1638,22 @@ mod intake_tests {
             json!(crate::api::API_VERSION),
             "the fast path answers in the shape `route` does: {pong:?}"
         );
+    }
 
-        wedged.wait(); // let the held worker go, so the pool drains with the test
+    /// The next thing on the wire that is not a receipt.
+    ///
+    /// Every admitted request is receipted the moment it is taken, so a test
+    /// about an ANSWER reads past them.
+    async fn answer_past_receipts(
+        key: &str,
+        out: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
+    ) -> Value {
+        loop {
+            let seen = SessionSender::decrypt_push(key, &within_patience(out.recv()).await);
+            if seen.get("accepted").is_none() {
+                return seen;
+            }
+        }
     }
 
     /// The terminal's own session pings too — and its session was minted over
@@ -1590,13 +1665,11 @@ mod intake_tests {
     /// times out, which is a browser that closes a peer that was carrying.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_terminal_session_is_ponged_on_the_channel_it_pinged_over() {
-        let wedged = Arc::new(std::sync::Barrier::new(2));
-        let held = Arc::clone(&wedged);
         let intake = FrameIntake::with_pool(
             FrameHandler::new(
                 crate::timing::FrameClock::new(),
-                move |_sender, _frame, _timer| {
-                    held.wait();
+                |_sender, _frame, _timer| {
+                    std::thread::sleep(Duration::from_secs(2));
                     json!({ "ok": true })
                 },
             ),
@@ -1638,8 +1711,7 @@ mod intake_tests {
             .await
             .expect("the ping was admitted");
 
-        let answered = within_patience(term_out.recv()).await;
-        let pong = SessionSender::decrypt_push(&key, &answered);
+        let pong = answer_past_receipts(&key, &mut term_out).await;
         assert_eq!(
             pong["id"],
             json!(9),
@@ -1650,8 +1722,6 @@ mod intake_tests {
             relay_out.try_recv().is_err(),
             "and nothing was written to the relay socket the session was minted over"
         );
-
-        wedged.wait();
     }
 
     /// A frame too big for one DataChannel message still arrives whole, with
@@ -1684,7 +1754,10 @@ mod intake_tests {
         );
         let json = serde_json::to_string(&envelope).expect("an envelope serializes");
         let parts = crate::rtc::chunk::split(&json);
-        assert!(parts.len() > 1, "this payload has to be chunked to be the test it is");
+        assert!(
+            parts.len() > 1,
+            "this payload has to be chunked to be the test it is"
+        );
 
         // The channel reader's own loop: parts in, one whole envelope out, and
         // only then the intake.
@@ -1706,6 +1779,143 @@ mod intake_tests {
             within_patience(seen.recv()).await,
             "data:s-upload",
             "the upload reached a handler rather than being eaten by the fast path"
+        );
+    }
+
+    /// Every admitted request is receipted at once, whatever the pool is doing.
+    ///
+    /// The receipt is the device saying "I have this". It is what lets a client
+    /// stop counting the seconds against a queue it cannot see: the deadline
+    /// before it is about the wire, and after it the client is waiting for work
+    /// it knows was taken.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_admitted_request_is_receipted_while_the_pool_is_wedged() {
+        let intake = FrameIntake::with_pool(
+            FrameHandler::new(
+                crate::timing::FrameClock::new(),
+                |_sender, _frame, _timer| {
+                    // Long enough that nothing here is explained by the pool having
+                    // drained, bounded so the runtime can still shut down.
+                    std::thread::sleep(Duration::from_secs(2));
+                    json!({ "ok": true })
+                },
+            ),
+            TRANSPORT.clone(),
+            1,
+            1,
+        );
+        let (channel, mut out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &channel)
+            .unwrap();
+        out.try_recv().expect("the accept rode the carrier");
+
+        // One frame takes the worker, one fills the queue, and the third finds
+        // `dispatch` waiting for a slot. Each rides its own task, because the
+        // receipt goes out BEFORE that wait, which is the whole point.
+        for id in [1, 2, 3] {
+            let frame = client_request(
+                &key,
+                "s-1",
+                "data",
+                json!({ "id": id, "method": "board.list" }),
+            );
+            let admitted = Arc::clone(&intake);
+            let carrier = channel.clone();
+            tokio::spawn(async move {
+                let _ = admitted.accept(frame, &carrier).await;
+            });
+        }
+
+        let mut receipted = Vec::new();
+        while receipted.len() < 3 {
+            let seen = SessionSender::decrypt_push(&key, &within_patience(out.recv()).await);
+            assert_eq!(
+                seen["accepted"],
+                json!(true),
+                "a receipt settles nothing: {seen:?}"
+            );
+            assert!(seen.get("ok").is_none(), "and carries no verdict: {seen:?}");
+            receipted.push(seen["id"].as_u64().expect("a receipt names its request"));
+        }
+        receipted.sort_unstable();
+        assert_eq!(receipted, vec![1, 2, 3]);
+    }
+
+    /// An attachment is written where it is admitted, not behind the queue.
+    ///
+    /// The bytes are the client's own and the work is its own: waiting behind a
+    /// stranger's worktree scan is what turned a 15 KB upload into a timeout on
+    /// a phone. It answers on the carrier it arrived on, with the pool full.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_attachment_is_written_while_the_pool_is_wedged() {
+        let intake = FrameIntake::with_pool(
+            FrameHandler::new(
+                crate::timing::FrameClock::new(),
+                |_sender, frame, _timer| {
+                    let method = frame.payload["method"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    if method != "thread.attach" {
+                        std::thread::sleep(Duration::from_secs(2));
+                    }
+                    json!({ "id": frame.payload["id"], "ok": true, "result": { "ran": method } })
+                },
+            ),
+            TRANSPORT.clone(),
+            1,
+            1,
+        );
+        let (channel, mut out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &channel)
+            .unwrap();
+        out.try_recv().expect("the accept rode the carrier");
+
+        for id in [1, 2] {
+            let frame = client_request(
+                &key,
+                "s-1",
+                "data",
+                json!({ "id": id, "method": "board.list" }),
+            );
+            let admitted = Arc::clone(&intake);
+            let carrier = channel.clone();
+            tokio::spawn(async move {
+                let _ = admitted.accept(frame, &carrier).await;
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await; // the pool is taken
+        intake
+            .accept(
+                client_request(
+                    &key,
+                    "s-1",
+                    "data",
+                    json!({ "id": 3, "method": "thread.attach", "params": { "content_b64": "aGk=" } }),
+                ),
+                &channel,
+            )
+            .await
+            .expect("the attachment was admitted");
+
+        // Past the three receipts, the first answer on the wire is the
+        // attachment's — the two frames ahead of it are still in the pool.
+        let mut answers = Vec::new();
+        while answers.is_empty() {
+            let seen = SessionSender::decrypt_push(&key, &within_patience(out.recv()).await);
+            if seen.get("accepted").is_some() {
+                continue;
+            }
+            answers.push(seen);
+        }
+        assert_eq!(
+            answers[0]["result"]["ran"],
+            json!("thread.attach"),
+            "{answers:?}"
         );
     }
 

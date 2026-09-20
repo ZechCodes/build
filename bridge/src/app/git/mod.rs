@@ -218,6 +218,7 @@ impl AppState {
             },
             None,
             params.get("if_diff_key").and_then(Value::as_str),
+            crate::app::wants_patch(params),
         ))
     }
 
@@ -526,6 +527,9 @@ impl AppState {
             crate::gitgui::unpushed_payload(
                 &scope.repo_path,
                 params.get("if_diff_key").and_then(Value::as_str),
+                // Absent means yes: a client that has not heard of the flag
+                // is answered exactly as it always was.
+                params.get("patch").and_then(Value::as_bool).unwrap_or(true),
             )
         })
     }

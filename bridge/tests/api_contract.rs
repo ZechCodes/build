@@ -189,6 +189,31 @@ fn event_examples() -> Vec<Value> {
         .clone()
 }
 
+/// The receipt the intake pushes the moment it admits a request, as
+/// `events.json` states it: the request's id, `accepted: true`, and no
+/// verdict. The absence of `ok` is load-bearing — it is what tells a client
+/// that this settles nothing and its answer is still coming.
+#[test]
+fn a_receipt_names_a_request_and_settles_nothing() {
+    let fixture = read_json(&fixtures_root().join("v1/events.json"));
+    let receipt = &fixture["receipt"];
+    assert!(
+        receipt["id"].is_u64() || receipt["id"].is_string(),
+        "{receipt:?}"
+    );
+    assert_eq!(receipt["accepted"], Value::Bool(true), "{receipt:?}");
+    assert!(
+        receipt.get("ok").is_none(),
+        "a receipt carries no verdict: {receipt:?}"
+    );
+    assert!(receipt.get("result").is_none(), "{receipt:?}");
+    assert_eq!(
+        receipt.as_object().expect("an object").len(),
+        2,
+        "a receipt is the id and the word, and nothing else: {receipt:?}"
+    );
+}
+
 fn typed<T: serde::de::DeserializeOwned>(value: &Value, what: &str) -> T {
     serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{what}: {e}"))
 }

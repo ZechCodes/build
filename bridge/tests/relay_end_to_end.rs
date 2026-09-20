@@ -137,16 +137,37 @@ async fn a_slow_handler_does_not_stall_the_socket() {
         to_device.send(ask(id, "rtc.cheap")).await.unwrap();
     }
 
+    // Every frame is receipted on admission; those are not answers, and a
+    // reader that counted them would be counting the intake, not the work.
+    async fn next_answer(
+        from_device: &mut tokio::sync::mpsc::Receiver<serde_json::Value>,
+        session_key: &str,
+        within: std::time::Duration,
+    ) -> u64 {
+        loop {
+            let response = tokio::time::timeout(within, recv(from_device))
+                .await
+                .expect("an answer arrives inside the window this read allows");
+            let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
+            let frame = transport::decrypt_envelope(session_key, &envelope).unwrap();
+            if frame.payload.get("accepted").is_some() {
+                continue;
+            }
+            return frame.payload["id"].as_u64().unwrap();
+        }
+    }
+
     // The five cheap answers come back first — the read loop kept draining.
     let mut answered: Vec<u64> = Vec::new();
     for _ in 0..5 {
-        let response =
-            tokio::time::timeout(std::time::Duration::from_secs(1), recv(&mut from_device))
-                .await
-                .expect("cheap answers do not wait for the slow one");
-        let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
-        let frame = transport::decrypt_envelope(&session_key, &envelope).unwrap();
-        answered.push(frame.payload["id"].as_u64().unwrap());
+        answered.push(
+            next_answer(
+                &mut from_device,
+                &session_key,
+                std::time::Duration::from_secs(1),
+            )
+            .await,
+        );
     }
     answered.sort_unstable();
     assert_eq!(
@@ -156,10 +177,15 @@ async fn a_slow_handler_does_not_stall_the_socket() {
     );
 
     // And the slow one still gets its answer.
-    let response = recv(&mut from_device).await;
-    let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
-    let frame = transport::decrypt_envelope(&session_key, &envelope).unwrap();
-    assert_eq!(frame.payload["id"], 0);
+    assert_eq!(
+        next_answer(
+            &mut from_device,
+            &session_key,
+            std::time::Duration::from_secs(5),
+        )
+        .await,
+        0
+    );
 
     drop(to_device);
     bridge.abort();

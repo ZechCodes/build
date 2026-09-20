@@ -90,6 +90,7 @@ pub(in crate::app) use self::runtime::agents::endpoints::{
 pub(in crate::app) use self::runtime::agents::records::{
     record_activity, PumpWake, SelfReport, NO_ANSWER_SESSION_ENDED, SESSION_DIED_SUMMARY,
 };
+pub(in crate::app) use self::runtime::deferred::wants_patch;
 /// How a deferred reply is held to its verb's declared result type; see
 /// [`runtime::deferred::DeferredResultCheck`].
 pub(crate) use self::runtime::deferred::DeferredResultCheck;

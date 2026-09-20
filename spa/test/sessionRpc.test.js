@@ -378,3 +378,83 @@ describe("createSessionRpc", () => {
     expect(carrier.sent).toHaveLength(1);
   });
 });
+
+// A receipt is the device saying it has the request. It separates two
+// questions one deadline was answering at once — did this reach the machine,
+// and is the machine taking too long — and only the first is worth giving up
+// on. A bridge with eleven agents on it can take a while to answer; a client
+// that called that a failure is how a delivered message read as failed.
+describe("a receipt on admission", () => {
+  /** The id the rpc actually minted for the call it just sent. */
+  const askedId = (carrier) => carrier.sent.at(-1).frameFields.payload.id;
+  const receipt = (carrier) => carrier.deliver({ id: askedId(carrier), accepted: true });
+
+  it("takes the call off the path's deadline, and waits for the answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const carrier = fakeCarrier();
+      const rpc = rpcOn(carrier);
+      const asked = rpc.call("thread.post", {}, { timeoutMs: 5000 });
+      const observed = vi.fn();
+      asked.catch(observed);
+      await vi.advanceTimersByTimeAsync(0);
+
+      receipt(carrier);
+      await vi.advanceTimersByTimeAsync(30_000); // far past the path's deadline
+      expect(observed, "a request the device has is not a request that failed").not.toHaveBeenCalled();
+
+      carrier.deliver({ id: askedId(carrier), ok: true, result: { posted_sequence: 7 } });
+      await expect(asked).resolves.toEqual({ posted_sequence: 7 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still gives up on a machine that took the request and never answered", async () => {
+    vi.useFakeTimers();
+    try {
+      const carrier = fakeCarrier();
+      const rpc = rpcOn(carrier);
+      const asked = rpc.call("thread.attach", {}, { timeoutMs: 5000 });
+      const observed = vi.fn();
+      asked.catch(observed);
+      await vi.advanceTimersByTimeAsync(0);
+      receipt(carrier);
+
+      await vi.advanceTimersByTimeAsync(119_000);
+      expect(observed).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(asked).rejects.toMatchObject({ timedOut: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the path's deadline for a call nothing has acknowledged", async () => {
+    await expect(rpcOn(fakeCarrier()).call("board.list", {}, { timeoutMs: 5 }))
+      .rejects.toMatchObject({ timedOut: true });
+  });
+
+  it("tells the caller its request landed, so a send can say queued rather than failed", async () => {
+    const carrier = fakeCarrier();
+    const rpc = rpcOn(carrier);
+    const landed = vi.fn();
+    const asked = rpc.call("thread.post", {}, { onReceipt: landed });
+    // The send is a chain of awaits (the wire, then the encryption), so the
+    // envelope is on the carrier a few turns later.
+    for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
+
+    // Decryption is async, so a delivered frame lands a turn later.
+    const settle = async () => { for (let turn = 0; turn < 4; turn += 1) await Promise.resolve(); };
+    receipt(carrier);
+    await settle();
+    expect(landed).toHaveBeenCalledTimes(1);
+
+    receipt(carrier); // a second receipt for the same call is not a second landing
+    await settle();
+    expect(landed).toHaveBeenCalledTimes(1);
+
+    carrier.deliver({ id: askedId(carrier), ok: true, result: {} });
+    await asked;
+  });
+});

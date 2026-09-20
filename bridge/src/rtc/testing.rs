@@ -236,9 +236,16 @@ impl BrowserChannel {
             if let ChannelEvent::Envelope(json) = within_patience(self.events.recv()).await {
                 let envelope: Envelope =
                     serde_json::from_str(&json).expect("the device sends envelopes");
-                return transport::decrypt_envelope(&self.session_key, &envelope)
+                let payload = transport::decrypt_envelope(&self.session_key, &envelope)
                     .expect("the session key opens what the channel carried")
                     .payload;
+                // The receipt says the device holds the request, not what it
+                // answers — the browser reads it the same way, as proof of
+                // delivery that leaves the call waiting.
+                if payload.get("accepted").is_some() {
+                    continue;
+                }
+                return payload;
             }
         }
     }

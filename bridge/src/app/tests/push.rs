@@ -773,9 +773,14 @@ async fn a_files_item_carries_the_root_listing() {
 }
 
 /// A `git` item carries the surfaces themselves: the status shape, the
-/// latest commits, what is unpublished, and the working tree's diff — the
-/// same bodies `git.status`, `git.log`, `git.unpushed` and the diff verbs
-/// answer with, so a client writes them into its cache and asks nothing.
+/// latest commits and what is unpublished — the same bodies `git.status`,
+/// `git.log` and `git.unpushed` answer with, so a client writes them into
+/// its cache and asks nothing.
+///
+/// The one thing it does not carry is the working tree's hunks. Those are
+/// the largest thing a checkout has and the surface that shows them is one
+/// a reader has to open, so the item names the diff and its size and the
+/// body is read on demand.
 #[tokio::test]
 async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
     let (dir, repo) = init_repo();
@@ -797,9 +802,7 @@ async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
 
     std::fs::write(repo.join("pushed.txt"), "a small change\n").unwrap();
     let git = pushed_git_item(&state, &mut rx, &key, &project_id, |git| {
-        git["diff"]["patch"]
-            .as_str()
-            .is_some_and(|patch| patch.contains("a small change"))
+        git["status"]["files"][0]["path"] == "pushed.txt"
     })
     .await;
 
@@ -848,28 +851,35 @@ async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
         json!({ "project_id": project_id }),
     );
     assert_eq!(
-        git["diff"], diff["result"],
-        "the item carries what `project.diff` answers: {git:?}"
+        git["diff"],
+        Value::Null,
+        "the item names the diff and carries none of it: {git:?}"
     );
     assert_eq!(
         git["diff_bytes"].as_u64(),
         Some(diff["result"]["patch"].as_str().unwrap().len() as u64),
-        "{git:?}"
+        "the size it names is the body `project.diff` answers with: {git:?}"
+    );
+    assert!(
+        diff["result"]["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("a small change")),
+        "and that body is still there for the surface that asks: {diff:?}"
     );
 }
 
-/// A `git` item's diff is the body the diff verb for that checkout answers
-/// with — whatever kind of checkout it is, so a client writes the push into
-/// the same cache slot its own read fills.
+/// A `git` item names one checkout's diff and the diff verb for that
+/// checkout answers the body — whatever kind of checkout it is, so the read
+/// a client makes on opening the changes fills the slot the push marked.
 ///
 /// An external checkout's `worktree.diff` carries more than the stat, the
 /// files and the patch: the checkout's id, the branch the diff is anchored
 /// on so a surface can name it instead of saying "the base branch", and
-/// whether it can be adopted. A push that carried a run's shape instead
-/// would leave every one of those undefined the first time a reader opened
-/// the changes from cache.
+/// whether it can be adopted. A read routed to a run's verb instead would
+/// leave every one of those undefined the first time a reader opened the
+/// changes.
 #[tokio::test]
-async fn a_checkouts_pushed_diff_is_the_body_its_own_diff_verb_answers() {
+async fn a_checkouts_diff_is_named_by_the_push_and_answered_by_its_own_verb() {
     let (dir, repo) = init_repo();
     let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
     let project_id = state.lock().unwrap().project_at(0).id.clone();
@@ -900,9 +910,7 @@ async fn a_checkouts_pushed_diff_is_the_body_its_own_diff_verb_answers() {
 
     std::fs::write(checkout.join("pushed.txt"), "a small change\n").unwrap();
     let git = pushed_git_item(&state, &mut rx, &key, &worktree_id, |git| {
-        git["diff"]["patch"]
-            .as_str()
-            .is_some_and(|patch| patch.contains("a small change"))
+        git.get("diff_bytes").is_some()
     })
     .await;
 
@@ -911,16 +919,24 @@ async fn a_checkouts_pushed_diff_is_the_body_its_own_diff_verb_answers() {
         "worktree.diff",
         json!({ "project_id": project_id, "worktree_id": worktree_id }),
     );
-    let mut expected = read["result"].clone();
-    // The one field a push leaves off: the conditional key is a second diff
-    // walk, and a push is not a conditional read.
-    expected
-        .as_object_mut()
-        .expect("the verb answers an object")
-        .remove("diff_key");
-    assert_eq!(git["diff"], expected, "{git:?} against {read:?}");
-    assert_eq!(git["diff"]["worktree_id"], worktree_id.as_str(), "{git:?}");
-    assert_eq!(git["diff"]["base_branch"], "main", "{git:?}");
+    assert_eq!(git["diff"], Value::Null, "{git:?}");
+    assert_eq!(
+        git["diff_bytes"].as_u64(),
+        Some(read["result"]["patch"].as_str().unwrap().len() as u64),
+        "the item sizes the body this checkout's own verb answers: {git:?} against {read:?}"
+    );
+    assert!(
+        read["result"]["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("a small change")),
+        "{read:?}"
+    );
+    assert_eq!(
+        read["result"]["worktree_id"],
+        worktree_id.as_str(),
+        "{read:?}"
+    );
+    assert_eq!(read["result"]["base_branch"], "main", "{read:?}");
 }
 
 /// A working tree with more diff than a push may carry says how big it is and

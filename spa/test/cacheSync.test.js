@@ -246,6 +246,13 @@ describe("what a pass writes", () => {
     expect((await read("run-1", "unpushed")).value.diff_key).toBe("d1");
   });
 
+  // The patch is not asked for at all now: the record never held it, and on a
+  // phone's relayed path it was most of a megabyte per cold pass.
+  it("asks for the unpushed shape without the patch that weighs it", async () => {
+    await boot([branchItem()]);
+    expect(paramsOf("git.unpushed")).toEqual([{ run_id: "run-1", patch: false }]);
+  });
+
   it("keeps the unpushed commits' patch out of the record it holds them in", async () => {
     script["git.unpushed"] = () => ({ base: {}, commits: [], diff_key: "d1", patch: "megabytes" });
     await boot([branchItem()]);
@@ -510,10 +517,19 @@ describe("the two bodies that never ride a push", () => {
     expect(await read("run-1", "patch", "gone")).toBeUndefined();
   });
 
-  it("reads the working-tree diff only where the cache holds none", async () => {
+  // The hunks are the largest thing a workspace holds and nobody is looking
+  // at them during a pass: the record gets the stat, the files and the key,
+  // and the Changes surface reads the body when it opens over it.
+  it("reads the working-tree diff without its hunks, and only where the cache holds none", async () => {
+    script["run.diff"] = (params) => (params.patch === false
+      ? { diff_key: "d1", stat: { files_changed: 1 }, files: [{ path: "src/a.js" }] }
+      : { patch: "the whole diff", diff_key: "d1" });
     await boot([branchItem()]);
-    expect(paramsOf("run.diff")).toEqual([{ run_id: "run-1" }]);
-    expect((await read("run-1", "diff")).value.patch).toBe("the whole diff");
+    expect(paramsOf("run.diff")).toEqual([{ run_id: "run-1", patch: false }]);
+    const record = (await read("run-1", "diff")).value;
+    expect(record.patch, "no body was asked for or written").toBeUndefined();
+    expect(record.diff_key, "and the key that names one is held").toBe("d1");
+    expect(record.files).toHaveLength(1);
 
     bridge.call.mockClear();
     sync.stopCacheSync();

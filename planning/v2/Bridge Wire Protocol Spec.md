@@ -356,7 +356,7 @@ the client writes it into its cache and repaints.
 | --- | --- |
 | `state` | the whole feed row, exactly as `board.list` lists it |
 | `thread` | one tip per conversation: the items since this subscription's last flush, the sequence they run from, and the conversation's total |
-| `git` | `status`, the latest commits, the unpushed commit list, and the working-tree diff |
+| `git` | `status`, the latest commits, the unpushed commit list, and the working-tree diff's key and size (step 1.9) |
 | `files` | the changed paths and the root listing |
 | `terminals` | the tab list (a new kind; a console is a surface like any other) |
 | the board item | the entity ids that left the board, and the project and workspace lists when they moved |
@@ -381,7 +381,7 @@ The thresholds both sides are written against:
 | `LATEST_COMMITS` | 20 | `git.log` default when `since` is unknown |
 | `LATEST_THREAD_ITEMS` | 100 | `thread.page` forward read cap |
 | `THREAD_PUSH_MAX_ITEMS` | 100 | a thread item past this carries the tip only |
-| `WORKING_TREE_DIFF_MAX_BYTES` | 262144 | past this the git item carries `diff_key` only |
+| `WORKING_TREE_DIFF_MAX_BYTES` | 262144 | the `run.diff` / `worktree.diff` body cap; since step 1.9 no size rides a push |
 | `UNPUSHED_COMMITS_MAX` | 20 | commits whose patches the client syncs |
 | `COMMIT_PATCH_MAX_BYTES` | 262144 | `git.show` `max_bytes` |
 | `RECENT_FILES` | 5 | file contents the client keeps per workspace |
@@ -402,6 +402,59 @@ workspace costs what moved rather than what exists:
   list: `has_more` on such a page is about the window it walked.
 - `git.show` takes `max_bytes` and answers `truncated: true` rather than a
   quarter of a megabyte the reader did not ask for.
+
+#### Step 1.9: keys, not bodies (stage 3)
+
+Written after the fact, from a phone. Step 1.7's rule — an item carries what
+the surface paints from — put megabytes on a relayed path in the first two
+seconds of a session: one connect measured 2.28 MB on the app channel, of
+which `git.unpushed`'s patches and the whole-branch `run.diff` were 1.5 MB,
+for surfaces nobody had opened. On a phone-class path everything else on that
+one SCTP association waits behind them, including the 3 s liveness ping, and
+the session was torn down and re-minted before the first paint.
+
+So the largest bodies stop riding anything unsolicited:
+
+- a `git` item sends `"diff": null` and `diff_bytes`, whatever the size. The
+  item still names the diff — `diff_bytes` says it moved and how big it is —
+  and `run.diff` / `worktree.diff` answer the body when a reader opens the
+  changes. This is the shape a diff past `WORKING_TREE_DIFF_MAX_BYTES`
+  already had, so no client learns a new case.
+- `git.unpushed` takes `patch: false` and answers the commit list, the base
+  and the `diff_key` with no patches. `true` is the default, so review and
+  commit surfaces are unchanged; the client's cold pass asks for `false`.
+- `run.diff` / `worktree.diff` / `project.diff` take `patch: false` for the
+  same reason: the pass wants the key and the per-file stats, not the hunks.
+
+The rule this step is under, and the one that bounds it: **every body a push
+stops carrying must remain fetchable on demand by the surface that shows it.**
+A key with no verb behind it is a blank pane, not a saving.
+
+#### Step 1.10: a receipt on admission
+
+A request's deadline is the client's only protection against a path that
+died, and the client cannot tell a request that never arrived from one
+queued behind eleven agents' work. It guesses — and a 15 KB attachment was
+reported as failed after 10 s while the bridge was storing it.
+
+So the intake receipts every request the moment it is admitted, before
+anything decides how long answering will take:
+
+```json
+{ "id": 41, "accepted": true }
+```
+
+It rides the carrier the frame arrived on, carries the request's id and
+nothing else, and is sent ahead of dispatch. `ok` is deliberately absent:
+that field is what says a reply has settled a call, and a receipt settles
+nothing. A reader that treats every frame bearing its id as the answer would
+settle the call on the receipt — so `accepted` with no `ok` is the test, and
+the contract fixture (`fixtures/api/v1/events.json`) carries it.
+
+What it buys the client: the deadline before the receipt is about the PATH
+and stays short; after it, the client knows the device holds the request and
+waits far longer for the answer. A posted message can read *queued* from the
+receipt and *delivered* from the reply.
 
 ### Part 2: API versioning
 

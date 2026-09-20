@@ -686,7 +686,11 @@ const unpushedRecord = (answer) => {
 };
 
 async function syncUnpushed(context, entityId, scope, priority) {
-  const answer = await ask(context, "git.unpushed", scope, priority);
+  // Without the aggregate patch: this record never held it — `unpushedRecord`
+  // deletes it on arrival — and asking for it anyway put most of a megabyte on
+  // the wire for every cold pass. A reader opening the review asks for the
+  // body itself, from the pane, uncapped.
+  const answer = await ask(context, "git.unpushed", { ...scope, patch: false }, priority);
   if (!answer || !context.active()) return null;
   await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(answer));
   return answer;
@@ -723,27 +727,46 @@ async function dropStalePatches(context, entityId, held, wanted) {
 }
 
 /** Which verb answers this row's working-tree diff, and what to name the read
- *  so a view asking for the same body shares it. */
-function diffRead(row, held) {
+ *  so a view asking for the same body shares it.
+ *
+ *  `patch: false` asks for the shape without the hunks — the stat, the
+ *  per-file rows and the key that names the body. A read that names it is a
+ *  different read from one that does not, so it rides the key too: two callers
+ *  wanting different things must never be folded into one answer. */
+function diffRead(row, held, { patch = true } = {}) {
   const runId = row.run_id;
   const method = runId ? "run.diff" : "worktree.diff";
   const repository = runId ? `run:${runId}` : `worktree:${row.project_id}:${row.worktree_id}`;
   const base = runId ? { run_id: runId } : { project_id: row.project_id, worktree_id: row.worktree_id };
-  return { method, repository, params: held?.diff_key ? { ...base, if_diff_key: held.diff_key } : base };
+  const asked = patch ? base : { ...base, patch: false };
+  return { method, repository, params: held?.diff_key ? { ...asked, if_diff_key: held.diff_key } : asked };
 }
 
-/** The working-tree diff is the largest thing a workspace holds, and a push
- *  carries it whenever it fits — so a pass asks for it only where the cache
- *  has none at all. */
+/**
+ * The working-tree diff, as a PASS asks for it: the stat, the per-file rows
+ * and the key, and none of the hunks.
+ *
+ * The body is the largest thing a workspace holds — three quarters of a
+ * megabyte on a checkout with real work in it — and a pass that pulled one per
+ * workspace put megabytes on the wire before the reader had opened anything.
+ * Over a phone's relayed path that is the first ten seconds of every session
+ * spent on hunks nobody is looking at, and it is what the reader's own
+ * connection was competing with.
+ *
+ * Nothing goes blank for it: the Changes surface reads the wire itself when it
+ * mounts over a record the sync layer wrote (`core/changesReview.js`,
+ * `bodyOnly`), which it already did before this — the pass's body was being
+ * fetched twice over.
+ */
 async function syncWorkingDiff(context, entityId, row, priority) {
   if (await readCached(addressOf(context, entityId, "diff"))) return;
-  await pullWorkingDiff(context, entityId, row, priority);
+  await pullWorkingDiff(context, entityId, row, priority, { patch: false });
 }
 
-async function pullWorkingDiff(context, entityId, row, priority) {
+async function pullWorkingDiff(context, entityId, row, priority, { patch = true } = {}) {
   const address = addressOf(context, entityId, "diff");
   const held = (await readCached(address))?.value;
-  const { method, repository, params } = diffRead(row, held);
+  const { method, repository, params } = diffRead(row, held, { patch });
   const key = rpcReadKey({
     deviceId: context.deviceId,
     requestScope: context.requestScope,

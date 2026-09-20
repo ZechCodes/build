@@ -360,6 +360,10 @@ export function openCarriedSession({
     }
     const payload = frame.payload;
     onFrame(payload);
+    // A receipt names a request and settles nothing: the device has it, and
+    // the answer is still coming. `ok` is what says a reply settled a call,
+    // so its absence beside `accepted` is how the two are told apart.
+    if (payload && payload.accepted === true && payload.ok === undefined) return;
     const answered = payload && payload.id !== undefined ? pending.get(payload.id) : null;
     if (answered) {
       pending.delete(payload.id);

@@ -289,6 +289,12 @@ impl Dispatcher {
         }
     }
 
+    /// The handler these queues feed, for the frames the intake answers
+    /// without queueing at all (`FrameIntake::accept`).
+    pub(super) fn handler(&self) -> FrameHandler {
+        self.handler.clone()
+    }
+
     /// The queue a frame of this priority joins.
     fn queue(&self, priority: Priority) -> &mpsc::Sender<QueuedWork> {
         match priority {

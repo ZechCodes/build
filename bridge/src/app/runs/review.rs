@@ -71,6 +71,7 @@ impl AppState {
             subject,
             issue_id,
             params.get("if_diff_key").and_then(Value::as_str),
+            crate::app::wants_patch(params),
         ))
     }
 

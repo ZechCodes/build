@@ -9,8 +9,61 @@
 // Hides the pending map, the request ids, encrypt/decrypt, the per-call
 // timeout, and the rule that tells a reply from a push.
 
-/** How long a call waits for its answer before it is not coming. */
+/** How long a call waits for its answer before it is not coming.
+ *
+ *  This is the PATH's deadline: how long a frame may go unacknowledged before
+ *  the wire under it is the thing in doubt. Past a receipt it no longer
+ *  applies — see [`ANSWER_TIMEOUT_MS`]. */
 export const DEFAULT_RPC_TIMEOUT_MS = 12000;
+
+/** How long a call waits once the bridge has said it has the request.
+ *
+ *  A receipt separates two questions a single deadline was answering at once:
+ *  did this reach the device, and is the device taking too long. The first is
+ *  about the wire and is worth giving up on; the second is a machine with
+ *  eleven agents on it doing what it was asked, and giving up there is how a
+ *  client reported a message it had safely delivered as failed. So the wait
+ *  after a receipt is long enough to be a real fault rather than a queue. */
+export const ANSWER_TIMEOUT_MS = 120000;
+
+/**
+ * One call's two deadlines: the path's, and the answer's.
+ *
+ * Until a receipt arrives the call is waiting on the wire, and `timeoutMs` is
+ * what says the wire is not carrying. A receipt is the device saying it has
+ * the request, and from then on the only question is how long the work takes —
+ * so the path's deadline is dropped and a far longer one takes its place,
+ * because a queue is not a fault and reporting it as one is how a delivered
+ * message read as failed.
+ */
+function createDeadline(method, timeoutMs, onReceipt) {
+  let timer = null;
+  let settle = null;
+  let receipted = false;
+  const arm = (waitMs, uncertain) => {
+    clearTimeout(timer);
+    if (waitMs == null || waitMs === 0) return;
+    timer = setTimeout(() => settle?.(timedOutError(method, uncertain())), waitMs);
+  };
+  return {
+    race(answer, uncertain) {
+      const expiry = new Promise((_, reject) => {
+        settle = reject;
+        arm(timeoutMs, uncertain);
+      });
+      return Promise.race([answer, expiry]);
+    },
+    receipted(handoffAttempted) {
+      if (receipted) return;
+      receipted = true;
+      arm(ANSWER_TIMEOUT_MS, () => handoffAttempted);
+      onReceipt?.();
+    },
+    done() {
+      clearTimeout(timer);
+    },
+  };
+}
 
 function timedOutError(method, uncertain = false) {
   const error = new Error(`${method} timed out`);
@@ -80,6 +133,13 @@ export function createSessionRpc({
     const payload = frame.payload;
     const answered = payload && payload.id !== undefined ? pending.get(payload.id) : null;
     if (answered) {
+      // A receipt settles nothing: it says the device has the request, which
+      // takes the call off the path's deadline and onto the answer's. It
+      // carries no `ok`, which is what tells the two apart.
+      if (payload.accepted === true && payload.ok === undefined) {
+        answered.receipt();
+        return;
+      }
       pending.delete(payload.id);
       answered.ok(payload);
       return;
@@ -148,15 +208,17 @@ export function createSessionRpc({
     async call(
       method,
       params = {},
-      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground" } = {},
+      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground", onReceipt = null } = {},
     ) {
       if (closed) throw noCarrier();
       const id = "r" + ++requestId;
       let waiting;
+      const deadline = createDeadline(method, timeoutMs, onReceipt);
       const answer = new Promise((resolve, reject) => {
         waiting = {
           handoffAttempted: false,
           reject,
+          receipt: () => deadline.receipted(waiting.handoffAttempted),
           ok: (payload) => (payload.ok ? resolve(payload.result) : reject(refusalError(payload))),
         };
         pending.set(id, waiting);
@@ -191,15 +253,11 @@ export function createSessionRpc({
       });
       // However this settles, nothing is waiting for it any more: a call that
       // timed out must not leave an entry for a later loss to reject at nobody.
-      const settled = timeoutMs == null || timeoutMs === 0
-        ? answer
-        : Promise.race([
-            answer,
-            new Promise((_, reject) =>
-              setTimeout(() => reject(timedOutError(method, waiting.handoffAttempted)), timeoutMs),
-            ),
-          ]);
-      return settled.finally(() => pending.delete(id));
+      const settled = deadline.race(answer, () => waiting.handoffAttempted);
+      return settled.finally(() => {
+        deadline.done();
+        pending.delete(id);
+      });
     },
 
     fail,

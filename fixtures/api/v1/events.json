@@ -1,5 +1,9 @@
 {
   "since": "1.0.0",
+  "receipt": {
+    "id": 41,
+    "accepted": true
+  },
   "events": [
     {
       "type": "changes",

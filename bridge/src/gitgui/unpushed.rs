@@ -367,7 +367,11 @@ pub fn unpushed_summary(repo_path: &Path) -> Result<Value, String> {
     }))
 }
 
-pub fn unpushed_payload(repo_path: &Path, if_diff_key: Option<&str>) -> Result<Value, String> {
+pub fn unpushed_payload(
+    repo_path: &Path,
+    if_diff_key: Option<&str>,
+    with_patch: bool,
+) -> Result<Value, String> {
     let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
     let base = published_base(&repo)?;
     let key = unpushed_diff_key(repo_path, &base)?;
@@ -377,13 +381,16 @@ pub fn unpushed_payload(repo_path: &Path, if_diff_key: Option<&str>) -> Result<V
     let diff =
         crate::diff::diff_against_commit(repo_path, base.oid()).map_err(|e| e.to_string())?;
     let files = file_rows(&diff);
-    Ok(json!({
-        "patch": diff.patch(),
+    let mut payload = json!({
         "stat": diff.stat().to_json(),
         "files": files,
         "file_edited_at": file_edited_at(repo_path, &diff),
         "diff_key": key,
         "published": base.push_target_exists(),
         "base": base.json(),
-    }))
+    });
+    if with_patch {
+        payload["patch"] = json!(diff.patch());
+    }
+    Ok(payload)
 }

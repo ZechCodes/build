@@ -177,8 +177,18 @@ pub(in crate::app) struct DeferredRead {
     /// The complete aggregate held by the caller. We still recompute to avoid
     /// stale filesystem answers, then suppress the equal payload on the wire.
     pub(in crate::app) if_diff_key: Option<String>,
+    /// Whether the rendered answer keeps its patch text. A caller filling a
+    /// cache asks for the shape without it: the stat, the per-file rows and
+    /// the key that names the body it can ask for later.
+    pub(in crate::app) with_patch: bool,
     #[cfg(test)]
     pub(in crate::app) gate: Option<OffLockGate>,
+}
+
+/// Whether this read's caller wants the patch text. Absent means yes: a client
+/// that has not heard of the flag is answered exactly as it always was.
+pub(in crate::app) fn wants_patch(params: &Value) -> bool {
+    params.get("patch").and_then(Value::as_bool).unwrap_or(true)
 }
 
 impl DeferredRead {
@@ -196,6 +206,11 @@ impl DeferredRead {
         if let Some(diff_key) = conditional_key {
             if let Some(object) = rendered.as_object_mut() {
                 object.insert("diff_key".to_string(), json!(diff_key));
+            }
+        }
+        if !self.with_patch {
+            if let Some(object) = rendered.as_object_mut() {
+                object.remove("patch");
             }
         }
         Ok(rendered)
@@ -637,7 +652,7 @@ impl AppState {
         subject: ReadSubject,
         issue_id: Option<String>,
     ) -> Value {
-        self.defer_conditional_read(subject, issue_id, None)
+        self.defer_conditional_read(subject, issue_id, None, true)
     }
 
     /// Hand a changed subscription set to the drain, which reconciles the
@@ -660,11 +675,13 @@ impl AppState {
         subject: ReadSubject,
         issue_id: Option<String>,
         if_diff_key: Option<&str>,
+        with_patch: bool,
     ) -> Value {
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject,
             issue_id,
             if_diff_key: if_diff_key.map(str::to_string),
+            with_patch,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));

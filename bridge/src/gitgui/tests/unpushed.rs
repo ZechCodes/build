@@ -4,7 +4,7 @@ use super::*;
 fn pushed_branch_with_clean_tree_has_no_all_changes() {
     let dir = tempfile::tempdir().unwrap();
     let clone = clone_of_an_origin_carrying_feature_x(dir.path());
-    let payload = unpushed_payload(&clone, None).unwrap();
+    let payload = unpushed_payload(&clone, None, true).unwrap();
     assert_eq!(payload["base"]["kind"], "push_target");
     assert_eq!(payload["base"]["label"], "origin/main");
     assert_eq!(payload["stat"]["files_changed"], 0);
@@ -23,7 +23,7 @@ fn unpublished_branch_starts_at_nearest_published_history_and_includes_dirty_wor
     write(&clone, "f.txt", "unstaged\n");
     write(&clone, "dirty.txt", "dirty\n");
 
-    let payload = unpushed_payload(&clone, None).unwrap();
+    let payload = unpushed_payload(&clone, None, true).unwrap();
     assert_eq!(payload["base"]["kind"], "published_ancestor");
     let patch = payload["patch"].as_str().unwrap();
     assert!(patch.contains("committed.txt"), "{patch}");
@@ -40,10 +40,10 @@ fn conditional_key_moves_when_the_push_tracking_ref_catches_up() {
     git_ok(&clone, &["add", "."]);
     git_ok(&clone, &["commit", "-q", "-m", "local"]);
 
-    let first = unpushed_payload(&clone, None).unwrap();
+    let first = unpushed_payload(&clone, None, true).unwrap();
     let first_key = first["diff_key"].as_str().unwrap();
     assert_eq!(
-        unpushed_payload(&clone, Some(first_key)).unwrap(),
+        unpushed_payload(&clone, Some(first_key), true).unwrap(),
         json!({ "unchanged": true, "diff_key": first_key })
     );
 
@@ -57,7 +57,7 @@ fn conditional_key_moves_when_the_push_tracking_ref_catches_up() {
         &clone,
         &["update-ref", "refs/remotes/origin/main", &head.to_string()],
     );
-    let caught_up = unpushed_payload(&clone, Some(first_key)).unwrap();
+    let caught_up = unpushed_payload(&clone, Some(first_key), true).unwrap();
     assert_ne!(caught_up["diff_key"], first_key);
     assert_eq!(caught_up["stat"]["files_changed"], 0);
 }
@@ -146,7 +146,7 @@ fn diverged_push_target_uses_merge_base_and_does_not_render_remote_only_work_as_
     );
     git_ok(&clone, &["checkout", "-q", "topic"]);
 
-    let payload = unpushed_payload(&clone, None).unwrap();
+    let payload = unpushed_payload(&clone, None, true).unwrap();
     assert_eq!(payload["base"]["label"], "origin/topic");
     let patch = payload["patch"].as_str().unwrap();
     assert!(patch.contains("local.txt"), "{patch}");
@@ -171,7 +171,7 @@ fn branch_push_remote_wins_over_push_default_and_upstream_remote() {
     git_ok(&clone, &["config", "remote.pushDefault", "default-fork"]);
     git_ok(&clone, &["config", "branch.main.pushRemote", "branch-fork"]);
 
-    let payload = unpushed_payload(&clone, None).unwrap();
+    let payload = unpushed_payload(&clone, None, true).unwrap();
     assert_eq!(payload["base"]["label"], "branch-fork/main");
 }
 
@@ -366,4 +366,33 @@ fn a_checkout_with_no_publication_base_pushes_a_capped_commit_list() {
         format!("local {above_the_cap}"),
         "newest first: {summary:?}"
     );
+}
+
+/// The same answer without the one field that weighs anything.
+///
+/// A client filling a cache reads the commit list, the per-file rows and the
+/// stat, and throws the aggregate patch away on arrival — which on a phone's
+/// relayed path was most of a megabyte per connect, paid for nothing.
+#[test]
+fn an_unpushed_read_can_leave_the_patch_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+    git_ok(&clone, &["checkout", "-q", "-b", "local-only"]);
+    write(&clone, "committed.txt", "a change nobody has pushed\n");
+    git_ok(&clone, &["add", "."]);
+    git_ok(&clone, &["commit", "-q", "-m", "local"]);
+
+    let whole = unpushed_payload(&clone, None, true).unwrap();
+    let light = unpushed_payload(&clone, None, false).unwrap();
+
+    assert!(whole["patch"]
+        .as_str()
+        .is_some_and(|patch| !patch.is_empty()));
+    assert!(light.get("patch").is_none(), "{light:?}");
+    // Everything a list paints is still there, and the key still names the
+    // body a surface can ask for.
+    assert_eq!(light["files"], whole["files"]);
+    assert_eq!(light["stat"], whole["stat"]);
+    assert_eq!(light["diff_key"], whole["diff_key"]);
+    assert_eq!(light["base"], whole["base"]);
 }

@@ -330,6 +330,15 @@ pub struct GitUnpushedParams {
     /// [`UnchangedDiff`] rather than the patch when it still matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_diff_key: Option<String>,
+    /// Whether the aggregate patch rides the answer. `false` asks for the
+    /// shape without it — the commit list, the per-file rows and the stat —
+    /// which is everything a list paints and a fraction of the bytes: a
+    /// client filling a cache threw the patch away on arrival, and on a
+    /// phone's relayed path that was most of a megabyte per connect.
+    /// Absent means yes, so a client that has not heard of this is answered
+    /// exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -341,6 +350,14 @@ pub struct ProjectDiffParams {
 pub struct WorktreeDiffParams {
     pub project_id: String,
     pub worktree_id: String,
+    /// Whether the patch text rides the answer. `false` asks for the shape a
+    /// list paints — the stat and the per-file rows, with the `diff_key` that
+    /// names the body — and leaves the hunks to the surface that opens them.
+    /// A client filling a cache has no use for a body nobody is looking at,
+    /// and on a phone's relayed path that body was most of a megabyte per
+    /// connect. Absent means yes, so an older client is answered as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_diff_key: Option<String>,
 }
@@ -350,6 +367,14 @@ pub struct RunDiffParams {
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_diff_key: Option<String>,
+    /// Whether the patch text rides the answer. `false` asks for the shape a
+    /// list paints — the stat and the per-file rows, with the `diff_key` that
+    /// names the body — and leaves the hunks to the surface that opens them.
+    /// A client filling a cache has no use for a body nobody is looking at,
+    /// and on a phone's relayed path that body was most of a megabyte per
+    /// connect. Absent means yes, so an older client is answered as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

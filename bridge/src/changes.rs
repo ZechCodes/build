@@ -1162,11 +1162,17 @@ fn git_payload(facts: Option<&EntityFacts>) -> Value {
             git.insert(field.into(), value);
         }
     }
-    // The pair is written together or not at all: `diff: null` means "too big
-    // to push, here is how big", and a diff that could not be read at all
-    // says nothing rather than saying zero.
+    // The body never rides a push, whatever its size.
+    //
+    // A push is news about a checkout, and the hunks are the largest thing a
+    // checkout has: sending them to every subscriber on every flush put
+    // megabytes on the wire for surfaces nobody had opened, and over a phone's
+    // relayed path those megabytes are what the reader's own connection had to
+    // wait behind. So the item says the diff moved and how big it is, and the
+    // surface that shows one asks for it — which is the same shape a diff too
+    // big to push already had, and the client has read it that way all along.
     if let Some(bytes) = facts.diff_bytes {
-        git.insert("diff".into(), facts.diff.clone().unwrap_or(Value::Null));
+        git.insert("diff".into(), Value::Null);
         git.insert("diff_bytes".into(), json!(bytes));
     }
     Value::Object(git)
@@ -3503,15 +3509,19 @@ mod subscriptions {
                         "commits": [{ "hash": "a1b2c3d", "subject": "do it" }],
                         "diff_key": "77aa11bb",
                     },
-                    "diff": { "stat": {}, "files": [], "patch": "" },
+                    // The body is never pushed, however small: the item says
+                    // the diff moved and how big it is, and the surface that
+                    // shows one asks for it.
+                    "diff": Value::Null,
                     "diff_bytes": 41,
                 },
             })
         );
     }
 
-    /// A working tree too big to push says so: the item names the size and
-    /// carries no diff, and the client asks for it when a reviewer opens it.
+    /// A working tree past the cap reads exactly like every other one now —
+    /// the size, and no body — which is the shape this client has always
+    /// known how to answer.
     #[test]
     fn a_git_item_past_the_diff_cap_carries_the_size_and_no_diff() {
         let bus = ChangeBus::with_sources(

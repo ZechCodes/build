@@ -7,24 +7,25 @@
 // their caret, or the menu they have open, because a paint never touches the
 // control at all; it only ever says three things to one that is already there:
 //
-//   • which options it offers — patched in place by value (core/patchList.js),
-//     so a new label or a newly-seen assignee is an inserted `<option>` and
-//     every other option is the node it already was;
-//   • what it is set to — written only when it disagrees with the state, which
-//     is never for the control the change came from;
+//   • which options it offers — a newly filed label or a newly-seen agent is an
+//     inserted row inside the menu, and every other row is the row it was;
+//   • what is chosen, which is written from the state and never read back out
+//     of the control;
 //   • whether the Clear press is worth offering — hidden rather than removed,
 //     because removing a button is removing whatever focus was on it.
 //
 // The body below the bar is the caller's: this hands it back empty and never
 // writes into it again (core/trackerIssuesBody.js paints it, by key).
 //
-// #44 puts custom dropdowns where the native selects are. It is the same
-// contract — made once, patched, never re-created — so the shape survives it.
+// #44 put custom dropdowns where the native selects were, and the contract did
+// not move: made once, told what is on offer and what is chosen, never
+// re-created. What a menu holds beyond that — whether it is open, the query
+// half typed into it, the row the arrow keys have walked to — is the reader's,
+// and `update` does not touch any of it (core/filterMenuControl.js).
 
 import { ICON_PLUS } from "./icons.js";
-import { esc } from "./text.js";
-import { patchList } from "./patchList.js";
-import { filtersAreSet } from "./trackerFilters.js";
+import { chosenOf, filtersAreSet } from "./trackerFilters.js";
+import { mountFilterMenu } from "./filterMenuControl.js";
 
 export const LIST_VIEW = "list";
 export const BOARD_VIEW = "board";
@@ -34,48 +35,40 @@ const VIEWS = [
   { id: BOARD_VIEW, label: "Board" },
 ];
 
-/** The four filters, in the order they are read. Each names the filter it
- *  writes, what it is called where it cannot be seen — the bar has no room for
- *  four visible labels — and which of `filterOptions`' lists it offers. */
+/**
+ * The four filters, in the order they are read.
+ *
+ * Each names the filter it writes, what it is called, which of
+ * `filterOptions`' lists it offers, and whether it takes one answer or several.
+ *
+ * State and Column take one: they are questions with mutually exclusive
+ * answers, and a board narrowed to two columns is not a board. They use the
+ * same control in single-select mode all the same, so the bar reads as one
+ * family rather than as two native selects beside two of ours.
+ *
+ * Labels and Assignee take several, any-of. A selection of several is said
+ * differently for each (`summary`): label names are short and interchangeable,
+ * so the filter names itself and counts them; an assignee is somebody, and the
+ * first one is the most useful word on the bar.
+ */
 const FILTERS = [
   { name: "state", label: "State", offer: (options) => options.states },
   { name: "status", label: "Column", offer: (options) => options.statuses },
-  { name: "assignee", label: "Assignee", offer: (options) => options.assignees },
-  { name: "label", label: "Label", offer: (options) => options.labels },
+  { name: "assignee", label: "Assignee", multi: true, summary: "first", offer: (options) => options.assignees },
+  { name: "label", label: "Labels", multi: true, summary: "count", offer: (options) => options.labels },
 ];
 
 const viewButtonHtml = (view) =>
   `<button class="btn mini issue-view" type="button" data-issue-view="${view.id}">${view.label}</button>`;
-
-/** A filter, with no options in it. They arrive on the first update and are
- *  patched by value from then on; the select itself never comes back. */
-const selectHtml = (filter) =>
-  `<select class="issue-filter" data-issue-filter="${filter.name}" aria-label="${filter.label}"></select>`;
 
 const chromeHtml = () => `<div class="issue-head">
     <div class="issue-views" role="group" aria-label="How to lay the issues out">${VIEWS.map(viewButtonHtml).join("")}</div>
     <button class="btn mini primary issue-new" type="button" data-issue-new>${ICON_PLUS}<span>New issue</span></button>
   </div>
   <div class="issue-filters" role="group" aria-label="Filter issues">
-    ${FILTERS.map(selectHtml).join("")}
     <button class="btn mini" type="button" data-issue-filter-clear hidden>Clear</button>
   </div>
   <div class="issue-body"></div>`;
-
-/** One option, keyed by the value it stands for. No `selected` attribute: what
- *  a select is set to is said once, below, against the state — an attribute
- *  written on every paint would fight the reader for the control. */
-const optionHtml = (option) => `<option value="${esc(option.value)}">${esc(option.label)}</option>`;
-
-const offerOptions = (select, options) =>
-  patchList(select, options, { keyOf: (option) => option.value, render: optionHtml });
-
-/** Set only when it disagrees. A select written to the value it already holds
- *  is a select whose open menu closes under the reader. */
-const showValue = (select, value) => {
-  const wanted = value || "";
-  if (select.value !== wanted) select.value = wanted;
-};
 
 const showView = (button, view) => {
   const active = button.dataset.issueView === view;
@@ -95,30 +88,36 @@ export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear }) {
   host.innerHTML = chromeHtml();
   const body = host.querySelector(".issue-body");
   const viewButtons = [...host.querySelectorAll("[data-issue-view]")];
-  const selects = FILTERS.map((filter) => ({
-    ...filter,
-    control: host.querySelector(`[data-issue-filter="${filter.name}"]`),
-  }));
+  const bar = host.querySelector(".issue-filters");
   const clear = host.querySelector("[data-issue-filter-clear]");
+
+  // The menus are mounted ahead of the Clear press, which the frame already
+  // holds: a bar built once is a bar whose order is the markup's, not the
+  // order the mounts happened to run in.
+  const menus = FILTERS.map((filter) => ({
+    ...filter,
+    control: mountFilterMenu(bar, { ...filter, onChange: (chosen) => onFilter(filter.name, chosen) }),
+  }));
+  menus.forEach(({ control }) => bar.insertBefore(control.element, clear));
 
   viewButtons.forEach((button) => {
     button.onclick = () => onView(button.dataset.issueView);
   });
   host.querySelector("[data-issue-new]").onclick = onNew;
-  selects.forEach(({ name, control }) => {
-    control.onchange = () => onFilter(name, control.value);
-  });
-  clear.onclick = onClear;
+  clear.onclick = () => {
+    menus.forEach(({ control }) => control.close());
+    onClear();
+  };
 
   return {
     body,
     update({ view, options, filters }) {
       viewButtons.forEach((button) => showView(button, view));
-      selects.forEach(({ offer, name, control }) => {
-        offerOptions(control, offer(options));
-        showValue(control, filters[name]);
-      });
+      menus.forEach(({ offer, name, control }) => control.update(offer(options), chosenOf(filters[name])));
       clear.hidden = !filtersAreSet(filters);
+    },
+    dispose() {
+      menus.forEach(({ control }) => control.dispose());
     },
   };
 }

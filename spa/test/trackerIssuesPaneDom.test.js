@@ -109,11 +109,32 @@ const clearPress = () => {
   const press = host.querySelector("[data-issue-filter-clear]");
   return press && !press.hidden ? press : null;
 };
-/** Choose one filter, the way a reader does: the select's own change event. */
+/** One filter menu, by the filter it writes (#44). The native selects went;
+ *  every filter is now the same custom control. */
+const menu = (name) => host.querySelector(`[data-filter-menu="${name}"]`);
+const menuPress = (name) => menu(name).querySelector(".fmenu-press");
+const openMenu = async (name) => {
+  const press = menuPress(name);
+  if (press.getAttribute("aria-expanded") !== "true") press.click();
+  await flush();
+  return menu(name);
+};
+const menuRows = (name) => [...menu(name).querySelectorAll(".fmenu-row")];
+const menuLabels = (name) => menuRows(name).map((row) => row.textContent.trim());
+
+/** Choose one filter, the way a reader does: open the menu and press a row. */
 const chooseFilter = async (name, value) => {
-  const control = host.querySelector(`[data-issue-filter="${name}"]`);
-  control.value = value;
-  control.dispatchEvent(new Event("change"));
+  await openMenu(name);
+  const row = menuRows(name).find((one) => one.dataset.value === value);
+  if (!row) throw new Error(`no "${value}" row in the ${name} menu: ${menuLabels(name).join(", ")}`);
+  row.click();
+  await flush();
+};
+
+/** Clear one menu from inside it — the press in its own footer. */
+const clearMenu = async (name) => {
+  await openMenu(name);
+  menu(name).querySelector(".fmenu-clear").click();
   await flush();
 };
 const titles = () => [...host.querySelectorAll(".issue-title")].map((one) => one.textContent);
@@ -240,37 +261,29 @@ describe("the filters", () => {
   it("sends each one to issues.list", async () => {
     await mount();
     call.mockClear();
-    const state = host.querySelector('[data-issue-filter="state"]');
-    state.value = "open";
-    state.dispatchEvent(new Event("change"));
-    await flush();
+    await chooseFilter("state", "open");
     expect(listed("issues.list")[0][1]).toEqual({ project_id: "proj-1", state: "open" });
   });
 
   it("offers every column, including the ones nothing stands in", async () => {
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [], columns: columns() });
     await mount();
-    const options = [...host.querySelectorAll('[data-issue-filter="status"] option')].map((one) => one.value);
-    expect(options).toEqual(["", "backlog", "ready", "in_progress", "in_review", "done"]);
+    await openMenu("status");
+    expect(menuRows("status").map((one) => one.dataset.value))
+      .toEqual(["", "backlog", "ready", "in_progress", "in_review", "done"]);
   });
 
   it("offers a clear only once something is narrowed", async () => {
     await mount();
     expect(clearPress()).toBeNull();
-    const label = host.querySelector('[data-issue-filter="label"]');
-    label.value = "bug";
-    label.dispatchEvent(new Event("change"));
-    await flush();
+    await chooseFilter("label", "bug");
     expect(clearPress()).not.toBeNull();
   });
 
   it("says the filter is why the list is empty, not the project", async () => {
     call = vi.fn(async () => ({ issues: [] }));
     await mount();
-    const state = host.querySelector('[data-issue-filter="state"]');
-    state.value = "closed";
-    state.dispatchEvent(new Event("change"));
-    await flush();
+    await chooseFilter("state", "closed");
     expect(host.querySelector(".issue-empty").textContent).toContain("No issue matches these filters");
   });
 });
@@ -300,10 +313,7 @@ describe("the board", () => {
   it("does not send the column filter while the board is open", async () => {
     await board();
     call.mockClear();
-    const status = host.querySelector('[data-issue-filter="status"]');
-    status.value = "done";
-    status.dispatchEvent(new Event("change"));
-    await flush();
+    await chooseFilter("status", "done");
     expect(listed("issues.list")[0][1]).toEqual({ project_id: "proj-1", state: "open" });
   });
 
@@ -479,7 +489,12 @@ describe("the filter bar, mounted once", () => {
   // on a re-read that changes the list, not on a filter change, and not when
   // switching to the board and back. Zech: "The inputs/selects really
   // shouldn't be redrawing ever."
-  const controls = () => [...host.querySelectorAll(".issue-filters select, .issue-filters button")];
+  // Every control on the bar: the four menus' presses and the Clear beside
+  // them. The search boxes and rows inside a menu are mounted with it.
+  const controls = () => [
+    ...host.querySelectorAll(".issue-filters .fmenu-press"),
+    host.querySelector("[data-issue-filter-clear]"),
+  ];
 
   it("is the same DOM nodes through ten paints and a push", async () => {
     await mount();
@@ -498,30 +513,53 @@ describe("the filter bar, mounted once", () => {
 
   it("keeps a focused control's focus and value through a body repaint", async () => {
     await mount();
-    const label = host.querySelector('[data-issue-filter="label"]');
-    label.value = "bug";
-    label.dispatchEvent(new Event("change"));
-    await flush();
-    label.focus();
+    await chooseFilter("label", "bug");
+    const press = menuPress("label");
+    press.focus();
     call.mockImplementation(async (method) =>
       method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh", labels: ["bug"] })], columns: columns() } : {});
     watchers[0].refresh();
     await flush();
     expect(titles()).toEqual(["Fresh"]);
-    expect(host.querySelector('[data-issue-filter="label"]')).toBe(label);
-    expect(document.activeElement).toBe(label);
-    expect(label.value).toBe("bug");
+    expect(menuPress("label")).toBe(press);
+    expect(document.activeElement).toBe(press);
+    expect(press.textContent.trim()).toBe("bug");
+  });
+
+  // The whole reason the bar is mounted once: a menu the reader has OPEN, with
+  // a query half typed into it and a row walked to, is state that lives in the
+  // DOM — and a push about an issue must not touch any of it (#43, #44).
+  it("keeps an open menu open, searched and walked through a body repaint", async () => {
+    await mount();
+    await openMenu("label");
+    const search = menu("label").querySelector(".fmenu-search");
+    search.value = "bu";
+    search.dispatchEvent(new Event("input"));
+    await flush();
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    const walked = menu("label").querySelector(".fmenu-row.is-active");
+    call.mockImplementation(async (method) =>
+      method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh", labels: ["bug"] })], columns: columns() } : {});
+    watchers[0].refresh();
+    await flush();
+    expect(titles()).toEqual(["Fresh"]);
+    expect(menuPress("label").getAttribute("aria-expanded")).toBe("true");
+    expect(search.value).toBe("bu");
+    expect(document.activeElement).toBe(search);
+    expect(menu("label").querySelector(".fmenu-row.is-active")).toBe(walked);
   });
 
   // The options are the one thing about a control that a read may change. They
   // are patched by value: a label nobody had filed before is an inserted
   // `<option>`, and the select around it is the select it already was.
-  it("adds a newly filed label to the options without re-creating the select", async () => {
+  it("adds a newly filed label to the options without re-creating the menu", async () => {
     await mount();
-    const label = host.querySelector('[data-issue-filter="label"]');
-    const values = () => [...label.options].map((one) => one.value);
-    const anyLabel = label.options[0];
-    expect(values()).toEqual(["", "bug"]);
+    const press = menuPress("label");
+    await openMenu("label");
+    // A multi menu offers no "Any label" row: an empty selection already is
+    // one, so the rows are the labels themselves.
+    expect(menuRows("label").map((one) => one.dataset.value)).toEqual(["bug"]);
+    const kept = menuRows("label")[0];
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", {
       issues: [issue({ number: 13, id: "issue-13", labels: ["bug", "spa"] })],
       columns: columns(),
@@ -529,9 +567,10 @@ describe("the filter bar, mounted once", () => {
     // A narrowed read is what sends the tab back to the cache for the whole
     // list, which is where the menus are built from.
     await chooseFilter("state", "closed");
-    expect(values()).toEqual(["", "bug", "spa"]);
-    expect(host.querySelector('[data-issue-filter="label"]')).toBe(label);
-    expect(label.options[0]).toBe(anyLabel);
+    await openMenu("label");
+    expect(menuRows("label").map((one) => one.dataset.value)).toEqual(["bug", "spa"]);
+    expect(menuPress("label")).toBe(press);
+    expect(menuRows("label")[0]).toBe(kept);
   });
 
   // The Clear press is a control on the bar like the other four, so it is
@@ -543,6 +582,13 @@ describe("the filter bar, mounted once", () => {
     await chooseFilter("label", "bug");
     expect(press.hidden).toBe(false);
     expect(host.querySelector("[data-issue-filter-clear]")).toBe(press);
+  });
+
+  it("uses one control for all four filters, and no native select", async () => {
+    await mount();
+    expect(host.querySelectorAll(".issue-filters select")).toHaveLength(0);
+    expect([...host.querySelectorAll("[data-filter-menu]")].map((one) => one.dataset.filterMenu))
+      .toEqual(["state", "status", "assignee", "label"]);
   });
 
   it("survives a switch to the board and back", async () => {
@@ -561,11 +607,11 @@ describe("the push", () => {
   // change nothing on this tab. Nothing about a filter can move with one.
   it("does not redraw or drop focus when the feed moves without changing what it shows", async () => {
     await mount();
-    const filter = host.querySelector("select");
+    const filter = host.querySelector(".fmenu-press");
     filter.focus();
     pane.feedMoved();
     pane.feedMoved();
-    expect(host.querySelector("select")).toBe(filter);
+    expect(host.querySelector(".fmenu-press")).toBe(filter);
     expect(document.activeElement).toBe(filter);
   });
 
@@ -705,12 +751,7 @@ describe("what the tab opens on", () => {
       return { issues: wanted ? OPEN_AND_CLOSED.filter((one) => one.state === wanted) : OPEN_AND_CLOSED };
     });
 
-  const chooseState = async (value) => {
-    const control = host.querySelector('[data-issue-filter="state"]');
-    control.value = value;
-    control.dispatchEvent(new Event("change"));
-    await flush();
-  };
+  const chooseState = (value) => chooseFilter("state", value);
 
   it("asks the bridge for open issues, and draws only those", async () => {
     call = listing();
@@ -722,7 +763,8 @@ describe("what the tab opens on", () => {
   it("offers Open and closed, and Closed, and shows them when asked", async () => {
     call = listing();
     await mount();
-    const options = [...host.querySelectorAll('[data-issue-filter="state"] option')].map((one) => one.value);
+    await openMenu("state");
+    const options = menuRows("state").map((one) => one.dataset.value);
     expect(options).toEqual(["", "open", "closed"]);
 
     await chooseState("");

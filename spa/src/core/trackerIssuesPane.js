@@ -102,8 +102,8 @@ export function mountIssuesPane(host, options) {
       void refresh();
     },
     onNew: () => fileIssue(),
-    onFilter: (name, value) => {
-      state.filters = { ...state.filters, [name]: value };
+    onFilter: (name, chosen) => {
+      state.filters = { ...state.filters, [name]: chosen };
       state.shown = filterIssues(state.all, shownFilters());
       paint();
       void refresh();
@@ -136,7 +136,10 @@ export function mountIssuesPane(host, options) {
     if (state.disposed) return;
     chrome.update({
       view: state.view,
-      options: filterOptions(state.all, state.columns, nameActor),
+      // The menus are built from the project's WHOLE list and from the feed:
+      // the labels its issues wear, and every agent standing on one of its
+      // workspaces, grouped the way the assignee picker groups them (#44).
+      options: filterOptions(state.all, state.columns, nameActor, groups()),
       filters: state.filters,
     });
     const view = VIEWS[state.view] || VIEWS[LIST_VIEW];
@@ -367,6 +370,7 @@ export function mountIssuesPane(host, options) {
       state.disposed = true;
       watcher.dispose();
       reads.dispose();
+      chrome.dispose();
       state.picker?.close?.();
     },
   };

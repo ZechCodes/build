@@ -13,6 +13,7 @@ import {
   filtersAreSet,
   issueListParams,
   labelsOf,
+  narrowsTheRead,
   sortIssues,
 } from "../src/core/trackerFilters.js";
 
@@ -118,11 +119,90 @@ describe("what the bar offers", () => {
     ]);
   });
 
+  // #44: You is a standing answer now, beside Unassigned — it is a filter
+  // anybody wants whether or not they happen to hold an issue today. An
+  // assignee the issues name and the project does not is offered after them,
+  // under a heading that says why it is odd.
   it("names each assignee through the caller, which knows this project's agents", () => {
-    const options = filterOptions(issues, null, (assignee) => (assignee.kind === "user" ? "You" : "Agent 1"));
+    const options = filterOptions(issues, null, () => "Agent 1");
     expect(options.assignees.map((one) => one.label)).toEqual([
-      "Anyone", "Anyone assigned", "Unassigned", "Agent 1", "You",
+      "Anyone", "Anyone assigned", "Unassigned", "You", "Agent 1",
     ]);
+    expect(options.assignees.at(-1).group).toBe("No longer in this project");
+  });
+
+  // The picker groups agents by the workspace they stand on, and so does this:
+  // one agent is found the same way wherever it is chosen.
+  it("offers the project's agents under the workspace each stands on", () => {
+    const groups = [
+      { workspaceId: "ws-1", name: "issues-spa", agents: [{ id: "agent-1", label: "issues-spa · Agent 1" }] },
+      { workspaceId: "ws-2", name: "tracker-filters", agents: [{ id: "agent-2", label: "tracker-filters · Agent 1" }] },
+    ];
+    const offered = filterOptions([], null, () => "", groups).assignees;
+    expect(offered.map((one) => [one.value, one.group || ""])).toEqual([
+      ["", ""], ["any", ""], ["none", ""], ["user", ""],
+      ["agent:agent-1", "issues-spa"], ["agent:agent-2", "tracker-filters"],
+    ]);
+  });
+
+  // An agent that both stands on a workspace and holds an issue is one agent.
+  it("offers each assignee once", () => {
+    const groups = [{ workspaceId: "ws-1", name: "issues-spa", agents: [{ id: "agent-1", label: "issues-spa · Agent 1" }] }];
+    const held = [issue({ assignee: { kind: "agent", agent_id: "agent-1" } })];
+    const values = filterOptions(held, null, () => "x", groups).assignees.map((one) => one.value);
+    expect(values.filter((one) => one === "agent:agent-1")).toHaveLength(1);
+  });
+});
+
+// #44. A filter holds a LIST now. `issues.list` still takes one label and one
+// assignee, so several is narrowed here, over the whole list the cache holds.
+describe("a filter that holds several", () => {
+  const held = [
+    issue({ number: 3, id: "i3", labels: ["bug"], status: "ready" }),
+    issue({ number: 2, id: "i2", labels: ["ux"], status: "done" }),
+    issue({ number: 1, id: "i1", labels: ["perf"], status: "ready" }),
+  ];
+
+  it("keeps an issue wearing ANY of the chosen labels", () => {
+    expect(filterIssues(held, { label: ["bug", "perf"] }).map((one) => one.id)).toEqual(["i3", "i1"]);
+  });
+
+  it("reads a bare string as a selection of one, so an older caller still works", () => {
+    expect(filterIssues(held, { label: "bug" }).map((one) => one.id)).toEqual(["i3"]);
+  });
+
+  it("narrows nothing on an empty selection", () => {
+    expect(filterIssues(held, { label: [], assignee: [] })).toHaveLength(3);
+  });
+
+  it("keeps an issue held by any of the chosen assignees", () => {
+    const mixed = [
+      issue({ id: "u", assignee: { kind: "user" } }),
+      issue({ id: "a", assignee: { kind: "agent", agent_id: "agent-1" } }),
+      issue({ id: "n", assignee: null }),
+    ];
+    expect(filterIssues(mixed, { assignee: ["user", "none"] }).map((one) => one.id)).toEqual(["u", "n"]);
+    expect(filterIssues(mixed, { assignee: ["any"] }).map((one) => one.id)).toEqual(["u", "a"]);
+  });
+
+  // The param goes out only when exactly one thing is chosen: two chosen is
+  // not a narrower read, it is a wider one narrowed here afterwards.
+  it("sends the param for one chosen and none for several", () => {
+    expect(issueListParams("proj-1", { label: ["bug"] })).toEqual({ project_id: "proj-1", label: "bug" });
+    expect(issueListParams("proj-1", { label: ["bug", "ux"] })).toEqual({ project_id: "proj-1" });
+    expect(issueListParams("proj-1", { assignee: ["user"] })).toEqual({ project_id: "proj-1", assignee: { kind: "user" } });
+    expect(issueListParams("proj-1", { assignee: ["user", "none"] })).toEqual({ project_id: "proj-1" });
+  });
+
+  it("still calls a read narrowed when several are chosen", () => {
+    expect(narrowsTheRead({ label: ["bug", "ux"] })).toBe(true);
+    expect(narrowsTheRead({ label: [] })).toBe(false);
+  });
+
+  it("calls the bar set once a selection differs from the default", () => {
+    expect(filtersAreSet({ state: ["open"] })).toBe(false);
+    expect(filtersAreSet({ state: ["open"], label: ["bug"] })).toBe(true);
+    expect(filtersAreSet({ state: [] })).toBe(true);
   });
 });
 

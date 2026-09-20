@@ -25,12 +25,84 @@
   display:flex; flex-wrap:wrap; align-items:center; gap:6px;
   padding:10px var(--pane-gutter);
 }
-.issue-filter select, .issue-filters select {
+
+/* ---- a filter menu (#44) --------------------------------------------------
+
+   Ours rather than the platform's, because a native select has no search, says
+   nothing above itself about what is chosen, and on a phone is whatever the
+   platform decided. All four wear this — the two that take one answer as well
+   as the two that take several — so the bar reads as one family.
+
+   The popover is positioned against its own press and not against the page, so
+   nothing has to measure anything; under 760px it is a sheet at the bottom of
+   the screen instead, where a thumb is. */
+
+.fmenu { position:relative; }
+.fmenu-press {
+  display:inline-flex; align-items:center; gap:5px;
   font:inherit; font-size:12px; color:var(--ink2);
   background:var(--panel2); border:1px solid var(--line2); border-radius:7px;
-  padding:4px 8px; max-width:180px;
+  padding:4px 8px; max-width:200px; cursor:pointer;
+  transition:border-color var(--motion-fast), color var(--motion-fast);
 }
-.issue-filters select:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.fmenu-press-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fmenu-press:hover { border-color:var(--line3); color:var(--ink); }
+.fmenu-press:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+/* Something is chosen here. The one accent on the bar, so "which of these four
+   am I narrowed by" is answered without reading any of them. */
+.fmenu-press.is-set { color:var(--accent); border-color:var(--accent-soft); }
+.fmenu-caret { width:12px; height:12px; flex:0 0 auto; opacity:.7; }
+.fmenu-press[aria-expanded="true"] .fmenu-caret { transform:rotate(180deg); }
+
+.fmenu-pop {
+  position:absolute; z-index:40; top:calc(100% + 5px); left:0; min-width:230px; max-width:320px;
+  display:flex; flex-direction:column; gap:6px;
+  padding:8px; border-radius:10px;
+  background:var(--panel); border:1px solid var(--line2);
+  box-shadow:0 12px 28px -12px rgb(0 0 0 / .45);
+}
+/* `display` here has to say the shut state too: `hidden` is a rule of its own
+   that any later `display` beats, and a popover laid out as a flex column is a
+   popover that is never hidden. */
+.fmenu-pop[hidden] { display:none; }
+.fmenu-search {
+  font:inherit; font-size:12px; color:var(--ink);
+  background:var(--panel2); border:1px solid var(--line2); border-radius:7px; padding:5px 8px;
+}
+.fmenu-search:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.fmenu-rows { list-style:none; margin:0; padding:0; max-height:46vh; overflow:auto; }
+/* The workspace an agent stands on, as the assignee picker groups them. */
+.fmenu-group {
+  padding:7px 6px 3px; font-size:10.5px; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--dim);
+}
+.fmenu-row {
+  display:flex; align-items:center; gap:7px;
+  padding:5px 6px; border-radius:6px; cursor:pointer;
+  font-size:12.5px; color:var(--ink2);
+}
+/* The walked row and the pointed-at row are the same mark: focus never leaves
+   the search box, so this is the only thing that says where the keyboard is. */
+.fmenu-row.is-active, .fmenu-row:hover { background:var(--row-hover); color:var(--ink); }
+.fmenu-tick {
+  position:relative;
+  flex:0 0 14px; width:14px; height:14px; border-radius:4px;
+  border:1px solid var(--line3); background:var(--panel2);
+}
+.fmenu-row[aria-selected="true"] { color:var(--ink); }
+.fmenu-row[aria-selected="true"] .fmenu-tick {
+  background:var(--accent-fill); border-color:var(--accent-fill);
+}
+/* The tick itself, drawn rather than fetched: two sides of a box, turned. Dark
+   ink on the filled accent, which is what reads in both themes. */
+.fmenu-row[aria-selected="true"] .fmenu-tick::after {
+  content:""; position:absolute; left:4px; top:1px; width:3px; height:7px;
+  border:solid var(--accent-ink); border-width:0 2px 2px 0;
+  transform:rotate(43deg);
+}
+.fmenu-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fmenu-none { margin:0; padding:8px 6px; font-size:12px; color:var(--dim); }
+.fmenu-foot { display:flex; justify-content:flex-end; border-top:1px solid var(--line2); padding-top:6px; }
 
 .issue-body { padding:0 var(--pane-gutter) var(--pane-bottom); }
 
@@ -359,7 +431,19 @@
   }
   .issue-column { flex-basis:78vw; max-width:300px; scroll-snap-align:start; }
   .issue-head, .issue-filters { padding-left:var(--pane-gutter); padding-right:var(--pane-gutter); }
-  .issue-filter select, .issue-filters select { max-width:46vw; }
+  .fmenu-press { max-width:46vw; }
+  /* A sheet at the bottom of the screen rather than a popover pinned to a
+     press: on a phone the press is wherever the bar wrapped to, and a menu
+     hanging off it is a menu under the thumb that opened it. */
+  .fmenu-pop {
+    position:fixed; inset:auto 0 0 0; z-index:60;
+    min-width:0; max-width:none;
+    padding:12px 14px calc(14px + env(safe-area-inset-bottom));
+    border-radius:14px 14px 0 0; border-left:0; border-right:0; border-bottom:0;
+    box-shadow:0 -14px 34px -14px rgb(0 0 0 / .55);
+  }
+  .fmenu-rows { max-height:44vh; }
+  .fmenu-row { padding:9px 6px; }
   /* A phone's row shows the WHOLE title, wrapping onto as many lines as it
      takes rather than ellipsising: on a narrow screen a clipped title is most
      of the title. The stacking itself is no longer a phone rule — the row is

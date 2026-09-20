@@ -194,7 +194,14 @@ function fakeCarrier(name) {
   return carrier;
 }
 
-const fakeLink = () => ({ app: fakeCarrier("app"), term: fakeCarrier("term"), close: vi.fn() });
+/** The recovery status every real peer link carries (core/peerLink.js): whether
+ *  it is renegotiating right now. The app session's path probe stands down while
+ *  it is, so a fake link has to be able to say. */
+const fakeRecovery = (recovering = false) => ({
+  snapshot: () => ({ epoch: 0, recovering }),
+  subscribe: () => () => {},
+});
+const fakeLink = () => ({ app: fakeCarrier("app"), term: fakeCarrier("term"), recovery: fakeRecovery(), close: vi.fn() });
 
 /** The peer link opens as the real one does: the ICE servers are minted, the
  *  offer goes over the signaling wire, and the caller is told the channels are

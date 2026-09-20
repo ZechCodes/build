@@ -16,8 +16,8 @@ const pingTimedOut = () => Object.assign(new Error("ping timed out"), { timedOut
 
 /** A probe over a wire a test drives: when frames last arrived, what ICE says,
  *  and whether the ping is going to answer. */
-function stand({ frameAt = 0, iceConnected = true, pong = null, wire: given } = {}) {
-  const state = { frameAt, iceConnected, now: NOW };
+function stand({ frameAt = 0, iceConnected = true, pong = null, wire: given, busy = false } = {}) {
+  const state = { frameAt, iceConnected, now: NOW, busy };
   const wire = given !== undefined ? given : {
     peerFrameAt: () => state.frameAt,
     peerIsConnected: () => state.iceConnected,
@@ -28,6 +28,7 @@ function stand({ frameAt = 0, iceConnected = true, pong = null, wire: given } = 
     ping,
     wire: () => wire,
     rpc: { lastFrameAt: () => 0 },
+    busy: () => state.busy,
     onDead: (detail) => dead.push(detail),
     diagnosticId: "dev-a:sess-1",
     now: () => state.now,
@@ -121,6 +122,27 @@ describe("createPathProbe", () => {
     expect(await probe.judge("thread.post")).toBe("dead");
     expect(await probe.judge("board.list")).toBe("no-wire");
     expect(dead).toHaveLength(1);
+  });
+
+  it("stands down while an ICE restart is already putting the path right", async () => {
+    const { probe, ping, dead } = stand({ busy: true, pong: () => Promise.reject(pingTimedOut()) });
+
+    expect(await probe.judge("thread.post")).toBe("alive");
+    expect(ping).not.toHaveBeenCalled();
+    expect(dead).toHaveLength(0);
+    // Recorded, so a history shows the deadline was seen and deliberately not
+    // judged rather than silently ignored.
+    expect(records()).toMatchObject([{ state: "renegotiating", method: "thread.post" }]);
+  });
+
+  it("judges again once the restart has finished and the path is still not there", async () => {
+    const stood = stand({ busy: true, pong: () => Promise.reject(pingTimedOut()) });
+    await stood.probe.judge("thread.post");
+
+    stood.state.busy = false;
+
+    expect(await stood.probe.judge("board.list")).toBe("dead");
+    expect(stood.dead).toHaveLength(1);
   });
 
   it("records the probe, what vouched, and the verdict, so the next report carries the timeline", async () => {

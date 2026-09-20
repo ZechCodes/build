@@ -52,6 +52,12 @@ export const PATH_PROBE_EVENT = "path-probe";
  *   probe's own short deadline. The caller builds it, because which wire and
  *   which deadline are the session's to decide.
  * @param wire the carrier this session is riding, or null when nothing is.
+ * @param busy whether something else is already putting this path right — an
+ *   ICE restart in flight (core/peerLink.js). A restart keeps the channels open
+ *   while it renegotiates, so a call can time out under one on a path that is
+ *   about to be fine; and the restart has its own deadline and its own teardown,
+ *   so the verdict is already somebody's. The terminals' probe stands down on
+ *   the same signal.
  * @param rpc the session's rpc, read only for when it last decrypted a frame.
  * @param onDead the path is not there. Called at most once, with what the
  *   verdict was based on.
@@ -63,6 +69,7 @@ export function createPathProbe({
   ping,
   wire,
   rpc = null,
+  busy = () => false,
   onDead = () => {},
   diagnosticId = "peer",
   now = () => Date.now(),
@@ -79,6 +86,10 @@ export function createPathProbe({
 
   const ask = async (method) => {
     const riding = wire();
+    if (busy()) {
+      record("renegotiating", { method });
+      return "alive";
+    }
     const before = whatVouchesFor(rpc, riding, now());
     // A frame on either channel inside the proof window is the strongest
     // evidence there is, and it costs nothing to read: the deadline that fired
@@ -113,9 +124,9 @@ export function createPathProbe({
     /**
      * An RPC hit its path deadline. Is the wire under it there?
      *
-     * `"alive"` — something vouches for the path; the call's own failure stands
-     * and the session is kept. `"dead"` — nothing does, and `onDead` has been
-     * told. `"no-wire"` — there is nothing to ask about: no carrier, or the
+     * `"alive"` — something vouches for the path, or somebody else is already
+     * putting it right; the call's own failure stands and the session is kept.
+     * `"dead"` — nothing does, and `onDead` has been told. `"no-wire"` — there is nothing to ask about: no carrier, or the
      * verdict is already in. A session with no carrier is one the switch has
      * already reported idle, and severing it twice is not this module's job.
      *

@@ -98,6 +98,10 @@ export async function openSession({
    *  because it names the session the rendezvous has not minted yet; declared
    *  here so the teardowns above can reach it. */
   let pathProbe = null;
+  /** Whether this session's peer is renegotiating (`watchRecovery`). Nothing
+   *  says so until the caller has opened a peer link and handed it over, and a
+   *  session with no link is a session nothing is putting right. */
+  let peerIsRecovering = () => false;
 
   /** Nothing is carrying this session any more. The caller hears it once. */
   const severSession = () => {
@@ -157,6 +161,7 @@ export async function openSession({
     ping: () => rpc.call("ping", {}, { timeoutMs: PING_TIMEOUT_MS, carrier: carrierSwitch.active() }),
     wire: () => carrierSwitch.active(),
     rpc: { lastFrameAt: () => rpc?.lastFrameAt() || 0 },
+    busy: () => peerIsRecovering() === true,
     diagnosticId,
     onDead: () => {
       // Recorded beside the verdict, because a verdict nobody acted on and a
@@ -224,6 +229,20 @@ export async function openSession({
     /** Ride this DataChannel, or `null` when it has gone. Nothing carries this
      *  session in between. */
     peer: (peerCarrier) => carrierSwitch.peer(peerCarrier),
+
+    /**
+     * Tell this session when its peer is renegotiating (core/peerLink.js's
+     * recovery status).
+     *
+     * An ICE restart keeps the channels open while it works, so a call can burn
+     * its deadline under one on a path that is about to be perfectly fine — and
+     * the restart already has its own deadline and its own teardown. The probe
+     * stands down for it rather than racing it to a verdict, exactly as the
+     * terminals' probe does.
+     */
+    watchRecovery: (isRecovering) => {
+      peerIsRecovering = typeof isRecovering === "function" ? isRecovering : () => false;
+    },
 
     /**
      * Put this session's signaling back on the rendezvous, which the caller

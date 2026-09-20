@@ -152,8 +152,16 @@ function makeRendezvous({ deviceId }) {
   return rendezvous;
 }
 
+/** The recovery status every real peer link carries (core/peerLink.js): whether
+ *  it is renegotiating right now. The app session's path probe stands down while
+ *  it is, so a fake link has to be able to say. */
+const fakeRecovery = (recovering = false) => ({
+  snapshot: () => ({ epoch: 0, recovering }),
+  subscribe: () => () => {},
+});
+
 /** A direct connection as the connection layer uses it: two channels that can
- *  say they closed, and a way to close the pair. */
+ *  say they closed, its recovery status, and a way to close the pair. */
 function fakePeerLink(deviceId) {
   const carrier = () => {
     const listeners = new Set();
@@ -165,7 +173,7 @@ function fakePeerLink(deviceId) {
       drop: (reason = null) => listeners.forEach((fn) => fn(reason)),
     };
   };
-  const link = { app: carrier(), term: carrier(), close: vi.fn() };
+  const link = { app: carrier(), term: carrier(), recovery: fakeRecovery(), close: vi.fn() };
   linksFor.set(deviceId, link);
   return link;
 }
@@ -198,6 +206,9 @@ function fakeSession(deviceId, onLost = () => {}) {
     adapter: vi.fn(() => null),
     onPush: () => () => {},
     onCarrier: vi.fn((fn) => { carrierChanged = fn; }),
+    // Where the session learns whether its peer is renegotiating, so its path
+    // probe can stand down for a restart (core/session.js).
+    watchRecovery: vi.fn(),
     fireCarrier: () => carrierChanged(),
     reattachSignaling: vi.fn(async () => {}),
     closed: false,

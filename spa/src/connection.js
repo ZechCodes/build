@@ -233,6 +233,10 @@ async function connectOverChannels(deviceId, attempt) {
     }
     if (!attempt.own(session, closeQuietly)) throw new Error(`connection attempt for ${deviceId} was cancelled`);
     link = await openDirectLink(deviceId, session, sessionLease, authority);
+    // The session's path probe stands down while the link is putting the path
+    // right itself (#30): a restart keeps the channels open and owns its own
+    // verdict, and two things judging one path reach it twice.
+    session.watchRecovery(() => link.recovery.snapshot().recovering);
     if (!attempt.own(link, (owned) => owned.close())) {
       throw new Error(`connection attempt for ${deviceId} was cancelled`);
     }

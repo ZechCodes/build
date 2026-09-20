@@ -99,6 +99,25 @@ pub(in crate::app) fn dispatch_frame(
     api::reply(id, result)
 }
 
+/// What a `ping` answers, wherever it is answered from.
+///
+/// Two places answer it and they must answer identically: the carrier's fast
+/// path ([`crate::carrier::FrameIntake::accept`]), which is the one a browser's
+/// liveness probe reaches, and [`AppState::route_legacy`] for the callers that
+/// dispatch a frame directly.
+///
+/// `push_events` rides the probe as well as the greeting: a client that only
+/// ever pings can still tell whether this bridge will invalidate for it, and an
+/// old client ignores the extra field.
+pub(crate) fn pong() -> Value {
+    json!({
+        "pong": true,
+        "api_version": API_VERSION,
+        "push_events": true,
+        "message_context": { "version": 1 },
+    })
+}
+
 /// The verbs that cannot go through [`AppState::route`]: each needs the
 /// caller's own [`SessionSender`] (somewhere to push to) or the shared `Arc`
 /// (a background producer or pump to spawn). `None` means "not one of mine",
@@ -500,12 +519,7 @@ impl AppState {
             // `push_events` rides the probe as well as the greeting: a client
             // that only ever pings can still tell whether this bridge will
             // invalidate for it, and an old client ignores the extra field.
-            "ping" => Ok(json!({
-                "pong": true,
-                "api_version": API_VERSION,
-                "push_events": true,
-                "message_context": { "version": 1 },
-            })),
+            "ping" => Ok(pong()),
             // QA-only (`BRIDGE_QA_AGENT=1`), and unknown to everyone else: the
             // scripted stream is a test fixture, not part of `api/v1`.
             "stream.events" if self.qa_agent => self.stream_events(params),

@@ -71,7 +71,14 @@ export function subscribeTerminalStatus(fn) {
 
 export function terminalManager() {
   if (!socket) {
-    const created = new TerminalSocket({ transport });
+    // A terminal session that stopped answering on a wire the peer is still
+    // carrying is a session to re-establish, not a connection to tear down:
+    // the shells come back on the same channel, and the app session beside
+    // them never hears about it.
+    const created = new TerminalSocket({
+      transport,
+      onTermUnresponsive: () => followTerminalDevice({ freshSession: true }),
+    });
     socket = created;
     created.onStatus((status) => {
       if (socket === created) statusHub.set(status);

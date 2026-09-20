@@ -185,7 +185,8 @@ function fakeCarrier(name) {
       return () => closeListeners.delete(fn);
     },
     close: () => closeListeners.forEach((fn) => fn()),
-    drop: () => closeListeners.forEach((fn) => fn()),
+    // A wire shut on purpose says why; a wire that simply went says nothing.
+    drop: (reason = null) => closeListeners.forEach((fn) => fn(reason)),
   };
   return carrier;
 }
@@ -384,13 +385,34 @@ describe("a connection that goes after it was live", () => {
     expect(link.close).toHaveBeenCalledTimes(1); // only the departed lifetime closes it
   });
 
-  it("reconnects the whole device when the terminal half is the one that goes", async () => {
+  // The terminal half is one stream on the path, not the path. It used to cost
+  // the whole device — which is how a liveness probe timing out behind a loaded
+  // bridge re-dialled Zech's machine every few seconds for a day — and now it
+  // costs the terminals their session and nothing else.
+  it("keeps the device when the terminal half goes alone", async () => {
     const link = fakeLink();
     linkOpensWith(link);
     await connect("dev-a");
     const dialled = sockets().length;
 
     link.term.drop();
+    await settle();
+
+    expect(sockets(), "no redial").toHaveLength(dialled);
+    expect(contextFor("dev-a").peerLink, "the peer is still the one it was").toBe(link);
+    expect(link.close).not.toHaveBeenCalled();
+  });
+
+  // Unless what the terminal half reports is about the PATH: its liveness
+  // probe judging that nothing carried anywhere is the one reason a terminal
+  // channel speaks for the connection.
+  it("reconnects the whole device when the terminal half says nothing was carrying", async () => {
+    const link = fakeLink();
+    linkOpensWith(link);
+    await connect("dev-a");
+    const dialled = sockets().length;
+
+    link.term.drop("liveness-timeout");
     await settle();
 
     expect(sockets()).toHaveLength(dialled + 1);

@@ -58,6 +58,11 @@ const FRAME_PROOF_OF_LIFE_MS = 4000;
  *  would put an RPC behind every flush of a flood. */
 const TERM_ACK_THROTTLE_MS = 250;
 
+/** Why a wire this socket closed was closed, for the owner of the link that
+ *  hears it go: the path carried nothing at all, which is the one judgement
+ *  worth the whole connection. */
+export const LIVENESS_TIMEOUT = "liveness-timeout";
+
 /**
  * The socket was not there for a caller that needed it.
  *
@@ -85,8 +90,13 @@ export function terminalScope(scope = {}) {
 }
 
 export class TerminalSocket {
-  constructor({ transport }) {
+  constructor({ transport, onTermUnresponsive = noop }) {
     this.transport = transport;
+    /** What to do about a terminal session that stopped answering on a wire
+     *  that is plainly still carrying: re-establish the terminals, and nothing
+     *  else. The manager owns that move, because it owns which machine the
+     *  shells are on. */
+    this._onTermUnresponsive = onTermUnresponsive;
     // The session this socket is on, once a rendezvous has minted one for it.
     this._session = null;
     this._status = null;
@@ -660,26 +670,54 @@ export class TerminalSocket {
     return immediate ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, 2000));
   }
 
+  /** When this peer last carried anything — the terminal session's own frames
+   *  and the app session's alike, because the two channels are one path and a
+   *  frame on either is proof it is up. */
+  _peerFrameAt(wire) {
+    return Math.max(this._rpc?.lastFrameAt() || 0, wire?.peerFrameAt?.() || 0);
+  }
+
   async _probeLiveness(liveness, diagnosticId) {
     if (this._liveness !== liveness || this._closed || this._recovery?.snapshot().recovering) return false;
-    if (Date.now() - this._rpc.lastFrameAt() < FRAME_PROOF_OF_LIFE_MS) return true;
     const wire = this._switch.active();
     if (!wire) return false;
+    if (Date.now() - this._peerFrameAt(wire) < FRAME_PROOF_OF_LIFE_MS) return true;
     try {
       await this._call("ping", {}, 3000);
       return this._liveness === liveness;
     } catch {
-      // The wire that did not answer is the one that goes: closing a carrier
-      // is how it reports itself gone, and its owner decides what that costs.
-      this._closeUnresponsiveWire(liveness, wire, diagnosticId);
-      return false;
+      return this._judgeSilence(liveness, wire, diagnosticId);
     }
   }
 
-  _closeUnresponsiveWire(liveness, wire, diagnosticId) {
-    if (this._liveness !== liveness) return;
-    recordConnectionDiagnostic(diagnosticId, "terminal-session", { state: "liveness-timeout" });
-    wire.close();
+  /**
+   * The ping did not answer. Which of the two things that means?
+   *
+   * A path that carried NOTHING the whole time — no frame on either channel,
+   * and no pong — is down, and the wire goes: closing a carrier is how it
+   * reports itself gone, and its owner decides what that costs.
+   *
+   * But a peer that carried frames while the ping was outstanding is plainly
+   * up, and what did not answer is this SESSION, not the path. That happens to
+   * a bridge under load — the pong queues behind other work and the three
+   * seconds run out — and closing the channel then is how a browser talking to
+   * a busy machine tore its own connection down every few seconds. So the
+   * terminals re-establish themselves on the wire that is still carrying, and
+   * the app session and the peer are left alone.
+   */
+  _judgeSilence(liveness, wire, diagnosticId) {
+    if (this._liveness !== liveness) return false;
+    const carrying = Date.now() - this._peerFrameAt(wire) < FRAME_PROOF_OF_LIFE_MS;
+    recordConnectionDiagnostic(diagnosticId, "terminal-session", {
+      state: "liveness-timeout",
+      channel: carrying ? "term" : "peer",
+    });
+    if (!carrying) {
+      wire.close(LIVENESS_TIMEOUT);
+      return false;
+    }
+    this._onTermUnresponsive?.();
+    return false;
   }
 
   _call(method, params = {}, timeoutMs) {

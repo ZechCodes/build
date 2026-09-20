@@ -39,12 +39,16 @@ vi.mock("../src/core/deviceContexts.js", async () => ({
 const { followTerminalDevice, provideTerminalSessions, resetTerminalManager, subscribeTerminalStatus, terminalManager } =
   await import("../src/terminal/manager.js");
 const { App } = await import("../src/app.js");
+const { connectionDiagnosticHistory } = await import("../src/core/connectionDiagnostics.js");
 
 function answeringCarrier(name, { answerImmediately = true } = {}) {
   const envelopeListeners = new Set();
   const closeListeners = new Set();
   const carrier = {
     name,
+    // Mutable, so a case can let the handshake through and then have the
+    // bridge go quiet — which is the state a loaded daemon is in.
+    answerImmediately,
     sent: [],
     close: vi.fn(() => closeListeners.forEach((listener) => listener())),
     onEnvelope(listener) {
@@ -59,7 +63,7 @@ function answeringCarrier(name, { answerImmediately = true } = {}) {
       carrier.sent.push(envelope);
       const { id, method } = envelope.frameFields.payload;
       events.push(`${name}:${method}`);
-      if (answerImmediately) queueMicrotask(() => carrier.answer(envelope));
+      if (carrier.answerImmediately) queueMicrotask(() => carrier.answer(envelope));
     },
     answer(envelope = carrier.sent.at(-1)) {
       const { id, method } = envelope.frameFields.payload;
@@ -138,6 +142,106 @@ describe("terminal session handoff after a bridge restart", () => {
       expect(replacementTerm.sent.filter((frame) => frame.frameFields.payload.method === "ping").length).toBeGreaterThan(1);
       expect(replacementTerm.close).not.toHaveBeenCalled();
       expect(sharedAppCarrier.close).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** The terminal stack as it stands after one session has proved itself: the
+   *  socket live on `term`, with the app channel beside it on the same peer. */
+  async function livePeer({ answerImmediately = true, peerFrameAt = () => 0 } = {}) {
+    provideTerminalSessions(async (deviceId) => {
+      const number = sessions.length + 1;
+      const lease = {
+        sessionId: `terminal-${number}`,
+        sessionKeyB64: `key-${number}`,
+        deviceId,
+        release: vi.fn(),
+      };
+      sessions.push(lease);
+      return lease;
+    });
+    const term = answeringCarrier("term", { answerImmediately: true });
+    term.peerFrameAt = peerFrameAt;
+    const app = { close: vi.fn() };
+    contexts.set("dev-a", { deviceId: "dev-a", call: async () => ({}), peerLink: { app, term } });
+    const socket = terminalManager();
+    await settle();
+    await vi.advanceTimersByTimeAsync(0);
+    // Past the handshake the bridge stops answering, which is the state under
+    // test: a ping that will time out.
+    term.answerImmediately = answerImmediately;
+    return { socket, term, app };
+  }
+
+  // The bug this file's header names, seen end to end: under a load of agents
+  // the bridge's pong queued behind other work, the probe's three seconds ran
+  // out on a path that was plainly carrying, and the channel the probe closed
+  // took the whole connection with it — every few seconds, all day.
+  //
+  // The peer's two channels are one path, so the app session's frames are
+  // proof for the terminal session too: a quiet terminal beside a busy app is
+  // not a probe's business at all.
+  it("asks nothing of a path the peer is carrying on", async () => {
+    vi.useFakeTimers();
+    try {
+      const { term, app } = await livePeer({ answerImmediately: false, peerFrameAt: () => Date.now() });
+
+      await vi.advanceTimersByTimeAsync(6000);
+
+      const pings = term.sent.filter((frame) => frame.frameFields.payload.method === "ping");
+      expect(pings, "the handshake's ping and no other").toHaveLength(1);
+      expect(term.close, "the wire the peer is carrying on is not closed").not.toHaveBeenCalled();
+      expect(app.close, "and the app session is not touched").not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Silence at probe time, and the peer carrying again while the ping is out:
+  // the path is up and what did not answer is this SESSION. The terminals take
+  // a fresh one on the wire that is still carrying; nothing else moves.
+  it("re-establishes the terminals when the peer carries while the ping is out", async () => {
+    vi.useFakeTimers();
+    try {
+      let carryingSince = 0;
+      const { term, app } = await livePeer({
+        answerImmediately: false,
+        peerFrameAt: () => carryingSince,
+      });
+      const before = sessions.length;
+      // The app session hears something the moment the probe's ping goes out.
+      const wasSent = term.send;
+      term.send = async (envelope) => {
+        if (envelope.frameFields.payload.method === "ping") carryingSince = Date.now();
+        return wasSent(envelope);
+      };
+
+      // The proof window holds the first ping back to four seconds, and the
+      // ping itself waits three for a pong.
+      await vi.advanceTimersByTimeAsync(9000);
+
+      expect(term.close, "a carrying path keeps its wire").not.toHaveBeenCalled();
+      expect(app.close).not.toHaveBeenCalled();
+      expect(sessions.length, "the terminals take a fresh session instead").toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The other half, which must keep working: a path that carried nothing at
+  // all still goes, and says which channel it judged.
+  it("closes the wire when nothing is carrying anywhere, naming the peer", async () => {
+    vi.useFakeTimers();
+    try {
+      const { term } = await livePeer({ answerImmediately: false, peerFrameAt: () => 0 });
+
+      await vi.advanceTimersByTimeAsync(9000);
+
+      expect(term.close).toHaveBeenCalledWith("liveness-timeout");
+      const judged = connectionDiagnosticHistory()
+        .filter((record) => record.event === "terminal-session" && record.state === "liveness-timeout");
+      expect(judged.at(-1).channel, "the record says which channel was judged").toBe("peer");
     } finally {
       vi.useRealTimers();
     }

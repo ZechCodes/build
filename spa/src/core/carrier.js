@@ -24,8 +24,23 @@ export const DC_BUFFERED_HIGH = 1024 * 1024;
  * `{ channel }` wraps a negotiated DataChannel, whose envelope JSON crosses
  * bare, chunked past the message limit.
  */
-export function openCarrier({ socket, channel, sessionId }) {
-  return channel ? channelCarrier(channel) : relayCarrier(socket, sessionId);
+export function openCarrier({ socket, channel, sessionId, frames = peerFrames() }) {
+  return channel ? channelCarrier(channel, frames) : relayCarrier(socket, sessionId, frames);
+}
+
+/**
+ * When a frame last arrived on a set of wires — one record, shared by every
+ * carrier that belongs to the same peer.
+ *
+ * A peer link's two channels are one path: a frame on either of them is proof
+ * that path is up, whichever session it belonged to. Without this each session
+ * could only vouch for its own channel, and a terminal session sitting quiet
+ * beside a busy app session had no way to tell "nothing is arriving" from "not
+ * for me" — so it pinged a live path, timed out behind a loaded bridge, and
+ * closed the channel it had just judged.
+ */
+export function peerFrames() {
+  return { at: 0 };
 }
 
 /** `WebSocket.OPEN`, as a number rather than as a global: this module is read
@@ -59,7 +74,7 @@ export function sendOverSocket(socket, text) {
  *  one owner at a time — the session riding it and the link that opened it —
  *  and neither may silently unregister the other. Each returns the
  *  unsubscribe that is the only way off. */
-function carrierCore() {
+function carrierCore(frames) {
   const envelopeListeners = new Set();
   const closeListeners = new Set();
   let ended = false;
@@ -69,18 +84,23 @@ function carrierCore() {
   };
   return {
     deliver: (envelope) => {
+      frames.at = Date.now();
       for (const listener of [...envelopeListeners]) listener(envelope);
     },
-    end: () => {
+    /** `reason` travels to the close listeners: a wire that was shut on
+     *  purpose says why, and the owner of the link decides what that costs. */
+    end: (reason = null) => {
       if (ended) return false;
       ended = true;
-      for (const listener of [...closeListeners]) listener();
+      for (const listener of [...closeListeners]) listener(reason);
       return true;
     },
     gone: () => ended,
     interface: {
       onEnvelope: subscribe(envelopeListeners),
       onClose: subscribe(closeListeners),
+      /** When a frame last arrived on any wire of this peer. */
+      peerFrameAt: () => frames.at,
     },
   };
 }
@@ -94,8 +114,8 @@ function carrierCore() {
  * session and, when it is let go, stops reading and leaves the socket to the
  * others. Only the rendezvous closes the socket.
  */
-function relayCarrier(socket, sessionId) {
-  const core = carrierCore();
+function relayCarrier(socket, sessionId, frames) {
+  const core = carrierCore(frames);
   socket.addEventListener("message", (event) => {
     if (core.gone()) return;
     const message = JSON.parse(typeof event.data === "string" ? event.data : event.data.toString());
@@ -109,25 +129,25 @@ function relayCarrier(socket, sessionId) {
   return {
     ...core.interface,
     send: (envelope) => sendOverSocket(socket, JSON.stringify({ type: "e2ee_envelope", session_id: sessionId, envelope })),
-    close: () => {
-      core.end();
+    close: (reason = null) => {
+      core.end(reason);
     },
   };
 }
 
-function channelCarrier(channel) {
-  const core = carrierCore();
+function channelCarrier(channel, frames) {
+  const core = carrierCore(frames);
   const reassembler = createReassembler();
   const drainWaiters = [];
 
-  const shutDown = () => {
-    if (!core.end()) return;
+  const shutDown = (reason = null) => {
+    if (!core.end(reason)) return;
     for (const { reject } of drainWaiters.splice(0)) reject(new Error("the channel closed"));
     if (channel.readyState === "open" || channel.readyState === "connecting") channel.close();
   };
 
-  channel.addEventListener("close", shutDown);
-  channel.addEventListener("error", shutDown);
+  channel.addEventListener("close", () => shutDown());
+  channel.addEventListener("error", () => shutDown());
   channel.addEventListener("message", (event) => {
     const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
     let envelope;

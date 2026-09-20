@@ -62,6 +62,8 @@ pub(in crate::app) use self::mcp::{
 };
 #[cfg(test)]
 pub(in crate::app) use self::rpc::dispatch_frame;
+/// What a `ping` answers, so the carrier's fast path answers it identically.
+pub(crate) use self::rpc::pong;
 pub(in crate::app) use self::rpc::{
     entity_ids_of, err, optional_nonempty_string, require_array, require_str, require_value,
 };

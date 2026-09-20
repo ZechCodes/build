@@ -251,6 +251,24 @@ fn is_signaling(frame: &Frame) -> bool {
 /// The method namespace a relay carrier may carry (spec rule 1).
 const SIGNALING_PREFIX: &str = "rtc.";
 
+/// The answer to a `ping`, built here rather than queued for a worker.
+///
+/// A ping asks one question — "is this path alive" — and the answer is the
+/// frame coming back at all. Queued behind the pool it measures the pool
+/// instead: under a load of agents a browser's two-second liveness probe timed
+/// out on a path that was plainly carrying, the probe closed the terminal
+/// channel it had judged, and the session was re-minted every few seconds all
+/// day. So the one verb whose whole meaning is the round trip is answered
+/// before the queue, off no lock and no state — the shape is `app/rpc.rs`'s
+/// [`crate::app::pong`], so the two paths cannot drift.
+fn pong_for(frame: &Frame) -> Option<Value> {
+    if frame.payload.get("method").and_then(Value::as_str)? != "ping" {
+        return None;
+    }
+    let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+    Some(crate::api::reply(id, Ok(crate::app::pong())))
+}
+
 /// The refusal rule 1 names, word for word. `unavailable` from the closed
 /// `ApiError` set of `Bridge Wire Protocol Spec.md` — extending that set is a
 /// major bump, so the reason rides in `details` instead.
@@ -669,6 +687,10 @@ impl FrameIntake {
         }
         if carrier.kind == CarrierKind::Relay && !is_signaling(&frame) {
             self.refuse_as_not_a_data_plane(&sender, &frame);
+            return Ok(());
+        }
+        if let Some(pong) = pong_for(&frame) {
+            sender.push(pong);
             return Ok(());
         }
         self.dispatcher.dispatch(sender, frame).await;
@@ -1478,6 +1500,85 @@ mod intake_tests {
             seen.try_recv().is_err(),
             "nothing runs for a session after its close"
         );
+    }
+
+    /// A `ping` is answered while every worker is busy and the queue behind
+    /// them is full.
+    ///
+    /// The browser's liveness probe gives the pong three seconds and closes the
+    /// channel it was asking about when none comes. Queued behind the pool, the
+    /// pong measures the pool: under a load of agents that probe timed out on a
+    /// path that was carrying, and the session was re-minted every few seconds
+    /// for a day. The question a ping asks is whether the frame gets there and
+    /// back, so it is answered before the queue.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_ping_answers_while_every_worker_and_the_queue_are_full() {
+        let wedged = Arc::new(std::sync::Barrier::new(2));
+        let held = Arc::clone(&wedged);
+        let intake = FrameIntake::with_pool(
+            FrameHandler::new(
+                crate::timing::FrameClock::new(),
+                move |_sender, _frame, _timer| {
+                    // One worker, held until the test lets it go: this is the pool
+                    // being full, which is the state the daemon reaches under load.
+                    held.wait();
+                    json!({ "ok": true })
+                },
+            ),
+            TRANSPORT.clone(),
+            1,
+            1,
+        );
+        // A DataChannel, because the relay may carry nothing but signaling.
+        let (carrier, mut out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &carrier)
+            .unwrap();
+        out.try_recv().expect("the accept rode the carrier");
+
+        // The worker takes the first frame and stops on the barrier; the second
+        // fills the one queue slot behind it.
+        for id in [1, 2] {
+            intake
+                .accept(
+                    client_request(
+                        &key,
+                        "s-1",
+                        "data",
+                        json!({ "id": id, "method": "board.list" }),
+                    ),
+                    &carrier,
+                )
+                .await
+                .expect("the frame was admitted");
+        }
+
+        intake
+            .accept(
+                client_request(&key, "s-1", "data", json!({ "id": 3, "method": "ping" })),
+                &carrier,
+            )
+            .await
+            .expect("the ping was admitted");
+
+        let answered = within_patience(out.recv()).await;
+        let pong = SessionSender::decrypt_push(&key, &answered);
+        assert_eq!(
+            pong["id"],
+            json!(3),
+            "the pong overtook the wedged pool: {pong:?}"
+        );
+        assert_eq!(pong["ok"], json!(true), "{pong:?}");
+        assert_eq!(pong["result"]["pong"], json!(true), "{pong:?}");
+        assert_eq!(pong["result"]["push_events"], json!(true), "{pong:?}");
+        assert_eq!(
+            pong["result"]["api_version"],
+            json!(crate::api::API_VERSION),
+            "the fast path answers in the shape `route` does: {pong:?}"
+        );
+
+        wedged.wait(); // let the held worker go, so the pool drains with the test
     }
 
     /// Rule 1: the relay carries the negotiation and nothing else. An app verb

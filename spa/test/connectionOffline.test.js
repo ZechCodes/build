@@ -157,7 +157,13 @@ function makeRendezvous({ deviceId }) {
 function fakePeerLink(deviceId) {
   const carrier = () => {
     const listeners = new Set();
-    return { onClose: (fn) => listeners.add(fn), drop: () => listeners.forEach((fn) => fn()) };
+    return {
+      onClose: (fn) => listeners.add(fn),
+      // A wire says why it went where it was shut on purpose: the terminals'
+      // own judgement that nothing was carrying is the one reason worth the
+      // whole connection.
+      drop: (reason = null) => listeners.forEach((fn) => fn(reason)),
+    };
   };
   const link = { app: carrier(), term: carrier(), close: vi.fn() };
   linksFor.set(deviceId, link);
@@ -1391,6 +1397,42 @@ describe("per-device connections", () => {
     await flush();
 
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+  });
+
+  // The churn Zech watched all day: the terminals' liveness probe timed out
+  // behind a loaded bridge, closed the channel it had judged, and this layer
+  // read that as the machine going — re-minting session, link and rendezvous
+  // every few seconds. A terminal stream is one stream on the path, and the
+  // path is the app channel's to report.
+  it("keeps the device connected when the terminal channel goes alone", async () => {
+    await connectEveryDevice();
+    const link = linksFor.get("dev-a");
+
+    const session = lastSession("dev-a");
+
+    link.term.drop();
+    await flush();
+
+    expect(liveIds()).toContain("dev-a");
+    expect(contextFor("dev-a").offline).toBe(false);
+    expect(lastSession("dev-a"), "the app session is the one it always was").toBe(session);
+    expect(session.close, "nothing was re-minted").not.toHaveBeenCalled();
+    expect(link.close, "the peer is left carrying").not.toHaveBeenCalled();
+  });
+
+  // And the judgement that IS about the path still costs the connection.
+  it("loses the device when the terminal channel says nothing was carrying", async () => {
+    await connectEveryDevice();
+    const link = linksFor.get("dev-a");
+    const before = lastSession("dev-a");
+
+    link.term.drop("liveness-timeout");
+    await flush();
+
+    // The connection went and recovery dialled again: a fresh session on the
+    // same machine, which is what that judgement is supposed to cost.
+    expect(lastSession("dev-a")).not.toBe(before);
+    expect(before.close).toHaveBeenCalled();
   });
 
   it("does not close a replacement rendezvous when the established link is lost mid-dial", async () => {

@@ -57,6 +57,7 @@ import { deviceAwayText } from "./core/deviceAway.js";
 import { deviceNameOf, listingCouldBeLagging } from "./core/devicePolicy.js";
 import { pinnedDeviceTransportKey } from "./devices.js";
 import { followTerminalDevice, provideTerminalSessions, terminalDeviceId } from "./terminal/manager.js";
+import { LIVENESS_TIMEOUT } from "./terminal/session.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
@@ -318,6 +319,25 @@ function followTerminalsIfTheirs(context, options) {
   if (context.deviceId === terminalDeviceId()) followTerminalDevice(options);
 }
 
+/**
+ * The terminal channel of an established connection went.
+ *
+ * It costs the whole connection only where it is evidence about the PATH: the
+ * terminals judging that nothing carried anywhere (`LIVENESS_TIMEOUT`), or an
+ * app channel that has gone with it. Anything else — a stream that wedged
+ * under a loaded bridge, a chunk this browser could not reassemble — costs the
+ * terminals their session and nothing more, and they take a fresh one on the
+ * channel the peer is still carrying.
+ */
+function loseTerminalWire(deviceId, lifetime, reason) {
+  // The connection has already gone — the app channel went with the path, and
+  // its own handler is what said so.
+  if (!lifetime.current()) return false;
+  if (reason === LIVENESS_TIMEOUT) return loseEstablishedConnection(deviceId, lifetime);
+  followTerminalsIfTheirs(contextFor(deviceId), { freshSession: true });
+  return false;
+}
+
 function loseEstablishedConnection(deviceId, lifetime) {
   if (!lifetime.current()) return false;
   if (!connectionAttempts.isConnecting(deviceId)) closeRendezvous(deviceId);
@@ -572,9 +592,14 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
   }
   onAdopt(lifetime);
   if (!lifetime.current()) throw new Error("session replaced during adoption");
-  for (const carrier of [link.app, link.term]) {
-    carrier.onClose(() => loseEstablishedConnection(session.deviceId, lifetime));
-  }
+  // The app channel IS the connection: it goes, the connection goes. The
+  // terminal channel is one stream on the same path, and a path that died
+  // takes both channels with it — so a term channel that goes ALONE is a
+  // terminal stream to re-establish, not a device to drop. The one exception
+  // is the terminals' own liveness judgement that nothing is carrying
+  // anywhere, which says the path is dead in so many words.
+  link.app.onClose(() => loseEstablishedConnection(session.deviceId, lifetime));
+  link.term.onClose((reason) => loseTerminalWire(session.deviceId, lifetime, reason));
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   let initialGreeting = true;

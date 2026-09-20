@@ -1,4 +1,4 @@
-import { openCarrier } from "./carrier.js";
+import { openCarrier, peerFrames } from "./carrier.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 const CHANNELS = [["app", 0], ["term", 1]];
@@ -32,7 +32,11 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const iceServers = await withinDeadline(openTimeoutMs, () => fetchIceServers());
   const peer = new RTCPeerConnectionImpl({ iceServers });
   const channels = CHANNELS.map(([label, id]) => peer.createDataChannel(label, { negotiated: true, id, ordered: true }));
-  const carriers = channels.map((channel) => openCarrier({ channel }));
+  // One clock for both channels: they are one path, and a frame on either is
+  // proof it is up. What reads it is the terminal session's liveness probe,
+  // which must not judge a quiet channel beside a busy one as a dead peer.
+  const frames = peerFrames();
+  const carriers = channels.map((channel) => openCarrier({ channel, frames }));
   const recovery = createRecoveryStatus();
   let torn = false;
   let cancelWait = () => {};

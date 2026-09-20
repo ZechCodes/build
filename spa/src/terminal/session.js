@@ -26,6 +26,7 @@
 import { createSessionRpc } from "../core/sessionRpc.js";
 import { createSessionSwitch } from "../core/sessionSwitch.js";
 import { recordConnectionDiagnostic } from "../core/connectionDiagnostics.js";
+import { FRAME_PROOF_OF_LIFE_MS, PING_TIMEOUT_MS, peerFrameAt, whatVouchesFor } from "../core/pathLiveness.js";
 
 const textEncoder = new TextEncoder();
 const b64encodeBytes = (u8) => btoa(String.fromCharCode(...u8));
@@ -36,16 +37,6 @@ const noop = () => {};
  *  in flight. A repainting TUI is a handful of coalesced frames in that window;
  *  the cap is what keeps a pathological flood from growing without bound. */
 const ORPHAN_FRAME_LIMIT = 64;
-
-/** How long a decrypted frame vouches for the connection.
- *
- *  Every frame for this session rides ONE channel, in order, so a terminal
- *  flooding output queues the pong behind its bytes: pinging a busy
- *  stream measures the backlog, not the connection, and times out on a path
- *  that is plainly alive. Any frame we decrypted is itself proof the bridge is
- *  reachable, so within this window we skip the probe entirely — busy is not
- *  dead. Only real silence past it is worth a ping. */
-const FRAME_PROOF_OF_LIFE_MS = 4000;
 
 /** How long one terminal's cursor ack holds off the next.
  *
@@ -63,8 +54,10 @@ const TERM_ACK_THROTTLE_MS = 250;
  *  worth the whole connection. */
 export const LIVENESS_TIMEOUT = "liveness-timeout";
 
-/** How long the probe waits for a pong before it judges. */
-export const PING_TIMEOUT_MS = 3000;
+/** How long the probe waits for a pong before it judges — the shared rule
+ *  (core/pathLiveness.js), re-exported here because this module is where it was
+ *  first written and the terminals' callers name it. */
+export { PING_TIMEOUT_MS };
 
 /**
  * The socket was not there for a caller that needed it.
@@ -677,7 +670,7 @@ export class TerminalSocket {
    *  and the app session's alike, because the two channels are one path and a
    *  frame on either is proof it is up. */
   _peerFrameAt(wire) {
-    return Math.max(this._rpc?.lastFrameAt() || 0, wire?.peerFrameAt?.() || 0);
+    return peerFrameAt(this._rpc, wire);
   }
 
   async _probeLiveness(liveness, diagnosticId) {
@@ -738,10 +731,11 @@ export class TerminalSocket {
   }
 
   /** What says this path is still there, in the order the evidence is worth
-   *  anything: a frame that arrived on either channel, then ICE's own word. */
+   *  anything: a frame that arrived on either channel, then ICE's own word.
+   *  The terminals' verdict on that evidence is below; the reading of it is the
+   *  shared rule (core/pathLiveness.js). */
   _whatVouchesFor(wire) {
-    if (Date.now() - this._peerFrameAt(wire) < FRAME_PROOF_OF_LIFE_MS) return "frames";
-    return wire?.peerIsConnected?.() === true ? "ice-connected" : "nothing";
+    return whatVouchesFor(this._rpc, wire);
   }
 
   _call(method, params = {}, timeoutMs) {

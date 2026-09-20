@@ -82,14 +82,23 @@ export const isRelayCandidate = (candidate) => candidateTypeOf(candidate) === RE
  * — so this sits in front of a door without knowing which door it is. Both of
  * `peerLink.js`'s use it.
  *
+ * Two things bound what this can cost.
+ *
  * The window runs from the first RELAY candidate, not from the start of
  * gathering. That is what "1.5 s after the host and server-reflexive ones" means
  * in practice: an agent gathers host candidates in milliseconds and reflexive
- * ones in a fraction of a second, and the TURN allocation lands after both — so
- * measuring from the relay candidate itself gives the direct pairs the window
- * they were already ahead in, and it cannot wait for a direct candidate that is
- * never coming. A gather with nothing but relay candidates is held 1.5 s once
- * and then behaves as if there were no hold at all.
+ * ones in a fraction of a second, and the TURN allocation lands after both, so
+ * measuring from the relay candidate gives the direct pairs the window they were
+ * already ahead in.
+ *
+ * And nothing is held until a direct candidate has actually gone through. A
+ * browser with no direct candidate to offer — `iceTransportPolicy: "relay"`, or
+ * an agent that gathered nothing usable — has no race to protect, and making it
+ * wait 1.5 s would put the whole cost of this on exactly the people TURN exists
+ * for. The trade is a relay candidate that arrives BEFORE any direct one, which
+ * goes straight through unheld; that ordering is not what an agent does (host
+ * first, then reflexive, then the allocation), and paying a certain cost to cover
+ * an unlikely ordering is the wrong way round.
  */
 export function createRelayHold({
   deliver,
@@ -101,6 +110,10 @@ export function createRelayHold({
   let timer = null;
   let holding = true;
   let closed = false;
+  /** Whether a direct candidate has gone through yet. Until one has, there is no
+   *  direct pair for a relay candidate to beat, so there is nothing to hold it
+   *  for. */
+  let sawDirect = false;
 
   /** The window is over: everything held goes now, and nothing is held again. */
   const release = () => {
@@ -117,7 +130,12 @@ export function createRelayHold({
     /** One candidate, on its way through this door. */
     offer(candidate) {
       if (closed) return;
-      if (!holding || !isRelayCandidate(candidate)) {
+      if (!isRelayCandidate(candidate)) {
+        sawDirect = true;
+        deliver(candidate);
+        return;
+      }
+      if (!holding || !sawDirect) {
         deliver(candidate);
         return;
       }

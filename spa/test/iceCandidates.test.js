@@ -114,12 +114,13 @@ describe("createRelayHold", () => {
   it("keeps held relay candidates in the order they were gathered", () => {
     const { hold, delivered, elapse } = stand();
 
-    hold.offer(local("relay"));
     hold.offer(local("host"));
+    hold.offer(local("relay"));
+    hold.offer(local("srflx"));
     hold.offer(local("relay"));
     elapse();
 
-    expect(delivered).toEqual(["host", "relay", "relay"]);
+    expect(delivered).toEqual(["host", "srflx", "relay", "relay"]);
   });
 
   it("lets relay through at once once the window is over, and arms no second one", () => {
@@ -139,15 +140,30 @@ describe("createRelayHold", () => {
     expect(armed()).toBe(false);
   });
 
-  it("runs the window from the relay candidate itself, so a relay-only gather is bounded", () => {
+  it("holds nothing back from a browser with no direct candidate to offer", () => {
+    // `iceTransportPolicy: "relay"`, or an agent that gathered nothing usable.
+    // There is no direct pair for a relay candidate to beat, so making this wait
+    // would put the whole cost of #31 on exactly the people TURN exists for.
+    const { hold, delivered, armed } = stand();
+
+    hold.offer(local("relay"));
+    hold.offer(local("relay"));
+
+    expect(delivered).toEqual(["relay", "relay"]);
+    expect(armed()).toBe(false);
+  });
+
+  it("starts holding as soon as there is a direct candidate to protect", () => {
     const { hold, delivered, elapse } = stand();
 
     hold.offer(local("relay"));
-    expect(delivered).toEqual([]);
+    hold.offer(local("host"));
+    hold.offer(local("relay"));
+    expect(delivered).toEqual(["relay", "host"]);
 
     elapse();
 
-    expect(delivered).toEqual(["relay"]);
+    expect(delivered).toEqual(["relay", "host", "relay"]);
   });
 
   it("gives up the wait the moment a direct pair has connected — the race is over", () => {
@@ -182,12 +198,13 @@ describe("createRelayHold", () => {
     try {
       const delivered = [];
       const hold = createRelayHold({ deliver: (candidate) => delivered.push(candidateTypeOf(candidate)) });
+      hold.offer(local("host"));
       hold.offer(local("relay"));
-      expect(delivered).toEqual([]);
+      expect(delivered).toEqual(["host"]);
 
       vi.advanceTimersByTime(RELAY_HOLD_MS);
 
-      expect(delivered).toEqual(["relay"]);
+      expect(delivered).toEqual(["host", "relay"]);
     } finally {
       vi.useRealTimers();
     }

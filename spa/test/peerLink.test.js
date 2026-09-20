@@ -250,14 +250,17 @@ describe("openPeerLink", () => {
 
       const host = "candidate:1 1 udp 1 10.0.0.2 5000 typ host";
       const relay = "candidate:2 1 udp 1 203.0.113.9 3478 typ relay raddr 0.0.0.0 rport 0";
-      peer.gather({ type: "relay", candidate: relay, toJSON: () => ({ candidate: relay }) });
+      // Gathering order as an agent actually produces it: host first, then the
+      // TURN allocation. Nothing is held before a direct candidate has gone
+      // through, so a browser with only relay candidates never waits.
       peer.gather({ type: "host", candidate: host, toJSON: () => ({ candidate: host }) });
-      candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: relay, sdpMid: "0" } });
+      peer.gather({ type: "relay", candidate: relay, toJSON: () => ({ candidate: relay }) });
       candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: host, sdpMid: "0" } });
+      candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: relay, sdpMid: "0" } });
       await vi.advanceTimersByTimeAsync(0);
 
       // The direct candidate is on the wire and in the check list; the relay one
-      // is in neither, though it was gathered and received first.
+      // is in neither, though it was gathered and received before the window ran.
       expect(rtcIce()).toEqual([host]);
       expect(peer.remoteCandidates.map((one) => one.candidate)).toEqual([host]);
 

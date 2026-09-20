@@ -88,12 +88,25 @@ impl ProtocolReader {
     }
 
     pub(super) fn end_stream(&self) {
-        let changed = self
-            .state
-            .lock()
-            .unwrap()
-            .surfaces
-            .mark_retained_checklist_stale();
+        let changed = {
+            let mut state = self.state.lock().unwrap();
+            // The stream ending on the limit sentence is the verdict: the turn
+            // stopped because the harness has no usage left. Nothing else in the
+            // protocol says so — there is no result, no error and no non-zero
+            // exit — so this is the only moment it can be concluded (issue #58).
+            if let Some(said) = state.limit_said_last.take() {
+                let resets_at = crate::harness::usage_limit::resolved_reset(
+                    &said,
+                    time::OffsetDateTime::now_utc(),
+                );
+                eprintln!(
+                    "harness usage_limited: session={:?} said={:?} reset_clock={:?} resets_at={:?}",
+                    state.session_id, said.said, said.reset_clock, resets_at
+                );
+                state.usage_limited = Some(said);
+            }
+            state.surfaces.mark_retained_checklist_stale()
+        };
         self.bump_revision_when(changed);
     }
 
@@ -432,8 +445,28 @@ impl ProtocolReader {
             || event["subtype"]
                 .as_str()
                 .is_some_and(|kind| kind != "success");
+        // Logged whether or not it failed, because the whole difficulty in #58
+        // was that nobody could say afterwards WHETHER a result had arrived. The
+        // limited turns of 2026-09-20 left no line here at all, which is how we
+        // know the stream simply ended; a future limit that does emit one will
+        // say so in bridge.log and can then be recognised structurally instead of
+        // by its prose.
+        eprintln!(
+            "harness turn_result: session={:?} subtype={:?} is_error={:?} duration_ms={:?}",
+            self.state.lock().unwrap().session_id,
+            event["subtype"].as_str(),
+            event["is_error"].as_bool(),
+            event["duration_ms"].as_u64(),
+        );
         {
             let mut state = self.state.lock().unwrap();
+            // A turn that ended with a result did not stop silently. Its limit
+            // sentence was therefore a quote — unless the result itself failed, in
+            // which case the sentence is the better explanation of why and is
+            // kept for `end_stream` to conclude on.
+            if !failed {
+                state.limit_said_last = None;
+            }
             // Taken, acked or not, so an interrupt can never leak into the turn
             // after the one it ended.
             let stopped = state.pending_interrupt.take();
@@ -497,8 +530,18 @@ impl ProtocolReader {
                     }
                 }
                 (Voice::Assistant, Some("text")) => {
+                    // Recognised BEFORE the report, so `send_report`'s clearing
+                    // does not wipe the verdict this very block establishes.
+                    let limit = block["text"]
+                        .as_str()
+                        .and_then(crate::harness::usage_limit::usage_limit_said);
                     if let Some(summary) = spoken(block["text"].as_str()) {
                         self.report(AgentActivity::Narration { summary }, parent_call_id);
+                    }
+                    // A limit sentence from a SUBAGENT is that subagent's own
+                    // trouble to report; the session's usage is the parent's.
+                    if parent_call_id.is_none() {
+                        self.state.lock().unwrap().limit_said_last = limit;
                     }
                 }
                 (Voice::Assistant, Some("tool_use")) => self.read_tool_use(block, parent_call_id),
@@ -634,7 +677,12 @@ impl ProtocolReader {
         });
     }
 
+    /// Every activity this session reports passes here, which is what makes
+    /// "the last thing the turn produced" answerable: anything reported after a
+    /// limit sentence means the turn kept working, so the sentence was the agent
+    /// talking about a limit rather than hitting one.
     fn send_report(&self, report: ActivityReport) {
+        self.state.lock().unwrap().limit_said_last = None;
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
             let _ = sender.send(report);
         }

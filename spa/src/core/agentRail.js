@@ -1996,13 +1996,17 @@ function mountRailOnContext(host, context, swap) {
     // the record holds the window and not the name of the thread it is over.
     const conversationId = controllerInFocus().identity.conversationId || null;
     // The level reads the cached thread; it never changes what was cached.
-    const shown = itemsAtDetailLevel(threadItems(thread), detailLevel());
+    const held = threadItems(thread);
+    const shown = itemsAtDetailLevel(held, detailLevel());
     const built = timelineEntries(shown, agentLabel, conversationId, paintedDigests, {
       openRuns: runs.openKeys(),
       runItemsOf: fetchedRunItems,
       threadState: controllerInFocus().threadState,
       unreadFrom,
       place: conversationPlace(),
+      // So a timeline the level emptied says so, rather than claiming the
+      // conversation has nothing on the record.
+      hiddenByLevel: held.length - shown.length,
     });
     // No composer in here: the box is pinned below this scroller, so what the
     // poll repaints is the timeline and only the timeline.

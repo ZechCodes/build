@@ -71,6 +71,18 @@ const CONVERSATION = [
   { type: "message", data: { id: "m5", sequence: 5, role: "agent", body: "the retry is fixed" } },
 ];
 
+/// A project agent that only relays: everything on its conversation is either
+/// another agent's report or the mechanics of passing it on. At its default
+/// level there is nothing left to draw.
+const RELAY_CONVERSATION = [
+  { type: "tool_use", data: { sequence: 1, event: "tool_use", summary: "read src/retry.rs" } },
+  { type: "message", data: { id: "r2", sequence: 2, role: "user", body: REPORT, from_agent: SENDER } },
+];
+
+/// Which conversation the machine answers with, so a case can hand over one of
+/// its own before mounting.
+let conversation = CONVERSATION;
+
 const agent = (id, over = {}) => ({
   id,
   ordinal: 1,
@@ -90,7 +102,7 @@ const workspacePayload = () => ({
   entity_id: "run-workspace",
   agents: [agent("wa-1")],
   directories: [],
-  thread: { items: CONVERSATION, sessions: [] },
+  thread: { items: conversation, sessions: [] },
 });
 
 const projectPayload = () => ({
@@ -99,7 +111,7 @@ const projectPayload = () => ({
   run_id: PROJECT_OWNER,
   project_id: PROJECT_ID,
   agents: [agent("pa-1")],
-  thread: { items: CONVERSATION, sessions: [] },
+  thread: { items: conversation, sessions: [] },
 });
 
 /** The rail reads the disk and nothing else, so the board and both
@@ -165,6 +177,13 @@ const mountProjectRail = async () => {
   await flush();
 };
 
+/// The project agent above, mounted on a conversation its default level admits
+/// nothing of.
+const mountRelayRail = async () => {
+  conversation = RELAY_CONVERSATION;
+  await mountProjectRail();
+};
+
 const choose = async (level) => {
   menuCaret().click();
   menuItem(`detail:${level}`).click();
@@ -175,6 +194,7 @@ beforeEach(async () => {
   document.body.innerHTML = '<div id="agent-rail"></div>';
   localStorage.clear();
   await wipeCache();
+  conversation = CONVERSATION;
   resetAgentRailMemory();
   resetOptimistic();
   resetChangeEvents();
@@ -298,6 +318,32 @@ describe("what each level draws", () => {
 
     const card = timeline().querySelector(".thread-message.from-agent .thread-comment-card");
     expect(card.classList.contains("thread-arrival-folded")).toBe(false);
+  });
+});
+
+describe("a timeline the level emptied", () => {
+  it("says so, rather than claiming nothing was ever said", async () => {
+    await mountRelayRail();
+
+    expect(timeline().textContent).toContain("Nothing at this level");
+    expect(timeline().textContent).not.toContain("No conversation yet");
+  });
+
+  it("gives the conversation back when the level is widened", async () => {
+    await mountRelayRail();
+
+    await choose("all");
+
+    expect(timeline().textContent).not.toContain("Nothing at this level");
+    expect(rowKinds()).toEqual({ user: 0, agent: 0, arrived: 1, sent: 0, activity: 1 });
+  });
+
+  it("still says nothing was said when there is genuinely nothing", async () => {
+    conversation = [];
+
+    await mountWorkspaceRail();
+
+    expect(timeline().textContent).toContain("No conversation yet");
   });
 });
 

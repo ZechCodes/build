@@ -1355,7 +1355,7 @@ export function timelineEntries(
   agentLabel,
   threadId,
   digests,
-  { openRuns, runItemsOf, threadState = createThreadState(), unreadFrom, place = NOWHERE_IN_PARTICULAR } = {},
+  { openRuns, runItemsOf, threadState = createThreadState(), unreadFrom, place = NOWHERE_IN_PARTICULAR, hiddenByLevel = 0 } = {},
 ) {
   const view = {
     agentLabel,
@@ -1367,7 +1367,13 @@ export function timelineEntries(
   };
   const rows = timelineRowsOf(sourceItems, agentLabel, threadId, view);
   const entries = foldActivityRuns(rows, digests, view);
-  return { entries: withUnreadLine(entries, unreadFrom, sourceItems), itemCount: rows.length };
+  return {
+    entries: withUnreadLine(entries, unreadFrom, sourceItems),
+    itemCount: rows.length,
+    // How many items the caller's detail level kept OUT of `sourceItems` —
+    // which is the whole of whether an empty timeline means nothing was said.
+    hiddenByLevel,
+  };
 }
 
 /** The class the unread line is drawn with, and how the scroll finds it. */
@@ -1449,12 +1455,21 @@ function threadActionsHtml(actionsId) {
 /// to fetch for it can never be reading two different answers.
 export const digestsOf = (thread) => (thread && thread.activityDigests) || [];
 
-/// The rows a timeline holds: its entries, or the one row a conversation with
-/// nothing on the record shows. Keyed like any other, so the reconciler takes
-/// it away the moment there is something to say.
+/// The rows a timeline holds: its entries, or the one row an empty one shows.
+/// Keyed like any other, so the reconciler takes it away the moment there is
+/// something to say.
+///
+/// A timeline can be empty two ways, and they are not the same news. Nothing
+/// was ever said — or the detail level the reader chose
+/// (core/conversationDetail.js) admits none of what WAS said, which is a
+/// conversation they can have back by asking for more of it. Two keys rather
+/// than two bodies under one, so the reconciler swaps the row instead of
+/// leaving the first answer standing.
 const EMPTY_TIMELINE_ENTRY = { key: "empty", html: '<div class="thread-empty">No conversation yet.</div>' };
+const NOTHING_AT_LEVEL_ENTRY = { key: "empty-level", html: '<div class="thread-empty">Nothing at this level.</div>' };
 
-const timelineRows = ({ entries, itemCount }) => (itemCount ? entries : [EMPTY_TIMELINE_ENTRY]);
+const timelineRows = ({ entries, itemCount, hiddenByLevel }) =>
+  itemCount ? entries : [hiddenByLevel ? NOTHING_AT_LEVEL_ENTRY : EMPTY_TIMELINE_ENTRY];
 
 /// The conversation's own head: what it is, how much of it there is, and where
 /// the work it records stands.

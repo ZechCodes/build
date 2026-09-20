@@ -98,7 +98,17 @@ class BuildController(Controller):
 
         html = await asyncio.to_thread((STATIC_DIR / "index.html").read_text)
         html = html.replace("{{USER0}}", email[0:1].upper())
-        return Response(html, media_type="text/html")
+        # Never cached. Every asset this names is content-hashed and served
+        # immutable, so fetching this document again is the ONLY way a browser
+        # moves to a new build — and sent with no cache headers it was the one
+        # response a cache could make its own decision about. A phone that
+        # decided to keep it would go on running a bundle deploys no longer
+        # serve, with nothing in the app able to say so.
+        return Response(
+            html,
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
 
     # Sync handlers on purpose: Litestar runs them in its threadpool
     # (sync_to_thread=True), keeping blocking file reads — including multi-MB

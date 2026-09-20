@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { compare, satisfies } from "../src/core/bridgeApi/semver.js";
+import { SPA_API_RANGE } from "../src/core/bridgeApi/index.js";
 import * as v1 from "../src/core/bridgeApi/v1/index.js";
 
 const fixtureDirectory = fileURLToPath(new URL("../../fixtures/api/v1/", import.meta.url));
@@ -33,6 +34,29 @@ describe("the v1 adapter against fixtures/api/v1", () => {
   it("declares a range that admits versions.json's current", () => {
     expect(satisfies(versions.current, v1.range)).toBe(true);
     expect(versions.supported_majors).toContain(v1.major);
+  });
+
+  /**
+   * The gate, not the adapter.
+   *
+   * `SPA_API_RANGE` is what this build declares in `session.hello` and what
+   * decides whether a bridge is served at all; `v1.range` is one adapter's own
+   * claim. They are written separately, so the check above can pass while the
+   * gate has drifted — and a bridge outside the gate is not a degraded client,
+   * it is a dark one.
+   *
+   * Nothing on either side of the wire can see this by itself: the BRIDGE
+   * decides the number and the CLIENT decides what the number costs. The shared
+   * fixture is the one place both are visible, which is why the assertion lives
+   * here and reads `versions.current` rather than naming a version — a copy of
+   * the other side's constant would be worse than no test at all.
+   *
+   * This is what would have caught the tracker's 1.2.0 → 1.3.0 renumber if it
+   * had gone the other way, on the side that knows the range, in a suite
+   * instead of on a deploy.
+   */
+  it("gates on a range that admits versions.json's current too", () => {
+    expect(satisfies(versions.current, SPA_API_RANGE)).toBe(true);
   });
 
   it("names each fixture after the method inside it", () => {

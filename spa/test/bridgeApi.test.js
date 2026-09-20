@@ -88,20 +88,19 @@ describe("adapter selection", () => {
     });
   });
 
-  // The tracker's minor moved from 1.2.0 to 1.3.0 late, because main had
-  // already taken 1.2.0 for `changes.items: "bodies"`. A bridge outside the
-  // accepted range is gated out of the app entirely, so a renumber that fell
-  // outside it would take every client down the moment that bridge rolled —
-  // and nothing about the tracker's own code would have looked wrong.
-  it("serves a bridge on the minor the tracker landed on, and carries its kinds", () => {
+  // A greeting's kind list rides through whole, whatever is on it. The list
+  // has already grown twice — `terminals` from main, `issues` with the tracker
+  // — so nothing reads its length or its order, and a caller asks it whether
+  // the one kind it is about to subscribe to is there.
+  //
+  // Whether the version a bridge reports is one this build serves at all is
+  // not asserted here: that is a question about the shared contract fixture,
+  // and naming a version in this file would be a copy of the bridge's own
+  // constant. apiContract.test.js reads `versions.json` and asks it there.
+  it("carries a greeting's kinds through, however many there are", () => {
     const selected = selectAdapter(greetingV1({
-      api_version: "1.3.0",
-      changes: {
-        subscriptions: true,
-        kinds: ["state", "thread", "git", "files", "terminals", "issues"],
-      },
+      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] },
     }));
-    expect(selected.unsupported).toBeFalsy();
     expect(selected.create(vi.fn()).capabilities.changes.kinds).toContain("issues");
   });
 

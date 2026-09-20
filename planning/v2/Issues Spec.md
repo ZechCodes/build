@@ -530,10 +530,38 @@ carrying:
 - **`from_issue`** — the same envelope a dispatched issue carries: `{issue_id,
   number, title, links}`. It is what lets a client draw the notice as a card on
   the issue and link `#13`.
-- **A one-line body** saying what changed and who changed it: `#13 moved to In
-  review by agent-01K5Z…`. When the change is a comment, the comment's body
-  follows on its own line, because the whole point of hearing about a comment
-  is reading it.
+- **`issue_notice`** — what happened, structured, so a client draws one line
+  that deep-links the issue or the comment instead of parsing it back out of
+  prose:
+
+  ```json
+  {
+    "actor": { "kind": "agent", "agent_id": "agent-01K5Z…" },
+    "action": "moved",
+    "from": "in_progress",
+    "to": "in_review"
+  }
+  ```
+
+  `action` is one of `commented`, `moved`, `assigned`, `unassigned`, `created`,
+  `closed`, `reopened`, `edited`, `linked` — a slug, the way a column is.
+  `comment_id` rides `commented` and is what links the comment rather than the
+  issue; `from`/`to` ride `moved` as column slugs; `assignee` rides `assigned`.
+- **A one-line body** saying the same thing in prose, for a harness — which
+  gets the body or nothing — and as the fallback for a client that has not
+  learned `issue_notice`: `The wire-facade agent moved #13 Kanban drag to In
+  review`. An agent is named by the workspace it works in rather than by its
+  id, because the reader wants to know which colleague moved the card. When
+  the change is a comment, the comment's body follows underneath, because the
+  whole point of hearing about a comment is reading it.
+
+**A tracker is not the assignee, and the notice must not read as a brief.** The
+delivery envelope tells an agent handed an issue to read it with `get_issue`
+before it starts, to comment its progress and to move the card to In review
+when it reports Complete. A notice wears `from_issue` too, so a watcher was
+getting that same instruction — which is telling it to take over work nobody
+gave it. The assignment wording is for the assignee's dispatch message only;
+a notice says what it is, that nothing is being asked, and how to stop them.
 
 **An agent is never told about its own change.** The actor is excluded from the
 delivery, always. An agent that moves a card and is then woken to be told it
@@ -624,27 +652,36 @@ Nobody is told, the issues sit in In progress, and whoever assigned them finds
 out by going to look.
 
 So on **Complete**, and only on Complete, Build delivers one more `from_build`
-message into that agent's own conversation, naming every open issue assigned to
-it whose column is not Done, and saying the three ways out: finish it, comment
-where it got to, or hand it back with a comment saying why.
+message into that agent's own conversation, naming every issue assigned to it
+that is **still its to finish**, and saying the three ways out: finish it,
+comment where it got to, or hand it back with a comment saying why.
 
+Still its to finish means the column is `backlog`, `ready` or `in_progress`.
+
+- **In review is not held.** In review means the agent has reported Complete
+  and the work is ready to be looked at; whether it is done is somebody else's
+  call. An issue sitting there is waiting on a reviewer, not on the agent, and
+  telling the agent otherwise asks it either to redo finished work or to game
+  the column. Done and closed are excluded for the same reason and more
+  obviously.
 - **Not on Blocked or Waiting.** Both are the agent saying it cannot finish,
   which is already an answer about the work. A list of what it has not finished
   would be telling it what it just told us.
-- **Not when it holds nothing open.** Silence is the right answer there.
-- **Done is excluded**, not just closed. An issue parked in Done is one the
-  agent is finished with even if nobody has closed it, and a reminder that
-  includes those is noise — which is a reminder an agent learns to answer
-  without reading.
+- **Not when it holds nothing.** Silence is the right answer there.
 - **It names every issue**, with the column each is in, rather than counting
   them. "You still hold 3 issues" makes the agent go and look, and the looking
   is the part Build can do.
-- **It repeats.** An agent that answers with another Complete while still
-  holding the same issues is reminded again. That is the point rather than a
-  bug to suppress: the way out is one tool call.
+- **Once per set, not once per Complete.** The reminder is delivered as a turn,
+  so an agent that answers it reports Complete again — which is another
+  reminder, which is another answer. A second Complete holding exactly what the
+  agent was last told about says nothing; a set that has changed is news again.
+  What each agent was last told is remembered in memory and forgotten on
+  restart, which is the right way round: the reminder catches an agent walking
+  away from work inside a session.
 
 It runs after the report's own automatic activity, so an issue the same
-Complete moved to In review is described as it now stands.
+Complete handed on to In review is described as it now stands — which is also
+what keeps it out of the list.
 
 ### Where the notice's shape is pinned
 
@@ -742,16 +779,24 @@ was delivered into: that is the same message arriving, seen from the other side.
 
 Two things happen without anyone asking.
 
-**An agent that holds a dispatched issue reports Complete.** Its report's body
-is added to the issue as a comment authored by that agent, and the issue moves
-to `in_review` with a `moved` event whose payload says `{"by": "report"}`. It
-holds the issue when the issue's `assignee` is `{"kind":"agent"}` naming that
-agent, or the issue's `links.conversation_ids` holds that agent's conversation
-owner and nobody else holds it. A Blocked or Failed report adds the comment and
-does **not** move the issue: blocked is not ready to look at. One report
-comments on at most one issue — the one most recently dispatched to that agent —
-so an agent that has held three issues does not write the same report on all of
-them.
+**An agent that holds a dispatched issue reports Complete.** The issue moves to
+`in_review` with a `moved` event whose payload says `{"by": "report"}`. It holds
+the issue when the issue's `assignee` is `{"kind":"agent"}` naming that agent,
+or the issue's `links.conversation_ids` holds that agent's conversation owner
+and nobody else holds it. One report moves at most one issue — the one most
+recently dispatched to that agent. A Blocked or Failed report moves nothing:
+blocked is not ready to look at, and a board that said it was would be lying in
+the direction that wastes a reviewer's time.
+
+**A report does not comment.** It used to: the report's body was copied onto the
+issue. That made every end-of-turn report an issue comment, including four an
+agent wrote answering a reminder it could not silence — five comments on one
+issue in three minutes, none of them written to it. **A conversation message is
+never a comment on an issue**, whatever it mentions, whoever it is addressed to
+and whatever its viewing context names. `comment_issue` and `issues.comment`
+are the two things that write a comment and they are the only two; an agent
+that wants its report on the issue calls one of them, and the prompt asks it
+to. The timeline still records the move, and names the agent that caused it.
 
 **A workspace linked to an issue is finished.** `workspace.finish` closes every
 open issue that links that workspace, with a `closed` event whose payload is

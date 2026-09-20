@@ -121,10 +121,10 @@ async fn a_tracker_write_is_pushed_to_a_subscription_on_its_project() {
 
 // ----------------------------------------------------- automatic activity ---
 
-/// An agent holding a dispatched issue reports Complete: the report becomes a
-/// comment and the issue moves to In review.
+/// An agent holding a dispatched issue reports Complete: the issue moves to In
+/// review, and NOTHING is written on it as a comment.
 #[test]
-fn a_complete_from_the_agent_holding_an_issue_comments_and_moves_it() {
+fn a_complete_from_the_agent_holding_an_issue_moves_it_and_says_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -150,8 +150,8 @@ fn a_complete_from_the_agent_holding_an_issue_comments_and_moves_it() {
 
     assert_eq!(
         comment_bodies(&mut state, &id),
-        vec!["Fixed the drop handler race.".to_string()],
-        "the report is on the issue"
+        Vec::<String>::new(),
+        "a report is a message to the user, not a comment on the issue"
     );
     let read = state.handle(req("issues.get", json!({ "issue_id": id })));
     assert_eq!(
@@ -176,10 +176,11 @@ fn a_complete_from_the_agent_holding_an_issue_comments_and_moves_it() {
     );
 }
 
-/// Blocked comments and does not move: blocked is not ready to be looked at,
-/// and a board that said it was would waste a reviewer's time.
+/// Blocked leaves the card where it is: blocked is not ready to be looked at,
+/// and a board that said it was would waste a reviewer's time. It writes no
+/// comment either, so a Blocked report touches the issue not at all.
 #[test]
-fn a_blocked_report_comments_and_leaves_the_card_where_it_is() {
+fn a_blocked_report_leaves_the_card_where_it_is_and_says_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -200,10 +201,7 @@ fn a_blocked_report_comments_and_leaves_the_card_where_it_is() {
         report(DoneStatus::Blocked, "The fixture will not build."),
     );
 
-    assert_eq!(
-        comment_bodies(&mut state, &id),
-        vec!["The fixture will not build.".to_string()]
-    );
+    assert_eq!(comment_bodies(&mut state, &id), Vec::<String>::new());
     let read = state.handle(req("issues.get", json!({ "issue_id": id })));
     assert_eq!(
         read["result"]["issue"]["status"], "in_progress",
@@ -342,4 +340,104 @@ fn a_finish_does_not_reclose_an_issue_that_was_already_closed() {
         .unwrap()["payload"]["reason"]
         .clone();
     assert_eq!(reason, "not doing this", "the first reason stands");
+}
+
+/// Nothing an agent SAYS becomes a comment on an issue — not a report, not a
+/// message to another agent, not a message that names the issue, and not one
+/// sent while looking at it.
+///
+/// This is the whole of the rule that #35 exists for. A conversation message
+/// is a conversation message; `comment_issue` and `issues.comment` are the two
+/// things that write a comment, and they are the only two.
+#[test]
+fn nothing_an_agent_says_lands_on_the_issue_as_a_comment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let ws = workspace(&mut state, &project_id, "here");
+    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    let handed = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": id, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
+    ));
+    let dispatch = &handed["result"]["dispatch"].clone();
+    let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
+    let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
+
+    // A second agent of the project, to be written to.
+    let (_owner, colleague) = super::project_agent::project_agent(&mut state, &project_id);
+
+    // 1. A message naming the issue by number, posted into the conversation.
+    let posted = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": entity_id,
+            "agent_id": agent_id,
+            "body": "#1 Kanban drag is the one I am on; the drop handler races.",
+        }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+
+    // 2. A message sent while looking at that issue.
+    let looking = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": entity_id,
+            "agent_id": agent_id,
+            "body": "is this one done?",
+            "viewing_context": {
+                "version": 1,
+                "items": [{
+                    "kind": "issue",
+                    "issue_id": id,
+                    "number": 1,
+                    "title": "Kanban drag"
+                }]
+            },
+        }),
+    ));
+    assert_eq!(looking["ok"], true, "{looking:?}");
+
+    // 3. The agent's outgoing message to another agent — the case seen on #32,
+    //    where a report sent on with `message_agent` appeared as a comment.
+    state
+        .on_agent_mcp_action(
+            &entity_id,
+            &agent_id,
+            crate::mcp::BridgeAction::MessageAgent {
+                agent_id: colleague.clone(),
+                body: "Fixed the drop handler race on #1; nothing is blocked on me.".into(),
+            },
+        )
+        .expect("an agent may write to a colleague");
+
+    // 4. And its own end-of-turn report.
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        report(DoneStatus::Completed, "Fixed the drop handler race."),
+    );
+
+    assert_eq!(
+        comment_bodies(&mut state, &id),
+        Vec::<String>::new(),
+        "only comment_issue writes a comment"
+    );
+
+    // And the one thing that DOES write one still does.
+    state
+        .on_agent_mcp_action(
+            &entity_id,
+            &agent_id,
+            crate::mcp::BridgeAction::TrackerCommentIssue {
+                issue_id: id.clone(),
+                body: "Said deliberately.".into(),
+                refs: Vec::new(),
+            },
+        )
+        .expect("comment_issue writes a comment");
+    assert_eq!(
+        comment_bodies(&mut state, &id),
+        vec!["Said deliberately.".to_string()]
+    );
 }

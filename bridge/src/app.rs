@@ -383,6 +383,15 @@ pub struct AppState {
     /// queued it has answered. The queue's in-flight counters let the idle
     /// sweep distinguish an agent on its way from one that never arrived.
     delivery_queue: self::runtime::delivery::queue::DeliveryQueue,
+    /// What each agent was last told it still holds (spec: Issues → The
+    /// Complete reminder), so the same list is not sent twice.
+    ///
+    /// In memory rather than on disk, and per agent id. A bridge restart
+    /// forgets it, which is the right way round: the reminder exists to catch
+    /// an agent walking away from work inside a session, and a session that
+    /// has been restarted is one whose agent is reading its conversation from
+    /// the top anyway.
+    reminded_holdings: HashMap<String, Vec<String>>,
     /// Operation receipts cached only for Store-free execution, plus the one
     /// acceptance awaiting its canonical owner persistence. SQLite remains
     /// authoritative whenever configured.
@@ -544,6 +553,7 @@ impl AppState {
             streams: HashMap::new(),
             session_registry: SessionRegistry::new(),
             delivery_queue: Default::default(),
+            reminded_holdings: HashMap::new(),
             operation_ledger: Default::default(),
             self_handle: None,
             next_stream: 1,

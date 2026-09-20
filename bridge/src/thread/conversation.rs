@@ -342,6 +342,19 @@ impl Thread {
         message.from_issue = Some(Box::new(from_issue));
     }
 
+    /// Mark the message just posted as a notice about a tracked issue, saying
+    /// what changed and who changed it (spec: Issues → Tracking).
+    ///
+    /// Beside [`Self::wear_issue`], never instead of it: the envelope says
+    /// WHICH issue and this says WHAT HAPPENED to it, and a client needs both
+    /// to draw one line that links the right thing.
+    pub fn wear_issue_notice(&mut self, notice: super::IssueNotice) {
+        let Some(ThreadItem::Message(message)) = self.items.last_mut() else {
+            return;
+        };
+        message.issue_notice = Some(Box::new(notice));
+    }
+
     pub fn post_user_with_context(
         &mut self,
         body: impl Into<String>,
@@ -755,6 +768,7 @@ impl Thread {
             from_build: false,
             from_issue: None,
             issue_action: None,
+            issue_notice: None,
             done: false,
             outcome: None,
             completion_report: None,

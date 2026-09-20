@@ -10,14 +10,20 @@
 //! cannot finish, which is already an answer about the work; adding a list of
 //! what it has not finished would be telling it what it just told us.
 //!
-//! Deliberately repeatable. An agent that answers this with another Complete
-//! while still holding the same issues is reminded again — that is the point,
-//! not a bug to suppress. The way out is to finish them, say something on
-//! them, or hand them back, and all three are one tool call.
+//! Said once per set, not once per Complete. The reminder is delivered as a
+//! TURN, so an agent that answers it reports Complete again — which is another
+//! reminder, which is another answer. That loop ran five times on #27 in three
+//! minutes before the agent worked out what was happening and stopped
+//! replying. So the same list is not sent twice: a Complete holding what the
+//! agent was last told about says nothing, and a set that has changed is news
+//! again.
+//!
+//! The way out is to finish them, say something on them, or hand them back,
+//! and all three are one tool call.
 
 use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
 use crate::store::IssueFilter;
-use crate::tracker::{Issue, IssueState, DONE_STATUS};
+use crate::tracker::{Issue, IssueState, STILL_TO_FINISH};
 
 impl AppState {
     /// An agent reported Complete: tell it what it still holds.
@@ -29,19 +35,29 @@ impl AppState {
     pub(in crate::app) fn remind_of_open_issues(&mut self, entity_id: &str, agent_id: &str) {
         let held = self.open_issues_held_by(entity_id, agent_id);
         if held.is_empty() {
+            // Nothing held is also nothing to remember: an agent that finishes
+            // everything and is later handed one more should hear about it.
+            self.reminded_holdings.remove(agent_id);
             return;
         }
+        let holding: Vec<String> = held.iter().map(|issue| issue.id.clone()).collect();
+        if self.reminded_holdings.get(agent_id) == Some(&holding) {
+            return;
+        }
+        self.reminded_holdings.insert(agent_id.to_string(), holding);
         if let Err(why) = self.deliver_reminder(entity_id, agent_id, &held) {
             eprintln!("remind {agent_id} of its open issues: {why}");
         }
     }
 
-    /// The open issues assigned to this agent that are not in Done.
+    /// The issues assigned to this agent that are still ITS to finish.
     ///
-    /// Done is excluded rather than closed-only, because an issue parked in
-    /// Done is one the agent has finished with even if nobody has closed it —
-    /// reminding it about those would make the reminder noise, and a reminder
-    /// that is noise is one an agent learns to answer without reading.
+    /// [`STILL_TO_FINISH`] is the test rather than "open and not closed": an
+    /// issue in In review has been handed on — the agent said so by reporting
+    /// Complete — and one parked in Done is finished with whether or not
+    /// anybody closed it. Naming either would make the reminder noise, and a
+    /// reminder that is noise is one an agent learns to answer without
+    /// reading.
     fn open_issues_held_by(&mut self, entity_id: &str, agent_id: &str) -> Vec<Issue> {
         let Some(project_id) = self.projects.project_id_of(entity_id).map(str::to_string) else {
             return Vec::new();
@@ -64,7 +80,7 @@ impl AppState {
         };
         open.into_iter()
             .filter(|issue| {
-                issue.status != DONE_STATUS
+                STILL_TO_FINISH.contains(&issue.status.as_str())
                     && issue
                         .assignee
                         .as_ref()

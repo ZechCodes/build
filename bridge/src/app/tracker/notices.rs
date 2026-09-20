@@ -19,7 +19,7 @@
 
 use super::IssueWrite;
 use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
-use crate::thread::IssueEnvelope;
+use crate::thread::{IssueEnvelope, IssueNotice};
 use crate::tracker::{Actor, Issue, IssueEventKind};
 
 impl AppState {
@@ -29,18 +29,46 @@ impl AppState {
         if told.is_empty() {
             return;
         }
-        let Some(summary) = notice_summary(write) else {
+        let Some(notice) = notice_of(write) else {
             // A write that changed nothing the timeline records is not news.
             return;
         };
+        let body = notice_body(
+            &notice,
+            &write.issue,
+            &self.actor_label(&write.actor),
+            write.comments.first().map(|comment| comment.body.as_str()),
+        );
         let envelope = notice_envelope(&write.issue);
         for agent_id in told {
-            if let Err(why) = self.deliver_notice(&agent_id, &envelope, &summary) {
+            if let Err(why) = self.deliver_notice(&agent_id, &envelope, &notice, &body) {
                 eprintln!(
                     "notify {agent_id} about issue #{}: {why}",
                     write.issue.number
                 );
             }
+        }
+    }
+
+    /// Who a notice says did it, in the words the conversation uses.
+    ///
+    /// The same naming an assignment notice uses: an agent is named by the
+    /// workspace it works in, because the reader wants to know which of its
+    /// colleagues moved the card and an id is something to go and look up.
+    fn actor_label(&self, actor: &Actor) -> String {
+        let Actor::Agent { agent_id } = actor else {
+            return "The user".to_string();
+        };
+        let Some(entity_id) = self.entity_of_agent(agent_id) else {
+            return format!("Agent {agent_id}");
+        };
+        let identity = self.agent_identity(&entity_id, agent_id);
+        match identity.owner {
+            Some(owner) if owner.kind == crate::thread::AgentOwnerKind::Project => {
+                format!("The {} project's agent", owner.name)
+            }
+            Some(owner) => format!("The {} agent", owner.name),
+            None => format!("Agent {agent_id}"),
         }
     }
 
@@ -53,7 +81,8 @@ impl AppState {
         &mut self,
         agent_id: &str,
         envelope: &IssueEnvelope,
-        summary: &str,
+        notice: &IssueNotice,
+        body: &str,
     ) -> Result<(), String> {
         let entity_id = self
             .entity_of_agent(agent_id)
@@ -63,11 +92,16 @@ impl AppState {
             "agent_id": agent_id,
         }))?;
         let now = crate::store::now_rfc3339();
-        let body = summary.to_string();
+        let body = body.to_string();
         let envelope = envelope.clone();
+        let notice = notice.clone();
         self.edit_agent_conversation(&entity_id, agent_id, |thread, _| {
             thread.post_user_from_build(body, &now);
+            // Both: the envelope says WHICH issue, the notice says what
+            // happened to it, and one line that links the right thing needs
+            // the two together.
             thread.wear_issue(envelope);
+            thread.wear_issue_notice(notice);
             Ok(serde_json::Value::Null)
         })?;
         self.delivery_queue.enqueue(PendingAgentTurn {
@@ -109,55 +143,89 @@ fn notice_envelope(issue: &Issue) -> IssueEnvelope {
     }
 }
 
-/// One line saying what changed and who changed it, with a comment's words
-/// under it when the change is a comment.
+/// What changed, as a client reads it: the actor, the action and whatever
+/// detail that action has.
 ///
 /// Derived from the events the write carried rather than from the verb that
 /// made it, so the notice and the timeline cannot disagree about what
-/// happened: they are reading the same record.
-///
-/// `None` is a write the timeline records nothing for — which is not news.
-fn notice_summary(write: &IssueWrite) -> Option<String> {
-    let who = actor_name(&write.actor);
-    let number = write.issue.number;
+/// happened: they are reading the same record. `None` is a write the timeline
+/// records nothing for — which is not news.
+fn notice_of(write: &IssueWrite) -> Option<IssueNotice> {
+    let plain = |action: &str| IssueNotice {
+        actor: write.actor.clone(),
+        action: action.to_string(),
+        comment_id: None,
+        from: None,
+        to: None,
+        assignee: None,
+    };
     if let Some(comment) = write.comments.first() {
-        return Some(format!(
-            "#{number} {} — {who} commented:\n\n{}",
-            write.issue.title,
-            comment.body.trim()
-        ));
+        return Some(IssueNotice {
+            comment_id: Some(comment.id.clone()),
+            ..plain("commented")
+        });
     }
-    let what = write
-        .events
-        .iter()
-        .find_map(|event| change_phrase(event.kind, &event.payload))?;
-    Some(format!("#{number} {} — {what} by {who}", write.issue.title))
+    let named = |payload: &serde_json::Value, key: &str| {
+        payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    write.events.iter().find_map(|event| match event.kind {
+        IssueEventKind::Created => Some(plain("created")),
+        IssueEventKind::Moved => Some(IssueNotice {
+            from: named(&event.payload, "from"),
+            to: named(&event.payload, "to"),
+            ..plain("moved")
+        }),
+        IssueEventKind::Assigned => Some(IssueNotice {
+            assignee: event
+                .payload
+                .get("assignee")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            ..plain("assigned")
+        }),
+        IssueEventKind::Unassigned => Some(plain("unassigned")),
+        IssueEventKind::Labelled => Some(plain("edited")),
+        IssueEventKind::Linked => Some(plain("linked")),
+        IssueEventKind::Closed => Some(plain("closed")),
+        IssueEventKind::Reopened => Some(plain("reopened")),
+        IssueEventKind::Dispatched => Some(plain("assigned")),
+        // Who else is watching is not a change to the issue.
+        IssueEventKind::Tracked | IssueEventKind::Untracked => None,
+    })
 }
 
-/// How one event reads in a notice. `None` for the kinds a tracker is not told
-/// about: somebody else starting or stopping watching is not a change to the
-/// issue.
-fn change_phrase(kind: IssueEventKind, payload: &serde_json::Value) -> Option<String> {
-    let named = |key: &str| payload.get(key).and_then(serde_json::Value::as_str);
-    Some(match kind {
-        IssueEventKind::Created => "created".to_string(),
-        IssueEventKind::Moved => match named("to") {
-            Some(to) => format!("moved to {}", column_name(to)),
-            None => "moved".to_string(),
+/// The same thing in one line of prose, for a harness — which gets the body or
+/// nothing — and as the fallback for a client that has not learned
+/// `issue_notice` yet.
+///
+/// Reads as "X did Y on #N Title", with a comment's words under it: the point
+/// of hearing about a comment is reading it, and a notice that made the reader
+/// go and fetch it would have cost them the trip it exists to save.
+fn notice_body(notice: &IssueNotice, issue: &Issue, who: &str, comment: Option<&str>) -> String {
+    let issue_named = format!("#{} {}", issue.number, issue.title);
+    let line = match notice.action.as_str() {
+        "commented" => format!("{who} commented on {issue_named}"),
+        "moved" => match notice.to.as_deref() {
+            Some(to) => format!("{who} moved {issue_named} to {}", column_name(to)),
+            None => format!("{who} moved {issue_named}"),
         },
-        IssueEventKind::Assigned => match payload.get("assignee").and_then(assignee_name) {
-            Some(to) => format!("assigned to {to}"),
-            None => "assigned".to_string(),
+        "assigned" => match notice.assignee.as_ref().map(assignee_name) {
+            Some(to) => format!("{who} assigned {issue_named} to {to}"),
+            None => format!("{who} assigned {issue_named}"),
         },
-        IssueEventKind::Unassigned => "unassigned".to_string(),
-        IssueEventKind::Labelled => "relabelled".to_string(),
-        IssueEventKind::Linked => "linked".to_string(),
-        IssueEventKind::Closed => "closed".to_string(),
-        IssueEventKind::Reopened => "reopened".to_string(),
-        IssueEventKind::Dispatched => "dispatched".to_string(),
-        // Who else is watching is not a change to the issue.
-        IssueEventKind::Tracked | IssueEventKind::Untracked => return None,
-    })
+        "unassigned" => format!("{who} unassigned {issue_named}"),
+        "created" => format!("{who} created {issue_named}"),
+        "closed" => format!("{who} closed {issue_named}"),
+        "reopened" => format!("{who} reopened {issue_named}"),
+        "linked" => format!("{who} linked {issue_named}"),
+        _ => format!("{who} edited {issue_named}"),
+    };
+    match comment.map(str::trim).filter(|body| !body.is_empty()) {
+        Some(body) => format!("{line}\n\n{body}"),
+        None => line,
+    }
 }
 
 /// A column's display name, so a notice reads "moved to In review" rather than
@@ -170,21 +238,11 @@ fn column_name(slug: &str) -> &str {
         .unwrap_or(slug)
 }
 
-fn assignee_name(assignee: &serde_json::Value) -> Option<String> {
-    match assignee.get("kind").and_then(serde_json::Value::as_str)? {
-        "user" => Some("the user".to_string()),
-        "project_agent" => Some("the project's agent".to_string()),
-        _ => assignee
-            .get("agent_id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
-    }
-}
-
-fn actor_name(actor: &Actor) -> String {
-    match actor {
-        Actor::User => "the user".to_string(),
-        Actor::Agent { agent_id } => agent_id.clone(),
+fn assignee_name(assignee: &crate::tracker::Assignee) -> String {
+    match assignee {
+        crate::tracker::Assignee::User => "the user".to_string(),
+        crate::tracker::Assignee::ProjectAgent => "the project's agent".to_string(),
+        crate::tracker::Assignee::Agent { agent_id } => agent_id.clone(),
     }
 }
 
@@ -208,9 +266,20 @@ mod tests {
         }
     }
 
-    /// A move reads as the column's NAME, not the slug a client renders.
+    fn body_of(write: &IssueWrite, who: &str) -> String {
+        let notice = notice_of(write).unwrap();
+        notice_body(
+            &notice,
+            &write.issue,
+            who,
+            write.comments.first().map(|comment| comment.body.as_str()),
+        )
+    }
+
+    /// A move carries both columns as slugs for a client to render, and reads
+    /// as the column's NAME in the line a harness gets.
     #[test]
-    fn a_move_names_the_column_a_reader_would_recognise() {
+    fn a_move_carries_both_columns_and_names_the_one_it_landed_in() {
         let mut write = write_by(Actor::User);
         write.event(
             &Actor::User,
@@ -218,9 +287,14 @@ mod tests {
             json!({ "from": "backlog", "to": "in_review" }),
             "2026-09-20T15:01:00Z",
         );
+        let notice = notice_of(&write).unwrap();
+        assert_eq!(notice.action, "moved");
+        assert_eq!(notice.from.as_deref(), Some("backlog"));
+        assert_eq!(notice.to.as_deref(), Some("in_review"));
+        assert_eq!(notice.actor, Actor::User);
         assert_eq!(
-            notice_summary(&write).unwrap(),
-            "#13 Kanban drag — moved to In review by the user"
+            body_of(&write, "The user"),
+            "The user moved #13 Kanban drag to In review"
         );
     }
 
@@ -241,9 +315,19 @@ mod tests {
             refs: Vec::new(),
             created_at: "2026-09-20T15:01:00Z".into(),
         });
-        let summary = notice_summary(&write).unwrap();
-        assert!(summary.starts_with("#13 Kanban drag — agent-1 commented:"));
-        assert!(summary.ends_with("Reproduced it."), "{summary}");
+        let notice = notice_of(&write).unwrap();
+        assert_eq!(notice.action, "commented");
+        assert_eq!(
+            notice.comment_id.as_deref(),
+            Some("ic-1"),
+            "so a client links the comment and not the issue"
+        );
+        let body = body_of(&write, "The wire-facade agent");
+        assert!(
+            body.starts_with("The wire-facade agent commented on #13 Kanban drag"),
+            "{body}"
+        );
+        assert!(body.ends_with("Reproduced it."), "{body}");
     }
 
     /// Somebody else starting to watch is not a change to the issue, so it is
@@ -257,7 +341,7 @@ mod tests {
             json!({ "agent_id": "agent-2" }),
             "2026-09-20T15:01:00Z",
         );
-        assert_eq!(notice_summary(&write), None);
+        assert!(notice_of(&write).is_none());
     }
 
     /// An assignment names who got it, including the two assignee kinds that
@@ -276,9 +360,16 @@ mod tests {
                 json!({ "assignee": assignee }),
                 "2026-09-20T15:01:00Z",
             );
+            let notice = notice_of(&write).unwrap();
+            assert_eq!(notice.action, "assigned");
             assert_eq!(
-                notice_summary(&write).unwrap(),
-                format!("#13 Kanban drag — assigned to {expected} by the user")
+                notice.assignee,
+                Some(serde_json::from_value(assignee).unwrap()),
+                "a client draws who got it without parsing the line"
+            );
+            assert_eq!(
+                body_of(&write, "The user"),
+                format!("The user assigned #13 Kanban drag to {expected}")
             );
         }
     }

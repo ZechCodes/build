@@ -5,82 +5,76 @@
 //! work is worse than no issue: it says something false about where the work
 //! got to, and a board nobody trusts is a board nobody reads.
 //!
-//! 1. **An agent holding a dispatched issue reports Complete.** The report's
-//!    body becomes a comment on the issue and the issue moves to In review.
+//! 1. **An agent holding a dispatched issue reports Complete.** The issue
+//!    moves to In review.
 //! 2. **A workspace an issue links is finished.** The issue closes.
 //!
 //! Neither moves the inbox anchor or crosses a dismissal line. They are the
 //! work happening, not somebody speaking to the human.
+//!
+//! **What a report does NOT do is comment.** It used to: the report's body was
+//! copied onto the issue. That made every end-of-turn report an issue comment,
+//! including the four an agent wrote answering a reminder it could not
+//! silence — five comments on #27 in three minutes, none of them written to
+//! the issue. A conversation message is not a comment on an issue, whatever it
+//! mentions; `comment_issue` and `issues.comment` are the two things that
+//! write one, and an agent that wants its report on the issue calls one of
+//! them. The prompt asks it to.
 
 use super::{edits, IssueWrite, StoredAnswer};
 use crate::app::AppState;
 use crate::store::IssueFilter;
-use crate::tracker::{Actor, Issue, IssueComment, IssueEventKind, IssueState, IN_REVIEW_STATUS};
+use crate::tracker::{Actor, Issue, IssueEventKind, IssueState, IN_REVIEW_STATUS};
 use serde_json::json;
 
 impl AppState {
-    /// An agent finished a turn. If it holds a dispatched issue, say so on the
-    /// issue.
+    /// An agent reported Complete. If it holds a dispatched issue, move that
+    /// issue to In review.
     ///
-    /// A **Completed** report comments and moves the issue to In review: the
-    /// work is ready to be looked at, which is what Complete means on a board.
-    /// A **Blocked or Failed** report comments and does NOT move it — blocked
-    /// is not ready to look at, and a board that said it was would be lying in
-    /// the direction that wastes a reviewer's time.
+    /// Complete means the work is ready to be looked at, which is what In
+    /// review means on a board — so the card follows the report without
+    /// anybody dragging it. A **Blocked or Failed** report moves nothing:
+    /// blocked is not ready to look at, and a board that said it was would be
+    /// lying in the direction that wastes a reviewer's time.
+    ///
+    /// The timeline is the record of this, and it names the agent: the `moved`
+    /// event carries `by: "report"`, so a reader can tell a card the agent
+    /// moved deliberately from one its report moved for it.
     ///
     /// Quiet about its own failure. The report is the agent's and the turn is
-    /// over; losing the copy on the issue must not turn a finished piece of
-    /// work into a failed one.
-    pub(in crate::app) fn note_report_on_held_issue(
-        &mut self,
-        entity_id: &str,
-        agent_id: &str,
-        summary: &str,
-        completed: bool,
-    ) {
-        let summary = summary.trim();
-        if summary.is_empty() {
-            return;
-        }
+    /// over; failing to move a card must not turn a finished piece of work
+    /// into a failed one.
+    pub(in crate::app) fn move_held_issue_on_complete(&mut self, entity_id: &str, agent_id: &str) {
         let Some((project_id, issue)) = self.issue_held_by(entity_id, agent_id) else {
             return;
         };
-        if let Err(error) = self.record_report_on_issue(&project_id, issue, summary, completed) {
-            eprintln!("record report on issue for {agent_id}: {error}");
+        if let Err(error) = self.hand_held_issue_on(&project_id, issue) {
+            eprintln!("move the issue {agent_id} holds on its report: {error}");
         }
     }
 
-    fn record_report_on_issue(
-        &mut self,
-        project_id: &str,
-        issue: Issue,
-        summary: &str,
-        completed: bool,
-    ) -> Result<(), String> {
+    fn hand_held_issue_on(&mut self, project_id: &str, issue: Issue) -> Result<(), String> {
+        if !issue.is_open() {
+            return Ok(());
+        }
         let actor = Actor::Agent {
             agent_id: self
                 .issue_holder(&issue)
                 .unwrap_or_else(|| "agent".to_string()),
         };
         let now = crate::store::now_rfc3339();
-        let comment = IssueComment {
-            id: crate::tracker::new_comment_id(),
-            issue_id: issue.id.clone(),
-            author: actor.clone(),
-            body: summary.to_string(),
-            refs: Vec::new(),
-            created_at: now.clone(),
-        };
         let mut write = IssueWrite::by(actor.clone(), issue);
-        write.comments.push(comment);
-        if completed && write.issue.is_open() {
-            edits::move_to(
-                &mut write,
-                IN_REVIEW_STATUS,
-                &actor,
-                json!({ "by": "report" }),
-                &now,
-            );
+        edits::move_to(
+            &mut write,
+            IN_REVIEW_STATUS,
+            &actor,
+            json!({ "by": "report" }),
+            &now,
+        );
+        if write.events.is_empty() {
+            // Already there. Committing nothing would still push and still
+            // notify every tracker that the issue "changed".
+            return Ok(());
         }
         self.commit_issue_write(project_id, write, &now).map(|_| ())
     }

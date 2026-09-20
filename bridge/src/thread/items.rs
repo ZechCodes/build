@@ -86,6 +86,40 @@ pub struct IssueEnvelope {
     pub links: crate::tracker::IssueLinks,
 }
 
+/// What changed on an issue somebody is TRACKING, on the notice Build posted
+/// about it (spec: Issues → Tracking).
+///
+/// The body says the same thing in one line, so a harness reads it either way.
+/// This is for a client, which draws the notice as one line that deep-links
+/// the issue or the comment — and cannot do that from prose it would have to
+/// parse back.
+///
+/// Distinct from [`IssueAction`], which is an agent saying what IT did in its
+/// own conversation. A notice is Build telling somebody else what a third
+/// party did, and the actor is therefore part of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueNotice {
+    /// Who did it. `{kind: "user"}` or `{kind: "agent", agent_id}`.
+    pub actor: crate::tracker::Actor,
+    /// What they did: one of `commented`, `moved`, `assigned`, `unassigned`,
+    /// `closed`, `reopened`, `edited`, `linked`. A slug, the way a column is,
+    /// so a client renders the wording and the bridge does not decide it
+    /// twice.
+    pub action: String,
+    /// The comment this notice is about, on `commented` only — what lets a
+    /// client link the comment rather than the issue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_id: Option<String>,
+    /// The columns a `moved` went between, as slugs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Who an `assigned` handed it to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<crate::tracker::Assignee>,
+}
+
 /// What an agent did to an issue, on the message it posted saying so (spec:
 /// Issues → An agent says what it did).
 ///
@@ -547,6 +581,10 @@ pub struct ThreadMessage {
     /// so. Boxed for the reason `from_issue` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue_action: Option<Box<IssueAction>>,
+    /// What changed on a tracked issue, when the message is Build's notice
+    /// about it. Boxed for the reason `from_issue` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_notice: Option<Box<IssueNotice>>,
     /// Client mutation whose durable delivery owns this reviewer message.
     /// Managed messages are read through that exact operation and never by
     /// the legacy catch-all unread mailbox.

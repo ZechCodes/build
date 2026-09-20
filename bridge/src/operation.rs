@@ -109,6 +109,7 @@ impl OperationPayload {
         let sender = self.sender_note();
         let workspace = self.workspace_note();
         let issue = self.issue_note();
+        let watched = self.watched_issue_note();
         let looking = self.viewing_issue_note();
         let user_prompt = self
             .messages
@@ -116,7 +117,7 @@ impl OperationPayload {
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}{issue}{looking}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}{issue}{watched}{looking}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -157,8 +158,15 @@ impl OperationPayload {
         )
     }
 
-    /// What to do about the issue this turn was handed, when assigning one is
-    /// what sent it. Empty for every other message.
+    /// What to do about the issue this turn was handed, when being HANDED one
+    /// is what sent it. Empty for every other message.
+    ///
+    /// Only for an assignment, and the check is `from_build`: a tracking
+    /// notice wears an issue too, and it is Build telling a watcher that
+    /// somebody else changed something. Telling that watcher to read the issue
+    /// before it starts, comment its progress and move the card to In review
+    /// is telling it to take over work nobody gave it — which is what a
+    /// tracker was being told until #35.
     ///
     /// The body already says who assigned what — it is the notice — so this
     /// does not say it again. What it adds is the id, which the notice has no
@@ -169,6 +177,7 @@ impl OperationPayload {
     fn issue_note(&self) -> String {
         self.messages
             .iter()
+            .filter(|message| !message.from_build)
             .filter_map(|message| message.from_issue.as_deref())
             .next()
             .map_or_else(String::new, |issue| {
@@ -176,6 +185,29 @@ impl OperationPayload {
                     "\nThe issue is `{}` — read it with get_issue before you start. Comment your \
                      progress on it with comment_issue, and move it to In review with move_issue \
                      when you report Complete.\n",
+                    issue.issue_id
+                )
+            })
+    }
+
+    /// One line for a notice about an issue somebody is WATCHING: what it is
+    /// about, and that nothing is being asked of them.
+    ///
+    /// A tracker asked to hear about an issue. It is not the assignee, so the
+    /// envelope must not read as a brief — but it does need the id, because
+    /// `get_issue` is how it reads the detail if it wants it, and the body
+    /// names the issue by number rather than by id.
+    fn watched_issue_note(&self) -> String {
+        self.messages
+            .iter()
+            .filter(|message| message.from_build && message.issue_notice.is_some())
+            .filter_map(|message| message.from_issue.as_deref())
+            .next()
+            .map_or_else(String::new, |issue| {
+                format!(
+                    "\nThis is a notice about issue `{}`, which you are tracking — not work \
+                     assigned to you, and nobody is waiting on an answer. Read it with get_issue \
+                     if you need the detail; untrack_issue stops these.\n",
                     issue.issue_id
                 )
             })
@@ -408,6 +440,72 @@ mod tests {
         );
         assert!(cold.contains("Build conversation protocol"), "{cold}");
         assert!(!cold.contains("read_unread_messages"), "{cold}");
+    }
+
+    /// A tracker is not the assignee, and the envelope it reads must not tell
+    /// it to take the work.
+    ///
+    /// A notice wears the issue so a client can draw a card, and the brief was
+    /// keyed off `from_issue` alone — so until #35 every watcher was told to
+    /// read the issue before it started, comment its progress and move the
+    /// card to In review. That is an instruction to take over work nobody gave
+    /// it.
+    #[test]
+    fn a_notice_about_a_watched_issue_does_not_brief_it_as_an_assignment() {
+        let envelope = crate::thread::IssueEnvelope {
+            issue_id: "issue-01K5Z".into(),
+            number: 13,
+            title: "Kanban drag".into(),
+            links: crate::tracker::IssueLinks::default(),
+        };
+        let notice = crate::thread::IssueNotice {
+            actor: crate::tracker::Actor::User,
+            action: "moved".into(),
+            comment_id: None,
+            from: Some("in_progress".into()),
+            to: Some("in_review".into()),
+            assignee: None,
+        };
+        let watching = OperationPayload {
+            messages: vec![ThreadMessage {
+                from_build: true,
+                from_issue: Some(Box::new(envelope.clone())),
+                issue_notice: Some(Box::new(notice)),
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+
+        let warm = watching.delivery_prompt("post-1", false, AgentProvider::Claude);
+        assert!(warm.contains("which you are tracking"), "{warm}");
+        assert!(warm.contains("not work assigned to you"), "{warm}");
+        assert!(
+            !warm.contains("read it with get_issue before you start"),
+            "a tracker is not being briefed: {warm}"
+        );
+        assert!(
+            !warm.contains("move it to In review with move_issue"),
+            "and must not be told to move somebody else's card: {warm}"
+        );
+
+        // The assignee's own hand-off still says all of it.
+        let handed = OperationPayload {
+            messages: vec![ThreadMessage {
+                from_issue: Some(Box::new(envelope)),
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+        let brief = handed.delivery_prompt("post-1", false, AgentProvider::Claude);
+        assert!(
+            brief.contains("read it with get_issue before you start"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("move it to In review with move_issue"),
+            "{brief}"
+        );
+        assert!(!brief.contains("which you are tracking"), "{brief}");
     }
 
     /// An issue the user is LOOKING at is not one they handed over, and the

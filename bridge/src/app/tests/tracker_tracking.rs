@@ -325,8 +325,23 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
     assert_eq!(notice["from_issue"]["number"], 1);
     assert_eq!(notice["from_issue"]["title"], "Kanban drag");
     let body = notice["body"].as_str().unwrap();
-    assert!(body.contains("moved to In review"), "{body}");
-    assert!(body.contains(&actor.1), "it says who: {body}");
+    assert_eq!(
+        body, "The actor agent moved #1 Kanban drag to In review",
+        "one line: who did what to which issue"
+    );
+
+    // And the same thing structured, so a client draws that line with a link
+    // rather than parsing it back out of prose (spec: Issues → Tracking).
+    assert_eq!(
+        notice["issue_notice"],
+        json!({
+            "actor": { "kind": "agent", "agent_id": actor.1 },
+            "action": "moved",
+            "from": "backlog",
+            "to": "in_review",
+        }),
+        "{notice:?}"
+    );
 
     assert!(
         notices(&mut state, &actor.0, &actor.1).is_empty(),
@@ -592,24 +607,50 @@ fn complete_with_open_issues_lists_every_one_of_them() {
         &mut state,
         &project_id,
         DoneStatus::Completed,
-        &[("first", "in_progress"), ("second", "ready")],
+        // The report moves the NEWEST issue the agent holds to In review, so
+        // the last one listed is the one this Complete hands over.
+        &[
+            ("first", "in_progress"),
+            ("second", "ready"),
+            ("just finished", "in_progress"),
+        ],
     );
 
     let told = reminders(&mut state, &entity_id, &agent_id);
     assert_eq!(told.len(), 1, "one reminder per Complete: {told:?}");
     let body = &told[0];
-    assert!(body.contains("#1 first"), "{body}");
-    assert!(body.contains("#2 second"), "{body}");
+    assert!(body.contains("#1 first (In progress)"), "{body}");
+    assert!(body.contains("#2 second (Ready)"), "{body}");
+    // The case that made every Complete nag about the work it had just handed
+    // over: the report's own move put #3 in In review, and In review is the
+    // agent saying it is finished.
     assert!(
-        body.contains("(In progress)"),
-        "it says which column: {body}"
+        !body.contains("#3 just finished"),
+        "In review is not held open: {body}"
     );
-    // The reminder runs AFTER the report's own automatic move, so the issue
-    // this very Complete pushed to In review is described as it now stands
-    // rather than as it stood a moment ago.
     assert!(
-        body.contains("#2 second (In review)"),
-        "the report moved it, and the reminder says where it is now: {body}"
+        body.contains("2 issues assigned to you are still open"),
+        "{body}"
+    );
+}
+
+/// In review means the agent has said the work is ready to be looked at, and
+/// deciding it is done is somebody else's. So it is not held, and an agent
+/// that reports Complete holding nothing else hears nothing at all.
+#[test]
+fn an_issue_in_review_is_not_held_open_by_the_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (entity_id, agent_id) = reported(
+        &mut state,
+        &project_id,
+        DoneStatus::Completed,
+        &[("handed over", "in_review")],
+    );
+    assert!(
+        reminders(&mut state, &entity_id, &agent_id).is_empty(),
+        "nothing is waiting on the agent, so nothing is said"
     );
 }
 
@@ -669,7 +710,11 @@ fn an_issue_in_the_done_column_is_not_reminded_about() {
         &mut state,
         &project_id,
         DoneStatus::Completed,
-        &[("finished", "done"), ("still going", "in_progress")],
+        &[
+            ("finished", "done"),
+            ("still going", "in_progress"),
+            ("just finished", "in_progress"),
+        ],
     );
 
     let told = reminders(&mut state, &entity_id, &agent_id);
@@ -681,15 +726,24 @@ fn an_issue_in_the_done_column_is_not_reminded_about() {
         "Done is finished with: {body}"
     );
     assert!(
+        !body.contains("#3 just finished"),
+        "and so is In review: {body}"
+    );
+    assert!(
         body.contains("1 issue assigned to you is still open"),
         "{body}"
     );
 }
 
-/// Answering a reminder with another Complete while still holding the same
-/// issues is reminded again. That is the point, not a bug to suppress.
+/// Answering a reminder with another Complete while holding the SAME issues
+/// says nothing the second time.
+///
+/// The reminder is delivered as a turn, so an agent that answers it reports
+/// Complete again — which is another reminder, which is another answer. That
+/// loop ran five times on #27 before the agent stopped replying. The nudge is
+/// worth sending when the set changes and worth nothing when it has not.
 #[test]
-fn a_second_complete_reminds_again() {
+fn a_second_complete_holding_the_same_issues_says_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -697,7 +751,7 @@ fn a_second_complete_reminds_again() {
         &mut state,
         &project_id,
         DoneStatus::Completed,
-        &[("first", "in_progress")],
+        &[("second", "in_progress"), ("first", "in_progress")],
     );
     assert_eq!(reminders(&mut state, &entity_id, &agent_id).len(), 1);
 
@@ -712,9 +766,58 @@ fn a_second_complete_reminds_again() {
     );
     assert_eq!(
         reminders(&mut state, &entity_id, &agent_id).len(),
-        2,
-        "it holds the same issue, so it is told again"
+        1,
+        "the same set is not worth saying twice"
     );
+}
+
+/// But a set that CHANGED is news again: an agent handed a second issue after
+/// being reminded about the first is told about both.
+#[test]
+fn a_complete_holding_a_different_set_reminds_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (entity_id, agent_id) = reported(
+        &mut state,
+        &project_id,
+        DoneStatus::Completed,
+        &[
+            ("a", "in_progress"),
+            ("b", "in_progress"),
+            ("just finished", "in_progress"),
+        ],
+    );
+    assert_eq!(reminders(&mut state, &entity_id, &agent_id).len(), 1);
+
+    // One of the two it was told about is finished with, so the set has moved.
+    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    let done = listed["result"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["title"] == "b")
+        .and_then(|issue| issue["id"].as_str())
+        .unwrap()
+        .to_string();
+    state.handle(req(
+        "issues.update",
+        json!({ "issue_id": done, "status": "done" }),
+    ));
+
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        DoneReport {
+            status: DoneStatus::Completed,
+            summary: "And that one is finished with.".into(),
+            message_id: None,
+        },
+    );
+    let told = reminders(&mut state, &entity_id, &agent_id);
+    assert_eq!(told.len(), 2, "the set moved, so it is said again");
+    assert!(told[1].contains("#1 a"), "{told:?}");
+    assert!(!told[1].contains("#2 b"), "{told:?}");
 }
 
 // ------------------------------------------ the agent says what it did ---

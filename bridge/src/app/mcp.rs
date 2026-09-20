@@ -296,17 +296,17 @@ impl AppState {
         report: DoneReport,
     ) -> Option<DeferredJob> {
         self.record_agent_working_since(entity_id, agent_id, None);
-        // An agent holding a dispatched issue says so on the issue (spec:
-        // Issues → Automatic activity). Before the lifecycle routing below,
-        // which may end the run this agent belongs to and take the binding the
-        // issue is found through with it.
-        let completed = report.status == crate::mcp::DoneStatus::Completed;
-        self.note_report_on_held_issue(entity_id, agent_id, &report.summary, completed);
-        // And on Complete, what it still holds (spec: Issues → The Complete
-        // reminder). After the report has been recorded on the issue it was
-        // given, so an issue this very report moved to In review is described
-        // as it now stands rather than as it stood a moment ago.
-        if completed {
+        // A Complete hands the issue the agent holds on to In review (spec:
+        // Issues → Automatic activity), and then says what it still holds
+        // (spec: Issues → The Complete reminder). Both before the lifecycle
+        // routing below, which may end the run this agent belongs to and take
+        // the binding the issue is found through with it.
+        //
+        // The reminder runs second so that an issue this very report handed on
+        // is described as it now stands rather than as it stood a moment ago —
+        // which is also what keeps it out of the list.
+        if report.status == crate::mcp::DoneStatus::Completed {
+            self.move_held_issue_on_complete(entity_id, agent_id);
             self.remind_of_open_issues(entity_id, agent_id);
         }
         self.done_deferring_for_resolved_agent(entity_id, Some(agent_id), report)

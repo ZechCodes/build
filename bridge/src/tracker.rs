@@ -513,6 +513,15 @@ pub const IN_PROGRESS_STATUS: &str = "in_progress";
 /// set deliberately, and a reassignment is not a reason to rewind it.
 pub const DISPATCH_MOVES_FROM: [&str; 2] = [DEFAULT_STATUS, "ready"];
 
+/// The columns in which an issue is still the assignee's to finish.
+///
+/// In review is NOT one of them. In review means the agent has reported
+/// Complete and the work is ready to be looked at; whether it is done is
+/// somebody else's call, so an issue sitting there is waiting on a reviewer
+/// and not on the agent. Done and closed are finished with for the same
+/// reason and more obviously.
+pub const STILL_TO_FINISH: [&str; 3] = [DEFAULT_STATUS, "ready", IN_PROGRESS_STATUS];
+
 /// The column a word names, by slug or by display name, case-insensitively.
 /// `None` is a word that names no column this project has.
 pub fn normalize_status(word: &str) -> Option<&'static str> {

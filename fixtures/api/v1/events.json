@@ -40,7 +40,10 @@
                 "unread_reason": "message",
                 "read_through_sequence": 410,
                 "working": true,
-                "working_time": { "since": "2026-09-18T10:09:46Z", "seconds": 14 },
+                "working_time": {
+                  "since": "2026-09-18T10:09:46Z",
+                  "seconds": 14
+                },
                 "choice_revision": 1,
                 "has_terminal": true,
                 "can_interrupt": true,
@@ -50,10 +53,19 @@
               }
             ],
             "working": true,
-            "working_time": { "since": "2026-09-18T10:09:46Z", "seconds": 14 },
+            "working_time": {
+              "since": "2026-09-18T10:09:46Z",
+              "seconds": 14
+            },
             "can_finish": true,
-            "finish": { "warnings": [] },
-            "stat": { "files_changed": 1, "insertions": 12, "deletions": 3 }
+            "finish": {
+              "warnings": []
+            },
+            "stat": {
+              "files_changed": 1,
+              "insertions": 12,
+              "deletions": 3
+            }
           },
           "thread": [
             {
@@ -101,7 +113,11 @@
                 }
               ],
               "files_truncated": false,
-              "stat": { "files_changed": 1, "insertions": 12, "deletions": 3 },
+              "stat": {
+                "files_changed": 1,
+                "insertions": 12,
+                "deletions": 3
+              },
               "status_key": "9f3c1a0b7e2d4c55"
             },
             "log": {
@@ -123,7 +139,10 @@
               "highlight_key": "5c6d7e8f90123456"
             },
             "unpushed": {
-              "base": { "kind": "push_target", "label": "origin/build/cache-first" },
+              "base": {
+                "kind": "push_target",
+                "label": "origin/build/cache-first"
+              },
               "published": true,
               "commits": [
                 {
@@ -138,21 +157,42 @@
               "diff_key": "77aa11bb22cc33dd"
             },
             "diff": {
-              "stat": { "files_changed": 1, "insertions": 12, "deletions": 3 },
-              "files": [{ "path": "src/lib.rs", "status": "Modified" }],
-              "file_edited_at": { "src/lib.rs": 1789787235977 },
+              "stat": {
+                "files_changed": 1,
+                "insertions": 12,
+                "deletions": 3
+              },
+              "files": [
+                {
+                  "path": "src/lib.rs",
+                  "status": "Modified"
+                }
+              ],
+              "file_edited_at": {
+                "src/lib.rs": 1789787235977
+              },
               "patch": "diff --git a/src/lib.rs b/src/lib.rs\n"
             },
             "diff_bytes": 12345
           },
           "files": {
-            "paths": ["src/lib.rs", "src/app/rpc.rs"],
+            "paths": [
+              "src/lib.rs",
+              "src/app/rpc.rs"
+            ],
             "truncated": false,
             "root": {
               "path": "",
               "entries": [
-                { "name": "src", "kind": "dir" },
-                { "name": "Cargo.toml", "kind": "file", "size": 1841 }
+                {
+                  "name": "src",
+                  "kind": "dir"
+                },
+                {
+                  "name": "Cargo.toml",
+                  "kind": "file",
+                  "size": 1841
+                }
               ]
             }
           },
@@ -185,7 +225,12 @@
         },
         {
           "entity_id": "worktree-2",
-          "files": { "paths": ["docs/index.md"], "truncated": true }
+          "files": {
+            "paths": [
+              "docs/index.md"
+            ],
+            "truncated": true
+          }
         }
       ]
     },
@@ -197,7 +242,9 @@
           "entity_id": "board",
           "state": {
             "revision": 1183,
-            "removed": ["run-3"],
+            "removed": [
+              "run-3"
+            ],
             "projects": [
               {
                 "project_id": "proj-1",
@@ -211,8 +258,28 @@
         }
       ]
     },
-    { "type": "board.changed" },
-    { "type": "entity.changed", "id": "run-7" },
+    {
+      "type": "changes",
+      "subscription_id": "s-inbox",
+      "items": [
+        {
+          "entity_id": "proj-1",
+          "issues": {
+            "issue_ids": [
+              "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+            ],
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "type": "board.changed"
+    },
+    {
+      "type": "entity.changed",
+      "id": "run-7"
+    },
     {
       "type": "term.output",
       "term_id": "term-1",
@@ -225,7 +292,11 @@
       "data": "G1s3MjsxSGJ1aWxk",
       "cursor": 4260
     },
-    { "type": "term.closed", "term_id": "term-1", "reason": "closed" },
+    {
+      "type": "term.closed",
+      "term_id": "term-1",
+      "reason": "closed"
+    },
     {
       "type": "rtc.ice",
       "candidate": {

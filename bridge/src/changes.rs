@@ -105,6 +105,9 @@ pub const UNPUSHED_COMMITS_MAX: usize = 20;
 /// pages forward from the sequence it holds. An agent that says a hundred
 /// things between two flushes is a harness in a storm, not a conversation.
 pub const THREAD_PUSH_MAX_ITEMS: usize = 100;
+/// The same, for the issue ids one `issues` item names. Past it the item is
+/// `truncated`, which means "refetch the list", not "these issues".
+pub const ISSUES_PER_FLUSH: usize = 200;
 
 /// The clamp on a `{"batch_ms": N}` mode, as the greeting advertises it.
 pub const MIN_BATCH_MS: u64 = 1_000;
@@ -142,16 +145,25 @@ pub enum Kind {
     Files,
     /// The tabs open in a checkout — the human's shells, coming and going.
     Terminals,
+    /// One project's issue tracker: a create, an update, a comment, a move
+    /// (spec: Issues → Push).
+    ///
+    /// The one kind whose entity is a PROJECT rather than a work item, because
+    /// a tracker belongs to a project and not to any one thing inside it. A
+    /// subscription scoped `all` receives it beside everything else; one
+    /// scoped to a project entity receives only it.
+    Issues,
 }
 
 impl Kind {
     /// Every kind, in wire order.
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 6] = [
         Kind::State,
         Kind::Thread,
         Kind::Git,
         Kind::Files,
         Kind::Terminals,
+        Kind::Issues,
     ];
 
     /// How the wire spells it.
@@ -162,6 +174,7 @@ impl Kind {
             Kind::Git => "git",
             Kind::Files => "files",
             Kind::Terminals => "terminals",
+            Kind::Issues => "issues",
         }
     }
 
@@ -560,35 +573,49 @@ struct Pending {
 
 // ------------------------------------------------------- subscriptions ---
 
+/// The names one kind carries on an item — a `files` item's paths, an
+/// `issues` item's issue ids — with the cap that turns naming them into
+/// "refetch".
+///
+/// One type for both, because they are one idea: a bounded list of what moved,
+/// which past its cap stops being a list and becomes a flag.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct NameSet {
+    names: BTreeSet<String>,
+    truncated: bool,
+}
+
+impl NameSet {
+    fn add(&mut self, names: &[String], cap: usize) {
+        for name in names {
+            if self.names.len() >= cap && !self.names.contains(name) {
+                self.truncated = true;
+                break;
+            }
+            self.names.insert(name.clone());
+        }
+    }
+}
+
 /// One entity's un-flushed item, for one subscription.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PendingItem {
     kinds: KindSet,
-    paths: BTreeSet<String>,
-    truncated: bool,
+    files: NameSet,
+    issues: NameSet,
 }
 
 impl PendingItem {
-    fn add_paths(&mut self, paths: &[String]) {
-        for path in paths {
-            if self.paths.len() >= FILES_PER_FLUSH && !self.paths.contains(path) {
-                self.truncated = true;
-                break;
-            }
-            self.paths.insert(path.clone());
-        }
-    }
-
     fn is_empty(&self) -> bool {
         self.kinds.is_empty()
     }
 
     /// Split into (what the settle window holds back, what may go now): the
-    /// worktree kinds wait, `state` and `thread` never do.
+    /// worktree kinds wait, `state`, `thread` and `issues` never do.
     fn split_worktree(self) -> (PendingItem, PendingItem) {
         let mut held = PendingItem {
-            paths: self.paths,
-            truncated: self.truncated,
+            files: self.files,
+            issues: self.issues,
             ..PendingItem::default()
         };
         let mut due = PendingItem::default();
@@ -674,7 +701,7 @@ impl Subscription {
     /// Insert into this subscription's own pending map. Coalescing is per
     /// subscription: a thousand notes of one entity are one item, and an
     /// hour spent `off` holds one item per entity, not an hour of history.
-    fn note(&mut self, entity_id: &str, kind: Kind, paths: &[String], now: Instant) {
+    fn note(&mut self, entity_id: &str, kind: Kind, names: &[String], now: Instant) {
         if self.collapsed {
             return;
         }
@@ -687,8 +714,10 @@ impl Subscription {
         }
         let item = self.pending.entry(entity_id.to_string()).or_default();
         item.kinds.insert(kind);
-        if kind == Kind::Files {
-            item.add_paths(paths);
+        match kind {
+            Kind::Files => item.files.add(names, FILES_PER_FLUSH),
+            Kind::Issues => item.issues.add(names, ISSUES_PER_FLUSH),
+            _ => {}
         }
     }
 
@@ -982,6 +1011,12 @@ fn item_payload(
     if item.kinds.contains(Kind::Terminals) {
         out.insert("terminals".into(), terminals_payload(facts));
     }
+    if item.kinds.contains(Kind::Issues) {
+        out.insert(
+            "issues".into(),
+            json!({ "issue_ids": item.issues.names, "truncated": item.issues.truncated }),
+        );
+    }
     Value::Object(out)
 }
 
@@ -1093,8 +1128,8 @@ fn unanswered_lists(owed: BoardLists, answer: Option<&Map<String, Value>>) -> Bo
 /// the way it always has — by listing the tree itself.
 fn files_payload(item: &PendingItem, facts: Option<&EntityFacts>) -> Value {
     let mut files = Map::new();
-    files.insert("paths".into(), json!(item.paths));
-    files.insert("truncated".into(), json!(item.truncated));
+    files.insert("paths".into(), json!(item.files.names));
+    files.insert("truncated".into(), json!(item.files.truncated));
     if let Some(root) = facts.and_then(|f| f.root_listing.clone()) {
         files.insert("root".into(), root);
     }
@@ -1420,6 +1455,16 @@ impl ChangeBus {
     pub fn note_files(&self, entity_id: &str, paths: &[String]) {
         self.note_subscriptions(entity_id, Kind::Files, paths);
         self.note_legacy_entity(entity_id, Kind::Files);
+    }
+
+    /// These issues of this project moved (spec: Issues → Push).
+    ///
+    /// The subscription path ONLY. No legacy `entity.changed` and no board
+    /// bump: a client in legacy mode has no issues surface to refetch, and
+    /// bumping the board on every comment would repaint the feed for something
+    /// the feed does not show.
+    pub fn note_issues(&self, project_id: &str, issue_ids: &[String]) {
+        self.note_subscriptions(project_id, Kind::Issues, issue_ids);
     }
 
     /// The feed is stale: bump the revision a client compares against, note
@@ -2556,8 +2601,8 @@ mod subscriptions {
         let many: Vec<String> = (0..FILES_PER_FLUSH + 5).map(|n| format!("f{n}")).collect();
         bus.note_files("run-7", &many);
         let item = &bus.subscriptions.lock().unwrap()[0].pending["run-7"];
-        assert_eq!(item.paths.len(), FILES_PER_FLUSH);
-        assert!(item.truncated, "past the cap the list means refetch");
+        assert_eq!(item.files.names.len(), FILES_PER_FLUSH);
+        assert!(item.files.truncated, "past the cap the list means refetch");
     }
 
     /// The board item carries the revision a client compares against, and
@@ -2889,13 +2934,46 @@ mod subscriptions {
     }
 
     /// The spec as the wire spells it, both ways.
+    /// A kind this bridge does not know refuses the WHOLE subscription — it is
+    /// not dropped and the rest served.
+    ///
+    /// `KindSet` is a transparent `BTreeSet<Kind>`, so an unknown variant fails
+    /// the set, which fails the spec, which is `invalid_params` for the call.
+    /// That is the opposite of how the v1 facade treats an unknown FIELD, which
+    /// it drops silently — and the difference matters to a client: asking an
+    /// older bridge for a newer kind costs it the whole subscription, including
+    /// the kinds it does understand. A client should ask for what the greeting
+    /// advertises rather than for what it hopes is there.
     #[test]
+    fn a_kind_this_bridge_does_not_know_refuses_the_whole_subscription() {
+        let refused: Result<SubscriptionSpec, _> = serde_json::from_value(json!({
+            "subscription_id": "s-inbox",
+            "scope": { "kind": "entity", "id": "proj-1" },
+            "kinds": ["state", "thread", "sandwiches"],
+        }));
+        let refused = refused.expect_err("a kind that names nothing");
+        assert!(
+            refused.to_string().contains("sandwiches"),
+            "the refusal names the kind it did not know: {refused}"
+        );
+
+        // And the kinds it DOES know still parse beside each other, so the
+        // refusal above is about the unknown one and not about the list.
+        let accepted: SubscriptionSpec = serde_json::from_value(json!({
+            "subscription_id": "s-inbox",
+            "scope": { "kind": "entity", "id": "proj-1" },
+            "kinds": ["state", "thread", "issues"],
+        }))
+        .expect("every kind this bridge advertises");
+        assert!(accepted.kinds.contains(Kind::Issues));
+    }
+
     #[test]
     fn a_subscription_spec_round_trips_through_the_wire_form() {
         let wire = json!({
             "subscription_id": "s-focus",
             "scope": { "kind": "entity", "id": "run-7" },
-            "kinds": ["state", "thread", "git", "files", "terminals"],
+            "kinds": ["state", "thread", "git", "files", "terminals", "issues"],
             "mode": "realtime",
             "priority": "foreground",
         });

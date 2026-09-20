@@ -108,7 +108,7 @@ async fn the_greeting_announces_push_events() {
         json!({
             "subscriptions": true,
             "mode": "legacy",
-            "kinds": ["state", "thread", "git", "files", "terminals"],
+            "kinds": ["state", "thread", "git", "files", "terminals", "issues"],
             "items": "bodies",
             "batch_ms": { "min": 1000, "max": 600_000 },
         }),

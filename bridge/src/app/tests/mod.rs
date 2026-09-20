@@ -216,6 +216,7 @@ mod rtc;
 mod runtime;
 mod shell;
 mod tracker;
+mod tracker_activity;
 mod tracker_dispatch;
 mod tracker_tools;
 mod workflow;

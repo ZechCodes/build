@@ -293,6 +293,36 @@ fn check_changes_item(item: &Value) {
     if let Some(files) = object.get("files") {
         check_files(entity_id, files);
     }
+    if let Some(issues) = object.get("issues") {
+        check_issues(entity_id, issues);
+    }
+}
+
+/// The `issues` item: the ids that moved, under the cap, and the flag that
+/// says the list stopped naming them.
+///
+/// Its `entity_id` is a PROJECT — the one item whose entity is not a work item,
+/// because a tracker belongs to a project and not to anything inside it.
+fn check_issues(entity_id: &str, issues: &Value) {
+    assert!(
+        entity_id.starts_with("proj-"),
+        "{entity_id}: an issues item is about a project"
+    );
+    let ids = issues["issue_ids"]
+        .as_array()
+        .expect("issues.issue_ids is a list");
+    assert!(
+        ids.iter().all(Value::is_string),
+        "{entity_id}: issues.issue_ids are strings"
+    );
+    assert!(
+        ids.len() <= changes::ISSUES_PER_FLUSH,
+        "{entity_id}: issues.issue_ids is capped"
+    );
+    assert!(
+        issues["truncated"].is_boolean(),
+        "{entity_id}: issues.truncated is a bool"
+    );
 }
 
 /// The terminal and signalling frames, which are `json!` literals rather than

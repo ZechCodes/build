@@ -296,6 +296,16 @@ impl AppState {
         report: DoneReport,
     ) -> Option<DeferredJob> {
         self.record_agent_working_since(entity_id, agent_id, None);
+        // An agent holding a dispatched issue says so on the issue (spec:
+        // Issues → Automatic activity). Before the lifecycle routing below,
+        // which may end the run this agent belongs to and take the binding the
+        // issue is found through with it.
+        self.note_report_on_held_issue(
+            entity_id,
+            agent_id,
+            &report.summary,
+            report.status == crate::mcp::DoneStatus::Completed,
+        );
         self.done_deferring_for_resolved_agent(entity_id, Some(agent_id), report)
     }
 

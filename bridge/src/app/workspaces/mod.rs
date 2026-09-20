@@ -539,6 +539,12 @@ impl AppState {
         if !blockers.is_empty() {
             return Err(crate::workspace::finish_refusal(&blockers));
         }
+        // Every open issue this workspace was cut for closes with it (spec:
+        // Issues → Automatic activity). Here, where Done has been ACCEPTED,
+        // rather than after the folder is gone: the eligibility measured above
+        // is what proves the work is somewhere else, and a removal that later
+        // fails on disk does not make the work un-done.
+        self.close_issues_of_finished_workspace(&workspace.project_id, &workspace.id);
         let registry_root = self.workspaces.root().to_path_buf();
         self.remove_workspace(&workspace, params, Some(registry_root));
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))

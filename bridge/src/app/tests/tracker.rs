@@ -22,6 +22,35 @@ pub(super) fn tracked(state_root: &Path) -> (tempfile::TempDir, AppState, String
     (home, state, project_id)
 }
 
+/// The same, over a repository whose `main` tracks an origin — what a
+/// workspace needs before Done will take it, since eligibility is the measure
+/// that every commit is already somewhere else.
+pub(super) fn tracked_with_origin(state_root: &Path) -> (AppState, String) {
+    let repo = init_repo_named(state_root, "tracked");
+    let origin = state_root.join("tracked.git");
+    git_in(
+        state_root,
+        &[
+            "clone",
+            "--bare",
+            repo.to_str().unwrap(),
+            origin.to_str().unwrap(),
+        ],
+    );
+    git_in(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git_in(&repo, &["fetch", "origin"]);
+    git_in(&repo, &["branch", "--set-upstream-to=origin/main", "main"]);
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let mut state = rooted(state_root)
+        .with_task_store(state_root.join("store"))
+        .expect("the store opens");
+    let project_id = added_project(&mut state, &repo);
+    (state, project_id)
+}
+
 pub(super) fn filed(state: &mut AppState, project_id: &str, title: &str) -> Value {
     let created = state.handle(req(
         "issues.create",

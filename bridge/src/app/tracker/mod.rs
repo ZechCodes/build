@@ -11,6 +11,7 @@
 //! [`views`]; the fencing an agent-supplied reference goes through is
 //! [`refs`].
 
+mod activity;
 mod dispatch;
 mod edits;
 mod refs;
@@ -156,6 +157,7 @@ impl AppState {
             .tracker_store()?
             .create_tracker_issue(draft, &[created])
             .stored()?;
+        self.note_issues_changed(&project_id, &issue.id);
         let Some(target) = target else {
             return Ok(json!({
                 "issue": issue_json(&project_id, &issue),
@@ -263,6 +265,7 @@ impl AppState {
         self.tracker_store()?
             .save_tracker_issue_activity(&write.issue, &write.comments, &write.events)
             .stored()?;
+        self.note_issues_changed(project_id, &write.issue.id);
         Ok(json!({ "issue": issue_json(project_id, &write.issue) }))
     }
 
@@ -419,6 +422,15 @@ impl AppState {
             .get(project_id)
             .map(|project| project.repo_path.display().to_string())
             .ok_or_else(|| format!("unknown project_id: {project_id}"))
+    }
+
+    /// Tell every `changes` subscriber that this project's issues moved.
+    ///
+    /// Called after the write lands, never before: a subscriber told to refetch
+    /// ahead of the commit would read the state the write is about to replace.
+    pub(in crate::app) fn note_issues_changed(&self, project_id: &str, issue_id: &str) {
+        self.changes
+            .note_issues(project_id, &[issue_id.to_string()]);
     }
 
     /// The store, or why there is none.

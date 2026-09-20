@@ -166,6 +166,7 @@ impl AppState {
             .tracker_store()?
             .create_tracker_issue(draft, &[created])
             .stored()?;
+        self.note_issues_changed(&scope.project_id, &issue.id);
         Ok(json!({
             "issue": super::issue_json(&scope.project_id, &issue),
         }))

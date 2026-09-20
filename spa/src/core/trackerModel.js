@@ -107,6 +107,12 @@ export const priorityLabel = (priority) =>
  *  quiet ones: a board where every card wears a chip says nothing with one. */
 export const priorityIsMarked = (priority) => priority === "medium" || priority === "high" || priority === "urgent";
 
+/** Whether a priority is pressing enough to say on a LIST ROW (#45). A quieter
+ *  bar than the board card's: a row is read a dozen at a time down a column,
+ *  and a mark most of them wear is a mark none of them makes. Medium is the
+ *  ordinary case and says nothing here. */
+export const priorityIsPressing = (priority) => priority === "high" || priority === "urgent";
+
 /** Open or closed, which is independent of the Done column: one says whether
  *  the work is still live, the other where it stands on the board, and the SPA
  *  shows both. */

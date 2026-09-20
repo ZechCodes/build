@@ -195,10 +195,11 @@ describe("the list", () => {
   it("puts the column, the age, the labels and the holder on the second", async () => {
     await mount();
     const facts = host.querySelector(".issue-row .issue-row-facts");
+    // The labels are one group of muted words rather than a pill each (#45).
     expect([...facts.children].map((one) => one.classList[0]))
-      .toEqual(["issue-status", "issue-age", "issue-label", "issue-assign"]);
+      .toEqual(["issue-status", "issue-age", "issue-labels", "issue-assign"]);
     expect(facts.querySelector(".issue-status").textContent).toBe("In progress");
-    expect(facts.querySelector(".issue-label").textContent).toBe("bug");
+    expect(facts.querySelector(".issue-labels .issue-label").textContent).toBe("bug");
     expect(facts.querySelector(".issue-assign").textContent.trim()).toBe("You");
   });
 

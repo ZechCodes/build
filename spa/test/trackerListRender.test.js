@@ -35,14 +35,43 @@ const facts = (row) =>
     (one) => `${one.classList[0]}:${one.textContent.trim()}`,
   );
 
+/** Every element on line one, said the same way. */
+const lineOne = (row) =>
+  [...row.querySelector(".issue-row-open").children].map((one) => `${one.classList[0]}:${one.textContent}`);
+
 describe("the first line", () => {
   it("is the number and the title, and nothing else", () => {
-    const row = render({ title: "Kanban drag does not persist", labels: ["bug"], priority: "high" });
-    const line = row.querySelector(".issue-row-open");
+    const row = render({ title: "Kanban drag does not persist", labels: ["bug"], priority: "medium" });
     // Said as class:text, because the gap between the number and the title is
     // the stylesheet's and there is deliberately no whitespace node for it.
-    expect([...line.children].map((one) => `${one.classList[0]}:${one.textContent}`))
-      .toEqual(["issue-number:#12", "issue-title:Kanban drag does not persist"]);
+    expect(lineOne(row)).toEqual(["issue-number:#12", "issue-title:Kanban drag does not persist"]);
+  });
+
+  // #45: the priority is a mark before the title rather than a chip on line
+  // two — it says how to READ the title, and the eye going down a column of
+  // titles meets it on the way in.
+  it("puts a pressing priority between the number and the title", () => {
+    expect(lineOne(render({ title: "Fix it", priority: "high" })))
+      .toEqual(["issue-number:#12", "issue-priority-mark:!", "issue-title:Fix it"]);
+    expect(lineOne(render({ title: "Fix it", priority: "urgent" })))
+      .toEqual(["issue-number:#12", "issue-priority-mark:!!", "issue-title:Fix it"]);
+  });
+
+  // Shape as well as colour: a mark that is only a colour is not a mark to
+  // every reader, and a name for the one who cannot see it at all.
+  it("names the priority where the mark cannot be seen", () => {
+    const mark = render({ priority: "urgent" }).querySelector(".issue-priority-mark");
+    expect(mark.getAttribute("aria-label")).toBe("Urgent priority");
+    expect(mark.classList.contains("issue-priority-mark-urgent")).toBe(true);
+  });
+
+  // Only high and urgent. A list where most rows carry a mark has no marks in
+  // it, so medium — the ordinary case — says nothing here, even though the
+  // board card still chips it.
+  it("marks nothing at medium and below", () => {
+    for (const priority of ["none", "low", "medium"]) {
+      expect(render({ priority }).querySelector(".issue-priority-mark")).toBeNull();
+    }
   });
 
   it("is the link to the issue, so a middle-click and a copied address work", () => {
@@ -51,7 +80,9 @@ describe("the first line", () => {
 });
 
 describe("the second line", () => {
-  it("reads status, priority, age, labels, assignee — in that order", () => {
+  // The same facts in the same order as #28 asked for them, minus the priority
+  // chip, which went to line one (#45). The column is the one chip left.
+  it("reads status, age, labels, assignee — in that order", () => {
     const row = render({
       status: "in_review",
       priority: "high",
@@ -61,19 +92,35 @@ describe("the second line", () => {
     });
     expect(facts(row)).toEqual([
       "issue-status:In review",
-      "issue-priority:High",
       "issue-age:2h ago",
-      "issue-label:bug",
-      "issue-label:ui",
+      "issue-labels:bugui", // two label words, spaced by the stylesheet and nothing else
       "issue-assign:issues-spa · Agent 1",
     ]);
   });
 
-  // `none` and `low` wear no chip: a list where every row has one says nothing
-  // with it.
-  it("leaves the priority out when there is none worth a mark", () => {
-    expect(facts(render({ priority: "none" })).some((one) => one.startsWith("issue-priority"))).toBe(false);
-    expect(facts(render({ priority: "low" })).some((one) => one.startsWith("issue-priority"))).toBe(false);
+  it("leaves the priority chip off the row entirely", () => {
+    for (const priority of ["none", "low", "medium", "high", "urgent"]) {
+      expect(render({ priority }).querySelector(".issue-priority")).toBeNull();
+    }
+  });
+
+  // #45: labels are small muted words rather than pills, and a row shows three
+  // of them. The rest are a count, and the count names them rather than losing
+  // them — a row wearing six labels used to be a wall of six boxes.
+  it("shows three labels and counts the rest", () => {
+    const row = render({ labels: ["bug", "ui", "spa", "tracker", "perf"] });
+    const labels = [...row.querySelectorAll(".issue-labels .issue-label")].map((one) => one.textContent);
+    expect(labels).toEqual(["bug", "ui", "spa", "+2"]);
+    expect(row.querySelector(".issue-label-more").getAttribute("title")).toBe("tracker, perf");
+  });
+
+  it("counts nothing when three is all there is", () => {
+    const row = render({ labels: ["bug", "ui", "spa"] });
+    expect(row.querySelector(".issue-label-more")).toBeNull();
+  });
+
+  it("draws no label group at all on an issue wearing none", () => {
+    expect(render({ labels: [] }).querySelector(".issue-labels")).toBeNull();
   });
 
   it("leaves the age out rather than guessing when the stamp says nothing", () => {
@@ -101,7 +148,7 @@ describe("a closed issue, when the filter asked for one", () => {
   it("leaves the rest of line two in its order behind it", () => {
     const row = render({ state: "closed", status: "done", priority: "urgent", labels: ["bug"] });
     expect(facts(row).map((one) => one.split(":")[0])).toEqual([
-      "issue-closed", "issue-status", "issue-priority", "issue-age", "issue-label", "issue-assign",
+      "issue-closed", "issue-status", "issue-age", "issue-labels", "issue-assign",
     ]);
   });
 });

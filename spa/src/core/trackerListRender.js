@@ -27,26 +27,35 @@ import {
   ageHtml,
   assignPressLabel,
   closedChipHtml,
-  labelsHtml,
   numberHtml,
-  priorityChipHtml,
+  priorityMarkHtml,
   rowAssigneeHtml,
+  rowLabelsHtml,
   statusChipHtml,
 } from "./trackerChips.js";
 
-/** Line two, in the order Zech asked for it. Anything with nothing to say is
- *  left out rather than drawn empty — a priority of `none`, a stamp that does
- *  not parse, an issue with no labels — and what is left is spaced, not
- *  punctuated: the gap between two chips is the separator. */
+/**
+ * Line two, in the order Zech asked for it, quietly (#45).
+ *
+ * The same facts in the same order; what changed is how much each one weighs.
+ * The column is the one chip and the only thing on the row with a background.
+ * The age is dim. The labels are small muted words spaced apart rather than a
+ * row of pills, three of them and a count for the rest. The holder is dim and
+ * is still the press it was. The priority left this line entirely — it is a
+ * mark before the title now, and only when it is pressing.
+ *
+ * Anything with nothing to say is left out rather than drawn empty — a stamp
+ * that does not parse, an issue with no labels — and what is left is spaced,
+ * not punctuated: the gap between two of them is the separator.
+ */
 const factsHtml = (issue, columns, nowMs) =>
   [
     // Closed leads, because it changes how everything after it reads: a column
-    // and a priority on a closed issue are where it stopped, not where it is.
+    // on a closed issue is where it stopped, not where it is.
     closedChipHtml(issue.state),
     statusChipHtml(columns, issue.status),
-    priorityChipHtml(issue.priority),
     ageHtml(issue.updated_at, nowMs),
-    labelsHtml(issue.labels),
+    rowLabelsHtml(issue.labels),
   ]
     .filter(Boolean)
     .join("");
@@ -62,10 +71,15 @@ const factsHtml = (issue, columns, nowMs) =>
  * No state dot. The row carries no open/closed mark at all now, which is a
  * thing the list used to say and no longer does; the board card, the agent's
  * entry and the issue's own page all still carry it.
+ *
+ * Line one is `#12 Title` with, at most, one more thing on it: the mark a
+ * pressing priority wears, between the two. It sits there rather than among
+ * the facts because it says how to READ the title, and the eye going down a
+ * column of titles meets it on the way in (#45).
  */
 export const issueRowHtml = (issue, { columns, agentLabels, href, nowMs = Date.now() }) =>
   `<li class="issue-row" data-issue="${esc(issue.id)}">
-    <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}<span class="issue-title">${esc(issue.title)}</span></a>
+    <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}${priorityMarkHtml(issue.priority)}<span class="issue-title">${esc(issue.title)}</span></a>
     <span class="issue-row-facts">${factsHtml(issue, columns, nowMs)}<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="${esc(assignPressLabel(issue, agentLabels))}" title="Assign this issue">${rowAssigneeHtml(issue.assignee, agentLabels)}</button></span>
   </li>`;
 

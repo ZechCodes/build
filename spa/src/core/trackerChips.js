@@ -10,7 +10,15 @@
 // Everything here is escaped. Nothing here reads the app or the DOM.
 
 import { esc, humanAge } from "./text.js";
-import { COLUMN_NOTE_SHARED, actorLabel, columnName, priorityIsMarked, priorityLabel, stateLabel } from "./trackerModel.js";
+import {
+  COLUMN_NOTE_SHARED,
+  actorLabel,
+  columnName,
+  priorityIsMarked,
+  priorityIsPressing,
+  priorityLabel,
+  stateLabel,
+} from "./trackerModel.js";
 
 /** Open or closed, as a dot and its accessible name. A closed issue is drawn
  *  quiet rather than absent: it is still the project's history. */
@@ -49,7 +57,54 @@ export const statusChipHtml = (columns, status) =>
 export const labelsHtml = (labels) =>
   (labels || []).map((label) => `<span class="issue-label">${esc(label)}</span>`).join("");
 
-/** Its priority — only when it is one worth a mark. A board where every card
+/** How many labels a row shows before it stops counting them out (#45). Three
+ *  is what fits beside the rest of line two at a phone's width; the rest are
+ *  a number, and the number carries their names in its title. */
+export const ROW_LABEL_LIMIT = 3;
+
+/**
+ * Its labels, on a LIST ROW.
+ *
+ * Zech, #45: "the issue list still feels cluttered." Labels were the loudest
+ * thing on the row — a pill each, bordered, however many the issue wore — and
+ * a dozen rows of them read as a wall. So: small muted words, spaced rather
+ * than boxed, three of them, and `+n` for the rest. They are still every label
+ * the issue has; the ones past the third are behind a number rather than gone.
+ *
+ * Grouped in one element so the spacing between labels is the labels' own and
+ * not line two's — they are one fact, read together.
+ */
+export function rowLabelsHtml(labels, limit = ROW_LABEL_LIMIT) {
+  const all = (labels || []).filter(Boolean);
+  if (!all.length) return "";
+  const shown = all.slice(0, limit);
+  const rest = all.slice(limit);
+  const more = rest.length
+    ? `<span class="issue-label issue-label-more" title="${esc(rest.join(", "))}">+${rest.length}</span>`
+    : "";
+  return `<span class="issue-labels">${labelsHtml(shown)}${more}</span>`;
+}
+
+/** The mark a pressing priority wears on a list row: one stroke for high, two
+ *  for urgent. Shape as well as colour, because a mark that is only a colour
+ *  is not a mark to every reader. */
+const PRIORITY_MARKS = Object.freeze({ high: "!", urgent: "!!" });
+
+/**
+ * Its priority, on a LIST ROW: a small mark before the title, and only when
+ * the priority is pressing (#45).
+ *
+ * Before the TITLE rather than among the facts on line two, because priority
+ * is how the row should be read and not another thing it says — the eye going
+ * down a column of titles meets it on the way in. Everything at medium and
+ * below wears nothing: a list where most rows carry a mark has no marks in it.
+ */
+export const priorityMarkHtml = (priority) =>
+  priorityIsPressing(priority)
+    ? `<span class="issue-priority-mark issue-priority-mark-${esc(priority)}" role="img" aria-label="${esc(priorityLabel(priority))} priority" title="${esc(priorityLabel(priority))} priority">${PRIORITY_MARKS[priority]}</span>`
+    : "";
+
+/** Its priority, as a chip — the board card's form. A board where every card
  *  wears a chip says nothing with one, so `none` and `low` wear none. */
 export const priorityChipHtml = (priority) =>
   priorityIsMarked(priority)

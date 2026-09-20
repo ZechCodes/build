@@ -59,13 +59,16 @@
 }
 /* A closed issue on a list row (#33). Quiet, and the only state word drawn —
    "Open" on every other row is a word the reader learns to skip. It leads line
-   two because it changes how the rest of it reads. */
+   two because it changes how the rest of it reads.
+
+   #45 took its pill away with every other pill on the row: the column is the
+   one chip there now. What is left is the violet — what closed has always been
+   here, and what the state dot wore before the dots went (#28) — because a
+   closed row that cannot be told from an open one is the thing #33 was for. */
 .issue-closed {
-  font-size:10.5px; font-weight:650; letter-spacing:.03em;
-  border-radius:999px; padding:1px 7px;
-  /* Violet is what closed has always been here — it is what the state dot
-     wore before the dots went (#28). */
-  background:var(--line2); color:var(--violet);
+  font-size:11px; font-weight:600; letter-spacing:.01em;
+  background:none; padding:0;
+  color:var(--violet);
   white-space:nowrap;
 }
 .issue-priority-medium { background:var(--panel2); color:var(--ink2); }
@@ -75,35 +78,73 @@
 .issue-assignee { font-size:11px; color:var(--ink2); white-space:nowrap; }
 .issue-unassigned { color:var(--dim); font-style:italic; }
 
-/* ---- the list ------------------------------------------------------------ */
+/* ---- the list ------------------------------------------------------------
+
+   Zech, #45: "the issue list still feels cluttered." The row keeps every fact
+   it had and the order it had them in; what changed is how much each one
+   weighs. One chip (the column) and one colour on it. Labels are words, not
+   pills. The priority left line two for a single mark before the title, and
+   only when it is pressing. Rows are separated by a hairline on a 12px rhythm
+   rather than by a block of hover colour — a list whose rows light up under
+   the pointer is a list that flickers as the eye travels down it. */
 
 .issue-rows { list-style:none; margin:0; padding:0; }
 /* Two lines, stacked at every width: `#12 Title` on the first with the full
-   row to itself, and every other fact on the second. */
+   row to itself, and every other fact on the second. 6px of padding on each
+   side puts 12px between one row's words and the next's, with the rule in the
+   middle of it. */
 .issue-row {
   position:relative;
   display:flex; flex-direction:column; gap:3px;
-  padding:9px 10px;
-  border-radius:9px; transition:background var(--motion-fast);
+  padding:6px 10px;
+  border-bottom:1px solid var(--line2);
 }
-.issue-row:hover { background:var(--row-hover); }
+.issue-row:last-child { border-bottom:0; }
 
 /* The link is line one, because the press on line two is a button and a button
    cannot live inside an anchor. Its hit area is stretched over the whole row
    instead, so the row is still one thing to press — and the ring is drawn
    around the row rather than around the two words that carry the href. */
 .issue-row-open {
-  display:flex; align-items:baseline; gap:8px; min-width:0;
+  display:flex; align-items:baseline; gap:7px; min-width:0;
   color:inherit; text-decoration:none;
 }
-.issue-row-open::after { content:""; position:absolute; inset:0; border-radius:9px; }
+.issue-row-open::after { content:""; position:absolute; inset:0; border-radius:6px; }
 .issue-row:has(.issue-row-open:focus-visible) { outline:2px solid var(--accent); outline-offset:-2px; }
+/* The reading weight. The title is the row, so it is the one thing set in the
+   colour and the weight the rest of the app reads its prose in; the number
+   beside it is dim, because nobody scans a list by number. */
 .issue-title {
   flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  color:var(--ink); font-weight:550;
+  color:var(--ink); font-weight:400;
 }
+
+/* A pressing priority, before the title (#45). One stroke for high and two for
+   urgent, so the two are told apart by shape as well as by colour: a mark that
+   is only a colour is not a mark to every reader. Nothing at medium and below
+   wears one — a list where most rows carry a mark has no marks in it. */
+.issue-priority-mark {
+  flex:0 0 auto; font-size:12px; font-weight:800; line-height:1;
+  letter-spacing:-.06em; color:var(--amber);
+}
+.issue-priority-mark-urgent { color:var(--red); }
+
 /* Spacing is the separator: there is no punctuation between these. */
 .issue-row-facts { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+/* Dim at the end of line two: when it moved, and who has it. Facts you read
+   when you have decided this is the row, not while you are deciding. */
+.issue-row-facts .issue-assignee { color:var(--dim); }
+
+/* Labels as words (#45). No pill, no border, no fill — the gaps between them
+   are the whole of the separation, and they are one group so that gap is
+   theirs and not line two's. Three, then a count; the count names the rest in
+   its title rather than losing them. */
+.issue-labels { display:inline-flex; align-items:center; gap:7px; min-width:0; }
+.issue-labels .issue-label {
+  font-size:11px; color:var(--dim);
+  background:none; border:0; border-radius:0; padding:0;
+}
+.issue-labels .issue-label-more { color:var(--dim); opacity:.8; }
 
 /* The assignee is a press, not a label: assigning is dispatching, and handing
    an issue to an agent is worth reaching from the list. It sits above the
@@ -121,7 +162,11 @@
    them is a word the reader learns to skip. The press is still there and still
    holds its width, so nothing moves when it appears; it is simply quiet until
    the row is reached. Where there is no pointer to hover with, it is always
-   shown: a control that only exists on hover does not exist on a phone. */
+   shown: a control that only exists on hover does not exist on a phone.
+
+   This is the one thing the pointer still changes about a row: the row itself
+   no longer lights up (#45), so what hover does is reveal the press it is
+   over rather than paint the line it is on. */
 .issue-assign-cue {
   font-size:11px; color:var(--dim);
   opacity:0; transition:opacity var(--motion-fast);
@@ -315,15 +360,19 @@
   /* A phone's row shows the WHOLE title, wrapping onto as many lines as it
      takes rather than ellipsising: on a narrow screen a clipped title is most
      of the title. The stacking itself is no longer a phone rule — the row is
-     two lines at every width now — so only the wrapping is left here.
-     The press wears its border, because there is no hover to find it with. */
+     two lines at every width now — so only the wrapping is left here. */
   .issue-row-open { flex-wrap:wrap; }
   .issue-title {
-    flex:1 1 calc(100% - 4em); white-space:normal; overflow:visible;
+    flex:1 1 calc(100% - 5em); white-space:normal; overflow:visible;
     text-overflow:clip; overflow-wrap:anywhere; line-height:1.3;
   }
-  .issue-row-facts { gap:6px 8px; }
-  .issue-assign { border-color:var(--line2); font-size:11px; }
+  .issue-row-facts { gap:5px 8px; }
+  /* There is no hover here to find the press with, so it is found by its WORDS
+     rather than by a box: the cue is always shown and the border stays off
+     (#45). An empty bordered box on every unheld row was the loudest thing on
+     a row that had stopped using boxes for everything else. */
+  .issue-assign { font-size:11px; padding:1px 2px; }
+  .issue-assign-cue { opacity:1; }
   .issue-assignee, .issue-unassigned { white-space:normal; }
 }
 

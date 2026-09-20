@@ -29,6 +29,26 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/device/d1/project/p/workspace/ws/directory/src/nope").tab).toBe("changes");
   });
 
+  // #29. The tab is the workspace's, not the checkout's: a directory never
+  // scopes it, and a branch has no issues tab at all.
+  it("parses the workspace issues tab, its board and one issue inside it", () => {
+    expect(routeFromHash("#/device/d1/project/p/workspace/ws/issues")).toEqual({
+      name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "issues",
+    });
+    expect(routeFromHash("#/device/d1/project/p/workspace/ws/issues?view=board")).toEqual({
+      name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "issues", view: "board",
+    });
+    expect(routeFromHash("#/device/d1/project/p/workspace/ws/issues/issue-7")).toEqual({
+      name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "issues", issueId: "issue-7",
+    });
+  });
+
+  // A branch is a checkout and has no agents to hold issues, so `issues` there
+  // is still the retired right-cluster tab that named the inbox.
+  it("gives a branch no issues tab", () => {
+    expect(routeFromHash("#/device/d1/project/p/branch/main/issues").name).toBe("inbox");
+  });
+
   // A workspace is one machine's checkout, so a workspace URL with no device in
   // it is the same question a device-less branch URL is, and parks in the same
   // place — carrying the whole workspace route, directory and file included.
@@ -344,6 +364,13 @@ describe("hashFromRoute", () => {
       { name: "workspace", projectId: "p", workspaceId: "ws", sourceId: "src", tab: "changes" },
       { name: "workspace", projectId: "a b", workspaceId: "w/s", sourceId: "source 1", tab: "files", file: "src/a b.js", line: 3 },
       { name: "workspace", projectId: "p", workspaceId: "ws", tab: "files" },
+      // #29: the workspace's own issues tab, its board, and one issue opened
+      // inside it — all still `name: "workspace"`, which is what keeps the
+      // shell's rail standing across the switch.
+      { name: "workspace", projectId: "p", workspaceId: "ws", tab: "issues" },
+      { name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "issues", view: "board" },
+      { name: "workspace", projectId: "p", workspaceId: "ws", tab: "issues", issueId: "issue-1" },
+      { name: "workspace", projectId: "a b", workspaceId: "w/s", tab: "issues", issueId: "issue 1" },
       { name: "project", projectId: "p" },
       { name: "project", deviceId: "d1", projectId: "p" },
       { name: "project", projectId: "a b" },

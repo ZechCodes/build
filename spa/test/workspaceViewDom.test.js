@@ -272,7 +272,7 @@ describe("workspace surface", () => {
       expect(options.agentSelection).toBe(selection);
       expect(options.agentSelection.scope()).toEqual({ agent_id: "second-agent" });
     }
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
   });
 
   // A link from a message to the conversation it came from names the agent on
@@ -409,7 +409,7 @@ describe("workspace surface", () => {
     document.querySelector("[data-confirm-init-git]").click();
     await flush();
     expect(call).toHaveBeenCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "workspace" });
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
     expect(App.route).toMatchObject({ tab: "files", file: "draft.md" });
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
     expect(pane.dispose).not.toHaveBeenCalled();
@@ -575,7 +575,9 @@ describe("workspace surface", () => {
       source: { id: "assets", is_git: false }, results: [{ target: "workspace", status: "initialized", is_git: true }],
     });
     await flush();
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["files"]);
+    // A directory with no Git in it has no Changes; the workspace's Issues tab
+    // is not the directory's and is offered whatever the directory is (#29).
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["files", "issues"]);
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
 

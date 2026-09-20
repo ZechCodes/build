@@ -6,7 +6,7 @@
 import { $ } from "../dom.js";
 import { App, go, markRoute } from "../app.js";
 import { esc } from "../core/text.js";
-import { DIRECTORY_TABS, paintDirectoryRail } from "../core/directoryRail.js";
+import { DIRECTORY_TABS, WORKSPACE_TABS, paintDirectoryRail } from "../core/directoryRail.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { shellSelection } from "../core/shell.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
@@ -19,7 +19,16 @@ import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { cachedFeedView } from "../core/cachedRows.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
+import { mountWorkspaceIssuesTab } from "../core/workspaceIssuesTab.js";
+import { issueContextItem } from "../core/trackerViewingContext.js";
+import "../styles/issues.css";
 import "../styles/surfaces.css";
+
+/** The workspace's third tab, which is not about a directory at all: the
+ *  issues its own agents are holding (#29). A directory scopes Changes and
+ *  Files; it does not scope this. */
+const ISSUES_TAB = "issues";
+const onIssuesTab = (route) => route.tab === ISSUES_TAB;
 
 function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection }) {
   body.innerHTML = `<div class="workspace-gitpane"></div>`;
@@ -99,7 +108,39 @@ function installWorkspaceAction(state, workspace) {
   setToolbarVerb(render);
 }
 
-function mountDirectoryPane(body, { directory, canonical, scope, callRpc, cacheScope, agentSelection }) {
+function mountDirectoryPane(body, options) {
+  const { canonical } = options;
+  if (onIssuesTab(canonical)) return mountIssuesTab(body, options);
+  return mountCheckoutPane(body, options);
+}
+
+/**
+ * Say which issue is on screen, so the agent beside it knows what the reader
+ * is looking at (#21, #29).
+ *
+ * The WORKSPACE half of the stamp is already there: the rail is standing on
+ * this workspace, so anything sent from here to the project's agent wears the
+ * workspace item (core/agentRail.js). This adds the issue to it, from the READ
+ * rather than from the route — an agent told an id and nothing else is no
+ * better off — and only where the bridge takes the kind at all.
+ */
+const sayWhichIssue = (deviceId) => (issue) => {
+  const item = issueContextItem(issue, deviceId);
+  if (item) App.viewingContext?.set?.({ version: 1, items: [item] });
+};
+
+function mountIssuesTab(body, { canonical, callRpc, context, feed, agentSelection }) {
+  return mountWorkspaceIssuesTab(body, {
+    route: canonical,
+    context: context || { deviceId: canonical.deviceId, rpc: callRpc },
+    feed,
+    selection: agentSelection,
+    sayWhichIssue: sayWhichIssue(canonical.deviceId),
+    navigate: go,
+  });
+}
+
+function mountCheckoutPane(body, { directory, canonical, scope, callRpc, cacheScope, agentSelection }) {
   const navigate = { openFile: ({ path, line }) => go({ ...canonical, tab: "files", file: path, line }) };
   if (canonical.tab !== "files") {
     return mountChanges(body, {
@@ -206,7 +247,11 @@ function directoryTabsPainter(body, state, sourceId) {
   return () => {
     const directory = selectedDirectory(state.workspace, sourceId);
     if (!directory) return false;
-    const tabs = directory.is_git === false ? DIRECTORY_TABS.filter((entry) => entry.id === "files") : DIRECTORY_TABS;
+    // The issues tab is the workspace's own and is offered whatever the
+    // selected directory is — a checkout with no Git in it still has agents
+    // standing in it, and they still hold issues.
+    const faces = directory.is_git === false ? DIRECTORY_TABS.filter((entry) => entry.id === "files") : DIRECTORY_TABS;
+    const tabs = [...faces, ...WORKSPACE_TABS.filter((entry) => entry.id === ISSUES_TAB)];
     paintDirectoryRail($("#dir-rail"), {
       tabs,
       active: App.route.tab,
@@ -239,7 +284,11 @@ function refreshWorkspacePane(state, workspace) {
   const directory = selectedDirectory(workspace, state.route.sourceId);
   const sourceId = directoryId(directory);
   if (!sourceId) return null;
-  const canonical = { ...state.route, sourceId, tab: directoryTab(directory, state.route.tab) };
+  // The issues tab is the workspace's, not the checkout's, so it keeps the
+  // route's own tab rather than being coerced to one of the directory's two.
+  const canonical = onIssuesTab(state.route)
+    ? { ...state.route, sourceId }
+    : { ...state.route, sourceId, tab: directoryTab(directory, state.route.tab) };
   const body = $("#tabbody");
   const previousGuard = state.pane?.canLeave;
   if (App.routeLeaveGuard === previousGuard) App.routeLeaveGuard = null;
@@ -252,6 +301,10 @@ function refreshWorkspacePane(state, workspace) {
     callRpc: state.callRpc,
     cacheScope: state.context.cacheScope,
     agentSelection: state.selection,
+    context: state.context,
+    // Read at every use, never captured: a workspace gains and loses agents
+    // while the tab stands there, and the issues follow them.
+    feed: () => deviceFeedNow(state.route.deviceId),
   });
   App.routeLeaveGuard = state.pane?.canLeave || null;
   return { directory, canonical, body };
@@ -269,8 +322,12 @@ function mountWorkspace(workspace, state) {
     return;
   }
 
-  const canonical = { ...route, sourceId, tab: directoryTab(directory, route.tab) };
-  if (route.sourceId !== sourceId || route.tab !== canonical.tab) markRoute(canonical);
+  const canonical = onIssuesTab(route)
+    ? { ...route, sourceId }
+    : { ...route, sourceId, tab: directoryTab(directory, route.tab) };
+  // The issues tab is not about a directory, so none is written into its URL —
+  // the sourceId on the canonical route is only there for the console's scope.
+  if (!onIssuesTab(route) && (route.sourceId !== sourceId || route.tab !== canonical.tab)) markRoute(canonical);
 
   state.refreshPane = (nextWorkspace) => refreshWorkspacePane(state, nextWorkspace);
   const mounted = state.refreshPane(workspace);

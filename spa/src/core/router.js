@@ -60,6 +60,12 @@ const clusterRoute = (segment) =>
 // Changes, including nothing at all.
 const branchTab = (segment) => (BRANCH_TABS.has(segment) ? segment : "changes");
 
+/** A WORKSPACE's tabs: the checkout's two faces, plus the issues its agents
+ *  hold (#29). A branch has neither agents nor issues, so it keeps `branchTab`
+ *  and `issues` there stays the retired right-cluster tab that named the
+ *  inbox. */
+const workspaceTab = (segment) => (segment === ISSUES_TAB ? ISSUES_TAB : branchTab(segment));
+
 // A terminal tab named a terminal, and that outlived the tab: the surface it
 // opens is the branch, with the console open on it.
 const termOf = (segment) => (isTermTab(segment) ? { term: segment } : null);
@@ -82,17 +88,33 @@ const inboxIn = (projectId) => (projectId ? { name: "inbox", projectId } : inbox
  */
 const projectPage = (projectId) => (projectId ? { name: "project", projectId } : inbox());
 
-/** `<workspaceId>[/directory/<sourceId>][/<tab>]`. The directory is optional,
- *  so the tab is whichever segment follows whatever came before it. */
+/**
+ * `<workspaceId>[/directory/<sourceId>][/<tab>[/<issueId>]]`.
+ *
+ * The directory is optional, so the tab is whichever segment follows whatever
+ * came before it — and on the issues tab one more segment may follow, naming
+ * the issue open inside it.
+ *
+ * All of it stays `name: "workspace"`. That is not tidiness: the shell keys the
+ * rail on the route's name and its workspace id (core/shell.js), so a route
+ * that stayed a workspace keeps the same bubbles standing across a directory
+ * tab, the issues tab and one issue inside it — which is the whole of what the
+ * reader sees when the page swaps under them.
+ */
 function workspaceRoute(projectId, parts) {
   if (!parts[0]) return projectPage(projectId);
-  const [sourceId, tabSegment] = parts[1] === "directory" ? [parts[2], parts[3]] : [undefined, parts[1]];
+  const scoped = parts[1] === "directory";
+  const [sourceId, tabSegment, tail] = scoped ? [parts[2], parts[3], parts[4]] : [undefined, parts[1], parts[2]];
+  const tab = workspaceTab(tabSegment);
   return {
     name: "workspace",
     projectId,
     workspaceId: parts[0],
     ...(sourceId ? { sourceId } : null),
-    tab: branchTab(tabSegment),
+    tab,
+    // Only the issues tab has anything after it. A stray segment behind a
+    // directory tab named nothing before this and still names nothing.
+    ...(tab === ISSUES_TAB && tail ? { issueId: tail } : null),
   };
 }
 
@@ -211,6 +233,10 @@ const FILE_TAB_SURFACES = new Set(["branch", "workspace"]);
 // surface — the page is the same page — so it rides as a query beside the file.
 const AGENT_SURFACES = new Set(["workspace", "project"]);
 
+// The surfaces with an Issues tab of their own: the project's whole tracker,
+// and the subset a workspace's agents hold (#29).
+const ISSUES_SURFACES = new Set(["project", "workspace"]);
+
 /// The agent a URL names, or null for one that names none.
 function railAgent(query) {
   const agent = query ? new URLSearchParams(query).get("agent") : "";
@@ -231,7 +257,9 @@ function issuesView(query) {
 function placeInSurface(route, query) {
   const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
   const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
-  const view = route.name === "project" && route.tab === ISSUES_TAB ? issuesView(query) : null;
+  // Both surfaces that HAVE an issues tab read it: the project's own, and a
+  // workspace's (#29). They are the same tracker laid out the same two ways.
+  const view = ISSUES_SURFACES.has(route.name) && route.tab === ISSUES_TAB ? issuesView(query) : null;
   return place || agent || view ? { ...place, ...agent, ...view } : null;
 }
 
@@ -355,8 +383,8 @@ const railAgentPairs = (route) => [["agent", route.agent || ""]];
 
 /// The Issues tab's layout, and nothing at all for the list or for the
 /// workspaces tab: a URL says only what is not the default.
-const issuesViewPairs = (route) =>
-  [["view", route.tab === ISSUES_TAB && route.view === BOARD_VIEW ? BOARD_VIEW : ""]];
+const issuesViewPairs = (route, standing = ISSUES_TAB) =>
+  [["view", route.tab === standing && route.view === BOARD_VIEW ? BOARD_VIEW : ""]];
 
 /// Which of the project page's two tabs a route stands on. Workspaces is the
 /// page itself and writes nothing, so every URL that named a project and
@@ -406,10 +434,15 @@ const HASH_WRITERS = Object.freeze({
     route.projectId && route.issueId ? `${projectPrefix(route)}/${ISSUES_TAB}/${encode(route.issueId)}` : null,
   workspace: (route) => {
     if (!route.projectId || !route.workspaceId) return null;
-    const tab = branchTab(route.tab);
+    const tab = workspaceTab(route.tab);
+    const issues = tab === ISSUES_TAB;
     const source = route.sourceId ? `/directory/${encode(route.sourceId)}` : "";
-    const query = hashQuery([...tabPlacePairs(route, tab), ...railAgentPairs(route)]);
-    return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${query}`;
+    // One issue open inside the tab, and the board when that is not the list
+    // it opens on — the same two things the project's own Issues tab writes.
+    const opened = issues && route.issueId ? `/${encode(route.issueId)}` : "";
+    const place = issues ? issuesViewPairs(route, ISSUES_TAB) : tabPlacePairs(route, tab);
+    const query = hashQuery([...place, ...railAgentPairs(route)]);
+    return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${opened}${query}`;
   },
   branch: (route) => {
     if (!route.projectId || !route.branch) return null;

@@ -28,6 +28,7 @@ import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { workspaceAgents } from "./trackerAssignee.js";
 import { WORKSPACE_ISSUES_SELECTOR, mountWorkspaceIssues } from "./trackerWorkspaceIssuesView.js";
+import { workspaceIssuesPlace } from "./workspaceIssuesTab.js";
 import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
 import { openWorkspaceSettings } from "../sheets/workspaceSettings.js";
@@ -250,8 +251,12 @@ function syncIssuesButton(host) {
   const block = mountWorkspaceIssues(button, {
     deviceId: App.route.deviceId,
     projectId: App.route.projectId,
-    workspaceName: () => identity().label || "",
+    workspaceId: App.route.workspaceId,
     agents: agentsInFocus,
+    // The icon is a shortcut to the workspace's Issues tab (#29), not a place
+    // of its own: the overlay it used to open was a modal you had to close
+    // before you could do anything about what was in it.
+    open: () => go(workspaceIssuesPlace(App.route)),
   });
   issuesBlock = { ...block, button };
 }

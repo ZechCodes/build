@@ -70,10 +70,13 @@ vi.mock("../src/core/taskFeed.js", () => ({
   dropFeedDevice: () => {},
 }));
 
-// The tracker's issue surface is its own file with its own suite; what this
-// file is about is the shell around it.
+// The tracker's own surfaces have their own files and their own suites; what
+// this file is about is the shell around them.
 vi.mock("../src/core/trackerIssuePage.js", () => ({
   mountIssuePage: () => ({ feedMoved: () => {}, dispose: () => {} }),
+}));
+vi.mock("../src/core/trackerIssuesPane.js", () => ({
+  mountIssuesPane: () => ({ feedMoved: () => {}, dispose: () => {} }),
 }));
 
 const { App, go, render, unmountView } = await import("../src/app.js");
@@ -104,6 +107,10 @@ const PLACES = {
   "project (issues tab)": { name: "project", deviceId: "dev-1", projectId: "p-1", tab: "issues" },
   "issue (tracker)": { name: "trackerIssue", deviceId: "dev-1", projectId: "p-1", issueId: "i-1" },
   workspace: { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1" },
+  // #29: the workspace's own issues, and one of them open. Both are still
+  // workspace routes, which is what keeps the rail standing across them.
+  "workspace (issues tab)": { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1", tab: "issues" },
+  "workspace (issue open)": { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1", tab: "issues", issueId: "i-1" },
   "issue (legacy)": { name: "issue", deviceId: "dev-1", projectId: "p-1", id: "i-1" },
   "branch (legacy)": { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" },
 };
@@ -219,6 +226,22 @@ describe("a page swapping inside the shell", () => {
     expect(pageContent("project")).toBeNull();
     // Same conversation, different page: the tabs are the shell's and the rail
     // is the shell's, so only #root changed.
+    expect(strip()).toBe(held);
+  });
+
+  // #29. The reader opens an issue, works on it, and talks to the agent
+  // holding it — which only works if the agent is still there. The rail is
+  // keyed on the workspace, so every one of these is the same standing.
+  it("keeps the WORKSPACE's strip standing across its tabs and one of its issues", async () => {
+    await visit(PLACES.workspace);
+    const held = strip();
+    expect(held).toBeTruthy();
+    await visit(PLACES["workspace (issues tab)"]);
+    expect(strip()).toBe(held);
+    await visit(PLACES["workspace (issue open)"]);
+    expect(strip()).toBe(held);
+    // …and back to the checkout, without the bubbles having moved once.
+    await visit(PLACES.workspace);
     expect(strip()).toBe(held);
   });
 

@@ -145,6 +145,10 @@ export const pinText = (pinned, subject) => `${pinned ? "Unpin" : "Pin"} the ${s
  *  One says what moved, the other says what is there. */
 export const changesTabLabel = "Changes";
 export const filesTabLabel = "Files";
+/** A workspace's third face: the issues its own agents are holding (#29). Not
+ *  the project's whole tracker — the word is the same because it is the same
+ *  tracker, narrowed to the agents standing here. */
+export const issuesTabLabel = "Issues";
 
 /** What a two-column pane's drawer trigger offers while nothing is open — the
  *  gesture, not the state, because on a phone the list it names is behind the

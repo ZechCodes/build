@@ -60,8 +60,26 @@ export function mountIssuesPane(host, options) {
   const labelsOfAgents = () => agentLabels(groups());
   const nameActor = (actor) => actorLabel(actor, labelsOfAgents());
 
-  const hrefOf = (issue) =>
-    hashFromRoute({ name: "trackerIssue", projectId: state.projectId, deviceId: state.deviceId, issueId: issue.id });
+  /**
+   * Which issues this tab is about.
+   *
+   * The project's own Issues tab is about all of them and passes nothing. A
+   * workspace's tab (#29) passes the agents standing in it, and the narrowing
+   * is done HERE rather than on the wire: `issues.list` takes one assignee and
+   * a workspace has several, so one pass over the list the tab already holds
+   * answers for every agent at once.
+   */
+  const kept = (issues) => (state.only ? (issues || []).filter((issue) => state.only(issue)) : issues || []);
+
+  /** Where one issue opens. The project's tab opens the tracker's own page;
+   *  a workspace's opens the same page INSIDE the workspace, because leaving
+   *  the workspace to read an issue is leaving the agents holding it. */
+  const routeOf = (issue) =>
+    state.issueRoute
+      ? state.issueRoute(issue)
+      : { name: "trackerIssue", projectId: state.projectId, deviceId: state.deviceId, issueId: issue.id };
+
+  const hrefOf = (issue) => hashFromRoute(routeOf(issue));
 
   /** What the tab does when a read fails because the wire went away rather
    *  than because the bridge said no: keeps the list that is already on screen,
@@ -149,7 +167,7 @@ export function mountIssuesPane(host, options) {
       issuesRecordAt(state.deviceId, state.projectId),
     ]);
     if (state.disposed || !record) return;
-    state.all = sortIssues(record.issues);
+    state.all = kept(sortIssues(record.issues));
     state.columns = columnsOf(record.columns);
     state.shown = filterIssues(state.all, shownFilters());
     reads.seen(at); // this list is as old as the cache's stamp, not as old as now
@@ -167,7 +185,7 @@ export function mountIssuesPane(host, options) {
     try {
       const answer = await state.callRpc("issues.list", issueListParams(state.projectId, filters));
       if (state.disposed) return;
-      state.shown = sortIssues(answer?.issues);
+      state.shown = kept(sortIssues(answer?.issues));
       // An unnarrowed read IS the project's whole list; there is no second read
       // to make for it.
       if (!filtersAreSet(filters)) state.all = state.shown;
@@ -192,7 +210,7 @@ export function mountIssuesPane(host, options) {
   async function refreshWholeList(narrowed) {
     const record = await readIssuesRecord(state.deviceId, state.projectId);
     if (state.disposed) return;
-    if (narrowed && record) state.all = sortIssues(record.issues);
+    if (narrowed && record) state.all = kept(sortIssues(record.issues));
     if (record?.columns?.length) state.columns = columnsOf(record.columns);
   }
 
@@ -281,7 +299,7 @@ export function mountIssuesPane(host, options) {
       onFiled: (answer, outcome) => {
         void refresh();
         if (outcome?.assigneeWentNowhere) sayTheAssigneeWasDropped(answer?.issue);
-        if (answer?.issue) state.navigate?.({ name: "trackerIssue", projectId: state.projectId, deviceId: state.deviceId, issueId: answer.issue.id });
+        if (answer?.issue) state.navigate?.(routeOf(answer.issue));
       },
     });
   }

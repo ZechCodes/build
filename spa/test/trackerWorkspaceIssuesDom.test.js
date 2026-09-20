@@ -1,9 +1,16 @@
 /** @vitest-environment jsdom */
-// The issues icon beside the workspace's settings cog, and the view it opens.
+// The issues icon beside the workspace's settings cog: its count, and where it
+// goes.
 //
-// Both halves read the project's cached issue list and listen to that record,
-// so an `issues` push moves the badge on the bar and the rows under an open
-// overlay without a read of their own.
+// The count reads the project's cached issue list and listens to that record,
+// so an `issues` push moves the badge on the bar with nothing asked of the
+// bridge.
+//
+// It no longer opens an overlay (#16 → #29). A modal is a thing you must close
+// before you can act on what is in it, and closing it is leaving the issue, so
+// the press now goes to the workspace's Issues TAB — which is the full tracker
+// with the workspace's agents still in the rail beside it. What that tab shows
+// is tested in trackerWorkspaceIssuesTab.test.js and workspaceViewDom.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -19,6 +26,9 @@ const TWO = "agent-01M2TWO";
 const ELSEWHERE = "agent-01M2ELSE";
 
 let button, trackerCache, mountWorkspaceIssues, block, agents;
+/** Where the press said to go. The icon does not know the router — the toolbar
+ *  passes `open`, because the toolbar is what knows where it is standing. */
+let opened = [];
 
 const flush = async () => {
   for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
@@ -31,8 +41,9 @@ const mount = async (over = {}) => {
   block = mountWorkspaceIssues(button, {
     deviceId: "dev-1",
     projectId: "proj-1",
-    workspaceName: () => "wire-facade",
+    workspaceId: "ws-1",
     agents: () => agents,
+    open: (where) => opened.push(where),
     ...over,
   });
   await flush();
@@ -57,6 +68,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   carriedKinds = ["state", "thread", "git", "files", "terminals", "issues"];
   agents = [{ id: ONE, ordinal: 1 }, { id: TWO, ordinal: 2 }];
+  opened = [];
   document.body.innerHTML =
     '<button data-workspace-issues hidden><span class="tb-issues-count"></span></button>';
   button = document.querySelector("[data-workspace-issues]");
@@ -124,102 +136,30 @@ describe("the badge", () => {
   });
 });
 
-describe("the view it opens", () => {
-  const someIssues = () => [
-    held(ONE, { number: 1, id: "i1", status: "in_progress", title: "Kanban drag" }),
-    held(ONE, { number: 2, id: "i2", status: "ready" }),
-    held(ONE, { number: 3, id: "i3", status: "done" }),
-    held(TWO, { number: 4, id: "i4", status: "in_review" }),
-    held(ELSEWHERE, { number: 5, id: "i5", status: "in_progress" }),
-  ];
-
-  it("opens on a press and names the workspace", async () => {
-    await putIssues(someIssues());
+describe("the press", () => {
+  it("goes to this workspace's issues tab rather than opening anything", async () => {
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
     await mount();
     button.click();
     await flush();
-    expect(overlay()).not.toBeNull();
-    expect(overlay().querySelector("h3").textContent).toBe("Issues in wire-facade");
+    expect(opened).toEqual([{ deviceId: "dev-1", projectId: "proj-1", workspaceId: "ws-1" }]);
   });
 
-  it("groups the rows by agent, in the order the row lists them", async () => {
-    await putIssues(someIssues());
+  // The overlay is gone: nothing is mounted over the page at all.
+  it("puts no overlay over the page", async () => {
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
     await mount();
     button.click();
     await flush();
-    expect(agentSections()).toEqual(["Agent 1", "Agent 2"]);
+    expect(document.querySelector(".modal-workspace-issues")).toBeNull();
+    expect(document.querySelector("dialog")).toBeNull();
   });
 
-  it("puts in-progress first within an agent and folds what is finished", async () => {
-    await putIssues(someIssues());
-    await mount();
-    button.click();
-    await flush();
-    const section = [...document.querySelectorAll("[data-issues-agent]")][0];
-    expect([...section.querySelectorAll("[data-agent-issue-group]")].map((one) => one.dataset.agentIssueGroup))
-      .toEqual(["working", "holding", "finished"]);
-    const fold = section.querySelector('details[data-agent-issue-group="finished"]');
-    expect(fold.open).toBe(false);
-    fold.querySelector("summary").click();
-    expect(fold.open).toBe(true);
-  });
-
-  it("gives each row its number, title, column and moved time, linking to the issue", async () => {
-    await putIssues(someIssues());
-    await mount();
-    button.click();
-    await flush();
-    const card = document.querySelector(".agent-issue-card");
-    expect(card.querySelector(".issue-number").textContent).toBe("#1");
-    expect(card.querySelector(".agent-issue-title").textContent).toBe("Kanban drag");
-    expect(card.querySelector(".issue-status").textContent).toBe("In progress");
-    expect(card.querySelector("time")).not.toBeNull();
-    expect(card.getAttribute("href")).toBe("#/device/dev-1/project/proj-1/issues/i1");
-  });
-
-  it("leaves out an issue held by an agent of another workspace", async () => {
-    await putIssues(someIssues());
-    await mount();
-    button.click();
-    await flush();
-    expect(cardsUnder("Agent 1")).toEqual(["#1", "#2", "#3"]);
-    expect(document.body.innerHTML).not.toContain("#5");
-  });
-
-  // The one place an empty state IS drawn: the reader pressed a button to get
-  // here and is owed an answer.
-  it("says so when the workspace's agents hold nothing", async () => {
+  it("goes there even when the workspace's agents are holding nothing", async () => {
     await putIssues([held(ELSEWHERE, { number: 1, id: "i1", status: "in_progress" })]);
     await mount();
     button.click();
     await flush();
-    expect(overlay().textContent).toContain("No issues assigned in this workspace.");
-  });
-
-  it("moves the rows under an open view when the push moves them", async () => {
-    await putIssues([held(ONE, { number: 1, id: "i1", status: "ready" })]);
-    await mount();
-    button.click();
-    await flush();
-    expect(cardsUnder("Agent 1")).toEqual(["#1"]);
-
-    await putIssues([
-      held(ONE, { number: 1, id: "i1", status: "ready" }),
-      held(ONE, { number: 7, id: "i7", status: "in_progress" }),
-    ]);
-    await flush();
-    expect(cardsUnder("Agent 1")).toEqual(["#7", "#1"]);
-  });
-
-  it("takes the view down with it", async () => {
-    await putIssues(someIssues());
-    await mount();
-    button.click();
-    await flush();
-    expect(overlay()).not.toBeNull();
-    block.dispose();
-    block = null;
-    await flush();
-    expect(overlay()).toBeNull();
+    expect(opened).toHaveLength(1);
   });
 });

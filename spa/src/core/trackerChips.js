@@ -10,13 +10,17 @@
 // Everything here is escaped. Nothing here reads the app or the DOM.
 
 import { esc, humanAge } from "./text.js";
-import { actorLabel, columnName, priorityIsMarked, priorityLabel, stateLabel } from "./trackerModel.js";
+import { COLUMN_NOTE_SHARED, actorLabel, columnName, priorityIsMarked, priorityLabel, stateLabel } from "./trackerModel.js";
 
 /** Open or closed, as a dot and its accessible name. A closed issue is drawn
  *  quiet rather than absent: it is still the project's history. */
+/** Open or closed, as a dot and its accessible name. The dot is where a reader
+ *  meets the other half of the board's surprise, so it carries the rule with
+ *  it: this mark and the column move independently. */
 export const stateDotHtml = (state) => {
   const label = stateLabel(state);
-  return `<span class="issue-state issue-state-${state === "closed" ? "closed" : "open"}" role="img" aria-label="${esc(label)}" title="${esc(label)}"></span>`;
+  const said = `${label}. ${COLUMN_NOTE_SHARED}`;
+  return `<span class="issue-state issue-state-${state === "closed" ? "closed" : "open"}" role="img" aria-label="${esc(said)}" title="${esc(said)}"></span>`;
 };
 
 /** The column an issue stands in. A chip and not a dot, because a column is a

@@ -34,6 +34,53 @@ export function columnsOf(columns) {
   return listed.length ? listed : FALLBACK_COLUMNS.map((column) => ({ ...column }));
 }
 
+/**
+ * What each column means, for a reader who has never seen this board.
+ *
+ * Every sentence here is the Issues Spec's own, because the board is the one
+ * place the user meets rules the agents are told outright and the user is not:
+ *
+ *  - a dispatch moves an issue to In progress from Backlog or Ready, and
+ *    leaves it alone anywhere further along ("the board position was set
+ *    deliberately and a reassignment is not a reason to rewind it");
+ *  - an agent moves a card to In review when it reports Complete — "you are
+ *    saying the work is ready to be looked at, not that it is accepted";
+ *  - "closing does not move it to Done and moving it to Done does not close
+ *    it: one is 'where is this on the board', the other is 'is this still
+ *    open'".
+ *
+ * Nothing is invented for the columns the spec only names. Backlog and Ready
+ * say what a dispatch does to them, which the spec does state, and no more.
+ */
+const COLUMN_NOTES = Object.freeze({
+  backlog: "Filed, not started. Assigning it to an agent moves it to In progress.",
+  ready: "Ready to pick up. Assigning it to an agent moves it to In progress.",
+  in_progress: "An agent has been handed this and started on it.",
+  in_review:
+    "An agent moves a card here when it reports Complete: the work is ready to be looked at, not that it is accepted.",
+  done: "The work is over. Closing is separate — a closed issue keeps its column, and a card in Done can still be open.",
+});
+
+/** The sentence every column shares, under whatever its own says. A column is
+ *  where an issue stands, and that is a different question from whether it is
+ *  still open — the one thing about this board that surprises people. */
+export const COLUMN_NOTE_SHARED =
+  "A column is where an issue stands on the board; open or closed is whether it is still live. The two move independently.";
+
+/**
+ * What to say about one column on hover, or behind its info glyph.
+ *
+ * A column the bridge named but this build has no words for says the shared
+ * sentence alone rather than nothing: a later per-project column set is a
+ * record change, and a board of unexplained columns would be worse than one
+ * with a general note on each.
+ */
+export function columnNote(columns, status) {
+  const slug = String(status || "");
+  const own = COLUMN_NOTES[slug];
+  return own ? `${own} ${COLUMN_NOTE_SHARED}` : COLUMN_NOTE_SHARED;
+}
+
 /** What to call the column a status names. An issue standing in a column the
  *  bridge no longer offers still says where it is: the slug is shown rather
  *  than nothing, because "somewhere this client cannot name" is worse than the

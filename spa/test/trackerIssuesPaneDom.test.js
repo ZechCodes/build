@@ -242,6 +242,35 @@ describe("the board", () => {
     expect(listed("issues.list")[0][1]).toEqual({ project_id: "proj-1" });
   });
 
+  // Hover for a pointer, an info glyph for everything without one — the same
+  // words both ways, so a phone is not told less than a laptop.
+  it("says what each column means, on hover and behind a glyph", async () => {
+    await board();
+    const head = host.querySelector('[data-column="in_review"] .issue-column-head');
+    expect(head.getAttribute("title")).toContain("ready to be looked at, not that it is accepted");
+    const why = head.querySelector(".issue-column-why");
+    expect(why.open).toBe(false);
+    why.querySelector("summary").click();
+    expect(why.open).toBe(true);
+    expect(why.querySelector(".issue-column-note").textContent)
+      .toContain("ready to be looked at, not that it is accepted");
+  });
+
+  it("puts the glyph on every column, empty ones included", async () => {
+    await board();
+    const columns = [...host.querySelectorAll(".issue-column")];
+    expect(columns.length).toBeGreaterThan(1);
+    expect(columns.every((one) => one.querySelector(".issue-column-why"))).toBe(true);
+  });
+
+  // The other half of the complaint: five columns and an open/closed mark with
+  // no legend.
+  it("says on the open/closed mark that it moves independently of the column", async () => {
+    await mount();
+    expect(host.querySelector(".issue-state").getAttribute("title"))
+      .toContain("The two move independently");
+  });
+
   it("switches between the two views", async () => {
     await mount();
     expect(host.querySelector(".issue-board")).toBeNull();

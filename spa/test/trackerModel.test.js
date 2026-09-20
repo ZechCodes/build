@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  COLUMN_NOTE_SHARED,
   FALLBACK_COLUMNS,
   UNASSIGNED,
   actorInitials,
@@ -10,6 +11,7 @@ import {
   assigneeFromKey,
   assigneeKey,
   columnName,
+  columnNote,
   columnsOf,
   issueLinks,
   priorityIsMarked,
@@ -131,5 +133,39 @@ describe("an issue's links", () => {
       workspace_ids: [], branches: ["build/x"], commits: [], conversation_ids: [], parent_issue_id: null,
     });
     expect(issueLinks(null).workspace_ids).toEqual([]);
+  });
+});
+
+// The board is the one place the user meets rules the agents are told outright
+// and the user never is. Every sentence is the Issues Spec's own; nothing is
+// invented for a column the spec only names.
+describe("what a column means", () => {
+  it("says of In review the thing a first-time reader gets wrong", () => {
+    expect(columnNote(null, "in_review")).toContain("ready to be looked at, not that it is accepted");
+  });
+
+  it("says of Done that closing is a separate question", () => {
+    expect(columnNote(null, "done")).toContain("Closing is separate");
+  });
+
+  // The spec states what a dispatch does to these two, and no more, so neither
+  // does this.
+  it("says of Backlog and Ready what assigning does to them", () => {
+    expect(columnNote(null, "backlog")).toContain("moves it to In progress");
+    expect(columnNote(null, "ready")).toContain("moves it to In progress");
+  });
+
+  // The one thing about this board that surprises people, under every column.
+  it("carries the independence rule on every column", () => {
+    for (const slug of ["backlog", "ready", "in_progress", "in_review", "done"]) {
+      expect(columnNote(null, slug)).toContain(COLUMN_NOTE_SHARED);
+    }
+  });
+
+  // A later per-project column set is a record change, and a board of
+  // unexplained columns would be worse than one with a general note on each.
+  it("still says something about a column this build has no words for", () => {
+    expect(columnNote([{ id: "icebox", name: "Icebox" }], "icebox")).toBe(COLUMN_NOTE_SHARED);
+    expect(columnNote(null, "")).toBe(COLUMN_NOTE_SHARED);
   });
 });

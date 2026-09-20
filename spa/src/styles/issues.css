@@ -424,3 +424,33 @@ a.thread-issue-action:focus-visible { outline:2px solid var(--accent); outline-o
 @media (prefers-reduced-motion: reduce) {
   .issue-entry:target .issue-comment-card { animation:none; }
 }
+
+/* ---- what a column means -------------------------------------------------
+   A `title` answers a pointer; this glyph answers everything without one. The
+   note opens in flow rather than as a floating tooltip: a column is already a
+   narrow scrolling strip, and a popover inside one is a popover half off the
+   screen on a phone. */
+
+.issue-column-why { position:relative; flex:none; }
+.issue-column-why > summary {
+  display:flex; align-items:center; justify-content:center;
+  width:14px; height:14px; border-radius:50%;
+  list-style:none; cursor:pointer;
+  font-size:9.5px; font-weight:700; font-style:italic;
+  color:var(--dim); border:1px solid var(--line3);
+  transition:color var(--motion-fast), border-color var(--motion-fast);
+}
+.issue-column-why > summary::-webkit-details-marker { display:none; }
+.issue-column-why > summary:hover { color:var(--ink2); border-color:var(--ink2); }
+.issue-column-why > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.issue-column-why[open] > summary { color:var(--accent); border-color:var(--accent); }
+.issue-column-note {
+  margin:6px 0 0; padding:7px 9px;
+  border-radius:7px; background:var(--panel); border:1px solid var(--line2);
+  font-size:11px; font-weight:400; line-height:1.45; letter-spacing:0;
+  text-transform:none; color:var(--ink2);
+}
+/* The note belongs to the column head but sits under the whole head, so it
+   does not squeeze the name and the count into nothing while it is open. */
+.issue-column-head { flex-wrap:wrap; }
+.issue-column-head .issue-column-note { flex-basis:100%; }

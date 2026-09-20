@@ -17,6 +17,7 @@
 
 import { esc } from "./text.js";
 import { assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, stateDotHtml } from "./trackerChips.js";
+import { columnNote } from "./trackerModel.js";
 
 /** What the keyboard is told, once per board rather than once per card. */
 export const MOVE_HINT = "Use the left and right arrow keys to move this issue between columns.";
@@ -41,17 +42,40 @@ export const issueCardHtml = (issue, { columns, agentLabels, href }) =>
     </button>
   </li>`;
 
+/**
+ * What a column means, said twice over.
+ *
+ * A `title` for a pointer, and a `details` behind an info glyph for everything
+ * that has no pointer — a phone, a keyboard, a screen reader. The same words
+ * both ways, from the Issues Spec (core/trackerModel.js): this board is the
+ * one place the user meets rules the agents are told outright and the user
+ * never is, and "In review means ready to look at, not accepted" is the whole
+ * reason a first-time reader misreads it.
+ *
+ * `details` rather than a tooltip of our own, as the folds beside it already
+ * are: the browser owns the press, so it answers a tap, Enter and a screen
+ * reader without a line of wiring.
+ */
+const columnWhyHtml = (column, note) => `<details class="issue-column-why">
+      <summary aria-label="What ${esc(column.name)} means" title="${esc(note)}">i</summary>
+      <p class="issue-column-note" role="note">${esc(note)}</p>
+    </details>`;
+
 /** One column. The count is on the head because a board is read column by
  *  column, and "how much is in review" is the question a board is for. */
-const columnHtml = (column, context) => `<section class="issue-column" data-column="${esc(column.id)}" aria-label="${esc(column.name)}">
-    <header class="issue-column-head">
+const columnHtml = (column, context) => {
+  const note = columnNote(context.columns, column.id);
+  return `<section class="issue-column" data-column="${esc(column.id)}" aria-label="${esc(column.name)}">
+    <header class="issue-column-head" title="${esc(note)}">
       <h3>${esc(column.name)}</h3>
+      ${columnWhyHtml(column, note)}
       <span class="issue-column-count">${column.issues.length}</span>
     </header>
     <ul class="issue-column-cards" role="list" data-column-drop="${esc(column.id)}">
       ${column.issues.map((issue) => issueCardHtml(issue, context)).join("")}
     </ul>
   </section>`;
+};
 
 /**
  * The board.

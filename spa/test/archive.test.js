@@ -3,7 +3,6 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  accountNavHtml,
   archiveListHtml,
   archiveRecordHtml,
   archiveRowHtml,
@@ -185,14 +184,5 @@ describe("archiveRecordHtml", () => {
     expect(html).not.toContain("Upstream");
     expect(html).not.toContain("Finish action");
     expect(html).toContain("build/login");
-  });
-});
-
-describe("accountNavHtml", () => {
-  it("names both account pages and marks the one you are on", () => {
-    const html = accountNavHtml("archive");
-    expect(html).toContain('data-page="settings"');
-    expect(html).toContain('data-page="archive"');
-    expect(html.match(/class="[^"]*active[^"]*"[^>]*data-page="archive"/)).toBeTruthy();
   });
 });

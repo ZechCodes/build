@@ -9,7 +9,6 @@ import { renderProject } from "./views/projectView.js";
 import { renderIssue } from "./views/issueView.js";
 import { renderTrackerIssue } from "./views/trackerIssueView.js";
 import { isSettingsRoute, renderSettingsModal } from "./views/settingsModal.js";
-import { renderAccount } from "./views/account.js";
 import { renderCaptureDecision } from "./views/captureDecision.js";
 import { renderResolving } from "./views/resolving.js";
 import { markConsoleTerminal } from "./core/consoleModel.js";
@@ -246,8 +245,10 @@ function routeLinkHash(link) {
 }
 
 // Every route is one of these surfaces: the inbox (the landing route), a
-// project, a workspace, a branch, an issue, a capture's decision page, an
-// account page, or the holding screen a pre-redesign URL waits on.
+// project, a workspace, a branch, an issue, a capture's decision page, or the
+// holding screen a pre-redesign URL waits on. The account and a device's
+// settings are not here: they are configuration rather than a place to stand,
+// so they open as a modal over whichever of these the reader was on.
 const VIEWS = {
   inbox: renderInbox,
   project: renderProject,
@@ -256,7 +257,6 @@ const VIEWS = {
   issue: renderIssue,
   trackerIssue: renderTrackerIssue,
   capture: renderCaptureDecision,
-  account: renderAccount,
   resolve: renderResolving,
 };
 

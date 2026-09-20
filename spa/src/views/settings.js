@@ -271,8 +271,8 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   // page is done when the bridge-side mounts are. It paints itself into the
   // placeholder when the api answers, and names its own refusal in
   // #downloadserr, so a slow round trip leaves a "loading…" line — not a page
-  // of dead buttons, and not a caller (renderAccount, which mounts the account
-  // nav next) waiting on the api's clock.
+  // of dead buttons, and not the modal that hosts this panel waiting on the
+  // api's clock.
   void mountDownloads(root, {
     fetchDownloads,
     mintInstallCommand,

@@ -177,18 +177,3 @@ export function archiveListHtml(rows, ui = {}) {
   }
   return rows.map((row) => archiveRowHtml(row, ui)).join("");
 }
-
-/** The account's own pages, above whichever one is open. Devices live inside
- *  Settings, so there are two. */
-const ACCOUNT_PAGES = [
-  { page: "settings", label: "Settings" },
-  { page: "archive", label: "Archive" },
-];
-
-export function accountNavHtml(current) {
-  const page = current === "archive" ? "archive" : "settings";
-  return `<div class="tabs account-nav">${ACCOUNT_PAGES.map(
-    (entry) =>
-      `<div class="t${entry.page === page ? " active" : ""}" data-page="${entry.page}" role="button" tabindex="0">${entry.label}</div>`,
-  ).join("")}</div>`;
-}

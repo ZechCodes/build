@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-// The account archive's wiring: one page painted from archived.list, a record
-// that opens under the row it belongs to, and the account's two pages named
-// above it.
+// The archive's wiring: one page painted from archived.list, and a record that
+// opens under the row it belongs to. The archive is a section of the settings
+// modal (views/settingsModal.js) rather than a route host of its own, so the
+// nav around it is the modal's sidebar and is tested there.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -67,7 +68,7 @@ const branchItem = {
 };
 
 let App;
-let renderAccount;
+let renderArchive;
 let adoptDeviceSession;
 let resetDeviceContexts;
 // What each machine says it has filed away, as the test writes it.
@@ -106,7 +107,7 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   location.hash = "#/account/archive";
   ({ App } = await import("../src/app.js"));
-  ({ renderAccount } = await import("../src/views/account.js"));
+  ({ renderArchive } = await import("../src/views/archive.js"));
   ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   App.route = { name: "account", page: "archive" };
   App.devices = [
@@ -133,7 +134,7 @@ const rows = () => [...document.querySelectorAll("#archive-list .archive-row")];
 
 describe("the account archive page", () => {
   it("lists what every device filed away, newest first", async () => {
-    await renderAccount();
+    await renderArchive();
     await flush();
     // One list across the account, each row named by the machine it is on.
     expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/workspace-1", "dev-1/issue-1", "dev-2/run-1"]);
@@ -146,7 +147,7 @@ describe("the account archive page", () => {
   it("states a finished workspace's record instead of opening a workspace", async () => {
     filed["dev-1"] = [workspaceItem];
     const hash = location.hash;
-    await renderAccount();
+    await renderArchive();
     await flush();
     rows()[0].click();
     expect(location.hash).toBe(hash);
@@ -156,7 +157,7 @@ describe("the account archive page", () => {
 
   it("keeps the machines' records apart when both name a record the same", async () => {
     filed = { "dev-1": [issueItem], "dev-2": [{ ...issueItem, project: "relaydb", finished_at: "2026-08-11T09:30:00Z" }] };
-    await renderAccount();
+    await renderArchive();
     await flush();
 
     expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/issue-1", "dev-2/issue-1"]);
@@ -177,7 +178,7 @@ describe("the account archive page", () => {
       "dev-1": [{ ...workspaceItem, title: "repo" }, issueItem],
       "dev-2": [{ ...branchItem, title: "repo" }],
     };
-    await renderAccount();
+    await renderArchive();
     await flush();
 
     const named = (row) => [...row.querySelectorAll(".title, .title + .dim")].map((node) => node.textContent);
@@ -188,14 +189,14 @@ describe("the account archive page", () => {
 
   it("says no machine when one machine holds the title", async () => {
     filed = { "dev-1": [workspaceItem], "dev-2": [] };
-    await renderAccount();
+    await renderArchive();
     await flush();
 
     expect(rows()[0].querySelector(".dim")).toBeNull();
   });
 
   it("opens one record at a time, under its own row", async () => {
-    await renderAccount();
+    await renderArchive();
     await flush();
     rows()[2].click();
     let record = document.querySelector(".archive-record");
@@ -212,22 +213,12 @@ describe("the account archive page", () => {
     expect(document.querySelector(".archive-record")).toBeNull();
   });
 
-  it("names the account's pages above it and marks the open one", async () => {
-    await renderAccount();
-    await flush();
-    const tabs = [...document.querySelectorAll("#root .account-nav .t")];
-    expect(tabs.map((tab) => tab.dataset.page)).toEqual(["settings", "archive"]);
-    expect(tabs[1].classList.contains("active")).toBe(true);
-    tabs[0].click();
-    expect(location.hash).toBe("#/account/settings");
-  });
-
   // The archive is history: a re-read almost always lands exactly what is
   // already on the page. Rebuilding it anyway drops a selection someone is
   // copying a path out of, and the focus they reached a card with.
   it("leaves the page alone on a read that lands the same archive", async () => {
     const { writeCached } = await import("../src/core/localCache.js");
-    await renderAccount();
+    await renderArchive();
     await flush();
     rows()[2].click(); // a record open under it
     const row = rows()[2];
@@ -242,7 +233,7 @@ describe("the account archive page", () => {
 
   it("redraws when a machine's board record moves", async () => {
     const { writeCached } = await import("../src/core/localCache.js");
-    await renderAccount();
+    await renderArchive();
     await flush();
     expect(rows()).toHaveLength(3);
     filed["dev-2"] = [];
@@ -261,7 +252,7 @@ describe("the account archive page", () => {
   // would leave this page on the last pass's history until the next one.
   it("redraws when one row's own record moves", async () => {
     const { writeCached } = await import("../src/core/localCache.js");
-    await renderAccount();
+    await renderArchive();
     await flush();
     expect(rows()).toHaveLength(3);
     filed["dev-2"] = [];
@@ -280,7 +271,7 @@ describe("the account archive page", () => {
   // on the account for its whole archive a dozen times over for one pass.
   it("reads each machine once for a pass that writes a board and every row on it", async () => {
     const { writeCached } = await import("../src/core/localCache.js");
-    await renderAccount();
+    await renderArchive();
     await flush();
     const before = archiveReads();
 
@@ -298,7 +289,7 @@ describe("the account archive page", () => {
   // the wire, all of them answering the same history.
   it("does not read again while its last read is still out on the wire", async () => {
     const { writeCached } = await import("../src/core/localCache.js");
-    await renderAccount();
+    await renderArchive();
     await settle();
     const before = archiveReads();
     const perRead = App.devices.length;
@@ -334,7 +325,7 @@ describe("the account archive page", () => {
       }),
     });
 
-    await renderAccount();
+    await renderArchive();
     await flush();
 
     expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/workspace-1", "dev-1/issue-1"]);
@@ -342,10 +333,10 @@ describe("the account archive page", () => {
 
   it("says so when no device can answer, and keeps what it has", async () => {
     resetDeviceContexts();
-    await renderAccount();
+    await renderArchive();
     await flush();
     expect(document.querySelector("#archive-list").textContent).toContain("unavailable");
-    // The page — and the way back off it — is on screen either way.
-    expect(document.querySelectorAll("#root .account-nav .t")).toHaveLength(2);
+    // The page is on screen either way, and the way back off it is the modal's
+    // sidebar around it (views/settingsModal.js), which this page never draws.
   });
 });

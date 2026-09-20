@@ -393,7 +393,6 @@ main { max-width:min(1180px, 100%); margin:0 auto;
 /* ---- the account archive ----
    A record opens under the row it belongs to, so it reads as that row's inside
    rather than as the next thing on the page. */
-.account-nav { margin-bottom:16px; }
 .card.archive-row { cursor:pointer; background:transparent; border:0; border-radius:8px; padding:14px 13px; margin:0 0 4px; box-shadow:none; }
 .archive-row:hover, .archive-row[aria-expanded="true"] { background:var(--row-hover); box-shadow:none; }
 .archive-row .chip { background:none; border-radius:0; padding-right:0; }

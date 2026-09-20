@@ -97,8 +97,11 @@ export function mountWorkspaceIssuesTab(body, { route, context, feed, selection,
     });
   }
 
-  body.innerHTML = `<div class="issue-pane"></div>`;
-  return mountIssuesPane(body.querySelector(".issue-pane"), {
+  // Named for what it is, not `.issue-pane`: that sat one character from the
+  // `#issue-pane` the issue page above mounts into, and two hosts a selector
+  // apart is how a test asserts the wrong one.
+  body.innerHTML = `<div class="workspace-issues-pane"></div>`;
+  return mountIssuesPane(body.querySelector(".workspace-issues-pane"), {
     ...shared,
     projectName: route.projectId,
     view: route.view,

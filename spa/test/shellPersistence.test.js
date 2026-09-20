@@ -76,7 +76,14 @@ vi.mock("../src/core/trackerIssuePage.js", () => ({
   mountIssuePage: () => ({ feedMoved: () => {}, dispose: () => {} }),
 }));
 vi.mock("../src/core/trackerIssuesPane.js", () => ({
-  mountIssuesPane: () => ({ feedMoved: () => {}, dispose: () => {} }),
+  // It draws the frame the real pane draws. A stand-in that renders nothing
+  // makes "did the page stand up" unanswerable, which is the one question this
+  // file is built on (#36) — the mocked pane would have left the project's
+  // Issues tab looking exactly like a tab that never mounted.
+  mountIssuesPane: (host) => {
+    host.innerHTML = '<div class="issue-head"></div>';
+    return { feedMoved: () => {}, dispose: () => {} };
+  },
 }));
 
 const { App, go, render, unmountView } = await import("../src/app.js");
@@ -148,6 +155,11 @@ const PAGE_CONTENT = {
   // there is to see, and seeing it is what says the route host ran.
   "issue (tracker)": "#issue-pane",
   workspace: ".workspace-gitpane",
+  // #29. Both hosts are drawn by core/workspaceIssuesTab.js rather than by the
+  // tracker inside them, which is what makes them answerable with the pane and
+  // the page both mocked: seeing the host is what says the TAB ran.
+  "workspace (issues tab)": ".workspace-issues-pane",
+  "workspace (issue open)": ".issue-surface",
   "issue (legacy)": ".ivsplit",
   "branch (legacy)": ".gitpane",
 };
@@ -236,12 +248,25 @@ describe("a page swapping inside the shell", () => {
     await visit(PLACES.workspace);
     const held = strip();
     expect(held).toBeTruthy();
+    expect(pageContent("workspace")).toBeTruthy();
+
+    // Each leg asserts the page REALLY swapped before it asserts the strip did
+    // not: a marker that is present everywhere proves nothing, and a shell case
+    // standing over a page that never mounted is the hole #36 closed.
     await visit(PLACES["workspace (issues tab)"]);
+    expect(pageContent("workspace (issues tab)")).toBeTruthy();
+    expect(pageContent("workspace")).toBeNull();
     expect(strip()).toBe(held);
+
     await visit(PLACES["workspace (issue open)"]);
+    expect(pageContent("workspace (issue open)")).toBeTruthy();
+    expect(pageContent("workspace (issues tab)")).toBeNull();
     expect(strip()).toBe(held);
+
     // …and back to the checkout, without the bubbles having moved once.
     await visit(PLACES.workspace);
+    expect(pageContent("workspace")).toBeTruthy();
+    expect(pageContent("workspace (issue open)")).toBeNull();
     expect(strip()).toBe(held);
   });
 

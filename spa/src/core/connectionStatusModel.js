@@ -27,6 +27,14 @@ export function secondsUntilAttempt(nextAttemptAt, nowMs) {
 
 const RECOVERING = new Set([ATTEMPTING, WAITING]);
 
+/** Whether one machine's recovery record says it is being reconnected to: a
+ *  dial in flight, or a wait between tries. Both read as "reconnecting" to
+ *  anybody looking at a surface over that machine — the difference between
+ *  them is only whether the ring has a number to show. Asked by the surfaces
+ *  that hold a copy quietly while the wire is being made again
+ *  (core/transientRead.js), so the ring and they agree on the word. */
+export const isRecovering = (record) => RECOVERING.has(record?.status);
+
 /** What a machine is called, as the account knows it. A record can name a
  *  machine the device list has not caught up with — a connection lost before
  *  its first list answered — and such a machine is spoken of as what it is. */

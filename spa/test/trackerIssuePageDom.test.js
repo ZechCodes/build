@@ -35,6 +35,29 @@ let carriedKinds = EVERY_KIND;
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
 
+/** The machine this page is reading, as core/transientRead.js asks about it.
+ *  A case moves it; `reconnect()` is the session coming back. */
+let away = true;
+let reconnecting = true;
+let movedListeners = new Set();
+vi.mock("../src/core/deviceReconnect.js", () => ({
+  deviceWatch: () => ({
+    away: () => away,
+    reconnecting: () => reconnecting,
+    moved: (fn) => {
+      movedListeners.add(fn);
+      return () => movedListeners.delete(fn);
+    },
+  }),
+}));
+
+const reconnect = async () => {
+  away = false;
+  reconnecting = false;
+  [...movedListeners].forEach((fn) => fn());
+  await flush();
+};
+
 const openAssigneePicker = vi.fn(() => ({ close: vi.fn(), setCatalog: vi.fn() }));
 vi.mock("../src/core/trackerAssigneePicker.js", () => ({
   openAssigneePicker: (...args) => openAssigneePicker(...args),
@@ -107,6 +130,9 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
   carriedKinds = EVERY_KIND;
+  away = true;
+  reconnecting = true;
+  movedListeners = new Set();
   notifyError.mockClear();
   openAssigneePicker.mockClear();
   document.body.innerHTML = '<div id="pane"></div>';
@@ -448,5 +474,65 @@ describe("saying which issue is open", () => {
     watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
     await flush();
     expect(seen.length).toBeGreaterThan(1);
+  });
+});
+
+// #24. A phone's session dies at the network layer every few minutes and every
+// call in flight dies with it. The page had already painted from the cache, so
+// "Could not read this issue" was a complaint about a copy that was on screen
+// the whole time.
+describe("a read that fails because the session dropped", () => {
+  const WENT = "your device went offline";
+  const cached = () =>
+    trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
+      issue: issue({ id: "issue-1", number: 12, title: "From the cache" }),
+      timeline: [],
+    });
+  const note = () => host.querySelector(".read-wait")?.textContent ?? null;
+
+  it("keeps the cached copy and says nothing", async () => {
+    await cached();
+    refuses = { method: "issues.get", message: WENT };
+    await mount();
+    expect(host.querySelector(".issue-page-title").textContent).toBe("From the cache");
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("marks when that copy was read, while the machine is being reconnected to", async () => {
+    await cached();
+    refuses = { method: "issues.get", message: WENT };
+    await mount();
+    expect(note()).toContain("reconnecting");
+  });
+
+  it("reads again when the machine is back, with nothing polled in between", async () => {
+    await cached();
+    refuses = { method: "issues.get", message: WENT };
+    await mount();
+    expect(listed("issues.get")).toHaveLength(1);
+    refuses = null;
+    await reconnect();
+    expect(listed("issues.get")).toHaveLength(2);
+    expect(host.querySelector(".issue-page-title").textContent).toBe("Kanban drag does not persist");
+    expect(note()).toBeNull();
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  // The bridge answered. The reader has to hear that, dropped session or not.
+  it("still says a refusal out loud", async () => {
+    await cached();
+    refuses = { method: "issues.get", message: "no such issue" };
+    await mount();
+    expect(notifyError).toHaveBeenCalledWith("Could not read this issue", "no such issue");
+  });
+
+  // Nothing on screen to be quiet about: the wait is the same, but its failure
+  // is said.
+  it("waits with nothing on screen, then says so when the retry fails too", async () => {
+    refuses = { method: "issues.get", message: WENT };
+    await mount();
+    expect(notifyError).not.toHaveBeenCalled();
+    await reconnect();
+    expect(notifyError).toHaveBeenCalledWith("Could not read this issue", WENT);
   });
 });

@@ -15,7 +15,9 @@ import { messageOf } from "./text.js";
 import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
-import { issueRecord, readIssueRecord, readIssuesRecord, writeIssueRecord } from "./trackerCache.js";
+import { issueRecord, issueRecordAt, readIssueRecord, readIssuesRecord, writeIssueRecord } from "./trackerCache.js";
+import { createReadRetry } from "./transientRead.js";
+import { deviceWatch } from "./deviceReconnect.js";
 import { columnsOf } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { issueLinkRows } from "./trackerLinks.js";
@@ -45,6 +47,17 @@ export function mountIssuePage(host, options) {
 
   const groups = () => workspaceAgents(state.feed(), state.projectKey);
   const place = () => ({ projectId: state.projectId, deviceId: state.deviceId, projectKey: state.projectKey });
+
+  /** What this page does when a read fails because the wire went away rather
+   *  than because the bridge said no: keeps what is on screen, marks when it
+   *  was read, and reads again when the machine is back — without a word, as
+   *  long as there is something to keep. */
+  const reads = createReadRetry({
+    host,
+    watch: deviceWatch(state.deviceId),
+    retry: () => void refresh({ keepDrafts: true }),
+    hasContent: () => Boolean(state.issue),
+  });
 
   // ---- painting ------------------------------------------------------------
 
@@ -93,6 +106,7 @@ export function mountIssuePage(host, options) {
     painted = html;
     host.innerHTML = html;
     if (state.issue) wire();
+    reads.mark(); // the host was just rewritten; the mark lives among its children
     restoreField(typing);
   };
 
@@ -111,15 +125,17 @@ export function mountIssuePage(host, options) {
   }
 
   async function paintFromCache() {
-    const [held, list] = await Promise.all([
+    const [cached, list, at] = await Promise.all([
       readIssueRecord(state.deviceId, state.projectId, state.issueId),
       readIssuesRecord(state.deviceId, state.projectId),
+      issueRecordAt(state.deviceId, state.projectId, state.issueId),
     ]);
     if (state.disposed) return;
     state.columns = columnsOf(list?.columns);
-    if (!held?.issue || state.issue) return;
-    take(held);
+    if (!cached?.issue || state.issue) return;
+    take(cached);
     state.loaded = false; // a cached paint is not an answer about what exists
+    reads.seen(at); // this copy is as old as the cache's stamp, not as old as now
     paint();
   }
 
@@ -129,10 +145,15 @@ export function mountIssuePage(host, options) {
       const answer = await state.callRpc("issues.get", { issue_id: state.issueId });
       if (state.disposed) return;
       take(answer, { keepDrafts });
+      reads.succeeded();
       paint();
       await writeIssueRecord(state.deviceId, state.projectId, state.issueId, issueRecord(answer.issue, answer.timeline));
     } catch (error) {
       if (state.disposed) return;
+      // The wire going away is not news about this issue. With the issue on
+      // screen the page keeps it and waits; with nothing on screen it waits
+      // too, and says so if the read still fails once the machine is back.
+      if (reads.failed(error)) return;
       state.loaded = true;
       paint();
       notifyError("Could not read this issue", messageOf(error));
@@ -266,6 +287,7 @@ export function mountIssuePage(host, options) {
     dispose() {
       state.disposed = true;
       watcher.dispose();
+      reads.dispose();
       state.picker?.close?.();
     },
   };

@@ -1384,3 +1384,13 @@ body.gated #inbox-rail { display:none; }
   height:100%; padding:40px 22px; color:var(--dim); }
 .shell-stub h2 { margin:0; font-size:16px; color:var(--ink2); }
 .shell-stub p { margin:0; font-size:13px; max-width:42ch; }
+
+/* ---- a copy held while the wire is being made again -----------------------
+   A read that failed because the session dropped leaves what it read on
+   screen. This says when that copy was read and that something is being done
+   about it — quietly, because it is not an error: the surface under it is
+   real, it is simply not the newest thing there is. */
+.read-wait {
+  margin:0 0 8px; padding:4px 0;
+  font-size:11px; line-height:1.4; color:var(--dim);
+}

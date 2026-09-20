@@ -65,3 +65,13 @@ export const writeIssuesRecord = (deviceId, projectId, record) =>
 
 export const writeIssueRecord = (deviceId, projectId, issueId, record) =>
   writeCached(issueAddress(deviceId, projectId, issueId), record);
+
+/** When the cache last took an answer for a record, or 0 for one it has never
+ *  held. A surface showing a cached copy says when that copy was read
+ *  (core/transientRead.js), and this is when — the moment the answer landed,
+ *  not the moment the surface got round to painting it. */
+export const issuesRecordAt = async (deviceId, projectId) =>
+  (await readCached(issuesAddress(deviceId, projectId)))?.at || 0;
+
+export const issueRecordAt = async (deviceId, projectId, issueId) =>
+  (await readCached(issueAddress(deviceId, projectId, issueId)))?.at || 0;

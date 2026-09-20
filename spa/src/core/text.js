@@ -18,9 +18,22 @@ export const messageOf = (error) => (error instanceof Error ? error.message : St
  *  WHEN it went unreachable (a moving "reconnecting…" claim reads as a lie while
  *  nothing is happening) and calm about what resumes automatically. */
 export function deviceUnreachableText(name, sinceMs) {
-  const time = new Date(sinceMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `${name || "Your device"} unreachable since ${time} — tasks will resume when it reconnects.`;
+  return `${name || "Your device"} unreachable since ${clockTime(sinceMs)} — tasks will resume when it reconnects.`;
 }
+
+/** A moment as a clock reads it. The one format every sentence here puts a
+ *  time in, so "since 4:42 pm" and "last read at 4:42 pm" are the same time
+ *  said the same way. */
+export const clockTime = (whenMs) =>
+  new Date(whenMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+/** What a surface says over a copy it is still showing while the machine that
+ *  answered for it is being reconnected to: when this copy was read, and that
+ *  something is being done about it. Deliberately not an error — the copy on
+ *  screen is real, it is simply not the newest thing there is. A surface with
+ *  no read behind it yet says only what is happening. */
+export const lastReadText = (sinceMs) =>
+  sinceMs ? `Last read at ${clockTime(sinceMs)}, reconnecting` : "Reconnecting";
 
 /** What a work surface says when the machine its link names cannot answer —
  *  gone offline, or never opened on this client: there is nothing to read and

@@ -41,6 +41,29 @@ vi.mock("../src/core/trackerAssigneePicker.js", () => ({
   openAssigneePicker: (...args) => openAssigneePicker(...args),
 }));
 
+/** The machine this tab is reading, as core/transientRead.js asks about it.
+ *  A case moves it; `reconnect()` is the session coming back. */
+let away = true;
+let reconnecting = true;
+let movedListeners = new Set();
+vi.mock("../src/core/deviceReconnect.js", () => ({
+  deviceWatch: () => ({
+    away: () => away,
+    reconnecting: () => reconnecting,
+    moved: (fn) => {
+      movedListeners.add(fn);
+      return () => movedListeners.delete(fn);
+    },
+  }),
+}));
+
+const reconnect = async () => {
+  away = false;
+  reconnecting = false;
+  [...movedListeners].forEach((fn) => fn());
+  await flush();
+};
+
 const openCreateIssue = vi.fn();
 vi.mock("../src/core/trackerCreate.js", () => ({
   openCreateIssue: (...args) => openCreateIssue(...args),
@@ -89,6 +112,9 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
   carriedKinds = EVERY_KIND;
+  away = true;
+  reconnecting = true;
+  movedListeners = new Set();
   notifyError.mockClear();
   openAssigneePicker.mockClear();
   openCreateIssue.mockClear();
@@ -435,5 +461,72 @@ describe("the push", () => {
     pane.dispose();
     pane = null;
     expect(watchers[0].disposed).toBe(true);
+  });
+});
+
+// #24, the tab's half. The list and the board are two drawings of one read, so
+// both keep what they have when the session under them dies.
+describe("a read that fails because the session dropped", () => {
+  const WENT = "your device went offline";
+  const CACHED = [issue({ number: 9, id: "issue-9", title: "From the cache", status: "ready" })];
+
+  const refusing = (message) =>
+    vi.fn(async (method) => {
+      if (method === "issues.list") throw new Error(message);
+      return {};
+    });
+
+  const note = () => host.querySelector(".read-wait")?.textContent ?? null;
+
+  const withCache = async (message) => {
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: CACHED, columns: columns() });
+    call = refusing(message);
+    await mount();
+  };
+
+  it("keeps the cached list and says nothing", async () => {
+    await withCache(WENT);
+    expect(titles()).toEqual(["From the cache"]);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("marks when that list was read, while the machine is being reconnected to", async () => {
+    await withCache(WENT);
+    expect(note()).toContain("reconnecting");
+  });
+
+  // A board is the same read laid out differently, so it keeps its cards too.
+  it("keeps the board's cards just the same", async () => {
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: CACHED, columns: columns() });
+    call = refusing(WENT);
+    await mount({ view: "board" });
+    expect(cardsIn("ready")).toEqual(["issue-9"]);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("reads again when the machine is back, with nothing polled in between", async () => {
+    await withCache(WENT);
+    expect(listed("issues.list")).toHaveLength(1);
+    call.mockImplementation(async (method) =>
+      method === "issues.list" ? { issues: [issue({ number: 12, id: "issue-12", title: "Kanban drag does not persist" })] } : {},
+    );
+    await reconnect();
+    expect(listed("issues.list")).toHaveLength(2);
+    expect(titles()).toEqual(["Kanban drag does not persist"]);
+    expect(note()).toBeNull();
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("still says a refusal out loud", async () => {
+    await withCache("project_id is required");
+    expect(notifyError).toHaveBeenCalledWith("Could not read this project's issues", "project_id is required");
+  });
+
+  it("waits with nothing on screen, then says so when the retry fails too", async () => {
+    call = refusing(WENT);
+    await mount();
+    expect(notifyError).not.toHaveBeenCalled();
+    await reconnect();
+    expect(notifyError).toHaveBeenCalledWith("Could not read this project's issues", WENT);
   });
 });

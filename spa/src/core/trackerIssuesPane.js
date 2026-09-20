@@ -17,7 +17,9 @@ import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import { ICON_PLUS } from "./icons.js";
-import { readIssuesRecord } from "./trackerCache.js";
+import { issuesRecordAt, readIssuesRecord } from "./trackerCache.js";
+import { createReadRetry } from "./transientRead.js";
+import { deviceWatch } from "./deviceReconnect.js";
 import { NO_FILTERS, filterIssues, filterOptions, filtersAreSet, issueListParams, sortIssues } from "./trackerFilters.js";
 import { actorLabel, columnsOf } from "./trackerModel.js";
 import { boardColumns, moveParams, nextColumn, withMovedIssue } from "./trackerBoardModel.js";
@@ -61,6 +63,17 @@ export function mountIssuesPane(host, options) {
   const hrefOf = (issue) =>
     hashFromRoute({ name: "trackerIssue", projectId: state.projectId, deviceId: state.deviceId, issueId: issue.id });
 
+  /** What the tab does when a read fails because the wire went away rather
+   *  than because the bridge said no: keeps the list that is already on screen,
+   *  marks when it was read, and reads again when the machine is back. The
+   *  list and the board share it — they are two drawings of one read. */
+  const reads = createReadRetry({
+    host,
+    watch: deviceWatch(state.deviceId),
+    retry: () => void refresh(),
+    hasContent: () => state.shown.length > 0 || state.all.length > 0,
+  });
+
   // ---- painting ------------------------------------------------------------
 
   const paintContext = () => ({
@@ -82,6 +95,7 @@ export function mountIssuesPane(host, options) {
       ${filterBarHtml(filterOptions(state.all, state.columns, nameActor), state.filters)}
       <div class="issue-body">${bodyHtml()}</div>`;
     wire();
+    reads.mark(); // the host was just rewritten; the mark lives among its children
   };
 
   // ---- reading -------------------------------------------------------------
@@ -89,11 +103,15 @@ export function mountIssuesPane(host, options) {
   /** What the cache holds, painted before anything is asked. A project never
    *  opened on this device holds nothing, and the tab simply waits. */
   async function paintFromCache() {
-    const record = await readIssuesRecord(state.deviceId, state.projectId);
+    const [record, at] = await Promise.all([
+      readIssuesRecord(state.deviceId, state.projectId),
+      issuesRecordAt(state.deviceId, state.projectId),
+    ]);
     if (state.disposed || !record) return;
     state.all = sortIssues(record.issues);
     state.columns = columnsOf(record.columns);
     state.shown = filterIssues(state.all, shownFilters());
+    reads.seen(at); // this list is as old as the cache's stamp, not as old as now
     paint();
   }
 
@@ -112,10 +130,16 @@ export function mountIssuesPane(host, options) {
       // An unnarrowed read IS the project's whole list; there is no second read
       // to make for it.
       if (!filtersAreSet(filters)) state.all = state.shown;
+      reads.succeeded();
       await refreshWholeList(filtersAreSet(filters));
       paint();
     } catch (error) {
-      if (!state.disposed) notifyError("Could not read this project's issues", messageOf(error));
+      if (state.disposed) return;
+      // The wire going away is not news about this project's issues. With a
+      // list on screen the tab keeps it and waits; with nothing on screen it
+      // waits too, and says so if the read still fails once the machine is back.
+      if (reads.failed(error)) return;
+      notifyError("Could not read this project's issues", messageOf(error));
     }
   }
 
@@ -311,6 +335,7 @@ export function mountIssuesPane(host, options) {
     dispose() {
       state.disposed = true;
       watcher.dispose();
+      reads.dispose();
       state.picker?.close?.();
     },
   };

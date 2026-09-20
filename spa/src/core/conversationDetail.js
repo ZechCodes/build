@@ -78,13 +78,22 @@ const isMessage = (item) => item?.type === "message";
  *  drawn as such (core/thread.js `arrivedMessageHtml`, `sentMessageHtml`). */
 const isBetweenAgents = (item) => Boolean(item?.data?.from_agent || item?.data?.sent_to);
 
+/** An agent acting on an issue, narrated in its own conversation
+ *  (core/trackerActionLine.js). It is this agent's own act rather than
+ *  correspondence with anywhere else, so it is dialogue at every level — and
+ *  said here rather than left to fall out of carrying no `from_agent`, because
+ *  "what this agent did" is exactly what the narrowest level is for and it
+ *  should not depend on which fields the bridge happens to set. One line, so
+ *  it costs the narrowed view almost nothing. */
+const isOwnIssueAction = (item) => Boolean(item?.data?.issue_action);
+
 /** What each level admits. One predicate per level rather than a ladder of
  *  conditionals: a level is a way of reading the thread, and adding one should
  *  be adding a reading. */
 const SHOWN_AT_LEVEL = {
   all: () => true,
   messages: isMessage,
-  agent: (item) => isMessage(item) && !isBetweenAgents(item),
+  agent: (item) => isMessage(item) && (isOwnIssueAction(item) || !isBetweenAgents(item)),
 };
 
 const shownAt = (level) => SHOWN_AT_LEVEL[level] || SHOWN_AT_LEVEL[DEFAULT_LEVEL];

@@ -389,3 +389,38 @@
   .modal-workspace-issues { width:calc(100vw - 20px); }
   .workspace-issues-body { max-height:70vh; }
 }
+
+/* ---- an agent acting on an issue, in its own conversation ----------------
+   The agent's voice at reduced weight: a footnote that happens to be
+   clickable, not a bubble. No avatar — an avatar would give a line of
+   bookkeeping the same standing as something the agent said. */
+
+.thread-message.thread-action { padding:1px 0 1px 34px; }
+.thread-issue-action {
+  display:inline-flex; flex-wrap:wrap; align-items:baseline; gap:0 5px;
+  padding:3px 8px; border-radius:7px;
+  font-size:11.5px; line-height:1.5; color:var(--dim);
+  text-decoration:none;
+  transition:background var(--motion-fast), color var(--motion-fast);
+}
+a.thread-issue-action:hover { background:var(--row-hover); color:var(--ink2); }
+a.thread-issue-action:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.thread-issue-action-number { color:var(--accent); font-weight:650; font-variant-numeric:tabular-nums; }
+/* The title wraps rather than being clipped: on a phone the whole point is
+   knowing WHICH issue, and an ellipsis at 30 characters answers that worst. */
+.thread-issue-action-title { min-width:0; overflow-wrap:anywhere; }
+
+@media (max-width: 760px) {
+  .thread-message.thread-action { padding-left:12px; }
+}
+
+/* The comment an action line lands on: a moment's mark so the reader sees
+   where they arrived rather than having to count rows. */
+.issue-entry:target .issue-comment-card {
+  outline:2px solid var(--accent); outline-offset:2px;
+  animation:issue-comment-arrival var(--motion-slow) var(--ease-out);
+}
+@keyframes issue-comment-arrival { from { background:var(--accent-soft); } to { background:var(--panel); } }
+@media (prefers-reduced-motion: reduce) {
+  .issue-entry:target .issue-comment-card { animation:none; }
+}

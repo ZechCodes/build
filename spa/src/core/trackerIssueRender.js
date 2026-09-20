@@ -38,7 +38,9 @@ export const issueBodyHtml = (issue) =>
 
 const whenHtml = (row) => (row.at ? `<span class="issue-when" title="${esc(row.at)}">${esc(ageText(row.at))}</span>` : "");
 
-const commentHtml = (row, agentLabels) => `<li class="issue-entry issue-comment">
+/// The id an action line in a conversation lands on: a comment is linked as
+/// `#comment-<id>` (core/trackerActionLine.js), so the row has to answer to it.
+const commentHtml = (row, agentLabels) => `<li class="issue-entry issue-comment" id="comment-${esc(row.key)}">
     <span class="issue-avatar" aria-hidden="true">${esc(actorInitials(row.actor))}</span>
     <div class="issue-comment-card">
       <div class="issue-entry-head"><strong>${esc(actorLabel(row.actor, agentLabels))}</strong>${whenHtml(row)}</div>

@@ -26,6 +26,7 @@ import { ICON_CHECK } from "./icons.js";
 import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
 import { setMotionRowHtml } from "./motion.js";
 import { issueCardHtml } from "./trackerMessageCard.js";
+import { issueActionLineHtml } from "./trackerActionLine.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -945,10 +946,25 @@ function buildNoticeHtml(message, agentLabel, context) {
 /// The sequence rides the row: it is how the timeline says which message a row
 /// stands for, and how the panel reports what the reader's viewport has reached
 /// (`readThroughSequence`).
+/// An agent acting on an issue, as one line in its own voice.
+///
+/// Its own row rather than a card inside the ordinary bubble: an agent that
+/// files, assigns, moves and comments across a session would otherwise bury
+/// what it SAID under its own bookkeeping. The sequence rides it like any
+/// other message, so it reads in order and counts as unread.
+function issueActionMessageHtml(message, context) {
+  return `<article class="thread-message thread-action"${sequenceAttribute(message)}>
+    ${issueActionLineHtml(message.issue_action, { place: context.place })}
+  </article>`;
+}
+
 function messageHtml(message, agentLabel, context) {
   // First, so a notice can never be read as an arrival: the mark says Build
   // wrote it, and that outranks every other reading of who a message is from.
   if (message.from_build) return buildNoticeHtml(message, agentLabel, context);
+  // Before the sent/arrived readings: an action line is this agent saying what
+  // it just did here, whatever else the record carries.
+  if (message.issue_action) return issueActionMessageHtml(message, context);
   if (message.sent_to) return sentMessageHtml(message, context);
   if (message.from_agent) return arrivedMessageHtml(message, agentLabel, context);
   const user = message.role === "user";

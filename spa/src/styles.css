@@ -1514,7 +1514,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px;
   margin:18px 0 8px 44px; }
 .thread-title span { color:var(--dim); font-size:11px; font-weight:500; }
-.thread-timeline { position:relative; display:flex; flex-direction:column; gap:18px; padding:18px 0; }
+.thread-timeline { position:relative; display:flex; flex-direction:column; --thread-gap:18px; gap:var(--thread-gap); padding:18px 0; }
 .thread-timeline::before { content:""; position:absolute; top:0; bottom:0; left:18px; width:2px; background:var(--line); }
 /* Nothing on the record: no avatars for the spine to thread, so it is not drawn
    — and with it gone the 44px gutter it ran down is holding nothing open, so
@@ -1786,7 +1786,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 /* Conversation treatment shared by the full-page thread and the agent rail.
    Messages keep their metadata and rich children, but the transcript reads as
    prose with a quiet reply bubble instead of a stack of issue cards. */
-.thread-timeline { gap:20px; padding:20px 0; }
+/* The rail and the full page share this gap, and the issue lines pull back
+   against it by name (styles/issues.css) rather than guessing at it. */
+.thread-timeline { --thread-gap:20px; gap:var(--thread-gap); padding:20px 0; }
 .thread-timeline::before { display:none; }
 .thread-message { margin-left:0; }
 .thread-avatar { display:none; }

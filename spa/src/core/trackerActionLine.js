@@ -18,40 +18,13 @@
 
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
+import { actionPhrase } from "./trackerLineWords.js";
 
 export const ACTION_LINE_CLASS = "thread-issue-action";
 
-/**
- * How an action reads in a sentence.
- *
- * The bridge's own word is used as it comes; this only covers the four Zech
- * named, in case they arrive as bare tokens rather than as past tense. An
- * action this build has never heard of reads as itself rather than as nothing
- * — a later verb should leave a legible line, not a blank one.
- */
-const ACTION_WORDS = Object.freeze({
-  create: "created",
-  created: "created",
-  assign: "assigned",
-  assigned: "assigned",
-  update: "updated",
-  updated: "updated",
-  comment: "commented on",
-  commented: "commented on",
-  move: "moved",
-  moved: "moved",
-  close: "closed",
-  closed: "closed",
-  reopen: "reopened",
-  reopened: "reopened",
-  link: "linked",
-  linked: "linked",
-});
-
-export const actionWord = (action) => {
-  const said = String(action || "").trim();
-  return ACTION_WORDS[said.toLowerCase()] || said || "acted on";
-};
+/** The verb, leading its own sentence: this line has no actor in front of it
+ *  — it IS the agent speaking — so it opens with what it did (#40). */
+export const actionWord = (action) => actionPhrase(action, { leading: true });
 
 /**
  * Where the line goes: the issue's page, and the comment itself when the
@@ -80,7 +53,10 @@ export function actionHref(action, place) {
  */
 export function issueActionLineHtml(action, { place = null } = {}) {
   if (!action || !action.issue_id) return "";
-  const said = `${actionWord(action.action)} <span class="thread-issue-action-number">#${esc(String(action.number ?? ""))}</span> <span class="thread-issue-action-title">${esc(action.title || "")}</span>`;
+  // The spaces between the spans are for the reader, not for the layout: flex
+  // drops whitespace-only nodes and `gap` does the spacing, but they stay in
+  // the text a screen reader speaks and a copy takes.
+  const said = `<span class="thread-issue-said">${esc(actionWord(action.action))}</span> <span class="thread-issue-number">#${esc(String(action.number ?? ""))}</span> <span class="thread-issue-line-title">${esc(action.title || "")}</span>`;
   const href = actionHref(action, place);
   return href
     ? `<a class="${ACTION_LINE_CLASS}" href="${esc(href)}" data-issue-action="${esc(action.issue_id)}">${said}</a>`

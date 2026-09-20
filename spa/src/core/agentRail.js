@@ -2000,6 +2000,9 @@ function mountRailOnContext(host, context, swap) {
   const conversationPlace = () => ({
     deviceId: context.deviceId ?? null,
     projectId: entity.projectId || context.projectId,
+    // What this project is called, for the one row that names Build's own
+    // agent for it: "Build agent" rather than four characters of an id (#40).
+    projectName: knownProjectName(context) || projectName || "",
   });
 
   /** What this project's agents are called, for the one row that names an

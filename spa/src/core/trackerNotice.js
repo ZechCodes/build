@@ -31,40 +31,9 @@
 
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { actorLabel } from "./trackerModel.js";
+import { actionPhrase, actorName } from "./trackerLineWords.js";
 
 export const NOTICE_CLASS = "thread-issue-notice";
-
-/**
- * The verb, in the sentence this line is.
- *
- * Deliberately NOT core/trackerActionLine.js's table, which reads "commented
- * on" because its sentence has no "on" of its own ("commented on #12"). This
- * one does — "{actor} {action} on #{number}" — so the same word here would
- * say "commented on on #32".
- *
- * Whatever arrives is used as it reads: the bridge writes a phrase, not a
- * token ("moved to In review", "assigned to Agent 2"), and a client that
- * rewrote those would have to know every verb the bridge will ever have. Only
- * bare tokens are turned into past tense, for a sender that sends one.
- */
-const NOTICE_WORDS = Object.freeze({
-  comment: "commented",
-  create: "created",
-  assign: "assigned",
-  update: "updated",
-  edit: "edited",
-  move: "moved",
-  close: "closed",
-  reopen: "reopened",
-  link: "linked",
-  track: "tracked",
-});
-
-export const noticeWord = (action) => {
-  const said = String(action || "").trim();
-  return NOTICE_WORDS[said.toLowerCase()] || said;
-};
 
 /** Whether this message is a tracking notice rather than something a person
  *  or an agent said. Both marks, because `from_build` alone is the restart
@@ -88,17 +57,6 @@ function noticeFromBody(body) {
   const gap = said.indexOf(" ");
   if (gap === -1) return null;
   return { actor: said.slice(0, gap), action: said.slice(gap + 1).trim() };
-}
-
-/** The actor as a reader knows them: the user, or an agent by whatever name
- *  this client has for it. A bare agent id becomes the same four characters an
- *  agent wears everywhere else it has no name (core/trackerModel.js). */
-function actorText(actor, agentLabels) {
-  if (!actor) return "";
-  if (typeof actor === "string") {
-    return actor.startsWith("agent-") ? actorLabel({ kind: "agent", agent_id: actor }, agentLabels) : actor;
-  }
-  return actorLabel(actor, agentLabels);
 }
 
 /**
@@ -155,19 +113,25 @@ export function noticeHref(notice, place) {
  * than being guessed at or left as an empty gap — "#32 Title" is a true
  * sentence about an issue, and "acted on #32" is a claim nothing backs.
  */
-/** "Agent 2 commented on ", or nothing where neither source named both. */
-function openingHtml(notice, agentLabels) {
-  const who = actorText(notice.actor, agentLabels);
-  const did = noticeWord(notice.action);
-  return who && did ? `${esc(who)} ${esc(did)} on ` : "";
+/** "issues-spa · Agent 1 commented on", or nothing where neither source named
+ *  both. Both halves or neither: "commented on #39" with nobody in front of it
+ *  reads as the reader having done it. */
+function openingHtml(notice, reading) {
+  const who = actorName(notice.actor, reading);
+  const did = actionPhrase(notice.action);
+  return who && did ? `<span class="thread-issue-said">${esc(who)} ${esc(did)}</span>` : "";
 }
 
 const issueSaidHtml = (notice) =>
-  `<span class="${NOTICE_CLASS}-number">#${esc(String(notice.number ?? ""))}</span> <span class="${NOTICE_CLASS}-title">${esc(notice.title || "")}</span>`;
+  `<span class="thread-issue-number">#${esc(String(notice.number ?? ""))}</span> <span class="thread-issue-line-title">${esc(notice.title || "")}</span>`;
 
-export function issueNoticeLineHtml(notice, { place = null, agentLabels = {} } = {}) {
+export function issueNoticeLineHtml(notice, { place = null, agentLabels = {}, projectName = "" } = {}) {
   if (!notice?.issue_id) return "";
-  const said = `${openingHtml(notice, agentLabels)}${issueSaidHtml(notice)}`;
+  // The spaces between the spans are for the reader, not for the layout: flex
+  // drops whitespace-only nodes and `gap` does the spacing, but they stay in
+  // the text a screen reader speaks and a copy takes.
+  const opening = openingHtml(notice, { agentLabels, projectName });
+  const said = `${opening ? `${opening} ` : ""}${issueSaidHtml(notice)}`;
   const href = noticeHref(notice, place);
   return href
     ? `<a class="${NOTICE_CLASS}" href="${esc(href)}" data-issue-notice="${esc(notice.issue_id)}">${said}</a>`

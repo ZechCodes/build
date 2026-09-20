@@ -954,11 +954,19 @@ function buildNoticeHtml(message, agentLabel, context) {
 /// what it SAID under its own bookkeeping. The sequence rides it like any
 /// other message, so it reads in order and counts as unread.
 function issueActionMessageHtml(message, context) {
-  return `<article class="thread-message thread-action"${sequenceAttribute(message)}>
+  return `<article class="thread-message thread-issue-line thread-action"${sequenceAttribute(message)}>
     ${issueActionLineHtml(message.issue_action, { place: context.place })}
   </article>`;
 }
 
+/// `thread-issue-line` is on both this row and the action line above it: they
+/// are one KIND of row — a quiet clickable line about an issue — and the
+/// stylesheet rules that matter (no gutter, one line, the tight rhythm between
+/// consecutive ones) are about that kind rather than about which of the two it
+/// is. Zech, on the rolled build: "There's a lot of space on the left of the
+/// issue notifications, there's a lot of space between them, and they're not
+/// one line."
+///
 /// A tracking notice, as one quiet line.
 ///
 /// Zech: "Tracking notices come in looking like user messages (same color and
@@ -972,8 +980,12 @@ function issueActionMessageHtml(message, context) {
 /// any other message. No fold and no detail filter: it is one line, and a line
 /// nobody can see is a line nobody can press.
 function issueNoticeMessageHtml(message, context) {
-  return `<article class="thread-message thread-notice"${sequenceAttribute(message)}>
-    ${issueNoticeLineHtml(issueNoticeOf(message), { place: context.place, agentLabels: context.agentLabels })}
+  return `<article class="thread-message thread-issue-line thread-notice"${sequenceAttribute(message)}>
+    ${issueNoticeLineHtml(issueNoticeOf(message), {
+      place: context.place,
+      agentLabels: context.agentLabels,
+      projectName: context.place?.projectName || "",
+    })}
   </article>`;
 }
 

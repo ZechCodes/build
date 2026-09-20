@@ -65,6 +65,31 @@ impl AgentIdentity {
     }
 }
 
+/// The issue a message was handed over with, when assigning one is what sent
+/// it (spec: Issues → The envelope).
+///
+/// The way `from_agent` names the sender: the body already carries the issue as
+/// prose, so a harness that never learns this field still reads the whole
+/// issue, and the field is what lets a client draw the message as an issue card
+/// and link `#12` without a second read.
+///
+/// Absent on every other message, so a client that has never heard of it reads
+/// a conversation exactly as it always has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueEnvelope {
+    pub issue_id: String,
+    /// Per-project and sequential — what `#12` is.
+    pub number: u64,
+    pub title: String,
+    /// The issue's markdown body as it stood when the issue was handed over.
+    /// A copy, deliberately: the message is the record of what the agent was
+    /// given, and an issue edited afterwards must not rewrite it.
+    pub body: String,
+    /// What the issue is about, so the agent can reach the workspace, branch
+    /// or conversation without asking.
+    pub links: crate::tracker::IssueLinks,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageRole {
@@ -480,6 +505,13 @@ pub struct ThreadMessage {
     /// each other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_to: Option<Box<AgentIdentity>>,
+    /// The issue this message handed over, when assigning one is what sent it.
+    ///
+    /// Boxed for the reason `from_agent` is: almost every message on almost
+    /// every conversation is somebody talking, and an issue's title, body and
+    /// links must not cost the rest of them a word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_issue: Option<Box<IssueEnvelope>>,
     /// Client mutation whose durable delivery owns this reviewer message.
     /// Managed messages are read through that exact operation and never by
     /// the legacy catch-all unread mailbox.

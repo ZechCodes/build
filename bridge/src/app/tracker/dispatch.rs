@@ -1,0 +1,677 @@
+//! Assignment is dispatch (spec: Issues → Assignment is dispatch).
+//!
+//! Handing an issue to an agent delivers it into that agent's conversation and
+//! starts the agent. There is no second step where somebody turns an issue into
+//! work, which is the whole reason this file exists rather than
+//! `issues.assign` just writing a name onto a record.
+//!
+//! Nothing here forks a code path. The workspace is cut by `workspace.create`,
+//! the agent is added by the same `agent.add` the project surface's
+//! `add_workspace_agent` calls, and the delivery is the post every other
+//! message goes through — so a dispatched issue is durable, gets an operation
+//! receipt, and starts its agent exactly the way a reviewer message does.
+//!
+//! What IS different is the envelope: the message wears the issue
+//! ([`crate::thread::IssueEnvelope`]) the way a hand-off wears its sender, and
+//! carries the issue as prose in its body so a harness that never learns the
+//! field still reads the whole issue.
+
+use super::{edits, IssueWrite, StoredAnswer};
+use crate::app::git::deferred::DeferredGitWork;
+use crate::app::rpc::missing_param;
+use crate::app::{AgentChoiceArgs, AppState};
+use crate::thread::IssueEnvelope;
+use crate::tracker::{
+    Actor, Assignee, Issue, IssueEventKind, DISPATCH_MOVES_FROM, IN_PROGRESS_STATUS,
+};
+use serde_json::{json, Value};
+
+/// Where an `issues.assign` was told to put the work.
+///
+/// One tagged value covering all five kinds, because assignment IS dispatch:
+/// a second `dispatch` field beside the assignee would be two places for the
+/// same decision to be made, and they could disagree. The two creating kinds
+/// are not assignees — they resolve to [`Assignee::Agent`] before anything is
+/// stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::app) enum AssignTarget {
+    /// Nobody. Dispatches nothing and stops nothing already running.
+    Nobody,
+    User,
+    ProjectAgent,
+    Agent {
+        agent_id: String,
+    },
+    NewWorkspace {
+        name: Option<String>,
+        isolation: Option<String>,
+        choice: OwnedChoice,
+    },
+    NewAgent {
+        workspace_id: String,
+        choice: OwnedChoice,
+    },
+}
+
+/// What a new agent runs on, owned so it can travel to the deferred drain.
+///
+/// Every field is optional and an absent one is left OUT of the params
+/// `agent.add` is called with: that verb reads the PRESENCE of a choice key to
+/// tell "run it on this" from "run it on whatever the workspace runs on", and a
+/// null would read as the former.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::app) struct OwnedChoice {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl OwnedChoice {
+    fn args(&self) -> AgentChoiceArgs<'_> {
+        AgentChoiceArgs {
+            harness: self.provider.as_deref(),
+            model: self.model.as_deref(),
+            effort: self.effort.as_deref(),
+        }
+    }
+
+    /// Read off a wire assignee, which spells it `provider` — the word every
+    /// wire verb uses. A TOOL spells the same thing `harness`, and maps it
+    /// before it gets here.
+    fn from_wire(value: &Value) -> OwnedChoice {
+        let word = |key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|word| !word.is_empty())
+                .map(str::to_string)
+        };
+        OwnedChoice {
+            provider: word("provider"),
+            model: word("model"),
+            effort: word("effort"),
+        }
+    }
+}
+
+impl AssignTarget {
+    /// Read an `assignee` off a verb's params. `null` is unassignment, which is
+    /// a legible thing to ask for and not a missing param.
+    pub(in crate::app) fn parse(value: Option<&Value>) -> Result<AssignTarget, String> {
+        let Some(value) = value else {
+            return Err(missing_param("assignee"));
+        };
+        if value.is_null() {
+            return Ok(AssignTarget::Nobody);
+        }
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or("assignee: name a kind")?;
+        let named = |key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("assignee {kind}: name a {key}"))
+        };
+        match kind {
+            "user" => Ok(AssignTarget::User),
+            "project_agent" => Ok(AssignTarget::ProjectAgent),
+            "agent" => Ok(AssignTarget::Agent {
+                agent_id: named("agent_id")?,
+            }),
+            "new_workspace" => Ok(AssignTarget::NewWorkspace {
+                name: value
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                isolation: value
+                    .get("isolation")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                choice: OwnedChoice::from_wire(value),
+            }),
+            "new_agent" => Ok(AssignTarget::NewAgent {
+                workspace_id: named("workspace_id")?,
+                choice: OwnedChoice::from_wire(value),
+            }),
+            other => Err(format!(
+                "unknown assignee kind: {other} — one of user, project_agent, agent, \
+                 new_workspace, new_agent"
+            )),
+        }
+    }
+
+    /// What is stored on the issue for the kinds that name an assignee
+    /// outright. The two creating kinds answer `None`: what they resolve to is
+    /// only known once the agent exists.
+    fn settled_assignee(&self) -> Option<Option<Assignee>> {
+        match self {
+            AssignTarget::Nobody => Some(None),
+            AssignTarget::User => Some(Some(Assignee::User)),
+            AssignTarget::ProjectAgent => Some(Some(Assignee::ProjectAgent)),
+            AssignTarget::Agent { agent_id } => Some(Some(Assignee::Agent {
+                agent_id: agent_id.clone(),
+            })),
+            _ => None,
+        }
+    }
+}
+
+/// One delivered issue: where it went, and the receipt for the turn it queued.
+pub(in crate::app) struct Delivered {
+    pub workspace_id: Option<String>,
+    pub entity_id: String,
+    pub agent_id: String,
+    pub operation_id: String,
+}
+
+impl Delivered {
+    fn wire(&self, kind: &str) -> Value {
+        json!({
+            "kind": kind,
+            "workspace_id": self.workspace_id,
+            "entity_id": self.entity_id,
+            "agent_id": self.agent_id,
+            "operation_id": self.operation_id,
+        })
+    }
+}
+
+impl AppState {
+    /// `issues.assign` — hand an issue to somebody, and start them on it.
+    pub(crate) fn issues_assign(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = crate::app::require_str(params, "issue_id")?;
+        let (project_id, issue) = self.tracker_issue(&issue_id)?;
+        let target = AssignTarget::parse(params.get("assignee"))?;
+        let note = crate::app::optional_nonempty_string(params, "note")?.map(str::to_string);
+        self.assign_issue_to(&project_id, issue, target, note, Actor::User, None)
+    }
+
+    /// The whole of assignment, for the wire verb and for the MCP tool alike.
+    ///
+    /// `sender` is the agent that asked, when one did. It decides two things
+    /// and nothing else: whose name is on the events, and whether the delivered
+    /// message wears a sender beside its issue.
+    pub(in crate::app) fn assign_issue_to(
+        &mut self,
+        project_id: &str,
+        issue: Issue,
+        target: AssignTarget,
+        note: Option<String>,
+        actor: Actor,
+        sender: Option<crate::app::AgentSender<'_>>,
+    ) -> Result<Value, String> {
+        let now = crate::store::now_rfc3339();
+        // The creating kinds cut a checkout, which is minutes of git on a big
+        // repository. They hand that work to the drain and answer from there.
+        if let AssignTarget::NewWorkspace {
+            name,
+            isolation,
+            choice,
+        } = &target
+        {
+            return self.dispatch_into_a_new_workspace(
+                project_id, issue, name, isolation, choice, note, actor, sender,
+            );
+        }
+        let mut write = IssueWrite::of(issue);
+        let delivery =
+            self.deliver_for(project_id, &write.issue, &target, note.as_deref(), sender)?;
+        self.settle_assignment(&mut write, &target, &delivery, &actor, &now)?;
+        let answered = self.commit_issue_write(project_id, write, &now)?;
+        Ok(json!({
+            "issue": answered["issue"],
+            "dispatch": delivery
+                .as_ref()
+                .map(|delivered| delivered.wire(target.wire_kind()))
+                .unwrap_or(Value::Null),
+        }))
+    }
+
+    /// Write the assignment down: who holds it, where the work went, and the
+    /// column it moved to.
+    fn settle_assignment(
+        &mut self,
+        write: &mut IssueWrite,
+        target: &AssignTarget,
+        delivery: &Option<Delivered>,
+        actor: &Actor,
+        now: &str,
+    ) -> Result<(), String> {
+        let settled = match target.settled_assignee() {
+            Some(settled) => settled,
+            // A creating kind resolves to the agent it made.
+            None => delivery.as_ref().map(|delivered| Assignee::Agent {
+                agent_id: delivered.agent_id.clone(),
+            }),
+        };
+        write.issue.assignee = settled.clone();
+        match &settled {
+            None => write.event(actor, IssueEventKind::Unassigned, json!({}), now),
+            Some(assignee) => write.event(
+                actor,
+                IssueEventKind::Assigned,
+                json!({ "assignee": assignee }),
+                now,
+            ),
+        }
+        let Some(delivered) = delivery else {
+            return Ok(());
+        };
+        // What the dispatch made is what the issue is about now. These write no
+        // `linked` events of their own: the `dispatched` event below already
+        // says it, and two records of one fact read as two things happening.
+        if let Some(workspace_id) = &delivered.workspace_id {
+            crate::tracker::IssueLinks::add(&mut write.issue.links.workspace_ids, workspace_id);
+        }
+        crate::tracker::IssueLinks::add(
+            &mut write.issue.links.conversation_ids,
+            &delivered.entity_id,
+        );
+        write.event(
+            actor,
+            IssueEventKind::Dispatched,
+            delivered.wire(target.wire_kind()),
+            now,
+        );
+        // Starting work moves the card, but only off the columns that mean
+        // "not started". An issue already In progress, In review or Done was
+        // put there deliberately, and a reassignment is not a reason to rewind
+        // it.
+        if write.issue.is_open() && DISPATCH_MOVES_FROM.contains(&write.issue.status.as_str()) {
+            edits::move_to(
+                write,
+                IN_PROGRESS_STATUS,
+                actor,
+                json!({ "by": "dispatch" }),
+                now,
+            );
+        }
+        Ok(())
+    }
+
+    /// Put the issue where the work will happen, for the kinds that need no
+    /// checkout cut. `None` is `{kind:"user"}` and unassignment, which dispatch
+    /// nothing.
+    fn deliver_for(
+        &mut self,
+        project_id: &str,
+        issue: &Issue,
+        target: &AssignTarget,
+        note: Option<&str>,
+        sender: Option<crate::app::AgentSender<'_>>,
+    ) -> Result<Option<Delivered>, String> {
+        let (workspace_id, entity_id) = match target {
+            AssignTarget::Nobody | AssignTarget::User => return Ok(None),
+            AssignTarget::ProjectAgent => {
+                let conversation =
+                    self.project_ensure_conversation(&json!({ "project_id": project_id }))?;
+                let entity_id = conversation["run_id"]
+                    .as_str()
+                    .ok_or("the project conversation has no owner")?
+                    .to_string();
+                (None, entity_id)
+            }
+            AssignTarget::Agent { agent_id } => {
+                let entity_id = self.agent_of_this_project(project_id, agent_id)?;
+                return self
+                    .hand_over(issue, &entity_id, agent_id, note, sender)
+                    .map(Some);
+            }
+            AssignTarget::NewAgent {
+                workspace_id,
+                choice,
+            } => {
+                let added = self.add_agent_for_issue(project_id, workspace_id, choice.args())?;
+                return self
+                    .hand_over(issue, &added.1, &added.0, note, sender)
+                    .map(Some);
+            }
+            // Answered by the drain; never reaches here.
+            AssignTarget::NewWorkspace { .. } => return Ok(None),
+        };
+        let agent_id = self.ensure_primary_agent(&entity_id)?;
+        let mut delivered = self.hand_over(issue, &entity_id, &agent_id, note, sender)?;
+        delivered.workspace_id = workspace_id;
+        Ok(Some(delivered))
+    }
+
+    /// One agent of THIS project, or why it is none of this issue's business.
+    ///
+    /// The same refusal the project-agent handlers raise, in the same words: an
+    /// issue reaches the agents of its own project and nothing else.
+    fn agent_of_this_project(&self, project_id: &str, agent_id: &str) -> Result<String, String> {
+        let entity_id = self
+            .entity_of_agent(agent_id)
+            .ok_or_else(|| format!("unknown agent_id: {agent_id}"))?;
+        if self.projects.project_id_of(&entity_id) != Some(project_id) {
+            return Err(format!("agent {agent_id} is not in project {project_id}"));
+        }
+        Ok(entity_id)
+    }
+
+    /// Put an agent on one of this project's workspaces, through the same
+    /// `agent.add` the project surface's `add_workspace_agent` calls — minting
+    /// the workspace's conversation owner first, because a workspace nobody has
+    /// talked to has none and there would be nowhere for the agent to live.
+    ///
+    /// Answers `(agent_id, entity_id)`.
+    fn add_agent_for_issue(
+        &mut self,
+        project_id: &str,
+        workspace_id: &str,
+        choice: AgentChoiceArgs<'_>,
+    ) -> Result<(String, String), String> {
+        let workspace = self
+            .workspaces
+            .get(workspace_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        if workspace.project_id != project_id {
+            return Err(format!(
+                "workspace {workspace_id} is not in project {project_id}"
+            ));
+        }
+        let mut params = choice.wire();
+        params["workspace_id"] = json!(workspace_id);
+        let conversation = self.workspace_ensure_conversation(&params)?;
+        let entity_id = conversation["run_id"]
+            .as_str()
+            .ok_or("the workspace conversation has no owner")?
+            .to_string();
+        params["entity_id"] = json!(entity_id);
+        let added = self.agent_add(&params)?;
+        let agent_id = added["agent"]["id"]
+            .as_str()
+            .ok_or("the added agent has no id")?
+            .to_string();
+        Ok((agent_id, entity_id))
+    }
+
+    /// Deliver the issue into one agent's conversation.
+    ///
+    /// The post every other message goes through, so the turn is durable, gets
+    /// a receipt, and starts the agent the way a reviewer message does. What is
+    /// added is the envelope: the message wears the issue, and carries it as
+    /// prose so a harness that never learns the field still reads it.
+    fn hand_over(
+        &mut self,
+        issue: &Issue,
+        entity_id: &str,
+        agent_id: &str,
+        note: Option<&str>,
+        sender: Option<crate::app::AgentSender<'_>>,
+    ) -> Result<Delivered, String> {
+        let operation_id = format!("op-{}", uuid::Uuid::new_v4());
+        let posted =
+            self.post_issue_to_agent(issue, entity_id, agent_id, note, &operation_id, sender)?;
+        Ok(Delivered {
+            workspace_id: None,
+            entity_id: posted,
+            agent_id: agent_id.to_string(),
+            operation_id,
+        })
+    }
+}
+
+/// The issue as the agent reads it in the message body.
+///
+/// The envelope is for a client that can draw an issue card; this is for the
+/// harness, which gets prose or nothing. `#12` and the title first because that
+/// is how the issue is referred to everywhere else.
+pub(in crate::app) fn issue_as_prose(issue: &Issue, note: Option<&str>) -> String {
+    let mut body = format!("#{} {}", issue.number, issue.title);
+    if !issue.body.trim().is_empty() {
+        body.push_str("\n\n");
+        body.push_str(issue.body.trim());
+    }
+    if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
+        body.push_str("\n\n");
+        body.push_str(note);
+    }
+    body
+}
+
+/// The issue as a message wears it.
+pub(in crate::app) fn envelope_of(issue: &Issue) -> IssueEnvelope {
+    IssueEnvelope {
+        issue_id: issue.id.clone(),
+        number: issue.number,
+        title: issue.title.clone(),
+        body: issue.body.clone(),
+        links: issue.links.clone(),
+    }
+}
+
+impl AssignTarget {
+    /// The word the `dispatched` event and the verb's answer call this kind.
+    pub(in crate::app) fn wire_kind(&self) -> &'static str {
+        match self {
+            AssignTarget::Nobody => "none",
+            AssignTarget::User => "user",
+            AssignTarget::ProjectAgent => "project_agent",
+            AssignTarget::Agent { .. } => "agent",
+            AssignTarget::NewWorkspace { .. } => "new_workspace",
+            AssignTarget::NewAgent { .. } => "new_agent",
+        }
+    }
+}
+
+impl AgentChoiceArgs<'_> {
+    /// The choice as `agent.add` params, with an absent key left OUT rather
+    /// than written as null — that verb reads the presence of a key.
+    pub(in crate::app) fn wire(&self) -> Value {
+        let mut params = json!({});
+        for (key, value) in [
+            ("provider", self.harness),
+            ("model", self.model),
+            ("effort", self.effort),
+        ] {
+            if let Some(value) = value {
+                params[key] = json!(value);
+            }
+        }
+        params
+    }
+}
+
+// ------------------------------------------------- cutting a workspace ---
+
+/// Everything the drain needs to finish a `new_workspace` dispatch once the
+/// checkout exists.
+///
+/// Owned, and holding nothing: it travels to a blocking thread and comes back
+/// to an `AppState` it cannot name while the git runs.
+pub(in crate::app) struct DispatchPlan {
+    project_id: String,
+    issue_id: String,
+    workspace_id: String,
+    choice: OwnedChoice,
+    note: Option<String>,
+    actor: Actor,
+    /// The agent that asked, as its two ids — [`crate::app::AgentSender`]
+    /// borrows, and this has to outlive the call that built it.
+    sender: Option<(String, String)>,
+}
+
+/// `workspace.create`'s own git, with the rest of the dispatch hung off the
+/// end of it.
+///
+/// A wrapper rather than a second implementation: `run` and `invalidate` are
+/// the workspace family's, untouched, so cutting a checkout for an issue is
+/// byte-for-byte the cut `workspace.create` makes. Only `settle` — which runs
+/// with the mutex retaken and the checkout on disk — is this file's.
+struct IssueDispatchWork {
+    inner: Box<dyn DeferredGitWork>,
+    plan: DispatchPlan,
+}
+
+impl DeferredGitWork for IssueDispatchWork {
+    fn run(&self, params: &Value) -> Result<Value, String> {
+        self.inner.run(params)
+    }
+
+    fn invalidates_on_error(&self) -> bool {
+        self.inner.invalidates_on_error()
+    }
+
+    fn invalidate(&self, app: &mut AppState) {
+        self.inner.invalidate(app);
+    }
+
+    /// The checkout is on disk; put an agent in it and hand it the issue.
+    ///
+    /// The registry is reloaded here rather than left to `invalidate`, which
+    /// runs AFTER this: until it is, the workspace the drain just cut is not
+    /// one `workspace.ensure_conversation` can see, and the agent would have
+    /// nowhere to live. Reloading twice is what `invalidate` already does to
+    /// itself on every other path, and costs a directory read.
+    fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
+        self.inner.settle(app, result)?;
+        if let Err(error) = app.workspaces.reload() {
+            return Err(format!("reload workspaces before dispatch: {error}"));
+        }
+        app.finish_new_workspace_dispatch(&self.plan)
+    }
+}
+
+impl AppState {
+    /// `{kind:"new_workspace"}` — cut a workspace, then put an agent in it and
+    /// hand it the issue.
+    ///
+    /// Cutting a checkout is seconds to minutes of git on a real repository, so
+    /// it goes to the drain like every other checkout Build makes, and the rest
+    /// of the dispatch goes with it. Nothing is written to the issue here: a
+    /// creation that fails must not leave an issue assigned to an agent that
+    /// was never made.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_into_a_new_workspace(
+        &mut self,
+        project_id: &str,
+        issue: Issue,
+        name: &Option<String>,
+        isolation: &Option<String>,
+        choice: &OwnedChoice,
+        note: Option<String>,
+        actor: Actor,
+        sender: Option<crate::app::AgentSender<'_>>,
+    ) -> Result<Value, String> {
+        let mut params = json!({
+            "project_id": project_id,
+            // The issue's title when the caller named nothing: a workspace cut
+            // for an issue is about that issue, and it names the branch too.
+            "name": name.clone().unwrap_or_else(|| issue.title.clone()),
+        });
+        if let Some(isolation) = isolation {
+            params["isolation"] = json!(isolation);
+        }
+        let created = self.workspace_create(&params)?;
+        let workspace_id = created["workspace_id"]
+            .as_str()
+            .ok_or("workspace.create answered no workspace_id")?
+            .to_string();
+        let plan = DispatchPlan {
+            project_id: project_id.to_string(),
+            issue_id: issue.id.clone(),
+            workspace_id: workspace_id.clone(),
+            choice: choice.clone(),
+            note,
+            actor,
+            sender: sender
+                .map(|sender| (sender.entity_id.to_string(), sender.agent_id.to_string())),
+        };
+        self.hang_dispatch_off_the_workspace_cut(plan)?;
+        Ok(json!({ "issue_id": issue.id, "workspace_id": workspace_id, "pending": true }))
+    }
+
+    /// Take the git `workspace.create` just handed the drain and put the rest
+    /// of the dispatch on the end of it.
+    ///
+    /// Wrapping what is already queued rather than queuing a second job: one
+    /// deferred slot exists per dispatch, and a dispatch that queued its own
+    /// would either overwrite the cut or race it.
+    fn hang_dispatch_off_the_workspace_cut(&mut self, plan: DispatchPlan) -> Result<(), String> {
+        let Some(crate::app::DeferredWork::Git(mut git)) = self.deferred_work.take() else {
+            return Err(
+                "workspace.create did not hand its checkout to the drain; cannot dispatch"
+                    .to_string(),
+            );
+        };
+        git.call = Box::new(IssueDispatchWork {
+            inner: git.call,
+            plan,
+        });
+        self.deferred_work = Some(crate::app::DeferredWork::Git(git));
+        Ok(())
+    }
+
+    /// The drain's half: the checkout exists, so make the agent and deliver.
+    fn finish_new_workspace_dispatch(&mut self, plan: &DispatchPlan) -> Result<Value, String> {
+        // Re-read the issue rather than carrying it through the git: the mutex
+        // was free for the whole cut, and somebody may have moved it.
+        let issue = self
+            .tracker_store()?
+            .load_tracker_issue(&plan.issue_id)
+            .stored()?
+            .ok_or_else(|| format!("unknown issue_id: {}", plan.issue_id))?;
+        let (agent_id, entity_id) =
+            self.add_agent_for_issue(&plan.project_id, &plan.workspace_id, plan.choice.args())?;
+        let sender = plan
+            .sender
+            .as_ref()
+            .map(|(entity_id, agent_id)| crate::app::AgentSender {
+                entity_id,
+                agent_id,
+            });
+        let mut delivered =
+            self.hand_over(&issue, &entity_id, &agent_id, plan.note.as_deref(), sender)?;
+        delivered.workspace_id = Some(plan.workspace_id.clone());
+        // Kept before the delivery is handed to the write: the answer names
+        // the receipt for the turn that was actually queued, which is the
+        // delivery's own and not the workspace cut's.
+        let dispatch = delivered.wire("new_workspace");
+        let now = crate::store::now_rfc3339();
+        let mut write = IssueWrite::of(issue);
+        let target = AssignTarget::NewWorkspace {
+            name: None,
+            isolation: None,
+            choice: plan.choice.clone(),
+        };
+        self.settle_assignment(&mut write, &target, &Some(delivered), &plan.actor, &now)?;
+        let answered = self.commit_issue_write(&plan.project_id, write, &now)?;
+        Ok(json!({ "issue": answered["issue"], "dispatch": dispatch }))
+    }
+
+    /// Deliver an issue into one conversation, with the envelope on it.
+    fn post_issue_to_agent(
+        &mut self,
+        issue: &Issue,
+        entity_id: &str,
+        agent_id: &str,
+        note: Option<&str>,
+        operation_id: &str,
+        sender: Option<crate::app::AgentSender<'_>>,
+    ) -> Result<String, String> {
+        let requester = match sender {
+            Some(sender) => Some(self.agent_requester(sender)?),
+            None => None,
+        };
+        let posted = self.thread_post_handing_over_issue(
+            &json!({
+                "entity_id": entity_id,
+                "agent_id": agent_id,
+                "body": issue_as_prose(issue, note),
+                "operation_id": operation_id,
+            }),
+            envelope_of(issue),
+            requester,
+        )?;
+        Ok(posted["entity_id"]
+            .as_str()
+            .unwrap_or(entity_id)
+            .to_string())
+    }
+}

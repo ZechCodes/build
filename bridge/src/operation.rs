@@ -108,13 +108,14 @@ impl OperationPayload {
         // envelope ahead of it turns commands such as `/goal ...` into prose.
         let sender = self.sender_note();
         let workspace = self.workspace_note();
+        let issue = self.issue_note();
         let user_prompt = self
             .messages
             .first()
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}{issue}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -153,6 +154,30 @@ impl OperationPayload {
             named.join(" and "),
             handles.join(" and ")
         )
+    }
+
+    /// One line naming the issue this turn was handed, when assigning one is
+    /// what sent it. Empty for every other message.
+    ///
+    /// The issue rides the message as `from_issue`, and the body already
+    /// carries it as prose — but the payload is JSON inside a prompt written in
+    /// the user's voice, and what the agent actually reads is the sentence
+    /// around it. So the envelope says the thing an agent has to act on: this
+    /// is the work, and these are the two tools that keep the issue honest
+    /// about where the work got to.
+    fn issue_note(&self) -> String {
+        self.messages
+            .iter()
+            .filter_map(|message| message.from_issue.as_deref())
+            .next()
+            .map_or_else(String::new, |issue| {
+                format!(
+                    "\nThis message hands you issue #{} \"{}\" (`{}`). Comment your progress on it \
+                     with comment_issue, and move it to In review with move_issue when you report \
+                     Complete.\n",
+                    issue.number, issue.title, issue.issue_id
+                )
+            })
     }
 
     /// One line naming the workspace the user was standing in, when the message

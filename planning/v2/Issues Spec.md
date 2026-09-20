@@ -264,6 +264,31 @@ Assigning over an existing assignee replaces it and writes one `assigned` event.
 Assigning `null` unassigns and writes `unassigned`; it dispatches nothing and
 stops nothing that is already running.
 
+### `new_workspace` waits for its checkout
+
+Cutting a workspace is seconds to minutes of git on a real repository, and
+`workspace.create` already hands that work to the deferred drain and answers
+`{workspace_id, pending}` under the lock. A workspace that is still provisioning
+has no conversation owner — `workspace.ensure_conversation` refuses one that is
+not `ready` — so the agent cannot be added until the checkout exists.
+
+So `issues.assign` with `new_workspace` **defers**, exactly the way
+`workspace.create` does: it hands the cut to the drain with the rest of the
+dispatch hung off the end of it, and the client's reply is the one the drain
+publishes once the agent has been made and the issue handed over. The reply
+shape is unchanged — `{issue, dispatch}` with every id filled in — because the
+client never sees the placeholder. The other four kinds do not defer; they are
+a SQLite write and an in-memory lookup.
+
+Nothing is written to the issue until the checkout exists. A cut that fails
+leaves the issue exactly as it was: unassigned, in its old column, with no
+`assigned` or `dispatched` event. An issue must never name an agent that was
+never made.
+
+The wrapper is why this is reuse rather than a fork: `run` and `invalidate` are
+`workspace.create`'s own, untouched, and only `settle` — which runs with the
+mutex retaken and the checkout on disk — belongs to the tracker.
+
 ### Reuse, not a fork
 
 Every one of these goes down the code path that already exists:
@@ -303,6 +328,8 @@ A dispatching assign answers
 ```
 
 and writes two events: `assigned`, then `dispatched` carrying the same four ids.
+`operation_id` is the receipt for the **delivery** — the turn the agent was
+actually given — and never the workspace cut's.
 It also links what it made — the `workspace_id` and the `entity_id` go onto
 `links.workspace_ids` and `links.conversation_ids` — and those write no separate
 `linked` events, because `dispatched` already says it.

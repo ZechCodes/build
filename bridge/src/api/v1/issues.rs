@@ -48,6 +48,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             IssuesCommentParams,
             IssueComment
         ),
+        v1_method!(
+            "issues.assign",
+            issues_assign,
+            IssuesAssignParams,
+            IssueAssigned
+        ),
         v1_method!("issues.link", issues_link, IssuesLinkParams, IssueAnswer),
         v1_method!("issues.close", issues_close, IssuesCloseParams, IssueAnswer),
         v1_method!("issues.reopen", issues_reopen, IssueIdParams, IssueAnswer),
@@ -151,6 +157,25 @@ pub struct IssuesLinkParams {
     pub parent_issue_id: Option<String>,
 }
 
+/// Hand an issue to somebody, and start them on it.
+///
+/// One tagged `assignee` covering all five kinds — `user`, `project_agent`,
+/// `agent`, `new_workspace`, `new_agent` — because assignment IS dispatch and a
+/// second field beside it would be a second place for the same decision. `null`
+/// unassigns. Untyped here for the reason a timeline entry is: the five arms
+/// carry different fields, and `AssignTarget::parse` is the one place that
+/// reads them, naming each refusal.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesAssignParams {
+    pub issue_id: String,
+    pub assignee: Value,
+    /// Extra instruction delivered under the issue. Not stored on the issue:
+    /// the body is the issue, and a hand-off note belongs in the conversation
+    /// it was said in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IssuesCloseParams {
     pub issue_id: String,
@@ -228,6 +253,29 @@ pub struct IssueComment {
     pub comment: IssueCommentView,
 }
 
+/// Where an assignment put the work, or `null` when it dispatched nothing —
+/// which is `{"kind":"user"}` and unassignment.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueDispatch {
+    /// Which of the five kinds was asked for.
+    pub kind: String,
+    /// The workspace the work runs in, when the dispatch names or makes one.
+    pub workspace_id: Option<String>,
+    /// The conversation owner the issue was delivered into.
+    pub entity_id: String,
+    /// The agent now holding the issue.
+    pub agent_id: String,
+    /// The receipt for the turn the delivery queued.
+    pub operation_id: Value,
+}
+
+/// What `issues.assign` answers: the issue, and where the work went.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueAssigned {
+    pub issue: IssueView,
+    pub dispatch: Option<IssueDispatch>,
+}
+
 /// One timeline entry: the record itself, with `type` naming which it is.
 ///
 /// Untyped past the discriminator on purpose. A comment and an event have
@@ -259,16 +307,24 @@ pub struct IssueColumns {
 // ----------------------------------------------------------------- codes ---
 
 /// The request was legible and the issue's own state said no.
-const CONFLICT: [&str; 3] = [
+const CONFLICT: [&str; 6] = [
     "is already closed",
     "is already open",
     "a parent link cannot close a loop",
+    // A dispatch that cuts a checkout waits for the filesystem, the way every
+    // other checkout Build makes does.
+    "another filesystem operation is still running",
+    "is not in project",
+    "workspace must finish provisioning successfully",
 ];
 
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 12] = [
+const INVALID: [&str; 15] = [
+    "unknown assignee kind:",
+    "assignee: name a kind",
+    "assignee new_agent: name a",
     "unknown status:",
     "unknown state:",
     "unknown priority:",
@@ -339,6 +395,17 @@ fn issues_comment(
     params: IssuesCommentParams,
 ) -> Result<Answer<IssueComment>, ApiError> {
     answer(app.issues_comment(&params.wire())).map_err(refine)
+}
+
+fn issues_assign(
+    app: &mut AppState,
+    params: IssuesAssignParams,
+) -> Result<Answer<IssueAssigned>, ApiError> {
+    answer(
+        app.issues_assign(&params.wire())
+            .map(super::deferral_placeholder),
+    )
+    .map_err(refine)
 }
 
 fn issues_link(

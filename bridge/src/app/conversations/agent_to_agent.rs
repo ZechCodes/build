@@ -151,7 +151,10 @@ impl AppState {
 
     /// The sending agent as the thing an operation is owed an answer by: which
     /// agent it is, the owner it belongs to, and its own conversation.
-    fn agent_requester(&self, sender: AgentSender<'_>) -> Result<OperationRequester, String> {
+    pub(in crate::app) fn agent_requester(
+        &self,
+        sender: AgentSender<'_>,
+    ) -> Result<OperationRequester, String> {
         let conversation_id = self
             .entity_agents(sender.entity_id)?
             .resolve(Some(sender.agent_id))?

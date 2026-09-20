@@ -64,6 +64,30 @@ impl AppState {
         self.post_to_thread(params, PostOrigin::asked_by(requester, sender))
     }
 
+    /// `thread.post`, carrying the issue that assigning one handed over.
+    ///
+    /// The same write, with the envelope added — and, when an AGENT did the
+    /// assigning, the sender and the requester a hand-off already carries. The
+    /// human assigning an issue is the human speaking, so that case wears an
+    /// envelope and no sender.
+    pub(in crate::app) fn thread_post_handing_over_issue(
+        &mut self,
+        params: &Value,
+        issue: crate::thread::IssueEnvelope,
+        requester: Option<OperationRequester>,
+    ) -> Result<Value, String> {
+        let origin = match requester {
+            Some(requester) => {
+                let sender = self.agent_identity(&requester.entity_id, &requester.agent_id);
+                let mut origin = PostOrigin::asked_by(requester, sender);
+                origin.from_issue = Some(issue);
+                origin
+            }
+            None => PostOrigin::handing_over(issue, None),
+        };
+        self.post_to_thread(params, origin)
+    }
+
     fn post_to_thread(&mut self, params: &Value, origin: PostOrigin) -> Result<Value, String> {
         let normalized_params = normalize_post_viewing_contexts(params)?;
         let params = &normalized_params;
@@ -172,6 +196,7 @@ impl AppState {
                 anchor: None,
                 viewing_context: parse_viewing_context(params.get("viewing_context"))?,
                 from_agent: None,
+                from_issue: None,
             }],
             None => parse_thread_post_messages(
                 params,
@@ -368,6 +393,7 @@ impl AppState {
                 anchor: None,
                 viewing_context: parse_viewing_context(params.get("viewing_context"))?,
                 from_agent: None,
+                from_issue: None,
             }],
             None => parse_thread_post_messages(
                 params,
@@ -376,9 +402,14 @@ impl AppState {
             )?,
         };
         let sender = origin.sender();
+        let handed_over = origin.issue();
         let messages: Vec<ReviewerMessage> = messages
             .into_iter()
-            .map(|message| message.sent_by(sender.as_ref()))
+            .map(|message| {
+                message
+                    .sent_by(sender.as_ref())
+                    .about_issue(handed_over.as_ref())
+            })
             .collect();
         let resume = matches!(
             active.run.state,

@@ -11,6 +11,7 @@
 //! [`views`]; the fencing an agent-supplied reference goes through is
 //! [`refs`].
 
+mod dispatch;
 mod edits;
 mod refs;
 mod views;

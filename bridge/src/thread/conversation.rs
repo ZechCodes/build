@@ -287,6 +287,21 @@ impl Thread {
         self.unclaim_own_message_line();
     }
 
+    /// Say which issue the message just posted handed over, set the same way
+    /// the sender is and for the same reason: the post paths that carry an
+    /// anchor or a viewing context cannot take one more argument each.
+    ///
+    /// It does NOT unclaim the own-message line the way wearing a sender does.
+    /// An issue is not a sender: the human assigning one IS the human speaking,
+    /// and a row they cleared should come back for it. Where an AGENT did the
+    /// assigning, the sender it also wears is what moves the line.
+    pub fn wear_issue(&mut self, from_issue: super::IssueEnvelope) {
+        let Some(ThreadItem::Message(message)) = self.items.last_mut() else {
+            return;
+        };
+        message.from_issue = Some(Box::new(from_issue));
+    }
+
     pub fn post_user_with_context(
         &mut self,
         body: impl Into<String>,
@@ -697,6 +712,7 @@ impl Thread {
             role,
             from_agent: None,
             sent_to: None,
+            from_issue: None,
             done: false,
             outcome: None,
             completion_report: None,

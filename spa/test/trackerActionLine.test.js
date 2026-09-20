@@ -51,8 +51,6 @@ describe("the line", () => {
   // tense both read, because the bridge may send either.
   it("renders each action", () => {
     const said = (name) => paint([acted({ action: name })]).textContent.replace(/\s+/g, " ").trim().replace(/^#\d+\s*/, "");
-    expect(said("created")).toBe("created");
-    expect(said("create")).toBe("created");
     expect(said("assigned")).toBe("assigned");
     // The wire says `update`; a reader calls it an edit (#40).
     expect(said("updated")).toBe("edited");
@@ -61,6 +59,17 @@ describe("the line", () => {
     expect(said("commented_on")).toBe("commented on");
     expect(said("moved")).toBe("moved");
     expect(said("closed")).toBe("closed");
+  });
+
+  // Zech, 21:19Z: "Use 'Created #X {title}'". A creation is the one action
+  // whose news is the title, so it reads verb first and keeps the title.
+  it("reads a creation verb first, with the title", () => {
+    const text = (over) => paint([acted(over)]).textContent.replace(/\s+/g, " ").trim();
+    expect(text({ action: "created", title: "Ghost rows survive" })).toBe("Created #14 Ghost rows survive");
+    expect(text({ action: "create", title: "Ghost rows survive" })).toBe("Created #14 Ghost rows survive");
+    expect(text({ action: "created", title: "" })).toBe("Created #14");
+    expect(paint([acted({ action: "created", title: "Ghost rows survive" })]).querySelector(".thread-issue-title")).not.toBeNull();
+    expect(paint([acted({ action: "commented", title: "Ghost rows survive" })]).querySelector(".thread-issue-title")).toBeNull();
   });
 
   // A later verb should leave a legible line, not a blank one — and never one

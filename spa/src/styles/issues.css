@@ -419,6 +419,7 @@ a.thread-issue-action:focus-visible, a.thread-issue-notice:focus-visible {
 }
 /* Who did what. Fixed-size beside the title, so the title is what shrinks. */
 .thread-issue-said { flex:0 0 auto; }
+.thread-issue-title { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .thread-issue-number { flex:0 0 auto; color:var(--accent); font-weight:650; font-variant-numeric:tabular-nums; }
 .thread-issue-line-title {
   flex:0 1 auto; min-width:0;

@@ -274,7 +274,10 @@ describe("the shape of the row", () => {
   // page the link opens, and it stays as hover text where length costs
   // nothing.
   it("leads with the number and carries no title on the line", () => {
-    for (const row of [said(notice_()), said(action_())]) {
+    // A creation is the one exception: it reads "Created #39 A title" (Zech,
+    // 21:19Z), covered in trackerActionLine.test.js. Every other verb leads
+    // with the number.
+    for (const row of [said(notice_()), said(action_({ action: "commented" }))]) {
       const line = row.querySelector("a, span");
       expect(line.firstElementChild.classList.contains("thread-issue-number")).toBe(true);
       expect(line.querySelector(".thread-issue-line-title")).toBeNull();

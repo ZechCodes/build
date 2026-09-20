@@ -45,6 +45,22 @@ export function actionHref(action, place) {
 }
 
 /**
+ * The words of the line. A creation is the one action whose news is the title
+ * — nothing else on the page has named the issue yet — so it reads verb first
+ * with the title, ellipsised: Zech, 21:19Z: "Use 'Created #X {title}'".
+ * Every other action leads with the number and leaves the title to hover.
+ */
+function actionSpansHtml(action) {
+  const number = `<span class="thread-issue-number">#${esc(String(action.number ?? ""))}</span>`;
+  const word = actionWord(action.action);
+  if (word === "created") {
+    const title = action.title ? ` <span class="thread-issue-title">${esc(action.title)}</span>` : "";
+    return `<span class="thread-issue-said">Created</span> ${number}${title}`;
+  }
+  return `${number} <span class="thread-issue-said">${esc(word)}</span>`;
+}
+
+/**
  * The line itself, or nothing for a message that carries no action.
  *
  * `#12` and the title are one anchor rather than two: the whole line is the
@@ -62,7 +78,7 @@ export function issueActionLineHtml(action, { place = null } = {}) {
   // The spaces between the spans are for the reader, not for the layout: flex
   // drops whitespace-only nodes and `gap` does the spacing, but they stay in
   // the text a screen reader speaks and a copy takes.
-  const said = `<span class="thread-issue-number">#${esc(String(action.number ?? ""))}</span> <span class="thread-issue-said">${esc(actionWord(action.action))}</span>`;
+  const said = actionSpansHtml(action);
   const hover = action.title ? ` title="${esc(action.title)}"` : "";
   const href = actionHref(action, place);
   return href

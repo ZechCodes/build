@@ -71,7 +71,7 @@ impl AppState {
             refs: Vec::new(),
             created_at: now.clone(),
         };
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(actor.clone(), issue);
         write.comments.push(comment);
         if completed && write.issue.is_open() {
             edits::move_to(
@@ -166,7 +166,7 @@ impl AppState {
             .into_iter()
             .filter(|issue| issue.links.links_workspace(workspace_id))
         {
-            let mut write = IssueWrite::of(issue);
+            let mut write = IssueWrite::by(Actor::User, issue);
             write.issue.state = IssueState::Closed;
             write.issue.closed_at = Some(now.clone());
             write.event(

@@ -266,3 +266,170 @@ fn the_per_agent_read_answers_what_it_holds_and_what_it_watches() {
     assert_eq!(empty["result"]["assigned"], json!([]));
     assert_eq!(empty["result"]["tracking"], json!([]));
 }
+
+// ------------------------------------------------------------- notices ---
+
+/// The notices sitting on one agent's conversation, newest last.
+fn notices(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> {
+    let page = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": entity_id, "agent_id": agent_id, "limit": 50 }),
+    ));
+    page["result"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| item["type"] == "message")
+        .map(|item| item["data"].clone())
+        .filter(|message| message["from_build"] == true)
+        .collect()
+}
+
+/// A change reaches every tracker and never the agent that made it.
+#[test]
+fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let actor = coding_agent(&mut state, &project_id, "actor");
+    let watcher = coding_agent(&mut state, &project_id, "watcher");
+    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+
+    for who in [&actor, &watcher] {
+        state.handle(req(
+            "issues.track",
+            json!({ "issue_id": id, "agent_id": who.1 }),
+        ));
+    }
+
+    // The actor moves it through its own tool, so the bridge knows who acted.
+    state
+        .on_agent_mcp_action(
+            &actor.0,
+            &actor.1,
+            crate::mcp::BridgeAction::TrackerMoveIssue {
+                issue_id: id.clone(),
+                status: "in_review".into(),
+            },
+        )
+        .expect("the actor moves its issue");
+
+    let told = notices(&mut state, &watcher.0, &watcher.1);
+    assert_eq!(told.len(), 1, "one notice per change: {told:?}");
+    let notice = &told[0];
+    assert_eq!(notice["from_build"], true, "Build's own words");
+    assert_eq!(notice["role"], "user", "an instruction arrives inbound");
+    assert_eq!(notice["from_issue"]["issue_id"], id.as_str());
+    assert_eq!(notice["from_issue"]["number"], 1);
+    assert_eq!(notice["from_issue"]["title"], "Kanban drag");
+    let body = notice["body"].as_str().unwrap();
+    assert!(body.contains("moved to In review"), "{body}");
+    assert!(body.contains(&actor.1), "it says who: {body}");
+
+    assert!(
+        notices(&mut state, &actor.0, &actor.1).is_empty(),
+        "nobody is told what they just did"
+    );
+}
+
+/// A comment's body rides the notice — the point of hearing about a comment is
+/// reading it.
+#[test]
+fn a_comments_body_rides_the_notice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let watcher = coding_agent(&mut state, &project_id, "watcher");
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    state.handle(req(
+        "issues.track",
+        json!({ "issue_id": id, "agent_id": watcher.1 }),
+    ));
+
+    state.handle(req(
+        "issues.comment",
+        json!({ "issue_id": id, "body": "The drop handler races the column read." }),
+    ));
+
+    let told = notices(&mut state, &watcher.0, &watcher.1);
+    assert_eq!(told.len(), 1, "{told:?}");
+    let body = told[0]["body"].as_str().unwrap();
+    assert!(body.contains("commented"), "{body}");
+    assert!(
+        body.contains("The drop handler races the column read."),
+        "the words themselves: {body}"
+    );
+}
+
+/// The notice starts the tracker's turn, so an idle agent wakes to it.
+#[test]
+fn a_notice_starts_the_tracking_agents_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let watcher = coding_agent(&mut state, &project_id, "watcher");
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    state.handle(req(
+        "issues.track",
+        json!({ "issue_id": id, "agent_id": watcher.1 }),
+    ));
+    // Nothing queued yet: the tracking call itself woke nobody.
+    assert!(state.delivery_queue.take_ready(|_| false).is_empty());
+
+    state.handle(req(
+        "issues.update",
+        json!({ "issue_id": id, "status": "ready" }),
+    ));
+
+    let queued = state.delivery_queue.take_ready(|_| false);
+    assert_eq!(queued.len(), 1, "one turn for one change");
+    let turn = &queued[0];
+    assert_eq!(turn.agent_id, watcher.1, "the tracker's turn, not anyone's");
+    assert_eq!(turn.owner, watcher.0);
+    assert_eq!(turn.phase, "issue_notice");
+    assert!(
+        turn.says_something(),
+        "it tells the agent to go and read, which is what starts an idle one"
+    );
+    assert!(
+        !turn.interrupt,
+        "a notice does not cut a turn in flight short"
+    );
+}
+
+/// A write that changes nothing delivers nothing: it is not news, for the same
+/// reason it writes no event.
+#[test]
+fn a_change_that_changes_nothing_wakes_nobody() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let watcher = coding_agent(&mut state, &project_id, "watcher");
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    state.handle(req(
+        "issues.track",
+        json!({ "issue_id": id, "agent_id": watcher.1 }),
+    ));
+
+    // It is already in Backlog.
+    state.handle(req(
+        "issues.update",
+        json!({ "issue_id": id, "status": "backlog" }),
+    ));
+    assert!(
+        notices(&mut state, &watcher.0, &watcher.1).is_empty(),
+        "moving a card where it already is is not news"
+    );
+
+    // And somebody else starting to watch is not a change to the issue.
+    let other = coding_agent(&mut state, &project_id, "other");
+    state.handle(req(
+        "issues.track",
+        json!({ "issue_id": id, "agent_id": other.1 }),
+    ));
+    assert!(
+        notices(&mut state, &watcher.0, &watcher.1).is_empty(),
+        "who else is watching is not a change to the issue"
+    );
+}

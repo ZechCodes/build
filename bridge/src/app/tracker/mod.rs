@@ -14,6 +14,7 @@
 mod activity;
 mod dispatch;
 mod edits;
+mod notices;
 mod refs;
 mod tools;
 mod tracking;
@@ -39,14 +40,23 @@ pub(in crate::app) struct IssueWrite {
     pub(in crate::app) issue: Issue,
     pub(in crate::app) comments: Vec<IssueComment>,
     pub(in crate::app) events: Vec<IssueEvent>,
+    /// Who is making this change.
+    ///
+    /// Carried on the write rather than passed beside it: a tracking notice
+    /// must not go back to whoever caused it, and that exclusion is the rule
+    /// the whole feature rests on. An argument every caller had to remember to
+    /// keep in step would be one a caller could get wrong.
+    pub(in crate::app) actor: Actor,
 }
 
 impl IssueWrite {
-    fn of(issue: Issue) -> IssueWrite {
+    /// A write, and who is making it.
+    fn by(actor: Actor, issue: Issue) -> IssueWrite {
         IssueWrite {
             issue,
             comments: Vec::new(),
             events: Vec::new(),
+            actor,
         }
     }
 
@@ -178,7 +188,7 @@ impl AppState {
         let issue_id = require_str(params, "issue_id")?;
         let (project_id, issue) = self.tracker_issue(&issue_id)?;
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(Actor::User, issue);
         edits::apply_update(&mut write, params, &Actor::User, &now)?;
         self.commit_issue_write(&project_id, write, &now)
     }
@@ -198,7 +208,7 @@ impl AppState {
             refs,
             created_at: now.clone(),
         };
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(Actor::User, issue);
         write.comments.push(comment.clone());
         let answered = self.commit_issue_write(&project_id, write, &now)?;
         Ok(json!({
@@ -213,7 +223,7 @@ impl AppState {
         let issue_id = require_str(params, "issue_id")?;
         let (project_id, issue) = self.tracker_issue(&issue_id)?;
         let asked = edits::asked_links(params)?;
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(Actor::User, issue);
         let now = crate::store::now_rfc3339();
         self.apply_links(&project_id, &mut write, &asked, &Actor::User, &now)?;
         self.commit_issue_write(&project_id, write, &now)
@@ -229,7 +239,7 @@ impl AppState {
         }
         let reason = crate::app::optional_nonempty_string(params, "reason")?.map(str::to_string);
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(Actor::User, issue);
         edits::close(&mut write, &Actor::User, reason, &now);
         self.commit_issue_write(&project_id, write, &now)
     }
@@ -242,7 +252,7 @@ impl AppState {
             return Err(format!("issue #{} is already open", issue.number));
         }
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(Actor::User, issue);
         write.issue.state = IssueState::Open;
         write.issue.closed_at = None;
         write.event(&Actor::User, IssueEventKind::Reopened, json!({}), &now);
@@ -267,6 +277,10 @@ impl AppState {
             .save_tracker_issue_activity(&write.issue, &write.comments, &write.events)
             .stored()?;
         self.note_issues_changed(project_id, &write.issue.id);
+        // AFTER the write is durable, and quiet about its own failure: the
+        // change landed, and a conversation that could not be written must not
+        // turn it back into a refusal.
+        self.notify_trackers(&write);
         Ok(json!({ "issue": issue_json(project_id, &write.issue) }))
     }
 

@@ -192,7 +192,7 @@ impl AppState {
             refs,
             created_at: now.clone(),
         };
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(scope.actor.clone(), issue);
         write.comments.push(comment.clone());
         let answered = self.commit_issue_write(&scope.project_id, write, &now)?;
         Ok(json!({
@@ -238,7 +238,7 @@ impl AppState {
         let status = edits::optional_status(&params, "status")?
             .ok_or_else(|| "status is required".to_string())?;
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(scope.actor.clone(), issue);
         edits::move_to(&mut write, &status, &scope.actor, json!({}), &now);
         self.commit_issue_write(&scope.project_id, write, &now)
     }
@@ -254,7 +254,7 @@ impl AppState {
             return Err(format!("issue #{} is already closed", issue.number));
         }
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(scope.actor.clone(), issue);
         edits::close(&mut write, &scope.actor, reason, &now);
         self.commit_issue_write(&scope.project_id, write, &now)
     }
@@ -268,7 +268,7 @@ impl AppState {
         let issue = self.issue_of_this_agents_project(scope, issue_id)?;
         let asked = edits::asked_links(&params)?;
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(scope.actor.clone(), issue);
         self.apply_links(&scope.project_id, &mut write, &asked, &scope.actor, &now)?;
         self.commit_issue_write(&scope.project_id, write, &now)
     }

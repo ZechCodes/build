@@ -76,6 +76,31 @@
           "body": "the retry path double-posts; take it before the rail",
           "created_at": "2026-09-13T10:05:02Z"
         }
+      },
+      {
+        "type": "message",
+        "data": {
+          "id": "message-44",
+          "sequence": 44,
+          "updated_sequence": 44,
+          "role": "user",
+          "from_build": true,
+          "from_issue": {
+            "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "number": 13,
+            "title": "Kanban drag does not persist",
+            "body": "",
+            "links": {
+              "workspace_ids": [],
+              "branches": [],
+              "commits": [],
+              "conversation_ids": [],
+              "parent_issue_id": null
+            }
+          },
+          "body": "#13 Kanban drag does not persist \u2014 moved to In review by agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+          "created_at": "2026-09-20T15:04:00Z"
+        }
       }
     ],
     "activity_digests": [

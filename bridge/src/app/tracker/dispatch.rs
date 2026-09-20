@@ -217,7 +217,7 @@ impl AppState {
                 project_id, issue, name, isolation, choice, note, actor, sender,
             );
         }
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(actor.clone(), issue);
         let delivery =
             self.deliver_for(project_id, &write.issue, &target, note.as_deref(), sender)?;
         self.settle_assignment(&mut write, &target, &delivery, &actor, &now)?;
@@ -650,7 +650,7 @@ impl AppState {
         // delivery's own and not the workspace cut's.
         let dispatch = delivered.wire("new_workspace");
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(plan.actor.clone(), issue);
         let target = AssignTarget::NewWorkspace {
             name: None,
             isolation: None,

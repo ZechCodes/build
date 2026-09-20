@@ -63,7 +63,7 @@ impl AppState {
         because: Option<&str>,
     ) -> Result<Value, String> {
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::of(issue);
+        let mut write = IssueWrite::by(actor.clone(), issue);
         let changed = if tracking {
             write.issue.track(agent_id)?
         } else {

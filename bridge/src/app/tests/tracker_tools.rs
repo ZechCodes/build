@@ -36,7 +36,7 @@ fn call(
     state.on_agent_mcp_action(&who.0, &who.1, action)
 }
 
-/// The eight the tracker adds, by name.
+/// The ten the tracker adds, by name.
 const ISSUE_TOOLS: [&str; 10] = [
     "list_issues",
     "get_issue",
@@ -50,7 +50,7 @@ const ISSUE_TOOLS: [&str; 10] = [
     "untrack_issue",
 ];
 
-/// Both working surfaces are shown the same eight tools. The router is shown
+/// Both working surfaces are shown the same ten tools. The router is shown
 /// none of them: it has no project to be scoped to.
 #[test]
 fn both_working_surfaces_carry_the_issue_tools_and_the_router_carries_none() {

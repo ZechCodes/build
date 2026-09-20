@@ -351,6 +351,8 @@ impl AppState {
         };
         let agent_id = self.ensure_primary_agent(&entity_id)?;
         let mut delivered = self.hand_over(issue, &entity_id, &agent_id, note, sender)?;
+        // The project's agent works in the repository itself, so there is no
+        // workspace to name and the hand-off must not invent one.
         delivered.workspace_id = workspace_id;
         Ok(Some(delivered))
     }
@@ -425,7 +427,12 @@ impl AppState {
         let posted =
             self.post_issue_to_agent(issue, entity_id, agent_id, note, &operation_id, sender)?;
         Ok(Delivered {
-            workspace_id: None,
+            // Where the agent is working, when it is working somewhere. All a
+            // hand-off is given is a conversation, and an issue that recorded
+            // only that would name who is on it and not where the code is —
+            // which is the question anybody reading the issue later asks.
+            // `None` for the project's agent, which works in no checkout.
+            workspace_id: self.workspace_of_conversation(&posted),
             entity_id: posted,
             agent_id: agent_id.to_string(),
             operation_id,

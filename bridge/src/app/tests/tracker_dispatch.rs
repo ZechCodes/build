@@ -251,7 +251,7 @@ fn a_new_agent_on_an_existing_workspace_is_made_and_handed_the_issue() {
     );
     let dispatch = &answered["dispatch"];
     assert_eq!(dispatch["kind"], "new_agent");
-    assert_eq!(dispatch["workspace_id"], Value::Null);
+    assert_eq!(dispatch["workspace_id"], ws);
     let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
     assert_eq!(
         answered["issue"]["assignee"],
@@ -262,6 +262,7 @@ fn a_new_agent_on_an_existing_workspace_is_made_and_handed_the_issue() {
         answered["issue"]["links"]["conversation_ids"],
         json!([dispatch["entity_id"].as_str().unwrap()])
     );
+    assert_eq!(answered["issue"]["links"]["workspace_ids"], json!([ws]));
     assert_eq!(answered["issue"]["status"], "in_progress");
 
     let delivered = messages(
@@ -519,4 +520,98 @@ fn a_workspace_that_cannot_be_cut_leaves_the_issue_unassigned() {
     assert_eq!(after["result"]["issue"]["assignee"], Value::Null);
     assert_eq!(after["result"]["issue"]["status"], "backlog");
     assert_eq!(event_kinds(&mut state, &id), vec!["created"]);
+}
+
+/// Handing an issue to an agent that already exists records the workspace that
+/// agent is working in, not just its conversation.
+///
+/// This is what makes self-assignment worth asking an agent for: an agent that
+/// assigns itself the issue it is working on links the checkout by doing it,
+/// and nobody has to remember a second call.
+#[test]
+fn assigning_to_an_existing_agent_links_the_workspace_it_works_in() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let ws = workspace(&mut state, &project_id, "here");
+
+    // An agent on that workspace, made without any issue in hand.
+    let second = issue_id(&filed(&mut state, &project_id, "two"));
+    let made = assign(
+        &mut state,
+        &second,
+        json!({ "kind": "new_agent", "workspace_id": ws }),
+    );
+    let agent_id = made["dispatch"]["agent_id"].as_str().unwrap().to_string();
+
+    let answered = assign(
+        &mut state,
+        &id,
+        json!({ "kind": "agent", "agent_id": agent_id }),
+    );
+    assert_eq!(
+        answered["dispatch"]["workspace_id"], ws,
+        "the dispatch says where the work is: {answered:?}"
+    );
+    assert_eq!(
+        answered["issue"]["links"]["workspace_ids"],
+        json!([ws]),
+        "and the issue records it"
+    );
+    assert_eq!(
+        answered["issue"]["links"]["conversation_ids"],
+        json!([answered["dispatch"]["entity_id"].as_str().unwrap()])
+    );
+}
+
+/// Unassigning leaves the links alone. What the issue was worked in is a fact
+/// about its history; handing it back does not unmake the checkout, and an
+/// issue that forgot where the work happened would be worse off than one
+/// nobody holds.
+#[test]
+fn unassigning_does_not_unlink_the_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let ws = workspace(&mut state, &project_id, "here");
+    let made = assign(
+        &mut state,
+        &id,
+        json!({ "kind": "new_agent", "workspace_id": ws }),
+    );
+    let linked = made["issue"]["links"].clone();
+    assert_eq!(linked["workspace_ids"], json!([ws]));
+
+    let after = assign(&mut state, &id, Value::Null);
+    assert_eq!(after["issue"]["assignee"], Value::Null);
+    assert_eq!(
+        after["issue"]["links"], linked,
+        "handing it back forgets nothing"
+    );
+}
+
+/// The prompt asks for the self-assignment that does the linking. What
+/// `link_issue` is left saying for itself is pinned in `mcp.rs`.
+#[test]
+fn the_prompt_asks_an_agent_to_assign_itself_what_it_is_working_on() {
+    let templates = crate::templates::Templates::default();
+    // Collapsed, so the assertions read the wording rather than the wrapping.
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (name, text) in [
+        ("build", &templates.build),
+        ("plan", &templates.plan),
+        ("project_agent", &templates.project_agent),
+    ] {
+        let text = flat(text);
+        assert!(
+            text.contains("Assign yourself any issue you pick up that nobody handed you"),
+            "{name} does not ask for it"
+        );
+        assert!(
+            text.contains("assigning records the workspace and conversation"),
+            "{name} does not say what assigning yourself records"
+        );
+    }
 }

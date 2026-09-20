@@ -680,9 +680,9 @@ impl DoneServer {
     // -------------------------------------------------- issue tracker ---
     // The per-project issue tracker (spec: Issues). One block, shown by both
     // working surfaces, so a coding agent and a project agent are offered the
-    // same eight tools with the same words.
+    // same ten tools with the same words.
 
-    /// The tracker's eight, appended to whichever surface is being built.
+    /// The tracker's ten, appended to whichever surface is being built.
     ///
     /// None takes a project: the scope is the calling agent's own, read off
     /// the session, so there is nothing to pass and no other project reachable.
@@ -807,7 +807,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "link_issue",
-                "description": "Record what an issue is about: the workspace being worked in, the branch, a commit, or the conversation working it. A link has to name something of your own project. Name at least one.",
+                "description": "Record what an issue is about: the workspace being worked in, the branch, a commit, or the conversation working it. Assigning an issue already links the assignee's workspace and conversation, so this is for the branch you cut for it, each commit that lands for it, and any second workspace. A link has to name something of your own project. Name at least one.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -2370,7 +2370,7 @@ mod tests {
         "remove_workspace_directory",
     ];
 
-    /// The issue tracker's eight, the OTHER inventory shared between the two
+    /// The issue tracker's ten, the OTHER inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
     const ISSUE_TOOLS: [&str; 10] = [
@@ -2385,6 +2385,30 @@ mod tests {
         "track_issue",
         "untrack_issue",
     ];
+
+    /// `link_issue` says what assignment does NOT do for you, so an agent that
+    /// read "assignment links your workspace" does not conclude the tool is
+    /// redundant and leave every commit unlinked.
+    #[test]
+    fn link_issue_says_what_assignment_leaves_for_it() {
+        let described = server()
+            .tools()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "link_issue")
+            .expect("link_issue is offered")
+            .clone();
+        let description = described["description"].as_str().unwrap();
+        assert!(
+            description.contains("Assigning an issue already links"),
+            "{description}"
+        );
+        assert!(
+            description.contains("each commit that lands for it"),
+            "{description}"
+        );
+    }
 
     #[test]
     fn every_surface_advertises_its_exact_tool_inventory() {

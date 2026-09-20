@@ -354,6 +354,22 @@ impl AppState {
             .map(|(run_id, _)| run_id.clone())
     }
 
+    /// The workspace a conversation belongs to, if it belongs to one.
+    ///
+    /// The other direction of [`Self::workspace_conversation_owner`], asked by
+    /// assignment: handing an issue to an agent names a conversation, and what
+    /// the issue wants recorded is the checkout that conversation works in.
+    /// `None` for the project's own conversation, which has no workspace.
+    pub(in crate::app) fn workspace_of_conversation(&self, entity_id: &str) -> Option<String> {
+        self.workspaces
+            .list(None)
+            .into_iter()
+            .find(|workspace| {
+                self.workspace_conversation_owner(workspace).as_deref() == Some(entity_id)
+            })
+            .map(|workspace| workspace.id.clone())
+    }
+
     /// Where a run's git is read: its checkout, unless the run is a workspace
     /// conversation. That run stands on the workspace root, which is a folder of
     /// sources and no repository, so its git is the workspace's git directory —

@@ -353,9 +353,24 @@ A dispatching assign answers
 and writes two events: `assigned`, then `dispatched` carrying the same four ids.
 `operation_id` is the receipt for the **delivery** — the turn the agent was
 actually given — and never the workspace cut's.
-It also links what it made — the `workspace_id` and the `entity_id` go onto
-`links.workspace_ids` and `links.conversation_ids` — and those write no separate
-`linked` events, because `dispatched` already says it.
+It also links **where the work is** — the `workspace_id` and the `entity_id` go
+onto `links.workspace_ids` and `links.conversation_ids` — and those write no
+separate `linked` events, because `dispatched` already says it.
+
+This holds for every dispatching kind and not only the two that create
+something. Handing an issue to an agent that already exists links the workspace
+that agent is working in, looked up from its conversation, because an issue that
+recorded only the conversation would name who is on it and not where the code
+is — which is the question anybody reading the issue later asks. The project's
+agent links no workspace: it works in the repository itself. **Unassigning
+unlinks nothing.** Where an issue was worked is a fact about its history, and
+handing it back does not unmake the checkout.
+
+Which is what makes self-assignment worth asking an agent for, and the
+issue-tools prompt does: an agent that picks up an issue nobody handed it
+assigns it to itself, and the checkout is recorded by that alone. `link_issue`
+is then left with what assignment cannot know — the branch cut for the issue,
+each commit that lands for it, and any second workspace.
 
 A dispatching assign also **moves the issue to `in_progress`** and writes a
 `moved` event, when the issue is open and its status is `backlog` or `ready`.

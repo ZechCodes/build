@@ -102,6 +102,9 @@ export function mountIssuePage(host, options) {
   function take(answer, { keepDrafts = false } = {}) {
     if (!answer?.issue) return;
     state.issue = answer.issue;
+    // Whoever mounted this page may want to say which issue is open — the
+    // route names an id, but only a read knows its number and title.
+    state.onIssueRead?.(answer.issue);
     state.rows = timelineRows(answer.timeline);
     if (!keepDrafts) state.labelsDraft = (answer.issue.labels || []).join(", ");
     state.loaded = true;

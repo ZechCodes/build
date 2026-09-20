@@ -20,6 +20,7 @@ import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 import { mountIssuePage } from "../core/trackerIssuePage.js";
+import { issueContextItem } from "../core/trackerViewingContext.js";
 import { mountProjectAgentRail } from "../core/projectAgentRail.js";
 import { createAgentSelection } from "../core/agentSelection.js";
 import "../styles/issues.css";
@@ -39,7 +40,21 @@ export async function renderTrackerIssue() {
   }
   root.innerHTML = `<div id="tabbody" class="flush"><div id="issue-pane" class="issue-surface"></div></div>`;
   let feed = null;
+  /**
+   * Say which issue is on screen, so the project agent's rail beside it knows
+   * what the reader is looking at.
+   *
+   * Set from the READ rather than from the route: the route names an id, and
+   * an agent told an id and nothing else is no better off. Gated on the
+   * bridge — a kind an older one does not know is refused, and the refusal
+   * takes the reader's message with it (core/trackerViewingContext.js).
+   */
+  const sayWhichIssue = (issue) => {
+    const item = issueContextItem(issue, context.deviceId);
+    if (item) App.viewingContext?.set?.({ version: 1, items: [item] });
+  };
   const page = mountIssuePage($("#issue-pane"), {
+    onIssueRead: sayWhichIssue,
     projectId: route.projectId,
     deviceId: context.deviceId,
     projectKey: routeProjectKey(route),

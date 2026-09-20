@@ -71,7 +71,7 @@ const answerFor = (over = {}, timeline = TIMELINE) => ({
   timeline,
 });
 
-const mount = async () => {
+const mount = async (over = {}) => {
   page = mountIssuePage(host, {
     projectId: "proj-1",
     deviceId: "dev-1",
@@ -82,6 +82,7 @@ const mount = async () => {
     refreshCatalog: async () => ({ providers: [] }),
     feed: () => feed,
     navigate: vi.fn(),
+    ...over,
   });
   await flush();
   return page;
@@ -410,5 +411,42 @@ describe("the push", () => {
     watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: [], truncated: true } }]);
     await flush();
     expect(listed("issues.get")).toHaveLength(1);
+  });
+});
+
+// The project agent's rail stands beside this page, so the page says which
+// issue is open. Only from the READ: the route names an id, and an agent told
+// an id and nothing else is no better off.
+describe("saying which issue is open", () => {
+  it("reports the issue once it has been read, and not before", async () => {
+    const seen = [];
+    let settle;
+    call = vi.fn((method) => (method === "issues.get" ? new Promise((resolve) => { settle = resolve; }) : Promise.resolve({})));
+    page = mountIssuePage(host, {
+      projectId: "proj-1",
+      deviceId: "dev-1",
+      projectKey: PROJECT_KEY,
+      issueId: "issue-1",
+      callRpc: call,
+      catalog: () => ({ providers: [] }),
+      refreshCatalog: async () => ({ providers: [] }),
+      feed: () => feed,
+      navigate: vi.fn(),
+      onIssueRead: (issue) => seen.push(issue),
+    });
+    await flush();
+    expect(seen).toEqual([]);
+    settle(answerFor());
+    await flush();
+    expect(seen.map((one) => [one.number, one.title])).toEqual([[12, "Kanban drag does not persist"]]);
+  });
+
+  it("reports it again when a push re-reads it, so a retitled issue is not stale", async () => {
+    const seen = [];
+    await mount({ onIssueRead: (issue) => seen.push(issue.title) });
+    expect(seen).toHaveLength(1);
+    watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
+    await flush();
+    expect(seen.length).toBeGreaterThan(1);
   });
 });

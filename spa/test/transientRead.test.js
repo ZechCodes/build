@@ -204,21 +204,62 @@ describe("what a surface does about one", () => {
     expect(guard.failed(thrown("your device went offline"))).toBe(true);
   });
 
-  // One lost call on a wire that is still up has nothing to wait for: waiting
-  // on a reconnect that will never come would hold the surface silent forever.
-  it("waits for no reconnect when the machine never went away", () => {
+  // The read knows first. Measured on the compose stack: with the bridge
+  // paused the call timed out at +12s and the ring did not say Reconnecting
+  // until +15s — so a guard that asks "is the machine away?" as the read fails
+  // is told "no" about a session that is already dead. Asking then, and
+  // believing the answer, is why the mark never appeared and the retry never
+  // armed: the whole of #24, silently absent on a live stack.
+  it("waits even while the registry still thinks the machine is here", () => {
     away = false;
     reconnecting = false;
     expect(guard.failed(thrown("issues.get timed out", { timedOut: true }))).toBe(true);
-    expect(guard.waiting()).toBe(false);
-    expect(moved.size).toBe(0);
+    expect(guard.waiting()).toBe(true);
+    expect(moved.size).toBe(1);
   });
 
-  it("says that one out loud when there is no copy on screen", () => {
+  it("marks as soon as the registry catches up, without another failure", () => {
+    away = false;
+    reconnecting = false;
+    guard.succeeded(Date.parse("2026-09-20T16:40:00Z"));
+    guard.failed(thrown("issues.get timed out", { timedOut: true }));
+    expect(note()).toBeNull();
+    away = true;
+    reconnecting = true;
+    [...moved].forEach((fn) => fn());
+    expect(note()).toContain("Last read at");
+  });
+
+  it("reads again on the machine coming back, having gone after the read died", () => {
+    away = false;
+    reconnecting = false;
+    guard.failed(thrown("issues.get timed out", { timedOut: true }));
+    away = true;
+    [...moved].forEach((fn) => fn());
+    expect(retry).not.toHaveBeenCalled();
+    reconnect();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  // Coming back from never having gone is not a reconnect. Reading on that
+  // would be a read per announcement, for as long as the surface is mounted.
+  it("reads nothing on an announcement about a machine that never went", () => {
+    away = false;
+    reconnecting = false;
+    guard.failed(thrown("issues.get timed out", { timedOut: true }));
+    [...moved].forEach((fn) => fn());
+    [...moved].forEach((fn) => fn());
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  // Quiet is for a copy on screen. An empty surface that the machine has no
+  // explanation for would otherwise sit on its loading frame saying nothing.
+  it("says one out loud when there is no copy and the machine claims to be here", () => {
     away = false;
     reconnecting = false;
     hasContent = () => false;
     expect(guard.failed(thrown("issues.get timed out", { timedOut: true }))).toBe(false);
+    expect(guard.waiting()).toBe(true);
   });
 
   it("lets go of its subscription when the surface does", () => {

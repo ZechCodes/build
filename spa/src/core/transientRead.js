@@ -117,6 +117,7 @@ export function createReadRetry({ host = null, watch, retry, hasContent = () => 
   let lastReadAt = 0;
   let waiting = false;
   let retrying = false;
+  let wentAway = false;
   let off = null;
 
   const disarm = () => {
@@ -130,25 +131,41 @@ export function createReadRetry({ host = null, watch, retry, hasContent = () => 
   const rest = () => {
     waiting = false;
     retrying = false;
+    wentAway = false;
     disarm();
     mark();
   };
 
-  /** The machine moved. Still away: only the mark changes, because "in 3
-   *  seconds" becoming "reconnecting" is news. Back: read once. */
+  /**
+   * The machine moved.
+   *
+   * Still away: the mark changes and nothing else, because "in 3 seconds"
+   * becoming "reconnecting" is news. Back, having been away: read once. Back
+   * having never been away is not a reconnect — it is the machine it always
+   * was — and reading on that would be a read per announcement.
+   */
   const moved = () => {
     mark();
-    // `off` and not just `away()`: the two subscriptions behind `moved`
+    // `off` and not just the states: the two subscriptions behind `moved`
     // announce one reconnect twice, and a surface read twice is a surface that
     // read once too often.
-    if (!off || watch.away()) return;
+    if (!off) return;
+    if (watch.away()) {
+      wentAway = true;
+      return;
+    }
+    if (!wentAway) return;
     disarm();
     retrying = true;
     retry();
   };
 
   const arm = () => {
-    if (!off) off = watch.moved(moved);
+    if (off) return;
+    // Where the machine stands as the read fails — which may be "here", even
+    // though the read just died on the wire. See `failed`.
+    wentAway = watch.away();
+    off = watch.moved(moved);
   };
 
   return {
@@ -176,17 +193,22 @@ export function createReadRetry({ host = null, watch, retry, hasContent = () => 
       }
       const wasRetry = retrying;
       retrying = false;
-      // The machine is answering: this was one lost call, not a dead session,
-      // so there is no reconnect to wait for. Waiting on one that will never
-      // come would hold the surface silent forever.
-      if (!watch.away()) {
-        rest();
-        return hasContent();
-      }
+      // Always wait, whatever the registry currently thinks. The read knows
+      // first: a call dies on the wire seconds before ICE gives up and the
+      // supervisor starts reconnecting, so a guard that asks "is the machine
+      // away?" at this instant is told "no" about a session that is already
+      // dead — and then neither marks nor retries. Measured on the compose
+      // stack: the read timed out at +12s, the ring said Reconnecting at +15s.
       waiting = true;
       arm();
       mark();
-      return !wasRetry || hasContent();
+      if (hasContent()) return true;
+      // Nothing on screen. A retry that has already run and failed again is
+      // said out loud; so is a first failure the machine has no explanation
+      // for, because a surface that sits on its loading frame in silence
+      // waiting for a reconnect that may never come says nothing at all.
+      if (wasRetry) return false;
+      return watch.away();
     },
 
     /** Redraw the mark. A surface that rewrites its own innards calls this

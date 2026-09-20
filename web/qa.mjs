@@ -286,22 +286,56 @@ async function main() {
     const seen = await call("workspace.get", { workspace_id: workspace.workspace_id });
     return everyDirectoryIsARepository(seen) ? seen : null;
   });
-  check("workspace.remove_directory leaves only repositories behind", !!readyToFinish, "the plain directory did not leave");
+  check(
+    "workspace.remove_directory leaves only repositories behind",
+    !!readyToFinish,
+    readyToFinish ? `directories=${readyToFinish.directories.length}` : "the plain directory did not leave",
+  );
 
   const finished = await call("workspace.finish", { workspace_id: workspace.workspace_id });
   const gitFinish = finished.repositories.find((item) => item.directory_id === gitDirectory.id);
   check("workspace.finish pushes each Git directory", finished.complete === true && gitFinish?.pushed === true);
   check("finish results pair by directory_id", finished.repositories.every((item) => readyToFinish.directories.some((directory) => directory.id === item.directory_id)));
-  const afterFinish = await call("workspace.get", { workspace_id: workspace.workspace_id });
-  check("finish retains the workspace and marks it finished", afterFinish.status === "finished" && afterFinish.root === workspace.root);
-  const retained = await call("fs.read", { ...gitScope, path: "README.md" });
-  check("finished workspace files remain available", decode(retained.content_b64) === gitReplacement);
-  const retainedTerminals = await term.call("term.list", { workspace_id: workspace.workspace_id });
+  // Done REMOVES the workspace it finished — `WorkspaceFinishResult.deleted` is
+  // documented as always true, and the doc comment on `workspace_finish` is
+  // plain about it: "the live record and the files do not come back. Recovery
+  // is pulling the remote." The harness used to assert the opposite, from
+  // before the workspace verbs replaced the per-checkout finish.
+  check("workspace.finish reports the workspace deleted", finished.deleted === true, `deleted=${finished.deleted}`);
+  let goneRefusal = null;
+  const isGone = await waitFor(async () => {
+    try {
+      await call("workspace.get", { workspace_id: workspace.workspace_id });
+      return false; // the record is still there; the removal is `pending`
+    } catch (error) {
+      goneRefusal = error;
+      return true;
+    }
+  });
   check(
-    "finish retains live workspace terminals",
-    retainedTerminals.terminals.some((item) => item.term_id === workspaceTerm.term_id),
+    "the finished workspace is gone, and says so when asked for",
+    !!isGone && /unknown workspace_id/.test(goneRefusal?.message || ""),
+    goneRefusal?.message || "workspace.get still answers for it",
   );
-  await term.call("term.close", { term_id: workspaceTerm.term_id });
+  const afterFinish = await call("workspace.list", { project_id: project.project_id });
+  check(
+    "the finished workspace leaves the list",
+    !afterFinish.workspaces.some((item) => item.workspace_id === workspace.workspace_id),
+  );
+  // Every terminal standing in the workspace is closed with it. `term.list` is
+  // asked about a workspace that no longer exists, so a refusal is as good an
+  // answer as an empty list — both say the terminal is not standing.
+  let terminalsAfter = null;
+  try {
+    terminalsAfter = await term.call("term.list", { workspace_id: workspace.workspace_id });
+  } catch {
+    terminalsAfter = null;
+  }
+  check(
+    "finish closes the terminals that stood in the workspace",
+    !terminalsAfter?.terminals?.some((item) => item.term_id === workspaceTerm.term_id),
+    terminalsAfter ? `terminals=${terminalsAfter.terminals.length}` : "term.list refused for a workspace that is gone",
+  );
 
   const localProject = await call("project.create", { name: `qa-local-${tag}` });
   const localWorkspace = await call("workspace.create", {

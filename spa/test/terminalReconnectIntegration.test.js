@@ -149,7 +149,7 @@ describe("terminal session handoff after a bridge restart", () => {
 
   /** The terminal stack as it stands after one session has proved itself: the
    *  socket live on `term`, with the app channel beside it on the same peer. */
-  async function livePeer({ answerImmediately = true, peerFrameAt = () => 0 } = {}) {
+  async function livePeer({ answerImmediately = true, peerFrameAt = () => 0, peerIsConnected = () => false } = {}) {
     provideTerminalSessions(async (deviceId) => {
       const number = sessions.length + 1;
       const lease = {
@@ -163,6 +163,7 @@ describe("terminal session handoff after a bridge restart", () => {
     });
     const term = answeringCarrier("term", { answerImmediately: true });
     term.peerFrameAt = peerFrameAt;
+    term.peerIsConnected = peerIsConnected;
     const app = { close: vi.fn() };
     contexts.set("dev-a", { deviceId: "dev-a", call: async () => ({}), peerLink: { app, term } });
     const socket = terminalManager();
@@ -229,8 +230,37 @@ describe("terminal session handoff after a bridge restart", () => {
     }
   });
 
-  // The other half, which must keep working: a path that carried nothing at
-  // all still goes, and says which channel it judged.
+  // The churn as Zech saw it, and as the compose stack reproduces it: a bridge
+  // that does not answer in three seconds over a path the browser's own ICE is
+  // still holding open. An application ping measures the path AND the daemon
+  // behind it; ICE measures the path, with consent checks of its own. So ICE's
+  // word outranks the silence, and the peer stands.
+  it("keeps a peer ICE is still holding, however long the bridge takes to answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const { term, app } = await livePeer({
+        answerImmediately: false,
+        peerFrameAt: () => 0,
+        peerIsConnected: () => true,
+      });
+      const before = sessions.length;
+
+      await vi.advanceTimersByTimeAsync(9000);
+
+      expect(term.close, "the path ICE holds is not closed").not.toHaveBeenCalled();
+      expect(app.close).not.toHaveBeenCalled();
+      expect(sessions.length, "the terminals re-establish instead").toBeGreaterThan(before);
+      const judged = connectionDiagnosticHistory()
+        .filter((record) => record.event === "terminal-session" && record.state === "liveness-timeout");
+      expect(judged.at(-1).vouched).toBe("ice-connected");
+      expect(judged.at(-1).channel).toBe("term");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The other half, which must keep working: a path nothing vouches for — no
+  // frames, and ICE not holding it either — still goes.
   it("closes the wire when nothing is carrying anywhere, naming the peer", async () => {
     vi.useFakeTimers();
     try {
@@ -242,6 +272,7 @@ describe("terminal session handoff after a bridge restart", () => {
       const judged = connectionDiagnosticHistory()
         .filter((record) => record.event === "terminal-session" && record.state === "liveness-timeout");
       expect(judged.at(-1).channel, "the record says which channel was judged").toBe("peer");
+      expect(judged.at(-1).vouched, "and that nothing vouched for the path").toBe("nothing");
     } finally {
       vi.useRealTimers();
     }

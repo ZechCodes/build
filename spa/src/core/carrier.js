@@ -29,18 +29,23 @@ export function openCarrier({ socket, channel, sessionId, frames = peerFrames() 
 }
 
 /**
- * When a frame last arrived on a set of wires — one record, shared by every
- * carrier that belongs to the same peer.
+ * What a set of wires knows about the path under them — one record, shared by
+ * every carrier that belongs to the same peer.
  *
- * A peer link's two channels are one path: a frame on either of them is proof
- * that path is up, whichever session it belonged to. Without this each session
- * could only vouch for its own channel, and a terminal session sitting quiet
- * beside a busy app session had no way to tell "nothing is arriving" from "not
- * for me" — so it pinged a live path, timed out behind a loaded bridge, and
- * closed the channel it had just judged.
+ * `at` is when a frame last arrived on any of them: a peer link's two channels
+ * are one path, and a frame on either is proof that path is up, whichever
+ * session it belonged to. Without this each session could only vouch for its
+ * own channel, and a terminal session sitting quiet beside a busy app session
+ * had no way to tell "nothing is arriving" from "not for me".
+ *
+ * `connected` is what the browser's own ICE says about the path (`peerLink.js`
+ * writes it). It is the stronger evidence of the two and the reason the first
+ * is not enough: an idle connection carries no frames at all, and a session
+ * that read silence as death tore down a path ICE was still holding open with
+ * its own consent checks.
  */
 export function peerFrames() {
-  return { at: 0 };
+  return { at: 0, connected: false };
 }
 
 /** `WebSocket.OPEN`, as a number rather than as a global: this module is read
@@ -101,6 +106,8 @@ function carrierCore(frames) {
       onClose: subscribe(closeListeners),
       /** When a frame last arrived on any wire of this peer. */
       peerFrameAt: () => frames.at,
+      /** Whether the browser's own ICE still holds this path open. */
+      peerIsConnected: () => frames.connected === true,
     },
   };
 }

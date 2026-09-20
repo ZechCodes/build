@@ -587,7 +587,7 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
     }));
   } catch (error) {
     closeQuietly(session);
-    link.close();
+    link.close("the session could not be adopted");
     throw error;
   }
   onAdopt(lifetime);

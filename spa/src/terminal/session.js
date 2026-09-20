@@ -63,6 +63,9 @@ const TERM_ACK_THROTTLE_MS = 250;
  *  worth the whole connection. */
 export const LIVENESS_TIMEOUT = "liveness-timeout";
 
+/** How long the probe waits for a pong before it judges. */
+export const PING_TIMEOUT_MS = 3000;
+
 /**
  * The socket was not there for a caller that needed it.
  *
@@ -682,42 +685,63 @@ export class TerminalSocket {
     const wire = this._switch.active();
     if (!wire) return false;
     if (Date.now() - this._peerFrameAt(wire) < FRAME_PROOF_OF_LIFE_MS) return true;
+    const asked = Date.now();
     try {
-      await this._call("ping", {}, 3000);
+      await this._call("ping", {}, PING_TIMEOUT_MS);
       return this._liveness === liveness;
-    } catch {
-      return this._judgeSilence(liveness, wire, diagnosticId);
+    } catch (error) {
+      return this._judgeSilence(liveness, wire, diagnosticId, { asked, error });
     }
   }
 
   /**
    * The ping did not answer. Which of the two things that means?
    *
-   * A path that carried NOTHING the whole time — no frame on either channel,
-   * and no pong — is down, and the wire goes: closing a carrier is how it
-   * reports itself gone, and its owner decides what that costs.
+   * A path nothing vouches for is down, and the wire goes: closing a carrier
+   * is how it reports itself gone, and its owner decides what that costs.
    *
-   * But a peer that carried frames while the ping was outstanding is plainly
-   * up, and what did not answer is this SESSION, not the path. That happens to
-   * a bridge under load — the pong queues behind other work and the three
-   * seconds run out — and closing the channel then is how a browser talking to
-   * a busy machine tore its own connection down every few seconds. So the
-   * terminals re-establish themselves on the wire that is still carrying, and
-   * the app session and the peer are left alone.
+   * Two things vouch for it. A frame that arrived on either channel while the
+   * ping was out is one. The other, and the stronger, is the browser's own
+   * ICE: it runs consent checks over the path every few seconds and takes the
+   * connection off `connected` when they stop being answered, which is a
+   * direct measurement of the path where an application ping measures the path
+   * AND the daemon behind it. A bridge with eleven agents on it can take three
+   * seconds to say "pong" over a phone's relayed path while the path itself is
+   * perfectly healthy — and a browser that read that as death tore its own
+   * connection down every six seconds, all day, which is the bug this is.
+   *
+   * So a path ICE is still holding costs the terminals their session and
+   * nothing more: they re-establish on the wire that is still there, and the
+   * app session and the peer are left alone.
    */
-  _judgeSilence(liveness, wire, diagnosticId) {
+  _judgeSilence(liveness, wire, diagnosticId, { asked, error } = {}) {
     if (this._liveness !== liveness) return false;
-    const carrying = Date.now() - this._peerFrameAt(wire) < FRAME_PROOF_OF_LIFE_MS;
+    const vouched = this._whatVouchesFor(wire);
     recordConnectionDiagnostic(diagnosticId, "terminal-session", {
       state: "liveness-timeout",
-      channel: carrying ? "term" : "peer",
+      channel: vouched === "nothing" ? "peer" : "term",
+      // Which evidence saved the path, or that there was none.
+      vouched,
+      // How the ping ended, and how long it took to end that way: a refusal
+      // that comes back in a millisecond is a wire that is not there, not a
+      // bridge that took too long, and the two were indistinguishable in the
+      // record a phone sent back.
+      waitedMs: asked ? Date.now() - asked : null,
+      refusal: error?.message || null,
     });
-    if (!carrying) {
+    if (vouched === "nothing") {
       wire.close(LIVENESS_TIMEOUT);
       return false;
     }
     this._onTermUnresponsive?.();
     return false;
+  }
+
+  /** What says this path is still there, in the order the evidence is worth
+   *  anything: a frame that arrived on either channel, then ICE's own word. */
+  _whatVouchesFor(wire) {
+    if (Date.now() - this._peerFrameAt(wire) < FRAME_PROOF_OF_LIFE_MS) return "frames";
+    return wire?.peerIsConnected?.() === true ? "ice-connected" : "nothing";
   }
 
   _call(method, params = {}, timeoutMs) {

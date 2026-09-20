@@ -56,6 +56,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     }
   };
   let torn = false;
+  let tornBecause = "closed by the client";
   let cancelWait = () => {};
   let stopWatching = () => {};
   const observed = [];
@@ -76,24 +77,46 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     signal("rtc.ice", { candidate }).catch(() => diagnostic("candidate-failed", { direction: "local" }));
   };
   peer.addEventListener("icecandidate", outgoingCandidate);
-  observe(peer, "connectionstatechange", () => diagnostic("state", { state: safeState(peer.connectionState) }));
-  observe(peer, "iceconnectionstatechange", () => diagnostic("ice-state", { state: safeIceState(peer.iceConnectionState) }));
+  /** What ICE says about this path, for everything riding it to read. The
+   *  browser runs consent checks of its own (RFC 7675) and takes the state off
+   *  `connected` when they stop being answered, so this is a better answer to
+   *  "is the path there" than any silence an application can measure. */
+  const readIceState = () => {
+    frames.connected = ["connected", "completed"].includes(peer.iceConnectionState)
+      || peer.connectionState === "connected";
+  };
+  observe(peer, "connectionstatechange", () => {
+    readIceState();
+    diagnostic("state", { state: safeState(peer.connectionState) });
+  });
+  observe(peer, "iceconnectionstatechange", () => {
+    readIceState();
+    diagnostic("ice-state", { state: safeIceState(peer.iceConnectionState) });
+  });
   for (const channel of channels) {
     observe(channel, "close", () => diagnostic("channel", { channel: channel.label, state: "closed" }));
     observe(channel, "error", () => diagnostic("channel", { channel: channel.label, state: "error" }));
   }
-  const tearDown = () => {
+  /** Take the connection down, saying why.
+   *
+   *  The reason is not decoration: a peer that closed with nothing said is a
+   *  reconnect nobody can account for afterwards, and that is exactly the
+   *  state a browser re-minting its session every six seconds leaves its
+   *  reader in. Every caller names one. */
+  const tearDown = (reason = "closed by the client") => {
     if (torn) return;
     torn = true;
+    tornBecause = reason;
     cancelWait();
     stopWatching();
     recovery.clear();
     unsubscribe();
     for (const stopObserving of observed.splice(0)) stopObserving();
     peer.removeEventListener("icecandidate", outgoingCandidate);
+    frames.connected = false;
     for (const carrier of carriers) carrier.close();
     peer.close();
-    diagnostic("closed");
+    diagnostic("closed", { reason: tornBecause });
     signal("rtc.close", {}).catch(() => {});
   };
 
@@ -103,10 +126,11 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       await offer(peer, signal, iceServers, {}, ensureActive);
       await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive, true);
     }, (cancel) => (cancelWait = cancel));
+    readIceState();
     diagnostic("connected", { phase: "initial" });
     await sampleTransportPath();
   } catch (error) {
-    tearDown();
+    tearDown(`the connection never opened: ${error?.blockedReason || "failed"}`);
     throw error;
   }
 
@@ -124,13 +148,14 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
         await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive);
       }, (cancel) => (cancelWait = cancel));
       if (torn) return;
+      readIceState();
       diagnostic("connected", { phase: "restart" });
       await sampleTransportPath();
       recovery.end();
       await onConnected();
     } catch (error) {
       diagnostic("restart-failed", { reason: error?.blockedReason === "timeout" ? "timeout" : "failed" });
-      tearDown();
+      tearDown("the ICE restart did not land");
     }
   });
   const [app, term] = carriers;

@@ -1581,6 +1581,79 @@ mod intake_tests {
         wedged.wait(); // let the held worker go, so the pool drains with the test
     }
 
+    /// The terminal's own session pings too — and its session was minted over
+    /// the relay, whose socket is gone by the time the probe runs.
+    ///
+    /// So the answer has to come back on the wire the ping arrived on, not on
+    /// the one the session was opened over. A pong written to a closed relay
+    /// socket is a pong the browser never sees, which is a probe that always
+    /// times out, which is a browser that closes a peer that was carrying.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_terminal_session_is_ponged_on_the_channel_it_pinged_over() {
+        let wedged = Arc::new(std::sync::Barrier::new(2));
+        let held = Arc::clone(&wedged);
+        let intake = FrameIntake::with_pool(
+            FrameHandler::new(
+                crate::timing::FrameClock::new(),
+                move |_sender, _frame, _timer| {
+                    held.wait();
+                    json!({ "ok": true })
+                },
+            ),
+            TRANSPORT.clone(),
+            1,
+            1,
+        );
+        // Minted over the relay, the way a terminal session is.
+        let (relay, mut relay_out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-term", &session_init("s-term", &key), &relay)
+            .unwrap();
+        relay_out.try_recv().expect("the accept rode the relay");
+
+        // It rides the term DataChannel from then on, and the relay socket goes.
+        let (term, mut term_out) = CarrierHandle::open_channel();
+        for id in [1, 2] {
+            intake
+                .accept(
+                    client_request(
+                        &key,
+                        "s-term",
+                        "data",
+                        json!({ "id": id, "method": "term.list" }),
+                    ),
+                    &term,
+                )
+                .await
+                .expect("the frame was admitted");
+        }
+        intake.close_carrier(&relay);
+
+        intake
+            .accept(
+                client_request(&key, "s-term", "data", json!({ "id": 9, "method": "ping" })),
+                &term,
+            )
+            .await
+            .expect("the ping was admitted");
+
+        let answered = within_patience(term_out.recv()).await;
+        let pong = SessionSender::decrypt_push(&key, &answered);
+        assert_eq!(
+            pong["id"],
+            json!(9),
+            "the pong came back on the term channel: {pong:?}"
+        );
+        assert_eq!(pong["result"]["pong"], json!(true), "{pong:?}");
+        assert!(
+            relay_out.try_recv().is_err(),
+            "and nothing was written to the relay socket the session was minted over"
+        );
+
+        wedged.wait();
+    }
+
     /// Rule 1: the relay carries the negotiation and nothing else. An app verb
     /// arriving on a relay carrier is refused with the wire spec's closed
     /// `ApiError` shape and never reaches a handler.

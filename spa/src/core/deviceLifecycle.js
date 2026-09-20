@@ -84,7 +84,10 @@ function createOwner(deviceId) {
     safely(() => departing.session?.fail?.(reason));
     safely(() => departing.session?.close?.());
     safely(() => departing.onDetached?.());
-    safely(() => departing.peerLink?.close?.());
+    // The mark that stood this device down is what the connection's own
+    // record should say: a peer closed for a reason nobody wrote down is a
+    // reconnect that cannot be accounted for afterwards.
+    safely(() => departing.peerLink?.close?.(`the device stood down: ${reason || "lost"}`));
   };
 
   const standDown = (identity, mark) => {

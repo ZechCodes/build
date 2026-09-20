@@ -318,7 +318,16 @@ let mountedRoute = null;
 // the page underneath, and a modal that claimed it would tear that page down.
 let modalDispose = null;
 
-const sameRoute = (a, b) => Boolean(a) && Boolean(b) && JSON.stringify(a) === JSON.stringify(b);
+/** Whether two routes name the same standing. Compared field by field rather
+ *  than by JSON: a route that has been round-tripped through
+ *  `withDeviceOrResolve` carries the same fields in whatever order that built
+ *  them, and a key-order difference here would quietly rebuild a page that
+ *  never went away. */
+function sameRoute(a, b) {
+  if (!a || !b) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].every((key) => a[key] === b[key]);
+}
 
 /**
  * Settings, the account and a device's settings are configuration rather than

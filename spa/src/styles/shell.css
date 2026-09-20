@@ -933,7 +933,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-body .review-thread { padding:0; }
 .rail-body .thread-title { display:none; }
 .rail-body .thread-revision-view { margin-left:0; }
-.rail-body .thread-timeline { gap:22px; padding:4px 0 16px; }
+/* The gap and `--thread-gap` are declared together, always: the issue lines
+   pull back against this number to sit tight (styles/issues.css), and a rule
+   that set one without the other is how they drifted — the rail said 22 and
+   the variable said 18, so the lines sat 8 px apart instead of 4. */
+.rail-body .thread-timeline { --thread-gap:22px; gap:var(--thread-gap); padding:4px 0 16px; }
 .rail-body .thread-message.agent .thread-body { padding-right:8px; }
 /* Where the conversation would be, on a branch that has no agent yet: which
    agent to start one on. Only the layout is said here — the cards stack,

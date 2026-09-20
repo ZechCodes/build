@@ -166,16 +166,35 @@ await check("the Issues tab paints the filed issue", async () => {
   return { ok: await has(page, stamp), detail: `#${filed?.issue?.number}` };
 });
 
-await check("the row shows state and column as two separate facts", async () => {
+// The row used to carry a coloured state dot beside its column. It does not
+// any more: #28 took the dots out, and #33 made the list open-only by default,
+// so an open row says nothing about its state and a closed one — which is only
+// ever on screen because the filter asked — leads line two with a Closed chip.
+// This checks the shape that replaced it.
+await check("the row puts number and title on one line, and the facts on the next", async () => {
   const row = await page.evaluate(() => {
     const one = document.querySelector(".issue-row");
-    return one && {
-      state: one.querySelector(".issue-state")?.className || "",
+    if (!one) return null;
+    const line = one.querySelector(".issue-row-open");
+    const facts = one.querySelector(".issue-row-facts");
+    return {
+      firstLine: [...(line?.children || [])].map((child) => child.classList[0]),
+      facts: [...(facts?.children || [])].map((child) => child.classList[0]),
       status: one.querySelector(".issue-status")?.textContent || "",
       labels: [...one.querySelectorAll(".issue-label")].map((l) => l.textContent),
+      dots: one.querySelectorAll(".issue-state, .issue-sep").length,
+      closedChip: Boolean(one.querySelector(".issue-closed")),
     };
   });
-  return { ok: Boolean(row?.state.includes("open") && row.status), detail: JSON.stringify(row) };
+  const ok = Boolean(
+    row &&
+      JSON.stringify(row.firstLine) === JSON.stringify(["issue-number", "issue-title"]) &&
+      row.status &&
+      row.dots === 0 &&
+      // Open by default (#33), so no Closed chip on what the tab opens with.
+      !row.closedChip,
+  );
+  return { ok, detail: JSON.stringify(row) };
 });
 
 // ── 3. the push: an issue moved by somebody else, with nothing touched ───────

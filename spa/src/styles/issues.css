@@ -376,8 +376,13 @@ a.thread-issue-action:focus-visible, a.thread-issue-notice:focus-visible {
 /* The tight rhythm. Consecutive lines read as a list rather than as separate
    messages, so they pull back against the timeline's own gap — and only
    against each other: a real message either side keeps the full gap, because
-   it IS a separate thing to say. */
-.thread-timeline { --thread-gap:18px; }
+   it IS a separate thing to say.
+
+   `--thread-gap` is declared by whichever rule sets the timeline's `gap`, and
+   never here: a copy of the number in this file is a copy that goes stale, and
+   it did — the rail's gap is 22px and this said 18, so the lines sat 8px apart
+   and no test could tell, because the value only exists once there is layout.
+   test/issueLineRhythm.test.js holds every gap rule to declaring both. */
 .thread-issue-line + .thread-issue-line { margin-top:calc(4px - var(--thread-gap)); }
 
 /* The comment an action line lands on: a moment's mark so the reader sees

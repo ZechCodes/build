@@ -76,6 +76,36 @@ const seed = JSON.parse(readFileSync("/tmp/live-seed.json", "utf8"));
 const docker = (command) =>
   execSync(`echo '${command}' | newgrp docker 2>&1`, { encoding: "utf8", shell: "/bin/bash" });
 
+/**
+ * Put the bridge back, whatever happened.
+ *
+ * This check works by PAUSING the bridge, and an early version left it paused
+ * whenever anything between the pause and the unpause threw — a failed RPC, a
+ * Playwright timeout, the harness being killed. A paused bridge answers
+ * nothing, so the next run of this or any other check fails for a reason that
+ * has nothing to do with what it is testing, and the stack looks broken to
+ * whoever picks it up next. It wedged this stack twice before it was found.
+ *
+ * So the unpause is in a `finally` and also on exit: a check that can leave a
+ * SHARED stack unusable is worse than no check at all.
+ */
+let paused = false;
+const pauseBridge = () => {
+  docker(`docker pause ${BRIDGE}`);
+  paused = true;
+};
+const unpauseBridge = () => {
+  if (!paused) return;
+  paused = false;
+  try {
+    docker(`docker unpause ${BRIDGE}`);
+  } catch {
+    // Already running, or gone. Either way there is nothing left to undo.
+  }
+};
+process.on("exit", unpauseBridge);
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => process.exit(1));
+
 const results = [];
 const record = (name, ok, detail = "") => {
   results.push({ name, ok, detail });
@@ -153,23 +183,40 @@ call("issues.comment", { issue_id: issueId, body: `Written off-page by dropped-r
 // ── 3. the session dies under the page ──────────────────────────────────────
 await watchToasts();
 console.log(`\npausing ${BRIDGE} — registered, answering nothing\n`);
-docker(`docker pause ${BRIDGE}`);
-const pausedAt = Date.now();
-await page.goto(issuePage, { waitUntil: "load" });
 
+// Declared out here because the report below reads them: everything between
+// the pause and the unpause is inside the guard, and a `const` inside it would
+// not survive to be reported.
+let duringCount = cached;
 let markedAt = null;
 let markText = null;
-for (let step = 0; step < 16; step++) {
-  await page.waitForTimeout(3000);
-  const shown = await mark();
-  if (shown && markedAt === null) {
-    markedAt = Date.now() - pausedAt;
-    markText = shown;
+
+pauseBridge();
+try {
+  const pausedAt = Date.now();
+  await page.goto(issuePage, { waitUntil: "load" });
+
+  for (let step = 0; step < 16; step++) {
+    await page.waitForTimeout(3000);
+    const shown = await mark();
+    if (shown && markedAt === null) {
+      markedAt = Date.now() - pausedAt;
+      markText = shown;
+    }
+    if (step % 3 === 0) {
+      console.log(`   +${Math.round((Date.now() - pausedAt) / 1000)}s  mark=${JSON.stringify(shown)}  toasts=${(await toasts()).length}`);
+    }
   }
-  if (step % 3 === 0) console.log(`   +${Math.round((Date.now() - pausedAt) / 1000)}s  mark=${JSON.stringify(shown)}  toasts=${(await toasts()).length}`);
+  duringCount = await entries();
+} finally {
+  // Whatever happened above — a failed read, a Playwright timeout, a throw —
+  // the bridge goes back. A paused bridge answers nothing, and leaving one on
+  // a SHARED stack breaks the next run of every other check for a reason that
+  // has nothing to do with what it is testing.
+  console.log(`\nunpausing ${BRIDGE}\n`);
+  unpauseBridge();
 }
 
-const duringCount = await entries();
 record(
   "the page keeps the copy it had, and not the comment it never read",
   duringCount === cached,
@@ -185,8 +232,6 @@ record(
 );
 
 // ── 4. the machine comes back ───────────────────────────────────────────────
-console.log(`\nunpausing ${BRIDGE}\n`);
-docker(`docker unpause ${BRIDGE}`);
 const resumedAt = Date.now();
 
 let grewAt = null;

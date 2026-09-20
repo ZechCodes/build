@@ -62,6 +62,7 @@
 // and nothing below is asked to guess at a shape.
 
 import { pageVisible } from "./visibility.js";
+import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { greetingVersion, PRE_ALPHA_API_VERSION, selectAdapter, SPA_API_RANGE } from "./bridgeApi/index.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
@@ -269,13 +270,38 @@ const CALL_DONE = "done";
 const CALL_REFUSED = "refused";
 const CALL_STALE = "stale";
 
+/// The code a refusal named, under whichever name it arrived under: the wire's
+/// `error_code` from a 1.1+ bridge, `code` once an adapter has made it an
+/// ApiError, and "unknown" for a refusal that named none.
+const refusalCode = (thrown) => thrown?.code || thrown?.error_code || "unknown";
+
+/// A refused subscribe, on the record.
+///
+/// This is the failure that is invisible from the inside: the client asks, the
+/// bridge says no, and the page simply never hears anything again. It goes in
+/// the connection diagnostic history (core/connectionDiagnostics.js) so the
+/// next one is readable in Settings → Diagnostics rather than only in a console
+/// nobody has open — which on the phone where this was reported is no console
+/// at all. Enumerated words only: the subscription's own id and the bridge's
+/// code, both from closed sets.
+function noteRefusedSubscription(state, method, params, thrown) {
+  if (method !== "changes.subscribe") return;
+  recordConnectionDiagnostic(`${state.deviceId}:subscriptions`, "subscription", {
+    state: "refused",
+    subscription: params?.subscription_id || "",
+    code: refusalCode(thrown),
+  });
+}
+
 /** One subscription call, and which of the three ways it ended. */
 async function askBridge(state, method, params) {
   const call = state.call;
   try {
     await call(method, params);
-  } catch {
-    return state.call === call ? CALL_REFUSED : CALL_STALE;
+  } catch (thrown) {
+    if (state.call !== call) return CALL_STALE;
+    noteRefusedSubscription(state, method, params, thrown);
+    return CALL_REFUSED;
   }
   return state.call === call ? CALL_DONE : CALL_STALE;
 }

@@ -597,3 +597,63 @@ describe("a bridge that refuses one subscription", () => {
     expect(new Set(onLive)).toEqual(new Set(["s-inbox", "s-background", "s-active:run-7"]));
   });
 });
+
+/// A refused subscribe is the failure nobody can see from inside the app: the
+/// client asks, the bridge says no, and the page never hears another thing.
+/// It goes on the connection diagnostic record so Settings → Diagnostics can
+/// show it — on a phone that is the only place it CAN be read.
+describe("a refused subscribe on the record", () => {
+  let diagnostics;
+
+  beforeEach(async () => {
+    diagnostics = await import("../src/core/connectionDiagnostics.js");
+    diagnostics.clearConnectionDiagnosticHistory();
+  });
+
+  const refusing = (code) => {
+    call = vi.fn(async (method, params) => {
+      calls.push([method, params]);
+      if (method === "session.hello") {
+        const mode = params.changes === "subscriptions" ? "subscriptions" : "legacy";
+        return { ...SUBSCRIBING_GREETING, changes: { ...SUBSCRIBING_GREETING.changes, mode } };
+      }
+      if (method === "changes.subscribe") {
+        const refusal = new Error("unknown variant `issues`");
+        if (code) refusal.error_code = code;
+        throw refusal;
+      }
+      return {};
+    });
+    return call;
+  };
+
+  const subscriptionEntries = () =>
+    diagnostics.connectionDiagnosticHistory().filter((entry) => entry.event === "subscription");
+
+  it("names the subscription and the bridge's code", async () => {
+    changeEvents.watchChanges({ refresh: () => {}, id: "s-inbox", scope: "all", kinds: ["state", "thread"], mode: "realtime" });
+    await changeEvents.greetBridge(refusing("invalid_params"), { deviceId: "dev-1" });
+    await settle();
+
+    const [entry] = subscriptionEntries();
+    expect(entry).toMatchObject({ state: "refused", subscription: "s-inbox", code: "invalid_params" });
+    // The machine stays readable off the id, the way every other diagnostic is.
+    expect(String(entry.connection).startsWith("dev-1:")).toBe(true);
+  });
+
+  it("says unknown for a refusal that named no code", async () => {
+    changeEvents.watchChanges({ refresh: () => {}, id: "s-inbox", scope: "all", kinds: ["state"], mode: "realtime" });
+    await changeEvents.greetBridge(refusing(null), { deviceId: "dev-1" });
+    await settle();
+
+    expect(subscriptionEntries()[0].code).toBe("unknown");
+  });
+
+  it("records nothing for a subscribe that worked", async () => {
+    changeEvents.watchChanges({ refresh: () => {}, id: "s-inbox", scope: "all", kinds: ["state"], mode: "realtime" });
+    await changeEvents.greetBridge(subscribingBridge(), { deviceId: "dev-1" });
+    await settle();
+
+    expect(subscriptionEntries()).toEqual([]);
+  });
+});

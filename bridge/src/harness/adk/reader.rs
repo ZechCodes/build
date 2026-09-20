@@ -88,25 +88,30 @@ impl ProtocolReader {
     }
 
     pub(super) fn end_stream(&self) {
-        let changed = {
+        // The stream ending on the limit sentence is the verdict: the turn stopped
+        // because the harness has no usage left. Nothing else in the protocol says
+        // so — there is no result, no error and no non-zero exit — so this is the
+        // only moment it can be concluded (issue #58).
+        let (changed, limited) = {
             let mut state = self.state.lock().unwrap();
-            // The stream ending on the limit sentence is the verdict: the turn
-            // stopped because the harness has no usage left. Nothing else in the
-            // protocol says so — there is no result, no error and no non-zero
-            // exit — so this is the only moment it can be concluded (issue #58).
-            if let Some(said) = state.limit_said_last.take() {
+            let limited = state.limit_said_last.take().map(|said| {
                 let resets_at = crate::harness::usage_limit::resolved_reset(
                     &said,
                     time::OffsetDateTime::now_utc(),
                 );
-                eprintln!(
-                    "harness usage_limited: session={:?} said={:?} reset_clock={:?} resets_at={:?}",
-                    state.session_id, said.said, said.reset_clock, resets_at
-                );
-                state.usage_limited = Some(said);
-            }
-            state.surfaces.mark_retained_checklist_stale()
+                let session = state.session_id.clone();
+                state.usage_limited = Some(said.clone());
+                (session, said, resets_at)
+            });
+            (state.surfaces.mark_retained_checklist_stale(), limited)
         };
+        // Written with the lock released, for the same reason as above.
+        if let Some((session, said, resets_at)) = limited {
+            eprintln!(
+                "harness usage_limited: session={session:?} said={:?} reset_clock={:?} resets_at={resets_at:?}",
+                said.said, said.reset_clock
+            );
+        }
         self.bump_revision_when(changed);
     }
 
@@ -451,9 +456,14 @@ impl ProtocolReader {
         // know the stream simply ended; a future limit that does emit one will
         // say so in bridge.log and can then be recognised structurally instead of
         // by its prose.
+        // The session id is copied out and the lock released BEFORE the write:
+        // `eprintln!` can block on a full pipe, and blocking on I/O while holding
+        // the protocol state would stall every reader of this session behind a
+        // log line.
+        let session = self.state.lock().unwrap().session_id.clone();
         eprintln!(
             "harness turn_result: session={:?} subtype={:?} is_error={:?} duration_ms={:?}",
-            self.state.lock().unwrap().session_id,
+            session,
             event["subtype"].as_str(),
             event["is_error"].as_bool(),
             event["duration_ms"].as_u64(),

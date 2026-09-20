@@ -37,7 +37,7 @@
 //! "session limit" or "usage limit", either apostrophe, a reset clause that
 //! names a zone or does not, and no reset clause at all.
 
-use time::{Duration, OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 /// What a harness said, and when it says the limit lifts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,60 +167,59 @@ fn parse_twelve_hour(text: &str) -> Option<(u8, u8)> {
     Some((hour, minute))
 }
 
-/// The instant a clock means, given the offset its zone is on.
+/// The instant a harness's reset clause means, resolved in the zone it named.
 ///
-/// The harness names a time and no date, so the date is inferred: the next time
-/// that clock comes round. A limit reported at 21:30Z that resets at "6:20pm" is
-/// resetting in fifty minutes, not twenty-three hours ago.
+/// # Why this is zone-aware rather than offset-aware
 ///
-/// The offset is the caller's to supply because resolving an IANA zone needs a
-/// zone database, and this crate carries none — see `resets_at_in_zone`.
-pub fn resets_at(clock: &ResetClock, now: OffsetDateTime, offset: UtcOffset) -> OffsetDateTime {
-    let local = now.to_offset(offset);
-    let at = local.replace_time(
-        time::Time::from_hms(clock.hour, clock.minute, 0).unwrap_or(time::Time::MIDNIGHT),
-    );
-    if at > now {
-        at
-    } else {
-        at + Duration::days(1)
-    }
-}
-
-/// The UTC offset a stated zone is on, when it can be known without a zone
-/// database.
+/// The harness gives a wall clock and a zone and no date, so two things have to
+/// be worked out: which day that clock next falls on, and what offset the zone is
+/// on THAT day. A fixed offset cannot do the second. A limit reported at 01:30 on
+/// the night America/New_York leaves daylight saving, resetting at 6:20pm, resets
+/// at 23:20Z and not 22:20Z — the offset changes between the two moments, and a
+/// countdown built on the offset at the time of reading would be an hour wrong
+/// exactly twice a year.
 ///
-/// # The gap this leaves, deliberately visible
+/// `jiff` is used for this and confined to this module: it carries a bundled zone
+/// database (so a Windows host or a container with no `/usr/share/zoneinfo` still
+/// resolves), prefers the system copy where there is one, and applies the zone's
+/// own rules to a civil datetime. Everything crossing this module's boundary
+/// stays `time::OffsetDateTime`, as the rest of the crate speaks.
 ///
-/// `time` is compiled here with `formatting` and `parsing` only: no bundled tz
-/// database, and not even `local-offset`. So `America/New_York` — the zone the
-/// harness actually named — cannot be turned into an offset by this crate, and
-/// this returns `None` for it. A limit whose zone cannot be resolved has no
-/// instant, and the reader is told the reset time is unknown rather than shown a
-/// countdown computed from a guess.
-///
-/// That is the honest behaviour and not the wanted one: a countdown is the point
-/// of the banner. Closing it needs one small dependency (`time-tz` with its
-/// bundled database composes with the `time` types already here), which is a
-/// supply-chain decision for whoever owns the daemon rather than something to
-/// slip into a feature branch. The seam is this function: give it a real lookup
-/// and every caller gets the countdown with no other change.
-pub fn offset_for_zone(zone: &str) -> Option<UtcOffset> {
-    match zone {
-        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" | "Z" => Some(UtcOffset::UTC),
-        _ => None,
-    }
-}
-
-/// The instant a harness's reset clause means, when the zone can be resolved.
-///
-/// `None` covers all three ways it can be unknowable: the harness named no time,
-/// it named no zone, or it named a zone this build cannot look up
-/// ([`offset_for_zone`]).
+/// `None` covers every way the answer can be unknowable: the harness named no
+/// time, it named no zone, or it named a zone no database has.
 pub fn resolved_reset(said: &UsageLimitSaid, now: OffsetDateTime) -> Option<OffsetDateTime> {
     let clock = said.reset_clock.as_ref()?;
-    let offset = offset_for_zone(clock.zone.as_deref()?)?;
-    Some(resets_at(clock, now, offset))
+    let zone = jiff::tz::TimeZone::get(clock.zone.as_deref()?).ok()?;
+    let now_there = jiff::Timestamp::from_second(now.unix_timestamp())
+        .ok()?
+        .to_zoned(zone.clone());
+
+    // Today in that zone, at that clock. `to_zoned` applies the zone's rules,
+    // which is what makes the two awkward nights right rather than approximate:
+    // a clock in the hour that does not exist on the spring change is moved
+    // forward, and one in the hour that happens twice on the autumn change takes
+    // the first of them.
+    let today = at_clock(now_there.date(), clock, &zone)?;
+    let resets = if today.timestamp() > now_there.timestamp() {
+        today
+    } else {
+        // Tomorrow's date resolved in the zone afresh, NOT today's instant plus
+        // twenty-four hours: on a change day those differ by an hour, and the
+        // wall clock the harness named is the thing to honour.
+        at_clock(now_there.date().tomorrow().ok()?, clock, &zone)?
+    };
+    OffsetDateTime::from_unix_timestamp(resets.timestamp().as_second()).ok()
+}
+
+/// One date in one zone at the harness's clock.
+fn at_clock(
+    date: jiff::civil::Date,
+    clock: &ResetClock,
+    zone: &jiff::tz::TimeZone,
+) -> Option<jiff::Zoned> {
+    let hour = i8::try_from(clock.hour).ok()?;
+    let minute = i8::try_from(clock.minute).ok()?;
+    date.at(hour, minute, 0, 0).to_zoned(zone.clone()).ok()
 }
 
 #[cfg(test)]
@@ -305,93 +304,116 @@ mod tests {
         }
     }
 
-    /// The date the harness did not give. A time still ahead is today's; one
-    /// already past is tomorrow's, which is what stops a limit reported at 21:30Z
-    /// from reading as having reset twenty-three hours ago.
-    #[test]
-    fn the_reset_date_is_the_next_time_that_clock_comes_round() {
-        let utc = UtcOffset::UTC;
-        let now = OffsetDateTime::from_unix_timestamp(1_789_939_878).expect("2026-09-20T21:31:18Z");
-
-        let ahead = resets_at(
-            &ResetClock {
-                hour: 22,
-                minute: 20,
-                zone: None,
-            },
-            now,
-            utc,
-        );
-        // 2026-09-20T22:20:00Z — midnight of the 20th plus 22h20m.
-        assert_eq!(
-            ahead.unix_timestamp(),
-            1_789_862_400 + 80_400,
-            "22:20Z the same day"
-        );
-
-        let passed = resets_at(
-            &ResetClock {
-                hour: 6,
-                minute: 0,
-                zone: None,
-            },
-            now,
-            utc,
-        );
-        assert!(
-            passed > now,
-            "a time already past today resolves to tomorrow"
-        );
-        // 2026-09-21T06:00:00Z — midnight of the 20th, plus a day, plus six hours.
-        assert_eq!(
-            passed.unix_timestamp(),
-            1_789_862_400 + 86_400 + 21_600,
-            "06:00Z tomorrow"
-        );
-    }
-
-    /// The seam, and the gap behind it stated as a test so nobody mistakes it for
-    /// an oversight: UTC resolves, a real zone does not, and an unresolvable zone
-    /// yields no instant rather than a wrong one.
-    #[test]
-    fn a_zone_this_build_cannot_look_up_yields_no_instant() {
-        let now = OffsetDateTime::from_unix_timestamp(1_789_939_878).unwrap();
-
-        let utc = usage_limit_said("You've hit your session limit · resets 11:00pm (UTC)").unwrap();
-        assert!(resolved_reset(&utc, now).is_some(), "UTC needs no database");
-
-        let eastern = usage_limit_said(EVIDENCED).unwrap();
-        assert_eq!(
-            resolved_reset(&eastern, now),
-            None,
-            "America/New_York needs a zone database this build does not carry"
-        );
-
-        let zoneless = usage_limit_said("You've hit your session limit · resets 6:20pm").unwrap();
-        assert_eq!(resolved_reset(&zoneless, now), None, "no zone, no instant");
-
-        let timeless = usage_limit_said("You've hit your session limit").unwrap();
-        assert_eq!(resolved_reset(&timeless, now), None, "no clock, no instant");
+    /// A clock in a zone, as an instant, for the tests to read.
+    fn resolve(text: &str, now_unix: i64) -> Option<i64> {
+        let said = usage_limit_said(text).expect("a limit sentence");
+        let now = OffsetDateTime::from_unix_timestamp(now_unix).unwrap();
+        resolved_reset(&said, now).map(OffsetDateTime::unix_timestamp)
     }
 
     /// The evidenced case end to end: the sentence, read in the zone it names,
-    /// resolves to the instant the outage actually ended.
+    /// resolves to the instant the outage actually lifted.
     #[test]
     fn the_evidenced_sentence_resolves_to_the_instant_the_outage_lifted() {
-        let said = usage_limit_said(EVIDENCED).expect("the evidenced sentence");
-        let clock = said.reset_clock.expect("a reset clock");
-        assert_eq!(clock.zone.as_deref(), Some("America/New_York"));
+        // 2026-09-20T21:31:18Z, when the harness said it.
+        let resets = resolve(EVIDENCED, 1_789_939_878).expect("America/New_York resolves");
 
-        // America/New_York was on UTC-4 that day; the caller supplies that.
-        let eastern = UtcOffset::from_hms(-4, 0, 0).unwrap();
-        let now = OffsetDateTime::from_unix_timestamp(1_789_939_878).unwrap();
+        // 6:20pm EDT is 22:20Z: midnight of the 20th plus 22h20m.
+        assert_eq!(resets, 1_789_862_400 + 80_400);
+    }
 
-        let resets = resets_at(&clock, now, eastern);
+    /// The date the harness did not give. A clock still ahead is today's; one
+    /// already past is tomorrow's, which is what stops a limit reported at 21:31Z
+    /// from reading as having reset hours ago.
+    #[test]
+    fn the_reset_date_is_the_next_time_that_clock_comes_round() {
+        let now = 1_789_939_878; // 2026-09-20T21:31:18Z
 
+        let ahead = resolve("You've hit your session limit · resets 11:00pm (UTC)", now).unwrap();
+        assert_eq!(ahead, 1_789_862_400 + 82_800, "23:00Z the same day");
+
+        let passed = resolve("You've hit your session limit · resets 6:00am (UTC)", now).unwrap();
+        assert!(
+            passed > now,
+            "a clock already past today resolves to tomorrow"
+        );
+        assert_eq!(passed, 1_789_862_400 + 86_400 + 21_600, "06:00Z tomorrow");
+    }
+
+    /// The night the zone changes, which is the whole reason this resolves in the
+    /// zone rather than against an offset read at the time of the limit.
+    ///
+    /// America/New_York leaves daylight saving at 02:00 local on 2026-11-01,
+    /// falling back to UTC-5. A limit hit at 01:30 EDT (05:30Z) that resets at
+    /// 6:20pm resets at 23:20Z — an hour later than the UTC-4 offset in force when
+    /// it was read would have said.
+    #[test]
+    fn a_reset_across_a_daylight_saving_change_uses_the_offset_of_the_day_it_falls_on() {
+        // 2026-11-01T05:30:00Z — 01:30 EDT, half an hour before the change.
+        let at_the_change = 1_793_511_000;
+        let resets = resolve(
+            "You've hit your session limit · resets 6:20pm (America/New_York)",
+            at_the_change,
+        )
+        .expect("resolves");
+
+        // 18:20 EST = 23:20Z. Midnight UTC on 2026-11-01 is 1_793_491_200.
+        assert_eq!(resets, 1_793_491_200 + 84_000, "6:20pm EST, not EDT");
+        // And the offset in force when the limit was READ would have given 22:20Z,
+        // which is the wrong answer this test exists to rule out.
+        assert_ne!(resets, 1_793_491_200 + 80_400);
+    }
+
+    /// The two clocks a zone change makes strange: one that happens twice, and one
+    /// that does not happen at all. Neither may produce no answer — a banner with
+    /// no countdown because the reset fell in a folded hour would be a worse
+    /// failure than a minute's imprecision.
+    #[test]
+    fn an_ambiguous_or_skipped_reset_clock_still_resolves() {
+        // 01:30 happens twice on 2026-11-01 in New York.
+        let folded = resolve(
+            "You've hit your session limit · resets 1:30am (America/New_York)",
+            1_793_500_000,
+        );
+        assert!(
+            folded.is_some(),
+            "a clock that happens twice still resolves"
+        );
+
+        // 02:30 does not exist on 2026-03-08 in New York: the clock jumps 02:00→03:00.
+        // 2026-03-08T06:00:00Z is 01:00 EST, before the jump.
+        let skipped = resolve(
+            "You've hit your session limit · resets 2:30am (America/New_York)",
+            1_772_949_600,
+        );
+        assert!(
+            skipped.is_some(),
+            "a clock that does not exist still resolves"
+        );
+    }
+
+    /// No zone, no clock, or a zone no database has: no instant, and the reader is
+    /// told the reset time is unknown rather than shown a countdown from a guess.
+    #[test]
+    fn a_limit_with_nothing_resolvable_yields_no_instant() {
+        let now = 1_789_939_878;
         assert_eq!(
-            resets.unix_timestamp(),
-            1_789_942_800,
-            "6:20pm EDT is 22:20Z"
+            resolve("You've hit your session limit · resets 6:20pm", now),
+            None,
+            "no zone"
+        );
+        assert_eq!(
+            resolve("You've hit your session limit", now),
+            None,
+            "no clock"
+        );
+        assert_eq!(
+            resolve(
+                "You've hit your session limit · resets 6:20pm (Mars/Olympus)",
+                now
+            ),
+            None,
+            "a zone no database has"
         );
     }
 }

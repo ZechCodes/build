@@ -33,7 +33,7 @@ import { hashString } from "./patternMotion.js";
 import { createAdoptingCall } from "./adoption.js";
 import { agentDefaultsForWorkspace, agentDefaultsInWorkspace } from "./workspaceDefaults.js";
 import { projectAgentChoiceOf } from "./projectAgentSetting.js";
-import { workspaceKey } from "./deviceKey.js";
+import { deviceKey, workspaceKey } from "./deviceKey.js";
 import {
   AGENT_STARTING,
   QUIET_SHAPE,
@@ -92,6 +92,7 @@ import { readCached, subscribeCache } from "./localCache.js";
 import { scopeFor } from "./cacheScope.js";
 import { replyOrNothing } from "./session.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { agentLabels as agentLabelsOf, workspaceAgents } from "./trackerAssignee.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
@@ -953,6 +954,10 @@ function mountRailOnContext(host, context, swap) {
   const faces = new Map();
   let agentlessOnce = false; // an answer that lost the agents, waiting to be repeated
   let feedRow = null; // this work item's row off the shared feed, for the pinned status line
+  /** This machine's whole view of the feed, which is how an agent of ANOTHER
+   *  workspace gets a name: a tracking notice is about somebody else's act
+   *  (core/trackerNotice.js), so the row this rail stands on is not enough. */
+  let feedView = null;
   let statusTicker = null;
   // One-shot: the composer steals focus the first time it paints, then never
   // again — a poll rebuilding the panel later (a new agent, a mode switch)
@@ -1997,6 +2002,24 @@ function mountRailOnContext(host, context, swap) {
     projectId: entity.projectId || context.projectId,
   });
 
+  /** What this project's agents are called, for the one row that names an
+   *  agent it is not standing on: a tracking notice's "X did Y". Zech asked
+   *  for a name he recognises, and "Agent 01M2" is not one. */
+  const conversationAgentLabels = () => {
+    const place = conversationPlace();
+    if (!place.projectId || !place.deviceId) return {};
+    return agentLabelsOf(workspaceAgents(feedView, deviceKey(place.deviceId, place.projectId)));
+  };
+
+  /** The names as the paint sees them. In the fingerprint because a feed that
+   *  renames an agent has to repaint a line already on screen, and out of it
+   *  nothing else would notice. */
+  const agentLabelsSignature = () =>
+    Object.entries(conversationAgentLabels())
+      .sort(([left], [right]) => (left < right ? -1 : 1))
+      .map(([id, label]) => `${id}:${label}`)
+      .join(",");
+
   const chatFingerprintOf = (thread, agentLabel) => {
     const openRuns = conversationRuns().openKeys();
     const threadState = controllerInFocus().threadState;
@@ -2010,6 +2033,7 @@ function mountRailOnContext(host, context, swap) {
       agentLabel,
       unreadFrom,
       detailLevel: detailLevel(),
+      agentLabels: agentLabelsSignature(),
       ...threadOfferState(threadState),
     });
   };
@@ -2042,6 +2066,7 @@ function mountRailOnContext(host, context, swap) {
       threadState: controllerInFocus().threadState,
       unreadFrom,
       place: conversationPlace(),
+      agentLabels: conversationAgentLabels(),
       // So a timeline the level emptied says so, rather than claiming the
       // conversation has nothing on the record.
       hiddenByLevel: held.length - shown.length,
@@ -3022,8 +3047,13 @@ function mountRailOnContext(host, context, swap) {
     // One machine's rows, not the merge: this work item is on the machine its
     // link named, and every machine mints a `proj-1` — so the row is looked for
     // by the machine and the project together.
-    feedRow = toolbarIdentity(feedRoute(), deviceFeedView(feed, context.deviceId)).row;
+    feedView = deviceFeedView(feed, context.deviceId);
+    feedRow = toolbarIdentity(feedRoute(), feedView).row;
     paintRailStatus();
+    // A tracking notice names the agent that acted, and that name comes off
+    // the feed — so a feed that moved can change a line already on screen.
+    // The fingerprint decides whether it actually repaints.
+    paintChat();
   });
 
   // The feed names this work item — agents included — and its snapshot replays

@@ -26,6 +26,9 @@ const INPUTS = {
   agentLabel: "Claude Code",
   sending: "",
   choiceState: "",
+  // What this project's agents are called. A tracking notice draws one of
+  // these names, so a rename has to repaint a line already on screen.
+  agentLabels: "agent-1:issues-spa · Agent 1",
 };
 
 const withInput = (over) => chatPaintFingerprint({ ...INPUTS, ...over });
@@ -47,6 +50,7 @@ describe("the chat paint's fingerprint", () => {
       agentLabel: "Codex",
       sending: "th-1::m-4",
       choiceState: "th-1::m-4=go",
+      agentLabels: "agent-1:issues-spa · Agent 2",
     };
 
     for (const [name, value] of Object.entries(moved)) {

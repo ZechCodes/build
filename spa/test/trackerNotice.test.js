@@ -181,6 +181,25 @@ describe("the row, in the timeline", () => {
     expect(row.textContent).not.toContain("this reproduces on a phone too");
   });
 
+  // Zech asked for "X did Y", and X has to be a name he recognises. The names
+  // come off the feed, so the timeline is handed them.
+  it("names the agent the way the rest of the project names it", () => {
+    document.body.innerHTML = threadHtml(
+      { id: "conversation-3", items: [item({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented" } })] },
+      { place: PLACE, agentLabels: { "agent-01M2XXGQ": "issues-spa · Agent 1" } },
+    );
+    expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())
+      .toBe("issues-spa · Agent 1 commented on #32 Kanban drag does not persist");
+  });
+
+  // Not a blank where a name should be: an agent this client cannot name is
+  // still said, by the four characters it wears everywhere else.
+  it("falls back to the agent's short name when the feed has none for it", () => {
+    expect(paint([item({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented" } })])
+      .textContent.replace(/\s+/g, " ").trim())
+      .toBe("Agent 01M2 commented on #32 Kanban drag does not persist");
+  });
+
   it("carries its sequence, so it reads in order and counts as unread", () => {
     expect(paint([item()]).dataset.sequence).toBe("9");
   });

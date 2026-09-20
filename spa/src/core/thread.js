@@ -973,7 +973,7 @@ function issueActionMessageHtml(message, context) {
 /// nobody can see is a line nobody can press.
 function issueNoticeMessageHtml(message, context) {
   return `<article class="thread-message thread-notice"${sequenceAttribute(message)}>
-    ${issueNoticeLineHtml(issueNoticeOf(message), { place: context.place })}
+    ${issueNoticeLineHtml(issueNoticeOf(message), { place: context.place, agentLabels: context.agentLabels })}
   </article>`;
 }
 
@@ -1417,7 +1417,7 @@ function activityRow(item, index, agentLabel, folding) {
 ///
 /// `spoken` is whether this is the last thing said, which is the whole of
 /// whether its offer can still be answered.
-function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place }) {
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels }) {
   const message = item.data || {};
   // Old bridges persisted the noisy structured handoff as a chat message.
   if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
@@ -1426,7 +1426,7 @@ function messageRow(item, index, agentLabel, { threadId, spoken, threadState, pl
   if (message.answers_options_of) return [];
   const offer = offerKey(threadId, message.id);
   const live = spoken && !threadState.isSending(offer);
-  const context = { live, offer, threadState, place };
+  const context = { live, offer, threadState, place, agentLabels };
   return [{ key: rowKey(message, index), item, html: messageHtml(message, agentLabel, context) }];
 }
 
@@ -1437,7 +1437,7 @@ function messageRow(item, index, agentLabel, { threadId, spoken, threadState, pl
 /// message are drawn on other rows instead. Used for the conversation itself
 /// and for the children of an open run, so a fetched run's rows are the rows
 /// the window would have drawn for the same items.
-function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place }) {
+function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place, agentLabels }) {
   const items = sourceItems.filter((item) => !isStartupEvent(item));
   const folding = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !folding.foldedItems.has(item));
@@ -1447,7 +1447,7 @@ function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place 
   const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
   return topLevelItems.flatMap((item, index) =>
     item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place })
+      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels })
       : [activityRow(item, index, agentLabel, folding)],
   );
 }
@@ -1475,10 +1475,21 @@ export function timelineEntries(
   agentLabel,
   threadId,
   digests,
-  { openRuns, runItemsOf, threadState = createThreadState(), unreadFrom, place = NOWHERE_IN_PARTICULAR, hiddenByLevel = 0 } = {},
+  {
+    openRuns,
+    runItemsOf,
+    threadState = createThreadState(),
+    unreadFrom,
+    place = NOWHERE_IN_PARTICULAR,
+    // What this project's agents are called. Only one row reads them — a
+    // tracking notice's "X did Y" — and X has to be a name the reader knows.
+    agentLabels = {},
+    hiddenByLevel = 0,
+  } = {},
 ) {
   const view = {
     agentLabel,
+    agentLabels,
     threadId,
     threadState,
     place,
@@ -1648,6 +1659,7 @@ export function chatPaintFingerprint({
   choiceState,
   unreadFrom,
   detailLevel,
+  agentLabels,
 }) {
   return [
     deliveredSequence,
@@ -1661,6 +1673,9 @@ export function chatPaintFingerprint({
     choiceState || "",
     unreadFrom ?? "",
     detailLevel || "",
+    // A tracking notice names an agent, and that name comes off the feed: a
+    // rename has to repaint a line that is already on screen.
+    agentLabels || "",
   ].join("|");
 }
 

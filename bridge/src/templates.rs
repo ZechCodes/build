@@ -207,6 +207,13 @@ check what came of it, ask the agent what you still need to know, and report to
 the user. Work already in flight goes to the workspace and the agent that hold
 it rather than to a new one.
 
+Hand significant work over as an ISSUE rather than as a message. Anything beyond
+a quick question or a one-line correction: file it with `create_issue`, put the
+brief in the body, and hand it over with `assign_issue` — which will cut the
+workspace and put an agent on it in the same call. The issue is the record, and
+the record is the point: it is where the user looks, where that agent asks what
+it needs, and what is still there when this conversation is not.
+
 Split what is independent. Two pieces of work that do not read each other's
 changes are two workspaces with an agent on each, started in the same turn,
 rather than one agent taking them in order. Two pieces that touch the same files
@@ -228,8 +235,9 @@ new one, or take one away), `add_workspace_agent` and `remove_workspace_agent`
 workspace is cut from), `add_workspace_directory` and
 `remove_workspace_directory` (the folders inside one workspace that already
 exists), `search_conversation` (your own history), `set_topic` and
-`post_thread_message`. There are no others — you cannot reach another project,
-you cannot read a workspace agent's conversation, and you cannot change a file.
+`post_thread_message`. Beyond the issue tools below there are no others — you
+cannot reach another project, you cannot read a workspace agent's conversation,
+and you cannot change a file.
 
 A message may say which workspace the user was standing in when they sent it —
 the line naming it arrives with the message. While one does, \"this workspace\"
@@ -347,14 +355,26 @@ in.";
 /// surface and the project surface, and a project overriding one template
 /// still overrides only that one.
 ///
-/// It says the four things an agent gets wrong without being told. An issue
-/// handed over is the WORK, not a note about it, so progress belongs on the
-/// issue and not only in a conversation nobody else reads. In review is what
-/// Complete means on a board — ready to be looked at, not accepted — and an
-/// agent that moves its own issue to Done is marking its own homework. A
-/// hand-off is an assignment, because an assignment delivers the issue and
-/// leaves a record while a message leaves only words. And work an agent
-/// notices and does not do exists nowhere unless it is filed.
+/// It says the things an agent gets wrong without being told. An issue handed
+/// over is the WORK, not a note about it, so progress belongs on the issue and
+/// not only in a conversation nobody else reads. In review is what Complete
+/// means on a board — ready to be looked at, not accepted — and an agent that
+/// moves its own issue to Done is marking its own homework. A hand-off is an
+/// assignment, because an assignment delivers the issue and leaves a record
+/// while a message leaves only words. And work an agent notices and does not do
+/// exists nowhere unless it is filed.
+///
+/// Three more, added because the conversation kept being used for what the
+/// board is for. A brief sent as a message is a brief only its reader has, so
+/// anything bigger than a correction is filed and assigned. A multi-step piece
+/// of work planned only in a conversation is invisible to the user and dies
+/// with the session, so an agent files and self-assigns its own. And a question
+/// about somebody else's issue asked anywhere but that issue reaches one person
+/// when it needed to reach two.
+///
+/// TODO(#13): when `track_issue` lands, this note gains its line about tracking
+/// an issue you depend on. Nothing here mentions it yet — telling an agent
+/// about a tool it does not have is worse than saying nothing.
 const ISSUE_TOOLS_NOTE: &str = "\
 Your project has an issue tracker, and the issue tools reach it: `list_issues`,
 `get_issue`, `create_issue`, `comment_issue`, `assign_issue`, `move_issue`,
@@ -372,9 +392,25 @@ Move it to In review with `move_issue` when you report Complete. In review means
 the work is ready to be looked at, not that it is accepted; you are not the one
 who decides it is done.
 
-Hand work off by ASSIGNING the issue, not by messaging. `assign_issue` delivers
-the issue into that agent's conversation and starts it, and leaves a record on
-the issue that a message does not. Assigning is what dispatching is here.
+Hand work off by ASSIGNING the issue, not by messaging. Anything beyond a quick
+question or a one-line correction gets an issue: file it with the brief in the
+body, then assign it. `assign_issue` delivers the issue into that agent's
+conversation and starts it, and leaves a record on the issue that a message does
+not — the issue is where the user and the other agents look, and a brief sent as
+a message is a brief only its reader has. Assigning is what dispatching is here.
+
+Use issues to plan your OWN work too. When what you have taken on is more than a
+single step, file an issue for it — or one for each piece that could be worked
+independently — assign it to yourself, and move it across the board as you go.
+That is how the user sees what is in progress without opening this conversation,
+and it is how the plan outlives the session: one that lives only here is lost
+with it.
+
+When an issue came from outside this conversation, ask ON the issue. A question
+you need answered, a decision that is not yours, something you found that
+changes what was asked — `comment_issue`, not this thread and not a message to
+whoever assigned it. The assigner and the user both read the issue and the
+answer comes back there; asked anywhere else it reaches one of them at best.
 
 File an issue for follow-up work you find and do not do. An issue is cheap, and
 something you noticed and did not write down exists only in this conversation.";
@@ -900,6 +936,23 @@ mod tests {
                 "{tool} is how work is placed: {project}"
             );
         }
+        // Rule 1: significant work is handed over as an issue, not as a
+        // message — the project agent's own words for it.
+        assert!(
+            project.contains("Hand significant work over as an ISSUE rather than as a message."),
+            "the project agent hands work over as an issue: {project}"
+        );
+        for tool in ["`create_issue`", "`assign_issue`"] {
+            assert!(
+                project.contains(tool),
+                "{tool} is how significant work is handed over: {project}"
+            );
+        }
+        assert!(
+            project.contains("Beyond the issue tools below there are no others"),
+            "the inventory cannot end before the eight tools appended under it: {project}"
+        );
+
         // Every rule the surface had before orchestration arrived is still here.
         for kept in [
             "scratch space Build hands you",
@@ -1087,6 +1140,72 @@ mod tests {
                 "{name} carries something other than the one note: {template}"
             );
         }
+    }
+
+    /// Every template that carries the issue tools carries the same three rules
+    /// about when to reach for them: file and assign rather than message, file
+    /// and self-assign to plan your own work, and ask on the issue you were
+    /// handed. One note, appended by `coding_template` and to the project
+    /// agent's prompt, so the coding surface and the project surface cannot
+    /// come to say different things.
+    #[test]
+    fn every_template_with_the_issue_tools_says_when_to_reach_for_them() {
+        let t = Templates::default();
+        for (name, template) in templates_with_the_issue_tools(&t) {
+            let text = collapse_whitespace(template);
+            for sentence in [
+                // Rule 1: a brief is an issue, not a message.
+                "Anything beyond a quick question or a one-line correction gets an issue",
+                "a brief sent as a message is a brief only its reader has",
+                // Rule 2: plan your own work on the board.
+                "Use issues to plan your OWN work too.",
+                "assign it to yourself, and move it across the board as you go",
+                // Rule 3: ask where both readers are.
+                "When an issue came from outside this conversation, ask ON the issue.",
+                "not this thread and not a message to whoever assigned it",
+            ] {
+                assert!(text.contains(sentence), "{name} does not say it: {text}");
+            }
+            // And the rules that were there before these three arrived.
+            for kept in [
+                "Read it with `get_issue` first",
+                "Comment your progress on it with `comment_issue` as you go",
+                "Move it to In review with `move_issue` when you report Complete.",
+                "Hand work off by ASSIGNING the issue, not by messaging.",
+                "File an issue for follow-up work you find and do not do.",
+            ] {
+                assert!(text.contains(kept), "{name} dropped an older rule: {text}");
+            }
+        }
+    }
+
+    /// `track_issue` does not exist yet (#13). Until it does, no prompt may
+    /// mention tracking: an agent told to call a tool it has not got gets an
+    /// unknown-tool error and no way to know why.
+    #[test]
+    fn no_template_offers_a_tracking_tool_that_does_not_exist_yet() {
+        let t = Templates::default();
+        for (name, template) in templates_with_the_issue_tools(&t) {
+            assert!(
+                !template.contains("track_issue"),
+                "{name} offers a tool the bridge does not have: {template}"
+            );
+        }
+    }
+
+    /// Every template the issue note is appended to: the coding phases and the
+    /// project agent. The router has no project and gets none of it.
+    fn templates_with_the_issue_tools(t: &Templates) -> Vec<(&'static str, &String)> {
+        vec![
+            ("plan", &t.plan),
+            ("build", &t.build),
+            ("build_stage", &t.build_stage),
+            ("revise", &t.revise),
+            ("revise_stage", &t.revise_stage),
+            ("review_changes", &t.review_changes),
+            ("message", &t.message),
+            ("project_agent", &t.project_agent),
+        ]
     }
 
     /// The two templates it is deliberately NOT on: the router has no project

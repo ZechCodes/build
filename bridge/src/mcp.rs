@@ -707,7 +707,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "create_issue",
-                "description": "File an issue in your project. Use it for work you have found and are NOT doing: an issue is cheap, and something you noticed and did not write down exists only in this conversation. It is filed, not started — assign it to start anyone on it.",
+                "description": "File an issue in your project. Two things it is for: work you have found and are NOT doing — an issue is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -722,7 +722,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "comment_issue",
-                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look.",
+                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ASK: a question about an issue that came from outside your conversation goes here rather than in your own thread or a message to whoever assigned it, because the assigner and the user both read the issue and the answer comes back to you here.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -747,7 +747,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "assign_issue",
-                "description": "Hand an issue to somebody. Assigning IS dispatching: it delivers the issue into that agent's conversation and starts it. This is how you hand work off — an issue assigned leaves a record on the issue that a message does not, and the agent that gets it knows what it is working on.",
+                "description": "Hand an issue to somebody. Assigning IS dispatching: it delivers the issue into that agent's conversation and starts it. This is how you hand work off — anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message, because the issue is where the user and the other agents look and a brief sent as a message is a brief only its reader has. Assign it to yourself to plan and track work you are doing yourself.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -2435,6 +2435,58 @@ mod tests {
                 assert!(
                     description.contains("never `git worktree add`"),
                     "{tool} does not forbid git's own worktrees: {description}"
+                );
+            }
+        }
+    }
+
+    /// The three issue tools whose descriptions had to change say, in the
+    /// description itself, when to reach for them: file and assign rather than
+    /// message, file and self-assign to plan your own work, and ask on the
+    /// issue you were handed.
+    ///
+    /// Said here as well as in the prompt for the reason the checkout tools say
+    /// their rule twice — a description survives the compaction that eats a
+    /// cold prompt, and the moment an agent reaches for a message instead of an
+    /// issue is long after that prompt is gone.
+    #[test]
+    fn the_issue_tools_say_when_to_reach_for_them_in_the_description_itself() {
+        for surface in [&server(), &project()] {
+            let listed =
+                surface.handle_message(r#"{"jsonrpc":"2.0","id":75,"method":"tools/list"}"#);
+            let value = parse(&listed.reply.unwrap());
+            let described = |tool: &str| -> String {
+                value["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|listed| listed["name"] == tool)
+                    .unwrap_or_else(|| panic!("{tool} is advertised"))["description"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            };
+            for (tool, said) in [
+                // Rule 1: the threshold and the reason.
+                (
+                    "assign_issue",
+                    "anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message",
+                ),
+                // Rule 2: your own multi-step work is an issue too.
+                (
+                    "create_issue",
+                    "work you ARE doing that runs to more than one step, filed and assigned to yourself",
+                ),
+                // Rule 3: the issue is where you ask, not only where you report.
+                (
+                    "comment_issue",
+                    "a question about an issue that came from outside your conversation goes here",
+                ),
+            ] {
+                let description = described(tool);
+                assert!(
+                    description.contains(said),
+                    "{tool} no longer says, verbatim: {said}\n\nit says: {description}"
                 );
             }
         }

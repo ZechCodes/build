@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import { createThreadState, threadHtml, wireThreadArrivals } from "../src/core/thread.js";
+import { itemsAtDetailLevel } from "../src/core/conversationDetail.js";
 import { issueCardHtml } from "../src/core/trackerMessageCard.js";
 
 const HERE = { deviceId: "dev-1", projectId: "proj-1" };
@@ -175,5 +176,68 @@ describe("the card on its own", () => {
   it("says nothing for an envelope that names no issue", () => {
     expect(issueCardHtml(null)).toBe("");
     expect(issueCardHtml({ number: 12 })).toBe("");
+  });
+});
+
+// How a handed-over issue reads at each of the three detail levels
+// (core/conversationDetail.js).
+//
+// The levels do not know about `from_issue` and should not: what they read is
+// whether a message is this conversation's DIALOGUE or correspondence with
+// somewhere else, and `from_agent`/`sent_to` is the whole of that question. An
+// issue hand-off falls on either side of it depending on who did the
+// assigning, which is the right answer for both — so this is the contract
+// between the two, pinned from the tracker's side.
+describe("a handed-over issue at each detail level", () => {
+  /** The user assigned it: an instruction arriving on the user's side of this
+   *  conversation, from the person reading it. This agent's dialogue. */
+  const assignedByUser = handedOver();
+
+  /** Another agent assigned it: the hand-off carries `from_agent`, and it is
+   *  drawn as an arrival — correspondence with a conversation elsewhere. */
+  const assignedByAgent = () => {
+    const item = handedOver();
+    item.data.id = "message-10";
+    item.data.sequence = 10;
+    item.data.from_agent = { id: "agent-01K5Y", owner: { kind: "project", id: "proj-1", name: "Build" } };
+    return item;
+  };
+
+  const both = () => [assignedByUser, assignedByAgent()];
+  const idsAt = (level) => itemsAtDetailLevel(both(), level).map((item) => item.data.id);
+
+  it("keeps both at All", () => {
+    expect(idsAt("all")).toEqual(["message-9", "message-10"]);
+  });
+
+  // Both are messages, whoever sent them; only the activity goes.
+  it("keeps both at All messages", () => {
+    expect(idsAt("messages")).toEqual(["message-9", "message-10"]);
+  });
+
+  // The one the reader assigned is the reader talking to this agent. Hiding it
+  // at the level called "this agent's messages and yours" would hide the
+  // instruction the agent is working from.
+  it("keeps the one the user assigned at Agent only", () => {
+    expect(idsAt("agent")).toEqual(["message-9"]);
+  });
+
+  // The one another agent assigned is correspondence, and goes with the rest
+  // of it.
+  it("drops the one another agent assigned at Agent only", () => {
+    expect(idsAt("agent")).not.toContain("message-10");
+  });
+
+  it("still draws the card on what Agent only kept", () => {
+    const card = paint(itemsAtDetailLevel(both(), "agent"));
+    expect(card).not.toBeNull();
+    expect(card.querySelector(".thread-issue-link").textContent).toBe("#12");
+    expect(document.querySelectorAll(".thread-issue")).toHaveLength(1);
+  });
+
+  it("draws both cards at All messages, one of them as an arrival", () => {
+    paint(itemsAtDetailLevel(both(), "messages"));
+    expect(document.querySelectorAll(".thread-issue")).toHaveLength(2);
+    expect(document.querySelectorAll(".thread-message.from-agent")).toHaveLength(1);
   });
 });

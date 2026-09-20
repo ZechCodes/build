@@ -58,12 +58,16 @@ describe("route leave guards", () => {
     App.routeLeaveGuard = vi.fn(() => new Promise((resolve) => { decide = resolve; }));
 
     const first = go({ name: "inbox" });
-    const latest = go({ name: "account" });
+    // A page rather than the account: the account is a modal over whatever the
+    // reader was on, and taking one up deliberately does NOT drop what they are
+    // looking at (app.js `pageIsChanging`). The subject here is the guard and
+    // which route wins, so the route that wins is a place.
+    const latest = go({ name: "project", deviceId: "dev-1", projectId: "p2" });
     expect(App.routeLeaveGuard).toHaveBeenCalledTimes(1);
     decide(true);
     await Promise.all([first, latest]);
 
-    expect(App.route.name).toBe("account");
+    expect(App.route.name).toBe("project");
     expect(App.viewingContext.clear).toHaveBeenCalledTimes(1);
   });
 

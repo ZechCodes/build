@@ -140,7 +140,13 @@ function mayLeaveRoute() {
  * route has no hash of its own, so the link is written from the route as given.
  */
 function standOn(route) {
-  App.viewingContext.clear();
+  // What the reader is looking at belongs to the PAGE (#21 has the issue page
+  // name its issue, so the project agent beside it knows which one is open), so
+  // it is dropped when the page is replaced and not merely when the URL moves.
+  // Opening a modal, and closing it again, is neither: the reader is still
+  // looking at the page under the scrim, and that page does not read again on
+  // the way back — so a clear here would be a clear for good.
+  if (pageIsChanging(route)) App.viewingContext.clear();
   App.route = withDeviceOrResolve(route);
   // Every route the app takes up comes through here — a navigation and a move
   // within a surface alike — and either can change which workspace is on
@@ -317,6 +323,11 @@ let mountedRoute = null;
 // The open modal's teardown, which is NOT App.viewDispose: that slot belongs to
 // the page underneath, and a modal that claimed it would tear that page down.
 let modalDispose = null;
+
+/** Whether taking up this route replaces the page in #root. A settings route
+ *  lays a modal over the page instead, and a route the mounted page is already
+ *  standing on is a modal closing back onto it. */
+const pageIsChanging = (route) => !isSettingsRoute(route) && !sameRoute(mountedRoute, route);
 
 /** Whether two routes name the same standing. Compared field by field rather
  *  than by JSON: a route that has been round-tripped through

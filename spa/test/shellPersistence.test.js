@@ -37,7 +37,7 @@ vi.mock("../src/core/trackerIssuePage.js", () => ({
   mountIssuePage: () => ({ feedMoved: () => {}, dispose: () => {} }),
 }));
 
-const { App, render, unmountView } = await import("../src/app.js");
+const { App, go, render, unmountView } = await import("../src/app.js");
 const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { stopShell } = await import("../src/core/shell.js");
 
@@ -244,5 +244,53 @@ describe("a modal over a page", () => {
     await visit({ name: "account", page: "settings" });
     expect(document.querySelector('[role="dialog"]')).toBeTruthy();
     expect(document.querySelector("#root").children.length).toBeGreaterThan(0);
+  });
+});
+
+describe("what the reader is looking at, while a modal is over the page", () => {
+  // #21 has the issue page say which issue is on screen, so the project agent's
+  // rail beside it knows. The page sets it from its own read; the router clears
+  // it on every navigation. A modal is not a navigation — the reader is still
+  // looking at the issue, with settings laid over it — and the page under does
+  // not read again on the way back, so a clear there is a clear for good.
+  it("keeps the issue named while settings open and close over it", async () => {
+    // The context is off until a bridge says it takes one (core/viewingContext).
+    App.viewingContext.setEnabled(true);
+    await visit(PLACES["issue (tracker)"]);
+    App.viewingContext.set({ version: 1, items: [{ kind: "issue", issue_id: "i-1", title: "Rebuild", number: 3 }] });
+    expect(App.viewingContext.snapshot()).toBeTruthy();
+
+    await visit({ name: "account", page: "settings" });
+    expect(App.viewingContext.snapshot()).toBeTruthy();
+
+    await visit(PLACES["issue (tracker)"]);
+    expect(App.viewingContext.snapshot()).toBeTruthy();
+  });
+
+  // …and a real navigation still drops it: the reader is looking at something
+  // else now, and the agent must not be told about the page they left. Taken
+  // through `go`, which is where the router drops it — the `visit` above sets
+  // App.route and renders, so it would never reach that code at all.
+  it("forgets it when the reader actually goes somewhere else", async () => {
+    App.viewingContext.setEnabled(true);
+    await visit(PLACES["issue (tracker)"]);
+    App.viewingContext.set({ version: 1, items: [{ kind: "issue", issue_id: "i-1", title: "Rebuild", number: 3 }] });
+    expect(App.viewingContext.snapshot()).toBeTruthy();
+
+    go(PLACES.workspace);
+    expect(App.viewingContext.snapshot()).toBeFalsy();
+  });
+
+  it("keeps it when the route taken up is the modal, or the page already under it", async () => {
+    App.viewingContext.setEnabled(true);
+    await visit(PLACES["issue (tracker)"]);
+    const named = { version: 1, items: [{ kind: "issue", issue_id: "i-1", title: "Rebuild", number: 3 }] };
+
+    App.viewingContext.set(named);
+    go({ name: "account", page: "settings" }); // the modal going up
+    expect(App.viewingContext.snapshot()).toBeTruthy();
+
+    go(PLACES["issue (tracker)"]); // …and closing back onto the page under it
+    expect(App.viewingContext.snapshot()).toBeTruthy();
   });
 });

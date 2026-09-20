@@ -1,5 +1,6 @@
 use super::*;
 
+mod adopted_checkouts;
 mod conversation_git;
 mod directories;
 mod git_init_deferred;

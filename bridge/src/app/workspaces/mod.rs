@@ -808,6 +808,10 @@ impl AppState {
     /// Read only Git's local worktree registry. This deliberately avoids the
     /// existing discovery scan because that synchronizes refs and computes
     /// diffs; legacy adoption needs identity and paths only.
+    ///
+    /// The same pass takes rows away: a checkout Build does not own is only
+    /// ever a window onto a folder somebody else made, so the window closes
+    /// when the folder does ([`Self::prune_adopted_checkouts`]).
     fn adopt_external_git_worktrees(&mut self) {
         let projects = self
             .projects
@@ -836,50 +840,94 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         for (project_id, repo_path, source_id, legacy_root) in projects {
-            let Ok(repository) = git2::Repository::open(&repo_path) else {
+            let Some(checkouts) = external_checkouts(&repo_path, &legacy_root) else {
                 continue;
             };
-            let Ok(names) = repository.worktrees() else {
-                continue;
-            };
-            for name in names.iter().flatten() {
-                let Ok(worktree) = repository.find_worktree(name) else {
-                    continue;
-                };
-                let path = worktree.path().to_path_buf();
-                if crate::workspace::is_managed_workspace_mount(&path)
-                    || held_paths.iter().any(|held| same_path(held, &path))
+            for (name, path) in &checkouts {
+                if !path.is_dir()
+                    || crate::workspace::is_managed_workspace_mount(path)
+                    || held_paths.iter().any(|held| same_path(held, path))
                 {
                     continue;
                 }
-                let id = crate::worktree::external_worktree_id(&path);
+                let id = crate::worktree::external_worktree_id(path);
                 self.workspaces.adopt_root(
                     &project_id,
                     id,
-                    name.to_string(),
-                    path,
+                    name.clone(),
+                    path.clone(),
                     source_id.clone(),
                     true,
                 );
             }
-            let Ok(entries) = std::fs::read_dir(legacy_root) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if crate::isolation::Isolation::of(&path) != Some(Isolation::Rift)
-                    || crate::workspace::is_managed_workspace_mount(&path)
-                    || held_paths.iter().any(|held| same_path(held, &path))
-                {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let id = crate::worktree::external_worktree_id(&path);
-                self.workspaces
-                    .adopt_root(&project_id, id, name, path, source_id.clone(), true);
-            }
+            let live = checkouts
+                .into_iter()
+                .map(|(_, path)| path)
+                .collect::<Vec<_>>();
+            self.prune_adopted_checkouts(&project_id, &live);
         }
     }
+
+    /// Take away the rows of checkouts that are no longer there.
+    ///
+    /// An adopted row holds no record of its own: it is minted from the
+    /// folder every time the list is read, so when the folder goes, or when
+    /// Git stops calling it a worktree, what is left is a name with nothing
+    /// behind it — no conversation, no work summary, and a Done that cannot
+    /// be pressed. Those rows outlived the worktrees they were cut for, so
+    /// the pass that adopts is also the pass that forgets.
+    ///
+    /// Only ids minted by checkout adoption are ever forgotten here: a
+    /// project's own repository and a run's worktree are adopted under their
+    /// own ids from records that are still live, and neither is this pass's
+    /// to remove.
+    fn prune_adopted_checkouts(&mut self, project_id: &str, live: &[PathBuf]) {
+        let stale = self
+            .workspaces
+            .list(Some(project_id))
+            .into_iter()
+            .filter(|workspace| {
+                !workspace.managed && crate::worktree::is_checkout_id(&workspace.id)
+            })
+            .filter(|workspace| {
+                !workspace.root.is_dir()
+                    || !live.iter().any(|path| same_path(path, &workspace.root))
+            })
+            .map(|workspace| workspace.id.clone())
+            .collect::<Vec<_>>();
+        for id in stale {
+            self.workspaces.forget(&id);
+        }
+    }
+}
+
+/// Every checkout this project offers to adoption, as the name it wears and
+/// the path it stands at: what Git's own worktree registry lists, and what
+/// Build's legacy worktrees root holds beside it.
+///
+/// `None` when the repository cannot be read at all. That is not the same
+/// answer as "no checkouts" — a project whose repository is briefly
+/// unreadable must not have the rows it already has taken away.
+fn external_checkouts(repo_path: &Path, legacy_root: &Path) -> Option<Vec<(String, PathBuf)>> {
+    let repository = git2::Repository::open(repo_path).ok()?;
+    let names = repository.worktrees().ok()?;
+    let mut checkouts = names
+        .iter()
+        .flatten()
+        .filter_map(|name| {
+            let worktree = repository.find_worktree(name).ok()?;
+            Some((name.to_string(), worktree.path().to_path_buf()))
+        })
+        .collect::<Vec<_>>();
+    let Ok(entries) = std::fs::read_dir(legacy_root) else {
+        return Some(checkouts);
+    };
+    checkouts.extend(entries.flatten().filter_map(|entry| {
+        let path = entry.path();
+        (crate::isolation::Isolation::of(&path) == Some(Isolation::Rift))
+            .then(|| (entry.file_name().to_string_lossy().into_owned(), path))
+    }));
+    Some(checkouts)
 }
 
 pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {

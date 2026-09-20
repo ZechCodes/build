@@ -28,11 +28,19 @@ const branchItem = (over = {}) => ({
 
 const bridge = { call: null };
 
+/** What this device's greeting says its subscriptions carry. A case that names
+ *  a shorter list is an older bridge answering, not another machine. */
+const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "issues"];
+let carriedKinds = EVERY_KIND;
+
 const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
 vi.mock("../src/app.js", () => ({ App }));
 
 let registeredWatchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
+  // The greeting says which kinds a bridge carries; a stand-in that
+  // answers none would have the sync layer ask for none of the new ones.
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: carriedKinds } }),
   watchChanges: (registration) => {
     const watcher = { ...registration, disposed: false };
     registeredWatchers.push(watcher);
@@ -132,6 +140,7 @@ beforeEach(async () => {
   contexts.clear();
   board = [];
   script = {};
+  carriedKinds = EVERY_KIND;
   App.route = { name: "inbox" };
   registerDevice("dev-1");
   bridge.call = vi.fn(async (method, params) => answer(method, params));
@@ -903,5 +912,44 @@ describe("an issues item", () => {
     await deliver(moved("p1"), ["issues"]);
     expect(calls("git.status")).toEqual([]);
     expect(calls("thread.page")).toEqual([]);
+  });
+});
+
+// `issues` is asked for only where the greeting says the bridge carries it.
+//
+// This is not politeness. Every kind in one `changes.subscribe` shares that
+// call's fate, and `addDesired` abandons the subscriptions after a refused one
+// — so naming a kind an older bridge does not know would take `state` and
+// `thread` down with it, and every push this device would have delivered.
+describe("a bridge that does not carry issues", () => {
+  const kindsOfInbox = () => subscription("s-inbox")?.kinds;
+
+  it("asks for issues where the greeting advertises them", async () => {
+    await boot();
+    expect(kindsOfInbox()).toEqual(["state", "thread", "issues"]);
+  });
+
+  it("leaves issues off where it does not", async () => {
+    carriedKinds = ["state", "thread", "git", "files", "terminals"];
+    await boot();
+    expect(kindsOfInbox()).toEqual(["state", "thread"]);
+  });
+
+  // The whole point: the inbox keeps working. An Issues tab filling from the
+  // pass alone is a degraded tracker; an inbox with no pushes is a dead client.
+  it("keeps all three subscriptions, and the inbox's other kinds", async () => {
+    carriedKinds = [];
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    expect(live().map((watcher) => watcher.id)).toEqual(["s-inbox", "s-background", "s-active"]);
+    expect(kindsOfInbox()).toEqual(["state", "thread"]);
+  });
+
+  // A capability object in a shape this build does not expect costs the
+  // tracker its push and nothing else.
+  it("still subscribes when the greeting says nothing readable at all", async () => {
+    carriedKinds = undefined;
+    await boot();
+    expect(kindsOfInbox()).toEqual(["state", "thread"]);
+    expect(live().map((watcher) => watcher.id)).toContain("s-background");
   });
 });

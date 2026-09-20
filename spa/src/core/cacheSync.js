@@ -27,7 +27,7 @@
 
 import { App } from "../app.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
-import { watchChanges } from "./changeEvents.js";
+import { bridgeCapabilities, watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
@@ -853,6 +853,28 @@ export function threadWindow(held, page) {
 // on a 30 s cooldown. `s-active` carries the same kinds for the one workspace
 // the reader is standing in, in realtime, and is re-issued when they move.
 
+/**
+ * The inbox subscription's kinds.
+ *
+ * `issues` rides here rather than on a subscription of its own: it is not a
+ * worktree kind, so it is paced by nothing and costs this flush nothing, and
+ * an issue moving is news the reader is looking at.
+ *
+ * But it is asked for only where the bridge's greeting says it carries them.
+ * Every kind in one `changes.subscribe` shares that call's fate, and a refused
+ * subscribe abandons the ones after it — so naming a kind an older bridge does
+ * not know would take `state` and `thread` down with it, and this device's
+ * pushes with them. A bridge too old to carry issues keeps its whole inbox and
+ * its Issues tab fills from the pass instead, which is the right way to lose.
+ */
+const inboxKinds = (deviceId) => {
+  // Read defensively: every push this device hears rides on this subscription
+  // being taken out, so a capability object in a shape this build does not
+  // expect must cost the tracker its push and nothing else.
+  const carried = bridgeCapabilities(deviceId)?.changes?.kinds || [];
+  return carried.includes("issues") ? ["state", "thread", "issues"] : ["state", "thread"];
+};
+
 const subscriptionShape = (deviceId) => ({
   deviceId,
   refresh: NOTHING,
@@ -878,10 +900,7 @@ async function subscribeDevice(context) {
         ...shape,
         id: "s-inbox",
         scope: "all",
-        // `issues` rides here rather than on a subscription of its own: it is
-        // not a worktree kind, so it is paced by nothing and costs this flush
-        // nothing, and an issue moving is news the reader is looking at.
-        kinds: ["state", "thread", "issues"],
+        kinds: inboxKinds(deviceId),
         mode: "realtime",
         priority: "foreground",
       }),

@@ -62,6 +62,9 @@ vi.mock("../src/devices.js", () => ({
 }));
 vi.mock("../src/core/composeView.js", () => ({ flushCaptures: async () => {} }));
 vi.mock("../src/core/changeEvents.js", () => ({
+  // The greeting says which kinds a bridge carries; a stand-in that
+  // answers none would have the sync layer ask for none of the new ones.
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] } }),
   dispatchChangeEvent: (...args) => changed.push(args),
   disarmChangeEvents: () => {},
   greetBridge: (...args) => greetings.greet(...args),

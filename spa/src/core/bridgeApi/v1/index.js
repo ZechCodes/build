@@ -127,6 +127,19 @@ function statedGreeting(greeting) {
   };
 }
 
+/**
+ * The subscription kinds a bridge says it carries.
+ *
+ * A greeting that names none is read as carrying none, and a caller asking
+ * "does this bridge carry X" gets no for every X. That is the safe direction:
+ * every kind in one `changes.subscribe` shares that call's fate, so asking for
+ * one the bridge does not know risks the whole subscription — and with it the
+ * kinds that would have worked. A caller may still ask for a kind unguarded;
+ * this is for the ones worth checking first.
+ */
+const kindsOf = (stated) =>
+  Array.isArray(stated.changes.kinds) ? stated.changes.kinds.filter((kind) => typeof kind === "string") : [];
+
 /** A boolean the greeting may state outright; otherwise the minor decides. */
 function capability(stated, minorFloor, minor) {
   if (typeof stated === "boolean") return stated;
@@ -145,10 +158,10 @@ function minorOf(version) {
  */
 export function capabilitiesOf(greeting, version) {
   const stated = statedGreeting(greeting);
-  if (!stated) return { changes: { subscriptions: false }, requests: { priority: false }, errors: { codes: false } };
+  if (!stated) return { changes: { subscriptions: false, kinds: [] }, requests: { priority: false }, errors: { codes: false } };
   const minor = minorOf(version);
   return {
-    changes: { subscriptions: capability(stated.changes.subscriptions, 1, minor) },
+    changes: { subscriptions: capability(stated.changes.subscriptions, 1, minor), kinds: kindsOf(stated) },
     requests: { priority: capability(stated.requests.priority, 1, minor) },
     errors: { codes: capability(stated.errors.codes, 1, minor) },
   };

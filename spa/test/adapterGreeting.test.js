@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, watchChanges;
 
-const NONE = { changes: { subscriptions: false }, requests: { priority: false }, errors: { codes: false } };
+const NONE = { changes: { subscriptions: false, kinds: [] }, requests: { priority: false }, errors: { codes: false } };
 
 const greeting11 = () => ({
   api_version: "1.2.0",
@@ -41,7 +41,9 @@ describe("the adapter a greeting selects", () => {
     expect(install.mock.calls[0][0]).toMatchObject({ major: 1, version: "1.2.0" });
     expect(bridgeAdapter()).toBe(install.mock.results[0].value);
     expect(bridgeCapabilities()).toEqual({
-      changes: { subscriptions: true },
+      // The kinds ride through as the greeting states them, so a caller can ask
+      // whether this bridge carries the one it is about to subscribe to.
+      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
       requests: { priority: true },
       errors: { codes: true },
     });

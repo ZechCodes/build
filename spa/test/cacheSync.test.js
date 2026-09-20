@@ -56,6 +56,9 @@ vi.mock("../src/app.js", () => ({ App }));
 
 let registeredWatchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
+  // The greeting says which kinds a bridge carries; a stand-in that
+  // answers none would have the sync layer ask for none of the new ones.
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] } }),
   watchChanges: (registration) => {
     const watcher = { ...registration, disposed: false };
     registeredWatchers.push(watcher);

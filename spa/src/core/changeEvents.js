@@ -71,7 +71,7 @@ export { SPA_API_RANGE };
 /** What no adapter claims: every capability off. What a surface reads before
  *  a greeting, and about a bridge nobody here speaks to. */
 const NO_CAPABILITIES = Object.freeze({
-  changes: Object.freeze({ subscriptions: false }),
+  changes: Object.freeze({ subscriptions: false, kinds: Object.freeze([]) }),
   requests: Object.freeze({ priority: false }),
   errors: Object.freeze({ codes: false }),
 });

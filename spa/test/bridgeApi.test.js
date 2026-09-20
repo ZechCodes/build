@@ -79,7 +79,10 @@ describe("adapter selection", () => {
     const selected = selectAdapter(greetingV1());
     expect(selected.major).toBe(1);
     expect(selected.create(vi.fn()).capabilities).toEqual({
-      changes: { subscriptions: true },
+      // The kinds come through as the greeting states them: a caller asks
+      // whether this bridge carries the one it is about to name, because every
+      // kind in one subscribe shares that call's fate.
+      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
       requests: { priority: true },
       errors: { codes: true },
     });
@@ -113,7 +116,7 @@ describe("adapter selection", () => {
       expect(selected.version).toBe("0.0.0");
       expect(selected.major).toBe(1);
       expect(selected.create(vi.fn()).capabilities).toEqual({
-        changes: { subscriptions: false },
+        changes: { subscriptions: false, kinds: [] },
         requests: { priority: false },
         errors: { codes: false },
       });

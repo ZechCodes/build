@@ -59,7 +59,28 @@ describe("the machines, one row each", () => {
   const waiting = { deviceId: "b", status: "waiting", failedAttempts: 1, nextAttemptAt: NOW + 2400 };
 
   it("says Connected for a machine holding a session", () => {
-    expect(status([STUDIO]).rows).toEqual([{ id: "a", name: "Studio", status: "connected", seconds: null, label: "Connected" }]);
+    expect(status([STUDIO]).rows).toEqual([
+      { id: "a", name: "Studio", status: "connected", seconds: null, path: null, label: "Connected" },
+    ]);
+  });
+
+  // Both are connected and neither is a fault, but they are not the same
+  // connection to be on, and which one the reader got is the one thing they
+  // cannot see from the ring.
+  it("says which way a connected machine is carrying, once its path is known", () => {
+    expect(status([{ ...STUDIO, path: "direct" }]).rows[0].label).toBe("Connected WebRTC");
+    expect(status([{ ...STUDIO, path: "turn" }]).rows[0].label).toBe("Connected TURN");
+  });
+
+  it("says the plain word while nothing has answered for the path yet", () => {
+    expect(status([STUDIO]).rows[0].label).toBe("Connected");
+    expect(status([{ ...STUDIO, path: "something new" }]).rows[0].label).toBe("Connected");
+  });
+
+  it("says nothing about the path of a machine that is not connected", () => {
+    const rows = status([{ ...STUDIO, live: false, path: "turn" }]).rows;
+    expect(rows[0].label).toBe("Offline");
+    expect(rows[0].path).toBe(null);
   });
 
   // Not every machine that is not connected is being reconnected to: recovery

@@ -43,8 +43,16 @@ let shownState = "";
  *  machine — so the number in the ring is the number of machines that would
  *  answer if something asked them now. */
 function devicesNow() {
-  const live = new Set(liveContexts().map((context) => context.deviceId));
-  return App.devices.map((device) => ({ id: device.id, name: device.name, live: live.has(device.id) }));
+  const live = new Map(liveContexts().map((context) => [context.deviceId, context]));
+  return App.devices.map((device) => ({
+    id: device.id,
+    name: device.name,
+    live: live.has(device.id),
+    // How that machine is carrying, as its own peer link measured it
+    // (core/transportPath.js). Null until the first sample lands, which the
+    // row says as the plain word.
+    path: live.get(device.id)?.peerLink?.transportPath?.() || null,
+  }));
 }
 
 /** The ring's parts, made once and then kept: the button the ring is drawn on,

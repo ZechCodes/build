@@ -58,12 +58,25 @@ class FakePeerConnection extends FakeEventTarget {
     this.connectionState = "new";
     this.closed = false;
     this.autoConnect = true;
+    this.localCandidateType = "host";
+    this.remoteCandidateType = "host";
     FakePeerConnection.instances.push(this);
   }
   createDataChannel(label, init) {
     const channel = new FakeChannel(label, init);
     this.channels.set(label, channel);
     return channel;
+  }
+  /** The stats a browser answers with once a pair has won. A case can say
+   *  which pair that is; the default is a direct one. */
+  async getStats() {
+    return new Map(
+      [
+        { id: "pair-1", type: "candidate-pair", state: "succeeded", nominated: true, localCandidateId: "l", remoteCandidateId: "r" },
+        { id: "l", type: "local-candidate", candidateType: this.localCandidateType },
+        { id: "r", type: "remote-candidate", candidateType: this.remoteCandidateType },
+      ].map((entry) => [entry.id, entry]),
+    );
   }
   async createOffer(options = {}) {
     return { type: "offer", sdp: `v=0 offer ${this.localDescriptions.length}${options.iceRestart ? " restart" : ""}` };
@@ -165,6 +178,35 @@ describe("openPeerLink", () => {
     candidateSinks[0]({ type: "rtc.ice", candidate: fromTheBridge });
     await tick();
     expect(peer.remoteCandidates).toEqual([fromTheBridge]);
+  });
+
+  // Which way the connection ended up carrying is the one thing about it the
+  // reader cannot see, and the bridge writes the same classification on its
+  // own side, so the two ends can be read against each other.
+  it("says which path it is carrying on when it lands, and again after a restart", async () => {
+    const { peer, resolved, signalled } = await upgrade();
+    expect(resolved.transportPath()).toBe("direct");
+
+    // The restart lands on a relayed pair, which is the case this is for: a
+    // path that was direct is not the path the restart found.
+    peer.localCandidateType = "relay";
+    peer.fail();
+    await tick();
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    await tick();
+    await tick();
+
+    expect(signalled.filter(([method]) => method === "rtc.offer").length).toBeGreaterThan(1);
+    expect(resolved.transportPath()).toBe("turn");
+  });
+
+  it("says nothing about a path it could not read", async () => {
+    const { peer, resolved } = await upgrade();
+    peer.getStats = async () => new Map();
+    expect(resolved.transportPath(), "the sample it took when it landed still stands").toBe("direct");
   });
 
   it("rejects when the ICE servers cannot be minted, and never builds a peer", async () => {

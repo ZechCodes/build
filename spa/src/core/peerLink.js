@@ -1,4 +1,5 @@
 import { openCarrier, peerFrames } from "./carrier.js";
+import { classifyTransportPath } from "./transportPath.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 const CHANNELS = [["app", 0], ["term", 1]];
@@ -38,6 +39,22 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const frames = peerFrames();
   const carriers = channels.map((channel) => openCarrier({ channel, frames }));
   const recovery = createRecoveryStatus();
+  // How this connection ended up carrying — straight to the machine, or
+  // through a TURN relay. Sampled when it lands and again after every ICE
+  // restart, because a restart is where a path that was direct becomes a
+  // relayed one. Null until the first sample answers.
+  let transportPath = null;
+  const sampleTransportPath = async () => {
+    try {
+      const path = classifyTransportPath(await peer.getStats?.());
+      if (torn || !path) return;
+      transportPath = path;
+      diagnostic("carrying", { path });
+    } catch {
+      /* a peer that cannot be asked says nothing, and the reader is told
+         nothing rather than told wrong */
+    }
+  };
   let torn = false;
   let cancelWait = () => {};
   let stopWatching = () => {};
@@ -87,6 +104,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive, true);
     }, (cancel) => (cancelWait = cancel));
     diagnostic("connected", { phase: "initial" });
+    await sampleTransportPath();
   } catch (error) {
     tearDown();
     throw error;
@@ -107,6 +125,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       }, (cancel) => (cancelWait = cancel));
       if (torn) return;
       diagnostic("connected", { phase: "restart" });
+      await sampleTransportPath();
       recovery.end();
       await onConnected();
     } catch (error) {
@@ -115,7 +134,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     }
   });
   const [app, term] = carriers;
-  return { app, term, recovery, close: tearDown };
+  return { app, term, recovery, transportPath: () => transportPath, close: tearDown };
 }
 
 async function offer(peer, signal, iceServers, options, ensureActive) {

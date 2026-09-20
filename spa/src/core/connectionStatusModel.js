@@ -63,15 +63,25 @@ const connectedLabel = (connectedCount) => {
  *  not a failure. */
 export const OFFLINE = "offline";
 
+/** What a connected machine's row says about HOW it is connected: straight to
+ *  the machine, or through a TURN relay. A machine whose path nothing has
+ *  answered for yet says the plain word — the reader is told what is known,
+ *  and never guessed at. */
+const connectedLabelFor = (path) => {
+  if (path === "turn") return "Connected TURN";
+  return path === "direct" ? "Connected WebRTC" : "Connected";
+};
+
 /** What one row says about one machine. Short by design: a row has the room
  *  for a state, and the ring's own label is where the sentence is. */
-const rowLabel = (status, seconds) => {
-  if (status === CONNECTED) return "Connected";
+const rowLabel = (status, seconds, path) => {
+  if (status === CONNECTED) return connectedLabelFor(path);
   if (status === OFFLINE) return "Offline";
   return status === WAITING && seconds > 0 ? `Reconnecting in ${seconds} s` : "Reconnecting";
 };
 
-const rowFor = (id, name, status, seconds) => ({ id, name, status, seconds, label: rowLabel(status, seconds) });
+const rowFor = (id, name, status, seconds, path = null) =>
+  ({ id, name, status, seconds, path: status === CONNECTED ? path : null, label: rowLabel(status, seconds, path) });
 
 /** Every machine, in the account's own order, each with what is true of IT —
  *  the same records the ring is derived from, read one machine at a time. A
@@ -82,7 +92,8 @@ function rowsFor(devices, recoveries, nowMs) {
   const recovering = new Map(recoveries.map((record) => [record.deviceId, record]));
   const rowOf = (id, name) => {
     const record = recovering.get(id);
-    if (!record) return rowFor(id, name, devices.find((device) => device.id === id)?.live ? CONNECTED : OFFLINE, null);
+    const device = devices.find((candidate) => candidate.id === id);
+    if (!record) return rowFor(id, name, device?.live ? CONNECTED : OFFLINE, null, device?.path || null);
     const seconds = record.status === WAITING ? secondsUntilAttempt(record.nextAttemptAt, nowMs) : null;
     return rowFor(id, name, record.status, seconds);
   };

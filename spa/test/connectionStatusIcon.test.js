@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const recovery = vi.hoisted(() => ({ states: [], listener: null }));
-const contexts = vi.hoisted(() => ({ live: [], listener: null }));
+const contexts = vi.hoisted(() => ({ live: [], listener: null, paths: new Map() }));
 
 vi.mock("../src/connection.js", () => ({
   deviceRecoverySnapshot: () => recovery.states,
@@ -28,7 +28,13 @@ vi.mock("../src/connection.js", () => ({
 }));
 
 vi.mock("../src/core/deviceContexts.js", () => ({
-  liveContexts: () => contexts.live.map((deviceId) => ({ deviceId })),
+  liveContexts: () => contexts.live.map((deviceId) => ({
+    deviceId,
+    // The peer link is what measured the path this machine is carrying on.
+    peerLink: contexts.paths.has(deviceId)
+      ? { transportPath: () => contexts.paths.get(deviceId) }
+      : null,
+  })),
   onDeviceStateChanged: (listener) => {
     contexts.listener = listener;
     return () => { contexts.listener = null; };
@@ -62,6 +68,7 @@ beforeEach(() => {
     <div id="connection-announcement" aria-live="polite"></div>`;
   App.devices = [{ id: "a", name: "Studio" }, { id: "b", name: "Laptop" }];
   contexts.live = ["a", "b"];
+  contexts.paths = new Map();
   recovery.states = [];
 });
 
@@ -252,6 +259,28 @@ describe("the menu behind the ring", () => {
       { name: "Studio", status: "Connected" },
       { name: "Laptop", status: "Offline" },
     ]);
+  });
+
+  // Both are connected and neither is a fault, but a reader who is on a relay
+  // path is on a different connection from one who is not, and this is the
+  // only place that says which.
+  it("says which way each connected machine is carrying", () => {
+    contexts.paths = new Map([["a", "direct"], ["b", "turn"]]);
+    mountConnectionStatus();
+    press();
+
+    expect(rows()).toEqual([
+      { name: "Studio", status: "Connected WebRTC" },
+      { name: "Laptop", status: "Connected TURN" },
+    ]);
+  });
+
+  it("says the plain word for a machine whose path nothing has measured yet", () => {
+    contexts.paths = new Map([["a", "direct"]]);
+    mountConnectionStatus();
+    press();
+
+    expect(rows()[1]).toEqual({ name: "Laptop", status: "Connected" });
   });
 
   it("counts a waiting machine down on the same clock the ring uses", () => {

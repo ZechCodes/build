@@ -183,6 +183,18 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
     expect(controller.recoveries()).toEqual([]);
   });
 
+  it("releases the attachment fetches the dead path ate", async () => {
+    const { context } = await strandedDevice("dev-e");
+    const { threadState } = context.chatRepository.history("conversation-1");
+    threadState.deferAttachment("shots/big.png");
+    const reconnected = bridgeAnswering("dev-e", { api_version: "1.2.0" });
+    expect(adoptDeviceSession(reconnected)).toBe(context);
+
+    await greetLiveBridge(context);
+
+    expect(threadState.attachmentDeferred("shots/big.png")).toBe(false);
+  });
+
   it("does not hold the app back on it: the greeting settles first", async () => {
     const { context } = await strandedDevice("dev-d");
     let releaseLedger;

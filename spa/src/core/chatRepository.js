@@ -899,6 +899,28 @@ export function createChatRepository({
      * bridge with no operation ledger, has nothing to do here and says so with
      * an empty list.
      */
+    /**
+     * Every attachment fetch a dead path ate is worth asking for again (#30
+     * point 3).
+     *
+     * Each conversation's thread state held its failed fetches apart: a bridge
+     * that refused a path stays refused, and one that was never answered because
+     * nothing carried it goes back to being asked for. Returns how many paths
+     * across how many conversations were released, for the caller's record.
+     */
+    retryDeferredAttachments() {
+      if (!active) return { conversations: 0, paths: 0 };
+      let conversations = 0;
+      let paths = 0;
+      for (const history of histories.values()) {
+        const released = history.threadState.retryDeferredAttachments?.() || [];
+        if (!released.length) continue;
+        conversations += 1;
+        paths += released.length;
+      }
+      return { conversations, paths };
+    },
+
     async resolveUncertainPosts() {
       if (!active || !threadPostOperations) return [];
       const resolved = [];

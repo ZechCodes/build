@@ -559,6 +559,10 @@ export function greetLiveBridge(context, {
     // speaks, and the recovery announces itself through the controllers when it
     // answers. `settled` passes through untouched.
     if (isAuthoritative() && contextFor(session.deviceId)?.session === session) {
+      // Pictures first, and synchronously: the next repaint of a timeline the
+      // reader is already looking at is what asks for them again, and it can be
+      // milliseconds away.
+      repository?.retryDeferredAttachments();
       void repository?.resolveUncertainPosts();
     }
     return settled;

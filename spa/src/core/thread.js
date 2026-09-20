@@ -28,6 +28,7 @@ import { setMotionRowHtml } from "./motion.js";
 import { issueCardHtml } from "./trackerMessageCard.js";
 import { issueActionLineHtml } from "./trackerActionLine.js";
 import { isIssueNotice, issueNoticeLineHtml, issueNoticeOf } from "./trackerNotice.js";
+import { isTransientTransportError } from "./transientRead.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -446,6 +447,19 @@ const ATTACHMENT_CACHE_MAX = 40;
 export function createThreadState({ ownerId = "" } = {}) {
   const attachmentDataUrls = new Map();
   const pendingAttachmentLoads = new Map();
+  /// Paths whose fetch died on the wire rather than being refused (#30).
+  ///
+  /// Three states, not two: held bytes, a refusal that is final, and this — a
+  /// request that was never answered because nothing carried it. Remembering
+  /// this one as a refusal is how Zech's 789 KB screenshot read "unavailable"
+  /// for the rest of the tab's life over a path that came back twenty seconds
+  /// later, with a hard refresh as the only cure. Remembering nothing at all is
+  /// not the answer either: the timeline repaints every second and a half, and a
+  /// dead window is a minute of re-asking a wire that is not there.
+  ///
+  /// So it is held, the figure keeps saying "loading", and the set is emptied
+  /// when the device reconnects.
+  const deferredAttachments = new Set();
   const pendingChoices = new Map();
   const sendingChoices = new Set();
   const openSentMessages = new Set();
@@ -458,10 +472,31 @@ export function createThreadState({ ownerId = "" } = {}) {
     attachment: (path) => attachmentDataUrls.get(path),
     rememberAttachment(path, dataUrl) {
       if (!live) return;
+      deferredAttachments.delete(path);
       if (attachmentDataUrls.size >= ATTACHMENT_CACHE_MAX) {
         attachmentDataUrls.delete(attachmentDataUrls.keys().next().value);
       }
       attachmentDataUrls.set(path, dataUrl);
+    },
+
+    /// This fetch was never answered because nothing was carrying it. Held
+    /// rather than remembered as a refusal, and asked again after the reconnect.
+    deferAttachment(path) {
+      if (live) deferredAttachments.add(path);
+    },
+
+    /// Whether this path is waiting on a wire rather than settled either way.
+    /// The renderer reads it to keep drawing "loading", and the wiring reads it
+    /// to leave the path alone until there is a session worth asking.
+    attachmentDeferred: (path) => deferredAttachments.has(path),
+
+    /// The device is back: everything a dead path cost is worth asking for
+    /// again. Only the deferrals go — held bytes are content-addressed and
+    /// immutable, and a real refusal is still a refusal.
+    retryDeferredAttachments() {
+      const waiting = [...deferredAttachments];
+      deferredAttachments.clear();
+      return waiting;
     },
     loadAttachment(path, load) {
       if (attachmentDataUrls.has(path)) return Promise.resolve(attachmentDataUrls.get(path));
@@ -514,6 +549,7 @@ export function createThreadState({ ownerId = "" } = {}) {
       live = false;
       attachmentDataUrls.clear();
       pendingAttachmentLoads.clear();
+      deferredAttachments.clear();
       pendingChoices.clear();
       sendingChoices.clear();
       openSentMessages.clear();
@@ -540,8 +576,12 @@ function attachmentsHtml(attachments, threadState) {
       const name = esc(attachment.name || attachment.path || "file");
       const size = esc(formatAttachmentSize(attachment.size));
       if (isImageAttachment(attachment.mime)) {
+        // Three states, and the caption says which: nothing (it is coming or it
+        // is here), refused (it is not coming), and waiting on a wire that is
+        // not there — which is a picture still loading, not a picture gone.
         const refused = threadState.attachment(attachment.path) === null ? " unavailable" : "";
-        return `<figure class="thread-attachment-figure${refused}">
+        const waiting = !refused && threadState.attachmentDeferred?.(attachment.path) ? " waiting" : "";
+        return `<figure class="thread-attachment-figure${refused}${waiting}">
           <button type="button" class="thread-attachment-preview" aria-label="Open ${name}">
             <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
           </button>
@@ -1987,23 +2027,39 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     });
   };
 
+  /// Which of the two failures this was, and what the reader is shown for it.
+  ///
+  /// A bridge that refused the path is final: the figure says so, the refusal is
+  /// remembered, and no repaint asks again — the bytes are not coming. A wire
+  /// that was not there refused nothing; the request never arrived anywhere, so
+  /// the figure keeps saying "loading" and the path is asked for again once the
+  /// device is back (#30). Telling them apart is the one rule
+  /// core/transientRead.js owns, because a second reading of it would be a
+  /// second answer about the same failure.
+  const failedToLoad = (path, image, error) => {
+    const figure = image?.closest(".thread-attachment-figure");
+    if (isTransientTransportError(error)) {
+      threadState.deferAttachment(path);
+      figure?.classList.add("waiting");
+      return;
+    }
+    threadState.rememberAttachment(path, null);
+    figure?.classList.add("unavailable");
+  };
+
   root.querySelectorAll("img.thread-attachment-image").forEach((image) => {
     const path = image.dataset.attachmentPath;
-    // A picture already showing, and one already asked for and refused, are
-    // both settled: asking again on every poll would be a request a second and
-    // a half for bytes the reader is not going to get.
+    // A picture already showing, one already asked for and refused, and one
+    // waiting on a wire that is not there are all settled for now: asking again
+    // on every poll would be a request a second and a half for bytes that are
+    // not coming back on this render.
     if (!path || image.getAttribute("src") || threadState.attachment(path) === null) return;
+    if (threadState.attachmentDeferred(path)) return;
     dataUrlFor(path).then(
       (dataUrl) => {
         image.setAttribute("src", dataUrl);
       },
-      () => {
-        // A picture that will not load says so where the picture would be,
-        // rather than leaving a silent gap in the conversation — remembered as
-        // well as shown, so the next render draws the same unavailable figure.
-        threadState.rememberAttachment(path, null);
-        image.closest(".thread-attachment-figure")?.classList.add("unavailable");
-      },
+      (error) => failedToLoad(path, image, error),
     );
   });
 
@@ -2015,9 +2071,8 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
       try {
         const dataUrl = image.getAttribute("src") || await dataUrlFor(path);
         if (dataUrl) openThreadAttachmentLightbox(preview, { src: dataUrl, alt: image.alt });
-      } catch {
-        threadState.rememberAttachment(path, null);
-        image.closest(".thread-attachment-figure")?.classList.add("unavailable");
+      } catch (error) {
+        failedToLoad(path, image, error);
       }
     };
   });

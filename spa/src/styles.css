@@ -1768,6 +1768,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-attachment-figure figcaption { padding-top:4px; color:var(--dim); font-size:11px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .thread-attachment-figure.unavailable figcaption::after { content:" · unavailable"; color:var(--red); }
+/* A picture whose fetch died on the wire is still coming: the caption says so
+   in the dim of every other waiting thing, not the red of a refusal. */
+.thread-attachment-figure.waiting figcaption::after { content:" · loading"; color:var(--dim); }
 /* A sent file is a card the reader can pick up: the kind's icon, the name,
    and what it weighs — the same tile it wore in the tray before the send. */
 .thread-attachment { display:flex; align-items:center; gap:9px; max-width:min(260px, 100%);

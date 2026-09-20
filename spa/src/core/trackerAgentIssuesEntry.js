@@ -1,68 +1,64 @@
-// The issues entry in a conversation's activity area, mounted.
+// What an agent is carrying on the issue board, as one of its SURFACES.
 //
-// It reads the project's cached issue list and draws the four groups for the
-// agent in focus. It asks the bridge for nothing: the list is already on disk
-// (core/trackerCache.js), the ordered pass keeps it warm, and an `issues` push
-// makes core/cacheSync.js rewrite that record — so subscribing to the RECORD
-// repaints this entry on the push with no read, no second subscription and no
-// full pass. It is the same way the console and the changes review stay live.
+// Not a block in the conversation any more (#34). Zech, on the #14 entry as it
+// rolled: "Right now the in review issues on an agent are just noise taking up
+// space on the chat. I had envisioned the issues activity to be the same UX as
+// agents/workflows/tasks/shells. So it's only visible when the user wants it
+// to be and there's a clear pattern for done work."
 //
-// Nothing is drawn on a bridge whose greeting does not advertise the issues
-// kind. Not an empty box: an entry that is always there and usually empty is
-// one a reader learns to skip past, and on such a bridge there is nothing to
-// put in it anyway.
+// So this file no longer draws anything. It supplies rows, and the surfaces
+// layer draws them behind a pill like every other kind — which also gets the
+// fold for finished work for free, rather than this file inventing a second
+// one beside it.
+//
+// The rows come off the project's cached issue list. It asks the bridge for
+// nothing: the list is already on disk (core/trackerCache.js), the ordered
+// pass keeps it warm, and an `issues` push makes core/cacheSync.js rewrite
+// that record — so subscribing to the RECORD gives a live surface with no
+// read, no second subscription and no full pass.
+//
+// Nothing is supplied at all on a bridge whose greeting does not advertise the
+// issues kind, so no pill appears. Not an empty one: a pill that is always
+// there and opens on nothing is one a reader learns to skip.
 
 import { subscribeCache } from "./localCache.js";
 import { issuesAddress, readIssuesRecord } from "./trackerCache.js";
 import { carriesIssuesPush } from "./trackerPush.js";
-import { columnsOf } from "./trackerModel.js";
-import { agentIssueGroups } from "./trackerAgentIssues.js";
-import { agentIssuesHtml } from "./trackerAgentIssuesRender.js";
+import { agentIssueEntries } from "./trackerAgentIssues.js";
 
 /**
- * Mount the entry into `host`.
+ * Mount the supplier.
  *
- * `set(agentId)` says whose issues to draw — the rail calls it whenever the
- * agent in focus changes, and with null when there is none. `dispose()` stops
- * listening.
+ * `onChanged` is called whenever the answer to `entriesFor` would differ — a
+ * pushed list, or the first read landing — and the rail re-syncs its surfaces
+ * off it. Nothing here knows which agent is in focus: the rail asks per agent
+ * at paint time, because the focus moves far more often than the list does.
  */
-export function mountAgentIssues(host, { deviceId, projectId } = {}) {
-  const state = { agentId: null, issues: [], columns: [], disposed: false };
-  const place = { projectId: projectId || null, deviceId: deviceId || null };
+export function mountAgentIssues({ deviceId, projectId, onChanged } = {}) {
+  const state = { issues: [], disposed: false };
   // Asked once, at mount: a bridge does not gain the kind without a new
   // greeting, and a new greeting remounts the rail.
   const carries = Boolean(deviceId) && Boolean(projectId) && carriesIssuesPush(deviceId);
-
-  const paint = () => {
-    if (state.disposed || !host) return;
-    const html = carries
-      ? agentIssuesHtml(agentIssueGroups(state.issues, state.agentId), { columns: state.columns, place })
-      : "";
-    if (host.innerHTML !== html) host.innerHTML = html;
-    host.hidden = !html;
-  };
 
   async function reread() {
     if (!carries) return;
     const record = await readIssuesRecord(deviceId, projectId);
     if (state.disposed) return;
     state.issues = record?.issues || [];
-    state.columns = columnsOf(record?.columns);
-    paint();
+    onChanged?.();
   }
 
-  const unsubscribe =
-    carries && subscribeCache(issuesAddress(deviceId, projectId), () => void reread());
+  const unsubscribe = carries && subscribeCache(issuesAddress(deviceId, projectId), () => void reread());
 
-  paint();
   void reread();
 
   return {
-    set(agentId) {
-      const next = agentId || null;
-      if (state.agentId === next) return;
-      state.agentId = next;
-      paint();
+    /** This agent's issues as surface entries, or none at all — which is what
+     *  keeps the pill away from an agent holding and tracking nothing. */
+    entriesFor(agentId) {
+      if (!carries || !agentId) return null;
+      const entries = agentIssueEntries(state.issues, agentId);
+      return entries.length ? entries : null;
     },
     dispose() {
       state.disposed = true;

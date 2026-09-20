@@ -87,6 +87,8 @@ const visit = async (route) => {
 };
 
 const strip = () => document.querySelector("#agent-rail .rail-strip");
+const separators = () => document.querySelectorAll("#agent-rail .rail-sep");
+const bubbleIds = () => [...document.querySelectorAll("#agent-rail .rail-strip [data-agent]")].map((b) => b.dataset.agent);
 const regions = () => ["shell", "toolbar", "view-body", "root", "agent-rail", "console-region"].map((id) => document.getElementById(id));
 
 beforeEach(() => {
@@ -292,5 +294,40 @@ describe("what the reader is looking at, while a modal is over the page", () => 
 
     go(PLACES["issue (tracker)"]); // …and closing back onto the page under it
     expect(App.viewingContext.snapshot()).toBeTruthy();
+  });
+});
+
+describe("the strip on a page standing on the project", () => {
+  // Zech, on the project page after the shell roll: two bubbles for the one
+  // project agent, one above the separator wearing the agent's unread count in
+  // place of the project's initial, and the same agent again below the line.
+  //
+  // The line exists to separate the project's agent from the agents of the
+  // thing you are standing IN. On the project page there is no such thing —
+  // the project's conversation is what the page stands on — so asking for the
+  // bubble above the line asked for the very same conversation twice.
+  it("draws the project's conversation once, with no line", async () => {
+    await visit(PLACES.project);
+    expect(strip()).toBeTruthy();
+    expect(separators()).toHaveLength(0);
+    const ids = bubbleIds();
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("draws it once on an issue of the project too, which stands on the same conversation", async () => {
+    await visit(PLACES["issue (tracker)"]);
+    expect(strip()).toBeTruthy();
+    expect(separators()).toHaveLength(0);
+    const ids = bubbleIds();
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  // …and a page standing on something else in the project still gets it: the
+  // project's agent is reachable from every workspace in the project, and the
+  // line is what says which half of the strip is which.
+  it("keeps the project's bubble above the line on a workspace", async () => {
+    await visit(PLACES.workspace);
+    expect(strip()).toBeTruthy();
+    expect(separators()).toHaveLength(1);
   });
 });

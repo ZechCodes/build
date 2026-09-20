@@ -50,6 +50,24 @@ describe("what a route stands on", () => {
     expect(parts.key).toBe("project:d1/p-1");
   });
 
+  // Zech, on the project page after the shell roll: two bubbles for the one
+  // project agent, one above the separator and the same agent again below it.
+  //
+  // The rail draws a project bubble above a line when the page is standing on
+  // something ELSE in the project (core/agentRailModel.js `underTheProject`).
+  // A page already standing on the project's own conversation must not ask for
+  // one: both halves of the strip would be that same conversation.
+  it("asks for no project bubble on a page already standing on the project", () => {
+    for (const route of [
+      { name: "project", deviceId: "d1", projectId: "p-1" },
+      { name: "trackerIssue", deviceId: "d1", projectId: "p-1", issueId: "i-1" },
+    ]) {
+      const parts = shellPartsForRoute(route);
+      expect([route.name, parts.rail.kind]).toEqual([route.name, "project"]);
+      expect([route.name, parts.rail.projectAgent]).toEqual([route.name, undefined]);
+    }
+  });
+
   it("carries the project's agent onto a workspace page without minting it", () => {
     const parts = shellPartsForRoute({ name: "workspace", deviceId: "d1", projectId: "p-1", workspaceId: "w-1" });
     expect(parts.rail).toMatchObject({ kind: "workspace", workspaceId: "w-1", projectAgent: { projectId: "p-1" } });

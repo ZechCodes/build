@@ -97,14 +97,24 @@ const STANDING = {
     },
 };
 
-/** Standing in a project: the project's own agent, on the owner its conversation
- *  has. The one standing whose owner is not known from the route alone, so the
- *  shell finds it before the rail goes up (`standProjectRail` below). */
+/**
+ * Standing in a project: the project's own agent, on the owner its conversation
+ * has. The one standing whose owner is not known from the route alone, so the
+ * shell finds it before the rail goes up (`standProjectRail` below).
+ *
+ * No `projectAgent`, deliberately. That field asks the rail for a second half —
+ * the project's bubble above a line, with the agents of the thing you are
+ * standing IN below it (core/agentRailModel.js `underTheProject`). A page
+ * standing on the project's own conversation has no such second thing, so both
+ * halves came out as that same conversation: the project's agent drawn twice,
+ * once above the line and once below. It is the workspace page's shape, and
+ * only the workspace page's.
+ */
 const projectStanding = (route) =>
   route.projectId && {
     key: `project:${deviceKey(route.deviceId, route.projectId)}`,
     mintsProjectConversation: true,
-    rail: { kind: "project", projectId: route.projectId, projectAgent: { projectId: route.projectId } },
+    rail: { kind: "project", projectId: route.projectId },
     console: null,
   };
 
@@ -194,14 +204,18 @@ const PROJECTS_RECORD_KIND = "projects";
  *  cache scope (a test standing a page up without one). */
 const projectsAddress = (context) => context.cacheScope?.address({ entityId: "", kind: PROJECTS_RECORD_KIND }) || null;
 
-/** The project's conversation owner as the cached list says it: null while the
- *  list is cold, or while the project has no conversation yet. */
-async function cachedOwner(context, projectId) {
+/** The project as this machine's cached list has it, or null while the list is
+ *  cold. Both facts the rail wants come off the one row: the conversation's
+ *  owner, and the name whose initial the project's bubbles wear. */
+async function cachedProject(context, projectId) {
   const address = projectsAddress(context);
   const listed = address ? (await readCached(address))?.value : null;
-  const row = (listed || []).find((project) => project.project_id === projectId);
-  return (row && (row.entity_id || row.run_id)) || null;
+  return (listed || []).find((project) => project.project_id === projectId) || null;
 }
+
+/** The owner the cached row names: null while the list is cold, or while the
+ *  project has no conversation yet. */
+const ownerOf = (row) => (row && (row.entity_id || row.run_id)) || null;
 
 /**
  * Stand the project's rail up on the owner of its conversation.
@@ -220,10 +234,14 @@ async function cachedOwner(context, projectId) {
  * already holds.
  */
 async function standProjectRail(parts, context, mine) {
-  const cached = await cachedOwner(context, parts.rail.projectId);
+  const row = await cachedProject(context, parts.rail.projectId);
   if (generation !== mine) return; // the reader left while the owner was found
-  if (cached) live.rail = mountRail({ ...parts.rail, entityId: cached }, context);
-  else await standOnAnswer(parts, context, mine);
+  // The name rides along whether or not the row names an owner: a project the
+  // bridge is about to mint a conversation for is still a project with a name,
+  // and its bubbles should wear its initial the moment they appear.
+  const named = { ...parts, rail: { ...parts.rail, projectName: row?.name || "" } };
+  if (ownerOf(row)) live.rail = mountRail({ ...named.rail, entityId: ownerOf(row) }, context);
+  else await standOnAnswer(named, context, mine);
 }
 
 /** The bridge's answer for a project the list names no owner for. A call that
@@ -249,11 +267,12 @@ function standWhenListed(parts, context, mine) {
   let rail = null;
   let unsubscribe = null;
   const tryMount = async () => {
-    const owner = await cachedOwner(context, parts.rail.projectId);
+    const row = await cachedProject(context, parts.rail.projectId);
+    const owner = ownerOf(row);
     if (!owner || rail || generation !== mine) return;
     unsubscribe?.();
     unsubscribe = null;
-    rail = mountRail({ ...parts.rail, entityId: owner }, context);
+    rail = mountRail({ ...parts.rail, projectName: row.name || "", entityId: owner }, context);
   };
   unsubscribe = subscribeCache(address, () => void tryMount());
   return {

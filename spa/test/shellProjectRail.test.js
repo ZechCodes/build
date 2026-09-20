@@ -62,6 +62,18 @@ describe("the conversation a project page stands on", () => {
     expect(options).toMatchObject({ kind: "project", projectId: "proj-1", entityId: "run-7", deviceId: "dev-1" });
   });
 
+  // The bubbles on a project page wear the project's INITIAL in place of a
+  // pattern (core/agentRailModel.js, the kind "project" branch), and the name
+  // that initial is taken from comes off the same cached row as the owner. With
+  // no name the rail falls back to "?", which is what the project page wore
+  // after the shell roll.
+  it("names the project, so its bubbles wear its initial and not a question mark", async () => {
+    await listProjects([{ project_id: "proj-1", name: "build", entity_id: "run-7" }]);
+    standShell(route);
+    await flush();
+    expect(mountAgentRail.mock.calls[0][1].projectName).toBe("build");
+  });
+
   it("asks the bridge for an owner when the list names none", async () => {
     await listProjects([{ project_id: "proj-1", name: "build" }]);
     standShell(route);

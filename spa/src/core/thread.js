@@ -897,6 +897,30 @@ function sentMessageHtml(message, { place, threadState }) {
   </article>`;
 }
 
+/// Build's own words in an agent's conversation.
+///
+/// The bridge posts one of these when it comes back from a restart: the agent
+/// was working, its process is gone, and this is what tells it to carry on. It
+/// is written with the human's role because it lands on the inbound side — an
+/// instruction to the agent, whoever wrote it — and `from_build` is the whole
+/// of what distinguishes it from something the reader typed.
+///
+/// So it wears the bubble every instruction wears, and says who wrote it where
+/// an arrival says where it came from. What it must NOT be is an arrival: it
+/// does not fold (there is one paragraph behind it, not a report), it carries
+/// no conversation to point at, and no detail level hides it — an agent reading
+/// "Agent only" is still being told to resume, and hiding the instruction it is
+/// acting on would leave the conversation unreadable.
+///
+/// No avatar. The reader's initial on a message the reader did not write is
+/// the one thing this must not say.
+function buildNoticeHtml(message, agentLabel, context) {
+  return `<article class="thread-message thread-comment user from-build"${sequenceAttribute(message)}>
+    <div class="thread-from"><span class="thread-from-build">from Build</span></div>
+    <div class="thread-comment-card">${messageCardHtml(message, agentLabel, context)}</div>
+  </article>`;
+}
+
 /// One message, drawn as whichever of the three things it is: what this agent
 /// sent elsewhere, what another agent sent here, or the plain bubble everything
 /// else has always been.
@@ -905,6 +929,9 @@ function sentMessageHtml(message, { place, threadState }) {
 /// stands for, and how the panel reports what the reader's viewport has reached
 /// (`readThroughSequence`).
 function messageHtml(message, agentLabel, context) {
+  // First, so a notice can never be read as an arrival: the mark says Build
+  // wrote it, and that outranks every other reading of who a message is from.
+  if (message.from_build) return buildNoticeHtml(message, agentLabel, context);
   if (message.sent_to) return sentMessageHtml(message, context);
   if (message.from_agent) return arrivedMessageHtml(message, agentLabel, context);
   const user = message.role === "user";

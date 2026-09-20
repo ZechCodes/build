@@ -79,6 +79,16 @@ const RELAY_CONVERSATION = [
   { type: "message", data: { id: "r2", sequence: 2, role: "user", body: REPORT, from_agent: SENDER } },
 ];
 
+/// A conversation holding Build's own words: the notice the bridge posts when
+/// it comes back from a restart, beside one of everything a level filters.
+const NOTICE_CONVERSATION = [
+  { type: "message", data: { id: "n1", sequence: 1, role: "user", body: "look at the retry path" } },
+  { type: "tool_use", data: { sequence: 2, event: "tool_use", summary: "read src/retry.rs" } },
+  { type: "message", data: { id: "n3", sequence: 3, role: "user", body: REPORT, from_agent: SENDER } },
+  { type: "message", data: { id: "n4", sequence: 4, role: "user", body: "The Build bridge restarted. Carry on.", from_build: true } },
+  { type: "message", data: { id: "n5", sequence: 5, role: "agent", body: "picking it back up" } },
+];
+
 /// Which conversation the machine answers with, so a case can hand over one of
 /// its own before mounting.
 let conversation = CONVERSATION;
@@ -396,6 +406,14 @@ describe("remembering the choice", () => {
 });
 
 describe("the menu's placement on the conversation head", () => {
+  // Each case sets the viewport it is about. Put it back afterwards: the rail
+  // does not stand its panel up at phone width, so a leaked 390 would break
+  // whatever ran next for a reason nowhere near its own subject.
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });
+  });
+
   /// The head is a glass bar at the TOP of the panel: `backdrop-filter` makes
   /// `position:fixed` resolve from the head rather than the viewport, and a
   /// menu that preferred to open upward from there ran off the top of the
@@ -460,5 +478,65 @@ describe("the menu's placement on the conversation head", () => {
     expect(placed.bottom).toBeLessThanOrEqual(720);
     expect(placed.left).toBeGreaterThanOrEqual(0);
     expect(placed.right).toBeLessThanOrEqual(390);
+  });
+});
+
+/// The bridge's restart notice is an instruction to the agent, so no level may
+/// hide it — and "Agent only" is the level a project agent opens at, which is
+/// exactly where these land.
+describe("a notice Build wrote, at every level", () => {
+  // The placement cases above leave the viewport at phone width, where the
+  // rail does not stand its panel up. These are about the timeline, so they
+  // ask for a window the panel opens in.
+  beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });
+  });
+
+  const notice = () => timeline().querySelector(".thread-message.from-build");
+
+  const mountWithNotice = async () => {
+    conversation = NOTICE_CONVERSATION;
+    await mountWorkspaceRail();
+  };
+
+  it("is drawn with its chip and no avatar at All", async () => {
+    await mountWithNotice();
+
+    expect(notice()).not.toBeNull();
+    expect(notice().querySelector(".thread-from-build").textContent).toBe("from Build");
+    expect(notice().querySelector(".thread-avatar")).toBeNull();
+    expect(notice().textContent).toContain("The Build bridge restarted");
+  });
+
+  it("survives All messages, where the activity goes", async () => {
+    await mountWithNotice();
+
+    await choose("messages");
+
+    expect(notice()).not.toBeNull();
+    expect(rowKinds().activity).toBe(0);
+  });
+
+  it("survives Agent only, where the correspondence goes", async () => {
+    await mountWithNotice();
+
+    await choose("agent");
+
+    expect(notice()).not.toBeNull();
+    expect(notice().querySelector(".thread-from-build")).not.toBeNull();
+    // The arrival beside it is gone, which is what makes this a real test.
+    expect(rowKinds()).toMatchObject({ arrived: 0, activity: 0 });
+  });
+
+  it("is never drawn as an arrival, at any level", async () => {
+    await mountWithNotice();
+
+    for (const level of ["all", "messages", "agent"]) {
+      await choose(level);
+      expect(notice().classList.contains("from-agent")).toBe(false);
+      expect(notice().querySelector(".thread-arrival-press")).toBeNull();
+      expect(notice().querySelector(".thread-arrival-folded")).toBeNull();
+    }
   });
 });

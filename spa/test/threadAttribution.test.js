@@ -312,3 +312,72 @@ describe("a message this agent sent to another agent", () => {
     expect(document.querySelectorAll(".thread-activity-group")).toHaveLength(2);
   });
 });
+
+/// Build's own words: the notice the bridge posts into an agent's conversation
+/// when it comes back from a restart. It is written with the human's role —
+/// it lands on the inbound side, because it is an instruction to the agent —
+/// so without a mark it would read as something the reader typed.
+describe("a notice Build wrote", () => {
+  const RESTART = "The Build bridge restarted. Carry on where you left off.";
+
+  const notice = (over = {}) =>
+    threadWith({ id: "message-20", role: "user", body: RESTART, from_build: true, ...over });
+
+  const message = () => document.querySelector(".thread-message");
+
+  it("says it came from Build, where an arrival says where it came from", () => {
+    document.body.innerHTML = notice();
+
+    expect(message().classList.contains("from-build")).toBe(true);
+    expect(document.querySelector(".thread-from-build").textContent).toBe("from Build");
+    // The same line an arrival names its sender in, so the two read alike.
+    expect(document.querySelector(".thread-from .thread-from-build")).not.toBeNull();
+    expect(document.querySelector(".thread-body").textContent).toBe(RESTART);
+  });
+
+  it("wears no avatar, because the reader did not write it", () => {
+    document.body.innerHTML = notice();
+
+    expect(document.querySelector(".thread-avatar")).toBeNull();
+  });
+
+  it("keeps the bubble an instruction wears", () => {
+    document.body.innerHTML = notice();
+
+    expect(message().classList.contains("user")).toBe(true);
+    expect(message().querySelector(".thread-comment-card")).not.toBeNull();
+  });
+
+  it("is not an arrival: it never folds and offers no press", () => {
+    // Long enough that an ARRIVAL of the same length would be folded to five.
+    const long = Array.from({ length: 12 }, (_, line) => `line ${line + 1} of the notice`).join("\n");
+    document.body.innerHTML = notice({ body: long });
+
+    expect(document.querySelector(".thread-arrival-folded")).toBeNull();
+    expect(document.querySelector(".thread-arrival-press")).toBeNull();
+    expect(document.querySelector(".thread-message.from-agent")).toBeNull();
+    expect(document.querySelector(".thread-from-owner")).toBeNull();
+  });
+
+  it("outranks a sender mark, so it can never be drawn as an arrival", () => {
+    document.body.innerHTML = notice({ from_agent: PROJECT_SENDER });
+
+    expect(message().classList.contains("from-build")).toBe(true);
+    expect(message().classList.contains("from-agent")).toBe(false);
+  });
+
+  it("leaves a message without the field exactly as it was", () => {
+    document.body.innerHTML = threadWith({ id: "message-21", role: "user", body: "look at the retry path" });
+
+    expect(document.querySelector(".thread-from-build")).toBeNull();
+    expect(message().classList.contains("from-build")).toBe(false);
+    expect(document.querySelector(".thread-avatar").textContent).toBe("Y");
+  });
+
+  it("is false-y safe: from_build: false is the reader's own message", () => {
+    document.body.innerHTML = threadWith({ id: "message-22", role: "user", body: "mine", from_build: false });
+
+    expect(document.querySelector(".thread-from-build")).toBeNull();
+    expect(document.querySelector(".thread-avatar")).not.toBeNull();
+  });
+});

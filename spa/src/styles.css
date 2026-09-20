@@ -1816,6 +1816,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-from-topic { flex:0 1 auto; }
 .thread-from-sep, .thread-sent-sep { flex:none; }
 .thread-from-chip { font-family:var(--mono); letter-spacing:0.02em; }
+/* Build's own words — the restart notice. It wears the bubble an instruction
+   wears, because that is what it is, and says who wrote it in the line an
+   arrival names its sender in. Set to the bubble's own edge: the line belongs
+   to the card under it, and on this side that edge is the right one. */
+.thread-message.from-build .thread-from { justify-content:flex-end; }
+.thread-from-build { flex:none; color:var(--ink2); font-weight:550; }
 /* What another agent sends is usually a report, and a report laid in whole
    buries the conversation around it. Folded, the card shows its first five
    lines and the press underneath opens the rest — the whole of it was in the

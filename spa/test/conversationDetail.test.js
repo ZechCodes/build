@@ -18,6 +18,7 @@ const userSaid = (sequence) => message(sequence, { role: "user", body: "hi" });
 const agentSaid = (sequence) => message(sequence, { role: "agent", body: "on it" });
 const arrived = (sequence) => message(sequence, { role: "user", from_agent: { id: "other", topic: "Deploy" } });
 const sentOut = (sequence) => message(sequence, { role: "agent", sent_to: { id: "other", topic: "Deploy" } });
+const fromBuild = (sequence) => message(sequence, { role: "user", body: "The Build bridge restarted.", from_build: true });
 const toolCall = (sequence) => ({ type: "tool_use", data: { sequence, event: "tool_use", summary: "read file" } });
 const committed = (sequence) => ({ type: "committed", data: { sequence, event: "committed", summary: "abc123" } });
 
@@ -71,6 +72,24 @@ describe("the levels a conversation can be read at", () => {
     expect(itemIsShownAt(committed(1), "all")).toBe(true);
     expect(itemIsShownAt(committed(1), "messages")).toBe(false);
     expect(itemIsShownAt(committed(1), "agent")).toBe(false);
+  });
+
+  /// The restart notice is an instruction to the agent, the same as anything
+  /// the reader types. A level that hid it would hide the thing the agent is
+  /// acting on and leave the conversation unreadable — and "Agent only" is the
+  /// level a project agent opens at, which is exactly where these arrive.
+  it("keeps a notice Build wrote at every level", () => {
+    const items = [toolCall(1), arrived(2), sentOut(3), fromBuild(4), userSaid(5)];
+
+    expect(itemsAtDetailLevel(items, "all").map((item) => item.data.sequence)).toContain(4);
+    expect(itemsAtDetailLevel(items, "messages").map((item) => item.data.sequence)).toContain(4);
+    expect(itemsAtDetailLevel(items, "agent").map((item) => item.data.sequence)).toEqual([4, 5]);
+  });
+
+  it("reads a notice Build wrote as this conversation's own, not as correspondence", () => {
+    expect(itemIsShownAt(fromBuild(1), "agent")).toBe(true);
+    expect(itemIsShownAt(fromBuild(1), "messages")).toBe(true);
+    expect(itemIsShownAt(fromBuild(1), "all")).toBe(true);
   });
 
   it("falls back to showing everything for a level nobody defined", () => {

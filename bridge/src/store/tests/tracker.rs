@@ -115,6 +115,47 @@ fn an_issue_reloads_exactly_as_it_was_written() {
     );
 }
 
+/// The tracker list survives a restart, and a record written before tracking
+/// existed still loads — with nobody watching, which is the true answer for it.
+#[test]
+fn the_tracker_list_reloads_and_a_record_without_one_still_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut issue = filed(&store, "watched");
+    issue.trackers = vec!["agent-1".into(), "agent-2".into()];
+    store.save_tracker_issue_activity(&issue, &[], &[]).unwrap();
+
+    // A record from before the field existed: the key is simply absent.
+    let older = filed(&store, "from before");
+    store
+        .connection()
+        .execute(
+            "UPDATE tracker_issues SET record = json_remove(record, '$.trackers') WHERE id = ?1",
+            [&older.id],
+        )
+        .unwrap();
+
+    drop(store);
+    let reopened = Store::new(dir.path()).unwrap();
+    assert_eq!(
+        reopened
+            .load_tracker_issue(&issue.id)
+            .unwrap()
+            .unwrap()
+            .trackers,
+        vec!["agent-1".to_string(), "agent-2".into()]
+    );
+    assert!(
+        reopened
+            .load_tracker_issue(&older.id)
+            .unwrap()
+            .unwrap()
+            .trackers
+            .is_empty(),
+        "an issue filed before tracking is watched by nobody, not unreadable"
+    );
+}
+
 /// A comment and the event that explains it land in the same transaction as
 /// the issue they are about — one refusal cannot leave a timeline claiming
 /// something the record does not say.

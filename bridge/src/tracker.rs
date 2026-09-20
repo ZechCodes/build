@@ -32,6 +32,13 @@ pub const MAX_LABEL_BYTES: usize = 40;
 /// How many entries one of an issue's four link lists holds.
 pub const MAX_LINKS_PER_KIND: usize = 20;
 
+/// How many agents may watch one issue.
+///
+/// A bound rather than a belief that fifty is the right number: every change to
+/// a tracked issue delivers one message per tracker, so an unbounded list is an
+/// unbounded write and an unbounded number of agents woken by one edit.
+pub const MAX_TRACKERS: usize = 50;
+
 /// A fresh id: the ULID rule every other Build id uses, under this record's
 /// own prefix, and **monotonic within this process**.
 ///
@@ -267,6 +274,13 @@ pub struct Issue {
     pub assignee: Option<Assignee>,
     #[serde(default)]
     pub links: IssueLinks,
+    /// The agents watching this issue (spec: Issues → Tracking).
+    ///
+    /// Ordered by when each started, deduped, capped at [`MAX_TRACKERS`].
+    /// `default` because every issue filed before tracking existed has none,
+    /// and an empty list is the right answer for them.
+    #[serde(default)]
+    pub trackers: Vec<String>,
     pub created_by: Actor,
     pub created_at: String,
     pub updated_at: String,
@@ -275,6 +289,53 @@ pub struct Issue {
 }
 
 impl Issue {
+    /// Start watching, answering whether this changed anything.
+    ///
+    /// A set: an agent already watching is not added twice, and saying so again
+    /// is not a second fact for a timeline to carry. Past [`MAX_TRACKERS`] the
+    /// request is refused rather than dropped — a tracker that was not added
+    /// would believe it is being told about an issue it will never hear from
+    /// again, which is worse than being told no.
+    pub fn track(&mut self, agent_id: &str) -> Result<bool, String> {
+        if self.trackers.iter().any(|tracking| tracking == agent_id) {
+            return Ok(false);
+        }
+        if self.trackers.len() >= MAX_TRACKERS {
+            return Err(format!(
+                "issue #{} already has the most trackers it can carry ({MAX_TRACKERS})",
+                self.number
+            ));
+        }
+        self.trackers.push(agent_id.to_string());
+        Ok(true)
+    }
+
+    /// Stop watching, answering whether this changed anything.
+    pub fn untrack(&mut self, agent_id: &str) -> bool {
+        let before = self.trackers.len();
+        self.trackers.retain(|tracking| tracking != agent_id);
+        self.trackers.len() != before
+    }
+
+    pub fn is_tracked_by(&self, agent_id: &str) -> bool {
+        self.trackers.iter().any(|tracking| tracking == agent_id)
+    }
+
+    /// Everyone to tell about a change, which is every tracker except whoever
+    /// made it.
+    ///
+    /// The exclusion is the rule the whole feature rests on: an agent woken to
+    /// be told what it just did would answer its own message, and two agents
+    /// each tracking the other's issue would do it forever.
+    pub fn trackers_to_notify(&self, actor: &Actor) -> Vec<String> {
+        let acted = actor.agent_id();
+        self.trackers
+            .iter()
+            .filter(|tracking| Some(tracking.as_str()) != acted)
+            .cloned()
+            .collect()
+    }
+
     /// A newly filed issue, before the store mints its number.
     pub fn drafted(project_path: &str, title: &str, created_by: Actor, now: &str) -> Issue {
         Issue {
@@ -289,6 +350,7 @@ impl Issue {
             priority: IssuePriority::None,
             assignee: None,
             links: IssueLinks::default(),
+            trackers: Vec::new(),
             created_by,
             created_at: now.to_string(),
             updated_at: now.to_string(),
@@ -329,6 +391,10 @@ pub enum IssueEventKind {
     Closed,
     Reopened,
     Dispatched,
+    /// An agent started watching this issue — by asking, or by being assigned
+    /// it. The payload says which.
+    Tracked,
+    Untracked,
 }
 
 impl IssueEventKind {
@@ -343,6 +409,8 @@ impl IssueEventKind {
             IssueEventKind::Closed => "closed",
             IssueEventKind::Reopened => "reopened",
             IssueEventKind::Dispatched => "dispatched",
+            IssueEventKind::Tracked => "tracked",
+            IssueEventKind::Untracked => "untracked",
         }
     }
 }
@@ -567,6 +635,69 @@ mod tests {
         }
         assert_eq!(list.len(), MAX_LINKS_PER_KIND);
         assert!(!IssueLinks::add(&mut list, "ws-over"), "past the cap");
+    }
+
+    fn issue() -> Issue {
+        Issue::drafted("/repo", "one", Actor::User, "2026-09-20T15:00:00Z")
+    }
+
+    /// Tracking is a set, and saying a thing twice is not a second fact.
+    #[test]
+    fn tracking_twice_adds_one_tracker_and_reports_the_second_as_no_change() {
+        let mut issue = issue();
+        assert_eq!(issue.track("agent-1"), Ok(true));
+        assert_eq!(issue.track("agent-1"), Ok(false), "already watching");
+        assert_eq!(issue.track("agent-2"), Ok(true));
+        assert_eq!(
+            issue.trackers,
+            vec!["agent-1".to_string(), "agent-2".into()]
+        );
+        assert!(issue.is_tracked_by("agent-2"));
+    }
+
+    /// Untracking what was never tracked changes nothing and says so.
+    #[test]
+    fn untracking_someone_who_was_not_watching_is_no_change() {
+        let mut issue = issue();
+        issue.track("agent-1").unwrap();
+        assert!(!issue.untrack("agent-nobody"));
+        assert!(issue.untrack("agent-1"));
+        assert!(issue.trackers.is_empty());
+        assert!(!issue.untrack("agent-1"), "and again is no change");
+    }
+
+    /// Past the cap the request is REFUSED rather than dropped: a tracker that
+    /// was silently not added would believe it is being told about an issue it
+    /// will never hear from again.
+    #[test]
+    fn the_tracker_list_refuses_past_its_cap_rather_than_dropping_quietly() {
+        let mut issue = issue();
+        for n in 0..MAX_TRACKERS {
+            issue.track(&format!("agent-{n}")).expect("under the cap");
+        }
+        let refused = issue.track("agent-over").expect_err("past the cap");
+        assert!(refused.contains(&MAX_TRACKERS.to_string()), "{refused}");
+        assert_eq!(issue.trackers.len(), MAX_TRACKERS);
+    }
+
+    /// The rule the whole feature rests on: nobody is told what they just did.
+    #[test]
+    fn an_agents_own_change_is_never_delivered_back_to_it() {
+        let mut issue = issue();
+        issue.track("agent-1").unwrap();
+        issue.track("agent-2").unwrap();
+
+        let told = issue.trackers_to_notify(&Actor::Agent {
+            agent_id: "agent-1".into(),
+        });
+        assert_eq!(told, vec!["agent-2".to_string()], "not the actor");
+
+        let by_user = issue.trackers_to_notify(&Actor::User);
+        assert_eq!(
+            by_user,
+            vec!["agent-1".to_string(), "agent-2".into()],
+            "the human is no tracker, so every tracker hears a human's change"
+        );
     }
 
     /// An actor and an assignee are two shapes on purpose: only a destination

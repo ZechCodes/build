@@ -498,3 +498,102 @@ describe("telling the cache layer which contract is live", () => {
     expect(changeEvents.subscriptionsActive("dev-2")).toBe(false);
   });
 });
+
+/// One refused subscription used to be every subscription.
+///
+/// `changes.subscribe` carries a whole spec, so one unknown field refuses the
+/// call — and the loop that took the subscriptions out returned on the first
+/// refusal. A client that named a kind its bridge had never heard of therefore
+/// held NO subscriptions at all: not the refused one, and not the two after
+/// it. It looked exactly like a dead connection — nothing pushed, and the only
+/// thing that painted was what the reader typed. That is what this pins.
+describe("a bridge that refuses one subscription", () => {
+  /** A bridge that knows every kind but one, the way a bridge predating a new
+   *  kind answers: `invalid_params` for the spec that names it. */
+  const pickyBridge = (unknownKind) => {
+    call = vi.fn(async (method, params) => {
+      calls.push([method, params]);
+      if (method === "session.hello") {
+        const mode = params.changes === "subscriptions" ? "subscriptions" : "legacy";
+        return { ...SUBSCRIBING_GREETING, changes: { ...SUBSCRIBING_GREETING.changes, mode } };
+      }
+      if (method === "changes.subscribe") {
+        if ((params.kinds || []).includes(unknownKind)) {
+          throw new Error(`unknown variant \`${unknownKind}\``);
+        }
+        return { subscription_id: params.subscription_id, watch: "live" };
+      }
+      if (method === "changes.unsubscribe") return { ok: true };
+      return {};
+    });
+    return call;
+  };
+
+  const threeWatchers = () => {
+    changeEvents.watchChanges({ refresh: () => {}, id: "s-inbox", scope: "all", kinds: ["state", "thread", "issues"], mode: "realtime" });
+    changeEvents.watchChanges({ refresh: () => {}, id: "s-background", scope: "all", kinds: ["git", "files"], mode: { batch_ms: 30000 } });
+    changeEvents.watchChanges({ refresh: () => {}, id: "s-active", entity: "run-7", kinds: ["git", "files"], mode: "realtime" });
+  };
+
+  it("still takes out every other one", async () => {
+    threeWatchers();
+    await changeEvents.greetBridge(pickyBridge("issues"));
+    await settle();
+
+    const taken = subscribes().map((spec) => spec.subscription_id);
+    expect(taken).toContain("s-inbox"); // asked for, and refused
+    expect(taken).toContain("s-background");
+    expect(taken).toContain("s-active:run-7");
+  });
+
+  it("asks for the refused one again on the next diff, so an upgraded bridge heals", async () => {
+    threeWatchers();
+    await changeEvents.greetBridge(pickyBridge("issues"));
+    await settle();
+    const before = subscribes().filter((spec) => spec.subscription_id === "s-inbox").length;
+
+    // Any later diff: another watcher mounting is one.
+    changeEvents.watchChanges({ refresh: () => {}, entity: "run-9", kinds: ["git"] });
+    await settle();
+
+    expect(subscribes().filter((spec) => spec.subscription_id === "s-inbox").length).toBeGreaterThan(before);
+  });
+
+  it("holds the ones that worked, and does not re-ask for them", async () => {
+    threeWatchers();
+    await changeEvents.greetBridge(pickyBridge("issues"));
+    await settle();
+    const before = subscribes().filter((spec) => spec.subscription_id === "s-background").length;
+
+    changeEvents.watchChanges({ refresh: () => {}, entity: "run-9", kinds: ["git"] });
+    await settle();
+
+    expect(subscribes().filter((spec) => spec.subscription_id === "s-background").length).toBe(before);
+  });
+
+  it("stops the diff when the SESSION goes, rather than when a spec is refused", async () => {
+    threeWatchers();
+    let replaced = false;
+    const dying = vi.fn(async (method, params) => {
+      calls.push([method, params]);
+      if (method === "session.hello") {
+        const mode = params.changes === "subscriptions" ? "subscriptions" : "legacy";
+        return { ...SUBSCRIBING_GREETING, changes: { ...SUBSCRIBING_GREETING.changes, mode } };
+      }
+      if (method === "changes.subscribe") {
+        // The first subscribe lands; the session is replaced under the second.
+        if (!replaced) { replaced = true; return { subscription_id: params.subscription_id, watch: "live" }; }
+        await changeEvents.greetBridge(subscribingBridge());
+        return { subscription_id: params.subscription_id, watch: "live" };
+      }
+      return {};
+    });
+    await changeEvents.greetBridge(dying);
+    await settle();
+
+    // The replacement session replays the whole map, so every id is taken out
+    // on it — the point is that the dead session stopped rather than carrying on.
+    const onLive = subscribes().map((spec) => spec.subscription_id);
+    expect(new Set(onLive)).toEqual(new Set(["s-inbox", "s-background", "s-active:run-7"]));
+  });
+});

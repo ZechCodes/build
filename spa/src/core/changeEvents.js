@@ -259,24 +259,53 @@ function desiredSubscriptions(deviceId) {
   return desired;
 }
 
-/** One subscription call. `false` stops the diff: either the bridge refused —
- *  and the map will be replayed on the next greeting — or the session under it
- *  was replaced while this was in flight. */
+/// How one subscription call ended, which is three things and not two.
+///
+/// DONE and REFUSED are both answers from the session that asked: the bridge
+/// took the spec, or it would not. STALE is not an answer at all — the session
+/// was replaced while the call was in flight, so whatever came back is about a
+/// bridge this device is no longer on.
+const CALL_DONE = "done";
+const CALL_REFUSED = "refused";
+const CALL_STALE = "stale";
+
+/** One subscription call, and which of the three ways it ended. */
 async function askBridge(state, method, params) {
   const call = state.call;
   try {
     await call(method, params);
   } catch {
-    return false;
+    return state.call === call ? CALL_REFUSED : CALL_STALE;
   }
-  return state.call === call;
+  return state.call === call ? CALL_DONE : CALL_STALE;
+}
+
+/// Whether the diff may go on after this call.
+///
+/// A REFUSED spec is ONE spec's problem. It used to end the whole diff, and
+/// that made a single unknown field catastrophic: `s-inbox` naming a kind the
+/// bridge had never heard of was refused, the loop returned, and `s-background`
+/// and `s-active` were never taken out either — a device holding no
+/// subscriptions at all, which hears nothing and looks exactly like a dead
+/// connection. The refused id is dropped from `live` so a later pass asks
+/// again (a bridge that is upgraded under this tab heals without a reload),
+/// and the specs after it are still worth asking for.
+///
+/// STALE does end it: every spec after this one would be sent to a session
+/// that has gone, and `adoptGreetedSession` replays the whole map on the new
+/// one anyway.
+function keepGoingAfter(state, id, outcome) {
+  if (outcome === CALL_DONE) return true;
+  state.live.delete(id);
+  return outcome === CALL_REFUSED;
 }
 
 async function dropStale(state, desired) {
   for (const id of [...state.live.keys()]) {
     if (desired.has(id)) continue;
     state.live.delete(id);
-    if (!(await askBridge(state, "changes.unsubscribe", { subscription_id: id }))) return false;
+    const outcome = await askBridge(state, "changes.unsubscribe", { subscription_id: id });
+    if (outcome === CALL_STALE) return false;
   }
   return true;
 }
@@ -286,10 +315,7 @@ async function addDesired(state, desired) {
     const wire = JSON.stringify(spec);
     if (state.live.get(id) === wire) continue;
     state.live.set(id, wire);
-    if (!(await askBridge(state, "changes.subscribe", spec))) {
-      state.live.delete(id);
-      return false;
-    }
+    if (!keepGoingAfter(state, id, await askBridge(state, "changes.subscribe", spec))) return false;
   }
   return true;
 }

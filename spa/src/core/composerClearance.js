@@ -1,4 +1,4 @@
-import { isAtBottom } from "./paintKeepingPlace.js";
+import { isAtBottom, readerIsMoving, writeScrollTop } from "./paintKeepingPlace.js";
 
 const COMPOSER_CLEARANCE_PROPERTY = "--rail-composer-clearance";
 
@@ -10,10 +10,12 @@ export function mountComposerClearance(panel) {
 
   const sync = () => {
     const wasAtBottom = isAtBottom(scroller);
-    const heldScrollTop = scroller.scrollTop;
     const height = composer.getBoundingClientRect().height;
     scroller.style.setProperty(COMPOSER_CLEARANCE_PROPERTY, `${height}px`);
-    scroller.scrollTop = wasAtBottom ? scroller.scrollHeight : heldScrollTop;
+    // A reader in history is left exactly where they are: the clearance grows
+    // under the list, not above their place. One at the bottom follows it —
+    // unless the list is moving under them, when a write would only stop it.
+    if (wasAtBottom && !readerIsMoving(scroller)) writeScrollTop(scroller, scroller.scrollHeight);
   };
   const observer = typeof ResizeObserver === "function" ? new ResizeObserver(sync) : null;
   sync();

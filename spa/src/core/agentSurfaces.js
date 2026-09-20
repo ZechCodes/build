@@ -1,4 +1,5 @@
 import { el } from "../dom.js";
+import { readerIsMoving, writeScrollTop } from "./paintKeepingPlace.js";
 import { EXPANDED_ATTRIBUTE, patchElement } from "./domPatch.js";
 import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { EXITING_ATTRIBUTE, patchList } from "./patchList.js";
@@ -69,7 +70,7 @@ export function mountSurfaceClearance(viewerHost) {
     const margin = Number.parseFloat(getComputedStyle(viewerHost).marginBottom) || 0;
     const height = viewerHost.hidden ? 0 : viewerHost.getBoundingClientRect().height + margin;
     scroller.style.setProperty(SURFACE_CLEARANCE_PROPERTY, `${height}px`);
-    if (wasAtBottom) scroller.scrollTop = scroller.scrollHeight;
+    if (wasAtBottom && !readerIsMoving(scroller)) writeScrollTop(scroller, scroller.scrollHeight);
   };
 
   const observer = new ResizeObserver(sync);

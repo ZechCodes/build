@@ -3,7 +3,7 @@
 // that same panel moves into its new geometry. Keeping this here leaves the
 // rail's state and painting code concerned only with what is open and pinned.
 
-import { isAtBottom } from "./paintKeepingPlace.js";
+import { isAtBottom, readerIsMoving, writeScrollTop } from "./paintKeepingPlace.js";
 
 export const CHAT_LAYOUT_TRANSITION_MS = 240;
 export const CHAT_PANEL_TRANSITION_MS = 160;
@@ -42,7 +42,8 @@ function holdScrollPlace(scroller) {
   let holding = true;
   const settle = () => {
     if (!holding) return;
-    scroller.scrollTop = bottom ? scroller.scrollHeight : top;
+    if (readerIsMoving(scroller)) return;
+    writeScrollTop(scroller, bottom ? scroller.scrollHeight : top);
   };
   const observer = typeof ResizeObserver === "function" ? new ResizeObserver(settle) : null;
   observer?.observe(scroller);

@@ -7,6 +7,65 @@ const AT_BOTTOM_SLACK_PX = 32;
  *  of the conversation above it reads as the boundary it is. */
 const LINE_HEADROOM_PX = 12;
 
+/// How long after the last scroll event a list is still taken to be moving
+/// under the reader's finger or a fling, and how long after the last touch or
+/// wheel a run of scroll events is still the reader's rather than a paint's.
+const SCROLL_SETTLE_MS = 200;
+const FLING_MS = 3000;
+
+/// What each scroller knows about the reader moving it. Wired once per
+/// scroller by `wireReaderMotion`; a scroller nobody wired is never moving.
+const readerMotion = new WeakMap();
+const now = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
+
+/// Listen for the reader moving `scroller`: a finger on it, a wheel, and the
+/// scroll events that follow either. Idempotent.
+///
+/// On iOS, writing scrollTop during a fling ends the fling and lands the reader
+/// where the write said — so a paint that "keeps the reader's place" while they
+/// are flinging keeps sending them back to it. The policies below ask here
+/// before writing, and write nothing while the list is moving under the reader.
+export function wireReaderMotion(scroller) {
+  if (!scroller || readerMotion.has(scroller)) return;
+  const state = { touching: false, lastScrollAt: 0, lastInputAt: 0 };
+  readerMotion.set(scroller, state);
+  const passive = { passive: true };
+  const input = () => {
+    state.lastInputAt = now();
+  };
+  scroller.addEventListener("touchstart", () => {
+    state.touching = true;
+    input();
+  }, passive);
+  for (const type of ["touchend", "touchcancel"]) {
+    scroller.addEventListener(type, () => {
+      state.touching = false;
+      input();
+    }, passive);
+  }
+  scroller.addEventListener("wheel", input, passive);
+  scroller.addEventListener("scroll", () => {
+    state.lastScrollAt = now();
+  }, passive);
+}
+
+/// Whether the reader is moving `scroller` right now: a finger on it, or
+/// scroll events still arriving shortly after a touch or a wheel.
+export function readerIsMoving(scroller) {
+  const state = readerMotion.get(scroller);
+  if (!state) return false;
+  if (state.touching) return true;
+  const at = now();
+  return at - state.lastScrollAt < SCROLL_SETTLE_MS && at - state.lastInputAt < FLING_MS;
+}
+
+/// Put `scroller` at `top`, unless it is already there. A write that changes
+/// nothing is not free: on iOS it ends a fling in progress.
+export function writeScrollTop(scroller, top) {
+  if (Math.abs(scroller.scrollTop - top) < 1) return;
+  scroller.scrollTop = top;
+}
+
 /// Run `paint` and report whether it moved anything under `scroller`.
 ///
 /// Asking the DOM is the only honest answer: the paint belongs to the caller,
@@ -48,15 +107,17 @@ export function paintKeepingPlace(scroller, paint, { opening, policy }) {
 
 /// Where the reader belongs in a conversation that is still being written.
 ///
-/// A reader who is at the end is FOLLOWING, and a paint puts them where the
-/// reading resumes: on the unread line if the timeline carries one, and at the
-/// newest message if it does not. Landing on the line rather than the bottom is
-/// what makes a burst of messages readable — the reader arrives at the
-/// beginning of what is new instead of its end. A reader who has scrolled up is
-/// reading, and nothing moves them.
+/// A reader who is at the end is FOLLOWING, and a paint keeps them at the end:
+/// what has just arrived is drawn under what they were reading, and the end is
+/// where they were. A reader who has scrolled up is reading, and nothing moves
+/// them. Neither is moved while the list is moving under their finger or a
+/// fling (`readerIsMoving`): a write then only ends the fling where it stood.
 ///
-/// `unreadSelector` names the line (core/thread.js rules it); without one the
-/// end of the conversation is the only place to land.
+/// The one time the line is the landing spot is when the panel OPENS: the
+/// reader came for the first thing they have not read, not the last thing
+/// said, and reading a burst starts at its beginning. `unreadSelector` names
+/// the line (core/thread.js rules it); without one the end of the conversation
+/// is the only place to land.
 ///
 /// `olderItemsPrepended` says this paint grew the timeline at the TOP — a page
 /// of history the reader asked for by scrolling back past the start of the
@@ -85,19 +146,19 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
     restore: (scroller, held, changed) => {
       if (!held.opening && !changed) return;
       if (olderItemsPrepended) {
-        scroller.scrollTop = held.scrollTop + (scroller.scrollHeight - held.scrollHeight);
+        writeScrollTop(scroller, held.scrollTop + (scroller.scrollHeight - held.scrollHeight));
         return;
       }
-      if (!held.opening && !held.atBottom) {
-        scroller.scrollTop = held.scrollTop;
+      if (!held.opening && readerIsMoving(scroller)) return;
+      if (!held.opening) {
+        writeScrollTop(scroller, held.atBottom ? scroller.scrollHeight : held.scrollTop);
         return;
       }
       const land = () => {
-        scroller.scrollTop = landing(scroller);
+        writeScrollTop(scroller, landing(scroller));
       };
       land();
-      const layoutMaySettleLate = held.opening && typeof requestAnimationFrame === "function";
-      if (layoutMaySettleLate) requestAnimationFrame(land);
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(land);
     },
   };
 }
@@ -124,7 +185,7 @@ export function anchorTop(selector = "[data-key]") {
       const standing = withKey(scroller, held.key);
       if (!standing) return;
       const moved = offsetIn(scroller, standing) - held.offset;
-      if (moved) scroller.scrollTop += moved;
+      if (moved) writeScrollTop(scroller, scroller.scrollTop + moved);
     },
   };
 }

@@ -26,6 +26,7 @@
 // page leaving the workspace. The rail is on one of the two at a time and reads
 // the other beside it, so the strip says what both are doing.
 
+import { wireReaderMotion } from "./paintKeepingPlace.js";
 import { App, go } from "../app.js";
 import { createPatternRenderer } from "./agentCanvas.js";
 import { hashString } from "./patternMotion.js";
@@ -2078,6 +2079,7 @@ function mountRailOnContext(host, context, swap) {
     olderItemsAwaitingPaint = false;
     // Assignment rather than a listener: the scroller outlives every repaint,
     // and adding one per paint would ask for the same page once per tick.
+    wireReaderMotion(body);
     body.onscroll = () => {
       if (!panelVisible) return;
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();

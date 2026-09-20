@@ -6,7 +6,7 @@
 // neither touches the scroller for a paint that wrote nothing.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { anchorTop, followConversation, paintKeepingPlace } from "../src/core/paintKeepingPlace.js";
+import { anchorTop, followConversation, paintKeepingPlace, wireReaderMotion, readerIsMoving } from "../src/core/paintKeepingPlace.js";
 
 const VIEWPORT = 300;
 
@@ -238,7 +238,10 @@ describe("paintKeepingPlace", () => {
       expect(scroller.scrollTop).toBe(800);
     });
 
-    it("takes a reader who is at the end to what has just arrived", () => {
+    // Following means the end: what arrived is drawn under what they were
+    // reading, and the line is where the panel OPENS, not where each paint
+    // drags them back to.
+    it("keeps a reader who is at the end at the end as things arrive", () => {
       const { scroller, paint } = conversation([
         { key: "a", height: 400 },
         { key: "line", height: 20, line: true },
@@ -246,7 +249,37 @@ describe("paintKeepingPlace", () => {
       ]);
       scroller.scrollTop = 520; // scrollHeight - clientHeight: at the end
       paintKeepingPlace(scroller, paint, { opening: () => false, policy: followUnread() });
-      expect(scroller.scrollTop).toBe(388);
+      expect(scroller.scrollTop).toBe(820);
+    });
+
+    it("writes nothing when the place it would keep is the place the reader is", () => {
+      const { scroller, paint } = conversation([
+        { key: "a", height: 400 },
+        { key: "b", height: 400 },
+      ]);
+      paintKeepingPlace(scroller, paint, { opening, policy: followUnread() });
+      scroller.scrollTop = 60;
+      const writes = watchScrollTop(scroller);
+      paintKeepingPlace(scroller, paint, { opening: () => false, policy: followUnread() });
+      expect(writes).toEqual([]);
+    });
+
+    // On iOS a write to scrollTop during a fling ends the fling where the
+    // write said; a paint that lands mid-fling must not write at all.
+    it("writes nothing while the reader is moving the list", () => {
+      const { scroller, paint } = conversation([
+        { key: "a", height: 400 },
+        { key: "b", height: 400 },
+      ]);
+      paintKeepingPlace(scroller, paint, { opening, policy: followUnread() });
+      wireReaderMotion(scroller);
+      scroller.dispatchEvent(new Event("touchstart"));
+      scroller.scrollTop = 780; // within the slack: a follower, mid-fling
+      const writes = watchScrollTop(scroller);
+      paintKeepingPlace(scroller, paint, { opening: () => false, policy: followUnread() });
+      expect(writes).toEqual([]);
+      scroller.dispatchEvent(new Event("touchend"));
+      expect(readerIsMoving(scroller)).toBe(false);
     });
 
     it("leaves a reader who scrolled up where they are, line or no line", () => {

@@ -29,6 +29,7 @@ import { issueCardHtml } from "./trackerMessageCard.js";
 import { issueActionLineHtml } from "./trackerActionLine.js";
 import { isIssueNotice, issueNoticeLineHtml, issueNoticeOf } from "./trackerNotice.js";
 import { isTransientTransportError } from "./transientRead.js";
+import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -2038,7 +2039,16 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
   /// second answer about the same failure.
   const failedToLoad = (path, image, error) => {
     const figure = image?.closest(".thread-attachment-figure");
-    if (isTransientTransportError(error)) {
+    const transient = isTransientTransportError(error);
+    // Recorded, because "my attachments show unavailable" was half of the report
+    // this came from and the answer turns entirely on which of the two this was.
+    // A figure the reader says is wrong is then one line in Settings →
+    // Diagnostics: what the fetch was refused with, and what that was read as.
+    recordConnectionDiagnostic(threadState.ownerId || "attachments", "attachment-failed", {
+      state: transient ? "deferred" : "refused",
+      refusal: (error && error.message) || String(error || ""),
+    });
+    if (transient) {
       threadState.deferAttachment(path);
       figure?.classList.add("waiting");
       return;

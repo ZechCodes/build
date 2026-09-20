@@ -12,6 +12,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { createThreadState, threadHtml, wireThreadAttachments } from "../src/core/thread.js";
 import { createChatRepository } from "../src/core/chatRepository.js";
+import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../src/core/connectionDiagnostics.js";
 
 const withPicture = (path = "shots/big.png") => ({
   items: [{
@@ -87,6 +88,26 @@ describe("an attachment fetch that failed while the path was dead", () => {
 
     expect(document.querySelector("img.thread-attachment-image").getAttribute("src"))
       .toBe("data:image/png;base64,AAAA");
+  });
+
+  it("records which of the two it decided, so a report about a wrong figure carries it", async () => {
+    // "I'll also often get attachment timeouts around the same time" was half of
+    // the report this came from, and the answer turns entirely on this decision.
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    clearConnectionDiagnosticHistory();
+    wireThreadAttachments(paint(threadState), async () => { throw pathDeadline(); }, threadState);
+    await settle();
+
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "attachment-failed"))
+      .toMatchObject([{ connection: "conversation-1", state: "deferred", refusal: "thread.attachment timed out" }]);
+
+    clearConnectionDiagnosticHistory();
+    const refused = createThreadState({ ownerId: "conversation-2" });
+    wireThreadAttachments(paint(refused, "shots/gone.png"), async () => { throw bridgeRefused(); }, refused);
+    await settle();
+
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "attachment-failed"))
+      .toMatchObject([{ connection: "conversation-2", state: "refused", refusal: "no such attachment" }]);
   });
 
   it("still says unavailable when the bridge is the one refusing", async () => {

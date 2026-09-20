@@ -42,6 +42,9 @@ const { adoptDeviceSession, canAnswer, contextFor, resetDeviceContexts } = await
 );
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { greetLiveBridge } = await import("../src/connection.js");
+const { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } = await import(
+  "../src/core/connectionDiagnostics.js"
+);
 
 /** A bridge that answers one greeting and installs whatever the selection
  *  picked, exactly as core/session.js does. */
@@ -183,16 +186,33 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
     expect(controller.recoveries()).toEqual([]);
   });
 
-  it("releases the attachment fetches the dead path ate", async () => {
+  it("releases the attachment fetches the dead path ate, and records that it did", async () => {
     const { context } = await strandedDevice("dev-e");
     const { threadState } = context.chatRepository.history("conversation-1");
     threadState.deferAttachment("shots/big.png");
     const reconnected = bridgeAnswering("dev-e", { api_version: "1.2.0" });
     expect(adoptDeviceSession(reconnected)).toBe(context);
+    clearConnectionDiagnosticHistory();
 
     await greetLiveBridge(context);
 
     expect(threadState.attachmentDeferred("shots/big.png")).toBe(false);
+    // A figure still on "loading" after a reconnect has two possible causes —
+    // nothing released it, or nothing repainted — and this is what tells them
+    // apart in a reader's report.
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "attachments-released"))
+      .toMatchObject([{ connection: "dev-e:attachments", conversations: 1, paths: 1 }]);
+  });
+
+  it("says nothing about a reconnect that had no pictures waiting", async () => {
+    const { context } = await strandedDevice("dev-f");
+    const reconnected = bridgeAnswering("dev-f", { api_version: "1.2.0" });
+    expect(adoptDeviceSession(reconnected)).toBe(context);
+    clearConnectionDiagnosticHistory();
+
+    await greetLiveBridge(context);
+
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "attachments-released")).toEqual([]);
   });
 
   it("does not hold the app back on it: the greeting settles first", async () => {

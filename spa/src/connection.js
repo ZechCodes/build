@@ -22,7 +22,7 @@ import { createDeviceConnectionAttempts } from "./core/deviceConnectionAttempts.
 import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
-import { connectionDiagnosticHistory } from "./core/connectionDiagnostics.js";
+import { connectionDiagnosticHistory, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, rememberSelectedDevice } from "./app.js";
@@ -566,7 +566,7 @@ export function greetLiveBridge(context, {
       // Pictures first, and synchronously: the next repaint of a timeline the
       // reader is already looking at is what asks for them again, and it can be
       // milliseconds away.
-      repository?.retryDeferredAttachments();
+      releaseDeferredAttachments(session.deviceId, repository);
       void repository?.resolveUncertainPosts();
     }
     return settled;
@@ -584,6 +584,20 @@ export function greetLiveBridge(context, {
       releaseGreeting(context, greetingAuthority);
     });
   return suppressFailure ? greeting.catch(() => false) : greeting;
+}
+
+/** Ask this device's conversations for the pictures a dead path ate (#30), and
+ *  record that it happened.
+ *
+ *  Recorded because a figure that stays on "loading" after a reconnect has two
+ *  possible causes — nothing released it, or nothing repainted after it was
+ *  released — and Settings → Diagnostics is where a reader's report has to be
+ *  able to tell them apart. Silent when there was nothing waiting, which is
+ *  almost every reconnect. */
+function releaseDeferredAttachments(deviceId, repository) {
+  const released = repository?.retryDeferredAttachments();
+  if (!released?.paths) return;
+  recordConnectionDiagnostic(`${deviceId}:attachments`, "attachments-released", released);
 }
 
 /** Everything a device gets the moment it is live over its channels: the

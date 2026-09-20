@@ -26,6 +26,25 @@
 // only worth anything if a new one lands on the other side of it, and that
 // involves a relay, a rendezvous, two handshakes and a greeting.
 //
+// # Why the browser is made to keep believing ICE
+//
+// `docker pause` freezes the bridge so completely that it stops answering ICE's
+// own consent checks, and the browser notices within a few seconds: the
+// connection goes `disconnected`, core/peerLink.js starts an ICE restart, and
+// that machinery — which predates this issue — is what handles it. Zech's fault
+// was the opposite and is the whole reason #30 exists: his consent checks WERE
+// being answered, ICE said `connected` for the full 105 seconds, and nothing
+// above it could tell that SCTP was delivering none of his frames.
+//
+// So a paused container on its own reproduces the symptom and not the fault, and
+// a run over it would pass or fail for reasons that have nothing to do with the
+// probe. `RTCPeerConnection` is therefore patched in an init script to keep
+// reporting the state it reached once it has been connected — the same lever
+// web/relayed-path.mjs uses to reproduce his conditions without changing a line
+// of the product. With it, the browser's own ICE is blind exactly as his was, and
+// the probe is the only thing left that can notice. `KEEP_ICE=0` turns it off, to
+// watch the pause without it.
+//
 // # Why the pause and not `docker stop`
 //
 // Same reason as dropped-read-check: `stop` deregisters the device, the account
@@ -33,8 +52,7 @@
 // that is GONE, not a machine whose path died under it. A paused container holds
 // its registration and answers nothing, which is Zech's tablet exactly.
 
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
 
@@ -80,49 +98,33 @@ const workspace = seed.workspaces[0];
 const docker = (command) =>
   execSync(`echo '${command}' | newgrp docker 2>&1`, { encoding: "utf8", shell: "/bin/bash" });
 
-/** One bridge RPC from inside the qa container, which is where the compose
- *  network and the harness deps are. `--no-deps` so this cannot recreate the
- *  app or bridge another checkout's compose file started. */
-function call(method, params) {
-  const script = `import * as transport from "@build/secure-transport"; import { openDeviceLink, openRendezvous } from "./client.mjs"; import { loginWithDummy } from "./skrift-auth.mjs";
-const { cookie, mintGatewayToken } = await loginWithDummy(process.env.API_URL, { email: "qa@localhost" });
-const rendezvous = await openRendezvous({ relayUrl: process.env.RELAY_URL, mintGatewayToken });
-const link = await openDeviceLink({ rendezvous, transport, apiUrl: process.env.API_URL, cookie });
-const r = await link.session.call(${JSON.stringify(method)}, ${JSON.stringify(params)});
-console.log("RESULT " + JSON.stringify(r)); process.exit(0);`;
-  writeFileSync("/tmp/dead-path-call.mjs", script);
-  const out = execSync(
-    `echo 'docker compose -f ${REPO}/deploy/compose.real.yml --profile qa run --rm -T --no-deps qa node --input-type=module - < /tmp/dead-path-call.mjs' | newgrp docker 2>&1`,
-    { encoding: "utf8", shell: "/bin/bash" },
-  );
-  const line = out.split("\n").find((one) => one.startsWith("RESULT "));
-  if (!line) throw new Error(`no result from ${method}: ${out.trim().slice(-300)}`);
-  return JSON.parse(line.slice("RESULT ".length));
-}
+/** Pause and unpause, with the unpause guaranteed.
+ *
+ *  A run that is killed between the two leaves the whole compose stack frozen
+ *  for whoever holds it next, and the next person's failure looks like their own.
+ *  So the unpause is idempotent, runs on the way out however this process ends,
+ *  and is the only thing that ever calls `docker unpause` here. */
+let bridgeIsPaused = false;
+const pauseBridge = () => {
+  docker(`docker pause ${BRIDGE}`);
+  bridgeIsPaused = true;
+};
+const unpauseBridge = () => {
+  if (!bridgeIsPaused) return;
+  bridgeIsPaused = false;
+  try {
+    docker(`docker unpause ${BRIDGE}`);
+  } catch (error) {
+    console.error(`could not unpause ${BRIDGE}: ${error?.message || error}`);
+  }
+};
+for (const signal of ["exit", "SIGINT", "SIGTERM"]) process.on(signal, unpauseBridge);
 
-/** A picture in the conversation, put there before the browser looks — the
- *  figure whose fetch the dead window is going to eat. Small, because the point
- *  is which of three states the figure ends up in and not how many bytes cross.
- *  A 1×1 PNG, as bytes rather than as a file, so the script carries no fixture. */
+/** The picture this run sends, as bytes rather than as a fixture file: a 1×1
+ *  PNG. The size is beside the point — what is being tested is which of three
+ *  states the figure ends up in, not how many bytes cross. */
 const PNG_1X1_B64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
-
-function seedPicture() {
-  const uploaded = call("thread.attach", {
-    entity_id: workspace.entityId,
-    filename: `dead-path-${Date.now().toString(36)}.png`,
-    content_b64: PNG_1X1_B64,
-  });
-  call("thread.post", {
-    entity_id: workspace.entityId,
-    agent_id: workspace.agentId,
-    conversation_id: workspace.conversationId,
-    operation_id: randomUUID(),
-    body: "A picture for web/dead-path-check.mjs.",
-    attachments: [{ path: uploaded.path, name: uploaded.name }],
-  });
-  return uploaded;
-}
 
 const results = [];
 const record = (name, ok, detail = "") => {
@@ -130,10 +132,36 @@ const record = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
 };
 
+/** Keep the browser saying what ICE last said, once it has said `connected`.
+ *
+ *  Patched on the prototype so it applies to whatever the SPA constructs, and
+ *  only ever LATCHES a good state — a connection on its way up still reports the
+ *  truth, so negotiation is untouched and only the noticing is blinded. */
+const PIN_ICE = `(() => {
+  const proto = RTCPeerConnection.prototype;
+  const wasUp = new WeakSet();
+  for (const field of ["iceConnectionState", "connectionState"]) {
+    const real = Object.getOwnPropertyDescriptor(proto, field);
+    if (!real || !real.get) continue;
+    Object.defineProperty(proto, field, {
+      configurable: true,
+      get() {
+        const said = real.get.call(this);
+        if (said === "connected" || said === "completed") {
+          wasUp.add(this);
+          return said;
+        }
+        return wasUp.has(this) ? "connected" : said;
+      },
+    });
+  }
+})();`;
+
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium", headless: true, args: ["--no-sandbox"] });
 // One explicit context: browser.newPage() wraps a context with no session
 // cookie, and a page without it lands on the sign-in gate.
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+if (process.env.KEEP_ICE !== "0") await context.addInitScript(PIN_ICE);
 const page = await context.newPage();
 
 await page.goto(`${APP}/auth/dummy/login`, { waitUntil: "load" });
@@ -152,7 +180,11 @@ const sessionsConnected = async () =>
   (await diagnostics()).filter((entry) => entry.event === "connected").length;
 const recoveryText = () =>
   page.evaluate(() => document.querySelector(".chat-recovery")?.innerText?.replace(/\s+/g, " ").trim() || "");
-const composer = ".rail-composer textarea, .composer textarea, textarea";
+// The rail's composer, by the ids it is mounted under (core/agentRail.js's
+// COMPOSER_IDS and core/composer.js's composerPartIds). Not "the first textarea
+// on the page": a workspace also carries the changes-comment box, and Enter does
+// not send in either of them — the arrow does.
+const RAIL = { input: "#railinput", send: "#railsend", file: "#railinputfile", tray: "#railinputtray" };
 
 const wait = (ms) => page.waitForTimeout(ms);
 const until = async (answer, { every = 1000, forMs = 60000 } = {}) => {
@@ -168,34 +200,48 @@ const until = async (answer, { every = 1000, forMs = 60000 } = {}) => {
 // ── 1. stand on the workspace's conversation, live ──────────────────────────
 const route = `${APP}/app/#/project/${seed.projectId}/workspace/${workspace.workspaceId}`;
 await page.goto(route, { waitUntil: "load" });
-await wait(10000);
+await wait(12000);
 const liveSessions = await sessionsConnected();
 record("the workspace stands up with the bridge answering", liveSessions > 0, `${liveSessions} connected session(s) recorded`);
-const composerThere = await page.locator(composer).count();
-record("the conversation's composer is on screen", composerThere > 0, `${composerThere} composer(s)`);
+const composerThere = await page.locator(RAIL.input).count();
+record("the conversation's composer is on screen", composerThere === 1, `${composerThere} rail composer(s)`);
 
-// ── 2. the path dies under a send ───────────────────────────────────────────
-console.log(`\npausing ${BRIDGE} — registered, answering nothing\n`);
-docker(`docker pause ${BRIDGE}`);
-const pausedAt = Date.now();
-const beforeProbes = (await probes()).length;
-
-// A send is what puts a frame on the wire and starts the deadline that asks the
-// question. The body is tagged so the resolution can be recognised afterwards.
+// ── 2. a message with a picture, written and uploaded while the path is fine ─
+//
+// This is the order Zech's report happened in and it matters: the bytes go up
+// BEFORE the message does, so the attachment was safely on the bridge and it was
+// the FETCH of it back — `thread.attachment`, for the preview of his own just-sent
+// message — that died. Uploading before the pause is therefore not a shortcut; it
+// is the case.
 const stamp = Date.now().toString(36);
-await page.locator(composer).first().fill(`dead-path-check ${stamp}`);
-await page.keyboard.press("Enter");
+await page.setInputFiles(RAIL.file, {
+  name: `dead-path-${stamp}.png`,
+  mimeType: "image/png",
+  buffer: Buffer.from(PNG_1X1_B64, "base64"),
+});
+const uploaded = await until(
+  async () => page.evaluate((tray) => !document.querySelector(tray)?.hidden, RAIL.tray),
+  { every: 500, forMs: 30000 },
+);
+record("the picture uploads while the path is still carrying", Boolean(uploaded.found), uploaded.found ? "in the tray" : "never reached the tray");
+await page.locator(RAIL.input).fill(`dead-path-check ${stamp}`);
+
+// ── 3. the path dies, and then the send goes out over it ────────────────────
+console.log(`\npausing ${BRIDGE} — registered, answering nothing\n`);
+pauseBridge();
+const beforeProbes = (await probes()).length;
+await page.locator(RAIL.send).click();
 
 const judged = await until(async () => {
   const written = (await probes()).slice(beforeProbes);
   return written.some((entry) => entry.state === "dead") ? written : null;
-}, { every: 2000, forMs: 90000 });
+}, { every: 1000, forMs: 90000 });
 
-const askedAt = judged.found?.find((entry) => entry.state === "asked");
+const asked = judged.found?.find((entry) => entry.state === "asked");
 record(
   "the probe asks the wire once the send burns its path deadline",
-  Boolean(askedAt),
-  askedAt ? `asked about ${askedAt.method} at +${Math.round(judged.afterMs / 1000)}s, vouched=${askedAt.vouched}` : "never asked",
+  Boolean(asked),
+  asked ? `asked about ${asked.method}, vouched=${asked.vouched}` : `states seen: ${JSON.stringify((await probes()).map((e) => e.state))}`,
 );
 record(
   "…and judges the path dead rather than waiting for SCTP",
@@ -204,12 +250,12 @@ record(
     ? "no verdict in 90s"
     : `dead at +${Math.round(judged.afterMs / 1000)}s, where SCTP took ~${SCTP_GAVE_UP_AFTER_MS / 1000}s`,
 );
-// The verdict cannot honestly come before the deadline that triggered it, the
-// frame proof window, and the ping have all elapsed.
+// The verdict cannot honestly come before the deadline that triggered it and the
+// ping that answered it have both elapsed.
 const floorMs = timing.pathDeadline + timing.ping;
 record(
   `the verdict waits out the deadline and the ping first (${floorMs} ms)`,
-  judged.afterMs >= floorMs,
+  judged.found !== null && judged.afterMs >= floorMs,
   `judged at ${judged.afterMs} ms, floor ${floorMs} ms (deadline ${timing.pathDeadline} + ping ${timing.ping}, frame window ${timing.frameProof})`,
 );
 record(
@@ -217,20 +263,41 @@ record(
   (await probes()).some((entry) => entry.state === "restarting"),
   JSON.stringify((await probes()).map((entry) => entry.state)),
 );
-const stranded = await recoveryText();
+
+const stranded = await until(async () => {
+  const shown = await recoveryText();
+  return /uncertain/i.test(shown) ? shown : null;
+}, { every: 1000, forMs: 30000 });
 record(
   "the send that died is marked uncertain, with Check delivery on it",
-  /uncertain/i.test(stranded) && /check delivery/i.test(stranded),
-  JSON.stringify(stranded).slice(0, 180),
+  stranded.found !== null && /check delivery/i.test(stranded.found),
+  JSON.stringify(stranded.found || (await recoveryText())).slice(0, 200),
 );
 
-// ── 3. the machine comes back ───────────────────────────────────────────────
+const figures = () =>
+  page.evaluate(() => [...document.querySelectorAll(".thread-attachment-figure")].map((one) => one.className));
+const waiting = await until(async () => {
+  const shown = await figures();
+  return shown.some((className) => className.includes("waiting")) ? shown : null;
+}, { every: 1000, forMs: 40000 });
+record(
+  "the picture the dead path ate says loading, not unavailable",
+  waiting.found !== null,
+  JSON.stringify(waiting.found || (await figures())),
+);
+record(
+  "…and nothing is marked unavailable",
+  !(await figures()).some((className) => className.includes("unavailable")),
+  JSON.stringify(await figures()),
+);
+
+// ── 4. the machine comes back ───────────────────────────────────────────────
 console.log(`\nunpausing ${BRIDGE}\n`);
 const sessionsBefore = await sessionsConnected();
-docker(`docker unpause ${BRIDGE}`);
+unpauseBridge();
 const resumedAt = Date.now();
 
-const reconnected = await until(async () => (await sessionsConnected()) > sessionsBefore, { every: 2000, forMs: 90000 });
+const reconnected = await until(async () => (await sessionsConnected()) > sessionsBefore, { every: 1000, forMs: 90000 });
 record(
   "the supervisor lands a new session",
   Boolean(reconnected.found),
@@ -238,22 +305,17 @@ record(
 );
 
 // The whole point of point 2: this clears with nobody pressing anything.
-const settled = await until(async () => {
-  const shown = await recoveryText();
-  return shown === "" ? "clear" : null;
-}, { every: 2000, forMs: 90000 });
+const settled = await until(async () => ((await recoveryText()) === "" ? "clear" : null), { every: 1000, forMs: 90000 });
 record(
   "the uncertain post settles itself, with no press",
   settled.found === "clear",
   settled.found === "clear"
     ? `cleared at +${Math.round(settled.afterMs / 1000)}s after the unpause`
-    : `still showing ${JSON.stringify(await recoveryText()).slice(0, 180)}`,
+    : `still showing ${JSON.stringify(await recoveryText()).slice(0, 200)}`,
 );
-// It settled one way or the other: either the bridge had it, or it was re-sent.
-// Both end with the message in the transcript, which is the reader's test.
 const landed = await until(
   async () => page.evaluate((tag) => document.body.innerText.includes(tag), `dead-path-check ${stamp}`),
-  { every: 2000, forMs: 60000 },
+  { every: 1000, forMs: 60000 },
 );
 record(
   "…and the message is in the conversation",
@@ -261,56 +323,38 @@ record(
   landed.found ? `on screen at +${Math.round((Date.now() - resumedAt) / 1000)}s` : "never appeared",
 );
 
-// ── 4. a picture whose fetch the dead window eats ───────────────────────────
-//
-// A reload is how this is reproduced honestly. The bytes are cached per
-// conversation for the life of the tab, so a picture already on screen would not
-// be fetched again — and Zech's case is exactly the fetch that goes out for the
-// first time while the path is dead. A reload keeps the cache-first paint (same
-// origin, same IndexedDB) and takes a fresh attachment cache with it, which is
-// the state that used to leave the figure saying "unavailable" until a hard
-// refresh.
-console.log("\nseeding a picture, then reloading with the bridge paused\n");
-seedPicture();
-await page.goto(route, { waitUntil: "load" });
-await until(async () => page.locator("img.thread-attachment-image").count().then((n) => n > 0), { every: 1000, forMs: 30000 });
-const shownLive = await until(
-  async () => page.evaluate(() => [...document.querySelectorAll("img.thread-attachment-image")].some((img) => img.getAttribute("src"))),
-  { every: 1000, forMs: 30000 },
-);
-record("the seeded picture loads with the bridge answering", Boolean(shownLive.found), shownLive.found ? "filled" : "never filled");
-
-docker(`docker pause ${BRIDGE}`);
-await page.reload({ waitUntil: "load" });
-const figures = () =>
-  page.evaluate(() => [...document.querySelectorAll(".thread-attachment-figure")].map((one) => one.className));
-const waiting = await until(async () => {
-  const shown = await figures();
-  return shown.some((className) => className.includes("waiting")) ? shown : null;
-}, { every: 1000, forMs: 60000 });
+const released = (await diagnostics()).filter((entry) => entry.event === "attachments-released");
 record(
-  "a picture the dead path ate says loading, not unavailable",
-  waiting.found !== null,
-  waiting.found ? JSON.stringify(waiting.found) : JSON.stringify(await figures()),
+  "the reconnect releases the pictures the dead path ate",
+  released.length > 0,
+  JSON.stringify(released.map((entry) => ({ conversations: entry.conversations, paths: entry.paths }))),
 );
-record(
-  "…and is not marked unavailable anywhere",
-  !(await figures()).some((className) => className.includes("unavailable")),
-  JSON.stringify(await figures()),
-);
-
-docker(`docker unpause ${BRIDGE}`);
 const refetched = await until(
   async () => page.evaluate(() => [...document.querySelectorAll("img.thread-attachment-image")].some((img) => img.getAttribute("src"))),
-  { every: 2000, forMs: 90000 },
+  { every: 1000, forMs: 90000 },
 );
 record(
-  "the reconnect asks for it again and the picture arrives",
+  "…and the picture arrives",
   Boolean(refetched.found),
-  refetched.found ? `filled at +${Math.round(refetched.afterMs / 1000)}s after the unpause` : "never filled in 90s",
+  refetched.found ? `filled at +${Math.round(refetched.afterMs / 1000)}s after the release` : `figures: ${JSON.stringify(await figures())}`,
 );
 
-void pausedAt;
+// What the page recorded about the two decisions, printed whether or not the run
+// passed: a FAIL whose reason is in the history and not on the screen is a run
+// somebody has to do again by hand.
+const history = await diagnostics();
+const interesting = history.filter((entry) =>
+  ["path-probe", "attachment-failed", "attachments-released"].includes(entry.event));
+console.log("\n──────── what the page recorded ────────");
+console.log(`(the history holds the last ${history.length} events; a dead window with reconnects in it can overflow it)`);
+for (const entry of interesting) {
+  const detail = Object.entries(entry)
+    .filter(([field]) => !["at", "connection", "event"].includes(field))
+    .map(([field, value]) => `${field}=${JSON.stringify(value)}`)
+    .join(" ");
+  console.log(`  ${entry.event.padEnd(21)} ${detail}`);
+}
+
 await browser.close();
 console.log("\n──────── summary ────────");
 for (const { name, ok, detail } of results) console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);

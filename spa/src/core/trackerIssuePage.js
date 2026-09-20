@@ -18,13 +18,13 @@ import { notifyError } from "./notify.js";
 import { issueRecord, issueRecordAt, readIssueRecord, readIssuesRecord, writeIssueRecord } from "./trackerCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceWatch } from "./deviceReconnect.js";
-import { columnsOf } from "./trackerModel.js";
+import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { issueLinkRows } from "./trackerLinks.js";
 import { agentLabels, assigneeOptions, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import { issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
-import { labelsFromText } from "./trackerCreate.js";
+import { createThreadState, wireThreadAttachments } from "./thread.js";
 
 /** Whether one flush of `issues` items says anything about this issue. */
 const namesIssue = (items, issueId) =>
@@ -254,9 +254,25 @@ export function mountIssuePage(host, options) {
     };
   }
 
+  /// The files filed with the issue (#57), loaded through the conversation's
+  /// own wiring: one attachment story in this client rather than two, so the
+  /// refusal and the wire-went-away deferral are already answered for.
+  ///
+  /// `issues.attachment` is the verb this asks for, and a bridge that does not
+  /// have it yet refuses — which `wireThreadAttachments` draws as unavailable
+  /// rather than as a picture that never arrives.
+  const attachmentState = createThreadState({ ownerId: `issue:${options.issueId}` });
+  const wireAttachments = () =>
+    wireThreadAttachments(
+      host.querySelector(".issue-page-attachments"),
+      (path) => state.callRpc("issues.attachment", { issue_id: state.issueId, path }),
+      attachmentState,
+    );
+
   function wire() {
     wireRail();
     wireComposer();
+    wireAttachments();
   }
 
   // ---- lifecycle -----------------------------------------------------------

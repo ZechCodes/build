@@ -65,7 +65,7 @@ const rowHtml = (row, id, index) =>
  * and `summary` how a selection of several is said (core/filterMenu.js).
  * `onChange` is handed the whole new selection, as a list, every time.
  */
-export function mountFilterMenu(host, { name, label, multi = false, summary = "first", onChange }) {
+export function mountFilterMenu(host, { name, label, multi = false, summary = "first", invent = null, onChange }) {
   mounted += 1;
   const id = `fmenu-${mounted}`;
   host.insertAdjacentHTML("beforeend", frameHtml(id, name, multi));
@@ -105,7 +105,7 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
   };
 
   const paintRows = () => {
-    rows = menuRows(options, search.value, chosen, { multi });
+    rows = menuRows(options, search.value, chosen, { multi, invent });
     rows.forEach((row, index) => { row.at = index; });
     patchList(list, rows, {
       keyOf: (row) => row.key,
@@ -125,6 +125,9 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
 
   function choose(value) {
     chosen = toggleChoice(chosen, value, { multi });
+    // An invented name is on offer from now on, so the row that made it becomes
+    // an ordinary row and the query that summoned it has done its job.
+    if (invent && !options.some((option) => option.value === value)) search.value = "";
     paintPress();
     clear.disabled = !chosen.length;
     paintRows();

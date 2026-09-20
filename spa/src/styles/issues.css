@@ -106,6 +106,56 @@
 
 .issue-body { padding:0 var(--pane-gutter) var(--pane-bottom); }
 
+/* ---- filing in place (#57) ------------------------------------------------
+
+   Zech: "Issue creation should be inline." So the form is a slab at the head
+   of the list rather than a dialog over it — the list it is filed against
+   stays on screen and stays readable, which is most of what you are looking at
+   while you write the title. */
+
+.issue-compose-slot:empty { display:none; }
+.issue-compose {
+  display:flex; flex-direction:column; gap:8px;
+  margin:0 var(--pane-gutter) 12px;
+  padding:12px; border-radius:11px;
+  background:var(--panel2); border:1px solid var(--line2);
+}
+.issue-compose-title {
+  font:inherit; font-size:14px; font-weight:550; color:var(--ink);
+  background:var(--panel); border:1px solid var(--line2); border-radius:8px;
+  padding:8px 10px;
+}
+.issue-compose-title::placeholder { font-weight:400; color:var(--dim); }
+.issue-compose-title:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+/* The body box is the chat composer's, so the paperclip, the tray, the drop
+   mask and the paste all look and behave the way they do in a conversation. */
+.issue-compose-body { background:var(--panel); }
+.issue-compose .composer-tray:not([hidden]) { display:flex; flex-wrap:wrap; gap:6px; }
+/* The bar under the body holds only the paperclip here — there is no model to
+   pick and no arrow to send — so it hugs the box instead of sitting on a row
+   of its own. */
+.issue-compose-body .composer-bar { padding:2px 0 0; min-height:0; }
+.issue-compose-body .composer-actions { margin-left:auto; }
+.issue-compose-facets { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+/* The assignee keeps its own control (five kinds, two of which open forms), so
+   it cannot be a filter menu — but it can read like one. */
+.issue-compose-assignee .create-label { display:block; font-size:11px; color:var(--dim); margin-bottom:3px; }
+.issue-compose-assignee select {
+  font:inherit; font-size:12px; color:var(--ink2);
+  background:var(--panel); border:1px solid var(--line2); border-radius:7px;
+  padding:4px 8px; width:100%; max-width:340px;
+}
+.issue-compose-assignee select:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.issue-compose-assignee .issue-assignee-hint { font-size:11px; margin:3px 0 0; }
+.issue-compose-error[hidden], .issue-compose-waiting[hidden] { display:none; }
+.issue-compose-error { margin:0; font-size:12px; }
+.issue-compose-waiting { margin:0; font-size:11px; color:var(--ink2); }
+.issue-compose-row { display:flex; justify-content:flex-end; gap:8px; }
+
+/* The files an issue was filed with, on its own page. The conversation's own
+   attachment styles already draw these; this only says where they sit. */
+.issue-page-attachments { margin:10px 0 0; }
+
 /* ---- the marks an issue wears -------------------------------------------- */
 
 /* Open/closed is NOT the Done column: one says whether the work is live, the
@@ -431,6 +481,18 @@
   }
   .issue-column { flex-basis:78vw; max-width:300px; scroll-snap-align:start; }
   .issue-head, .issue-filters { padding-left:var(--pane-gutter); padding-right:var(--pane-gutter); }
+  /* A sheet at the foot of the screen, like the filter menus: on a phone the
+     form is the whole of what you are doing, and the list behind it is
+     context rather than something to keep reaching past. */
+  .issue-compose {
+    position:fixed; inset:auto 0 0 0; z-index:55;
+    margin:0; border-radius:14px 14px 0 0; border-left:0; border-right:0; border-bottom:0;
+    padding:12px 14px calc(14px + env(safe-area-inset-bottom));
+    max-height:88vh; overflow:auto;
+    background:var(--panel);
+    box-shadow:0 -14px 34px -14px rgb(0 0 0 / .55);
+  }
+  .issue-compose-row > .btn { flex:1 1 0; }
   .fmenu-press { max-width:46vw; }
   /* A sheet at the bottom of the screen rather than a popover pinned to a
      press: on a phone the press is wherever the bar wrapped to, and a menu

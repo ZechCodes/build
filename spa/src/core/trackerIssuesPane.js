@@ -33,7 +33,8 @@ import { agentLabels, assigneeOptions, selectedOptionId, workspaceAgents } from 
 import { BOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
 import { paintIssueBoard, paintIssueRows } from "./trackerIssuesBody.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
-import { openCreateIssue } from "./trackerCreate.js";
+import { openIssueComposer } from "./issueComposer.js";
+import { labelsOf } from "./trackerFilters.js";
 
 export function mountIssuesPane(host, options) {
   const state = {
@@ -47,6 +48,7 @@ export function mountIssuesPane(host, options) {
     view: options.view === BOARD_VIEW ? BOARD_VIEW : LIST_VIEW,
     disposed: false,
     picker: null,
+    composer: null,
   };
 
   // ---- what the feed knows about this project's agents ---------------------
@@ -276,7 +278,7 @@ export function mountIssuesPane(host, options) {
   }
 
   /** The issue was filed and the assignee was not. Said after the fact rather
-   *  than in the dialog, because the filing SUCCEEDED — keeping the form up
+   *  than in the form, because the filing SUCCEEDED — keeping the form up
    *  would invite a second one — and said persistently, because the reader
    *  believes an agent is working and none is. */
   const sayTheAssigneeWasDropped = (issue) =>
@@ -285,19 +287,80 @@ export function mountIssuesPane(host, options) {
       "The Build on this machine cannot assign an issue as it is filed, so it was created unassigned and nothing was started. Assign it from the issue page.",
     );
 
+  /** The issue was filed and the files were not (#57). The same shape of
+   *  silence and the same answer: the screenshot was usually the reason for
+   *  filing, so "it is not there" is worth a sentence rather than a discovery. */
+  const sayTheFilesWereDropped = (issue, count) =>
+    notifyError(
+      `Filed #${issue?.number ?? ""} — but ${count === 1 ? "the file" : `the ${count} files`} did not go with it`,
+      "The Build on this machine cannot carry files on an issue, so it was filed without them. Nothing was lost on your side — attach them to a comment once this machine can take them.",
+    );
+
+  /**
+   * A freshly filed issue, on screen before the read that confirms it.
+   *
+   * The list is keyed (core/trackerIssuesBody.js), so this is one row inserted
+   * rather than a repaint — which is the whole point of filing in place: you
+   * see the thing you just wrote appear in the list you wrote it against. The
+   * refresh behind it replaces this record with the bridge's own.
+   */
+  function showTheNewIssue(issue) {
+    if (!issue || state.disposed) return;
+    const held = kept([issue]);
+    if (!held.length) return; // a workspace's tab may not be about this issue
+    state.all = sortIssues([...state.all.filter((one) => one.id !== issue.id), issue]);
+    state.shown = filterIssues(state.all, shownFilters());
+    paint();
+    focusRow(issue.id);
+  }
+
+  /** Put the keyboard on a row by the issue it is about — by a scan rather
+   *  than a selector, because an id is data and a selector is a language. */
+  const focusRow = (issueId) => {
+    for (const row of host.querySelectorAll(".issue-row")) {
+      if (row.dataset.issue === issueId) {
+        row.querySelector(".issue-row-open")?.focus();
+        return;
+      }
+    }
+  };
+
+  /**
+   * Open the composer in place (#57).
+   *
+   * In the slot between the bar and the rows, not over them: an issue is filed
+   * ABOUT the list it is filed into, and a dialog that covers the list takes
+   * away the one thing you were looking at while you wrote. A second press on
+   * New issue puts the focus back in the open one rather than opening another.
+   */
   function fileIssue() {
-    openCreateIssue({
+    if (state.composer?.isOpen()) {
+      chrome.composeSlot.querySelector(".issue-compose-title")?.focus();
+      return;
+    }
+    state.composer = openIssueComposer(chrome.composeSlot, {
       projectId: state.projectId,
       projectName: state.projectName,
+      columns: state.columns,
+      labels: labelsOf(state.all),
       options: assigneeOptions(groups()),
       catalog: state.catalog(),
       callRpc: state.callRpc,
       onFiled: (answer, outcome) => {
+        showTheNewIssue(answer?.issue);
         void refresh();
         if (outcome?.assigneeWentNowhere) sayTheAssigneeWasDropped(answer?.issue);
-        if (answer?.issue) state.navigate?.(routeOf(answer.issue));
+        if (outcome?.attachmentsWentNowhere) sayTheFilesWereDropped(answer?.issue, outcome.attachmentCount);
+      },
+      onClosed: ({ filed }) => {
+        state.composer = null;
+        // Back where the reader was: on the row they just made, or on the
+        // press that opened the form. Never nowhere, which is what closing a
+        // focused subtree does if nobody says otherwise.
+        if (!filed) host.querySelector("[data-issue-new]")?.focus();
       },
     });
+    void state.refreshCatalog?.();
   }
 
   // ---- wiring --------------------------------------------------------------
@@ -372,6 +435,7 @@ export function mountIssuesPane(host, options) {
       reads.dispose();
       chrome.dispose();
       state.picker?.close?.();
+      state.composer?.close?.();
     },
   };
 }

@@ -56,7 +56,7 @@ const choosableOptions = (options, multi) =>
  * better served by "this match, and it is in that workspace" than by a tidy
  * outline that lies about the order.
  */
-export function menuRows(options, query, chosen, { multi = false } = {}) {
+export function menuRows(options, query, chosen, { multi = false, invent = null } = {}) {
   const picked = new Set(chosen || []);
   const ranked = fuzzyRank(choosableOptions(options, multi), query, (option) => option.label);
   const rows = [];
@@ -73,7 +73,27 @@ export function menuRows(options, query, chosen, { multi = false } = {}) {
       checked: picked.has(option.value),
     });
   });
+  const coined = inventedRow(options, query, invent);
+  if (coined) rows.push(coined);
   return rows;
+}
+
+/**
+ * The row that makes a name that does not exist yet.
+ *
+ * A filter chooses from what IS; a composer has to be able to say a label
+ * nobody has used before, which is most of what labelling a new issue is. So
+ * a menu asked to `invent` offers one extra row at the foot whenever the query
+ * names something not already on offer — and it is at the FOOT, because
+ * inventing is what you do when none of the answers above it was the one.
+ */
+function inventedRow(options, query, invent) {
+  if (!invent) return null;
+  const wanted = String(query || "").trim();
+  if (!wanted) return null;
+  const known = (options || []).some((option) => option.value === wanted || option.label === wanted);
+  if (known) return null;
+  return { kind: "option", key: `invent:${wanted}`, value: wanted, label: invent(wanted), checked: false, invented: true };
 }
 
 /** Where the option rows are, which is what the arrow keys walk. */

@@ -64,12 +64,6 @@ const reconnect = async () => {
   await flush();
 };
 
-const openCreateIssue = vi.fn();
-vi.mock("../src/core/trackerCreate.js", () => ({
-  openCreateIssue: (...args) => openCreateIssue(...args),
-  labelsFromText: (text) => String(text || "").split(",").map((one) => one.trim()).filter(Boolean),
-}));
-
 const PROJECT_KEY = "dev-1|proj-1";
 
 const feed = {
@@ -111,6 +105,32 @@ const clearPress = () => {
 };
 /** One filter menu, by the filter it writes (#44). The native selects went;
  *  every filter is now the same custom control. */
+/** The inline composer (#57), and the press that opens it. */
+const newPress = () => host.querySelector("[data-issue-new]");
+const composer = () => host.querySelector(".issue-compose");
+const openComposer = async () => {
+  newPress().click();
+  await flush();
+  return composer();
+};
+const typeIn = (selector, value) => {
+  const field = host.querySelector(selector);
+  field.value = value;
+  field.dispatchEvent(new Event("input"));
+  return field;
+};
+/** Choose an assignee in the composer's own control. */
+const chooseAssignee = async (optionId) => {
+  const select = host.querySelector("#issue-new-assignee");
+  select.value = optionId;
+  select.dispatchEvent(new Event("change"));
+  await flush();
+};
+const fileIt = async () => {
+  host.querySelector("[data-compose-file]").click();
+  await flush();
+};
+
 const menu = (name) => host.querySelector(`[data-filter-menu="${name}"]`);
 const menuPress = (name) => menu(name).querySelector(".fmenu-press");
 const openMenu = async (name) => {
@@ -153,7 +173,6 @@ beforeEach(async () => {
   movedListeners = new Set();
   notifyError.mockClear();
   openAssigneePicker.mockClear();
-  openCreateIssue.mockClear();
   document.body.innerHTML = '<div id="pane"></div>';
   host = document.querySelector("#pane");
   cache = await import("../src/core/localCache.js");
@@ -453,10 +472,47 @@ describe("the two presses", () => {
     expect(openAssigneePicker).toHaveBeenCalled();
   });
 
-  it("files a new issue in this project", async () => {
+  // #57: filing happens IN the tab. No dialog, no navigation — the list the
+  // issue is being filed against stays on screen while it is written.
+  it("opens the composer in place, above the list and over nothing", async () => {
     await mount();
-    host.querySelector("[data-issue-new]").click();
-    expect(openCreateIssue.mock.calls[0][0].projectId).toBe("proj-1");
+    expect(composer()).toBeNull();
+    await openComposer();
+    expect(composer()).not.toBeNull();
+    expect(document.querySelector(".modal, #issue-new-scrim")).toBeNull();
+    expect(titles()).toEqual(["Kanban drag does not persist", "Board is unreadable on a phone"]);
+    expect(document.activeElement).toBe(host.querySelector(".issue-compose-title"));
+  });
+
+  it("files what was typed, as issues.create params", async () => {
+    await mount();
+    await openComposer();
+    typeIn(".issue-compose-title", "Kanban drag");
+    typeIn("#issue-new-body", "It does not persist.");
+    call.mockClear();
+    await fileIt();
+    expect(listed("issues.create")[0][1]).toMatchObject({
+      project_id: "proj-1",
+      title: "Kanban drag",
+      body: "It does not persist.",
+    });
+  });
+
+  it("shuts once it has filed, and leaves the list behind it", async () => {
+    await mount();
+    await openComposer();
+    typeIn(".issue-compose-title", "Kanban drag");
+    await fileIt();
+    expect(composer()).toBeNull();
+  });
+
+  it("refuses an untitled issue without asking the bridge", async () => {
+    await mount();
+    await openComposer();
+    call.mockClear();
+    await fileIt();
+    expect(listed("issues.create")).toHaveLength(0);
+    expect(host.querySelector(".issue-compose-error").hidden).toBe(false);
   });
 
   // A bridge that predates `issues.create`'s assignee drops it at the facade
@@ -464,22 +520,149 @@ describe("the two presses", () => {
   // dispatch, so that is work the reader believes has started and has not.
   it("says when a filed issue's assignee went nowhere", async () => {
     await mount();
-    host.querySelector("[data-issue-new]").click();
-    const { onFiled } = openCreateIssue.mock.calls[0][0];
-    onFiled({ issue: issue({ id: "issue-1", number: 12 }) }, { assigneeWentNowhere: true });
-    await flush();
+    call.mockImplementation(async (method) =>
+      method === "issues.create" ? { issue: issue({ id: "issue-1", number: 12, assignee: null }) } : { issues: [] });
+    await openComposer();
+    typeIn(".issue-compose-title", "Kanban drag");
+    await chooseAssignee("project_agent");
+    await fileIt();
     expect(notifyError).toHaveBeenCalledWith(
       "Filed #12 — but nobody was assigned",
       expect.stringContaining("created unassigned and nothing was started"),
     );
   });
 
+  // #57: the composer is in the slot between the bar and the rows, outside the
+  // body — so a push that repaints the list cannot take away a form somebody
+  // is typing into.
+  it("keeps the composer, its text and its focus through a push", async () => {
+    await mount();
+    await openComposer();
+    const title = typeIn(".issue-compose-title", "Half written");
+    title.focus();
+    call.mockImplementation(async (method) =>
+      method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh" })], columns: columns() } : {});
+    watchers[0].refresh();
+    await flush();
+    expect(titles()).toEqual(["Fresh"]);
+    expect(host.querySelector(".issue-compose-title")).toBe(title);
+    expect(title.value).toBe("Half written");
+    expect(document.activeElement).toBe(title);
+  });
+
+  // The list is keyed, so a filed issue is one row INSERTED rather than a
+  // repaint — which is the whole point of filing in place: you watch the thing
+  // you just wrote appear in the list you wrote it against.
+  //
+  // The re-read behind it is held open here, so what is asserted is the
+  // OPTIMISTIC row and not the one a refresh would have painted anyway.
+  const fileWithTheReadHeldOpen = async () => {
+    await openComposer();
+    typeIn(".issue-compose-title", "Just filed");
+    call.mockImplementation((method) =>
+      method === "issues.create"
+        ? Promise.resolve({ issue: issue({ id: "issue-20", number: 20, title: "Just filed" }) })
+        : new Promise(() => {}), // the list never answers
+    );
+    await fileIt();
+  };
+
+  it("puts the new row in the list without rebuilding the rows around it", async () => {
+    await mount();
+    const kept = host.querySelector('[data-issue="issue-12"]');
+    await fileWithTheReadHeldOpen();
+    expect(titles()[0]).toBe("Just filed");
+    expect(host.querySelector('[data-issue="issue-12"]')).toBe(kept);
+  });
+
+  it("puts the focus on the row it just made", async () => {
+    await mount();
+    await fileWithTheReadHeldOpen();
+    expect(document.activeElement.closest(".issue-row")?.dataset.issue).toBe("issue-20");
+  });
+
+  // Cancelling gives the keyboard back to the press that opened the form —
+  // closing a focused subtree otherwise leaves the focus nowhere.
+  it("gives the focus back to New issue when nothing was filed", async () => {
+    await mount();
+    await openComposer();
+    host.querySelector("[data-compose-cancel]").click();
+    await flush();
+    expect(composer()).toBeNull();
+    expect(document.activeElement).toBe(newPress());
+  });
+
+  it("opens one composer, however many times the press is pressed", async () => {
+    await mount();
+    await openComposer();
+    typeIn(".issue-compose-title", "Half written");
+    await openComposer();
+    expect(host.querySelectorAll(".issue-compose")).toHaveLength(1);
+    expect(host.querySelector(".issue-compose-title").value).toBe("Half written");
+  });
+
+  // #57: the bytes go up BEFORE the issue does, the way a chat attachment
+  // does — and against the PROJECT, because an issue being created has no
+  // conversation to attach to (`thread.attach` would answer "unknown
+  // conversation owner").
+  const drop = (file) => {
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });
+    host.querySelector(".issue-compose").dispatchEvent(event);
+  };
+
+  it("sends a dropped file to issues.attach for this project, then files it with the issue", async () => {
+    await mount();
+    await openComposer();
+    call.mockImplementation(async (method) => {
+      if (method === "issues.attach") return { name: "shot.png", path: ".build/attachments/abc-shot.png", mime: "image/png", size: 3 };
+      if (method === "issues.create") return { issue: issue({ id: "issue-20", number: 20, attachments: [{ path: ".build/attachments/abc-shot.png" }] }) };
+      return { issues: [] };
+    });
+    drop(new File(["png"], "shot.png", { type: "image/png" }));
+    await flush();
+    expect(listed("issues.attach")[0][1]).toMatchObject({ project_id: "proj-1", filename: "shot.png" });
+    expect(host.querySelector(".composer-tray").hidden).toBe(false);
+
+    typeIn(".issue-compose-title", "Kanban drag");
+    await fileIt();
+    expect(listed("issues.create")[0][1].attachments).toEqual([
+      { name: "shot.png", path: ".build/attachments/abc-shot.png", mime: "image/png", size: 3 },
+    ]);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  // The v1 facade drops a field the bridge predates rather than refusing it,
+  // so filing with files on today's bridge answers ok with none. The
+  // screenshot was usually the reason for filing, so that is said out loud.
+  it("says when the files a bridge cannot carry went nowhere", async () => {
+    await mount();
+    await openComposer();
+    call.mockImplementation(async (method) => {
+      if (method === "issues.attach") return { name: "shot.png", path: ".build/attachments/abc-shot.png", mime: "image/png", size: 3 };
+      if (method === "issues.create") return { issue: issue({ id: "issue-20", number: 20 }) }; // no attachments came back
+      return { issues: [] };
+    });
+    drop(new File(["png"], "shot.png", { type: "image/png" }));
+    await flush();
+    typeIn(".issue-compose-title", "Kanban drag");
+    await fileIt();
+    expect(notifyError).toHaveBeenCalledWith(
+      "Filed #20 — but the file did not go with it",
+      expect.stringContaining("cannot carry files on an issue"),
+    );
+  });
+
   it("says nothing of the sort when the assignee landed", async () => {
     await mount();
-    host.querySelector("[data-issue-new]").click();
-    const { onFiled } = openCreateIssue.mock.calls[0][0];
-    onFiled({ issue: issue({ id: "issue-1", number: 12 }) }, { assigneeWentNowhere: false });
-    await flush();
+    call.mockImplementation(async (method) =>
+      method === "issues.create"
+        ? { issue: issue({ id: "issue-1", number: 12, assignee: { kind: "project_agent" } }) }
+        : { issues: [] });
+    await openComposer();
+    typeIn(".issue-compose-title", "Kanban drag");
+    await chooseAssignee("project_agent");
+    await fileIt();
     expect(notifyError).not.toHaveBeenCalled();
   });
 });

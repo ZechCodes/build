@@ -100,6 +100,13 @@ export const PRIORITIES = Object.freeze([
   Object.freeze({ id: "urgent", label: "Urgent" }),
 ]);
 
+/** Labels as a person types them — commas, because that is how anyone writes a
+ *  short list. Trimmed, emptied out and deduped, which is what the verb does to
+ *  them anyway; doing it here means the field shows what will be stored. */
+export const labelsFromText = (text) => [
+  ...new Set(String(text || "").split(",").map((label) => label.trim()).filter(Boolean)),
+];
+
 export const priorityLabel = (priority) =>
   PRIORITIES.find((candidate) => candidate.id === priority)?.label || PRIORITIES[0].label;
 

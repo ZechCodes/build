@@ -68,6 +68,7 @@ const chromeHtml = () => `<div class="issue-head">
   <div class="issue-filters" role="group" aria-label="Filter issues">
     <button class="btn mini" type="button" data-issue-filter-clear hidden>Clear</button>
   </div>
+  <div class="issue-compose-slot"></div>
   <div class="issue-body"></div>`;
 
 const showView = (button, view) => {
@@ -79,14 +80,19 @@ const showView = (button, view) => {
 /**
  * Mount the header and the filter bar into `host`, once.
  *
- * Hands back the body they sit above and an `update` that makes them say what
- * the state says. The four callbacks are the only way anything leaves here:
+ * Hands back the body they sit above, the slot the inline composer opens into
+ * (#57), and an `update` that makes them say what the state says. The four
+ * callbacks are the only way anything leaves here:
  * `onFilter` is given the filter's name and its new value, and the rest take
  * nothing — a press is a press.
  */
 export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear }) {
   host.innerHTML = chromeHtml();
   const body = host.querySelector(".issue-body");
+  // Between the bar and the rows, and OUTSIDE the body: the body is repainted
+  // whenever a push says an issue moved, and a composer somebody is typing
+  // into is not something a push gets to take away (#57).
+  const composeSlot = host.querySelector(".issue-compose-slot");
   const viewButtons = [...host.querySelectorAll("[data-issue-view]")];
   const bar = host.querySelector(".issue-filters");
   const clear = host.querySelector("[data-issue-filter-clear]");
@@ -111,6 +117,7 @@ export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear }) {
 
   return {
     body,
+    composeSlot,
     update({ view, options, filters }) {
       viewButtons.forEach((button) => showView(button, view));
       menus.forEach(({ offer, name, control }) => control.update(offer(options), chosenOf(filters[name])));

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
-// The assignee picker and the new-issue form — the two surfaces that ask the
-// same question with the same control.
+// The assignee picker and the inline issue composer — the two surfaces that
+// ask the same question with the same control.
 //
 // Assigning IS dispatching, so the control says what the chosen option is about
 // to do before it is pressed, and the two creating kinds are the only ones that
@@ -9,7 +9,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assignRefusalText, assigneeOptions, workspaceAgents } from "../src/core/trackerAssignee.js";
 import { openAssigneePicker } from "../src/core/trackerAssigneePicker.js";
-import { assigneeWentNowhere, createIssueParams, labelsFromText, openCreateIssue } from "../src/core/trackerCreate.js";
+import { attachmentsWentNowhere, composedIssueParams, openIssueComposer } from "../src/core/issueComposer.js";
+import { labelsFromText } from "../src/core/trackerModel.js";
 import { issue } from "./trackerWireFixture.js";
 
 const PROJECT_KEY = "dev-1|proj-1";
@@ -174,11 +175,17 @@ describe("the picker", () => {
   });
 });
 
-describe("the new-issue form", () => {
+describe("the inline issue composer", () => {
+  let slot;
+
   const open = (over = {}) => {
-    handle = openCreateIssue({
+    slot = document.createElement("div");
+    document.body.append(slot);
+    handle = openIssueComposer(slot, {
       projectId: "proj-1",
       projectName: "Build",
+      columns: null,
+      labels: ["bug", "ui"],
       options: options(),
       catalog: CATALOG,
       callRpc: call,
@@ -193,20 +200,36 @@ describe("the new-issue form", () => {
     field.dispatchEvent(new Event("input"));
   };
 
-  it("asks for a title, a body, labels, a priority and an assignee", () => {
+  /** One of the composer's own menus, by the filter it writes. */
+  const menu = (name) => document.querySelector(`[data-filter-menu="${name}"]`);
+  const pickInMenu = (name, value) => {
+    menu(name).querySelector(".fmenu-press").click();
+    const row = [...menu(name).querySelectorAll(".fmenu-row")].find((one) => one.dataset.value === value);
+    row.click();
+  };
+
+  it("asks for a title, a body, a column, a priority, labels and an assignee", () => {
     open();
-    for (const id of ["#issue-new-title", "#issue-new-body", "#issue-new-labels", "#issue-new-priority"]) {
-      expect(document.querySelector(id)).not.toBeNull();
-    }
+    expect(document.querySelector("#issue-new-title")).not.toBeNull();
+    expect(document.querySelector("#issue-new-body")).not.toBeNull();
+    for (const name of ["status", "priority", "labels"]) expect(menu(name)).not.toBeNull();
     expect(document.querySelector("[data-assignee-select]")).not.toBeNull();
+  });
+
+  // #57: the same paperclip, paste and drop the chat composer has.
+  it("takes files, with the conversation's own tray", () => {
+    open();
+    expect(document.querySelector(".issue-compose .composer.attachable")).not.toBeNull();
+    expect(document.querySelector(".composer-attach")).not.toBeNull();
+    expect(document.querySelector(".composer-dropmask")).not.toBeNull();
   });
 
   it("will not file an issue with no title", async () => {
     open();
-    press("[data-create-go]");
+    press("[data-compose-file]");
     await flush();
     expect(call).not.toHaveBeenCalled();
-    expect(document.querySelector(".create-error").textContent).toBe("An issue needs a title.");
+    expect(document.querySelector(".issue-compose-error").textContent).toBe("An issue needs a title.");
   });
 
   // A field nobody filled in is left off: the verb's own defaults are the
@@ -214,27 +237,44 @@ describe("the new-issue form", () => {
   it("sends only what was filled in", async () => {
     open();
     type("#issue-new-title", " Kanban drag does not persist ");
-    press("[data-create-go]");
+    press("[data-compose-file]");
     await flush();
     expect(call).toHaveBeenCalledWith("issues.create", {
       project_id: "proj-1", title: "Kanban drag does not persist",
     });
   });
 
-  it("sends the body, the labels and the priority when they were", async () => {
+  it("sends the body, the labels, the priority and the column when they were", async () => {
     open();
     type("#issue-new-title", "Kanban drag");
     type("#issue-new-body", "Dragging a card…");
-    type("#issue-new-labels", " bug , ui , bug ");
-    const priority = document.querySelector("#issue-new-priority");
-    priority.value = "high";
-    priority.dispatchEvent(new Event("change"));
-    press("[data-create-go]");
+    pickInMenu("labels", "bug");
+    pickInMenu("labels", "ui");
+    pickInMenu("priority", "high");
+    pickInMenu("status", "ready");
+    press("[data-compose-file]");
     await flush();
     expect(call.mock.calls[0][1]).toEqual({
       project_id: "proj-1", title: "Kanban drag", body: "Dragging a card…",
-      labels: ["bug", "ui"], priority: "high",
+      labels: ["bug", "ui"], priority: "high", status: "ready",
     });
+  });
+
+  // A filter chooses from what is; a composer has to be able to name a label
+  // nobody has used yet, which is most of what labelling a new issue is.
+  it("invents a label that is not on the list yet", async () => {
+    open();
+    type("#issue-new-title", "Kanban drag");
+    menu("labels").querySelector(".fmenu-press").click();
+    const search = menu("labels").querySelector(".fmenu-search");
+    search.value = "kanban";
+    search.dispatchEvent(new Event("input"));
+    const coined = [...menu("labels").querySelectorAll(".fmenu-row")].at(-1);
+    expect(coined.textContent).toContain("Create");
+    coined.click();
+    press("[data-compose-file]");
+    await flush();
+    expect(call.mock.calls[0][1].labels).toEqual(["kanban"]);
   });
 
   // `issues.create` runs the whole of `issues.assign` inside its own
@@ -243,24 +283,83 @@ describe("the new-issue form", () => {
     open();
     type("#issue-new-title", "Kanban drag");
     await choose("project_agent");
-    type("#issue-new-title", "Kanban drag");
-    press("[data-create-go]");
+    press("[data-compose-file]");
     await flush();
     expect(call.mock.calls[0][1].assignee).toEqual({ kind: "project_agent" });
   });
 
   it("says as much on the press", async () => {
     open();
-    expect(document.querySelector("[data-create-go]").textContent).toBe("File issue");
+    expect(document.querySelector("[data-compose-file]").textContent).toBe("File issue");
     await choose("new_workspace");
-    expect(document.querySelector("[data-create-go]").textContent).toBe("File and start");
+    expect(document.querySelector("[data-compose-file]").textContent).toBe("File and start");
   });
 
-  // `issues.create` is mid-change on the bridge: it answers `{issue}` today and
-  // `{issue, dispatch}` — with `dispatch: null` for a plain file — once it
-  // takes an assignee. The form reads the issue and nothing else, so it works
-  // against both, and this says so rather than leaving it to be found out
-  // against whichever bridge somebody happens to be pointed at.
+  // The assignee zone is the one part that is redrawn, and it must not be
+  // redrawn under a caret: typing a workspace name keeps the field it is
+  // being typed into.
+  it("keeps the workspace-name field while it is being typed in", async () => {
+    open();
+    await choose("new_workspace");
+    const name = document.querySelector("#issue-new-name");
+    name.focus();
+    name.value = "kanban-fix";
+    name.dispatchEvent(new Event("input"));
+    await flush();
+    expect(document.querySelector("#issue-new-name")).toBe(name);
+    expect(document.activeElement).toBe(name);
+  });
+
+  // #57's keys. Enter in a one-line field means "done with this line", and the
+  // next line is the description — a title is rarely the whole issue.
+  it("moves from the title to the body on enter, and does not file", async () => {
+    open();
+    type("#issue-new-title", "Kanban drag");
+    const title = document.querySelector("#issue-new-title");
+    title.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flush();
+    expect(document.activeElement).toBe(document.querySelector("#issue-new-body"));
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("files on cmd/ctrl+enter, from either field", async () => {
+    for (const [field, modifier] of [["#issue-new-title", "metaKey"], ["#issue-new-body", "ctrlKey"]]) {
+      call = vi.fn(async () => ({ issue: issue({ id: "issue-1" }) }));
+      open({ callRpc: call });
+      type("#issue-new-title", "Kanban drag");
+      document.querySelector(field).dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", [modifier]: true, bubbles: true, cancelable: true }),
+      );
+      await flush();
+      expect(call.mock.calls[0][0]).toBe("issues.create");
+      handle = null;
+    }
+  });
+
+  // Escape throws the draft away, so it asks — but only when there is a draft
+  // to throw. Confirming that you typed nothing is the confirm nobody reads.
+  it("shuts on escape with an empty form, and asks first once there is text", async () => {
+    open();
+    slot.querySelector(".issue-compose").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    await flush();
+    expect(slot.querySelector(".issue-compose")).toBeNull();
+
+    open();
+    type("#issue-new-title", "Kanban drag");
+    slot.querySelector(".issue-compose").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    await flush();
+    // Still there, behind a confirm that has not been answered.
+    expect(slot.querySelector(".issue-compose")).not.toBeNull();
+    expect(document.querySelector("[data-confirm-ok]")).not.toBeNull();
+    document.querySelector("[data-confirm-ok]").click();
+    await flush();
+    expect(slot.querySelector(".issue-compose")).toBeNull();
+  });
+
   it("reads the issue out of either answer shape", async () => {
     for (const answer of [
       { issue: issue({ id: "issue-1" }) },
@@ -271,10 +370,10 @@ describe("the new-issue form", () => {
       call = vi.fn(async () => answer);
       open({ callRpc: call, onFiled });
       type("#issue-new-title", "Kanban drag");
-      press("[data-create-go]");
+      press("[data-compose-file]");
       await flush();
       expect(onFiled.mock.calls[0][0].issue.id).toBe("issue-1");
-      handle = null; // the dialog closed itself on success
+      handle = null; // the composer closed itself on success
     }
   });
 });
@@ -288,8 +387,17 @@ describe("labels as a person types them", () => {
 
 describe("the create params on their own", () => {
   it("leaves the default priority off, because the verb's default is the record's", () => {
-    const state = { projectId: "p1", title: "x", body: "", labels: "", priority: "none" };
-    expect(createIssueParams(state, null)).toEqual({ project_id: "p1", title: "x" });
+    const draft = { title: "x", body: "", labels: [], priority: [], status: [] };
+    expect(composedIssueParams(draft, { projectId: "p1" })).toEqual({ project_id: "p1", title: "x" });
+  });
+
+  // #57: the files ride as the same `{path, name}` the thread's own
+  // attachments do, so one shape carries them everywhere.
+  it("carries the attachments that went up, and none when there were none", () => {
+    const draft = { title: "x", labels: [], priority: [], status: [] };
+    const files = [{ path: ".build/attachments/abc-shot.png", name: "shot.png" }];
+    expect(composedIssueParams(draft, { projectId: "p1", attachments: files }).attachments).toEqual(files);
+    expect(composedIssueParams(draft, { projectId: "p1", attachments: [] })).toEqual({ project_id: "p1", title: "x" });
   });
 });
 
@@ -423,52 +531,52 @@ describe("what the picker leaves to the issue", () => {
 
 // A v1 handler parses params into its own struct and serialises THAT back
 // before the implementation reads them, so a field the bridge predates is
-// dropped at the facade rather than refused. Filing with an assignee on a
-// bridge whose `issues.create` does not take one answers ok with an unassigned
-// issue — no error, and nothing in the answer that says so.
-describe("an assignee a bridge dropped on the floor", () => {
+// dropped at the facade rather than refused. Filing with an assignee — or with
+// files (#57) — on a bridge that does not take them answers ok with neither:
+// no error, and nothing in the answer that says so.
+describe("what a bridge dropped on the floor", () => {
   const filed = (over = {}) => ({ issue: issue({ id: "issue-1", number: 12, ...over }) });
+  const FILES = [{ path: ".build/attachments/abc-shot.png", name: "shot.png" }];
 
-  it("reads the answer against the request", () => {
-    // Asked for somebody, came back held by nobody: dropped.
-    expect(assigneeWentNowhere({ kind: "project_agent" }, filed())).toBe(true);
-    // Asked for somebody and got them: fine.
-    expect(assigneeWentNowhere({ kind: "project_agent" }, filed({ assignee: { kind: "project_agent" } }))).toBe(false);
-    // Asked for nobody: an unassigned issue is what was wanted.
-    expect(assigneeWentNowhere(null, filed())).toBe(false);
-  });
-
-  // Assignment is dispatch, so a dropped assignee is work the reader believes
-  // has started and has not. That is the worst thing to leave unsaid.
-  it("says so after the file, rather than in a dialog that already succeeded", async () => {
-    const onFiled = vi.fn();
-    call = vi.fn(async () => filed());
-    handle = openCreateIssue({
-      projectId: "proj-1", projectName: "Build", options: options(), catalog: CATALOG, callRpc: call, onFiled,
+  const fileWith = async (over, onFiled) => {
+    const slot = document.createElement("div");
+    document.body.append(slot);
+    handle = openIssueComposer(slot, {
+      projectId: "proj-1", projectName: "Build", columns: null, labels: [],
+      options: options(), catalog: CATALOG, callRpc: call, onFiled, ...over,
     });
     const title = document.querySelector("#issue-new-title");
     title.value = "Kanban drag";
     title.dispatchEvent(new Event("input"));
     await choose("project_agent");
-    document.querySelector("[data-create-go]").click();
+    document.querySelector("[data-compose-file]").click();
     await flush();
-    expect(onFiled.mock.calls[0][1]).toEqual({ assigneeWentNowhere: true });
     handle = null;
+  };
+
+  it("reads the answer against the request", () => {
+    // Asked for files, came back with none: dropped.
+    expect(attachmentsWentNowhere(FILES, filed())).toBe(true);
+    // Asked for files and got them: fine.
+    expect(attachmentsWentNowhere(FILES, filed({ attachments: FILES }))).toBe(false);
+    // Sent none: an issue with no files is what was wanted.
+    expect(attachmentsWentNowhere([], filed())).toBe(false);
+    expect(attachmentsWentNowhere(null, filed())).toBe(false);
+  });
+
+  // Assignment is dispatch, so a dropped assignee is work the reader believes
+  // has started and has not. That is the worst thing to leave unsaid.
+  it("says so after the file, rather than in a form that already succeeded", async () => {
+    const onFiled = vi.fn();
+    call = vi.fn(async () => filed());
+    await fileWith({ callRpc: call }, onFiled);
+    expect(onFiled.mock.calls[0][1]).toMatchObject({ assigneeWentNowhere: true, attachmentsWentNowhere: false });
   });
 
   it("says nothing when the assignee landed", async () => {
     const onFiled = vi.fn();
     call = vi.fn(async () => filed({ assignee: { kind: "project_agent" } }));
-    handle = openCreateIssue({
-      projectId: "proj-1", projectName: "Build", options: options(), catalog: CATALOG, callRpc: call, onFiled,
-    });
-    const title = document.querySelector("#issue-new-title");
-    title.value = "Kanban drag";
-    title.dispatchEvent(new Event("input"));
-    await choose("project_agent");
-    document.querySelector("[data-create-go]").click();
-    await flush();
-    expect(onFiled.mock.calls[0][1]).toEqual({ assigneeWentNowhere: false });
-    handle = null;
+    await fileWith({ callRpc: call }, onFiled);
+    expect(onFiled.mock.calls[0][1]).toMatchObject({ assigneeWentNowhere: false });
   });
 });

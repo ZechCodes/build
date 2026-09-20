@@ -12,8 +12,11 @@
 //! bound to. Adding and removing the project's own sources stays the project
 //! agent's, and the surface map in `mcp.rs` is what holds that line.
 
+use crate::app::workspaces::path_within;
 use crate::app::AppState;
+use crate::workspace::Workspace;
 use serde_json::{json, Value};
+use std::path::PathBuf;
 
 /// Which agent on which workspace a message is for. Naming no agent is the
 /// workspace's primary one, the way every other addressed verb reads it.
@@ -126,13 +129,15 @@ impl AppState {
     }
 
     /// `delete_workspace` — take one of this project's workspaces away,
-    /// through `workspace.delete` itself, refusals and all.
+    /// through `workspace.delete` itself, refusals and all. The workspace the
+    /// asking agent is standing in is not one of them.
     pub(in crate::app) fn project_agent_delete_workspace(
         &mut self,
         owner_id: &str,
         workspace_id: &str,
     ) -> Result<Value, String> {
-        self.project_agent_workspace(owner_id, workspace_id)?;
+        let workspace = self.project_agent_workspace(owner_id, workspace_id)?;
+        self.refuse_removing_the_agents_own_ground(owner_id, &workspace)?;
         self.workspace_delete(&json!({ "workspace_id": workspace_id }))
     }
 
@@ -179,14 +184,16 @@ impl AppState {
     }
 
     /// `remove_workspace_directory` — one directory leaves one of this
-    /// project's workspaces, through `workspace.remove_directory`.
+    /// project's workspaces, through `workspace.remove_directory`. Not the
+    /// directory the asking agent's own checkout is in.
     pub(in crate::app) fn project_agent_remove_workspace_directory(
         &mut self,
         owner_id: &str,
         workspace_id: &str,
         directory_id: &str,
     ) -> Result<Value, String> {
-        self.project_agent_workspace(owner_id, workspace_id)?;
+        let workspace = self.project_agent_workspace(owner_id, workspace_id)?;
+        self.refuse_removing_the_agents_own_directory(owner_id, &workspace, directory_id)?;
         self.workspace_remove_directory(&json!({
             "workspace_id": workspace_id,
             "directory_id": directory_id,
@@ -275,6 +282,71 @@ impl AppState {
         let mut sent = self.post_from_agent_to_agent(sender, &entity_id, &target_agent_id, body)?;
         sent["workspace_id"] = json!(target.workspace_id);
         Ok(sent)
+    }
+
+    /// The checkout the asking agent is standing in, when it stands in one.
+    ///
+    /// `None` for a project agent: its owner is a project's conversation, which
+    /// lives in a scratch directory that is no workspace's root. That is the
+    /// whole reason the two refusals below never fire for it — not a check on
+    /// who is asking, but the fact that it is standing nowhere.
+    fn agent_checkout(&self, owner_id: &str) -> Option<PathBuf> {
+        if self.is_project_conversation_owner(owner_id) {
+            return None;
+        }
+        self.runs.get(owner_id).map(|run| run.worktree.path.clone())
+    }
+
+    /// Refuse to take the ground out from under the agent that is asking.
+    ///
+    /// `delete_workspace` is the same tool an agent uses on its siblings, and
+    /// nothing in the call says which workspace the caller happens to be
+    /// standing in — so an agent that mistakes its own id for a sibling's ends
+    /// its own session and takes everything it had not committed with it. The
+    /// prompt warns about that; this is what actually stops it.
+    fn refuse_removing_the_agents_own_ground(
+        &self,
+        owner_id: &str,
+        workspace: &Workspace,
+    ) -> Result<(), String> {
+        match self.agent_checkout(owner_id) {
+            Some(checkout) if path_within(&checkout, &workspace.root) => {
+                Err("Build cannot remove the workspace this agent is working in.".to_string())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The same refusal, for one directory of a workspace.
+    ///
+    /// A workspace conversation's checkout IS the workspace root, so every
+    /// directory under it is ground that agent stands on; a run dispatched into
+    /// one directory stands on that one alone. Both are the same question —
+    /// whether the agent's checkout and this directory overlap — so it is asked
+    /// in both directions.
+    ///
+    /// A directory id that names nothing is left alone: `workspace.remove_directory`
+    /// says so in its own words, and answering it here would say it twice.
+    fn refuse_removing_the_agents_own_directory(
+        &self,
+        owner_id: &str,
+        workspace: &Workspace,
+        directory_id: &str,
+    ) -> Result<(), String> {
+        let Some(checkout) = self.agent_checkout(owner_id) else {
+            return Ok(());
+        };
+        let Some(directory) = workspace
+            .directories
+            .iter()
+            .find(|directory| directory.id == directory_id)
+        else {
+            return Ok(());
+        };
+        if path_within(&checkout, &directory.path) || path_within(&directory.path, &checkout) {
+            return Err("Build cannot remove the directory this agent is working in.".to_string());
+        }
+        Ok(())
     }
 
     /// One workspace of this agent's project, or why it is none of its

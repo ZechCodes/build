@@ -883,6 +883,16 @@ pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// Whether `inner` IS `outer` or sits beneath it.
+///
+/// Resolved through symlinks the way [`same_path`] resolves, and with the same
+/// fallback to the literal paths when either side cannot be: a workspace
+/// reached through a linked root has to read as the ground it is.
+pub(in crate::app) fn path_within(inner: &Path, outer: &Path) -> bool {
+    let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolve(inner).starts_with(resolve(outer))
+}
+
 fn canonical_or_existing(path: &Path) -> Result<PathBuf, String> {
     std::fs::canonicalize(path)
         .map_err(|error| format!("resolve workspace root {}: {error}", path.display()))

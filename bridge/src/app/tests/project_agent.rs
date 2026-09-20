@@ -463,6 +463,193 @@ fn a_coding_agent_works_the_workspaces_of_its_own_project_and_no_others() {
     }
 }
 
+/// Build will not take the ground out from under an agent.
+///
+/// `delete_workspace` is the same tool an agent uses on its siblings, and the
+/// call says nothing about where the caller is standing — so the one workspace
+/// it must never act on is the one the caller is in. Refused at the handler,
+/// not left to the prompt: an agent that got it wrong would end its own session
+/// and take its uncommitted work with it, and there is nothing left to tell
+/// afterwards.
+#[test]
+fn a_coding_agent_cannot_delete_the_workspace_it_is_standing_in() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let standing_on = workspace(&mut state, &project_id, "mine");
+    let sibling = workspace(&mut state, &project_id, "next door");
+
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": standing_on }),
+    ));
+    let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+    let coding_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+    let refused = state
+        .agent_action(
+            &run_id,
+            &coding_agent,
+            BridgeAction::DeleteWorkspace {
+                workspace_id: standing_on.clone(),
+            },
+        )
+        .expect_err("an agent cannot delete the workspace it is working in");
+    assert_eq!(
+        refused,
+        "Build cannot remove the workspace this agent is working in."
+    );
+    assert!(
+        state.workspaces.get(&standing_on).is_some(),
+        "the workspace survived the refusal"
+    );
+
+    // A sibling in the same project is still its business.
+    let deleted = state
+        .agent_action(
+            &run_id,
+            &coding_agent,
+            BridgeAction::DeleteWorkspace {
+                workspace_id: sibling.clone(),
+            },
+        )
+        .expect("a workspace it is not standing in is still deletable");
+    assert_eq!(deleted["deleted"], true, "{deleted:?}");
+    assert!(state.workspaces.get(&sibling).is_none());
+
+    // And the project agent, which stands in no workspace at all, is unaffected
+    // — including for the workspace the coding agent is working in.
+    let (owner, project_agent_id) = project_agent(&mut state, &project_id);
+    let by_the_project_agent = state
+        .agent_action(
+            &owner,
+            &project_agent_id,
+            BridgeAction::DeleteWorkspace {
+                workspace_id: standing_on.clone(),
+            },
+        )
+        .expect("the project agent stands nowhere and deletes any of them");
+    assert_eq!(
+        by_the_project_agent["deleted"], true,
+        "{by_the_project_agent:?}"
+    );
+    assert!(state.workspaces.get(&standing_on).is_none());
+}
+
+/// The same refusal, one directory down: a workspace conversation's checkout IS
+/// the workspace root, so every directory under it is ground that agent stands
+/// on. A directory of a workspace it is not in stays removable.
+#[test]
+fn a_coding_agent_cannot_remove_the_directory_its_checkout_is_in() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let assets = state_root.join("assets");
+    std::fs::create_dir(&assets).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let standing_on = workspace(&mut state, &project_id, "mine");
+    let sibling = workspace(&mut state, &project_id, "next door");
+
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": standing_on }),
+    ));
+    let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+    let coding_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+    // One more directory in each, so there is something to take out of both.
+    let directory_of = |state: &mut AppState, workspace_id: &str| -> String {
+        let grown = state
+            .agent_action(
+                &run_id,
+                &coding_agent,
+                BridgeAction::AddWorkspaceDirectory {
+                    workspace_id: workspace_id.to_string(),
+                    source_id: None,
+                    path: Some(assets.display().to_string()),
+                    remote: None,
+                    name: Some("assets".to_string()),
+                },
+            )
+            .expect("a directory is added");
+        grown["directories"].as_array().unwrap()[1]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let mine = directory_of(&mut state, &standing_on);
+    let theirs = directory_of(&mut state, &sibling);
+
+    let refused = state
+        .agent_action(
+            &run_id,
+            &coding_agent,
+            BridgeAction::RemoveWorkspaceDirectory {
+                workspace_id: standing_on.clone(),
+                directory_id: mine.clone(),
+            },
+        )
+        .expect_err("an agent cannot remove a directory of the workspace it is in");
+    assert_eq!(
+        refused,
+        "Build cannot remove the directory this agent is working in."
+    );
+    assert_eq!(
+        state
+            .workspaces
+            .get(&standing_on)
+            .unwrap()
+            .directories
+            .len(),
+        2,
+        "the directory survived the refusal"
+    );
+
+    let shrunk = state
+        .agent_action(
+            &run_id,
+            &coding_agent,
+            BridgeAction::RemoveWorkspaceDirectory {
+                workspace_id: sibling.clone(),
+                directory_id: theirs,
+            },
+        )
+        .expect("a directory of a workspace it is not in is still removable");
+    assert_eq!(
+        shrunk["directories"].as_array().unwrap().len(),
+        1,
+        "{shrunk:?}"
+    );
+
+    // The project agent is standing nowhere, so it removes either.
+    let (owner, project_agent_id) = project_agent(&mut state, &project_id);
+    let by_the_project_agent = state
+        .agent_action(
+            &owner,
+            &project_agent_id,
+            BridgeAction::RemoveWorkspaceDirectory {
+                workspace_id: standing_on.clone(),
+                directory_id: mine,
+            },
+        )
+        .expect("the project agent stands nowhere and removes any of them");
+    assert_eq!(
+        by_the_project_agent["directories"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "{by_the_project_agent:?}"
+    );
+}
+
 /// A project agent's message reaches its own conversation, which is what makes
 /// the conversation tools generic rather than the coding surface's.
 #[test]

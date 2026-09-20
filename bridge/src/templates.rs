@@ -334,8 +334,9 @@ conversation.
 
 `delete_workspace` takes a workspace away and `remove_workspace_directory`
 takes one directory out of one. Both take whatever is in them that is not
-committed and pushed, so say what you are about to remove before you remove it
-— including when what you would be removing is the workspace you are standing
+committed and pushed, so say what you are about to remove before you remove it.
+Neither can take the ground out from under you: Build refuses to delete the
+workspace you are standing in, or to remove the directory your own checkout is
 in.";
 
 fn phase_template(base: &str) -> String {
@@ -1016,6 +1017,7 @@ mod tests {
                 "Never `git worktree add`, never `git clone`, never a copy of the folder you are standing in",
                 "A workspace you cut is where a sub-agent goes.",
                 "say what you are about to remove before you remove it",
+                "Build refuses to delete the workspace you are standing in",
             ] {
                 assert!(text.contains(sentence), "{name} does not say it: {text}");
             }

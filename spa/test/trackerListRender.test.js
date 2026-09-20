@@ -79,6 +79,31 @@ describe("the second line", () => {
   });
 });
 
+// #33. The list opens on open issues, so a closed row is only ever on screen
+// because the reader asked for one — and once it is there it must not read as
+// open. The row lost its state dot with the dots (#28), so this is the mark.
+describe("a closed issue, when the filter asked for one", () => {
+  it("leads line two with a Closed chip", () => {
+    const row = render({ state: "closed", status: "in_review", priority: "high" });
+    expect(facts(row)[0]).toBe("issue-closed:Closed");
+  });
+
+  // "Open" on every other row is a word the reader learns to skip — the
+  // mistake "Unassigned" made before it.
+  it("says nothing at all on an open one", () => {
+    const row = render({ state: "open" });
+    expect(row.querySelector(".issue-closed")).toBeNull();
+    expect(row.textContent).not.toContain("Open");
+  });
+
+  it("leaves the rest of line two in its order behind it", () => {
+    const row = render({ state: "closed", status: "done", priority: "urgent", labels: ["bug"] });
+    expect(facts(row).map((one) => one.split(":")[0])).toEqual([
+      "issue-closed", "issue-status", "issue-priority", "issue-age", "issue-label", "issue-assign",
+    ]);
+  });
+});
+
 describe("no dots", () => {
   it("draws no state dot on the row", () => {
     expect(render({ state: "closed" }).querySelector(".issue-state")).toBeNull();

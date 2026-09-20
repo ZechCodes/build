@@ -21,7 +21,16 @@
 
 import { esc } from "./text.js";
 import { filtersAreSet } from "./trackerFilters.js";
-import { ageHtml, assignPressLabel, labelsHtml, numberHtml, priorityChipHtml, rowAssigneeHtml, statusChipHtml } from "./trackerChips.js";
+import {
+  ageHtml,
+  assignPressLabel,
+  closedChipHtml,
+  labelsHtml,
+  numberHtml,
+  priorityChipHtml,
+  rowAssigneeHtml,
+  statusChipHtml,
+} from "./trackerChips.js";
 
 const optionHtml = (option, chosen) =>
   `<option value="${esc(option.value)}"${option.value === chosen ? " selected" : ""}>${esc(option.label)}</option>`;
@@ -57,6 +66,9 @@ export function filterBarHtml(options, filters) {
  *  punctuated: the gap between two chips is the separator. */
 const factsHtml = (issue, columns, nowMs) =>
   [
+    // Closed leads, because it changes how everything after it reads: a column
+    // and a priority on a closed issue are where it stopped, not where it is.
+    closedChipHtml(issue.state),
     statusChipHtml(columns, issue.status),
     priorityChipHtml(issue.priority),
     ageHtml(issue.updated_at, nowMs),

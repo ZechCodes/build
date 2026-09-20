@@ -57,6 +57,17 @@
   font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
   border-radius:999px; padding:1px 7px; background:var(--line2); color:var(--ink2);
 }
+/* A closed issue on a list row (#33). Quiet, and the only state word drawn —
+   "Open" on every other row is a word the reader learns to skip. It leads line
+   two because it changes how the rest of it reads. */
+.issue-closed {
+  font-size:10.5px; font-weight:650; letter-spacing:.03em;
+  border-radius:999px; padding:1px 7px;
+  /* Violet is what closed has always been here — it is what the state dot
+     wore before the dots went (#28). */
+  background:var(--line2); color:var(--violet);
+  white-space:nowrap;
+}
 .issue-priority-medium { background:var(--panel2); color:var(--ink2); }
 .issue-priority-high { background:var(--amber-bg); color:var(--amber); }
 .issue-priority-urgent { background:var(--red-bg); color:var(--red); }

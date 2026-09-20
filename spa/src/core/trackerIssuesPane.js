@@ -20,7 +20,15 @@ import { ICON_PLUS } from "./icons.js";
 import { issuesRecordAt, readIssuesRecord } from "./trackerCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceWatch } from "./deviceReconnect.js";
-import { NO_FILTERS, filterIssues, filterOptions, filtersAreSet, issueListParams, sortIssues } from "./trackerFilters.js";
+import {
+  DEFAULT_FILTERS,
+  filterIssues,
+  filterOptions,
+  filtersAreSet,
+  issueListParams,
+  narrowsTheRead,
+  sortIssues,
+} from "./trackerFilters.js";
 import { actorLabel, columnsOf } from "./trackerModel.js";
 import { boardColumns, moveParams, nextColumn, withMovedIssue } from "./trackerBoardModel.js";
 import { agentLabels, assigneeOptions, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
@@ -48,7 +56,9 @@ export function mountIssuesPane(host, options) {
     all: [], // the project's whole list, which the filter menus are built from
     shown: [], // the narrowed list, which is what is painted
     columns: [],
-    filters: { ...NO_FILTERS },
+    // Open, not everything (#33): a closed issue is done, and done work is not
+    // what the tab is for. It is still one press away on the state filter.
+    filters: { ...DEFAULT_FILTERS },
     view: options.view === BOARD_VIEW ? BOARD_VIEW : LIST_VIEW,
     disposed: false,
     picker: null,
@@ -187,10 +197,12 @@ export function mountIssuesPane(host, options) {
       if (state.disposed) return;
       state.shown = kept(sortIssues(answer?.issues));
       // An unnarrowed read IS the project's whole list; there is no second read
-      // to make for it.
-      if (!filtersAreSet(filters)) state.all = state.shown;
+      // to make for it. Asked of the READ and not of the reader: the default
+      // asks for open issues only, so it narrows this even though the reader
+      // chose nothing (#33).
+      if (!narrowsTheRead(filters)) state.all = state.shown;
       reads.succeeded();
-      await refreshWholeList(filtersAreSet(filters));
+      await refreshWholeList(narrowsTheRead(filters));
       paint();
     } catch (error) {
       if (state.disposed) return;
@@ -210,7 +222,11 @@ export function mountIssuesPane(host, options) {
   async function refreshWholeList(narrowed) {
     const record = await readIssuesRecord(state.deviceId, state.projectId);
     if (state.disposed) return;
-    if (narrowed && record) state.all = kept(sortIssues(record.issues));
+    // A cold cache holds nothing, and the bar is built from `state.all`: with
+    // the default now narrowing the read (#33), falling through here would
+    // leave every menu empty on a first open until a pass had written. The
+    // narrowed read is a partial list, but a partial menu beats no menu.
+    if (narrowed) state.all = record ? kept(sortIssues(record.issues)) : state.shown;
     if (record?.columns?.length) state.columns = columnsOf(record.columns);
   }
 
@@ -318,7 +334,9 @@ export function mountIssuesPane(host, options) {
     const clear = host.querySelector("[data-issue-filter-clear]");
     if (clear) {
       clear.onclick = () => {
-        state.filters = { ...NO_FILTERS };
+        // Back to what the tab opens on, not to everything: Clear undoes the
+        // reader's narrowing, and closed issues were never part of it.
+        state.filters = { ...DEFAULT_FILTERS };
         paint();
         void refresh();
       };

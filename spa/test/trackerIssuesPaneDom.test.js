@@ -278,6 +278,9 @@ describe("the board", () => {
   });
 
   // The columns ARE the statuses, so narrowing by one would empty the rest.
+  // The state filter still rides — the board opens on open issues like the
+  // list does (#33) — but the column does not: the board's columns ARE the
+  // statuses, so narrowing by one would empty every other column.
   it("does not send the column filter while the board is open", async () => {
     await board();
     call.mockClear();
@@ -285,7 +288,7 @@ describe("the board", () => {
     status.value = "done";
     status.dispatchEvent(new Event("change"));
     await flush();
-    expect(listed("issues.list")[0][1]).toEqual({ project_id: "proj-1" });
+    expect(listed("issues.list")[0][1]).toEqual({ project_id: "proj-1", state: "open" });
   });
 
   // Hover for a pointer, an info glyph for everything without one — the same
@@ -578,5 +581,95 @@ describe("a read that fails because the session dropped", () => {
     expect(notifyError).not.toHaveBeenCalled();
     await reconnect();
     expect(notifyError).toHaveBeenCalledWith("Could not read this project's issues", WENT);
+  });
+});
+
+// #33. Zech, deciding the question #28 raised: "If closed means done we
+// shouldn't show them in the default view."
+describe("what the tab opens on", () => {
+  const OPEN_AND_CLOSED = [
+    issue({ number: 12, id: "issue-12", title: "Still open", state: "open", status: "in_progress" }),
+    issue({ number: 11, id: "issue-11", title: "Finished with", state: "closed", status: "done" }),
+  ];
+
+  /** The bridge, narrowing the way the real one does. */
+  const listing = () =>
+    vi.fn(async (method, params) => {
+      if (method !== "issues.list") return {};
+      const wanted = params.state;
+      return { issues: wanted ? OPEN_AND_CLOSED.filter((one) => one.state === wanted) : OPEN_AND_CLOSED };
+    });
+
+  const chooseState = async (value) => {
+    const control = host.querySelector('[data-issue-filter="state"]');
+    control.value = value;
+    control.dispatchEvent(new Event("change"));
+    await flush();
+  };
+
+  it("asks the bridge for open issues, and draws only those", async () => {
+    call = listing();
+    await mount();
+    expect(listed("issues.list")[0][1]).toEqual({ project_id: "proj-1", state: "open" });
+    expect(titles()).toEqual(["Still open"]);
+  });
+
+  it("offers Open and closed, and Closed, and shows them when asked", async () => {
+    call = listing();
+    await mount();
+    const options = [...host.querySelectorAll('[data-issue-filter="state"] option')].map((one) => one.value);
+    expect(options).toEqual(["", "open", "closed"]);
+
+    await chooseState("");
+    expect(titles()).toEqual(["Still open", "Finished with"]);
+
+    await chooseState("closed");
+    expect(titles()).toEqual(["Finished with"]);
+  });
+
+  // The row lost its state dot with the dots (#28), so once a closed issue is
+  // on screen this is what keeps it from reading as an open one.
+  it("marks a closed row Closed once one is on screen", async () => {
+    call = listing();
+    await mount();
+    await chooseState("closed");
+    const row = host.querySelector(".issue-row");
+    expect(row.querySelector(".issue-closed").textContent).toBe("Closed");
+    expect(row.querySelector(".issue-row-facts").firstElementChild.className).toBe("issue-closed");
+  });
+
+  it("draws no such chip on the open rows it opens with", async () => {
+    call = listing();
+    await mount();
+    expect(host.querySelector(".issue-closed")).toBeNull();
+  });
+
+  // The default is not a narrowing the reader made, so there is nothing to
+  // clear and an empty project is not a filter that matched nothing.
+  it("offers no Clear until the reader narrows something themselves", async () => {
+    call = listing();
+    await mount();
+    expect(host.querySelector("[data-issue-filter-clear]")).toBeNull();
+    await chooseState("closed");
+    expect(host.querySelector("[data-issue-filter-clear]")).not.toBeNull();
+  });
+
+  it("goes back to open issues on Clear, not to everything", async () => {
+    call = listing();
+    await mount();
+    await chooseState("");
+    expect(titles()).toEqual(["Still open", "Finished with"]);
+    host.querySelector("[data-issue-filter-clear]").click();
+    await flush();
+    expect(titles()).toEqual(["Still open"]);
+    expect(host.querySelector("[data-issue-filter-clear]")).toBeNull();
+  });
+
+  // A project with nothing in it is at its first state, not looking at a
+  // filter that matched none.
+  it("still says the project is empty rather than blaming the filter", async () => {
+    call = vi.fn(async () => ({ issues: [] }));
+    await mount();
+    expect(host.querySelector(".issue-empty h2").textContent).toBe("No issues yet");
   });
 });

@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ANY_ASSIGNEE,
+  DEFAULT_FILTERS,
   NO_FILTERS,
   assigneesOf,
   filterIssues,
@@ -85,9 +86,12 @@ describe("the same narrowing, over the cached list", () => {
   });
 
   // Which tells "nothing here yet" from "nothing matches what you asked for".
+  // Narrowed means narrowed beyond what the tab opens on (#33), so asking for
+  // everything — closed issues included — is itself a narrowing.
   it("says whether anything is narrowed", () => {
-    expect(filtersAreSet(NO_FILTERS)).toBe(false);
-    expect(filtersAreSet({ ...NO_FILTERS, label: "bug" })).toBe(true);
+    expect(filtersAreSet(DEFAULT_FILTERS)).toBe(false);
+    expect(filtersAreSet({ ...DEFAULT_FILTERS, label: "bug" })).toBe(true);
+    expect(filtersAreSet(NO_FILTERS)).toBe(true);
   });
 });
 
@@ -132,5 +136,46 @@ describe("the order the list answers in", () => {
     const given = [issue({ number: 1 }), issue({ number: 2 })];
     sortIssues(given);
     expect(given.map((one) => one.number)).toEqual([1, 2]);
+  });
+});
+
+// #33. Zech, deciding the open/closed question #28 raised: "If closed means
+// done we shouldn't show them in the default view."
+describe("what the tab opens on", () => {
+  it("is Open, not everything", () => {
+    expect(DEFAULT_FILTERS.state).toBe("open");
+    expect(DEFAULT_FILTERS).toEqual({ state: "open", status: "", assignee: "", label: "" });
+  });
+
+  // NO_FILTERS is still "nothing narrowed" — it is what the WHOLE list is read
+  // with, which is what the filter menus are built from. A menu offering only
+  // the labels of open issues could not offer Closed at all.
+  it("leaves the unnarrowed read unnarrowed", () => {
+    expect(NO_FILTERS.state).toBe("");
+  });
+
+  it("asks the bridge for open issues by default", () => {
+    expect(issueListParams("proj-1", DEFAULT_FILTERS)).toEqual({ project_id: "proj-1", state: "open" });
+  });
+
+  // "Narrowed" has to mean "narrowed beyond the default", or the Clear press
+  // would never go away and an empty project would read as an empty filter.
+  it("does not call the default a narrowing", () => {
+    expect(filtersAreSet(DEFAULT_FILTERS)).toBe(false);
+    expect(filtersAreSet({ ...DEFAULT_FILTERS, state: "" })).toBe(true);
+    expect(filtersAreSet({ ...DEFAULT_FILTERS, state: "closed" })).toBe(true);
+    expect(filtersAreSet({ ...DEFAULT_FILTERS, label: "bug" })).toBe(true);
+  });
+
+  // A tab standing on the default never asked for closed issues, so it never
+  // has any to hide; one that asked for everything shows them.
+  it("keeps closed issues out of the default list and lets them in when asked", () => {
+    const issues = [
+      issue({ number: 1, state: "open" }),
+      issue({ number: 2, state: "closed" }),
+    ];
+    expect(filterIssues(issues, DEFAULT_FILTERS).map((one) => one.number)).toEqual([1]);
+    expect(filterIssues(issues, { ...DEFAULT_FILTERS, state: "" }).map((one) => one.number)).toEqual([1, 2]);
+    expect(filterIssues(issues, { ...DEFAULT_FILTERS, state: "closed" }).map((one) => one.number)).toEqual([2]);
   });
 });

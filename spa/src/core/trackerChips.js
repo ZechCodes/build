@@ -23,6 +23,22 @@ export const stateDotHtml = (state) => {
   return `<span class="issue-state issue-state-${state === "closed" ? "closed" : "open"}" role="img" aria-label="${esc(said)}" title="${esc(said)}"></span>`;
 };
 
+/**
+ * The mark a CLOSED issue wears on a list row, and nothing at all for an open
+ * one (#33).
+ *
+ * The list opens on open issues, so a closed row is only ever on screen
+ * because the reader asked for one — but once it is there it must not be
+ * mistakable for an open one, and the row lost its state dot with the dots
+ * (#28). A chip, in that same vocabulary: a word, at the head of line two,
+ * before the column it stands in.
+ *
+ * Only the closed half is drawn. "Open" on every other row is a word the
+ * reader learns to skip, which is the mistake the assignee made before it.
+ */
+export const closedChipHtml = (state) =>
+  state === "closed" ? `<span class="issue-closed">${esc(stateLabel(state))}</span>` : "";
+
 /** The column an issue stands in. A chip and not a dot, because a column is a
  *  word — "In review" says something "amber" cannot. */
 export const statusChipHtml = (columns, status) =>

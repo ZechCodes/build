@@ -11,8 +11,25 @@
 
 import { UNASSIGNED, assigneeFromKey, assigneeKey, columnsOf } from "./trackerModel.js";
 
-/** Nothing narrowed: every issue of the project, open and closed. */
+/** Nothing narrowed: every issue of the project, open and closed. What the
+ *  WHOLE list is read with — the menus are built from it, and a menu offering
+ *  only what the current narrowing left could not offer Closed at all. */
 export const NO_FILTERS = Object.freeze({ state: "", status: "", assignee: "", label: "" });
+
+/**
+ * What the tab opens on, and what Clear goes back to.
+ *
+ * Zech, deciding the question #28 raised: "If closed means done we shouldn't
+ * show them in the default view." So Open is the default and closed issues are
+ * a thing you ask for — the filter still offers Closed and Open and closed,
+ * and a closed row wears its own chip when one is on screen
+ * (core/trackerListRender.js), so it can never be misread as open.
+ *
+ * Not a narrowing of NO_FILTERS but a starting point beside it: "is this list
+ * narrowed" is a question about what the reader asked for beyond the default,
+ * which is what `filtersAreSet` answers below.
+ */
+export const DEFAULT_FILTERS = Object.freeze({ ...NO_FILTERS, state: "open" });
 
 /** The word that means "assigned to somebody, no matter who". `issues.list`
  *  takes it beside the actor shapes and beside `"none"`. */
@@ -57,9 +74,33 @@ const matches = (issue, filters) => {
  *  until the bridge's own answer lands. */
 export const filterIssues = (issues, filters = {}) => (issues || []).filter((issue) => matches(issue, filters));
 
-/** Whether any filter is set, which is what tells an empty list "nothing here
- *  yet" from "nothing matches what you asked for". */
+/**
+ * Whether the reader has narrowed anything BEYOND the default.
+ *
+ * Which is what tells an empty list "nothing here yet" from "nothing matches
+ * what you asked for", and what decides whether the Clear press is offered at
+ * all. Measured against the default rather than against nothing: with Open as
+ * the starting point (#33) every list would otherwise read as narrowed, the
+ * Clear press would never go away, and a project with no issues in it would
+ * be reported as a filter that matched none.
+ */
 export const filtersAreSet = (filters = {}) =>
+  Object.keys(DEFAULT_FILTERS).some((name) => (filters[name] || "") !== DEFAULT_FILTERS[name]);
+
+/**
+ * Whether this read asks the bridge for less than the project's whole list.
+ *
+ * A different question from `filtersAreSet`, and the two stopped agreeing when
+ * Open became the default (#33): the default narrows the READ — it asks for
+ * open issues only — while narrowing nothing the READER chose.
+ *
+ * What depends on it is where the filter menus come from. They are built from
+ * the whole list so that choosing a label never empties the menu it was chosen
+ * from, and so that switching to Closed can still offer the labels only closed
+ * issues wear. A read that narrowed anything is not that list, and the cache's
+ * copy stands in for it.
+ */
+export const narrowsTheRead = (filters = {}) =>
   Boolean(filters.state || filters.status || filters.assignee || filters.label);
 
 /** Newest first, by number descending — the order `issues.list` answers in, so

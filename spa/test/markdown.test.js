@@ -167,3 +167,44 @@ describe("renderMarkdown pipe tables", () => {
     expect(html.indexOf("</ul>")).toBeLessThan(html.indexOf("<table>"));
   });
 });
+
+// #56. The references an agent can write, through the renderer itself.
+describe("references an agent writes", () => {
+  const links = {
+    issue: (number) => (number === 42 ? { deviceId: "d1", projectId: "p1", issueId: "i-42", title: "Rebuild" } : null),
+    workspace: (name) => (name === "board" ? { deviceId: "d1", projectId: "p1", workspaceId: "ws-1" } : null),
+  };
+
+  it("links them in a paragraph, a list and a heading", () => {
+    expect(renderMarkdown("see #42", { links })).toContain("<a href=");
+    expect(renderMarkdown("- see #42", { links })).toMatch(/<li>see <a href=/);
+    expect(renderMarkdown("## About #42", { links })).toMatch(/<h2[^>]*>About <a href=/);
+  });
+
+  // A heading is a LINE rule and needs the space; `#42` alone is a reference,
+  // and neither reading is allowed to eat the other.
+  it("keeps a heading a heading and an issue an issue", () => {
+    expect(renderMarkdown("# A heading", { links })).toMatch(/<h1[^>]*>A heading<\/h1>/);
+    expect(renderMarkdown("#42", { links })).toMatch(/^<p><a href=/);
+  });
+
+  it("leaves a fenced block entirely alone", () => {
+    const html = renderMarkdown("```\nsee #42\n```", { links });
+    expect(html).toContain("see #42");
+    expect(html).not.toContain("<a href=");
+  });
+
+  it("leaves a code span alone while linking beside it", () => {
+    const html = renderMarkdown("write `#42` to reach #42", { links });
+    expect(html).toContain("<code>#42</code>");
+    expect(html.match(/<a /g)).toHaveLength(1);
+  });
+
+  it("renders as plain words with no resolver, which is every caller today", () => {
+    expect(renderMarkdown("see #42")).toBe("<p>see #42</p>");
+  });
+
+  it("renders an unknown target as plain words", () => {
+    expect(renderMarkdown("see #999", { links })).toBe("<p>see #999</p>");
+  });
+});

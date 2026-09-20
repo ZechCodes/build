@@ -424,6 +424,29 @@ anything assigned to you, your own changes are never sent back to you, and
 `untrack_issue` stops it — being unassigned does not, because handing work on is
 often exactly when you still want to know how it went.";
 
+/// The reference shapes an agent can write, so a link into Build costs a few
+/// characters rather than a route nobody can remember (#56).
+///
+/// One note on every template that writes prose a reader opens — a message, an
+/// issue body, a comment — because the same shapes have to mean the same thing
+/// wherever they are typed. The renderer that reads them is
+/// `spa/src/core/markdownRefs.js`; a test below holds this list to it.
+const LINK_MARKUP_NOTE: &str = "\
+Write a reference and the reader gets a link. `#42` is an issue of your project.
+`@workspace:<name>` is a workspace and `@agent:<id>` is an agent's conversation.
+`[[workspace:path/to/file.rs]]` is a file in that workspace, and
+`[[workspace:path/to/file.rs#L10]]` opens it at a line — a range like `#L10-L20`
+opens at its first line.
+
+Use them in anything a person will read: messages, issue bodies, comments. They
+cost nothing when they miss — a reference to something that is not there renders
+as the words you typed, never as a broken link — so prefer one to pasting a URL,
+which goes stale when a thing moves. Inside backticks they stay literal, which
+is how this paragraph shows them to you.
+
+A bare number, a bare SHA and a plain `@name` are NOT references and never link:
+the prefix is what makes one, so ordinary writing stays ordinary.";
+
 fn phase_template(base: &str) -> String {
     base.to_string()
 }
@@ -432,7 +455,7 @@ fn phase_template(base: &str) -> String {
 /// agents on its project, and it can cut a checkout of its own to put one of
 /// them on.
 fn coding_template(base: &str) -> String {
-    format!("{base}\n\n{MESSAGE_AGENT_NOTE}\n\n{WORKSPACE_NOTE}\n\n{ISSUE_TOOLS_NOTE}")
+    format!("{base}\n\n{MESSAGE_AGENT_NOTE}\n\n{WORKSPACE_NOTE}\n\n{ISSUE_TOOLS_NOTE}\n\n{LINK_MARKUP_NOTE}")
 }
 
 /// A template whose phase ends in changed code, so its terminal message body is the
@@ -474,7 +497,7 @@ impl Default for Templates {
             // its own prompt already says what messaging another agent means,
             // in its own words, and the tracker is the one thing it has that
             // that prompt predates.
-            project_agent: format!("{PROJECT_AGENT}\n\n{ISSUE_TOOLS_NOTE}"),
+            project_agent: format!("{PROJECT_AGENT}\n\n{ISSUE_TOOLS_NOTE}\n\n{LINK_MARKUP_NOTE}"),
         }
     }
 }
@@ -1190,6 +1213,36 @@ mod tests {
 
     /// Every template the issue note is appended to: the coding phases and the
     /// project agent. The router has no project and gets none of it.
+    /// Every agent that writes prose a reader will open carries the reference
+    /// syntax (#56): the same one note, so a message, an issue body and a
+    /// comment cannot come to use different shapes for the same link.
+    #[test]
+    fn every_template_that_writes_prose_carries_the_reference_syntax() {
+        let t = Templates::default();
+        for (name, template) in templates_with_the_issue_tools(&t) {
+            assert!(
+                template.contains(LINK_MARKUP_NOTE),
+                "{name} carries something other than the one reference note: {template}"
+            );
+        }
+    }
+
+    /// The shapes themselves, named once here so a silent edit to the prompt
+    /// cannot drift from what spa/src/core/markdownRefs.js actually parses.
+    #[test]
+    fn the_reference_note_names_every_shape_the_renderer_reads() {
+        let text = collapse_whitespace(LINK_MARKUP_NOTE);
+        for shape in [
+            "#42",
+            "@workspace:",
+            "@agent:",
+            "[[workspace:path/to/file.rs]]",
+            "#L10",
+        ] {
+            assert!(text.contains(shape), "the note never shows {shape}: {text}");
+        }
+    }
+
     fn templates_with_the_issue_tools(t: &Templates) -> Vec<(&'static str, &String)> {
         vec![
             ("plan", &t.plan),

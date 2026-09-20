@@ -3,6 +3,7 @@
 
 import { esc } from "./text.js";
 import { slugifyHeading } from "./anchors.js";
+import { expandReferences } from "./markdownLinks.js";
 
 /** One row's cells. The outer pipes are optional (GFM), and `\|` is a literal
  *  pipe inside a cell rather than a boundary — a regex column in a table would
@@ -67,16 +68,29 @@ function delimiterAlignments(line) {
  */
 export const CODE_BLOCK_CLASS = "md-code";
 
+/**
+ * Markdown, and the references an agent can write in it (#56).
+ *
+ * `links` is optional and resolves a reference to where it lives
+ * (core/markdownLinks.js). Without one — which is every caller today — a
+ * reference renders as the words that were typed, so adding this took no
+ * caller with it and a reference to something missing is never a broken link.
+ */
 // eslint-disable-next-line complexity -- ratchet: renderMarkdown is at 18, cap 10 — reduce it, then drop this line
-export function renderMarkdown(markdown) {
+export function renderMarkdown(markdown, { links = null } = {}) {
   const lines = (markdown || "").split("\n");
   let html = "";
   let inCode = false;
   let inList = false;
+  // References expand AFTER the code spans and never inside one: a message
+  // explaining this syntax is mostly examples, and they have to stay literal.
   const inline = (s) =>
-    esc(s)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    expandReferences(
+      esc(s)
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>"),
+      links,
+    );
   // Heading ids are computed from the raw heading text (before inline rendering)
   // and de-duplicated within a single render so the stages view can scroll a
   // comment's breadcrumb to `#<slug>`. Empty slug → omit the id attribute.

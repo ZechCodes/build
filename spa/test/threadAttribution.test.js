@@ -240,6 +240,35 @@ describe("the human's own message", () => {
   });
 });
 
+// A hand-off's body is the issue as prose, then the sender's note: the card
+// draws the issue, so the body under it is the note alone, and the issue is
+// said once. A body that does not start with the prose is drawn whole.
+describe("a message that hands over an issue", () => {
+  const envelope = { issue_id: "issue-21", number: 21, title: "Stamp the issue on what the user sends", body: "SPA half of the ask.\n\nWhen the user sends from the issue page." };
+  const handed = (body) => threadHtml({
+    id: "conversation-3",
+    items: [{ type: "message", data: { id: "message-15", sequence: 39, role: "user", body, from_issue: envelope, delivery_status: "sent" } }],
+  });
+
+  it("draws the issue once, in the card, and the sender's note under it", () => {
+    document.body.innerHTML = handed(`#21 ${envelope.title}\n\n${envelope.body}\n\nAhead of #10 in your queue.`);
+    expect(document.querySelector(".thread-issue-title").textContent).toBe(envelope.title);
+    expect(document.querySelector(".thread-body").textContent.trim()).toBe("Ahead of #10 in your queue.");
+    expect(document.body.textContent.split("SPA half of the ask.").length - 1).toBe(1);
+  });
+
+  it("draws no body at all when nothing was said beyond the issue", () => {
+    document.body.innerHTML = handed(`#21 ${envelope.title}\n\n${envelope.body}`);
+    expect(document.querySelector(".thread-issue")).not.toBeNull();
+    expect(document.querySelector(".thread-body")).toBeNull();
+  });
+
+  it("draws a body whole when it does not start with the issue's prose", () => {
+    document.body.innerHTML = handed("Please take this one.");
+    expect(document.querySelector(".thread-body").textContent.trim()).toBe("Please take this one.");
+  });
+});
+
 describe("a message this agent sent to another agent", () => {
   it("is two lines: where it went, and the first line of what was said", () => {
     document.body.innerHTML = sent(WORKSPACE_SENDER);

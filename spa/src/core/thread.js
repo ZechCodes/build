@@ -778,8 +778,25 @@ function handedIssueHtml(message, context) {
   });
 }
 
+/// What a message says beyond the issue it hands over. The body of a hand-off
+/// is the issue rendered as prose — `#12 Title`, the issue's body — followed
+/// by whatever the sender added, so a harness that never learns about the
+/// envelope still receives the whole issue. The card above already draws the
+/// issue, so drawing the body whole would say the issue twice; only the part
+/// after the prose is the sender's own words. A body that does not start
+/// with the prose (an older bridge, a different shape) is drawn whole.
+function bodyBeyondIssue(message) {
+  const envelope = message.from_issue;
+  const body = String(message.body || "");
+  if (!envelope) return body;
+  const issueBody = String(envelope.body || "").trim();
+  const prose = `#${envelope.number ?? ""} ${envelope.title || ""}${issueBody ? `\n\n${issueBody}` : ""}`;
+  return body.startsWith(prose) ? body.slice(prose.length).trim() : body;
+}
+
 function messageCardHtml(message, agentLabel, context) {
   const { live, offer, threadState } = context;
+  const body = bodyBeyondIssue(message);
   // `done` is message metadata, not a presentation type: on a thread written
   // before outcomes were message statuses it flags the send that followed the
   // timeline's done event, and such a message renders like every other one.
@@ -793,7 +810,7 @@ function messageCardHtml(message, agentLabel, context) {
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
       ${handedIssueHtml(message, context)}
-      ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
+      ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body)}</div>` : ""}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, live, offer, threadState)}

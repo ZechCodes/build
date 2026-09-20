@@ -261,6 +261,22 @@ impl AppState {
         let Some(delivered) = delivery else {
             return Ok(());
         };
+        // The agent that GOT the work is the one that most needs to hear about
+        // the issue, so the dispatch subscribes it. Not a courtesy: it is what
+        // makes the hand-off two-way. `by: "assignment"` so a timeline reader
+        // can tell this from an agent that asked.
+        //
+        // Read off the DELIVERY rather than off the stored assignee, because
+        // `{kind:"project_agent"}` names no agent id and the project's agent
+        // needs telling exactly as much as any other.
+        if write.issue.track(&delivered.agent_id).unwrap_or(false) {
+            write.event(
+                actor,
+                IssueEventKind::Tracked,
+                json!({ "agent_id": delivered.agent_id, "by": "assignment" }),
+                now,
+            );
+        }
         // What the dispatch made is what the issue is about now. These write no
         // `linked` events of their own: the `dispatched` event below already
         // says it, and two records of one fact read as two things happening.

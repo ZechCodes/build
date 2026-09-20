@@ -57,6 +57,19 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!("issues.link", issues_link, IssuesLinkParams, IssueAnswer),
         v1_method!("issues.close", issues_close, IssuesCloseParams, IssueAnswer),
         v1_method!("issues.reopen", issues_reopen, IssueIdParams, IssueAnswer),
+        v1_method!("issues.track", issues_track, IssuesTrackParams, IssueAnswer),
+        v1_method!(
+            "issues.untrack",
+            issues_untrack,
+            IssuesTrackParams,
+            IssueAnswer
+        ),
+        v1_method!(
+            "issues.for_agent",
+            issues_for_agent,
+            IssuesForAgentParams,
+            IssuesForAgent
+        ),
         v1_method!(
             "issues.columns",
             issues_columns,
@@ -183,6 +196,23 @@ pub struct IssuesAssignParams {
     pub note: Option<String>,
 }
 
+/// One agent starts or stops watching one issue.
+///
+/// The wire verb names the agent because it is the USER's — a person on the
+/// board may subscribe any agent of the issue's project. A tool cannot: it
+/// forces the caller, the way it cannot sign a comment as somebody else.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesTrackParams {
+    pub issue_id: String,
+    pub agent_id: String,
+}
+
+/// What one agent is on.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesForAgentParams {
+    pub agent_id: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IssuesCloseParams {
     pub issue_id: String,
@@ -223,6 +253,10 @@ pub struct IssueView {
     /// `null` when nobody holds it.
     pub assignee: Option<Value>,
     pub links: IssueLinks,
+    /// The agents watching this issue. Always present; `[]` for an issue
+    /// nobody watches, so a client tells "nobody" from "this bridge is too old
+    /// to answer it".
+    pub trackers: Vec<String>,
     /// `{"kind":"user"}` or `{"kind":"agent","agent_id":…}`.
     pub created_by: Value,
     pub created_at: String,
@@ -298,6 +332,27 @@ pub struct IssueDetail {
     pub timeline: Vec<IssueTimelineEntry>,
 }
 
+/// One issue as a list somebody scans shows it: enough to recognise and to
+/// order by, and not the body.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueDigest {
+    pub issue_id: String,
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub status: String,
+    pub updated_at: String,
+}
+
+/// What one agent holds and what it watches. An assigned issue is in both:
+/// the two questions are different.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesForAgent {
+    pub agent_id: String,
+    pub assigned: Vec<IssueDigest>,
+    pub tracking: Vec<IssueDigest>,
+}
+
 /// One kanban column: the slug that is stored, the name that is shown.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IssueColumn {
@@ -314,7 +369,8 @@ pub struct IssueColumns {
 // ----------------------------------------------------------------- codes ---
 
 /// The request was legible and the issue's own state said no.
-const CONFLICT: [&str; 6] = [
+const CONFLICT: [&str; 7] = [
+    "already has the most trackers it can carry",
     "is already closed",
     "is already open",
     "a parent link cannot close a loop",
@@ -438,6 +494,27 @@ fn issues_reopen(
     params: IssueIdParams,
 ) -> Result<Answer<IssueAnswer>, ApiError> {
     answer(app.issues_reopen(&params.wire())).map_err(refine)
+}
+
+fn issues_track(
+    app: &mut AppState,
+    params: IssuesTrackParams,
+) -> Result<Answer<IssueAnswer>, ApiError> {
+    answer(app.issues_track(&params.wire())).map_err(refine)
+}
+
+fn issues_untrack(
+    app: &mut AppState,
+    params: IssuesTrackParams,
+) -> Result<Answer<IssueAnswer>, ApiError> {
+    answer(app.issues_untrack(&params.wire())).map_err(refine)
+}
+
+fn issues_for_agent(
+    app: &mut AppState,
+    params: IssuesForAgentParams,
+) -> Result<Answer<IssuesForAgent>, ApiError> {
+    answer(app.issues_for_agent(&params.wire())).map_err(refine)
 }
 
 fn issues_columns(

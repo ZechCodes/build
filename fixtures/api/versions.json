@@ -1,5 +1,7 @@
 {
-  "current": "1.4.0",
-  "supported_majors": [1],
+  "current": "1.5.0",
+  "supported_majors": [
+    1
+  ],
   "deprecated": []
 }

@@ -16,6 +16,7 @@ mod dispatch;
 mod edits;
 mod refs;
 mod tools;
+mod tracking;
 mod views;
 
 pub(in crate::app) use dispatch::AssignTarget;
@@ -176,8 +177,8 @@ impl AppState {
     pub(crate) fn issues_update(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let (project_id, issue) = self.tracker_issue(&issue_id)?;
-        let mut write = IssueWrite::of(issue);
         let now = crate::store::now_rfc3339();
+        let mut write = IssueWrite::of(issue);
         edits::apply_update(&mut write, params, &Actor::User, &now)?;
         self.commit_issue_write(&project_id, write, &now)
     }

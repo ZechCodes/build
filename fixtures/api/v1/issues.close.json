@@ -38,6 +38,9 @@
         ],
         "parent_issue_id": null
       },
+      "trackers": [
+        "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+      ],
       "created_by": {
         "kind": "user"
       },

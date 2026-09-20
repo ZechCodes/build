@@ -145,7 +145,7 @@ fn assigning_to_the_project_agent_records_where_the_work_went() {
     );
     assert_eq!(
         event_kinds(&mut state, &id),
-        vec!["created", "assigned", "dispatched", "moved"]
+        vec!["created", "assigned", "tracked", "dispatched", "moved"]
     );
 }
 
@@ -376,7 +376,13 @@ fn a_dispatch_moves_a_card_off_backlog_and_never_rewinds_one() {
     let added = event_kinds(&mut state, &reviewing).split_off(before);
     assert_eq!(
         added,
-        vec!["assigned".to_string(), "dispatched".to_string()],
+        vec![
+            "assigned".to_string(),
+            // Assignment subscribes the agent it hands the work to, which is
+            // a consequence of the assignment and so reads after it.
+            "tracked".to_string(),
+            "dispatched".to_string(),
+        ],
         "the dispatch says what it did and claims no move it did not make"
     );
 }
@@ -472,7 +478,7 @@ fn a_new_workspace_is_cut_an_agent_added_and_the_issue_handed_over() {
     assert_eq!(answered["issue"]["status"], "in_progress");
     assert_eq!(
         event_kinds(&mut state, &id),
-        vec!["created", "assigned", "dispatched", "moved"]
+        vec!["created", "assigned", "tracked", "dispatched", "moved"]
     );
 
     let delivered = messages(&mut state, &entity_id, &agent_id);

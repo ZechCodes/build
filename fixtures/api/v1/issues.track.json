@@ -1,12 +1,9 @@
 {
-  "method": "issues.link",
-  "since": "1.3.0",
+  "method": "issues.track",
+  "since": "1.5.0",
   "params": {
     "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
-    "workspace_id": "ws-3f2a91c4",
-    "branch": "build/issues-board",
-    "commit": "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f",
-    "conversation_id": "run-5d90b1e7"
+    "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
   },
   "result": {
     "issue": {

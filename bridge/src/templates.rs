@@ -371,10 +371,6 @@ in.";
 /// with the session, so an agent files and self-assigns its own. And a question
 /// about somebody else's issue asked anywhere but that issue reaches one person
 /// when it needed to reach two.
-///
-/// TODO(#13): when `track_issue` lands, this note gains its line about tracking
-/// an issue you depend on. Nothing here mentions it yet — telling an agent
-/// about a tool it does not have is worse than saying nothing.
 const ISSUE_TOOLS_NOTE: &str = "\
 Your project has an issue tracker, and the issue tools reach it: `list_issues`,
 `get_issue`, `create_issue`, `comment_issue`, `assign_issue`, `move_issue`,
@@ -413,7 +409,14 @@ whoever assigned it. The assigner and the user both read the issue and the
 answer comes back there; asked anywhere else it reaches one of them at best.
 
 File an issue for follow-up work you find and do not do. An issue is cheap, and
-something you noticed and did not write down exists only in this conversation.";
+something you noticed and did not write down exists only in this conversation.
+
+`track_issue` makes an issue tell you when it moves: every later change to it
+arrives as a message here, and starts your turn if you are idle. Track the ones
+you depend on rather than going back to look. You are tracked automatically on
+anything assigned to you, your own changes are never sent back to you, and
+`untrack_issue` stops it — being unassigned does not, because handing work on is
+often exactly when you still want to know how it went.";
 
 fn phase_template(base: &str) -> String {
     base.to_string()
@@ -1176,20 +1179,6 @@ mod tests {
             ] {
                 assert!(text.contains(kept), "{name} dropped an older rule: {text}");
             }
-        }
-    }
-
-    /// `track_issue` does not exist yet (#13). Until it does, no prompt may
-    /// mention tracking: an agent told to call a tool it has not got gets an
-    /// unknown-tool error and no way to know why.
-    #[test]
-    fn no_template_offers_a_tracking_tool_that_does_not_exist_yet() {
-        let t = Templates::default();
-        for (name, template) in templates_with_the_issue_tools(&t) {
-            assert!(
-                !template.contains("track_issue"),
-                "{name} offers a tool the bridge does not have: {template}"
-            );
         }
     }
 

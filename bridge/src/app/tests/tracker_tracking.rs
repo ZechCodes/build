@@ -433,3 +433,96 @@ fn a_change_that_changes_nothing_wakes_nobody() {
         "who else is watching is not a change to the issue"
     );
 }
+
+// --------------------------------------------------------------- tools ---
+
+/// The tool subscribes the CALLER. There is no agent id on it to get wrong,
+/// and an agent cannot decide what another agent is woken for.
+#[test]
+fn the_track_tool_subscribes_whoever_called_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let caller = coding_agent(&mut state, &project_id, "caller");
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+
+    let tracked_by_tool = state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerTrackIssue {
+                issue_id: id.clone(),
+            },
+        )
+        .expect("an agent tracks an issue of its own project");
+    assert_eq!(
+        tracked_by_tool["issue"]["trackers"],
+        json!([caller.1]),
+        "the caller, and nobody it might have named"
+    );
+
+    state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerUntrackIssue {
+                issue_id: id.clone(),
+            },
+        )
+        .expect("and stops");
+    assert_eq!(trackers(&mut state, &id), Vec::<String>::new());
+}
+
+/// An issue of another project is unknown to the tool, the way every other
+/// tracker tool reads it.
+#[test]
+fn the_track_tool_refuses_an_issue_outside_the_callers_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let caller = coding_agent(&mut state, &project_id, "caller");
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let other_repo = init_repo_named(elsewhere.path(), "other");
+    let other_repo = std::fs::canonicalize(&other_repo).unwrap();
+    let other_project = added_project(&mut state, &other_repo);
+    let theirs = issue_id(&filed(&mut state, &other_project, "not yours"));
+
+    let refused = state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerTrackIssue {
+                issue_id: theirs.clone(),
+            },
+        )
+        .expect_err("another project's issue");
+    assert!(refused.contains("unknown issue_id"), "{refused}");
+    assert_eq!(trackers(&mut state, &theirs), Vec::<String>::new());
+}
+
+/// The prompt tells an agent the tool exists and the two things it would
+/// otherwise get wrong: assignment tracks for you, and unassignment does not
+/// untrack.
+#[test]
+fn the_prompt_says_what_tracking_does_and_does_not_do() {
+    let templates = crate::templates::Templates::default();
+    // Collapsed, so the assertions read the wording rather than the wrapping.
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (name, text) in [
+        ("build", &templates.build),
+        ("plan", &templates.plan),
+        ("project_agent", &templates.project_agent),
+    ] {
+        let text = flat(text);
+        assert!(text.contains("`track_issue`"), "{name} does not offer it");
+        assert!(
+            text.contains("tracked automatically on anything assigned to you"),
+            "{name} does not say assignment tracks for you"
+        );
+        assert!(
+            text.contains("being unassigned does not"),
+            "{name} does not say unassignment leaves you watching"
+        );
+    }
+}

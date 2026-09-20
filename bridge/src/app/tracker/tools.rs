@@ -70,6 +70,12 @@ impl AppState {
             BridgeAction::TrackerCloseIssue { issue_id, reason } => {
                 self.close_issue_as_agent(&scope, issue_id, reason.clone())
             }
+            BridgeAction::TrackerTrackIssue { issue_id } => {
+                self.set_tracking_as_agent(&scope, issue_id, true)
+            }
+            BridgeAction::TrackerUntrackIssue { issue_id } => {
+                self.set_tracking_as_agent(&scope, issue_id, false)
+            }
             BridgeAction::TrackerLinkIssue {
                 issue_id,
                 workspace_id,
@@ -259,6 +265,31 @@ impl AppState {
         self.commit_issue_write(&scope.project_id, write, &now)
     }
 
+    /// `track_issue` / `untrack_issue` — the CALLER starts or stops watching.
+    ///
+    /// The agent is the caller and never an argument: a tool that could
+    /// subscribe somebody else would be one agent deciding what another is
+    /// woken for, which is not its to decide.
+    fn set_tracking_as_agent(
+        &mut self,
+        scope: &IssueScope,
+        issue_id: &str,
+        tracking: bool,
+    ) -> Result<Value, String> {
+        let issue = self.issue_of_this_agents_project(scope, issue_id)?;
+        let Some(agent_id) = scope.actor.agent_id().map(str::to_string) else {
+            return Err("only an agent can track an issue".to_string());
+        };
+        self.set_tracking(
+            &scope.project_id,
+            issue,
+            &agent_id,
+            tracking,
+            scope.actor.clone(),
+            None,
+        )
+    }
+
     fn link_issue_as_agent(
         &mut self,
         scope: &IssueScope,
@@ -308,6 +339,8 @@ fn is_an_issue_tool(action: &BridgeAction) -> bool {
             | BridgeAction::TrackerMoveIssue { .. }
             | BridgeAction::TrackerCloseIssue { .. }
             | BridgeAction::TrackerLinkIssue { .. }
+            | BridgeAction::TrackerTrackIssue { .. }
+            | BridgeAction::TrackerUntrackIssue { .. }
     )
 }
 

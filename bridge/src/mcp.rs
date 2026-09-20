@@ -289,6 +289,15 @@ pub enum BridgeAction {
         issue_id: String,
         reason: Option<String>,
     },
+    /// Start or stop hearing about an issue. Which agent is the CALLER: a
+    /// tool cannot subscribe somebody else, the way it cannot sign a comment
+    /// as somebody else, so neither carries an agent id.
+    TrackerTrackIssue {
+        issue_id: String,
+    },
+    TrackerUntrackIssue {
+        issue_id: String,
+    },
     /// Record what one is about.
     TrackerLinkIssue {
         issue_id: String,
@@ -357,6 +366,8 @@ impl BridgeAction {
             BridgeAction::TrackerMoveIssue { .. } => "move_issue",
             BridgeAction::TrackerCloseIssue { .. } => "close_issue",
             BridgeAction::TrackerLinkIssue { .. } => "link_issue",
+            BridgeAction::TrackerTrackIssue { .. } => "track_issue",
+            BridgeAction::TrackerUntrackIssue { .. } => "untrack_issue",
         }
     }
 
@@ -411,7 +422,11 @@ impl BridgeAction {
             | BridgeAction::TrackerAssignIssue { .. }
             | BridgeAction::TrackerMoveIssue { .. }
             | BridgeAction::TrackerCloseIssue { .. }
-            | BridgeAction::TrackerLinkIssue { .. } => &[McpSurface::Coding, McpSurface::Project],
+            | BridgeAction::TrackerLinkIssue { .. }
+            | BridgeAction::TrackerTrackIssue { .. }
+            | BridgeAction::TrackerUntrackIssue { .. } => {
+                &[McpSurface::Coding, McpSurface::Project]
+            }
         }
     }
 
@@ -806,6 +821,24 @@ impl DoneServer {
                     "required": ["issue_id"]
                 }
             }),
+            json!({
+                "name": "track_issue",
+                "description": "Start hearing about an issue. Every later change to it — a move, a comment, an assignment, an edit — arrives as a message in your conversation, and starts your turn if you are idle. Use it on an issue you depend on or are collaborating around; you are tracked automatically on anything assigned to you. Your own changes are never echoed back to you.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "issue_id": issue_id.clone() },
+                    "required": ["issue_id"]
+                }
+            }),
+            json!({
+                "name": "untrack_issue",
+                "description": "Stop hearing about an issue. Being unassigned does not do this on its own — handing work on is often exactly when you still want to know how it went — so say so when you no longer do.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "issue_id": issue_id.clone() },
+                    "required": ["issue_id"]
+                }
+            }),
         ]
     }
 
@@ -889,6 +922,14 @@ impl DoneServer {
                         reason: optional_argument(params, "reason"),
                     },
                 ),
+                Err(message) => refused(id.clone(), message),
+            },
+            "track_issue" => match issue() {
+                Ok(issue_id) => acted(id.clone(), BridgeAction::TrackerTrackIssue { issue_id }),
+                Err(message) => refused(id.clone(), message),
+            },
+            "untrack_issue" => match issue() {
+                Ok(issue_id) => acted(id.clone(), BridgeAction::TrackerUntrackIssue { issue_id }),
                 Err(message) => refused(id.clone(), message),
             },
             "link_issue" => match issue() {
@@ -2332,7 +2373,7 @@ mod tests {
     /// The issue tracker's eight, the OTHER inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const ISSUE_TOOLS: [&str; 8] = [
+    const ISSUE_TOOLS: [&str; 10] = [
         "list_issues",
         "get_issue",
         "create_issue",
@@ -2341,6 +2382,8 @@ mod tests {
         "move_issue",
         "close_issue",
         "link_issue",
+        "track_issue",
+        "untrack_issue",
     ];
 
     #[test]

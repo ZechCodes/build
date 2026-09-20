@@ -37,7 +37,7 @@ fn call(
 }
 
 /// The eight the tracker adds, by name.
-const ISSUE_TOOLS: [&str; 8] = [
+const ISSUE_TOOLS: [&str; 10] = [
     "list_issues",
     "get_issue",
     "create_issue",
@@ -46,6 +46,8 @@ const ISSUE_TOOLS: [&str; 8] = [
     "move_issue",
     "close_issue",
     "link_issue",
+    "track_issue",
+    "untrack_issue",
 ];
 
 /// Both working surfaces are shown the same eight tools. The router is shown

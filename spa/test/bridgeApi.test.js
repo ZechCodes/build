@@ -88,6 +88,23 @@ describe("adapter selection", () => {
     });
   });
 
+  // The tracker's minor moved from 1.2.0 to 1.3.0 late, because main had
+  // already taken 1.2.0 for `changes.items: "bodies"`. A bridge outside the
+  // accepted range is gated out of the app entirely, so a renumber that fell
+  // outside it would take every client down the moment that bridge rolled —
+  // and nothing about the tracker's own code would have looked wrong.
+  it("serves a bridge on the minor the tracker landed on, and carries its kinds", () => {
+    const selected = selectAdapter(greetingV1({
+      api_version: "1.3.0",
+      changes: {
+        subscriptions: true,
+        kinds: ["state", "thread", "git", "files", "terminals", "issues"],
+      },
+    }));
+    expect(selected.unsupported).toBeFalsy();
+    expect(selected.create(vi.fn()).capabilities.changes.kinds).toContain("issues");
+  });
+
   it("a 1.1 bridge and a 1.0-only SPA: the 1.0 adapter still serves it", () => {
     const onlyV1 = [{ major: 1, range: ">=1.0.0 <2.0.0", create: () => ({ stale: true }) }];
     const selected = selectAdapter(greetingV1(), onlyV1);

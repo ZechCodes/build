@@ -68,16 +68,29 @@ describe("the timeline's gap", () => {
   });
 });
 
-describe("the rhythm the lines are drawn with", () => {
-  const issues = () => readFileSync(resolve(process.cwd(), "src/styles/issues.css"), "utf8");
+describe("the rhythm the rows are drawn with", () => {
+  const read = (file) => readFileSync(resolve(process.cwd(), file), "utf8");
 
-  it("pulls consecutive lines back against that one number", () => {
-    expect(issues()).toContain(".thread-issue-line + .thread-issue-line { margin-top:calc(4px - var(--thread-gap)); }");
+  // One rule, against the class every quiet row carries — the lines AND the
+  // tool-call rows between them (#52). Named by kind, it pulled two of the
+  // three kinds together and left the third a full message gap away.
+  it("pulls consecutive quiet rows back against that one number", () => {
+    expect(read("src/styles.css")).toContain(
+      ".thread-timeline > .thread-quiet-row + .thread-quiet-row { margin-top:calc(4px - var(--thread-gap)); }",
+    );
+  });
+
+  it("is not also written by kind somewhere else", () => {
+    for (const [where, css] of stylesheets()) {
+      const byKind = [...css.matchAll(/([^{}]*\+[^{}]*)\{([^}]*margin-top[^}]*)\}/g)]
+        .filter((rule) => !rule[1].includes("thread-quiet-row") && /thread-(issue-line|activity)/.test(rule[1]));
+      expect([where, byKind.map((rule) => rule[1].trim())]).toEqual([where, []]);
+    }
   });
 
   // The rule that started this: issues.css declared the variable without the
   // gap, so it quietly won the cascade and set the wrong number.
   it("does not declare the number itself", () => {
-    expect(issues()).not.toMatch(/--thread-gap\s*:/);
+    expect(read("src/styles/issues.css")).not.toMatch(/--thread-gap\s*:/);
   });
 });

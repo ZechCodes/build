@@ -292,18 +292,22 @@ describe("the shape of the row", () => {
   });
 
   it("carries no indent of its own, so it starts where message text starts", () => {
-    const rules = readFileSync(resolve(process.cwd(), "src/styles/issues.css"), "utf8");
-    expect(rules).toContain(".thread-message.thread-issue-line { padding:0; }");
+    // The box moved to `.thread-quiet-row` in styles.css, where the tool-call
+    // rows share it (#52); test/quietRows.test.js is what holds it there.
+    expect(readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8"))
+      .toContain(".thread-quiet-row { min-height:0; margin:0; padding:1px 0; }");
     // The 34 px indent the rows used to carry on top of the avatar gutter.
-    expect(rules).not.toContain("padding:1px 0 1px 34px");
+    expect(readFileSync(resolve(process.cwd(), "src/styles/issues.css"), "utf8"))
+      .not.toContain("padding:1px 0 1px 34px");
   });
 
   // Consecutive lines read as a list; a real message either side keeps the
   // full gap, because it IS a separate thing to say.
   it("pulls consecutive lines together and leaves a message alone", () => {
-    const rules = readFileSync(resolve(process.cwd(), "src/styles/issues.css"), "utf8");
-    expect(rules).toContain(".thread-issue-line + .thread-issue-line { margin-top:calc(4px - var(--thread-gap)); }");
     const shell = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+    expect(shell).toContain(
+      ".thread-timeline > .thread-quiet-row + .thread-quiet-row { margin-top:calc(4px - var(--thread-gap)); }",
+    );
     expect(shell).toContain("--thread-gap:18px");
     expect(shell).toContain("--thread-gap:20px");
   });

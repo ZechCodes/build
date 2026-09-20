@@ -976,7 +976,7 @@ function sentMessageHtml(message, { place, threadState }) {
 /// is a better press than revealing prose about it.
 function noticeMessageHtml(message, context) {
   const row = (inner) =>
-    `<article class="thread-message thread-issue-line thread-notice"${sequenceAttribute(message)}>${inner}</article>`;
+    `<article class="thread-message thread-issue-line thread-notice thread-quiet-row"${sequenceAttribute(message)}>${inner}</article>`;
 
   if (isIssueNotice(message)) {
     return row(issueNoticeLineHtml(issueNoticeOf(message), {
@@ -1013,7 +1013,7 @@ function noticeMessageHtml(message, context) {
 /// what it SAID under its own bookkeeping. The sequence rides it like any
 /// other message, so it reads in order and counts as unread.
 function issueActionMessageHtml(message, context) {
-  return `<article class="thread-message thread-issue-line thread-action"${sequenceAttribute(message)}>
+  return `<article class="thread-message thread-issue-line thread-action thread-quiet-row"${sequenceAttribute(message)}>
     ${issueActionLineHtml(message.issue_action, { place: context.place })}
   </article>`;
 }
@@ -1129,8 +1129,8 @@ function activityHtml(event, meta, agentLabel, foldedChildrenHtml = "") {
     ${timeHtml(event.created_at)}`;
   // renderMarkdown escapes all input before adding its fixed safe tag set.
   const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}${foldedChildrenHtml}`;
-  if (!body) return `<div class="thread-event thread-activity"${sequence}>${head}</div>`;
-  return `<details class="thread-event thread-activity"${sequence}>
+  if (!body) return `<div class="thread-event thread-activity thread-quiet-row"${sequence}>${head}</div>`;
+  return `<details class="thread-event thread-activity thread-quiet-row"${sequence}>
     <summary class="thread-activity-head">${head}</summary>
     ${body}
   </details>`;
@@ -1282,7 +1282,7 @@ function rowReachesSequence(row) {
 /// so, and the pane cancels the press's own activation, so `open` says what the
 /// pane says and a shut run is one nothing is drawn inside.
 function activityRunHtml(span, summary, children) {
-  return `<details class="thread-activity-group" ${RENDERED_FOLD_ATTRIBUTE} ${ACTIVITY_RUN_ATTRIBUTE}="${esc(String(span.key))}" ${ACTIVITY_RUN_FROM_ATTRIBUTE}="${esc(String(span.from))}" ${ACTIVITY_RUN_THROUGH_ATTRIBUTE}="${esc(String(span.through))}"${children === null ? "" : " open"}>
+  return `<details class="thread-activity-group thread-quiet-row" ${RENDERED_FOLD_ATTRIBUTE} ${ACTIVITY_RUN_ATTRIBUTE}="${esc(String(span.key))}" ${ACTIVITY_RUN_FROM_ATTRIBUTE}="${esc(String(span.from))}" ${ACTIVITY_RUN_THROUGH_ATTRIBUTE}="${esc(String(span.through))}"${children === null ? "" : " open"}>
     <summary class="thread-activity-head thread-activity-group-head">
       <span class="thread-event-icon" aria-hidden="true">${esc(summary.icon)}</span>
       <span class="thread-activity-label">Actions</span>

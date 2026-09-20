@@ -75,6 +75,11 @@ export const ISSUE_LINE_ITEMS = [
   notice(42, "Issues list shows open issues by default", { actor: "agent-01M2A", action: "moved to In review" }),
   action(43, "Issue notice and action lines: one line, full width, no gutter, tight spacing", "commented_on"),
   action(44, "A short one", "created"),
+  // #52: an activity row in the middle of the run. Zech: "Activity entries
+  // should be styled like the notification entries … just same padding so
+  // they all group nicely together." Between two lines, so the measurement
+  // can ask whether the rhythm survives it.
+  { type: "event", data: { event: "tool_use", sequence: 441, summary: "Bash cd spa && npm run lint", created_at: "2026-09-20T21:10:00Z" } },
   notice(45, "Workspace issues as a tab of the workspace page, with the workspace rail beside it", { actor: "user", action: "closed" }),
   message(9, "A normal message after the run."),
   // #50: a fenced block far wider than a phone. The block must scroll; the
@@ -121,6 +126,18 @@ describe("the markup the browser measurement is taken over", () => {
     const block = host.querySelector("pre.md-code");
     expect(block).not.toBeNull();
     expect(block.textContent.split("\n")[0].length).toBeGreaterThan(100);
+  });
+
+  // #52's subject: the row has to sit in the run, not beside it.
+  it("holds an activity row between two issue lines", () => {
+    const host = document.createElement("div");
+    host.innerHTML = rendered();
+    const kinds = [...host.querySelectorAll(".thread-issue-line, .thread-activity, .thread-activity-group")]
+      .map((one) => (one.classList.contains("thread-issue-line") ? "line" : "activity"));
+    expect(kinds).toContain("activity");
+    // Surrounded, so a gap either side of it is measurable.
+    const at = kinds.indexOf("activity");
+    expect([kinds[at - 1], kinds[at + 1]]).toEqual(["line", "line"]);
   });
 
   it("holds all four kinds at once", () => {

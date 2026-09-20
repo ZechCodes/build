@@ -1612,7 +1612,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    said only when they ask for it. The line is the summary's first line — no
    label in front of it, since the icon carries the kind — and it is dropped
    once the fold is open, where the detail says it in full. */
-.thread-activity { min-height:24px; padding-top:1px; padding-bottom:1px; font-size:11.5px; }
+.thread-activity { font-size:11.5px; }
 .thread-activity-head { display:flex; align-items:baseline; gap:7px; min-width:0; cursor:pointer;
   list-style:none; }
 .thread-activity-head::-webkit-details-marker { display:none; }
@@ -1635,10 +1635,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    them. The quietest row on the timeline, because a run of work asks the reader
    for nothing; opening it lists the rows themselves, eight deep and scrolling
    past that, so a run of two hundred tool calls can never push a message off
-   the screen. The padding is on the head rather than the box: the rows inside
-   keep their own gutter, and doubling it would step them off the spine. */
+   the screen. The box itself is the quiet row's, below — head and rows alike
+   carry only vertical padding, so opening one steps nothing off the spine. */
 .thread-activity-group { position:relative; display:block; margin:0; color:var(--dim); font-size:11.5px; }
-.thread-activity-group-head { min-height:24px; padding:1px 0 1px 44px; }
 .thread-activity-group-head .thread-event-icon { left:8px; width:22px; height:22px; border-width:2px;
   background:var(--bg); color:var(--dim); font-size:10px; font-weight:600; }
 .thread-activity-count { flex:none; min-width:17px; padding:0 5px; border-radius:9px;
@@ -1912,7 +1911,6 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-event-icon { left:0; top:2px; width:14px; height:14px; border:0;
   background:transparent; font-size:9px; }
 .thread-activity-group { margin-left:0; }
-.thread-activity-group-head { min-height:28px; padding:3px 0 3px 18px; }
 .thread-activity-group-head::before { content:"›"; flex:none; color:var(--ink2);
   transform:rotate(0deg); transition:transform var(--motion-fast, 120ms) ease; }
 .thread-activity-group[open] > .thread-activity-group-head::before { transform:rotate(90deg); }
@@ -1927,6 +1925,37 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-activity-group-list .thread-activity .thread-event-icon { position:static; flex:none; }
 .thread-activity-preview { flex:1 1 auto; }
 .thread-activity-head time { margin-left:auto; }
+
+/* THE QUIET ROWS (#52). A notice, an issue action, a tool call, a folded run of
+   tool calls: one list, at one rhythm, in one box — and the box and the rhythm
+   are each written once, here, against the class every one of them carries.
+
+   They were written twice before, once per kind. Measured in a browser at
+   390px, the lines were 19px tall and 4px apart and the tool-call row beside
+   them was 28px tall and 22px away, because `.thread-issue-line +
+   .thread-issue-line` named only one of the kinds and each kind's box carried
+   its own numbers. Zech: "Activity entries should be styled like the
+   notification entries … just same padding so they all group nicely together."
+
+   No gutter, no indent, no bubble: the row starts where a message's text
+   starts. The icon comes off the spine and rides in the line — an absolute one
+   over a row with no left padding lands on the words.
+   test/quietRows.test.js refuses a rule that sets a quiet row's box by kind. */
+.thread-quiet-row { min-height:0; margin:0; padding:1px 0; }
+.thread-quiet-row .thread-event-icon { position:static; flex:none; }
+/* Consecutive rows read as a list rather than as separate messages, so they
+   pull back against the timeline's own gap — and only against each other, and
+   only where that gap is: a real message either side keeps the full gap
+   because it IS a separate thing to say, and the rows inside an open run are
+   not in the timeline's flex at all, so they have nothing to pull back against
+   and must not try.
+
+   `--thread-gap` is declared by whichever rule sets the timeline's `gap`, and
+   never here: a copy of the number is a copy that goes stale, and it did — the
+   rail's gap is 22px and the copy said 18, so the lines sat 8px apart and no
+   test could tell, because the value only exists once there is layout.
+   test/issueLineRhythm.test.js holds every gap rule to declaring both. */
+.thread-timeline > .thread-quiet-row + .thread-quiet-row { margin-top:calc(4px - var(--thread-gap)); }
 .thread-revision-view, .thread-composer { margin-left:0; }
 .composer { border:0; border-radius:0; background:transparent; }
 .composer:focus-within { border-color:transparent; box-shadow:none; }

@@ -106,8 +106,14 @@ async function measure(width, label) {
       host.innerHTML = new DOMParser().parseFromString(html, "text/html").querySelector(".thread-items").innerHTML;
       const timeline = host.getBoundingClientRect();
       const box = (el) => el.getBoundingClientRect();
-      const lines = [...host.querySelectorAll(".thread-issue-line")];
-      const messages = [...host.querySelectorAll(".thread-message:not(.thread-issue-line)")];
+      // #52: an activity row is one of these rows too — Zech asked for them to
+      // group with the notice lines, so the measurement asks about them all
+      // together rather than about the issue lines alone. One selector, the
+      // class the rows themselves are styled through, so a row the product
+      // starts drawing is a row this measures without being told.
+      const lines = [...host.querySelectorAll(".thread-quiet-row")];
+      const messages = [...host.querySelectorAll(".thread-message:not(.thread-quiet-row)")];
+      const isRow = (el) => el.classList.contains("thread-quiet-row");
       const textLeft = (el) => Math.round(box(el.querySelector(".thread-body") || el).left - timeline.left);
       const gaps = [];
       for (let i = 1; i < lines.length; i++) gaps.push(Math.round(box(lines[i]).top - box(lines[i - 1]).bottom));
@@ -115,9 +121,10 @@ async function measure(width, label) {
         timelineWidth: Math.round(timeline.width),
         messageTextLeft: messages[0] ? textLeft(messages[0]) : null,
         lines: lines.map((el) => {
-          const anchor = el.querySelector("a, span");
+          const anchor = el.querySelector("a, span, summary") || el;
           return {
-            text: el.textContent.replace(/\s+/g, " ").trim(),
+            kind: el.classList.contains("thread-issue-line") ? "line" : "activity",
+            text: el.textContent.replace(/\s+/g, " ").trim().slice(0, 40),
             left: Math.round(box(el).left - timeline.left),
             height: Math.round(box(el).height),
             rows: Math.round(box(el).height / parseFloat(getComputedStyle(anchor).lineHeight)),
@@ -151,8 +158,7 @@ async function measure(width, label) {
         gapsToMessages: [...host.children].flatMap((el, index, all) => {
           const next = all[index + 1];
           if (!next) return [];
-          const isLine = (one) => one.classList.contains("thread-issue-line");
-          if (isLine(el) === isLine(next)) return [];
+          if (isRow(el) === isRow(next)) return [];
           return [Math.round(box(next).top - box(el).bottom)];
         }),
       };

@@ -479,11 +479,11 @@
    avatar gutter, carried its own indent on top of it, wrapped because the
    title was allowed to, and sat a full message gap from the row above. */
 
-/* No gutter of its own. The row starts exactly where a message's text starts —
-   which is the timeline's left edge in the rail and just past the avatar
-   column on the full page — because it takes no indent and no padding rather
-   than trying to match a number. */
-.thread-message.thread-issue-line { padding:0; }
+/* No gutter of its own, and no box of its own: the row starts exactly where a
+   message's text starts, and what gives it that — no indent, no padding but a
+   pixel above and below — is `.thread-quiet-row` in styles.css, which the tool
+   call rows beside it wear too (#52). A second copy here is how the two kinds
+   drifted 9px apart in the first place. */
 
 /* ONE line, and the title is what gives. The number and the verb are short and
    fixed; the title is the part that can be any length, so it is the part that
@@ -492,7 +492,6 @@
 .thread-issue-notice {
   display:flex; align-items:baseline; gap:5px; flex-wrap:nowrap;
   min-width:0; max-width:100%;
-  padding:1px 0;
   font-size:11.5px; line-height:1.5; color:var(--dim);
   text-decoration:none; white-space:nowrap;
   transition:color var(--motion-fast);
@@ -530,17 +529,9 @@ a.thread-issue-action:focus-visible, a.thread-issue-notice:focus-visible {
 .thread-notice-body :is(p, ul, ol):first-child { margin-top:0; }
 .thread-notice-body :is(p, ul, ol):last-child { margin-bottom:0; }
 
-/* The tight rhythm. Consecutive lines read as a list rather than as separate
-   messages, so they pull back against the timeline's own gap — and only
-   against each other: a real message either side keeps the full gap, because
-   it IS a separate thing to say.
-
-   `--thread-gap` is declared by whichever rule sets the timeline's `gap`, and
-   never here: a copy of the number in this file is a copy that goes stale, and
-   it did — the rail's gap is 22px and this said 18, so the lines sat 8px apart
-   and no test could tell, because the value only exists once there is layout.
-   test/issueLineRhythm.test.js holds every gap rule to declaring both. */
-.thread-issue-line + .thread-issue-line { margin-top:calc(4px - var(--thread-gap)); }
+/* The tight rhythm lives in styles.css with the box, on `.thread-quiet-row`:
+   a rule naming `.thread-issue-line` twice pulled the lines together and left
+   the tool-call rows between them a full message gap away (#52). */
 
 /* The comment an action line lands on: a moment's mark so the reader sees
    where they arrived rather than having to count rows. */

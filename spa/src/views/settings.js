@@ -24,6 +24,12 @@ import { deviceCatalog } from "../core/inboxDevices.js";
 import { onDeviceStateChanged } from "../core/deviceContexts.js";
 import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../core/connectionDiagnostics.js";
 import { connectionDiagnosticsPanelHtml, mountConnectionDiagnostics } from "../core/connectionDiagnosticsPanel.js";
+import { buildVersionLineHtml, mountBuildVersionLine } from "../core/buildVersionLine.js";
+
+/** The sha this bundle was built at, as core/version.js and core/changeEvents.js
+ *  read it. `dev` for a bundle CI never stamped, which is what a dev server
+ *  serves and what the suites see. */
+const BUNDLE_VERSION = import.meta.env.VITE_BUILD_VERSION || "dev";
 
 /** One paired machine: what it is called, the key it holds, whether it is
  *  reachable, the way to its own settings, and the way to unpair it. The link
@@ -148,6 +154,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
       ${downloadsPlaceholderHtml()}
     </div>
     ${connectionDiagnosticsPanelHtml()}
+    ${buildVersionLineHtml(BUNDLE_VERSION)}
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
       <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed. Each device's own settings — its projects, its folder, how agents run there — live on its page.</div>
@@ -250,6 +257,8 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   // the `buildConnectionDiagnostics` global, and the machines through the
   // account list, so a device that has a name is named. Its poll is this page's
   // teardown — nothing ticks once Settings is off screen.
+  mountBuildVersionLine(root, { version: BUNDLE_VERSION, clipboard: navigator.clipboard });
+
   disposeDiagnostics = mountConnectionDiagnostics(root, {
     history: connectionDiagnosticHistory,
     clear: clearConnectionDiagnosticHistory,

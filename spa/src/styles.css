@@ -385,6 +385,11 @@ main { max-width:min(1180px, 100%); margin:0 auto;
   font-size:11px; line-height:1.5; }
 .diagrow-source { color:var(--dim); }
 .diagrow-detail { color:var(--ink2); }
+/* Which build this tab is running, under the dump it is read beside. One fact,
+   so one line: a panel and a heading would cost more room than the fact. */
+.buildversion { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  max-width:620px; margin-top:10px; padding:0 2px; font-size:12px; }
+.buildversion .mono { color:var(--ink2); }
 /* ---- the account archive ----
    A record opens under the row it belongs to, so it reads as that row's inside
    rather than as the next thing on the page. */

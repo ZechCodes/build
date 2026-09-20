@@ -325,3 +325,35 @@ describe("Settings → Diagnostics", () => {
     dropped.mockRestore();
   });
 });
+
+// Which build this tab is running, under the dump it is read beside. It sits
+// in Settings because that is where somebody with a question about this tab is
+// already standing — and on the night it mattered there was nowhere to look.
+describe("Settings → the build it is running", () => {
+  it("shows the line under Diagnostics, with the whole version in its title", async () => {
+    await renderSettings();
+    await flush();
+
+    const line = document.querySelector("#buildversion");
+    expect(line).not.toBeNull();
+    expect(line.textContent.replace(/\s+/g, " ").trim()).toBe("Build dev Copy");
+    // The suites run an unstamped bundle, so `dev` is the honest answer here.
+    expect(document.querySelector("#buildversionsha").getAttribute("title")).toBe("dev");
+    expect(document.querySelector("#diagnostics").compareDocumentPosition(line))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("copies the version when the button is pressed", async () => {
+    const writeText = vi.fn(async () => {});
+    const had = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+    await renderSettings();
+    await flush();
+    document.querySelector("#buildversioncopy").click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("dev"));
+
+    if (had) Object.defineProperty(navigator, "clipboard", had);
+    else delete navigator.clipboard;
+  });
+});

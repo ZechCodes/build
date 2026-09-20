@@ -78,6 +78,7 @@ pub mod reachability;
 pub mod reaper;
 pub mod relay;
 pub mod relay_server;
+pub mod resume;
 pub mod router;
 pub mod rtc;
 pub mod run;

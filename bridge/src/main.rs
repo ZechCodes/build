@@ -489,27 +489,125 @@ async fn run_daemon(
         runtime.ice_policy.clone(),
     ));
 
+    // Bring back whoever the last shutdown was holding. It waits for an
+    // authenticated relay socket rather than firing here, because a resumed
+    // agent starts talking immediately and the human has to be able to SEE it:
+    // a bridge no browser can reach is one whose agents work in the dark.
+    spawn_resume_after_restart(app.clone(), runtime.tasks_dir.clone(), reachable.clone());
+
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
     // become a tight reconnect loop hammering the server. A connection that lasted
     // long enough to be "clean" resets the delay, so a brief blip still recovers
     // fast. The policy lives in `Backoff` so it is unit-tested, not inline-and-hoped.
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
+    let mut going_down = shutdown_signals();
     loop {
         let connected_at = std::time::Instant::now();
-        match relay::run(&runtime.device_url, &identity, intake.clone(), &reachable).await {
-            Ok(()) => eprintln!(
-                "relay disconnected; reconnecting in {}s",
-                backoff.current().as_secs()
-            ),
-            Err(e) => eprintln!(
-                "relay error: {e}; reconnecting in {}s",
-                backoff.current().as_secs()
-            ),
+        tokio::select! {
+            // Biased so a SIGTERM that lands while the relay future is also
+            // ready is still the branch taken: systemd is about to send
+            // SIGKILL, and one more reconnect is worth nothing next to the
+            // roster.
+            biased;
+            () = going_down.recv() => break,
+            outcome = relay::run(&runtime.device_url, &identity, intake.clone(), &reachable) => {
+                match outcome {
+                    Ok(()) => eprintln!(
+                        "relay disconnected; reconnecting in {}s",
+                        backoff.current().as_secs()
+                    ),
+                    Err(e) => eprintln!(
+                        "relay error: {e}; reconnecting in {}s",
+                        backoff.current().as_secs()
+                    ),
+                }
+            }
         }
         backoff.note_session(connected_at.elapsed());
-        tokio::time::sleep(backoff.current()).await;
+        tokio::select! {
+            biased;
+            () = going_down.recv() => break,
+            () = tokio::time::sleep(backoff.current()) => {}
+        }
         backoff.increase();
     }
+    // The one exit the daemon has, whichever way the loop ended: record who was
+    // working before the harnesses go with the process. Rolling the binary
+    // kills every session on the device at once, and nothing but this says so.
+    eprintln!("bridge: shutting down");
+    AppState::record_resume_roster(&app, &runtime.tasks_dir, env!("CARGO_PKG_VERSION"));
+}
+
+/// A receiver that fires once the operating system asks this daemon to stop.
+///
+/// SIGTERM is what `systemctl stop` sends and so what a roll sends; SIGINT is
+/// what a terminal sends, and a developer's Ctrl-C should record a roster for
+/// the same reason. A platform whose handlers cannot be installed gets a
+/// receiver that never fires — the daemon behaves exactly as it did before any
+/// of this, rather than refusing to start over a signal.
+fn shutdown_signals() -> ShutdownSignals {
+    use tokio::signal::unix::{signal, SignalKind};
+    ShutdownSignals {
+        term: signal(SignalKind::terminate()).ok(),
+        interrupt: signal(SignalKind::interrupt()).ok(),
+    }
+}
+
+struct ShutdownSignals {
+    term: Option<tokio::signal::unix::Signal>,
+    interrupt: Option<tokio::signal::unix::Signal>,
+}
+
+impl ShutdownSignals {
+    /// Resolve on the first of either signal. Cancel-safe, because it is
+    /// polled inside a `select!` that loses the race every time the relay wins
+    /// one — `Signal::recv` is itself cancel-safe, and a pending signal is
+    /// still pending on the next poll.
+    async fn recv(&mut self) {
+        match (&mut self.term, &mut self.interrupt) {
+            (Some(term), Some(interrupt)) => {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = interrupt.recv() => {}
+                }
+            }
+            (Some(one), None) | (None, Some(one)) => {
+                one.recv().await;
+            }
+            (None, None) => std::future::pending().await,
+        }
+    }
+}
+
+/// Resume once, as soon as a browser could see it happen.
+///
+/// The store is already open — `construct_app` would have refused to start
+/// otherwise — so the only thing left to wait for is the relay, and the wait is
+/// bounded: a device that cannot reach its relay tonight still has agents that
+/// were cut off, and leaving them down until it can would be the outage this
+/// exists to end. It polls rather than takes a callback because
+/// `Reachability` is the one thing both the relay loop and the presence beats
+/// already agree on.
+fn spawn_resume_after_restart(
+    app: std::sync::Arc<std::sync::Mutex<AppState>>,
+    tasks_dir: std::path::PathBuf,
+    reachable: Reachability,
+) {
+    const POLL: Duration = Duration::from_millis(250);
+    const WAIT_FOR_RELAY: Duration = Duration::from_secs(60);
+    tokio::spawn(async move {
+        let deadline = std::time::Instant::now() + WAIT_FOR_RELAY;
+        while !reachable.is_reachable() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(POLL).await;
+        }
+        if !reachable.is_reachable() {
+            eprintln!(
+                "resume: no relay socket after {}s; resuming anyway",
+                WAIT_FOR_RELAY.as_secs()
+            );
+        }
+        AppState::resume_after_restart(&app, &tasks_dir, env!("CARGO_PKG_VERSION"));
+    });
 }
 
 fn exit_startup(error: String) -> ! {

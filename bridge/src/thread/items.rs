@@ -505,6 +505,23 @@ pub struct ThreadMessage {
     /// each other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_to: Option<Box<AgentIdentity>>,
+    /// Whether BUILD wrote this message rather than the human or an agent.
+    ///
+    /// One thing says it today: the notice a resumed agent is given after the
+    /// daemon restarted under it. The role is the human's for the reason
+    /// [`from_agent`](Self::from_agent) explains — an instruction lands on the
+    /// inbound side whoever wrote it — and this is what stops the agent, and
+    /// the human reading over its shoulder, taking Build's words for the
+    /// user's and answering a question nobody asked.
+    ///
+    /// Not an [`AgentIdentity`]: Build is not an agent, has no conversation and
+    /// cannot be written back to, and giving it a borrowed agent id would make
+    /// every `from_agent` reader believe in an agent that does not exist.
+    ///
+    /// Absent on every other message and on every record written before it,
+    /// so a client that has never heard of it reads those exactly as it has.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub from_build: bool,
     /// The issue this message handed over, when assigning one is what sent it.
     ///
     /// Boxed for the reason `from_agent` is: almost every message on almost

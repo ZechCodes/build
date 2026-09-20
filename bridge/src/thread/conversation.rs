@@ -273,6 +273,25 @@ impl Thread {
         id
     }
 
+    /// Build's own words in an agent's conversation.
+    ///
+    /// The role is the human's for the reason
+    /// [`post_user_from_agent`](Self::post_user_from_agent) gives — an
+    /// instruction lands on the inbound side whoever wrote it — and the mark
+    /// says the daemon wrote it. Used by the restart notice, which is the one
+    /// thing Build says in its own voice.
+    pub fn post_user_from_build(
+        &mut self,
+        body: impl Into<String>,
+        now: impl Into<String>,
+    ) -> String {
+        let id = self.post_user(body, None, now);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.from_build = true;
+        }
+        id
+    }
+
     /// Say who wrote the message just posted — the last item on the thread by
     /// construction, the way the attachments and the viewing context are set.
     /// For the post paths that carry an anchor, a viewing context or files and
@@ -712,6 +731,7 @@ impl Thread {
             role,
             from_agent: None,
             sent_to: None,
+            from_build: false,
             from_issue: None,
             done: false,
             outcome: None,

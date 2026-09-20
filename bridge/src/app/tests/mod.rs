@@ -211,6 +211,7 @@ mod project_agent;
 mod project_conversation;
 mod protocol;
 mod push;
+mod resume;
 mod routing;
 mod rtc;
 mod runtime;

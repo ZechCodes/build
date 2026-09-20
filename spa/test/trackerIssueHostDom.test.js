@@ -7,6 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mountIssuePage = vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() }));
+const mountAgentRail = vi.fn(() => ({ dispose: vi.fn() }));
+vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: (...args) => mountAgentRail(...args) }));
 vi.mock("../src/core/trackerIssuePage.js", () => ({ mountIssuePage: (...args) => mountIssuePage(...args) }));
 
 let subscribers = [];
@@ -47,6 +49,7 @@ beforeEach(() => {
   document.body.innerHTML =
     '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside>';
   mountIssuePage.mockClear();
+  mountAgentRail.mockClear();
   subscribers = [];
   snapshot = { items: [], projects: [], workspaces: [], pending: [], devices: {} };
   App.viewDispose = null;
@@ -78,6 +81,29 @@ describe("the issue route", () => {
     expect([given.projectId, given.deviceId, given.issueId, given.projectKey]).toEqual([
       "proj-1", "dev-1", "issue-1", "dev-1/proj-1",
     ]);
+  });
+
+  // The rail is the shell's: the project's agent is beside an issue of the
+  // project exactly as it is beside the project page, on the owner the bridge
+  // answers with, so the bubble does not vanish when an issue is opened.
+  it("mounts the project's agent rail beside the issue, as the project page does", async () => {
+    const call = device("dev-1");
+    call.mockImplementation(async (method) => (method === "project.ensure_conversation" ? { entity_id: "run-7" } : {}));
+    await renderTrackerIssue();
+    await flush();
+    expect(call).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" });
+    const [host, options] = mountAgentRail.mock.calls[0];
+    expect(host.id).toBe("agent-rail");
+    expect(options).toMatchObject({ kind: "project", projectId: "proj-1", entityId: "run-7", deviceId: "dev-1" });
+  });
+
+  it("takes the rail down with the page", async () => {
+    await renderTrackerIssue();
+    await flush();
+    const rail = mountAgentRail.mock.results[0].value;
+    App.viewDispose();
+    App.viewDispose = null;
+    expect(rail.dispose).toHaveBeenCalled();
   });
 
   it("hands over the feed the links and the assignee names are read off", async () => {

@@ -20,6 +20,8 @@ import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 import { mountIssuePage } from "../core/trackerIssuePage.js";
+import { mountProjectAgentRail } from "../core/projectAgentRail.js";
+import { createAgentSelection } from "../core/agentSelection.js";
 import "../styles/issues.css";
 import "../styles/surfaces.css";
 
@@ -53,10 +55,18 @@ export async function renderTrackerIssue() {
     feed = snapshot;
     page.feedMoved();
   });
+  // The project's agent stays beside an issue of the project, as it is beside
+  // the project page: the rail is the shell's, and the bubble that opens the
+  // project's conversation does not come and go with the page under it.
+  let disposed = false;
+  let rail = null;
   App.viewDispose = () => {
+    disposed = true;
     unsubscribe();
     deviceStrip();
     page.dispose();
+    rail?.dispose?.();
   };
+  rail = await mountProjectAgentRail({ context, route, selection: createAgentSelection(), disposed: () => disposed });
 }
 

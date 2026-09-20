@@ -19,7 +19,7 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { esc } from "../core/text.js";
-import { mountAgentRail } from "../core/agentRail.js";
+import { mountProjectAgentRail } from "../core/projectAgentRail.js";
 import { createAgentSelection } from "../core/agentSelection.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
@@ -176,44 +176,16 @@ function openWorkspace(state, workspaceKey) {
   if (row?.route) go(row.route);
 }
 
-/**
- * The project's agent, mounted on the owner the bridge answers with.
- *
- * `project.ensure_conversation` is the project's half of what
- * `workspace.ensure_conversation` is for a workspace: it answers the owner the
- * project already has, or mints one over a scratch directory Build owns. It is
- * the one call this page makes.
- *
- * The page names no harness, model or effort. What a project agent starts on is
- * the DEVICE's setting, held by the bridge beside its default harness, and the
- * mint reads it there — so a new browser is never asked for something the
- * machine that runs the agent already holds.
- *
- * The route may name an agent (`?agent=…`, core/router.js `conversationRoute`):
- * a link to the conversation a message came from lands here, and the rail comes
- * up standing on it.
- */
+/** The project's agent beside the page — the same rail an issue's page mounts
+ *  (core/projectAgentRail.js), because it is the shell's, not this page's. */
 async function mountProjectRail(state) {
-  try {
-    const answer = await state.context.rpc("project.ensure_conversation", {
-      project_id: state.route.projectId,
-    });
-    if (state.disposed) return;
-    state.rail = mountAgentRail($("#agent-rail"), {
-      kind: "project",
-      projectId: state.route.projectId,
-      projectName: state.page.name,
-      entityId: answer?.entity_id || answer?.run_id || null,
-      deviceId: state.context.deviceId,
-      callRpc: state.context.rpc,
-      cacheScope: state.context.cacheScope,
-      chatRepository: state.context.chatRepository,
-      selection: state.selection,
-      openAgentId: state.route.agent || null,
-    });
-  } catch (error) {
-    if (!state.disposed) notifyError("No conversation for this project", error.message || String(error));
-  }
+  state.rail = await mountProjectAgentRail({
+    context: state.context,
+    route: state.route,
+    selection: state.selection,
+    projectName: state.page.name,
+    disposed: () => state.disposed,
+  });
 }
 
 export async function renderProject() {

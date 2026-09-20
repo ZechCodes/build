@@ -16,6 +16,7 @@ mod dispatch;
 mod edits;
 mod notices;
 mod refs;
+mod reminder;
 mod tools;
 mod tracking;
 mod views;

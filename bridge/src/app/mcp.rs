@@ -300,12 +300,15 @@ impl AppState {
         // Issues → Automatic activity). Before the lifecycle routing below,
         // which may end the run this agent belongs to and take the binding the
         // issue is found through with it.
-        self.note_report_on_held_issue(
-            entity_id,
-            agent_id,
-            &report.summary,
-            report.status == crate::mcp::DoneStatus::Completed,
-        );
+        let completed = report.status == crate::mcp::DoneStatus::Completed;
+        self.note_report_on_held_issue(entity_id, agent_id, &report.summary, completed);
+        // And on Complete, what it still holds (spec: Issues → The Complete
+        // reminder). After the report has been recorded on the issue it was
+        // given, so an issue this very report moved to In review is described
+        // as it now stands rather than as it stood a moment ago.
+        if completed {
+            self.remind_of_open_issues(entity_id, agent_id);
+        }
         self.done_deferring_for_resolved_agent(entity_id, Some(agent_id), report)
     }
 

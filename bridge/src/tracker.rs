@@ -503,6 +503,9 @@ pub const COLUMNS: [Column; 5] = [
 pub const DEFAULT_STATUS: &str = "backlog";
 /// Where an agent's Complete moves the issue it holds.
 pub const IN_REVIEW_STATUS: &str = "in_review";
+/// The column that means an agent is finished with an issue, whether or not
+/// anybody has closed it.
+pub const DONE_STATUS: &str = "done";
 /// Where a dispatch moves an issue that has not started.
 pub const IN_PROGRESS_STATUS: &str = "in_progress";
 

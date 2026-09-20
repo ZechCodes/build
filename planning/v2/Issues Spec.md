@@ -585,6 +585,35 @@ assignee gets is the dispatched issue itself, which it was already getting.
 Its shape is pinned in `fixtures/api/v1/thread.page.json` with the notice, for
 the same reason and in the same file.
 
+### The Complete reminder
+
+An agent reports Complete and walks away from three open issues assigned to it.
+Nobody is told, the issues sit in In progress, and whoever assigned them finds
+out by going to look.
+
+So on **Complete**, and only on Complete, Build delivers one more `from_build`
+message into that agent's own conversation, naming every open issue assigned to
+it whose column is not Done, and saying the three ways out: finish it, comment
+where it got to, or hand it back with a comment saying why.
+
+- **Not on Blocked or Waiting.** Both are the agent saying it cannot finish,
+  which is already an answer about the work. A list of what it has not finished
+  would be telling it what it just told us.
+- **Not when it holds nothing open.** Silence is the right answer there.
+- **Done is excluded**, not just closed. An issue parked in Done is one the
+  agent is finished with even if nobody has closed it, and a reminder that
+  includes those is noise — which is a reminder an agent learns to answer
+  without reading.
+- **It names every issue**, with the column each is in, rather than counting
+  them. "You still hold 3 issues" makes the agent go and look, and the looking
+  is the part Build can do.
+- **It repeats.** An agent that answers with another Complete while still
+  holding the same issues is reminded again. That is the point rather than a
+  bug to suppress: the way out is one tool call.
+
+It runs after the report's own automatic activity, so an issue the same
+Complete moved to In review is described as it now stands.
+
 ### Where the notice's shape is pinned
 
 Both the tracking notice and the action message live in

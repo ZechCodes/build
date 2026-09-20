@@ -4,6 +4,7 @@
 use super::project_agent::{added_project, project_agent, workspace};
 use super::tracker::{filed, tracked};
 use super::*;
+use crate::mcp::{DoneReport, DoneStatus};
 
 fn issue_id(issue: &Value) -> String {
     issue["id"].as_str().unwrap().to_string()
@@ -525,4 +526,193 @@ fn the_prompt_says_what_tracking_does_and_does_not_do() {
             "{name} does not say unassignment leaves you watching"
         );
     }
+}
+
+// ------------------------------------------------- the Complete reminder ---
+
+/// A reminder is a `from_build` message naming what is still open.
+fn reminders(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<String> {
+    notices(state, entity_id, agent_id)
+        .into_iter()
+        .map(|message| message["body"].as_str().unwrap_or_default().to_string())
+        .filter(|body| body.starts_with("You reported Complete"))
+        .collect()
+}
+
+/// An agent, holding `titles`, that has just reported `status`.
+fn reported(
+    state: &mut AppState,
+    project_id: &str,
+    status: DoneStatus,
+    holding: &[(&str, &str)],
+) -> (String, String) {
+    let ws = workspace(state, project_id, "here");
+    let first = issue_id(&filed(state, project_id, holding[0].0));
+    let handed = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": first, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
+    ));
+    let dispatch = &handed["result"]["dispatch"];
+    let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
+    let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
+    state.handle(req(
+        "issues.update",
+        json!({ "issue_id": first, "status": holding[0].1 }),
+    ));
+    for (title, column) in &holding[1..] {
+        let id = issue_id(&filed(state, project_id, title));
+        state.handle(req(
+            "issues.assign",
+            json!({ "issue_id": id, "assignee": { "kind": "agent", "agent_id": agent_id } }),
+        ));
+        state.handle(req(
+            "issues.update",
+            json!({ "issue_id": id, "status": column }),
+        ));
+    }
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        DoneReport {
+            status,
+            summary: "Did the thing.".into(),
+            message_id: None,
+        },
+    );
+    (entity_id, agent_id)
+}
+
+/// Complete with open assigned issues delivers the list, and names every one.
+#[test]
+fn complete_with_open_issues_lists_every_one_of_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (entity_id, agent_id) = reported(
+        &mut state,
+        &project_id,
+        DoneStatus::Completed,
+        &[("first", "in_progress"), ("second", "ready")],
+    );
+
+    let told = reminders(&mut state, &entity_id, &agent_id);
+    assert_eq!(told.len(), 1, "one reminder per Complete: {told:?}");
+    let body = &told[0];
+    assert!(body.contains("#1 first"), "{body}");
+    assert!(body.contains("#2 second"), "{body}");
+    assert!(
+        body.contains("(In progress)"),
+        "it says which column: {body}"
+    );
+    // The reminder runs AFTER the report's own automatic move, so the issue
+    // this very Complete pushed to In review is described as it now stands
+    // rather than as it stood a moment ago.
+    assert!(
+        body.contains("#2 second (In review)"),
+        "the report moved it, and the reminder says where it is now: {body}"
+    );
+}
+
+/// Blocked says nothing: the agent has already told us it cannot finish.
+#[test]
+fn blocked_delivers_no_reminder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (entity_id, agent_id) = reported(
+        &mut state,
+        &project_id,
+        DoneStatus::Blocked,
+        &[("first", "in_progress")],
+    );
+    assert!(reminders(&mut state, &entity_id, &agent_id).is_empty());
+}
+
+/// An agent holding nothing open hears nothing.
+#[test]
+fn complete_holding_nothing_open_delivers_no_reminder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let ws = workspace(&mut state, &project_id, "here");
+    let conversation = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ));
+    let entity_id = conversation["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": entity_id })));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        DoneReport {
+            status: DoneStatus::Completed,
+            summary: "Nothing assigned to me.".into(),
+            message_id: None,
+        },
+    );
+    assert!(reminders(&mut state, &entity_id, &agent_id).is_empty());
+}
+
+/// An issue parked in Done is one the agent is finished with, so it is not
+/// named — a reminder that is noise is one an agent answers without reading.
+#[test]
+fn an_issue_in_the_done_column_is_not_reminded_about() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (entity_id, agent_id) = reported(
+        &mut state,
+        &project_id,
+        DoneStatus::Completed,
+        &[("finished", "done"), ("still going", "in_progress")],
+    );
+
+    let told = reminders(&mut state, &entity_id, &agent_id);
+    assert_eq!(told.len(), 1, "{told:?}");
+    let body = &told[0];
+    assert!(body.contains("#2 still going"), "{body}");
+    assert!(
+        !body.contains("#1 finished"),
+        "Done is finished with: {body}"
+    );
+    assert!(
+        body.contains("1 issue assigned to you is still open"),
+        "{body}"
+    );
+}
+
+/// Answering a reminder with another Complete while still holding the same
+/// issues is reminded again. That is the point, not a bug to suppress.
+#[test]
+fn a_second_complete_reminds_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (entity_id, agent_id) = reported(
+        &mut state,
+        &project_id,
+        DoneStatus::Completed,
+        &[("first", "in_progress")],
+    );
+    assert_eq!(reminders(&mut state, &entity_id, &agent_id).len(), 1);
+
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        DoneReport {
+            status: DoneStatus::Completed,
+            summary: "Still done.".into(),
+            message_id: None,
+        },
+    );
+    assert_eq!(
+        reminders(&mut state, &entity_id, &agent_id).len(),
+        2,
+        "it holds the same issue, so it is told again"
+    );
 }

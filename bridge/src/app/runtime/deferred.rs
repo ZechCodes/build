@@ -262,6 +262,10 @@ pub(in crate::app) enum ReadSubject {
         base_sha: Option<String>,
         base_branch: String,
     },
+    /// The unpublished changeset of one checkout — everything its push
+    /// destination does not have. What a workspace source's "All changes" is,
+    /// and the only changeset whose base is a publication rather than a branch.
+    Unpublished { repo_path: std::path::PathBuf },
     /// `run.stage_diff` — one immutable stage boundary, sha to sha.
     Stage {
         run_id: String,
@@ -308,6 +312,12 @@ impl ReadSubject {
                     ),
                 };
                 format!("run\0{}\0{}", base, delta_key)
+            }
+            // Already a key of the whole delta, and the one `git.unpushed`
+            // answers with — a narrowed read has to agree with the list read
+            // that sent the reader here.
+            Self::Unpublished { repo_path } => {
+                return crate::gitgui::unpushed_key(repo_path).map(Some)
             }
             _ => return Ok(None),
         };
@@ -389,6 +399,15 @@ impl ReadSubject {
                 }
                 .map_err(|error| error.to_string())?;
                 Ok(worktree_diff_json(worktree_path, &diff))
+            }
+            Self::Unpublished { repo_path } => {
+                let crate::diff::DiffPaths::Only(paths) = paths else {
+                    // The whole unpublished changeset is `git.unpushed`'s to
+                    // answer: it carries the base and the commit list too, and
+                    // this subject exists for the narrowed read alone.
+                    return Err("git.changeset_diff requires paths".to_string());
+                };
+                crate::gitgui::unpushed_file_diff(repo_path, paths)
             }
             Self::Stage {
                 run_id,

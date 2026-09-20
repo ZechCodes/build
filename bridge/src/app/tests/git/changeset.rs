@@ -240,3 +240,119 @@ fn a_path_that_escapes_the_checkout_is_refused() {
 
     assert_eq!(escaped["ok"], false, "{escaped:?}");
 }
+
+/// A workspace source's changeset is its UNPUBLISHED work — the delta
+/// `git.unpushed` describes — so the narrowed read comes out of that same
+/// delta and under that same key. It is the surface a phone lands on, and
+/// the aggregate patch behind it was the megabyte the landing spent.
+#[test]
+fn a_workspace_source_narrows_its_unpublished_changeset() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    state.lock().unwrap().workspaces.adopt_root(
+        &project_id,
+        "workspace-a".to_string(),
+        "A".to_string(),
+        repo.clone(),
+        "source-1".to_string(),
+        true,
+    );
+    std::fs::write(repo.join("opened.txt"), "what the reader opened\n").unwrap();
+    std::fs::write(repo.join("unopened.txt"), "unread\n".repeat(200)).unwrap();
+
+    let listed = call(
+        &handler,
+        "git.unpushed",
+        json!({ "workspace_id": "workspace-a", "source_id": "source-1", "patch": false }),
+    );
+    let opened = call(
+        &handler,
+        "git.changeset_diff",
+        json!({ "workspace_id": "workspace-a", "source_id": "source-1", "paths": ["opened.txt"] }),
+    );
+
+    assert_eq!(opened["ok"], true, "{opened:?}");
+    assert_eq!(
+        opened["result"]["diff_key"], listed["result"]["diff_key"],
+        "the narrowed read answers under the key the list read gave: {opened:?} against {listed:?}"
+    );
+    assert!(
+        opened["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("what the reader opened"),
+        "{opened:?}"
+    );
+    assert!(
+        !opened["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("unread"),
+        "{opened:?}"
+    );
+    // And the per-file key matches the one the list carried for that path, or
+    // a body fetched under it would never be recognised as still current.
+    assert_eq!(
+        row(&opened["result"], "opened.txt")["content_key"],
+        row(&listed["result"], "opened.txt")["content_key"],
+    );
+}
+
+/// Every read that can be asked for the shape without its hunks must survive
+/// the facade with the hunks gone.
+///
+/// `patch: false` shipped without this: the typed result declared `patch` as
+/// a required string, so the facade could not serialise the very answer the
+/// flag asks for and refused it as `internal`. The client's cold pass asked
+/// that way on every workspace, was refused every time, and nobody saw it —
+/// a pass swallows a failed read and the surfaces read for themselves. So
+/// every one of them is asked here, and the answer has to be an answer.
+#[test]
+fn every_diff_read_survives_having_its_patch_left_off() {
+    let (dir, repo) = init_repo();
+    let (state, handler, project_id) = project_with_two_dirty_files(&repo, dir.path());
+    let checkout = super::filesystem::add_external_worktree(&repo, dir.path(), "loose", "feature");
+    let worktree_id = state
+        .lock()
+        .unwrap()
+        .scan_external_worktrees_now(&project_id)
+        .expect("the project's checkouts are scanned")
+        .first()
+        .expect("the checkout was found")
+        .id
+        .clone();
+    std::fs::write(checkout.join("in-the-checkout.txt"), "a line\n").unwrap();
+    let run_id = {
+        let mut state = state.lock().unwrap();
+        let (_plan, run_id) = planned_run_in_review(&mut state, "shapeless");
+        run_id
+    };
+
+    for (method, params) in [
+        (
+            "project.diff",
+            json!({ "project_id": project_id, "patch": false }),
+        ),
+        (
+            "worktree.diff",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "patch": false }),
+        ),
+        ("run.diff", json!({ "run_id": run_id, "patch": false })),
+        (
+            "git.unpushed",
+            json!({ "project_id": project_id, "patch": false }),
+        ),
+    ] {
+        let answer = call(&handler, method, params);
+        assert_eq!(answer["ok"], true, "{method}: {answer:?}");
+        assert!(
+            answer["result"].get("patch").is_none(),
+            "{method} left the hunks off: {answer:?}"
+        );
+        assert!(
+            answer["result"]["files"].is_array(),
+            "{method} still names its files: {answer:?}"
+        );
+    }
+}

@@ -68,6 +68,7 @@ import { createDiffViewport } from "./diffViewport.js";
 import { createReviewPlug } from "./changesReview.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
 import { loadDiffSort, saveDiffSort } from "./diffSort.js";
+import { bridgeCapabilities } from "./changeEvents.js";
 
 /** The unpushed answer a source read for itself, kept where the next mount of
  *  this source reads it — which is what puts the base on the rail on the first
@@ -91,6 +92,9 @@ function keepUnpushed(cacheScope, scope, payload) {
  * aggregate without each hosting view having to remember special wiring. */
 export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navigate = null, viewingContext = null, onBaseChange = () => {}, submit = null }) {
   let base = { kind: "empty", label: null };
+  /** Whether this device's bridge answers hunks per file (`git.changeset_diff`,
+   *  API 1.4) — read off the greeting, never by trying the verb. */
+  const perFileDiffs = () => bridgeCapabilities(cacheScope?.deviceId)?.diffs?.perFile === true;
   const plug = createReviewPlug({
     navigate,
     viewingContext,
@@ -106,6 +110,12 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
     fetchDiff: async (ifDiffKey) => {
       const payload = await callRpc("git.unpushed", {
         ...scope,
+        // The commit list, the base and the key, and — of a bridge that can
+        // answer per file — none of the hunks. The aggregate patch of a
+        // workspace with real work in it is most of a megabyte, and pulling
+        // it on arrival is what a phone's first seconds went on. A bridge
+        // that cannot is asked for the whole thing, exactly as before.
+        ...(perFileDiffs() ? { patch: false } : {}),
         ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}),
       });
       if (!payload.unchanged && payload.base) {
@@ -116,6 +126,9 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
       if (!payload.unchanged) keepUnpushed(cacheScope, scope, payload);
       return { ...payload, commentable: Boolean(submit) };
     },
+    /** The hunks of the files the reader has open, out of the same
+     *  unpublished changeset `git.unpushed` just described. */
+    fetchFiles: (paths) => callRpc("git.changeset_diff", { ...scope, paths }),
   });
   return {
     ...plug,

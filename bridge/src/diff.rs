@@ -358,11 +358,20 @@ pub fn diff_against_commit(
     worktree_path: &Path,
     base: Option<git2::Oid>,
 ) -> Result<WorktreeDiff, DiffError> {
+    diff_against_commit_for(worktree_path, base, DiffPaths::All)
+}
+
+/// [`diff_against_commit`], narrowed to the paths a reader has open.
+pub fn diff_against_commit_for(
+    worktree_path: &Path,
+    base: Option<git2::Oid>,
+    paths: DiffPaths<'_>,
+) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(worktree_path)?;
     let tree = base
         .map(|oid| repo.find_commit(oid).and_then(|commit| commit.tree()))
         .transpose()?;
-    diff_tree_to_dirty_workdir(&repo, tree.as_ref(), DiffPaths::All)
+    diff_tree_to_dirty_workdir(&repo, tree.as_ref(), paths)
 }
 
 /// Cheap identity corresponding exactly to [`diff_against_commit`].

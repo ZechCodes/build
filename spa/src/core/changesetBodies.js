@@ -26,6 +26,18 @@ export const CHANGESET_DIFF_RECORD_KIND = "changesetdiff";
 /** The most paths one `git.changeset_diff` takes — the bridge errors past it. */
 export const CHANGESET_DIFF_MAX_PATHS = 50;
 
+/** How many bodies one turn asks for.
+ *
+ *  The gate that says a file is worth fetching is the viewport's, and a stack
+ *  whose bodies have not arrived is a list of headers — forty of them are a
+ *  few hundred pixels, all of it inside the observer's margin, so "what the
+ *  reader can see" is the whole changeset until something is drawn. Filling a
+ *  screenful at a time is what breaks that: every fill makes the stack taller,
+ *  and the files below the fold stop being visible before they are ever asked
+ *  for. Measured on a relayed path against a 1.2 MB diff over forty files, the
+ *  difference between this and no budget is 984 KB and 96 KB. */
+export const BODIES_PER_TURN = 8;
+
 const FILE_HEADER = "diff --git ";
 
 /** The path a file patch is of, read off its header the way the bridge wrote
@@ -110,6 +122,10 @@ function createFillQueue() {
 export function createChangesetBodies({ addressOf, fetchFiles, keyFor }) {
   let disposed = false;
   const enqueue = createFillQueue();
+  // What has been asked for and answered, by the key the file wore when it was
+  // asked. A file whose body came back empty — a binary, a path the changeset
+  // no longer touches — would otherwise be wanted by every paint for ever.
+  const answered = new Map();
   const bodies = createCachedBodies({
     addressOf,
     fetchMissing: async (paths) => {
@@ -130,13 +146,17 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor }) {
 
   const bodyOf = (path) => bodies.read(path);
 
-  async function fill(views, openPaths) {
-    const wanted = pathsToFetch(views, { openPaths, bodyOf });
+  async function fill(views, openPaths, budget) {
+    const keyOf = new Map((views || []).map((view) => [view.path, view.contentKey]));
+    const wanted = pathsToFetch(views, { openPaths, bodyOf })
+      .filter((path) => answered.get(path) !== keyOf.get(path))
+      .slice(0, budget);
     if (!wanted.length || disposed) return 0;
     let filled = 0;
     for (const batch of batchPaths(wanted)) {
       if (disposed) break;
       filled += (await bodies.ensure(batch)).length;
+      for (const path of batch) answered.set(path, keyOf.get(path));
     }
     return filled;
   }
@@ -144,8 +164,10 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor }) {
   return {
     bodyOf,
     /** Hold bodies for the views whose paths are in `openPaths`, and answer
-     *  how many landed, so a caller repaints only on news. */
-    sync: (views, openPaths) => enqueue(() => fill(views, openPaths)),
+     *  how many landed, so a caller repaints only on news. A turn asks for at
+     *  most [`BODIES_PER_TURN`] of them: the paint that follows is what tells
+     *  the next turn which files are still on screen. */
+    sync: (views, openPaths, { budget = BODIES_PER_TURN } = {}) => enqueue(() => fill(views, openPaths, budget)),
     dispose: () => {
       disposed = true;
     },

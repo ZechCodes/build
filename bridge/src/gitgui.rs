@@ -26,5 +26,6 @@ pub use network::{fetch, pull, push, GIT_NETWORK_TIMEOUT_SECS};
 pub use patches::{file_patches, GIT_DIFF_MAX_ANSWER_BYTES, GIT_DIFF_MAX_PATHS};
 pub use status::{status_payload, status_payload_unless};
 pub use unpushed::{
-    aggregate_work_summary, unpushed_payload, unpushed_summary, work_summary, WorkSummary,
+    aggregate_work_summary, unpushed_file_diff, unpushed_key, unpushed_payload, unpushed_summary,
+    work_summary, WorkSummary,
 };

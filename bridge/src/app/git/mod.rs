@@ -212,12 +212,14 @@ impl AppState {
     pub(crate) fn project_diff(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let repo_path = self.project_repo_path(&project_id)?;
-        Ok(self.defer_read(
+        Ok(self.defer_conditional_read(
             ReadSubject::Project {
                 project_id,
                 repo_path,
             },
             None,
+            None,
+            crate::app::wants_patch(params),
         ))
     }
 
@@ -280,6 +282,14 @@ impl AppState {
     /// a run against its baseline, one of the project's external checkouts
     /// against its merge base, or the project's own uncommitted work.
     fn changeset_subject(&mut self, params: &Value) -> Result<ReadSubject, String> {
+        // A workspace source's changeset is its unpublished work — the same
+        // delta `git.unpushed` describes, which is the only one measured
+        // against a publication rather than a branch.
+        if let Some(scope) = self.resolve_workspace_git_scope(params)? {
+            return Ok(ReadSubject::Unpublished {
+                repo_path: scope.repo_path,
+            });
+        }
         if let Some(run_id) = optional_scope_id(params, "run_id")? {
             self.project_of(&run_id)?;
             let active = self.runs.get(&run_id).ok_or("unknown run_id")?;

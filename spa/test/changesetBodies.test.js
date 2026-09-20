@@ -6,6 +6,7 @@ import {
   filePatchesByPath,
   pathOfFilePatch,
   pathsToFetch,
+  BODIES_PER_TURN,
   CHANGESET_DIFF_MAX_PATHS,
 } from "../src/core/changesetBodies.js";
 
@@ -106,6 +107,47 @@ describe("createChangesetBodies", () => {
 
     expect(calls).toBe(1);
     expect(bodies.bodyOf("logo.png")).toEqual({ content_key: "c9", patch: "" });
+  });
+
+  /** A stack with no bodies is a list of headers, so the viewport calls every
+   *  file visible. The budget is what stops one turn pulling a whole
+   *  changeset: a screenful goes out, the paint that follows makes the stack
+   *  taller, and what is now below the fold is never asked for. */
+  it("asks for a screenful a turn, not the whole changeset", async () => {
+    const asked = [];
+    const bodies = layer(async (paths) => {
+      asked.push([...paths]);
+      return {
+        files: paths.map((path) => ({ path, content_key: `k:${path}` })),
+        patch: paths.map((path) => patchFor(path, "body")).join(""),
+      };
+    });
+    const views = Array.from({ length: 40 }, (_, index) => ({
+      path: `part-${index}.txt`,
+      contentKey: `k:part-${index}.txt`,
+    }));
+    const open = new Set(views.map((view) => view.path));
+
+    const filled = await bodies.sync(views, open);
+
+    expect(filled).toBe(BODIES_PER_TURN);
+    expect(asked).toEqual([views.slice(0, BODIES_PER_TURN).map((view) => view.path)]);
+    // And the turn after asks for the next screenful, never the same one.
+    await bodies.sync(views, open);
+    expect(asked[1][0]).toBe(`part-${BODIES_PER_TURN}.txt`);
+  });
+
+  it("honours a budget the caller names", async () => {
+    const bodies = layer(async (paths) => ({
+      files: paths.map((path) => ({ path, content_key: `k:${path}` })),
+      patch: paths.map((path) => patchFor(path, "body")).join(""),
+    }));
+    const views = [
+      { path: "a.txt", contentKey: "k:a.txt" },
+      { path: "b.txt", contentKey: "k:b.txt" },
+    ];
+
+    expect(await bodies.sync(views, new Set(["a.txt", "b.txt"]), { budget: 1 })).toBe(1);
   });
 
   it("stops asking once disposed", async () => {

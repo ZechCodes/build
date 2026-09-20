@@ -375,6 +375,38 @@ pub fn unpushed_summary(repo_path: &Path) -> Result<Value, String> {
     }))
 }
 
+/// The key naming the unpublished changeset of this checkout, on its own.
+///
+/// A narrowed read answers under it, because what says whether a body a
+/// reader holds still stands is the whole changeset moving, not the one file.
+pub fn unpushed_key(repo_path: &Path) -> Result<String, String> {
+    let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
+    unpushed_diff_key(repo_path, &published_base(&repo)?)
+}
+
+/// The unpublished changeset narrowed to `paths` — the hunks behind the files
+/// a reviewer has open, out of the same delta [`unpushed_payload`] describes.
+///
+/// It answers the diff and nothing about publication: the base, the commit
+/// list and whether there is a push target are what the list read already
+/// carried, and a reader asking for one file's hunks is not asking again.
+pub fn unpushed_file_diff(repo_path: &Path, paths: &[String]) -> Result<Value, String> {
+    let repo = git2::Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let base = published_base(&repo)?;
+    let diff = crate::diff::diff_against_commit_for(
+        repo_path,
+        base.oid(),
+        crate::diff::DiffPaths::Only(paths),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "stat": diff.stat().to_json(),
+        "files": file_rows(&diff),
+        "file_edited_at": file_edited_at(repo_path, &diff),
+        "patch": diff.patch(),
+    }))
+}
+
 pub fn unpushed_payload(
     repo_path: &Path,
     if_diff_key: Option<&str>,

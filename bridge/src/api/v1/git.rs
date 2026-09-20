@@ -370,6 +370,11 @@ pub struct ChangesetDiffParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectDiffParams {
     pub project_id: String,
+    /// Whether the patch text rides the answer. `false` asks for the shape a
+    /// list paints and leaves the hunks to the surface that opens them. Absent
+    /// means yes, so an older client is answered as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -697,7 +702,11 @@ pub struct ProjectDiffResult {
     pub path: String,
     pub stat: DiffStat,
     pub files: Vec<DiffFileRow>,
-    pub patch: String,
+    /// Absent when the caller asked for the shape without it
+    /// (`patch: false`): the rows and the key name a body the surface
+    /// that opens it reads for itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
 }
 
 /// HEAD as the refs picker names it: the branch it is on, or the commit a
@@ -764,7 +773,11 @@ pub struct UnpushedBase {
 /// Everything this checkout has that its remote does not.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UnpushedDiff {
-    pub patch: String,
+    /// Absent when the caller asked for the shape without it
+    /// (`patch: false`): the rows and the key name a body the surface
+    /// that opens it reads for itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
     pub stat: DiffStat,
     pub files: Vec<DiffFileRow>,
     pub file_edited_at: FileEditedAt,
@@ -809,7 +822,11 @@ pub struct WorktreeDiff {
     pub stat: DiffStat,
     pub files: Vec<DiffFileRow>,
     pub file_edited_at: FileEditedAt,
-    pub patch: String,
+    /// Absent when the caller asked for the shape without it
+    /// (`patch: false`): the rows and the key name a body the surface
+    /// that opens it reads for itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
     pub diff_key: String,
 }
 
@@ -824,7 +841,11 @@ pub enum WorktreeDiffResult {
 pub struct RunDiff {
     pub stat: DiffStat,
     pub files: Vec<DiffFileRow>,
-    pub patch: String,
+    /// Absent when the caller asked for the shape without it
+    /// (`patch: false`): the rows and the key name a body the surface
+    /// that opens it reads for itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
     pub file_edited_at: FileEditedAt,
     pub diff_key: String,
     /// The issue that asked, when an issue surface did (`issue.diff`).

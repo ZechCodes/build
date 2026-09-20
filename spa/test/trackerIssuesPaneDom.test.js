@@ -18,7 +18,7 @@ const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] } }),
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: carriedKinds } }),
   watchChanges: (registration) => {
     const named = RETIRED.filter((option) => option in registration);
     if (named.length) throw new TypeError(`watchChanges does not poll: remove ${named.join(", ")}`);
@@ -27,6 +27,11 @@ vi.mock("../src/core/changeEvents.js", () => ({
     return { dispose: () => { watcher.disposed = true; } };
   },
 }));
+
+/** What this device's greeting says its subscriptions carry. A case naming a
+ *  shorter list is an older bridge answering, not another machine. */
+const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "issues"];
+let carriedKinds = EVERY_KIND;
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -83,6 +88,7 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
+  carriedKinds = EVERY_KIND;
   notifyError.mockClear();
   openAssigneePicker.mockClear();
   openCreateIssue.mockClear();
@@ -359,6 +365,16 @@ describe("the push", () => {
     watchers[0].refresh();
     await flush();
     expect(listed("issues.list")).toHaveLength(1);
+  });
+
+  // Every kind in one subscribe shares that call's fate, and a refused one
+  // takes this device's other subscriptions with it — so a bridge that does
+  // not carry issues is asked for nothing rather than for a word it will
+  // refuse. The tab keeps its own reads and the ordered pass keeps its cache.
+  it("asks a bridge that does not carry issues for no kind at all", async () => {
+    carriedKinds = ["state", "thread", "git", "files", "terminals"];
+    await mount();
+    expect(watchers.map((one) => one.kinds)).toEqual([[]]);
   });
 
   it("takes its subscription down with it", async () => {

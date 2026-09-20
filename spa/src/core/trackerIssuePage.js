@@ -13,6 +13,7 @@
 
 import { messageOf } from "./text.js";
 import { watchChanges } from "./changeEvents.js";
+import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import { issueRecord, readIssueRecord, readIssuesRecord, writeIssueRecord } from "./trackerCache.js";
 import { columnsOf } from "./trackerModel.js";
@@ -219,7 +220,10 @@ export function mountIssuePage(host, options) {
     refresh: () => void refresh({ keepDrafts: true }),
     entity: state.projectId,
     deviceId: state.deviceId,
-    kinds: ["issues"],
+  // Named only where the bridge carries them (core/trackerPush.js): every
+  // kind in one subscribe shares that call's fate, and a refused one takes
+  // this device's other subscriptions with it.
+    kinds: issuesPushKinds(state.deviceId),
     mode: "realtime",
     onChanges: (items) => {
       if (namesIssue(items, state.issueId)) void refresh({ keepDrafts: true });

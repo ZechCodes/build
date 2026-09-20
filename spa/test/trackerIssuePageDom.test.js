@@ -361,6 +361,40 @@ describe("the push", () => {
     expect(listed("issues.get")).toHaveLength(1);
   });
 
+  // The reader is typing a comment when the issue moves under them. The page
+  // redraws to show the move, and the caret is exactly where it was.
+  it("keeps the caret in the comment box across a re-read", async () => {
+    await mount();
+    const field = host.querySelector("#issue-comment");
+    field.value = "Reproduced on the phone";
+    field.dispatchEvent(new Event("input"));
+    const typed = host.querySelector("#issue-comment");
+    typed.focus();
+    typed.setSelectionRange(10, 10);
+    call.mockImplementation(async (method) => (method === "issues.get" ? answerFor({ status: "in_review" }) : {}));
+    watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
+    await flush();
+
+    const after = host.querySelector("#issue-comment");
+    expect(host.textContent).toContain("In review");
+    expect(after.value).toBe("Reproduced on the phone");
+    expect(document.activeElement).toBe(after);
+    expect(after.selectionStart).toBe(10);
+  });
+
+  // The feed moves every time any agent's state does, and most of those moves
+  // change nothing on this page. A page that redrew for each one would drop
+  // the reader's caret and scroll as often as agents work.
+  it("does not redraw when the feed moves without changing what it shows", async () => {
+    await mount();
+    const before = host.querySelector("#issue-comment");
+    before.focus();
+    page.feedMoved();
+    page.feedMoved();
+    expect(host.querySelector("#issue-comment")).toBe(before);
+    expect(document.activeElement).toBe(before);
+  });
+
   it("leaves an item about another issue alone", async () => {
     await mount();
     call.mockClear();

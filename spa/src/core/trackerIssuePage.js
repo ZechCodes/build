@@ -48,13 +48,32 @@ export function mountIssuePage(host, options) {
 
   // ---- painting ------------------------------------------------------------
 
-  const paint = () => {
-    if (state.disposed) return;
-    if (!state.issue) {
-      host.innerHTML = state.loaded ? issueMissingHtml() : "";
-      return;
-    }
-    host.innerHTML = issuePageHtml(state.issue, {
+  /** What the page last drew. A paint that would draw the same thing again
+   *  is skipped outright: the feed moves every time an agent's state does,
+   *  and a redraw that changes nothing on screen would still take the reader's
+   *  caret and scroll with it. */
+  let painted = null;
+
+  /** Where the reader is typing when the page is about to be redrawn: which
+   *  field, and where the caret is in it. A push, a feed move or a write's
+   *  own repaint must not take the caret away — it comes back to the same
+   *  place in the field the redraw stood up. */
+  const fieldSnapshot = () => {
+    const active = document.activeElement;
+    if (!active?.id || !host.contains(active)) return null;
+    return { id: active.id, start: active.selectionStart, end: active.selectionEnd, scrollTop: active.scrollTop };
+  };
+  const restoreField = (snapshot) => {
+    const field = snapshot && host.querySelector(`#${snapshot.id}`);
+    if (!field) return;
+    field.focus({ preventScroll: true });
+    if (typeof snapshot.start === "number" && field.setSelectionRange) field.setSelectionRange(snapshot.start, snapshot.end);
+    field.scrollTop = snapshot.scrollTop;
+  };
+
+  const pageHtml = () => {
+    if (!state.issue) return state.loaded ? issueMissingHtml() : "";
+    return issuePageHtml(state.issue, {
       columns: state.columns,
       agentLabels: agentLabels(groups()),
       rows: state.rows,
@@ -64,7 +83,17 @@ export function mountIssuePage(host, options) {
       busy: state.busy,
       sending: state.sending,
     });
-    wire();
+  };
+
+  const paint = () => {
+    if (state.disposed) return;
+    const html = pageHtml();
+    if (html === painted) return;
+    const typing = fieldSnapshot();
+    painted = html;
+    host.innerHTML = html;
+    if (state.issue) wire();
+    restoreField(typing);
   };
 
   /** Take one `issues.get` answer: the issue, its timeline, and the labels the
@@ -193,10 +222,7 @@ export function mountIssuePage(host, options) {
       state.draft = field.value;
       // Repaint only when the send button's own state moves: a repaint per
       // keystroke would take the caret with it.
-      if (wasEmpty !== !state.draft.trim()) {
-        paint();
-        host.querySelector("#issue-comment")?.focus();
-      }
+      if (wasEmpty !== !state.draft.trim()) paint();
     };
     form.onsubmit = (event) => {
       event.preventDefault();

@@ -95,7 +95,16 @@ async fn workspace_finish_refuses_an_adopted_checkout_and_leaves_its_terminal() 
     let mut app = qa_state(&repo, dir.path());
     app.term_shell = "/bin/bash".into();
     let project_id = app.project_at(0).id.clone();
-    let checkout = add_external_worktree(&repo, dir.path(), "terminal-finish", "terminal-finish");
+    // Outside the daemon's own state directory, where a checkout of Build's
+    // own making would stand: only a checkout somewhere the user works is
+    // ever adopted as a workspace.
+    let checkouts = tempfile::tempdir().unwrap();
+    let checkout = add_external_worktree(
+        &repo,
+        checkouts.path(),
+        "terminal-finish",
+        "terminal-finish",
+    );
     let worktree_id = external_id(&mut app, &project_id, Some("terminal-finish"));
     let state = app.shared();
     let handler = AppState::handler(Arc::clone(&state));

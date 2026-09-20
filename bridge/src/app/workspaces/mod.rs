@@ -840,7 +840,8 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         for (project_id, repo_path, source_id, legacy_root) in projects {
-            let Some(checkouts) = external_checkouts(&repo_path, &legacy_root) else {
+            let Some(checkouts) = external_checkouts(&repo_path, &legacy_root, &self.state_root)
+            else {
                 continue;
             };
             for (name, path) in &checkouts {
@@ -908,7 +909,11 @@ impl AppState {
 /// `None` when the repository cannot be read at all. That is not the same
 /// answer as "no checkouts" — a project whose repository is briefly
 /// unreadable must not have the rows it already has taken away.
-fn external_checkouts(repo_path: &Path, legacy_root: &Path) -> Option<Vec<(String, PathBuf)>> {
+fn external_checkouts(
+    repo_path: &Path,
+    legacy_root: &Path,
+    state_root: &Path,
+) -> Option<Vec<(String, PathBuf)>> {
     let repository = git2::Repository::open(repo_path).ok()?;
     let names = repository.worktrees().ok()?;
     let mut checkouts = names
@@ -919,15 +924,39 @@ fn external_checkouts(repo_path: &Path, legacy_root: &Path) -> Option<Vec<(Strin
             Some((name.to_string(), worktree.path().to_path_buf()))
         })
         .collect::<Vec<_>>();
-    let Ok(entries) = std::fs::read_dir(legacy_root) else {
-        return Some(checkouts);
-    };
-    checkouts.extend(entries.flatten().filter_map(|entry| {
-        let path = entry.path();
-        (crate::isolation::Isolation::of(&path) == Some(Isolation::Rift))
-            .then(|| (entry.file_name().to_string_lossy().into_owned(), path))
-    }));
+    if let Ok(entries) = std::fs::read_dir(legacy_root) {
+        checkouts.extend(entries.flatten().filter_map(|entry| {
+            let path = entry.path();
+            (crate::isolation::Isolation::of(&path) == Some(Isolation::Rift))
+                .then(|| (entry.file_name().to_string_lossy().into_owned(), path))
+        }));
+    }
+    checkouts.retain(|(_, path)| {
+        !is_scratch_checkout(path, repo_path, state_root, &std::env::temp_dir())
+    });
     Some(checkouts)
+}
+
+/// Whether a checkout stands somewhere that is not a place to work, and so is
+/// never offered to the user as a workspace.
+///
+/// Build's own state directory is where Build cuts the checkouts it needs for
+/// itself — a project's conversation owner, an agent's scratch worktree — and
+/// the system temp directory is where a tool puts what it means to throw
+/// away. Neither is anybody's workspace; a row for one is a row the user did
+/// not ask for and cannot use.
+///
+/// A repository that itself lives in temp is the exception that proves it:
+/// temp is then simply where this whole checkout lives, and its worktrees are
+/// as real as it is.
+pub(in crate::app) fn is_scratch_checkout(
+    path: &Path,
+    repo_path: &Path,
+    state_root: &Path,
+    temp_root: &Path,
+) -> bool {
+    path_within(path, state_root)
+        || (path_within(path, temp_root) && !path_within(repo_path, temp_root))
 }
 
 pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
@@ -961,6 +990,11 @@ fn workspace_json(workspace: &Workspace) -> Value {
         "root": workspace.root.display().to_string(),
         "status": workspace.status,
         "finished_at": workspace.archived_at,
+        // False for a checkout Build only adopted. A row with no conversation
+        // has no work summary and no Done to offer, and saying which of the
+        // two it is lets the client name it an adopted checkout rather than
+        // report a summary as missing.
+        "managed": workspace.managed,
         "directories": workspace.directories.iter().map(|directory| json!({
             "id": directory.id,
             "source_id": directory.source_id,

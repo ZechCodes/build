@@ -17,7 +17,13 @@ const bridge = { call: null };
 const indexSource = readFileSync(resolve("index.html"), "utf8");
 const bodyHtml = indexSource.match(/<body>([\s\S]*)<\/body>/)[1];
 
-const feedItems = [];
+// A branch row, so the legacy branch page has a checkout to stand on rather
+// than painting "no checkout in this project carries build/login".
+const feedItems = [
+  { kind: "branch", deviceId: "dev-1", project_id: "p-1", branch: "build/login", run_id: "run-1", worktree_id: "wt-1", state: "building" },
+];
+// …and the project, so its page has a row to list rather than its empty state.
+const feedProject = { id: "p-1", project_id: "p-1", name: "Login", deviceId: "dev-1", projectKey: "dev-1/p-1" };
 // The machine's checkout list, as a pass leaves it. The workspace page stands
 // on the RECORD rather than on a read (views/workspaceView.js), and it is found
 // through the per-device slice — so the snapshot has to carry a `devices` entry
@@ -26,6 +32,13 @@ const feedItems = [];
 // no directory.
 const feedWorkspace = {
   id: "w-1",
+  workspace_id: "w-1",
+  name: "Login",
+  status: "ready",
+  deviceId: "dev-1",
+  projectKey: "dev-1/p-1",
+  workspaceKey: "dev-1/w-1",
+  updated_at: "2026-01-01T00:00:00Z",
   project_id: "p-1",
   directories: [
     { source_id: "s-1", name: "Build", is_git: true },
@@ -33,8 +46,8 @@ const feedWorkspace = {
   ],
 };
 const feedSnapshot = () => ({
-  items: feedItems, plans: [], runs: [], externalWorktrees: [], projects: [], workspaces: [feedWorkspace],
-  devices: { "dev-1": { items: feedItems, projects: [], workspaces: [feedWorkspace] } },
+  items: feedItems, plans: [], runs: [], externalWorktrees: [], projects: [feedProject], workspaces: [feedWorkspace],
+  devices: { "dev-1": { items: feedItems, projects: [feedProject], workspaces: [feedWorkspace] } },
 });
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
@@ -112,6 +125,27 @@ const visit = async (route) => {
   await flush();
 };
 
+/**
+ * What proves the PAGE's own body stood up, per place.
+ *
+ * Asserted BEFORE anything about the shell, because a shell case standing over
+ * a page that never mounted tests half of what its name claims — and passes,
+ * the rail being the shell's rather than the page's. That is exactly how the
+ * workspace case here ran for a while against a `loading…` frame (#32/#36).
+ */
+const PAGE_CONTENT = {
+  project: "[data-workspace]",
+  "project (issues tab)": ".issue-head",
+  // The issue surface itself is core/trackerIssuePage.js, mocked at the top of
+  // this file because it has a suite of its own — so its host pane is what
+  // there is to see, and seeing it is what says the route host ran.
+  "issue (tracker)": "#issue-pane",
+  workspace: ".workspace-gitpane",
+  "issue (legacy)": ".ivsplit",
+  "branch (legacy)": ".gitpane",
+};
+
+const pageContent = (place) => document.querySelector(`#root ${PAGE_CONTENT[place]}`);
 const strip = () => document.querySelector("#agent-rail .rail-strip");
 const separators = () => document.querySelectorAll("#agent-rail .rail-sep");
 const bubbleIds = () => [...document.querySelectorAll("#agent-rail .rail-strip [data-agent]")].map((b) => b.dataset.agent);
@@ -149,10 +183,12 @@ afterEach(() => {
 
 describe("every place stands in the same shell", () => {
   for (const [place, route] of Object.entries(PLACES)) {
-    it(`gives ${place} the bubble strip`, async () => {
+    it(`stands ${place} up, and gives it the bubble strip`, async () => {
       await visit(route);
-      // The whole of Zech's report: the strip is there, on every page, at every
-      // width. An issue page that mounts no rail is what this catches.
+      // The page first: a strip beside an empty frame proves nothing.
+      expect([place, Boolean(pageContent(place))]).toEqual([place, true]);
+      // Then Zech's report: the strip is there, on every page, at every width.
+      // An issue page that mounts no rail is what this catches.
       expect([place, Boolean(strip())]).toEqual([place, true]);
     });
   }
@@ -176,7 +212,11 @@ describe("a page swapping inside the shell", () => {
     await visit(PLACES.project);
     const held = strip();
     expect(held).toBeTruthy();
+    expect(pageContent("project")).toBeTruthy();
     await visit(PLACES["project (issues tab)"]);
+    // The page really swapped: the workspaces went, the issues came.
+    expect(pageContent("project (issues tab)")).toBeTruthy();
+    expect(pageContent("project")).toBeNull();
     // Same conversation, different page: the tabs are the shell's and the rail
     // is the shell's, so only #root changed.
     expect(strip()).toBe(held);
@@ -206,7 +246,13 @@ describe("a page swapping inside the shell", () => {
     await visit(PLACES.workspace);
     const held = strip();
     expect(held).toBeTruthy();
-    await visit({ ...PLACES.workspace, sourceId: "s-2", tab: "files" });
+    // Only the directory changes — not the tab as well, so what this case is
+    // named for is the one thing that moved.
+    await visit({ ...PLACES.workspace, sourceId: "s-2" });
+    // …and the page under it really moved to the other directory: the app is
+    // standing on it, and the page painted a body for it.
+    expect(App.route.sourceId).toBe("s-2");
+    expect(pageContent("workspace")).toBeTruthy();
     expect(strip()).toBe(held);
   });
 

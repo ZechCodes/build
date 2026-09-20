@@ -27,7 +27,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   },
   startFeed: () => {},
   stopFeed: () => {},
-  refreshFeed: () => {},
+  refreshFeed: async () => [],
   dropFeedDevice: () => {},
 }));
 
@@ -222,6 +222,9 @@ describe("render dispatch", () => {
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
+    // The PAGE first — a shell case standing over a frame that never mounted
+    // tests half of what it names, and passes (#36).
+    expect(root().querySelector(".gitpane")).toBeTruthy();
     const tabs = [...document.querySelectorAll("#dir-rail [data-tab]")].map((cell) => cell.dataset.tab);
     expect(tabs).toEqual(["changes", "files"]);
     // Icon-only at every width: the words are the tooltip and the accessible
@@ -307,12 +310,15 @@ describe("render dispatch", () => {
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
+    expect(root().querySelector(".gitpane")).toBeTruthy();
     const console = document.getElementById("console-region").innerHTML;
     expect(console).not.toBe("");
     App.route = { name: "account", page: "settings" };
     render();
     await flush();
     expect(document.querySelector('[role="dialog"]')).toBeTruthy();
+    // The page under the scrim is still the branch's, not a rebuilt frame.
+    expect(root().querySelector(".gitpane")).toBeTruthy();
     expect(document.getElementById("console-region").innerHTML).toBe(console);
     expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
   });

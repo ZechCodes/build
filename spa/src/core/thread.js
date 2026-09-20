@@ -27,6 +27,7 @@ import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
 import { setMotionRowHtml } from "./motion.js";
 import { issueCardHtml } from "./trackerMessageCard.js";
 import { issueActionLineHtml } from "./trackerActionLine.js";
+import { isIssueNotice, issueNoticeLineHtml, issueNoticeOf } from "./trackerNotice.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -958,9 +959,32 @@ function issueActionMessageHtml(message, context) {
   </article>`;
 }
 
+/// A tracking notice, as one quiet line.
+///
+/// Zech: "Tracking notices come in looking like user messages (same color and
+/// on the right). They should be a single line 'X did Y on Z' deep linking."
+/// They looked like that because on the wire they ARE a message on the user's
+/// side — so the two marks together are what tell them apart, and this row is
+/// the whole of what one draws. The comment body it carries is deliberately
+/// not shown: the press is what opens it.
+///
+/// The sequence rides the row, so it reads in order and counts as unread like
+/// any other message. No fold and no detail filter: it is one line, and a line
+/// nobody can see is a line nobody can press.
+function issueNoticeMessageHtml(message, context) {
+  return `<article class="thread-message thread-notice"${sequenceAttribute(message)}>
+    ${issueNoticeLineHtml(issueNoticeOf(message), { place: context.place })}
+  </article>`;
+}
+
 function messageHtml(message, agentLabel, context) {
-  // First, so a notice can never be read as an arrival: the mark says Build
-  // wrote it, and that outranks every other reading of who a message is from.
+  // Before the from_build reading, which would otherwise draw this as the
+  // restart notice's bubble — on the user's side, in the user's colour, with
+  // the whole comment body under it.
+  if (isIssueNotice(message)) return issueNoticeMessageHtml(message, context);
+  // First of the rest, so a notice can never be read as an arrival: the mark
+  // says Build wrote it, and that outranks every other reading of who a
+  // message is from.
   if (message.from_build) return buildNoticeHtml(message, agentLabel, context);
   // Before the sent/arrived readings: an action line is this agent saying what
   // it just did here, whatever else the record carries.

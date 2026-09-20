@@ -378,6 +378,34 @@ a.thread-issue-action:focus-visible { outline:2px solid var(--accent); outline-o
   .thread-message.thread-action { padding-left:12px; }
 }
 
+/* ---- a tracking notice, in the conversation it was delivered to ----------
+   The same family as the action line above, and deliberately so: both are one
+   clickable line about an issue rather than something somebody said. The
+   difference is whose news it is — an action line is the agent reporting what
+   it just did, a notice is Build saying somebody else did something — which
+   the sentence says ("Agent 2 commented on #32 …") and the styling does not
+   need to repeat.
+
+   Left-aligned, always. A notice arrives as a message on the USER's side, and
+   drawn as one it claimed Zech had written it. */
+
+.thread-message.thread-notice { padding:1px 0 1px 34px; }
+.thread-issue-notice {
+  display:inline-flex; flex-wrap:wrap; align-items:baseline; gap:0 5px;
+  padding:3px 8px; border-radius:7px;
+  font-size:11.5px; line-height:1.5; color:var(--dim);
+  text-decoration:none;
+  transition:background var(--motion-fast), color var(--motion-fast);
+}
+a.thread-issue-notice:hover { background:var(--row-hover); color:var(--ink2); }
+a.thread-issue-notice:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.thread-issue-notice-number { color:var(--accent); font-weight:650; font-variant-numeric:tabular-nums; }
+.thread-issue-notice-title { min-width:0; overflow-wrap:anywhere; }
+
+@media (max-width: 760px) {
+  .thread-message.thread-notice { padding-left:12px; }
+}
+
 /* The comment an action line lands on: a moment's mark so the reader sees
    where they arrived rather than having to count rows. */
 .issue-entry:target .issue-comment-card {

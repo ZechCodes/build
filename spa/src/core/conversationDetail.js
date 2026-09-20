@@ -87,13 +87,24 @@ const isBetweenAgents = (item) => Boolean(item?.data?.from_agent || item?.data?.
  *  it costs the narrowed view almost nothing. */
 const isOwnIssueAction = (item) => Boolean(item?.data?.issue_action);
 
+/** A tracking notice: Build saying somebody acted on an issue this agent
+ *  follows (core/trackerNotice.js). One line, and news about the work rather
+ *  than correspondence with anywhere else, so it is dialogue at every level.
+ *
+ *  Said here rather than left to fall out of carrying no `from_agent`, for the
+ *  same reason the action line above is: the narrowest level is for what is
+ *  happening to this agent's work, and whether it survives should not depend
+ *  on which fields the bridge happens to set on a notice. */
+const isTrackingNotice = (item) => Boolean(item?.data?.from_build && item?.data?.from_issue);
+
 /** What each level admits. One predicate per level rather than a ladder of
  *  conditionals: a level is a way of reading the thread, and adding one should
  *  be adding a reading. */
 const SHOWN_AT_LEVEL = {
   all: () => true,
   messages: isMessage,
-  agent: (item) => isMessage(item) && (isOwnIssueAction(item) || !isBetweenAgents(item)),
+  agent: (item) =>
+    isMessage(item) && (isOwnIssueAction(item) || isTrackingNotice(item) || !isBetweenAgents(item)),
 };
 
 const shownAt = (level) => SHOWN_AT_LEVEL[level] || SHOWN_AT_LEVEL[DEFAULT_LEVEL];

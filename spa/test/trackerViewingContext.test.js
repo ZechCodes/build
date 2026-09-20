@@ -68,27 +68,36 @@ describe("the item on the wire", () => {
 });
 
 describe("the gate", () => {
-  // #20 has not landed and its `since` is "the minor #13 introduces", which
-  // does not exist either. Guessing it is the one thing that must not happen:
-  // guess low and every message from the issue page is refused whole.
-  it("is shut until the minor is known", () => {
-    expect(ISSUE_CONTEXT_SINCE).toBeNull();
-    apiVersion = "9.9.9";
-    expect(carriesIssueContext("dev-1")).toBe(false);
-    expect(issueContextItem(issue(), "dev-1")).toBeNull();
+  // The minor #13 introduces and #20 lands the item at. It was held at null
+  // until that number was reported rather than inferred: guess low and every
+  // message from the issue page is refused whole, the user's words with it.
+  it("stands at the minor the item landed in", () => {
+    expect(ISSUE_CONTEXT_SINCE).toBe("1.5.0");
   });
 
-  it("opens at or above the minor, once one is named", () => {
+  it("opens at that minor and above, on the constant alone", () => {
     apiVersion = "1.5.0";
-    expect(carriesIssueContext("dev-1", "1.5.0")).toBe(true);
+    expect(carriesIssueContext("dev-1")).toBe(true);
     apiVersion = "1.6.0";
-    expect(carriesIssueContext("dev-1", "1.5.0")).toBe(true);
+    expect(carriesIssueContext("dev-1")).toBe(true);
+    apiVersion = "2.0.0";
+    expect(carriesIssueContext("dev-1")).toBe(true);
   });
 
   it("stays shut below it", () => {
     apiVersion = "1.4.0";
-    expect(carriesIssueContext("dev-1", "1.5.0")).toBe(false);
-    expect(issueContextItem(issue(), "dev-1", "1.5.0")).toBeNull();
+    expect(carriesIssueContext("dev-1")).toBe(false);
+    expect(issueContextItem(issue(), "dev-1")).toBeNull();
+    apiVersion = "1.2.0";
+    expect(carriesIssueContext("dev-1")).toBe(false);
+  });
+
+  // A threshold nobody has named yet sends nothing to anybody — the state this
+  // gate spent its first day in, kept because it is the safe default.
+  it("sends nothing at all when no minor is named", () => {
+    apiVersion = "9.9.9";
+    expect(carriesIssueContext("dev-1", null)).toBe(false);
+    expect(issueContextItem(issue(), "dev-1", null)).toBeNull();
   });
 
   // Every unknown answers no: the cost of a wrong yes is the user's message.
@@ -105,7 +114,7 @@ describe("the gate", () => {
 describe("the item the page would send", () => {
   it("names the issue once the bridge can take it", () => {
     apiVersion = "1.5.0";
-    expect(issueContextItem(issue(), "dev-1", "1.5.0")).toEqual({
+    expect(issueContextItem(issue(), "dev-1")).toEqual({
       kind: "issue",
       issue_id: "issue-01M2ZS29",
       number: 21,
@@ -117,7 +126,7 @@ describe("the item the page would send", () => {
   // title behind it.
   it("says nothing about an issue that has not been read", () => {
     apiVersion = "1.5.0";
-    expect(issueContextItem(null, "dev-1", "1.5.0")).toBeNull();
-    expect(issueContextItem({ id: "issue-1" }, "dev-1", "1.5.0")).toBeNull();
+    expect(issueContextItem(null, "dev-1")).toBeNull();
+    expect(issueContextItem({ id: "issue-1" }, "dev-1")).toBeNull();
   });
 });

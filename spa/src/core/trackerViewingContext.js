@@ -18,20 +18,17 @@
 // advertised anywhere, so the only signal is the API minor the item landed in
 // — which is why #20 puts the item's `since` in the fixture.
 //
-// # Why the threshold is null
+// # The threshold, and why it was not guessed
 //
-// #20 has not landed. Its `since` is "the same minor #13 introduces", and #13
-// has not landed either: `versions.json` is at 1.4.0 (`git.changeset_diff`),
-// and there are no tracking fixtures. So the number does not exist yet.
+// 1.5.0 — the minor #13 introduces and #20 lands the item at: `versions.json`
+// current 1.5.0 and the bridge's API_VERSION 1.5.0, with `issues.track`,
+// `issues.untrack`, `issues.for_agent` and this item all at that minor.
 //
-// Guessing it is the one thing that must not happen here. Guess 1.5.0, have
-// #13 land at 1.6.0, and every message sent from the issue page to a 1.5.0
-// bridge is refused whole — the exact outage this gate exists to prevent, with
-// the user's own words as the casualty.
-//
-// So the threshold is null until #20 names it, and a null threshold sends
-// nothing to anybody. The feature is dark rather than dangerous, and turning
-// it on is this one constant. Everything below it is built and tested.
+// It was held at null until that number was reported rather than inferred, and
+// the reason is worth keeping: guess 1.5.0, have the verbs land at 1.6.0, and
+// every message sent from the issue page to a 1.5.0 bridge is refused whole —
+// the exact outage this gate exists to prevent, with the user's own words as
+// the casualty. A gate guessed low is worse than no gate at all.
 
 import { bridgeApiVersion } from "./changeEvents.js";
 import { compare } from "./bridgeApi/semver.js";
@@ -39,10 +36,10 @@ import { compare } from "./bridgeApi/semver.js";
 /**
  * The API minor that first accepts a viewing context naming an issue.
  *
- * null means "no bridge does yet". Set it to the minor #20 lands the item at —
- * the same one #13 introduces — and nothing else here has to change.
+ * A bridge below this is told nothing about which issue is open: it would
+ * refuse the whole message rather than the item it does not know.
  */
-export const ISSUE_CONTEXT_SINCE = null;
+export const ISSUE_CONTEXT_SINCE = "1.5.0";
 
 /**
  * Whether this device's bridge accepts the issue item.

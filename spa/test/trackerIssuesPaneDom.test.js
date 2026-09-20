@@ -456,6 +456,33 @@ describe("the two presses", () => {
 });
 
 describe("the push", () => {
+  // The feed moves whenever any agent's state does, and most of those moves
+  // change nothing on this tab. A tab that redrew for each one would take the
+  // reader's focus out of the filter they were using.
+  it("does not redraw or drop focus when the feed moves without changing what it shows", async () => {
+    await mount();
+    const filter = host.querySelector("select");
+    filter.focus();
+    pane.feedMoved();
+    pane.feedMoved();
+    expect(host.querySelector("select")).toBe(filter);
+    expect(document.activeElement).toBe(filter);
+  });
+
+  it("puts the focus back on the same control when a re-read does change the list", async () => {
+    await mount();
+    const filter = host.querySelector("select");
+    filter.focus();
+    const name = filter.name || filter.id;
+    call.mockImplementation(async (method) => (method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh" })], columns: columns() } : {}));
+    watchers[0].refresh();
+    await flush();
+    expect(host.textContent).toContain("Fresh");
+    const after = host.querySelector("select");
+    expect(after.name || after.id).toBe(name);
+    expect(document.activeElement).toBe(after);
+  });
+
   it("subscribes this project for issues, and nothing else", async () => {
     await mount();
     expect(watchers.map((one) => [one.entity, one.deviceId, one.kinds])).toEqual([["proj-1", "dev-1", ["issues"]]]);

@@ -89,13 +89,54 @@ export function mountIssuesPane(host, options) {
     return issueListHtml(state.shown, context);
   };
 
+  /** What the tab last drew. A paint that would draw the same thing again is
+   *  skipped: the feed moves whenever any agent's state does, and a redraw
+   *  that changes nothing on screen would still take the reader's focus out
+   *  of a filter or off a card. */
+  let painted = null;
+
+  /** The control the reader is on when the tab is about to be redrawn, named
+   *  well enough to find again: by id, else by name, else by the first data-
+   *  attribute it wears. Put back after the redraw, caret included. */
+  const controlSnapshot = () => {
+    const active = document.activeElement;
+    if (!active || !host.contains(active)) return null;
+    const dataKey = [...active.attributes].find((attribute) => attribute.name.startsWith("data-"));
+    const selector = active.id
+      ? `#${active.id}`
+      : active.name
+        ? `${active.tagName.toLowerCase()}[name="${active.name}"]`
+        : dataKey
+          ? `[${dataKey.name}="${dataKey.value}"]`
+          : null;
+    if (!selector) return null;
+    return { selector, start: active.selectionStart, end: active.selectionEnd };
+  };
+  const restoreControl = (snapshot) => {
+    const control = snapshot && host.querySelector(snapshot.selector);
+    if (!control) return;
+    control.focus({ preventScroll: true });
+    if (typeof snapshot.start === "number" && control.setSelectionRange) {
+      try {
+        control.setSelectionRange(snapshot.start, snapshot.end);
+      } catch {
+        // a control that holds a caret but will not place it (a select) is fine as focused
+      }
+    }
+  };
+
   const paint = () => {
     if (state.disposed) return;
-    host.innerHTML = `${headerHtml(state)}
+    const html = `${headerHtml(state)}
       ${filterBarHtml(filterOptions(state.all, state.columns, nameActor), state.filters)}
       <div class="issue-body">${bodyHtml()}</div>`;
+    if (html === painted && host.firstChild) return;
+    const focused = controlSnapshot();
+    painted = html;
+    host.innerHTML = html;
     wire();
     reads.mark(); // the host was just rewritten; the mark lives among its children
+    restoreControl(focused);
   };
 
   // ---- reading -------------------------------------------------------------

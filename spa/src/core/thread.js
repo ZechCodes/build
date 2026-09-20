@@ -1020,7 +1020,13 @@ function noticeMessageHtml(message, context) {
 /// other message, so it reads in order and counts as unread.
 function issueActionMessageHtml(message, context) {
   return `<article class="thread-message thread-issue-line thread-action thread-quiet-row"${sequenceAttribute(message)}>
-    ${issueActionLineHtml(message.issue_action, { place: context.place })}
+    ${issueActionLineHtml(message.issue_action, {
+      place: context.place,
+      // The same labels the notice line reads, so an agent named once is
+      // named the same way in both.
+      agentLabels: context.agentLabels,
+      projectName: context.place?.projectName || "",
+    })}
   </article>`;
 }
 

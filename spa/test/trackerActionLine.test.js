@@ -37,6 +37,16 @@ const paint = (items, place = HERE) => {
   return document.querySelector(".thread-issue-action");
 };
 
+/// The same paint, with what the conversation knows about the project's agents
+/// — which is how an assignee's id becomes a name a reader recognises.
+const paintWith = (items, { agentLabels = {}, projectName = "" } = {}) => {
+  document.body.innerHTML = threadHtml(
+    { id: "conversation-3", items },
+    { place: { ...HERE, projectName }, agentLabels },
+  );
+  return document.querySelector(".thread-issue-action");
+};
+
 describe("the line", () => {
   it("reads as one sentence in the agent's voice", () => {
     const line = paint([acted()]);
@@ -51,7 +61,6 @@ describe("the line", () => {
   // tense both read, because the bridge may send either.
   it("renders each action", () => {
     const said = (name) => paint([acted({ action: name })]).textContent.replace(/\s+/g, " ").trim().replace(/^#\d+\s*/, "");
-    expect(said("assigned")).toBe("assigned");
     // The wire says `update`; a reader calls it an edit (#40).
     expect(said("updated")).toBe("edited");
     expect(said("commented")).toBe("commented on");
@@ -70,6 +79,33 @@ describe("the line", () => {
     expect(text({ action: "created", title: "" })).toBe("Created #14");
     expect(paint([acted({ action: "created", title: "Ghost rows survive" })]).querySelector(".thread-issue-title")).not.toBeNull();
     expect(paint([acted({ action: "commented", title: "Ghost rows survive" })]).querySelector(".thread-issue-title")).toBeNull();
+  });
+
+  // #59. An assignment's news is WHO got it, so it reads verb first like a
+  // creation. "#52 assigned" told the reader the half they already knew.
+  it("reads an assignment verb first, naming who got it", () => {
+    const text = (over, options) =>
+      paintWith([acted(over)], options).textContent.replace(/\s+/g, " ").trim();
+
+    expect(text({ action: "assigned", assignee: { kind: "user" } })).toBe("Assigned #14 to You");
+    expect(text({ action: "assigned", assignee: { kind: "project_agent" } }, { projectName: "Build" }))
+      .toBe("Assigned #14 to Build agent");
+    expect(
+      text(
+        { action: "assigned", assignee: { kind: "agent", agent_id: "agent-1" } },
+        { agentLabels: { "agent-1": "issues-spa · Rail scroll" } },
+      ),
+    ).toBe("Assigned #14 to issues-spa · Rail scroll");
+
+    // Handing it back is its own word and names nobody.
+    expect(text({ action: "unassigned" })).toBe("Unassigned #14");
+  });
+
+  // An older bridge carried no assignee at all. The line says what it knows
+  // and invents no target.
+  it("says an assignment with no assignee as itself", () => {
+    expect(paint([acted({ action: "assigned" })]).textContent.replace(/\s+/g, " ").trim())
+      .toBe("Assigned #14");
   });
 
   // A later verb should leave a legible line, not a blank one — and never one

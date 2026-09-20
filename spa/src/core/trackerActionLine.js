@@ -18,7 +18,7 @@
 
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { actionPhrase } from "./trackerLineWords.js";
+import { actionPhrase, actorName } from "./trackerLineWords.js";
 
 export const ACTION_LINE_CLASS = "thread-issue-action";
 
@@ -45,17 +45,32 @@ export function actionHref(action, place) {
 }
 
 /**
- * The words of the line. A creation is the one action whose news is the title
- * — nothing else on the page has named the issue yet — so it reads verb first
- * with the title, ellipsised: Zech, 21:19Z: "Use 'Created #X {title}'".
+ * The words of the line.
+ *
+ * Two actions read verb first. A creation, because its news is the title —
+ * nothing else on the page has named the issue yet: "Created #X {title}".
+ * And an assignment, because its news is WHO got it, and a line reading "#52
+ * assigned" tells the reader the one half they already knew: "Assigned #52 to
+ * issues-spa · Agent 1".
+ *
+ * An assignment whose record names nobody — an older bridge, which carried no
+ * assignee at all — reads "Assigned #52" rather than inventing a target.
  * Every other action leads with the number and leaves the title to hover.
  */
-function actionSpansHtml(action) {
+function actionSpansHtml(action, reading) {
   const number = `<span class="thread-issue-number">#${esc(String(action.number ?? ""))}</span>`;
   const word = actionWord(action.action);
   if (word === "created") {
     const title = action.title ? ` <span class="thread-issue-title">${esc(action.title)}</span>` : "";
     return `<span class="thread-issue-said">Created</span> ${number}${title}`;
+  }
+  if (word === "assigned") {
+    const who = actorName(action.assignee, reading);
+    const to = who ? ` <span class="thread-issue-said">to</span> <span class="thread-issue-who">${esc(who)}</span>` : "";
+    return `<span class="thread-issue-said">Assigned</span> ${number}${to}`;
+  }
+  if (word === "unassigned") {
+    return `<span class="thread-issue-said">Unassigned</span> ${number}`;
   }
   return `${number} <span class="thread-issue-said">${esc(word)}</span>`;
 }
@@ -67,7 +82,7 @@ function actionSpansHtml(action) {
  * target, which is a larger press on a phone and one thing to tab to rather
  * than several.
  */
-export function issueActionLineHtml(action, { place = null } = {}) {
+export function issueActionLineHtml(action, { place = null, agentLabels = {}, projectName = "" } = {}) {
   if (!action || !action.issue_id) return "";
   // The number first, then what was done (#49). No actor: this line IS the
   // agent speaking in its own conversation, so "by …" would name the voice
@@ -78,7 +93,7 @@ export function issueActionLineHtml(action, { place = null } = {}) {
   // The spaces between the spans are for the reader, not for the layout: flex
   // drops whitespace-only nodes and `gap` does the spacing, but they stay in
   // the text a screen reader speaks and a copy takes.
-  const said = actionSpansHtml(action);
+  const said = actionSpansHtml(action, { agentLabels, projectName });
   const hover = action.title ? ` title="${esc(action.title)}"` : "";
   const href = actionHref(action, place);
   return href

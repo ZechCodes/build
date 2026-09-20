@@ -162,6 +162,14 @@ pub struct IssueAction {
     /// comment rather than the issue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_id: Option<String>,
+    /// Who the issue went to, on `assigned` only — the same shape
+    /// `issue_notice.assignee` carries.
+    ///
+    /// Without it the agent's own line can say "assigned" and not to whom,
+    /// which is the half a reader wants. Absent on an `unassigned`, which went
+    /// to nobody, and on every other action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<crate::tracker::Assignee>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

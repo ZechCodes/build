@@ -33,6 +33,10 @@ const ACTION_WORDS = Object.freeze({
   "commented on": "commented on",
   "assign": "assigned",
   "assigned": "assigned",
+  // Handing an issue back is its own word. A line that called it "assigned"
+  // said the opposite of what happened.
+  "unassign": "unassigned",
+  "unassigned": "unassigned",
   // The wire's word is `issues.update`; a reader calls it an edit, and the
   // reader's word is the one on screen.
   "update": "edited",

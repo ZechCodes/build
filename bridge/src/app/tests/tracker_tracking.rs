@@ -1147,3 +1147,69 @@ fn the_api_path_tracks_nobody() {
         "an unknown field is ignored, and the user is not a tracker"
     );
 }
+
+/// An agent's own line says who it handed the issue TO, not just that it
+/// assigned it.
+#[test]
+fn an_assignment_the_agent_made_records_who_got_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let ws = workspace(&mut state, &project_id, "here");
+    let caller = coding_agent(&mut state, &project_id, "caller");
+    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+
+    // Handed to a new agent on an existing workspace: a creating kind, which
+    // resolves to the agent it makes.
+    state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerAssignIssue {
+                issue_id: id.clone(),
+                assignee: json!({ "kind": "new_agent", "workspace_id": ws }),
+                note: None,
+                track: None,
+            },
+        )
+        .expect("an agent may assign");
+
+    let lines = said(&mut state, &caller.0, &caller.1);
+    let assigned = lines
+        .iter()
+        .find(|line| line["issue_action"]["action"] == "assigned")
+        .unwrap_or_else(|| panic!("no assignment line: {lines:?}"));
+    let got = assigned["issue_action"]["assignee"].clone();
+    assert_eq!(got["kind"], "agent", "{assigned:?}");
+    assert!(
+        got["agent_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("agent-")),
+        "the agent the dispatch made, not the kind that asked for it: {assigned:?}"
+    );
+
+    // Handing it back is its own word, and goes to nobody.
+    state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerAssignIssue {
+                issue_id: id.clone(),
+                assignee: Value::Null,
+                note: None,
+                track: None,
+            },
+        )
+        .expect("an agent may hand it back");
+    let lines = said(&mut state, &caller.0, &caller.1);
+    let handed_back = lines
+        .last()
+        .cloned()
+        .unwrap_or_else(|| panic!("no line: {lines:?}"));
+    assert_eq!(handed_back["issue_action"]["action"], "unassigned");
+    assert!(
+        handed_back["issue_action"]["assignee"].is_null(),
+        "nobody has it: {handed_back:?}"
+    );
+    assert_eq!(handed_back["body"], "Unassigned #1 Kanban drag");
+}

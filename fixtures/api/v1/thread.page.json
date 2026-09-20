@@ -123,6 +123,25 @@
       {
         "type": "message",
         "data": {
+          "id": "message-47",
+          "sequence": 47,
+          "updated_sequence": 47,
+          "role": "agent",
+          "still_working": true,
+          "issue_action": {
+            "action": "assigned",
+            "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "number": 13,
+            "title": "Kanban drag does not persist",
+            "assignee": { "kind": "agent", "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E" }
+          },
+          "body": "Assigned #13 Kanban drag does not persist",
+          "created_at": "2026-09-20T15:08:00Z"
+        }
+      },
+      {
+        "type": "message",
+        "data": {
           "id": "message-46",
           "sequence": 46,
           "updated_sequence": 46,

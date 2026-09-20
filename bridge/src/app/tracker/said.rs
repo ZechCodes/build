@@ -79,6 +79,13 @@ fn issue_action(write: &IssueWrite) -> Option<IssueAction> {
         comment_id: (action == "commented_on")
             .then(|| write.comments.first().map(|comment| comment.id.clone()))
             .flatten(),
+        // Read off the ISSUE rather than off the event, because the issue is
+        // what the assignment settled on: a creating kind resolves to the
+        // agent it made, and the event that named it was written before that
+        // agent existed.
+        assignee: (action == "assigned")
+            .then(|| write.issue.assignee.clone())
+            .flatten(),
     })
 }
 
@@ -90,7 +97,11 @@ fn action_slug(write: &IssueWrite) -> Option<&'static str> {
     }
     Some(match () {
         _ if has(IssueEventKind::Created) => "created",
-        _ if has(IssueEventKind::Assigned) || has(IssueEventKind::Unassigned) => "assigned",
+        // Two words, not one: an issue handed to somebody and an issue handed
+        // back are opposite things, and a line that called both "assigned"
+        // said the wrong one half the time.
+        _ if has(IssueEventKind::Assigned) => "assigned",
+        _ if has(IssueEventKind::Unassigned) => "unassigned",
         _ if has(IssueEventKind::Closed) => "closed",
         _ if has(IssueEventKind::Reopened) => "reopened",
         _ if has(IssueEventKind::Moved) => "moved",
@@ -109,6 +120,7 @@ fn label(action: &str) -> &'static str {
     match action {
         "created" => "Created",
         "assigned" => "Assigned",
+        "unassigned" => "Unassigned",
         "moved" => "Moved",
         "closed" => "Closed",
         "reopened" => "Reopened",
@@ -207,7 +219,7 @@ mod tests {
             (IssueEventKind::Reopened, "reopened"),
             (IssueEventKind::Linked, "linked"),
             (IssueEventKind::Labelled, "updated"),
-            (IssueEventKind::Unassigned, "assigned"),
+            (IssueEventKind::Unassigned, "unassigned"),
         ] {
             let action = issue_action(&write_with(vec![kind], false)).unwrap();
             assert_eq!(action.action, slug, "{kind:?}");

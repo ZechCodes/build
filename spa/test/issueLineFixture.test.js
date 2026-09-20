@@ -34,11 +34,14 @@ const notice = (sequence, title, issue_notice) => ({
     issue_notice, body: "",
   },
 });
-const action = (sequence, title, act) => ({
+const action = (sequence, title, act, assignee = null) => ({
   type: "message",
   data: {
     id: `m-${sequence}`, sequence, role: "agent", body: "",
-    issue_action: { issue_id: `issue-${sequence}`, number: sequence, title, action: act },
+    issue_action: {
+      issue_id: `issue-${sequence}`, number: sequence, title, action: act,
+      ...(assignee ? { assignee } : {}),
+    },
   },
 });
 
@@ -80,6 +83,12 @@ export const ISSUE_LINE_ITEMS = [
   // they all group nicely together." Between two lines, so the measurement
   // can ask whether the rhythm survives it.
   { type: "event", data: { event: "tool_use", sequence: 441, summary: "Bash cd spa && npm run lint", created_at: "2026-09-20T21:10:00Z" } },
+  // #59: an assignment reads verb first and names who got it, so the row it
+  // measures is the widest shape this line takes.
+  action(46, "An agent's own assignment line names who it went to", "assigned", {
+    kind: "agent",
+    agent_id: "agent-01M2A",
+  }),
   notice(45, "Workspace issues as a tab of the workspace page, with the workspace rail beside it", { actor: "user", action: "closed" }),
   message(9, "A normal message after the run."),
   // #50: a fenced block far wider than a phone. The block must scroll; the
@@ -122,8 +131,8 @@ describe("the markup the browser measurement is taken over", () => {
   it("holds a run of issue lines between ordinary messages", () => {
     const host = document.createElement("div");
     host.innerHTML = rendered();
-    expect(host.querySelectorAll(".thread-issue-line")).toHaveLength(6);
-    expect(host.querySelectorAll(".thread-action")).toHaveLength(2);
+    expect(host.querySelectorAll(".thread-issue-line")).toHaveLength(7);
+    expect(host.querySelectorAll(".thread-action")).toHaveLength(3);
   });
 
   // #42: one screenshot has to show all four, or it cannot show that no two

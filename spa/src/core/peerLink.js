@@ -55,6 +55,11 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // restart, because a restart is where a path that was direct becomes a
   // relayed one. Null until the first sample answers.
   let transportPath = null;
+  /** Told when the path this connection is carrying on CHANGES — which happens
+   *  when it first lands, and again if a restart or the direct-pair attempt
+   *  re-nominates. A subscription rather than a callback parameter, so nothing
+   *  above has to be handed down into the link to hear about it. */
+  const pathListeners = new Set();
   /** This connection's stats, or null when the peer cannot be asked. Two readings
    *  are taken off them — which path is carrying, and whether a direct pair is
    *  worth trying — and neither may throw at its caller. */
@@ -69,8 +74,13 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     try {
       const path = classifyTransportPath(await peerStats());
       if (torn || !path) return;
+      const moved = path !== transportPath;
       transportPath = path;
+      // Recorded on every landing, changed or not: "the restart came back on
+      // relay again" is worth having in the timeline. Announced only on a
+      // change, because that is what a surface has to redraw for.
       diagnostic("carrying", { path });
+      if (moved) for (const listener of [...pathListeners]) listener(path);
     } catch {
       /* a peer that cannot be asked says nothing, and the reader is told
          nothing rather than told wrong */
@@ -162,6 +172,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     stopWatching();
     clearTimeout(upgradeTimer);
     recovery.clear();
+    pathListeners.clear();
     holdInbound.close();
     holdOutbound.close();
     unsubscribe();
@@ -324,7 +335,19 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   });
   armDirectPairAttempt();
   const [app, term] = carriers;
-  return { app, term, recovery, transportPath: () => transportPath, close: tearDown };
+  return {
+    app,
+    term,
+    recovery,
+    transportPath: () => transportPath,
+    /** Hear when this connection starts carrying a different way. Returns the
+     *  unsubscribe, which is the only way off. */
+    onPathChanged(fn) {
+      pathListeners.add(fn);
+      return () => pathListeners.delete(fn);
+    },
+    close: tearDown,
+  };
 }
 
 async function offer(peer, signal, iceServers, options, ensureActive) {

@@ -201,7 +201,16 @@ const fakeRecovery = (recovering = false) => ({
   snapshot: () => ({ epoch: 0, recovering }),
   subscribe: () => () => {},
 });
-const fakeLink = () => ({ app: fakeCarrier("app"), term: fakeCarrier("term"), recovery: fakeRecovery(), close: vi.fn() });
+const fakeLink = () => ({
+  app: fakeCarrier("app"),
+  term: fakeCarrier("term"),
+  recovery: fakeRecovery(),
+  // Every real link tells its owner when the way it is carrying changes, so the
+  // ring can redraw the word (core/peerLink.js, issue #31).
+  onPathChanged: vi.fn(() => () => {}),
+  transportPath: () => null,
+  close: vi.fn(),
+});
 
 /** The peer link opens as the real one does: the ICE servers are minted, the
  *  offer goes over the signaling wire, and the caller is told the channels are

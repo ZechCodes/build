@@ -677,6 +677,40 @@ describe("a session that landed on a relayed pair", () => {
     expect(resolved.transportPath()).toBe("turn");
   });
 
+  it("tells its owner the path moved, so the ring can redraw the word", async () => {
+    // The ring reads the path off the link and repaints on availability and on
+    // recovery; a re-nomination under a steady session is neither, so without
+    // this it would keep saying "Connected TURN" until something unrelated drew.
+    const { peer, resolved } = await landedOnRelay();
+    const moves = [];
+    resolved.onPathChanged((path) => moves.push(path));
+
+    let asked = 0;
+    peer.getStats = async () => {
+      asked += 1;
+      if (asked === 1) {
+        return asReport([
+          ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+          ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+        ]);
+      }
+      return asReport(pairEntries("direct", { localType: "host", remoteType: "host", nominated: true }));
+    };
+    await vi.advanceTimersByTimeAsync(21000);
+
+    expect(moves).toEqual(["direct"]);
+  });
+
+  it("says nothing when a restart comes back on the same kind of path", async () => {
+    const { resolved } = await landedOnRelay({ alsoDirect: "failed" });
+    const moves = [];
+    resolved.onPathChanged((path) => moves.push(path));
+
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(moves).toEqual([]);
+  });
+
   it("is never asked of a session that is already direct", async () => {
     const { signalled } = await landedDirect();
     const before = offers(signalled);

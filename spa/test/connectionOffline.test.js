@@ -173,7 +173,16 @@ function fakePeerLink(deviceId) {
       drop: (reason = null) => listeners.forEach((fn) => fn(reason)),
     };
   };
-  const link = { app: carrier(), term: carrier(), recovery: fakeRecovery(), close: vi.fn() };
+  const link = {
+    app: carrier(),
+    term: carrier(),
+    recovery: fakeRecovery(),
+    // Every real link tells its owner when the way it is carrying changes, so
+    // the ring can redraw the word (core/peerLink.js, issue #31).
+    onPathChanged: vi.fn(() => () => {}),
+    transportPath: () => null,
+    close: vi.fn(),
+  };
   linksFor.set(deviceId, link);
   return link;
 }

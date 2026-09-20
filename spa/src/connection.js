@@ -29,6 +29,7 @@ import { App, rememberSelectedDevice } from "./app.js";
 import {
   adoptBridgeSelection,
   adoptDeviceConnection,
+  announceDeviceTransport,
   blockCurrentDevice,
   blockDeviceConnection,
   canAnswer,
@@ -237,6 +238,12 @@ async function connectOverChannels(deviceId, attempt) {
     // right itself (#30): a restart keeps the channels open and owns its own
     // verdict, and two things judging one path reach it twice.
     session.watchRecovery(() => link.recovery.snapshot().recovering);
+    // The ring says which way each machine is carrying, read live off the link
+    // (connectionStatus.js). It repaints on availability and on recovery, and a
+    // re-nomination is neither — so a path that changed under a steady session
+    // would otherwise keep showing the old word until something unrelated
+    // redrew it (#31).
+    link.onPathChanged(announceDeviceTransport);
     if (!attempt.own(link, (owned) => owned.close())) {
       throw new Error(`connection attempt for ${deviceId} was cancelled`);
     }

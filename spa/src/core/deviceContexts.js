@@ -42,6 +42,18 @@ export function onDeviceStateChanged(fn) {
 const announceDeviceState = () => stateListeners.forEach((fn) => fn());
 
 /**
+ * Something about HOW these machines are reachable changed — not whether.
+ *
+ * A peer connection that re-nominates onto a direct pair (issue #31) is the same
+ * machine, answering as before, so nothing here has become available or
+ * unavailable. What has changed is the one thing about the connection the reader
+ * cannot otherwise see, and it is shown in the same places the availability is
+ * (the ring, and the row behind it), so it is announced down the same channel
+ * rather than through a second one nobody else subscribes to.
+ */
+export const announceDeviceTransport = () => announceDeviceState();
+
+/**
  * A caller to one machine that refuses when that machine cannot answer.
  *
  * Every surface asks canAnswer before it stands a frame up, but a poll already

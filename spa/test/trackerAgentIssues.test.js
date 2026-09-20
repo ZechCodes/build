@@ -1,14 +1,15 @@
-// One agent's issues: who an issue belongs to, where it stands for that agent,
-// and the ordered rows its Issues surface is drawn from (#34).
-//
-// The four-group shape this file used to check went with the inline block the
-// surfaces pill replaced; the questions behind it did not change, and the
-// entries below are the same four answers in the shape the surfaces layer
-// draws.
+// One agent's issues, grouped the way a reader of its conversation wants them:
+// what it is working on, what it is holding, what it has finished, what it is
+// only watching.
 
 import { describe, expect, it } from "vitest";
 import {
-  agentIssueEntries,
+  FINISHED_GROUP,
+  HOLDING_GROUP,
+  WATCHING_GROUP,
+  WORKING_GROUP,
+  agentIssueCount,
+  agentIssueGroups,
   agentOpenIssueCount,
   assignedTo,
   groupOf,
@@ -23,12 +24,9 @@ const THEM = "agent-01M2THEM";
 /** An issue this agent holds, in whichever column the case is about. */
 const mine = (over = {}) => issue({ assignee: { kind: "agent", agent_id: ME }, ...over });
 
-/** The surface rows, said as `state:number`, which is the order and the
- *  standing in one string. */
-const entries = (issues, agentId = ME) =>
-  agentIssueEntries(issues, agentId).map((one) => `${one.state}:${one.number}`);
-const numbersIn = (issues, state, agentId = ME) =>
-  agentIssueEntries(issues, agentId).filter((one) => one.state === state).map((one) => one.number);
+const groupIds = (issues, agentId = ME) => agentIssueGroups(issues, agentId).map((one) => one.id);
+const inGroup = (issues, id, agentId = ME) =>
+  (agentIssueGroups(issues, agentId).find((one) => one.id === id)?.issues || []).map((one) => one.number);
 
 describe("who an issue belongs to", () => {
   it("is assigned to an agent only when the tagged shape names that agent", () => {
@@ -51,7 +49,7 @@ describe("who an issue belongs to", () => {
   // means the Tracking group simply never appears.
   it("reads an issue with no trackers field as tracked by nobody", () => {
     expect(tracks(issue(), ME)).toBe(false);
-    expect(entries([issue({ assignee: null })])).toEqual([]);
+    expect(groupIds([issue({ assignee: null })])).toEqual([]);
   });
 });
 
@@ -65,69 +63,86 @@ describe("what counts as over", () => {
   });
 });
 
-describe("where an issue stands for this agent", () => {
-  it("puts what it is doing above what it is merely holding", () => {
+describe("the four groups", () => {
+  it("puts in-progress work first and the rest of what it holds below", () => {
     const issues = [
       mine({ number: 1, status: "backlog" }),
       mine({ number: 2, status: "in_progress" }),
+      mine({ number: 3, status: "in_review" }),
       mine({ number: 4, status: "ready" }),
     ];
-    expect(entries(issues)).toEqual(["in_progress:2", "assigned:4", "assigned:1"]);
+    expect(groupIds(issues)).toEqual([WORKING_GROUP, HOLDING_GROUP]);
+    expect(inGroup(issues, WORKING_GROUP)).toEqual([2]);
+    expect(inGroup(issues, HOLDING_GROUP)).toEqual([4, 3, 1]);
   });
 
-  // #34: on an AGENT's list In review is finished work. The agent has said it
-  // is ready to be looked at and has nothing more to do with it — which is not
-  // the same question as whether the issue is open.
-  it("calls In review, Done and Closed the three it is finished with", () => {
+  it("collects what is finished, whether it was closed or moved to Done", () => {
     const issues = [
       mine({ number: 1, state: "closed", status: "in_progress" }),
       mine({ number: 2, status: "done" }),
-      mine({ number: 3, status: "in_review" }),
-      mine({ number: 4, status: "in_progress" }),
+      mine({ number: 3, status: "in_progress" }),
     ];
-    expect(entries(issues)).toEqual(["in_progress:4", "in_review:3", "done:2", "closed:1"]);
+    expect(inGroup(issues, FINISHED_GROUP)).toEqual([2, 1]);
+    expect(inGroup(issues, WORKING_GROUP)).toEqual([3]);
   });
 
-  it("tracks what it follows and does not hold", () => {
+  it("watches what it tracks and does not hold", () => {
     const issues = [issue({ number: 9, assignee: { kind: "agent", agent_id: THEM }, trackers: [ME] })];
-    expect(entries(issues)).toEqual(["tracked:9"]);
+    expect(groupIds(issues)).toEqual([WATCHING_GROUP]);
+    expect(inGroup(issues, WATCHING_GROUP)).toEqual([9]);
   });
 
   // The assignee is tracked automatically (#13), so almost every assigned issue
-  // is also a tracked one. Listing it twice would double every row.
+  // is also a tracked one. Counting it twice would double every row.
   it("never lists an issue twice when it is both assigned and tracked", () => {
-    expect(entries([mine({ number: 5, status: "in_progress", trackers: [ME] })])).toEqual(["in_progress:5"]);
+    const issues = [mine({ number: 5, status: "in_progress", trackers: [ME] })];
+    expect(groupIds(issues)).toEqual([WORKING_GROUP]);
+    expect(inGroup(issues, WATCHING_GROUP)).toEqual([]);
+  });
+
+  // A category a reader has none of is not worth a heading saying so.
+  it("leaves an empty group out rather than drawing it empty", () => {
+    expect(groupIds([mine({ number: 1, status: "in_progress" })])).toEqual([WORKING_GROUP]);
+    expect(groupIds([])).toEqual([]);
+    expect(groupIds(null)).toEqual([]);
+  });
+
+  it("collapses the two that are not news, and only those", () => {
+    const issues = [
+      mine({ number: 1, status: "in_progress" }),
+      mine({ number: 2, status: "ready" }),
+      mine({ number: 3, status: "done" }),
+      issue({ number: 4, assignee: { kind: "agent", agent_id: THEM }, trackers: [ME] }),
+    ];
+    expect(agentIssueGroups(issues, ME).map((one) => [one.id, one.collapses])).toEqual([
+      [WORKING_GROUP, false],
+      [HOLDING_GROUP, false],
+      [FINISHED_GROUP, true],
+      [WATCHING_GROUP, true],
+    ]);
   });
 
   it("ignores an issue that is neither assigned to nor tracked by this agent", () => {
-    expect(entries([issue({ number: 1, assignee: { kind: "agent", agent_id: THEM } })])).toEqual([]);
+    expect(groupIds([issue({ number: 1, assignee: { kind: "agent", agent_id: THEM } })])).toEqual([]);
   });
 
-  it("answers nothing for no agent, and nothing for no issues", () => {
-    expect(agentIssueEntries([mine({ number: 1 })], null)).toEqual([]);
-    expect(agentIssueEntries([], ME)).toEqual([]);
-    expect(agentIssueEntries(null, ME)).toEqual([]);
+  it("answers nothing for no agent at all", () => {
+    expect(agentIssueGroups([mine({ number: 1 })], null)).toEqual([]);
     expect(groupOf(mine({ number: 1 }), "")).toBeNull();
-  });
-
-  it("carries what a row needs and nothing raw beside it", () => {
-    const [row] = agentIssueEntries([mine({ number: 7, id: "i7", title: "Kanban", status: "in_progress" })], ME);
-    // `state` is the surface's, not the issue's own open/closed — two meanings
-    // on one field is a bug waiting for somebody to read the wrong one.
-    expect(row).toEqual({ id: "i7", state: "in_progress", number: 7, title: "Kanban", status: "in_progress", updated_at: "2026-08-21T10:00:00Z" });
   });
 });
 
-describe("the order within one standing", () => {
-  // An activity surface answers "what has moved", not "what was filed" — the
-  // Issues tab's newest-first order is a catalogue's, and is not this.
+describe("the order within a group", () => {
+  // An activity entry answers "what has moved", not "what was filed" — which
+  // is why each card wears the time it moved. The Issues tab's newest-first
+  // order is a catalogue's, and is deliberately not this.
   it("puts what moved most recently first", () => {
     const issues = [
       mine({ number: 1, status: "ready", updated_at: "2026-08-21T10:00:00Z" }),
       mine({ number: 2, status: "ready", updated_at: "2026-08-23T10:00:00Z" }),
       mine({ number: 3, status: "ready", updated_at: "2026-08-22T10:00:00Z" }),
     ];
-    expect(numbersIn(issues, "assigned")).toEqual([2, 3, 1]);
+    expect(inGroup(issues, HOLDING_GROUP)).toEqual([2, 3, 1]);
   });
 
   it("breaks a tie by number, so every repaint agrees", () => {
@@ -137,21 +152,21 @@ describe("the order within one standing", () => {
       mine({ number: 9, status: "ready", updated_at: same }),
       mine({ number: 8, status: "ready", updated_at: same }),
     ];
-    expect(numbersIn(issues, "assigned")).toEqual([9, 8, 7]);
+    expect(inGroup(issues, HOLDING_GROUP)).toEqual([9, 8, 7]);
   });
 
   // 0 is "unknown", not "now": an issue with no readable stamp sorts oldest
-  // rather than jumping to the top.
+  // rather than jumping to the top of the entry.
   it("sorts an unreadable stamp oldest rather than newest", () => {
     const issues = [
       mine({ number: 1, status: "ready", updated_at: "not a date" }),
       mine({ number: 2, status: "ready", updated_at: "2026-08-21T10:00:00Z" }),
     ];
-    expect(numbersIn(issues, "assigned")).toEqual([2, 1]);
+    expect(inGroup(issues, HOLDING_GROUP)).toEqual([2, 1]);
   });
 });
 
-describe("the badge's count", () => {
+describe("the counts", () => {
   const issues = [
     mine({ number: 1, status: "in_progress" }),
     mine({ number: 2, status: "ready" }),
@@ -160,16 +175,17 @@ describe("the badge's count", () => {
     issue({ number: 5, assignee: { kind: "agent", agent_id: THEM } }),
   ];
 
-  // What a badge asks: is this agent carrying anything right now. Deliberately
-  // NOT the surface's reading of finished — In review still counts as carried
-  // here, because the badge is asked by somebody looking at the workspace, not
-  // by somebody reading the agent's own conversation.
+  it("counts everything this agent has anything to do with", () => {
+    expect(agentIssueCount(issues, ME)).toBe(4);
+  });
+
+  // What a badge asks: is this agent carrying anything right now.
   it("counts only what it is holding and not finished", () => {
     expect(agentOpenIssueCount(issues, ME)).toBe(2);
   });
 
   it("counts nothing for an agent with nothing", () => {
-    expect(agentOpenIssueCount(issues, "agent-nobody")).toBe(0);
+    expect(agentIssueCount(issues, "agent-nobody")).toBe(0);
     expect(agentOpenIssueCount([], ME)).toBe(0);
   });
 });

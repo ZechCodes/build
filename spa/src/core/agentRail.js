@@ -124,7 +124,6 @@ import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { mountAgentIssues } from "./trackerAgentIssuesEntry.js";
-import { ISSUES_ENTRY_KIND } from "./agentSurfacesModel.js";
 import { mountAgentObservation } from "./agentObservation.js";
 import { createTaskCompletionTracker } from "./taskCompletionModel.js";
 import { mountTaskCompletionToast } from "./taskCompletionToast.js";
@@ -171,6 +170,7 @@ const RAIL_STATUS_PILLS_ID = "rail-status-pills";
 const RAIL_STATUS_GIT_ID = "rail-status-git";
 const RAIL_VIEWER_ID = "rail-surfaces-viewer";
 const RAIL_OBSERVATION_ID = "rail-observation";
+const RAIL_ISSUES_ID = "rail-issues";
 const WORKING_WORD_SELECTOR = ".rail-status-working-word";
 const STATUS_TEXT_SELECTOR = ".rail-status-text";
 const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
@@ -555,6 +555,13 @@ const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_V
 
 const railObservationHostHtml = () =>
   `<div class="agent-observation-host" id="${RAIL_OBSERVATION_ID}" hidden></div>`;
+
+/// What this agent is carrying on the issue board, under what it is doing right
+/// now. Its own host rather than a fifth surface kind: the surfaces beside it
+/// are drawn from the agent digest's own payload, and these come off the
+/// project's cached issue list and a different push
+/// (core/trackerAgentIssuesEntry.js). Hidden until there is something in it.
+const railIssuesHostHtml = () => `<div class="agent-issues-host" id="${RAIL_ISSUES_ID}" hidden></div>`;
 
 function surfaceMenuHtml(options) {
   return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE, icon: true }) : "";
@@ -2134,6 +2141,7 @@ function mountRailOnContext(host, context, swap) {
     `<div class="rail-composer" id="rail-composer">
       ${railViewerHostHtml()}
       ${railObservationHostHtml()}
+      ${railIssuesHostHtml()}
       ${railStatusRowHtml()}
       <div class="chat-recovery" id="rail-chat-recovery"></div>
       ${composerHtml({
@@ -2364,7 +2372,7 @@ function mountRailOnContext(host, context, swap) {
    *  conversation that has none. */
   const surfaceMenuOptionsInFocus = () => [
     ...detailLevelMenuOptions(detailLevel()),
-    ...surfaceMenuOptions(surfacesWithIssues(surfacesSeen().surfaces)),
+    ...surfaceMenuOptions(surfacesSeen().surfaces),
   ];
 
   const mountSurfaces = (panel) => {
@@ -2373,18 +2381,10 @@ function mountRailOnContext(host, context, swap) {
     const observationHost = panel.querySelector(`#${RAIL_OBSERVATION_ID}`);
     if (!pillHost || !viewerHost || !observationHost) return;
     observationBlock = mountAgentObservation(observationHost);
-    // The issues are a surface kind now (#34), so this supplies rows rather
-    // than drawing a block of its own. It reads a different source from the
-    // rest — the project's cached issue list, not the agent digest — which is
-    // why it is mounted beside them and merged in at paint.
-    issuesBlock = mountAgentIssues({
-      deviceId: context.deviceId,
-      projectId: context.projectId,
-      onChanged: () => {
-        syncSurfaces();
-        paintSurfaceMenu();
-      },
-    });
+    const issuesHost = panel.querySelector(`#${RAIL_ISSUES_ID}`);
+    if (issuesHost) {
+      issuesBlock = mountAgentIssues(issuesHost, { deviceId: context.deviceId, projectId: context.projectId });
+    }
     surfacesBlock = mountAgentSurfaces({
       pillHost,
       viewerHost,
@@ -2405,26 +2405,15 @@ function mountRailOnContext(host, context, swap) {
     surfacesBlock = null;
   };
 
-  /** The agent digest's surfaces with this agent's issues merged in. Merged
-   *  here rather than in the digest because they come from a different place
-   *  and a different push: the project's cached issue list. An agent holding
-   *  and tracking nothing adds nothing, so no pill appears. */
-  const surfacesWithIssues = (surfaces) => {
-    const entries = issuesBlock?.entriesFor(agentInFocus()?.id || null);
-    if (!entries) return surfaces;
-    return { ...(surfaces || {}), [ISSUES_ENTRY_KIND]: entries };
-  };
-
   const syncSurfaces = () => {
     if (!surfacesBlock || !observationBlock) return;
     const seen = surfacesSeen();
-    surfacesBlock.set(surfacesWithIssues(seen.surfaces), seen.at);
-    // The observation panel reads the checklist out of the digest's own
-    // payload; the issues are none of its business.
+    surfacesBlock.set(seen.surfaces, seen.at);
     observationBlock.set(seen.surfaces, {
       generation: seen.generation,
       working: agentInFocus()?.working === true,
     });
+    issuesBlock?.set(agentInFocus()?.id || null);
   };
 
   const paintSurfaceMenu = () => {

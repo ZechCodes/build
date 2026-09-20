@@ -1,15 +1,10 @@
 /** @vitest-environment jsdom */
-// What an agent is carrying on the issue board, as the rows behind its Issues
-// pill (#34).
+// The issues entry in a conversation's activity area.
 //
-// This supplier asks the bridge for nothing. The project's issue list is
-// already on disk, and an `issues` push makes the sync layer rewrite that
-// record — so it listens to the RECORD and re-supplies off the push with no
-// read of its own. The last describe here is the one that proves it.
-//
-// It draws nothing at all now: the surfaces layer draws these rows behind a
-// pill like every other kind (core/agentSurfaces.js), which is what gives the
-// fold for finished work without a second one being invented beside it.
+// It asks the bridge for nothing. The project's issue list is already on disk,
+// and an `issues` push makes the sync layer rewrite that record — so this
+// entry listens to the RECORD and repaints off the push with no read of its
+// own. The last describe here is the one that proves it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -25,7 +20,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
 const ME = "agent-01M2ME";
 const THEM = "agent-01M2THEM";
 
-let trackerCache, mountAgentIssues, entry, changes;
+let host, cache, trackerCache, mountAgentIssues, entry;
 
 const flush = async () => {
   for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
@@ -37,23 +32,28 @@ const mine = (over = {}) => issue({ assignee: { kind: "agent", agent_id: ME }, .
 const putIssues = (issues) =>
   trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
 
-const mount = async (over = {}) => {
-  entry = mountAgentIssues({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => changes++, ...over });
+const mount = async (agentId = ME, over = {}) => {
+  entry = mountAgentIssues(host, { deviceId: "dev-1", projectId: "proj-1", ...over });
+  entry.set(agentId);
   await flush();
   return entry;
 };
 
-/** The rows for one agent, said as `state:#number` so a case can assert the
- *  order and the standing at once. */
-const rows = (agentId = ME) =>
-  (entry.entriesFor(agentId) || []).map((one) => `${one.state}:#${one.number}`);
+const groupIds = () => [...host.querySelectorAll("[data-agent-issue-group]")].map((one) => one.dataset.agentIssueGroup);
+const cardsIn = (group) =>
+  [...host.querySelectorAll(`[data-agent-issue-group="${group}"] .agent-issue-card`)].map(
+    (one) => one.querySelector(".issue-number").textContent,
+  );
+const foldFor = (group) => host.querySelector(`details[data-agent-issue-group="${group}"]`);
 
 beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   carriedKinds = ["state", "thread", "git", "files", "terminals", "issues"];
-  changes = 0;
+  document.body.innerHTML = '<div id="issues-host"></div>';
+  host = document.querySelector("#issues-host");
+  cache = await import("../src/core/localCache.js");
   trackerCache = await import("../src/core/trackerCache.js");
   ({ mountAgentIssues } = await import("../src/core/trackerAgentIssuesEntry.js"));
 });
@@ -63,129 +63,176 @@ afterEach(() => {
   entry = null;
 });
 
-describe("the rows it supplies", () => {
-  it("read in progress, then assigned, then tracked, then what it is finished with", async () => {
+describe("the four categories", () => {
+  it("draws in-progress work first, then the rest it holds", async () => {
     await putIssues([
-      mine({ number: 1, id: "i1", status: "backlog" }),
+      mine({ number: 1, id: "i1", status: "ready" }),
       mine({ number: 2, id: "i2", status: "in_progress" }),
-      mine({ number: 3, id: "i3", status: "done" }),
-      issue({ number: 4, id: "i4", assignee: { kind: "agent", agent_id: THEM }, trackers: [ME] }),
-      mine({ number: 5, id: "i5", status: "in_review" }),
     ]);
     await mount();
-    expect(rows()).toEqual([
-      "in_progress:#2",
-      "assigned:#1",
-      "tracked:#4",
-      "in_review:#5",
-      "done:#3",
-    ]);
+    expect(groupIds()).toEqual(["working", "holding"]);
+    expect(cardsIn("working")).toEqual(["#2"]);
+    expect(cardsIn("holding")).toEqual(["#1"]);
   });
 
-  // The whole of Zech's complaint: In review was sitting above the fold, and
-  // an agent that has said "this is ready to look at" has nothing more to do
-  // with it. It is still OPEN — the Issues tab still lists it — which is a
-  // different question asked by a different reader.
-  it("counts In review among what the agent is finished with", async () => {
-    await putIssues([mine({ number: 1, id: "i1", status: "in_review" })]);
+  it("gives each card its number, title, column and when it moved", async () => {
+    await putIssues([mine({ number: 12, id: "i12", status: "in_review", title: "Kanban drag" })]);
     await mount();
-    expect(entry.entriesFor(ME)[0].state).toBe("in_review");
+    const card = host.querySelector(".agent-issue-card");
+    expect(card.querySelector(".issue-number").textContent).toBe("#12");
+    expect(card.querySelector(".agent-issue-title").textContent).toBe("Kanban drag");
+    expect(card.querySelector(".issue-status").textContent).toBe("In review");
+    expect(card.querySelector("time")).not.toBeNull();
   });
 
-  // Closed is true wherever the card sits, so it is asked before the column.
-  it("calls a closed issue closed, whatever column it was closed from", async () => {
-    await putIssues([mine({ number: 1, id: "i1", status: "backlog", state: "closed" })]);
+  it("links each card to the issue's page on this machine", async () => {
+    await putIssues([mine({ number: 3, id: "issue-3", status: "in_progress" })]);
     await mount();
-    expect(rows()).toEqual(["closed:#1"]);
+    expect(host.querySelector(".agent-issue-card").getAttribute("href"))
+      .toBe("#/device/dev-1/project/proj-1/issues/issue-3");
   });
 
-  it("carries what a row needs to draw itself", async () => {
-    await putIssues([mine({ number: 7, id: "i7", title: "Kanban drag", status: "in_progress", updated_at: "2026-08-21T10:00:00Z" })]);
-    await mount();
-    expect(entry.entriesFor(ME)[0]).toEqual({
-      id: "i7", state: "in_progress", number: 7, title: "Kanban drag",
-      status: "in_progress", updated_at: "2026-08-21T10:00:00Z",
-    });
-  });
-
-  it("supplies most recently moved first within one standing", async () => {
+  it("collects what it finished, closed or moved to Done alike", async () => {
     await putIssues([
-      mine({ number: 1, id: "i1", status: "in_progress", updated_at: "2026-08-21T10:00:00Z" }),
-      mine({ number: 2, id: "i2", status: "in_progress", updated_at: "2026-08-21T12:00:00Z" }),
+      mine({ number: 1, id: "i1", state: "closed", status: "in_progress" }),
+      mine({ number: 2, id: "i2", status: "done" }),
     ]);
     await mount();
-    expect(rows()).toEqual(["in_progress:#2", "in_progress:#1"]);
+    expect(groupIds()).toEqual(["finished"]);
+    expect(cardsIn("finished").sort()).toEqual(["#1", "#2"]);
   });
 
-  it("follows the agent it is asked about", async () => {
+  it("collects what it tracks but does not hold", async () => {
+    await putIssues([
+      issue({ number: 9, id: "i9", assignee: { kind: "agent", agent_id: THEM }, trackers: [ME] }),
+    ]);
+    await mount();
+    expect(groupIds()).toEqual(["watching"]);
+    expect(cardsIn("watching")).toEqual(["#9"]);
+  });
+
+  // A category a reader has none of is not worth a heading saying so.
+  it("omits an empty category rather than drawing it", async () => {
+    await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
+    await mount();
+    expect(groupIds()).toEqual(["working"]);
+    expect(host.querySelectorAll(".agent-issue-group")).toHaveLength(1);
+  });
+
+  it("draws nothing at all, and stays hidden, for an agent with no issues", async () => {
+    await putIssues([issue({ number: 1, id: "i1", assignee: { kind: "agent", agent_id: THEM } })]);
+    await mount();
+    expect(host.innerHTML).toBe("");
+    expect(host.hidden).toBe(true);
+  });
+
+  it("follows the agent the rail puts in focus", async () => {
     await putIssues([
       mine({ number: 1, id: "i1", status: "in_progress" }),
       issue({ number: 2, id: "i2", assignee: { kind: "agent", agent_id: THEM }, status: "in_progress" }),
     ]);
     await mount();
-    expect(rows(ME)).toEqual(["in_progress:#1"]);
-    expect(rows(THEM)).toEqual(["in_progress:#2"]);
+    expect(cardsIn("working")).toEqual(["#1"]);
+    entry.set(THEM);
+    await flush();
+    expect(cardsIn("working")).toEqual(["#2"]);
+    entry.set(null);
+    await flush();
+    expect(host.hidden).toBe(true);
   });
 });
 
-// No rows means no pill. Not an empty one: a pill that is always there and
-// opens on nothing is one a reader learns to skip.
-describe("when there is nothing to show", () => {
-  it("supplies nothing for an agent holding and tracking nothing", async () => {
-    await putIssues([issue({ number: 1, id: "i1", assignee: { kind: "agent", agent_id: THEM } })]);
+describe("the two collapses", () => {
+  const both = () => [
+    mine({ number: 1, id: "i1", status: "in_progress" }),
+    mine({ number: 2, id: "i2", status: "done" }),
+    mine({ number: 3, id: "i3", state: "closed" }),
+    issue({ number: 4, id: "i4", assignee: { kind: "agent", agent_id: THEM }, trackers: [ME] }),
+  ];
+
+  // A `details` is the browser's own toggle: it works from the keyboard and a
+  // screen reader with no wiring, and a repaint that leaves it alone leaves it
+  // open.
+  it("folds Done and Tracking, and leaves the other two open", async () => {
+    await putIssues(both());
     await mount();
-    expect(entry.entriesFor(ME)).toBeNull();
+    expect(foldFor("finished")).not.toBeNull();
+    expect(foldFor("watching")).not.toBeNull();
+    expect(foldFor("working")).toBeNull();
+    expect(foldFor("holding")).toBeNull();
   });
 
-  it("supplies nothing when no agent is in focus", async () => {
-    await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
+  it("comes up shut and opens on a press", async () => {
+    await putIssues(both());
     await mount();
-    expect(entry.entriesFor(null)).toBeNull();
+    const fold = foldFor("finished");
+    expect(fold.open).toBe(false);
+    fold.querySelector("summary").click();
+    expect(fold.open).toBe(true);
   });
 
-  it("supplies nothing on a bridge that does not carry issues", async () => {
+  // The count is the only thing a shut fold says, so it is never inside the
+  // part that hides.
+  it("keeps the count on the fold's own head, shut or open", async () => {
+    await putIssues(both());
+    await mount();
+    expect(foldFor("finished").querySelector("summary .agent-issue-count").textContent).toBe("2");
+    expect(foldFor("watching").querySelector("summary .agent-issue-count").textContent).toBe("1");
+  });
+
+  it("counts on the open groups too", async () => {
+    await putIssues(both());
+    await mount();
+    expect(host.querySelector('[data-agent-issue-group="working"] .agent-issue-count').textContent).toBe("1");
+  });
+});
+
+describe("a bridge that does not carry issues", () => {
+  // Not an empty box: an entry that is always there and usually empty is one a
+  // reader learns to skip, and there is nothing to put in it here anyway.
+  it("draws nothing and reads nothing", async () => {
     carriedKinds = ["state", "thread", "git", "files", "terminals"];
     await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
     await mount();
-    expect(entry.entriesFor(ME)).toBeNull();
+    expect(host.innerHTML).toBe("");
+    expect(host.hidden).toBe(true);
   });
 });
 
-describe("staying live off the record, with nothing asked of the bridge", () => {
-  it("re-supplies when the pushed list moves an issue", async () => {
-    await putIssues([mine({ number: 1, id: "i1", status: "backlog" })]);
+describe("repainting on the push", () => {
+  // The sync layer rewrites the project's record when an `issues` item arrives.
+  // This entry listens to the record, so the push repaints it with no read of
+  // its own and no full pass.
+  it("moves a card when the pushed list moves it, with nothing else touched", async () => {
+    await putIssues([mine({ number: 1, id: "i1", status: "ready" })]);
     await mount();
-    expect(rows()).toEqual(["assigned:#1"]);
+    expect(cardsIn("holding")).toEqual(["#1"]);
+    expect(cardsIn("working")).toEqual([]);
 
-    changes = 0;
     await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
     await flush();
-
-    expect(rows()).toEqual(["in_progress:#1"]);
-    expect(changes).toBeGreaterThan(0);
+    expect(cardsIn("working")).toEqual(["#1"]);
+    expect(groupIds()).toEqual(["working"]);
   });
 
-  it("picks up an issue that did not exist when it mounted", async () => {
+  it("draws an issue that did not exist when it mounted", async () => {
     await putIssues([]);
     await mount();
-    expect(entry.entriesFor(ME)).toBeNull();
+    expect(host.hidden).toBe(true);
 
-    await putIssues([mine({ number: 9, id: "i9", status: "in_progress" })]);
+    await putIssues([mine({ number: 5, id: "i5", status: "in_progress" })]);
     await flush();
-
-    expect(rows()).toEqual(["in_progress:#9"]);
+    expect(cardsIn("working")).toEqual(["#5"]);
+    expect(host.hidden).toBe(false);
   });
 
   it("stops listening once it is disposed", async () => {
-    await putIssues([mine({ number: 1, id: "i1", status: "backlog" })]);
+    await putIssues([mine({ number: 1, id: "i1", status: "ready" })]);
     await mount();
     entry.dispose();
-
-    changes = 0;
     await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
     await flush();
-
-    expect(changes).toBe(0);
+    expect(cardsIn("holding")).toEqual(["#1"]);
     entry = null;
   });
 });

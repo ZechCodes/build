@@ -31,6 +31,19 @@ export const HOLDING_GROUP = "holding";
 export const FINISHED_GROUP = "finished";
 export const WATCHING_GROUP = "watching";
 
+/** What each group is called, and whether it opens collapsed. The two that
+ *  collapse are the two that are not news: finished work, and work this agent
+ *  is only following. */
+const GROUP_COPY = Object.freeze({
+  [WORKING_GROUP]: { label: "In progress", collapses: false },
+  [HOLDING_GROUP]: { label: "Assigned", collapses: false },
+  [FINISHED_GROUP]: { label: "Done", collapses: true },
+  [WATCHING_GROUP]: { label: "Tracking", collapses: true },
+});
+
+/** The order they are drawn in, which is the order the questions are asked. */
+export const AGENT_ISSUE_GROUPS = [WORKING_GROUP, HOLDING_GROUP, FINISHED_GROUP, WATCHING_GROUP];
+
 /** Whether this issue names this agent as its assignee. The tagged actor shape
  *  is the wire's (core/trackerModel.js); only the `agent` kind can be one of
  *  these, since a project agent and the user are not agents of a workspace. */
@@ -89,92 +102,34 @@ const movedAt = (issue) => {
 export const byRecency = (left, right) =>
   movedAt(right) - movedAt(left) || Number(right?.number || 0) - Number(left?.number || 0);
 
-// ---- the agent's issues as one of its surfaces ----------------------------
-//
-// #34. These four questions used to answer a block drawn inline in the
-// conversation, and Zech read it as noise: "I had envisioned the issues
-// activity to be the same UX as agents/workflows/tasks/shells. So it's only
-// visible when the user wants it to be and there's a clear pattern for done
-// work."
-//
-// So they answer a different shape now: one flat list of rows the surfaces
-// layer can draw (core/agentSurfacesModel.js), each carrying the state that
-// decides whether it sits above the fold or under it.
-//
-// What "finished" means is wider here than it is for the badge. On an AGENT's
-// list, In review is finished: the agent has said the work is ready to be
-// looked at and has nothing more to do with it, and leaving it above the fold
-// is what made this read as noise. It is still open, and the Issues tab still
-// lists it as open — that is a different question, asked by a different
-// reader.
-
-export const ISSUE_SURFACE_IN_PROGRESS = "in_progress";
-export const ISSUE_SURFACE_ASSIGNED = "assigned";
-export const ISSUE_SURFACE_TRACKED = "tracked";
-export const ISSUE_SURFACE_IN_REVIEW = "in_review";
-export const ISSUE_SURFACE_DONE = "done";
-export const ISSUE_SURFACE_CLOSED = "closed";
-
-const IN_REVIEW = "in_review";
-
-/** The order the rows read in: what it is doing, what it is holding, what it
- *  is only following, then the three it is finished with. */
-const SURFACE_STATE_ORDER = [
-  ISSUE_SURFACE_IN_PROGRESS,
-  ISSUE_SURFACE_ASSIGNED,
-  ISSUE_SURFACE_TRACKED,
-  ISSUE_SURFACE_IN_REVIEW,
-  ISSUE_SURFACE_DONE,
-  ISSUE_SURFACE_CLOSED,
-];
-
 /**
- * Where one issue stands for this agent, as the surfaces layer names states.
+ * One agent's issues, grouped and ordered, with the empty groups left out.
  *
- * Closed is asked before the column because it is true wherever the card sits:
- * an issue closed from Backlog is finished, and calling it "assigned" would
- * put work nobody is doing at the top of the list.
+ * `issues` is the project's whole list as the cache holds it
+ * (core/trackerCache.js) — filtering per agent here rather than asking the
+ * bridge per agent is what lets this repaint straight off a pushed list with
+ * no read at all. When #13's `issues.for_agent` lands, the same grouping runs
+ * over its answer instead; nothing about these four questions changes.
  */
-function surfaceStateOf(issue, agentId) {
-  const group = groupOf(issue, agentId);
-  if (group === null) return null;
-  if (group === WATCHING_GROUP) return ISSUE_SURFACE_TRACKED;
-  if (issue?.state === "closed") return ISSUE_SURFACE_CLOSED;
-  if (issue?.status === DONE) return ISSUE_SURFACE_DONE;
-  if (issue?.status === IN_REVIEW) return ISSUE_SURFACE_IN_REVIEW;
-  return group === WORKING_GROUP ? ISSUE_SURFACE_IN_PROGRESS : ISSUE_SURFACE_ASSIGNED;
-}
-
-/**
- * One agent's issues as surface entries: flat, ordered, ready to draw.
- *
- * Most recently moved first within each standing, because this is an activity
- * surface and what moved is the question it answers.
- *
- * Deliberately NOT the raw issue record: an issue's own `state` is open or
- * closed, and the surfaces layer reads `state` as the mark that decides where
- * a row sits. Two meanings on one field is a bug waiting for somebody to read
- * the wrong one.
- */
-export function agentIssueEntries(issues, agentId) {
-  const entries = [];
+export function agentIssueGroups(issues, agentId) {
+  const byGroup = new Map(AGENT_ISSUE_GROUPS.map((id) => [id, []]));
   for (const issue of issues || []) {
-    const state = surfaceStateOf(issue, agentId);
-    if (!state) continue;
-    entries.push({
-      id: issue.id,
-      state,
-      number: issue.number ?? null,
-      title: issue.title || "",
-      status: issue.status || "",
-      updated_at: issue.updated_at || null,
-    });
+    const group = groupOf(issue, agentId);
+    if (group) byGroup.get(group).push(issue);
   }
-  return entries.sort(
-    (left, right) =>
-      SURFACE_STATE_ORDER.indexOf(left.state) - SURFACE_STATE_ORDER.indexOf(right.state) || byRecency(left, right),
-  );
+  return AGENT_ISSUE_GROUPS.filter((id) => byGroup.get(id).length).map((id) => ({
+    id,
+    label: GROUP_COPY[id].label,
+    collapses: GROUP_COPY[id].collapses,
+    issues: byGroup.get(id).sort(byRecency),
+  }));
 }
+
+/** How many issues this agent has anything to do with — what a count beside a
+ *  collapsed entry says. Counts every group, because a reader deciding whether
+ *  to open it wants the whole weight rather than the visible part. */
+export const agentIssueCount = (issues, agentId) =>
+  (issues || []).filter((issue) => groupOf(issue, agentId) !== null).length;
 
 /** The open issues this agent holds — not finished, not merely tracked. What a
  *  badge counts when it is asking "is this agent carrying anything". */

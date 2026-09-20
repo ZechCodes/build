@@ -54,6 +54,7 @@ webrtc = "0.20"
 # same version `webrtc` resolves, with the same (default) features, so one
 # `rtc` is compiled into the binary and its types are the engine's own.
 rtc = "0.20.4"
+jiff = { version = "0.2.37", features = ["tzdb-bundle-always"] }
 
 # The Rust half of the complexity gate (CLAUDE.md "Complexity gates"). The
 # threshold itself lives in clippy.toml; this promotes the lint from

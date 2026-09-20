@@ -50,6 +50,7 @@ in this document, "plan" means the legacy flow and "issue" means the tracker's.
 | `priority` | `"none"` \| `"low"` \| `"medium"` \| `"high"` \| `"urgent"` | `none` is the default and is a value, not an absence. |
 | `assignee` | `null` \| assignee | See [Actors](#actors). |
 | `links` | object | See [Links](#links). |
+| `trackers` | `["agent-01K5Z…"]` | The agents watching this issue — see [Tracking](#tracking). Ordered by when each started tracking, deduped, at most 50. Always present; an issue nobody watches answers `[]`. |
 | `created_by` | actor | Who filed it. |
 | `created_at`, `updated_at` | RFC 3339 UTC | |
 | `closed_at` | RFC 3339 UTC \| `null` | Set when `state` becomes `closed`, cleared on reopen. |
@@ -73,8 +74,8 @@ in this document, "plan" means the legacy flow and "issue" means the tracker's.
 | `issue_id` | | |
 | `at` | RFC 3339 UTC | |
 | `actor` | actor | |
-| `kind` | `created` \| `assigned` \| `unassigned` \| `moved` \| `labelled` \| `linked` \| `closed` \| `reopened` \| `dispatched` | |
-| `payload` | object | What the kind needs. `moved` carries `{from, to}`; `assigned` carries `{assignee}`; `labelled` carries `{added, removed}`; `linked` carries the link that was added; `closed` carries `{reason}`; `dispatched` carries `{workspace_id?, entity_id, agent_id, kind}`. |
+| `kind` | `created` \| `assigned` \| `unassigned` \| `moved` \| `labelled` \| `linked` \| `closed` \| `reopened` \| `dispatched` \| `tracked` \| `untracked` | |
+| `payload` | object | What the kind needs. `moved` carries `{from, to}`; `assigned` carries `{assignee}`; `labelled` carries `{added, removed}`; `linked` carries the link that was added; `closed` carries `{reason}`; `dispatched` carries `{workspace_id?, entity_id, agent_id, kind}`; `tracked` and `untracked` carry `{agent_id}` and, when the tracking was a consequence rather than a request, `{by: "assignment"}`. |
 
 ### Actors
 
@@ -163,8 +164,14 @@ is "is this still open", and the SPA shows both.
 ## The verbs
 
 All under `issues.*`, registered in `api/v1` as a family of their own
-(`bridge/src/api/v1/issues.rs`) with typed params and results, a fixture under
-`fixtures/api/v1/` per verb, and `since: "1.2.0"`.
+(`bridge/src/api/v1/issues.rs`) with typed params and results and a fixture
+under `fixtures/api/v1/` per verb.
+
+**A verb's `since` is the minor it actually shipped in, and a fixture must not
+claim one the bridge never served.** The ten the tracker shipped with say
+`1.3.0`. `issues.track`, `issues.untrack` and `issues.for_agent` arrive later
+and say the minor their own bump lands on — `versions.json` and `API_VERSION`
+move together, and the new fixtures' `since` equals that number.
 
 | Verb | Params | Result |
 | --- | --- | --- |
@@ -177,6 +184,9 @@ All under `issues.*`, registered in `api/v1` as a family of their own
 | `issues.link` | `{issue_id, workspace_id?, branch?, commit?, conversation_id?, parent_issue_id?}` | `{issue}` |
 | `issues.close` | `{issue_id, reason?}` | `{issue}` |
 | `issues.reopen` | `{issue_id}` | `{issue}` |
+| `issues.track` | `{issue_id, agent_id}` | `{issue}` |
+| `issues.untrack` | `{issue_id, agent_id}` | `{issue}` |
+| `issues.for_agent` | `{agent_id}` | `{agent_id, assigned: [IssueDigest], tracking: [IssueDigest]}` |
 | `issues.columns` | `{project_id}` | `{project_id, columns: [{id, name}]}` |
 
 Notes on each:
@@ -398,7 +408,7 @@ workspace `…`" lines (`bridge/src/operation.rs`):
 Eight tools, on **both** the coding surface and the project surface:
 
 `list_issues`, `get_issue`, `create_issue`, `comment_issue`, `assign_issue`,
-`move_issue`, `close_issue`, `link_issue`.
+`move_issue`, `close_issue`, `link_issue`, `track_issue`, `untrack_issue`.
 
 Each is a thin wrapper over the verb of the same shape. The bridge knows who is
 calling, so:
@@ -413,6 +423,11 @@ calling, so:
   project is refused by name. The gate is on the socket (`allowed_on`) as well
   as in the tool list a session is shown, so a harness writing its own frames
   reaches no further than one that reads the list.
+
+`track_issue` and `untrack_issue` take an `issue_id` and nothing else. Which
+agent is tracking is the caller — a tool cannot subscribe somebody else, the
+way it cannot sign a comment as somebody else — so there is no `agent_id` for a
+call to carry and none for it to get wrong.
 
 `assign_issue` takes the same five assignee kinds the verb does, so an agent can
 hand work to a named agent, to the project's agent, back to the user, or to a
@@ -441,6 +456,120 @@ overrides only that one. It says:
   a message does not;
 - file an issue for follow-up work you find and do not do. An issue is cheap and
   the thing you noticed is otherwise only in your conversation.
+
+## Tracking
+
+An issue that several agents are working around is only useful if they hear
+about it. Tracking is how: an agent says it wants to know, and every later
+change to that issue is delivered into its conversation as a message. No
+polling, and no staying awake — a delivered notice starts the agent's turn like
+any other delivered message, so an idle agent wakes to it.
+
+### Who is tracking
+
+`trackers` is a list of agent ids on the issue, ordered by when each started,
+deduped, capped at 50. An issue nobody watches answers `[]` rather than
+omitting the key.
+
+An agent joins the list three ways:
+
+- **It asks**, with `issues.track` / the `track_issue` tool.
+- **It is assigned the issue.** Assignment is dispatch, so the agent that gets
+  the work is the agent that most needs to hear about it; adding it is not a
+  courtesy but the thing that makes the hand-off two-way. The `tracked` event
+  for this carries `{by: "assignment"}`, so a timeline reader can tell a
+  request from a consequence.
+- Nothing else. Commenting on an issue does not subscribe you to it: an agent
+  that answers a question and moves on should not be woken for the next month.
+
+An agent leaves only by asking (`issues.untrack` / `untrack_issue`). **Being
+unassigned does not untrack**, which is deliberate: handing work on is exactly
+when the previous holder still wants to know how it went, and an agent that
+does not can say so in one call.
+
+Tracking an issue that is already tracked, and untracking one that is not, both
+answer the issue unchanged and write no event. This is a set, and saying a
+thing twice is not a second fact.
+
+### What a change delivers
+
+Every change to a tracked issue delivers one notice per tracker: a status or
+column move, a state change, a title, body, labels or priority edit, a new
+comment, an assignment, a link. The notice is an ordinary conversation message
+on the user's side — the side an instruction arrives on whoever wrote it —
+carrying:
+
+- **`from_build: true`**, the mark the restart notice already uses. It says the
+  daemon wrote this and nobody is waiting on an answer to it. A client draws it
+  as Build's own words rather than as the reader's.
+- **`from_issue`** — the same envelope a dispatched issue carries, narrowed to
+  what a notice needs: `{issue_id, number, title}`. It is what lets a client
+  draw the notice as a card on the issue and link `#13`.
+- **A one-line body** saying what changed and who changed it: `#13 moved to In
+  review by agent-01K5Z…`. When the change is a comment, the comment's body
+  follows on its own line, because the whole point of hearing about a comment
+  is reading it.
+
+**An agent is never told about its own change.** The actor is excluded from the
+delivery, always. An agent that moves a card and is then woken to be told it
+moved a card would answer its own message, and two agents each tracking the
+other's issue would do it forever.
+
+A change that alters nothing delivers nothing, for the same reason it writes no
+event: moving a card to the column it is already in is not news.
+
+Delivery is durable and goes down the path every other delivered message goes
+down — the same queue, the same receipt, the same start. It skips
+`note_user_message`, as an agent-to-agent hand-off does: Build telling an agent
+something is the work happening, not somebody speaking to the human, and it
+must not move the inbox anchor under a reader.
+
+### Where the notice's shape is pinned
+
+In **`fixtures/api/v1/thread.page.json`**, beside the other message shapes —
+not in `events.json`.
+
+`events.json` holds what the bridge pushes on a session: `changes`,
+`board.changed`, `entity.changed`, `term.*`, `rtc.ice`. Its contract test
+matches on the event's `type` and panics on anything it does not recognise
+(`the bridge sends no such push`). A notice is not a push: it is a message on a
+conversation, and a client reads it out of `thread.page` with every other
+message. Putting it in `events.json` would either break that test or make the
+file mean two things.
+
+So a `thread.page` item carries the example, and the same file is where
+`from_build` is pinned for the first time — the restart notice has been sending
+it since `486001f8` without a fixture saying so.
+
+### The per-agent read
+
+`issues.for_agent {agent_id}` answers what one agent is on:
+
+```json
+{
+  "agent_id": "agent-01K5Z…",
+  "assigned": [{ "issue_id": "issue-01K5Z…", "number": 13, "title": "…",
+                 "state": "open", "status": "in_progress",
+                 "updated_at": "2026-09-20T15:04:00Z" }],
+  "tracking": [ … the same digest … ]
+}
+```
+
+A digest and not the whole issue: this is a list somebody scans, and the body
+of thirty issues is not a list. An issue the agent both holds and tracks — which
+is every assigned one — appears in both, because the two questions are
+different and a client showing one should not have to know about the other.
+
+Both lists are newest-updated first. Scoped to the agent's own project, which
+the bridge resolves from the agent rather than taking as an argument.
+
+### Scope
+
+An agent may track only issues of its own project, and may track only itself:
+`issues.track` names an `agent_id`, and a tool call's is forced to the caller.
+The wire verb is the user's, so it may name any agent of the issue's project
+and refuses one outside it by name — the same refusal every project-scoped
+handler gives.
 
 ## Push
 
@@ -638,6 +767,12 @@ workspace, or a new workspace. Choosing one of the last two is where the
 harness/model/effort selects appear. The control says what it is about to do —
 "cut a workspace and start an agent on it" — because assigning starts work and
 the user should not discover that afterwards.
+
+**The agent's activity entry.** Per agent, what it holds and what it watches,
+from `issues.for_agent {agent_id}` — two digest lists, each newest-updated
+first, each entry `{issue_id, number, title, state, status, updated_at}`. An
+assigned issue appears in both lists; that is not a bug to de-duplicate, it is
+the two questions being different.
 
 **Push.** The project page subscribes `{scope: {kind: "entity", id: project_id},
 kinds: ["issues"]}` and refetches on an item. An issue page open on an issue

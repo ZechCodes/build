@@ -117,7 +117,8 @@ export function pressProjectTab(tab) {
     return;
   }
   const { deviceId, projectId } = App.route;
-  go({ ...projectRoute({ id: projectId, deviceId }), ...(tab === "issues" ? { tab: "issues" } : {}) });
+  // Issues is the default, so it is Workspaces that has to be asked for (#46).
+  go({ ...projectRoute({ id: projectId, deviceId }), tab: tab === "workspaces" ? "workspaces" : "issues" });
 }
 
 function paintVerb() {

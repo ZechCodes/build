@@ -1,8 +1,9 @@
 // Hash routes for the three-panel shell. There are two work items and two
 // global surfaces, and that is the whole vocabulary:
 //   #/inbox                                     — the landing surface
-//   #/project/<projectId>                       — the project: its workspaces
-//   #/project/<projectId>/issues[?view=board]   — the project: its issue tracker
+//   #/project/<projectId>[?view=board]          — the project: its issue tracker
+//   #/project/<projectId>/workspaces            — the project: its workspaces
+//   #/project/<projectId>/issues[?view=board]   — an alias for the tracker
 //   #/project/<projectId>/issues/<issueId>      — one issue of the tracker
 //   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
@@ -35,6 +36,12 @@ const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
 /// exactly as it was: the tracker is a different thing that happens to share
 /// the English word, and the two never meet (planning/v2/Issues Spec.md).
 const ISSUES_TAB = "issues";
+
+/// The project page's other tab. Issues is first and is what a project link
+/// opens on (#46), so Issues writes nothing and this one names itself: a URL
+/// says only what is not the default. `#/project/<p>` IS the Issues tab, and
+/// every `/issues` link written before the flip still parses to the same place.
+const WORKSPACES_TAB = "workspaces";
 
 /// Which way the Issues tab is laid out. The list is the default and writes no
 /// query; the board says so, because a link to a board should open one.
@@ -86,7 +93,7 @@ const inboxIn = (projectId) => (projectId ? { name: "inbox", projectId } : inbox
  * about that checkout. Every URL that used to open the checkout
  * (`#/project/<id>` and the retired tabs that hung off it) lands here.
  */
-const projectPage = (projectId) => (projectId ? { name: "project", projectId } : inbox());
+const projectPage = (projectId, tab = ISSUES_TAB) => (projectId ? { name: "project", projectId, tab } : inbox());
 
 /**
  * `<workspaceId>[/directory/<sourceId>][/<tab>[/<issueId>]]`.
@@ -137,7 +144,7 @@ function legacyStage(tabSegment, stageSegment) {
  * there is no tracker of a branch to open.
  */
 const trackerRoute = (projectId, issueId) =>
-  issueId ? { name: "trackerIssue", projectId, issueId } : { name: "project", projectId, tab: ISSUES_TAB };
+  issueId ? { name: "trackerIssue", projectId, issueId } : projectPage(projectId);
 
 /** `#/project/<p>/issue/<id>[…]` — the project is in the URL, so this is the
  *  canonical issue route no matter which legacy tail follows the id. */
@@ -320,6 +327,7 @@ function insideProject(projectId, parts) {
   if (collection === "workspace") return workspaceRoute(projectId, [id, ...tail]);
   if (collection === "branch") return branchRoute(projectId, id ? [id, ...tail] : []);
   if (collection === ISSUES_TAB) return trackerRoute(projectId, id);
+  if (collection === WORKSPACES_TAB) return projectPage(projectId, WORKSPACES_TAB);
   if (!id) return projectSurface(projectId, collection);
   if (collection === "issue" || collection === "plan") return issueRoute(projectId, id, tail);
   const kind = LEGACY_ID_COLLECTIONS[collection];
@@ -386,10 +394,10 @@ const railAgentPairs = (route) => [["agent", route.agent || ""]];
 const issuesViewPairs = (route, standing = ISSUES_TAB) =>
   [["view", route.tab === standing && route.view === BOARD_VIEW ? BOARD_VIEW : ""]];
 
-/// Which of the project page's two tabs a route stands on. Workspaces is the
-/// page itself and writes nothing, so every URL that named a project and
-/// nothing else still parses and writes back the way it always has.
-const projectTabPath = (route) => (route.tab === ISSUES_TAB ? `/${ISSUES_TAB}` : "");
+/// Which of the project page's two tabs a route stands on. Issues is the
+/// default (#46), so it writes nothing and a bare project link opens it;
+/// Workspaces is the one that has to name itself.
+const projectTabPath = (route) => (route.tab === WORKSPACES_TAB ? `/${WORKSPACES_TAB}` : "");
 
 /// Everything a work URL says before the branch or the issue: the machine the
 /// project is on, when the route names one, and the project itself. A route

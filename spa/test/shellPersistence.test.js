@@ -117,8 +117,9 @@ const flush = () => new Promise((done) => setTimeout(done, 0));
 
 /** Every route that is a place with a conversation, and what the reader calls it. */
 const PLACES = {
+  // #46: a bare project link opens the tracker, and Workspaces names itself.
   project: { name: "project", deviceId: "dev-1", projectId: "p-1" },
-  "project (issues tab)": { name: "project", deviceId: "dev-1", projectId: "p-1", tab: "issues" },
+  "project (workspaces tab)": { name: "project", deviceId: "dev-1", projectId: "p-1", tab: "workspaces" },
   "issue (tracker)": { name: "trackerIssue", deviceId: "dev-1", projectId: "p-1", issueId: "i-1" },
   workspace: { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1" },
   // #29: the workspace's own issues, and one of them open. Both are still
@@ -155,8 +156,8 @@ const visit = async (route) => {
  * workspace case here ran for a while against a `loading…` frame (#32/#36).
  */
 const PAGE_CONTENT = {
-  project: "[data-workspace]",
-  "project (issues tab)": ".issue-head",
+  project: ".issue-head",
+  "project (workspaces tab)": "[data-workspace]",
   // The issue surface itself is core/trackerIssuePage.js, mocked at the top of
   // this file because it has a suite of its own — so its host pane is what
   // there is to see, and seeing it is what says the route host ran.
@@ -234,14 +235,14 @@ describe("every place stands in the same shell", () => {
 });
 
 describe("a page swapping inside the shell", () => {
-  it("keeps the strip standing across a project's Workspaces and Issues tabs", async () => {
+  it("keeps the strip standing across a project's Issues and Workspaces tabs", async () => {
     await visit(PLACES.project);
     const held = strip();
     expect(held).toBeTruthy();
     expect(pageContent("project")).toBeTruthy();
-    await visit(PLACES["project (issues tab)"]);
-    // The page really swapped: the workspaces went, the issues came.
-    expect(pageContent("project (issues tab)")).toBeTruthy();
+    await visit(PLACES["project (workspaces tab)"]);
+    // The page really swapped: the issues went, the workspaces came.
+    expect(pageContent("project (workspaces tab)")).toBeTruthy();
     expect(pageContent("project")).toBeNull();
     // Same conversation, different page: the tabs are the shell's and the rail
     // is the shell's, so only #root changed.
@@ -278,7 +279,7 @@ describe("a page swapping inside the shell", () => {
   });
 
   it("keeps the strip standing when the Issues tab opens one of its issues", async () => {
-    await visit(PLACES["project (issues tab)"]);
+    await visit(PLACES.project);
     const held = strip();
     expect(held).toBeTruthy();
     await visit(PLACES["issue (tracker)"]);
@@ -290,7 +291,7 @@ describe("a page swapping inside the shell", () => {
 
   it("stands the legacy issue page on the issue's own conversation instead", async () => {
     // The legacy multi-stage issue is the one issue that does carry one.
-    await visit(PLACES["project (issues tab)"]);
+    await visit(PLACES.project);
     const held = strip();
     await visit(PLACES["issue (legacy)"]);
     expect(strip()).toBeTruthy();

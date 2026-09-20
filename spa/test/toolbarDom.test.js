@@ -84,6 +84,7 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openC
 const { App } = await import("../src/app.js");
 const { clearProjectTabHandler, initToolbar, setProjectTabHandler, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
+const { routeFromHash } = await import("../src/core/router.js");
 const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
 const { rememberDeviceFilter } = await import("../src/core/deviceFilter.js");
 const { stampWorkspace } = await import("../src/core/feedMerge.js");
@@ -192,22 +193,24 @@ describe("the project's pages in the bar", () => {
     toolbarRouteChanged();
   };
 
-  it("follows the project's name with Workspaces and Issues, marking the page you are on", () => {
+  // Issues first, and the one a route that names no tab is standing on (#46).
+  it("follows the project's name with Issues and Workspaces, marking the page you are on", () => {
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
     expect(names()).toEqual(["relaydb"]);
-    expect(projectTabs()).toEqual([["Workspaces", "true"], ["Issues", "false"]]);
-    standOn({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "issues" });
-    expect(projectTabs()).toEqual([["Workspaces", "false"], ["Issues", "true"]]);
+    expect(projectTabs()).toEqual([["Issues", "true"], ["Workspaces", "false"]]);
+    standOn({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "workspaces" });
+    expect(projectTabs()).toEqual([["Issues", "false"], ["Workspaces", "true"]]);
   });
 
   it("keeps them over an issue's page with Issues open, and goes back to the list from either", () => {
     standOn({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "issue-1" });
-    expect(projectTabs()).toEqual([["Workspaces", "false"], ["Issues", "true"]]);
+    expect(projectTabs()).toEqual([["Issues", "true"], ["Workspaces", "false"]]);
     bar().querySelector('[data-project-tab="issues"]').click();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/issues");
+    // The default tab's own URL: the bare project link (#46).
+    expect(location.hash).toBe("#/device/dev-1/project/p1");
     standOn({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "issue-1" });
     bar().querySelector('[data-project-tab="workspaces"]').click();
-    expect(location.hash).toBe("#/device/dev-1/project/p1");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/workspaces");
   });
 
   // The page is the same page: a navigation would remount the rail beside it.
@@ -215,14 +218,15 @@ describe("the project's pages in the bar", () => {
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
     const hash = location.hash;
     const opened = vi.fn((tab) => {
-      App.route = { ...App.route, tab: tab === "issues" ? "issues" : undefined };
+      App.route = { ...App.route, tab };
     });
     setProjectTabHandler(opened);
-    bar().querySelector('[data-project-tab="issues"]').click();
+    // Pressing the tab the page is NOT on, which is Workspaces now (#46).
+    bar().querySelector('[data-project-tab="workspaces"]').click();
     clearProjectTabHandler(opened);
-    expect(opened).toHaveBeenCalledWith("issues");
+    expect(opened).toHaveBeenCalledWith("workspaces");
     expect(location.hash).toBe(hash);
-    expect(projectTabs()).toEqual([["Workspaces", "false"], ["Issues", "true"]]);
+    expect(projectTabs()).toEqual([["Issues", "false"], ["Workspaces", "true"]]);
   });
 
   it("draws none over a workspace, whose tabs are its directories", async () => {
@@ -420,6 +424,10 @@ describe("the back chevron", () => {
     // so the navigation settles a tick later.
     await flush();
     expect(location.hash).toBe("#/device/dev-1/project/p1");
+    // …which is the Issues tab, the project's default (#46). The inbox's
+    // project name writes this same link (core/projectModel.js mints both), so
+    // both ways back into a project land on the tracker.
+    expect(routeFromHash(location.hash)).toMatchObject({ name: "project", projectId: "p1", tab: "issues" });
   });
 });
 

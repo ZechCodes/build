@@ -156,15 +156,18 @@ const STANDING = {
   },
 };
 
-/** The two pages a project has, as tabs after its name in the bar: the
- *  workspaces cut from it and its issue tracker, marked with the one the route
- *  is on. They live in the bar rather than over the page so they stay reachable
- *  with the chat open over the page on a phone. */
+/** The two pages a project has, as tabs after its name in the bar: its issue
+ *  tracker and the workspaces cut from it, marked with the one the route is on.
+ *  They live in the bar rather than over the page so they stay reachable with
+ *  the chat open over the page on a phone.
+ *
+ *  Issues first, and the one a route that names no tab is on (#46): "I think
+ *  issues should be the first and primary project tab." */
 export function projectTabsModel(current) {
-  const onIssues = current === "issues";
+  const onWorkspaces = current === "workspaces";
   return [
-    { id: "workspaces", label: "Workspaces", current: !onIssues },
-    { id: "issues", label: "Issues", current: onIssues },
+    { id: "issues", label: "Issues", current: !onWorkspaces },
+    { id: "workspaces", label: "Workspaces", current: onWorkspaces },
   ];
 }
 

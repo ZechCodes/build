@@ -33,7 +33,7 @@ describe("resolveLegacyRoute", () => {
   it("has no primary-checkout kind to resolve", () => {
     expect(resolveLegacyRoute({ kind: "primary", projectId: "p1", tab: "files" }, { items })).toBeNull();
     expect(routeFromHash("#/project/p1")).toEqual({
-      name: "resolve", kind: "project", projectId: "p1", route: { name: "project", projectId: "p1" },
+      name: "resolve", kind: "project", projectId: "p1", route: { name: "project", projectId: "p1", tab: "issues" },
     });
   });
 
@@ -202,7 +202,8 @@ describe("resolveLegacyRoute for a project with no device named", () => {
   // the whole of what is missing — and a project nobody has cut a workspace in
   // yet has no row anywhere but the project list. It still has to open.
   it("resolves the project's own page off the projects alone", () => {
-    const page = { name: "project", projectId: "proj-1" };
+    // A project route names its tab, and Issues is the one a bare link opens (#46).
+    const page = { name: "project", projectId: "proj-1", tab: "issues" };
     const empty = { items: [], workspaces: [], projects: [{ project_id: "proj-1", deviceId: "dev-b" }] };
     expect(resolveLegacyRoute({ ...ref, route: page }, empty, policy)).toEqual({ ...page, deviceId: "dev-b" });
     expect(resolveLegacyRoute({ ...ref, route: page }, { items: [], projects: [] }, policy)).toBeNull();

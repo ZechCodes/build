@@ -38,7 +38,8 @@ import "../styles/surfaces.css";
  *  itself, so a route that names no tab names that one. */
 const WORKSPACES_TAB = "workspaces";
 const ISSUES_TAB = "issues";
-const tabOf = (route) => (route.tab === ISSUES_TAB ? ISSUES_TAB : WORKSPACES_TAB);
+/// Issues is the default, so a route that names no tab is on it (#46).
+const tabOf = (route) => (route.tab === WORKSPACES_TAB ? WORKSPACES_TAB : ISSUES_TAB);
 
 /** Line two of a workspace row: what it is standing on, what its checkout is
  *  doing when that is not simply "ready", and what the work weighs. The same
@@ -142,7 +143,9 @@ function openTab(state, tab) {
 /** The hash this page is standing at, kept in step with the tab and the view
  *  without a navigation. A reload lands back on what is on screen. */
 function writeTabHash(state) {
-  const route = { ...state.route, tab: state.tab === ISSUES_TAB ? ISSUES_TAB : undefined, view: state.view };
+  // The tab is always named on the route; it is the URL that leaves the default
+  // out (core/router.js `projectTabPath`).
+  const route = { ...state.route, tab: state.tab, view: state.view };
   App.route = route;
   state.route = route;
   history.replaceState(null, "", hashFromRoute(route));
@@ -196,7 +199,7 @@ export async function renderProject() {
   // The two tabs are the toolbar's (core/toolbar.js), so they stay reachable
   // with the chat open over the page; a press is handed here to switch in
   // place, because a navigation would remount the rail beside the page.
-  state.openTab = (tab) => openTab(state, tab === ISSUES_TAB ? ISSUES_TAB : WORKSPACES_TAB);
+  state.openTab = (tab) => openTab(state, tab === WORKSPACES_TAB ? WORKSPACES_TAB : ISSUES_TAB);
   setProjectTabHandler(state.openTab);
   $("#project-pane").onclick = (event) => {
     const row = event.target.closest("[data-workspace]");

@@ -60,6 +60,12 @@ const openProject = async () => {
   await renderProject();
 };
 
+/** The Workspaces tab, which a project URL no longer opens on its own (#46). */
+const openWorkspacesTab = async () => {
+  App.route = { ...App.route, tab: "workspaces" };
+  await openProject();
+};
+
 const workspace = (id, extra = {}) => ({
   id,
   workspace_id: id,
@@ -121,7 +127,7 @@ const rows = () => [...document.querySelectorAll("[data-workspace]")];
 
 describe("the project surface", () => {
   it("lists the project's workspaces, each opening its own surface", async () => {
-    await openProject();
+    await openWorkspacesTab();
     await flush();
 
     expect(rows().map((row) => row.querySelector(".stitle").textContent)).toEqual(["ws-1", "docs"]);
@@ -131,7 +137,7 @@ describe("the project surface", () => {
   });
 
   it("repaints when the feed moves", async () => {
-    await openProject();
+    await openWorkspacesTab();
     await flush();
     expect(rows()).toHaveLength(2);
 
@@ -145,7 +151,7 @@ describe("the project surface", () => {
   // the page says what to do about it rather than looking broken.
   it("says there are no workspaces yet and points at the +", async () => {
     snapshot = { ...snapshot, workspaces: [] };
-    await openProject();
+    await openWorkspacesTab();
     await flush();
 
     expect(rows()).toHaveLength(0);
@@ -253,7 +259,17 @@ describe("the project surface", () => {
 // the project's name, so they stay reachable with the chat open over the
 // page); a press on them is handed to this page to switch in place.
 describe("the project's two tabs", () => {
-  it("opens on the workspaces, which is what a project URL has always opened on", async () => {
+  // #46: a bare project link opens the tracker now, and Workspaces is the tab
+  // that names itself.
+  it("opens on the issues, which is what a project URL opens on now", async () => {
+    await openProject();
+    await flush();
+    expect(mountIssuesPane).toHaveBeenCalled();
+    expect(document.querySelector(".project-rows")).toBeNull();
+  });
+
+  it("opens the workspaces when the route names that tab", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "workspaces" };
     await openProject();
     await flush();
     expect(document.querySelector(".project-rows")).not.toBeNull();
@@ -287,9 +303,9 @@ describe("the project's two tabs", () => {
     await openProject();
     await flush();
     mountAgentRail.mockClear();
-    pressProjectTab("issues");
+    pressProjectTab("workspaces");
     await flush();
-    expect(location.hash).toBe("#/device/dev-1/project/proj-1/issues");
+    expect(location.hash).toBe("#/device/dev-1/project/proj-1/workspaces");
     expect(mountAgentRail).not.toHaveBeenCalled();
   });
 
@@ -305,7 +321,7 @@ describe("the project's two tabs", () => {
     await openProject();
     await flush();
     mountIssuesPane.mock.calls[0][1].onViewChange("board");
-    expect(location.hash).toBe("#/device/dev-1/project/proj-1/issues?view=board");
+    expect(location.hash).toBe("#/device/dev-1/project/proj-1?view=board");
   });
 
   it("takes the Issues tab down with the page", async () => {

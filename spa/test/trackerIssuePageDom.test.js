@@ -10,8 +10,14 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, comment, event, issue } from "./trackerWireFixture.js";
 
 let watchers = [];
+// The real module refuses a registration that names a cadence — nothing in
+// this client polls — so this stand-in refuses one too. A poll creeping back
+// into a surface fails here rather than only in a browser.
+const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 vi.mock("../src/core/changeEvents.js", () => ({
   watchChanges: (registration) => {
+    const named = RETIRED.filter((option) => option in registration);
+    if (named.length) throw new TypeError(`watchChanges does not poll: remove ${named.join(", ")}`);
     const watcher = { ...registration, disposed: false };
     watchers.push(watcher);
     return { dispose: () => { watcher.disposed = true; } };

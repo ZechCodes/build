@@ -23,9 +23,6 @@ import { issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { labelsFromText } from "./trackerCreate.js";
 
-/** The safety poll behind the push, as every mounted surface keeps one. */
-const REFRESH_MS = 20000;
-
 /** Whether one flush of `issues` items says anything about this issue. */
 const namesIssue = (items, issueId) =>
   (items || []).some((item) => item.issues && (item.issues.truncated || (item.issues.issue_ids || []).includes(issueId)));
@@ -215,12 +212,15 @@ export function mountIssuePage(host, options) {
 
   paint();
   void paintFromCache().then(() => refresh());
+  // No cadence: nothing in this client polls. An item that names this issue
+  // is what re-reads it, and the pass behind that (core/cacheSync.js) is the
+  // whole of the safety net.
   const watcher = watchChanges({
     refresh: () => void refresh({ keepDrafts: true }),
-    intervalMs: REFRESH_MS,
     entity: state.projectId,
     deviceId: state.deviceId,
     kinds: ["issues"],
+    mode: "realtime",
     onChanges: (items) => {
       if (namesIssue(items, state.issueId)) void refresh({ keepDrafts: true });
     },

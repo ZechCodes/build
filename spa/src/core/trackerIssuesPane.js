@@ -29,10 +29,6 @@ import { openCreateIssue } from "./trackerCreate.js";
 const LIST_VIEW = "list";
 const BOARD_VIEW = "board";
 
-/** The safety poll behind the push, which is what every mounted surface keeps.
- *  A subscription that is carrying re-times this to its own cadence. */
-const REFRESH_MS = 20000;
-
 const viewButtonHtml = (view, id, label) =>
   `<button class="btn mini issue-view${view === id ? " active" : ""}" type="button" data-issue-view="${id}" aria-pressed="${view === id}">${label}</button>`;
 
@@ -282,12 +278,15 @@ export function mountIssuesPane(host, options) {
 
   paint();
   void paintFromCache().then(() => refresh());
+  // No cadence: nothing in this client polls. The tab hears that an issue of
+  // this project moved and reads the list again, and the pass behind it
+  // (core/cacheSync.js) is the whole of the safety net.
   const watcher = watchChanges({
     refresh: () => void refresh(),
-    intervalMs: REFRESH_MS,
     entity: state.projectId,
     deviceId: state.deviceId,
     kinds: ["issues"],
+    mode: "realtime",
   });
 
   return {

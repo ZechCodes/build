@@ -356,3 +356,36 @@
   .agent-issue-title { flex-basis:100%; white-space:normal; }
   .agent-issue-facts { margin-left:0; }
 }
+
+/* ---- the workspace's issues: the icon on the bar, and its view -----------
+   The icon sits beside the settings cog at every width — the bar is the one
+   piece of chrome that never collapses — so it keeps its size and its count
+   on a phone and only the view below it scrolls. */
+
+.tb-issues { position:relative; display:inline-flex; align-items:center; gap:4px; }
+.tb-issues[hidden] { display:none; }
+.tb-issues.has-issues { color:var(--ink2); }
+.tb-issues-count {
+  font-size:10.5px; font-weight:700; line-height:1;
+  color:var(--accent-ink); background:var(--accent-fill);
+  border-radius:999px; padding:2px 5px;
+  font-variant-numeric:tabular-nums;
+}
+/* An empty count is no pill at all rather than an empty one. */
+.tb-issues-count:empty { display:none; }
+
+.modal-workspace-issues { width:min(560px, calc(100vw - 32px)); }
+.workspace-issues-body { max-height:min(60vh, 520px); overflow-y:auto; display:flex; flex-direction:column; gap:14px; }
+.workspace-issues-agent-head {
+  margin:0 0 6px; font-size:11px; font-weight:700; letter-spacing:.05em;
+  text-transform:uppercase; color:var(--dim);
+}
+/* The groups inside a section are the conversation entry's own, so they keep
+   their panel fill; the section around them is only a heading. */
+.workspace-issues-agent .agent-issues { gap:5px; }
+.workspace-issues-body .empty { padding:18px 2px; }
+
+@media (max-width: 760px) {
+  .modal-workspace-issues { width:calc(100vw - 20px); }
+  .workspace-issues-body { max-height:70vh; }
+}

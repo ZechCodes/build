@@ -26,6 +26,8 @@ import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { workspaceAgents } from "./trackerAssignee.js";
+import { WORKSPACE_ISSUES_SELECTOR, mountWorkspaceIssues } from "./trackerWorkspaceIssuesView.js";
 import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
 import { openWorkspaceSettings } from "../sheets/workspaceSettings.js";
@@ -61,6 +63,8 @@ let scopedProjectKey = null;
 // Each project's workspaces as its own machine last listed them, by project
 // key — two machines' `proj-1` are two projects with two sets.
 const workspacesByProject = new Map();
+/** The issues icon's block, while the bar is standing in a workspace. */
+let issuesBlock = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
 let paintedIdentity = null; // what the bar's OWN markup was last built from — see paint()
@@ -206,6 +210,52 @@ const standingDirectories = () =>
 
 // ---- the bar ----------------------------------------------------------------
 
+/** The agents of the workspace the bar is standing in, in the order its row
+ *  lists them — the same order the rail's bubbles read across. Read at every
+ *  paint rather than captured: a workspace gains and loses agents while the bar
+ *  stands there. */
+function agentsInFocus() {
+  const route = App.route;
+  if (route.name !== "workspace" || !route.workspaceId) return [];
+  const group = workspaceAgents(feed, routeProjectKey(route))
+    .find((candidate) => candidate.workspaceId === route.workspaceId);
+  return (group?.agents || []).map((agent, index) => ({ id: agent.id, ordinal: index + 1 }));
+}
+
+/**
+ * The issues icon beside the cog, kept in step with the bar.
+ *
+ * Mounted against the button the last repaint drew — a repaint replaces that
+ * element, so the block is remounted onto the new one rather than left holding
+ * a detached node. Where the bar drew no button (every identity but a
+ * workspace) whatever was mounted is disposed.
+ *
+ * The count itself is not painted from here: the block listens to the project's
+ * cached issue list and moves its own badge, so an `issues` push never has to
+ * repaint the bar — the verb slot beside it can be holding a view's open menu
+ * or an action in flight.
+ */
+function syncIssuesButton(host) {
+  const button = host.querySelector(WORKSPACE_ISSUES_SELECTOR);
+  if (!button) {
+    issuesBlock?.dispose();
+    issuesBlock = null;
+    return;
+  }
+  if (issuesBlock?.button === button) {
+    issuesBlock.refresh();
+    return;
+  }
+  issuesBlock?.dispose();
+  const block = mountWorkspaceIssues(button, {
+    deviceId: App.route.deviceId,
+    projectId: App.route.projectId,
+    workspaceName: () => identity().label || "",
+    agents: agentsInFocus,
+  });
+  issuesBlock = { ...block, button };
+}
+
 function identity() {
   return toolbarIdentity(App.route, {
     ...feed,
@@ -249,6 +299,7 @@ function paint({ entering = false } = {}) {
       open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
       open.anchor.setAttribute("aria-expanded", "true");
     }
+    syncIssuesButton(host);
     host.querySelectorAll("[data-select]").forEach((control) => {
       control.onclick = (event) => {
         event.stopPropagation();
@@ -660,5 +711,7 @@ export function stopToolbar() {
   workspacesByProject.clear();
   toolbarResizeObserver?.disconnect();
   toolbarResizeObserver = null;
+  issuesBlock?.dispose();
+  issuesBlock = null;
   closeMenu();
 }

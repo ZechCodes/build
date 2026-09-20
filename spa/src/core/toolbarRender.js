@@ -6,7 +6,7 @@
 // says what the bar looks like for one identity.
 
 import { esc } from "./text.js";
-import { ICON_CHEVRON_LEFT, ICON_SETTINGS } from "./icons.js";
+import { ICON_CHEVRON_LEFT, ICON_CIRCLE_DOT, ICON_SETTINGS } from "./icons.js";
 
 /** One of the bar's popup triggers. The workspace switcher, the project
  *  selector and the collapsed directory menu are the same control wearing a
@@ -78,6 +78,17 @@ function projectTabsHtml(projectTabs) {
   return `<div class="tb-project-tabs" role="tablist" aria-label="Project pages">${tabs}</div>`;
 }
 
+/** What this workspace's agents are carrying on the issue board, beside the
+ *  cog. Drawn hidden and shown by whoever mounts it
+ *  (core/trackerWorkspaceIssuesView.js): a bridge that does not carry issues
+ *  gets no icon at all rather than one reading zero. The count lives in its own
+ *  span so the push can move it without repainting the bar — the verb slot
+ *  beside it can be holding an open menu. */
+const issuesButtonHtml = (kind) =>
+  kind === "workspace"
+    ? `<button class="iconbtn tb-issues" data-workspace-issues type="button" aria-label="Issues in this workspace" title="Issues in this workspace" hidden>${ICON_CIRCLE_DOT}<span class="tb-issues-count"></span></button>`
+    : "";
+
 /** The cog at the far right, opposite the switcher at the far left: what this
  *  workspace is called, what its agents start on, and the one way to delete it.
  *  Only a route standing IN a workspace has one to settle, so only a workspace
@@ -94,7 +105,7 @@ export function toolbarHtml({ project, kind, label, directories = [], projectTab
     ${identityHtml({ project, kind, label })}
     ${projectTabsHtml(projectTabs)}
     ${directoryTabsHtml(directories)}
-    <div class="tb-right">${settingsButtonHtml(kind)}<span class="tb-verb" id="tb-verb"></span></div>
+    <div class="tb-right">${issuesButtonHtml(kind)}${settingsButtonHtml(kind)}<span class="tb-verb" id="tb-verb"></span></div>
   </div>`;
 }
 

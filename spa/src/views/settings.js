@@ -22,6 +22,8 @@ import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core
 import { harnessDefaultsPanelHtml, mountHarnessDefaults } from "../core/harnessDefaults.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
 import { onDeviceStateChanged } from "../core/deviceContexts.js";
+import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../core/connectionDiagnostics.js";
+import { connectionDiagnosticsPanelHtml, mountConnectionDiagnostics } from "../core/connectionDiagnosticsPanel.js";
 
 /** One paired machine: what it is called, the key it holds, whether it is
  *  reachable, the way to its own settings, and the way to unpair it. The link
@@ -104,7 +106,8 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   const $ = (selector) => root.querySelector(selector);
   let disposeCreation = null;
   let disposePairing = null;
-  registerDispose(() => { disposeCreation?.(); disposePairing?.(); });
+  let disposeDiagnostics = null;
+  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); });
   root.innerHTML = `
     <div class="board-head"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div></div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
@@ -144,6 +147,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
       <div class="dim" style="font-size:13px;margin-bottom:8px">Install the bridge on another machine, or update this one.</div>
       ${downloadsPlaceholderHtml()}
     </div>
+    ${connectionDiagnosticsPanelHtml()}
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
       <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed. Each device's own settings — its projects, its folder, how agents run there — live on its page.</div>
@@ -241,6 +245,16 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   if (!isCurrent()) return;
   $("#adddev").onclick = () => { disposePairing = openAddDevice(refreshDeviceList); };
   mountCreationDevice(root, (dispose) => { disposeCreation = dispose; });
+
+  // The connection dump. It reads the history through the module rather than
+  // the `buildConnectionDiagnostics` global, and the machines through the
+  // account list, so a device that has a name is named. Its poll is this page's
+  // teardown — nothing ticks once Settings is off screen.
+  disposeDiagnostics = mountConnectionDiagnostics(root, {
+    history: connectionDiagnosticHistory,
+    clear: clearConnectionDiagnosticHistory,
+    devices: () => App.devices,
+  });
 
   // The same block the first-run gate mounts — one renderer, two hosts. It is
   // the only thing here that asks the api rather than the bridge, and nothing

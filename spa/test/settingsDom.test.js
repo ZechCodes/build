@@ -284,3 +284,44 @@ describe("Settings → what the account keeps", () => {
     expect(retireDevice).toHaveBeenCalledWith("dev-1");
   });
 });
+
+// The connection dump, on the page it is needed on. deploy/OPS.md asks people
+// to run `buildConnectionDiagnostics()` in a console before reloading a tab
+// that lost its connection — which is no use on the phone where the reconnects
+// happen. Settings reads the same history through the module.
+describe("Settings → Diagnostics", () => {
+  it("lists the recorded events, newest first, naming the machine", async () => {
+    const { recordConnectionDiagnostic, clearConnectionDiagnosticHistory } =
+      await import("../src/core/connectionDiagnostics.js");
+    clearConnectionDiagnosticHistory();
+    recordConnectionDiagnostic("dev-1:sess-1", "negotiating", { phase: "initial" });
+    recordConnectionDiagnostic("dev-2:sess-2", "restart-failed", { reason: "timeout" });
+
+    await renderSettings();
+    await flush();
+
+    const rows = [...document.querySelectorAll(".diagrow")];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain("restart-failed");
+    expect(rows[0].textContent).toContain("Studio");
+    expect(rows[0].textContent).toContain("reason=timeout");
+    expect(rows[1].textContent).toContain("Laptop");
+    clearConnectionDiagnosticHistory();
+  });
+
+  it("takes its poll away with the page, so nothing ticks off screen", async () => {
+    const armed = vi.spyOn(globalThis, "setInterval");
+    const dropped = vi.spyOn(globalThis, "clearInterval");
+
+    await renderSettings();
+    await flush();
+    const ticker = armed.mock.results.at(-1)?.value;
+    App.viewDispose?.();
+    App.viewDispose = null;
+
+    expect(ticker).toBeDefined();
+    expect(dropped.mock.calls.flat()).toContain(ticker);
+    armed.mockRestore();
+    dropped.mockRestore();
+  });
+});

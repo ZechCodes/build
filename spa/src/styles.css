@@ -363,6 +363,28 @@ main { max-width:min(1180px, 100%); margin:0 auto;
 .panel .row .k { font-family:var(--mono); color:var(--ink); min-width:140px; }
 .panel .row .v { color:var(--ink2); }
 .panel .row.last .k { color:var(--green); }
+/* ---- Settings -> Diagnostics ----
+   The connection dump, read on the device that is dropping — which is a phone,
+   so every measurement here is the 390px one. The list is capped and scrolls in
+   place rather than growing the page under the buttons that act on it.
+
+   Each event is a head that WRAPS (time, machine, kind — three short words that
+   must never be truncated) over two long strings that do not: an id and a
+   key=value line, both monospace, each scrolling sideways on its own. Wrapping
+   those two would turn one event into six lines of broken identifiers; letting
+   them widen the panel would put the whole page in a sideways scroll. */
+.diaglist { max-height:360px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; }
+.diaglist:empty { display:none; }
+.diagrow { padding:8px 10px; font-size:12.5px; }
+.diagrow + .diagrow { border-top:1px solid var(--line); }
+.diagrow-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px; }
+.diagrow-time { color:var(--ink); font-size:12px; }
+.diagrow-device { color:var(--ink2); min-width:0; overflow-wrap:anywhere; }
+.diagrow-kind { color:var(--accent); font-size:12px; }
+.diagrow-source, .diagrow-detail { margin-top:3px; overflow-x:auto; white-space:nowrap;
+  font-size:11px; line-height:1.5; }
+.diagrow-source { color:var(--dim); }
+.diagrow-detail { color:var(--ink2); }
 /* ---- the account archive ----
    A record opens under the row it belongs to, so it reads as that row's inside
    rather than as the next thing on the page. */

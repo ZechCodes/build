@@ -23,6 +23,8 @@ const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
 const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
 
 let passed = 0;
+import { FINISH_BLOCKERS, everyDirectoryIsARepository, plainDirectoriesOf, refusedBecause } from "./finishGate.mjs";
+
 const checks = [];
 function check(name, condition, detail = "") {
   checks.push({ name, ok: !!condition });
@@ -30,10 +32,16 @@ function check(name, condition, detail = "") {
   console.log(`${condition ? "✓" : "✗"} ${name}${detail ? `  — ${detail}` : ""}`);
 }
 
+/// Poll until the predicate answers something truthy, or give up.
+///
+/// The result is awaited: a predicate that asks the bridge something answers a
+/// promise, and a promise is truthy whatever it later resolves to — so without
+/// this an async predicate "succeeds" on its first tick and hands back the
+/// promise instead of the answer.
 async function waitFor(predicate, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const result = predicate();
+    const result = await predicate();
     if (result) return result;
     await sleep(50);
   }
@@ -207,6 +215,16 @@ async function main() {
   await call("git.stage", { ...gitScope, paths: ["README.md"] });
   const committed = await call("git.commit", { ...gitScope, message: `QA workspace ${tag}` });
   check("Git commit records the workspace edit", committed.subject === `QA workspace ${tag}`);
+  // Done removes the workspace, so the bridge refuses one whose work is only
+  // in it. The fixture has a bare clone of its own to publish to, so the
+  // harness satisfies that honestly rather than finishing work nothing else
+  // holds: the commit goes to the remote first.
+  const published = await call("git.push", gitScope);
+  check(
+    "git.push publishes the workspace commit and sets the upstream",
+    published.ahead === 0 && typeof published.upstream === "string" && published.upstream.length > 0,
+    `upstream=${published.upstream} ahead=${published.ahead}`,
+  );
   let plainGitRejected = false;
   try {
     await call("git.refs", plainScope);
@@ -239,14 +257,45 @@ async function main() {
   const terminals = await term.call("term.list", { workspace_id: workspace.workspace_id });
   check("term.list uses workspace_id only", terminals.terminals.some((item) => item.term_id === workspaceTerm.term_id));
 
+  // The commit is published now, so the only thing left between this workspace
+  // and Done is the plain folder it holds. Ask, and hold the gate to saying so:
+  // a plain directory is a blocker in itself, because nothing measures it and
+  // no remote has a copy.
+  check("the workspace still holds a directory that is not a repository", plainDirectoriesOf(workspace).length === 1);
+  let plainBlocked = null;
+  try {
+    await call("workspace.finish", { workspace_id: workspace.workspace_id });
+  } catch (error) {
+    plainBlocked = error;
+  }
+  check(
+    "workspace.finish refuses a workspace holding a plain directory",
+    refusedBecause(plainBlocked, FINISH_BLOCKERS.plainDirectory),
+    plainBlocked?.message || "finish was not refused",
+  );
+
+  // Read the plain source while it is still here: it leaves the workspace next,
+  // and what a FINISHED workspace keeps is asked of the Git directory below.
+  const beforeRemoval = await call("fs.read", { ...plainScope, path: "logo.txt" });
+  check("the workspace copy of the plain source holds the edit", decode(beforeRemoval.content_b64) === replacement);
+  await call("workspace.remove_directory", {
+    workspace_id: workspace.workspace_id,
+    directory_id: plainDirectory.id,
+  });
+  const readyToFinish = await waitFor(async () => {
+    const seen = await call("workspace.get", { workspace_id: workspace.workspace_id });
+    return everyDirectoryIsARepository(seen) ? seen : null;
+  });
+  check("workspace.remove_directory leaves only repositories behind", !!readyToFinish, "the plain directory did not leave");
+
   const finished = await call("workspace.finish", { workspace_id: workspace.workspace_id });
   const gitFinish = finished.repositories.find((item) => item.directory_id === gitDirectory.id);
   check("workspace.finish pushes each Git directory", finished.complete === true && gitFinish?.pushed === true);
-  check("finish results pair by directory_id", finished.repositories.every((item) => workspace.directories.some((directory) => directory.id === item.directory_id)));
+  check("finish results pair by directory_id", finished.repositories.every((item) => readyToFinish.directories.some((directory) => directory.id === item.directory_id)));
   const afterFinish = await call("workspace.get", { workspace_id: workspace.workspace_id });
   check("finish retains the workspace and marks it finished", afterFinish.status === "finished" && afterFinish.root === workspace.root);
-  const retained = await call("fs.read", { ...plainScope, path: "logo.txt" });
-  check("finished workspace files remain available", decode(retained.content_b64) === replacement);
+  const retained = await call("fs.read", { ...gitScope, path: "README.md" });
+  check("finished workspace files remain available", decode(retained.content_b64) === gitReplacement);
   const retainedTerminals = await term.call("term.list", { workspace_id: workspace.workspace_id });
   check(
     "finish retains live workspace terminals",
@@ -260,10 +309,23 @@ async function main() {
     name: `qa-local-workspace-${tag}`,
     isolation: "worktree",
   });
-  const incomplete = await call("workspace.finish", { workspace_id: localWorkspace.workspace_id });
-  check("finish without a remote returns complete:false", incomplete.complete === false && incomplete.repositories.some((item) => item.pushed === false));
+  // A project with no remote: its workspace is initialized with a commit and
+  // nowhere to publish it, which is exactly what the gate is for. It used to
+  // answer `complete:false`; since the gate it refuses, and refusing is the
+  // better answer — Done would have removed the only copy.
+  let localBlocked = null;
+  try {
+    await call("workspace.finish", { workspace_id: localWorkspace.workspace_id });
+  } catch (error) {
+    localBlocked = error;
+  }
+  check(
+    "workspace.finish refuses a workspace no remote has a copy of",
+    refusedBecause(localBlocked, FINISH_BLOCKERS.unpushed),
+    localBlocked?.message || "finish was not refused",
+  );
   const retainedIncomplete = await call("workspace.get", { workspace_id: localWorkspace.workspace_id });
-  check("incomplete finish retains a ready workspace", retainedIncomplete.status === "ready" && retainedIncomplete.root === localWorkspace.root);
+  check("a refused finish leaves the workspace ready and untouched", retainedIncomplete.status === "ready" && retainedIncomplete.root === localWorkspace.root);
 
   let unknownRejected = false;
   try { await call("does.not.exist"); } catch (error) { unknownRejected = /unknown method/.test(error.message); }

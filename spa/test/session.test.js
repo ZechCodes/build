@@ -5,6 +5,8 @@ import { describe, it, expect, vi } from "vitest";
 import { DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
 import { ANSWER_TIMEOUT_MS } from "../src/core/sessionRpc.js";
 import { PING_TIMEOUT_MS } from "../src/core/pathLiveness.js";
+import { PATH_PROBE_EVENT } from "../src/core/pathProbe.js";
+import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../src/core/connectionDiagnostics.js";
 import { ApiError, selectAdapter } from "../src/core/bridgeApi/index.js";
 
 // ---- fakes -------------------------------------------------------------------
@@ -553,5 +555,29 @@ describe("a session whose path has silently died", () => {
       expect(peer.sent.map((sent) => sent.frameFields.payload.method)).toEqual(["thread.post"]);
       expect(events.lost).toBe(0);
     });
+  });
+});
+
+// ---- what the next report from a phone carries (#30 point 4) ------------------
+
+describe("the diagnostic history of a path that died", () => {
+  it("records the probe, its verdict and the restart against the session id", async () => {
+    const stood = await carrying();
+    clearConnectionDiagnosticHistory();
+    vi.useFakeTimers();
+    try {
+      stood.peer.frames.connected = true;
+      stood.session.call("thread.post", {}, DEFAULT_RPC_TIMEOUT_MS).catch(() => {});
+      await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const written = connectionDiagnosticHistory().filter((entry) => entry.event === PATH_PROBE_EVENT);
+    expect(written.map((entry) => entry.state)).toEqual(["asked", "dead", "restarting"]);
+    expect(new Set(written.map((entry) => entry.connection))).toEqual(new Set(["dev-a:sess-1"]));
+    expect(written[0].method).toBe("thread.post");
+    expect(written[1].vouched).toBe("ice-connected");
   });
 });

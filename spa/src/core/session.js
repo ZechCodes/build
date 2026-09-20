@@ -17,7 +17,8 @@
 
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
-import { createPathProbe, PING_TIMEOUT_MS } from "./pathProbe.js";
+import { createPathProbe, PATH_PROBE_EVENT, PING_TIMEOUT_MS } from "./pathProbe.js";
+import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 export { DEFAULT_RPC_TIMEOUT_MS };
 
@@ -151,12 +152,20 @@ export async function openSession({
    * recovery supervisor mints the next one from, the same edge a lost channel
    * produces, so nothing downstream has to learn a new way for a session to end.
    */
+  const diagnosticId = `${deviceId}:${minted.sessionId}`;
   pathProbe = createPathProbe({
     ping: () => rpc.call("ping", {}, { timeoutMs: PING_TIMEOUT_MS, carrier: carrierSwitch.active() }),
     wire: () => carrierSwitch.active(),
     rpc: { lastFrameAt: () => rpc?.lastFrameAt() || 0 },
-    diagnosticId: `${deviceId}:${minted.sessionId}`,
-    onDead: severSession,
+    diagnosticId,
+    onDead: () => {
+      // Recorded beside the verdict, because a verdict nobody acted on and a
+      // session that was actually restarted read the same in a history
+      // otherwise, and this line is the seam between the two: everything after
+      // it in the timeline belongs to the next session.
+      recordConnectionDiagnostic(diagnosticId, PATH_PROBE_EVENT, { state: "restarting" });
+      severSession();
+    },
   });
 
   /**

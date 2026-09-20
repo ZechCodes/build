@@ -18,7 +18,7 @@ const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login" }];
 /** The merge as the feed last delivered it — one device's worth by default, the
  *  way a single-device fixture reads. */
 let feedSnapshot = { items: feedItems, projects: feedProjects };
-const refreshFeed = vi.fn(async () => {});
+const refreshFeed = vi.fn(async () => []);
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
     fn(feedSnapshot);

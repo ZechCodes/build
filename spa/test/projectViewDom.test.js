@@ -24,7 +24,7 @@ vi.mock("../src/core/trackerIssuesPane.js", () => ({ mountIssuesPane: (...args) 
 
 let subscribers = [];
 let snapshot = { items: [], projects: [], workspaces: [], pending: [], devices: {} };
-const refreshFeed = vi.fn(async () => {});
+const refreshFeed = vi.fn(async () => []);
 const deliver = () => subscribers.forEach((fn) => fn(snapshot));
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {

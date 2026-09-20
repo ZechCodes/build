@@ -12,7 +12,7 @@ const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelC
     openSetRemote: vi.fn(),
     refreshModelCatalog: vi.fn(async () => ({})),
     contextFor: vi.fn(),
-    refreshFeed: vi.fn(),
+    refreshFeed: vi.fn(async () => []),
     renameDevice: vi.fn(),
     revokeDevice: vi.fn(),
     retireDevice: vi.fn(),

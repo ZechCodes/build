@@ -18,7 +18,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   },
   deliverFeed: () => subscribers.forEach((fn) => fn(merged)),
   dropFeedDevice: () => {},
-  refreshFeed: () => {},
+  refreshFeed: async () => [],
   startFeed: () => {},
   stopFeed: () => {},
 }));

@@ -11,7 +11,7 @@ import { motionBeat } from "./motionRecorder.js";
  *  a new `call` is that bridge answering differently, not another machine. */
 const bridge = { call: null };
 
-const refreshFeed = vi.fn(async () => {});
+const refreshFeed = vi.fn(async () => []);
 vi.mock("../src/core/taskFeed.js", () => ({
   refreshFeed: (...args) => refreshFeed(...args),
   subscribeFeed: () => () => {},

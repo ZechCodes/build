@@ -60,7 +60,10 @@ let feed = {
 // agent rail, which subscribes to the feed too. A single-slot stub would let
 // that second subscriber silently steal the toolbar's own.
 const subscribers = new Set();
-const refreshFeed = vi.fn(async () => subscribers.forEach((fn) => fn(feed)));
+const refreshFeed = vi.fn(async () => {
+  subscribers.forEach((fn) => fn(feed));
+  return [];
+});
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
     subscribers.add(fn);

@@ -18,7 +18,10 @@ let feedProjects = [];
 let feedDevices = null;
 let subscriber = null;
 const feedSnapshot = () => ({ items: feedItems, projects: feedProjects, ...(feedDevices ? { devices: feedDevices } : {}) });
-const refreshFeed = vi.fn(async () => subscriber && subscriber(feedSnapshot()));
+const refreshFeed = vi.fn(async () => {
+  subscriber?.(feedSnapshot());
+  return [];
+});
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
     subscriber = fn;

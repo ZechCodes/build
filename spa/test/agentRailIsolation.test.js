@@ -13,7 +13,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
     listener({ items: [], projects: [] });
     return () => feedSubscribers.delete(listener);
   },
-  refreshFeed: async () => {},
+  refreshFeed: async () => [],
   dropFeedDevice: () => {},
   startFeed: () => {},
   stopFeed: () => {},

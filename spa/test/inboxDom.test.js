@@ -21,7 +21,7 @@ let snapshot = { items: [], pending: [], projects: [], workspaces: [], devices: 
 const deliver = () => subscribers.forEach((fn) => fn(snapshot));
 // The feed catching up is its own event: a verb that asks for a refresh does
 // not deliver a snapshot here, so a row leaving is the wiring's own doing.
-const refreshFeed = vi.fn(async () => {});
+const refreshFeed = vi.fn(async () => []);
 
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {

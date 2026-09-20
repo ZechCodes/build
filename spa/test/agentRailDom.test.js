@@ -26,7 +26,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
-const refreshFeed = vi.fn(async () => {});
+const refreshFeed = vi.fn(async () => []);
 // A Set, matching the real module (core/taskFeed.js) — more than one
 // subscriber at once is the normal case there, not an edge case to special-
 // case away.

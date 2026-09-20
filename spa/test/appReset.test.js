@@ -15,7 +15,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: () => () => {},
-  refreshFeed: async () => {},
+  refreshFeed: async () => [],
   dropFeedDevice: () => {},
   startFeed: () => {},
   stopFeed: () => {},

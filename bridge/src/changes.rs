@@ -2957,6 +2957,29 @@ mod subscriptions {
             "the refusal names the kind it did not know: {refused}"
         );
 
+        // And it survives to the CLIENT. `api::v1::parse_params` rewrites only
+        // the missing-field case and passes everything else through, so the
+        // refusal a browser reads names the unknown kind AND lists the ones
+        // this bridge serves. A client can therefore drop the kind it was
+        // refused for and re-subscribe with the rest, rather than having to
+        // treat every refusal as fatal.
+        let wire = crate::api::v1::parse_params::<SubscriptionSpec>(&json!({
+            "subscription_id": "s-inbox",
+            "scope": { "kind": "entity", "id": "proj-1" },
+            "kinds": ["state", "thread", "sandwiches"],
+        }))
+        .expect_err("the facade refuses it too");
+        assert_eq!(wire.code(), "invalid_params");
+        assert!(wire.message().contains("sandwiches"), "{}", wire.message());
+        for served in Kind::ALL {
+            assert!(
+                wire.message().contains(served.as_str()),
+                "the refusal lists {}, which this bridge does serve: {}",
+                served.as_str(),
+                wire.message()
+            );
+        }
+
         // And the kinds it DOES know still parse beside each other, so the
         // refusal above is about the unknown one and not about the list.
         let accepted: SubscriptionSpec = serde_json::from_value(json!({

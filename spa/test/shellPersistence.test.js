@@ -73,6 +73,13 @@ vi.mock("../src/core/taskFeed.js", () => ({
 // The tracker's own surfaces have their own files and their own suites; what
 // this file is about is the shell around them.
 vi.mock("../src/core/trackerIssuePage.js", () => ({
+  // Intentionally draws nothing, unlike the pane below. What this page is
+  // handed IS the marker — `#issue-pane` on the tracker's route, `.issue-surface`
+  // inside a workspace's Issues tab — and both are drawn by the host before the
+  // mount is called. So the marker already answers "did the host stand the page
+  // up", and a frame from here would only be this file drawing its own evidence.
+  // What the real page puts INSIDE that pane is core/trackerIssuePage.js's own
+  // suite to check (#39).
   mountIssuePage: () => ({ feedMoved: () => {}, dispose: () => {} }),
 }));
 vi.mock("../src/core/trackerIssuesPane.js", () => ({
@@ -450,4 +457,24 @@ describe("the strip on a page standing on the project", () => {
     expect(strip()).toBeTruthy();
     expect(separators()).toHaveLength(1);
   });
+});
+
+describe("the page-content markers can fail", () => {
+  // #39. A marker is only worth asserting if its absence means something, and
+  // a page-content marker can go quietly useless in either direction: a
+  // stand-in that draws nothing leaves the marker permanently absent, and a
+  // marker drawn unconditionally leaves it permanently present. Both turn
+  // "did the page stand up" into a question this file cannot answer.
+  //
+  // So every marker is walked against a machine that cannot answer, where the
+  // page paints a device notice instead of a body, and held to going with it.
+  // What that proves is that each marker follows its PAGE — not that the page
+  // drew anything inside it, which for the two issue markers is deliberately
+  // the mocked page's own suite to say.
+  for (const [place, route] of Object.entries(PLACES)) {
+    it(`${place} loses its marker when the page cannot mount`, async () => {
+      await visit({ ...route, deviceId: "dev-9" });
+      expect([place, Boolean(pageContent(place))]).toEqual([place, false]);
+    });
+  }
 });

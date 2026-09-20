@@ -90,6 +90,13 @@ docker compose -f deploy/compose.real.yml --profile qa run --rm qa    # pairs, t
 npm run e2e        # one encrypted round-trip over the `app` channel
 npm run qa         # workspaces, files, git and the terminal, end to end
 node wire-check.mjs  # the 1.1 wire surface, by hand from the host
+
+# A dropped session over an open surface: the cached copy is kept and marked,
+# and the read lands again on reconnect (#24). PAUSES the bridge rather than
+# stopping it — a stopped container deregisters the device, and a machine that
+# is gone is a different case from one being reconnected to. Needs a seed from
+# live-seed.mjs; exits non-zero on a failed check.
+ISSUES_REPO=$PWD/.. node dropped-read-check.mjs
 ```
 
 `PREFER_DEVICE_ID` pins one machine when the account has several

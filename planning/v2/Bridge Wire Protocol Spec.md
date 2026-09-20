@@ -783,10 +783,18 @@ Each item is tagged by `kind`:
   project's conversation is reachable from every workspace's rail, so a message
   sent from one leads with this item, and the delivery envelope says in prose
   which workspace the user was in.
+- `issue { issue_id, number, title }` — the issue they had open on the board
+  (**1.5.0**). The delivery envelope names it in prose too, and tells the agent
+  to read it with `get_issue` before answering about it. It carries no body on
+  purpose: an issue moves on after the message is sent, and a copy frozen into
+  the context would go stale while reading as current. Being pointed at an
+  issue is not being handed one — the sentence differs from the `from_issue`
+  hand-off's, which is the agent's work rather than the user's screen.
 
 A path must be scope-relative and at most 4 KiB; excerpts total at most 32 KiB
 across a context; a context carries at most 100 items and at least one; a
-workspace's id and name are each at most 512 bytes and neither may be empty.
+workspace's id and name, and an issue's id and title, are each at most 512
+bytes and none may be empty.
 Neither the context nor an item denies an unknown field — a newer SPA must be
 able to talk to an older bridge — so `version` stays 1 while kinds are added,
 and an item this bridge has never heard of is refused by kind alone.

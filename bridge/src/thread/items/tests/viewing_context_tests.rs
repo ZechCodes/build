@@ -183,3 +183,62 @@ fn viewing_context_rejects_a_workspace_item_naming_nothing() {
     .unwrap();
     assert!(unaddressed.validate().unwrap_err().contains("workspace"));
 }
+
+/// The board is a thing the user looks at, so a message sent while looking at
+/// an issue says which one. Additive at version 1, like the workspace item.
+#[test]
+fn viewing_context_carries_the_issue_the_user_is_looking_at() {
+    let context: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "items": [
+            { "kind": "issue", "issue_id": "issue-01K5Z", "number": 9, "title": "Kanban drag" }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(context.validate(), Ok(()));
+    assert_eq!(
+        context.items.first(),
+        Some(&ViewingContextItem::Issue {
+            issue_id: "issue-01K5Z".into(),
+            number: 9,
+            title: "Kanban drag".into(),
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&context.items[0]).unwrap(),
+        serde_json::json!({ "kind": "issue", "issue_id": "issue-01K5Z", "number": 9, "title": "Kanban drag" }),
+        "the item goes back out exactly as it came in"
+    );
+}
+
+/// Refused the way an over-long workspace name is: both words are for the
+/// agent to read, and a title the size of a file is not a label.
+#[test]
+fn viewing_context_rejects_an_issue_item_naming_nothing_or_too_much() {
+    let untitled: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "items": [{ "kind": "issue", "issue_id": "issue-1", "number": 9, "title": "" }]
+    }))
+    .unwrap();
+    assert!(untitled.validate().unwrap_err().contains("issue"));
+
+    let unaddressed: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "items": [{ "kind": "issue", "issue_id": "", "number": 9, "title": "Kanban drag" }]
+    }))
+    .unwrap();
+    assert!(unaddressed.validate().unwrap_err().contains("issue"));
+
+    let shouted: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "items": [{
+            "kind": "issue",
+            "issue_id": "issue-1",
+            "number": 9,
+            "title": "x".repeat(MAX_VIEWING_CONTEXT_LABEL_BYTES + 1),
+        }]
+    }))
+    .unwrap();
+    assert!(shouted.validate().unwrap_err().contains("512"));
+}

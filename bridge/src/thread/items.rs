@@ -713,6 +713,19 @@ pub enum ViewingContextItem {
         workspace_id: String,
         name: String,
     },
+    /// The issue the user had open when they wrote. Not a thing in the
+    /// checkout the way a file is: the board is its own surface, and "this
+    /// issue" is a question an agent is asked while looking at neither.
+    ///
+    /// Carries what it takes to NAME the issue and no more. The body is not
+    /// here on purpose — an issue changes after the message is sent, and a
+    /// copy frozen into viewing context would go stale while reading as
+    /// current. `get_issue` is how the agent reads it.
+    Issue {
+        issue_id: String,
+        number: u64,
+        title: String,
+    },
     Selection {
         path: String,
         text: String,
@@ -739,6 +752,21 @@ impl ViewingContext {
             ViewingContextItem::Workspace { workspace_id, name } => {
                 Some((workspace_id.as_str(), name.as_str()))
             }
+            _ => None,
+        })
+    }
+
+    /// The issue the user had open when they wrote, when the message says:
+    /// its number, its title and its id, for the line that tells the agent
+    /// what is on screen. The board sends at most one, so the first is the
+    /// answer — the same rule the workspace item follows.
+    pub fn issue(&self) -> Option<(u64, &str, &str)> {
+        self.items.iter().find_map(|item| match item {
+            ViewingContextItem::Issue {
+                issue_id,
+                number,
+                title,
+            } => Some((*number, title.as_str(), issue_id.as_str())),
             _ => None,
         })
     }
@@ -781,6 +809,9 @@ impl ViewingContext {
                 ViewingContextItem::Workspace { workspace_id, name } => {
                     validate_viewing_workspace(workspace_id, name)?
                 }
+                ViewingContextItem::Issue {
+                    issue_id, title, ..
+                } => validate_viewing_issue(issue_id, title)?,
                 ViewingContextItem::Selection {
                     path,
                     text,
@@ -819,6 +850,20 @@ fn validate_viewing_workspace(workspace_id: &str, name: &str) -> Result<(), Stri
         || name.len() > MAX_VIEWING_CONTEXT_LABEL_BYTES
     {
         return Err(format!("viewing_context workspace must carry an id and a name of at most {MAX_VIEWING_CONTEXT_LABEL_BYTES} bytes"));
+    }
+    Ok(())
+}
+
+/// An issue item names one, and the same way a workspace item does: both words
+/// are for the agent reading them, so neither may be empty and neither may be
+/// the size of a document. The number needs no check — every `u64` is one.
+fn validate_viewing_issue(issue_id: &str, title: &str) -> Result<(), String> {
+    if issue_id.is_empty()
+        || title.is_empty()
+        || issue_id.len() > MAX_VIEWING_CONTEXT_LABEL_BYTES
+        || title.len() > MAX_VIEWING_CONTEXT_LABEL_BYTES
+    {
+        return Err(format!("viewing_context issue must carry an id and a title of at most {MAX_VIEWING_CONTEXT_LABEL_BYTES} bytes"));
     }
     Ok(())
 }

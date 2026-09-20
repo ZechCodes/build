@@ -60,6 +60,38 @@ fn catch_up_names_the_workspace_a_message_was_sent_from() {
     );
 }
 
+/// The same for the issue on screen: a resumed agent reads the packet, and an
+/// issue named only inside the context JSON is not a sentence it will act on.
+#[test]
+fn catch_up_names_the_issue_the_user_was_looking_at() {
+    let mut thread = Thread::for_agent("agent-a");
+    thread.post_user_with_context(
+        "is this one done?",
+        None,
+        Some(ViewingContext {
+            version: 1,
+            items: vec![ViewingContextItem::Issue {
+                issue_id: "issue-01K5Z".into(),
+                number: 9,
+                title: "Kanban drag".into(),
+            }],
+        }),
+        NOW,
+    );
+    thread.post_user("and this?", None, NOW);
+
+    let prompt = thread.catch_up_markdown(10);
+    assert!(
+        prompt.contains("[looking at issue #9 \"Kanban drag\" (issue-01K5Z)]"),
+        "{prompt}"
+    );
+    assert_eq!(
+        prompt.matches("looking at issue").count(),
+        1,
+        "only the message that carried one says it: {prompt}"
+    );
+}
+
 /// A conversation stored whole, and the process that booted onto the last
 /// `tail` items of it — which is where an activity-heavy session leaves
 /// its replacement.

@@ -109,13 +109,14 @@ impl OperationPayload {
         let sender = self.sender_note();
         let workspace = self.workspace_note();
         let issue = self.issue_note();
+        let looking = self.viewing_issue_note();
         let user_prompt = self
             .messages
             .first()
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}{issue}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}{issue}{looking}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -194,6 +195,31 @@ impl OperationPayload {
             .find_map(crate::thread::ViewingContext::workspace)
             .map_or_else(String::new, |(workspace_id, name)| {
                 format!("\nThe user sent this from workspace \"{name}\" ({workspace_id}).\n")
+            })
+    }
+
+    /// One line naming the issue the user was LOOKING at, when the message
+    /// says which. Empty for everything sent from anywhere else.
+    ///
+    /// Not the same sentence as [`Self::issue_note`], and deliberately not:
+    /// that one hands the agent work and names the two tools that keep the
+    /// issue honest about it. This one answers "this issue" for a user who is
+    /// standing on the board and asking about what is on screen — the agent
+    /// has not been given the issue, only pointed at it.
+    ///
+    /// It carries no body, because the item does not: an issue moves on after
+    /// the message is sent, so the agent is told to go and read it rather than
+    /// handed a copy that reads as current and is not.
+    fn viewing_issue_note(&self) -> String {
+        self.messages
+            .iter()
+            .filter_map(|message| message.viewing_context.as_deref())
+            .find_map(crate::thread::ViewingContext::issue)
+            .map_or_else(String::new, |(number, title, issue_id)| {
+                format!(
+                    "\nThe user is looking at issue #{number} \"{title}\" (`{issue_id}`); read it \
+                     with get_issue before answering about it.\n"
+                )
             })
     }
 
@@ -382,6 +408,53 @@ mod tests {
         );
         assert!(cold.contains("Build conversation protocol"), "{cold}");
         assert!(!cold.contains("read_unread_messages"), "{cold}");
+    }
+
+    /// An issue the user is LOOKING at is not one they handed over, and the
+    /// envelope says which it is: the agent is being asked about the issue on
+    /// screen, and has to go and read it before it can answer.
+    #[test]
+    fn the_issue_the_user_is_looking_at_is_named_and_not_mistaken_for_a_hand_off() {
+        let looking = OperationPayload {
+            messages: vec![ThreadMessage {
+                viewing_context: Some(Box::new(
+                    serde_json::from_value(serde_json::json!({
+                        "version": 1,
+                        "items": [{
+                            "kind": "issue",
+                            "issue_id": "issue-01K5Z",
+                            "number": 9,
+                            "title": "Kanban drag does not persist"
+                        }]
+                    }))
+                    .unwrap(),
+                )),
+                ..payload().messages[0].clone()
+            }],
+            ..payload()
+        };
+
+        let warm = looking.delivery_prompt("post-1", false, AgentProvider::Claude);
+        assert!(
+            warm.contains(
+                "The user is looking at issue #9 \"Kanban drag does not persist\" \
+                 (`issue-01K5Z`)"
+            ),
+            "{warm}"
+        );
+        assert!(
+            warm.contains("read it with get_issue"),
+            "the agent is told how to read it: {warm}"
+        );
+        assert!(
+            !warm.contains("hands you issue"),
+            "looking at an issue is not being handed one: {warm}"
+        );
+
+        // And a message sent from nowhere near the board says nothing about
+        // one, which is what keeps the sentence worth reading.
+        let ordinary = payload().delivery_prompt("post-1", false, AgentProvider::Claude);
+        assert!(!ordinary.contains("is looking at issue"), "{ordinary}");
     }
 
     /// Words another agent sent are named as such in the envelope, not only in

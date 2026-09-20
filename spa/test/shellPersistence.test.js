@@ -154,12 +154,24 @@ describe("a page swapping inside the shell", () => {
     expect(strip()).toBe(held);
   });
 
-  it("keeps the strip standing between an issue's legacy URL and the tracker's", async () => {
-    await visit(PLACES["issue (tracker)"]);
+  it("keeps the strip standing when the Issues tab opens one of its issues", async () => {
+    await visit(PLACES["project (issues tab)"]);
     const held = strip();
     expect(held).toBeTruthy();
-    await visit(PLACES["issue (legacy)"]);
+    await visit(PLACES["issue (tracker)"]);
+    // A tracker issue carries no conversation of its own: its page stands on
+    // the PROJECT's agent, the same standing the tab under it had. So pressing
+    // an issue swaps the page and leaves the bubbles exactly where they were.
     expect(strip()).toBe(held);
+  });
+
+  it("stands the legacy issue page on the issue's own conversation instead", async () => {
+    // The legacy multi-stage issue is the one issue that does carry one.
+    await visit(PLACES["project (issues tab)"]);
+    const held = strip();
+    await visit(PLACES["issue (legacy)"]);
+    expect(strip()).toBeTruthy();
+    expect(strip()).not.toBe(held);
   });
 
   it("keeps the strip standing as a workspace changes the directory it is open on", async () => {

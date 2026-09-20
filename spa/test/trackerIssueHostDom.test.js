@@ -83,27 +83,27 @@ describe("the issue route", () => {
     ]);
   });
 
-  // The rail is the shell's: the project's agent is beside an issue of the
-  // project exactly as it is beside the project page, on the owner the bridge
-  // answers with, so the bubble does not vanish when an issue is opened.
-  it("mounts the project's agent rail beside the issue, as the project page does", async () => {
+  // The rail beside an issue is the SHELL's (core/shell.js stands it on the
+  // project's conversation before this page paints), so this page mounts none
+  // and takes none down. That is the point: the page that lost the bubble strip
+  // lost it by being the one responsible for mounting it. Where the project's
+  // owner comes from, and that an issue of the project is the same standing as
+  // the project page, are held in test/shellProjectRail.test.js.
+  it("mounts no rail of its own, so it cannot forget one", async () => {
     const call = device("dev-1");
-    call.mockImplementation(async (method) => (method === "project.ensure_conversation" ? { entity_id: "run-7" } : {}));
     await renderTrackerIssue();
     await flush();
-    expect(call).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" });
-    const [host, options] = mountAgentRail.mock.calls[0];
-    expect(host.id).toBe("agent-rail");
-    expect(options).toMatchObject({ kind: "project", projectId: "proj-1", entityId: "run-7", deviceId: "dev-1" });
+    expect(mountAgentRail).not.toHaveBeenCalled();
+    expect(call).not.toHaveBeenCalledWith("project.ensure_conversation", expect.anything());
   });
 
-  it("takes the rail down with the page", async () => {
+  it("leaves the rail standing when the page goes, because it is not the page's", async () => {
+    document.querySelector("#agent-rail").innerHTML = '<div class="rail-strip"></div>';
     await renderTrackerIssue();
     await flush();
-    const rail = mountAgentRail.mock.results[0].value;
     App.viewDispose();
     App.viewDispose = null;
-    expect(rail.dispose).toHaveBeenCalled();
+    expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
   });
 
   it("hands over the feed the links and the assignee names are read off", async () => {

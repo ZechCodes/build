@@ -12,18 +12,31 @@ import { describe, it, expect } from "vitest";
 import { shellPartsForRoute } from "../src/core/shell.js";
 
 describe("what a route stands on", () => {
-  it("gives the tracker's issue page the issue's own conversation", () => {
+  it("gives the tracker's issue page the project's conversation", () => {
     // The route Zech opened on his phone. It mounted no rail at all.
+    //
+    // It stands on the PROJECT's agent rather than on one of the issue's own: a
+    // tracker issue carries no conversation — the agents its page names are
+    // workspace agents it can be assigned to — and `kind: "issue"` addresses the
+    // legacy multi-stage issue record, which a tracker issue id is not.
     const parts = shellPartsForRoute({ name: "trackerIssue", deviceId: "d1", projectId: "p-1", issueId: "i-1" });
-    expect(parts.rail).toMatchObject({ kind: "issue", issueId: "i-1", projectId: "p-1", deviceId: "d1" });
-    expect(parts.key).toBe("issue:i-1");
+    expect(parts.rail).toMatchObject({ kind: "project", projectId: "p-1", deviceId: "d1" });
+    expect(parts.key).toBe("project:d1/p-1");
   });
 
-  it("names the legacy issue page the same conversation the tracker's page names", () => {
-    // Two URLs, one issue: the rail must not remount crossing between them.
+  it("gives an issue of the project the same standing as the project page", () => {
+    // So pressing an issue on the Issues tab swaps the page under a strip that
+    // does not move.
+    const page = shellPartsForRoute({ name: "project", deviceId: "d1", projectId: "p-1", tab: "issues" });
+    const issue = shellPartsForRoute({ name: "trackerIssue", deviceId: "d1", projectId: "p-1", issueId: "i-1" });
+    expect(issue.key).toBe(page.key);
+  });
+
+  it("keeps the legacy issue page on the issue's own conversation", () => {
+    // The legacy multi-stage issue is the one issue that does carry one.
     const legacy = shellPartsForRoute({ name: "issue", deviceId: "d1", projectId: "p-1", id: "i-1" });
-    const tracker = shellPartsForRoute({ name: "trackerIssue", deviceId: "d1", projectId: "p-1", issueId: "i-1" });
-    expect(legacy.key).toBe(tracker.key);
+    expect(legacy.rail).toMatchObject({ kind: "issue", issueId: "i-1", projectId: "p-1", deviceId: "d1" });
+    expect(legacy.key).toBe("issue:i-1");
   });
 
   it("stands a project page on the project's own agent, and says the conversation must be minted", () => {
@@ -89,7 +102,8 @@ describe("what a route stands on", () => {
   it("stands nowhere on a work route that does not say enough to name a conversation", () => {
     expect(shellPartsForRoute({ name: "workspace", deviceId: "d1", projectId: "p-1" })).toBeNull();
     expect(shellPartsForRoute({ name: "branch", deviceId: "d1", projectId: "p-1" })).toBeNull();
-    expect(shellPartsForRoute({ name: "trackerIssue", deviceId: "d1", projectId: "p-1" })).toBeNull();
+    expect(shellPartsForRoute({ name: "issue", deviceId: "d1", projectId: "p-1" })).toBeNull();
     expect(shellPartsForRoute({ name: "project", deviceId: "d1" })).toBeNull();
+    expect(shellPartsForRoute({ name: "trackerIssue", deviceId: "d1", issueId: "i-1" })).toBeNull();
   });
 });

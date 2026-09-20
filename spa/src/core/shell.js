@@ -28,6 +28,7 @@ import { createAgentSelection } from "./agentSelection.js";
 import { canAnswer, routeContext } from "./deviceContexts.js";
 import { deviceKey } from "./deviceKey.js";
 import { notifyError } from "./notify.js";
+import { readCached, subscribeCache } from "./localCache.js";
 
 /**
  * What each route stands on: the conversation its rail is of, the console's
@@ -41,16 +42,6 @@ import { notifyError } from "./notify.js";
  * every kind at once, so no entry here can omit them.
  */
 const STANDING = {
-  // Standing ON the project IS standing on its conversation, so the owner is
-  // minted before the rail goes up — the one route where that is true.
-  project: (route) =>
-    route.projectId && {
-      key: `project:${deviceKey(route.deviceId, route.projectId)}`,
-      mintsProjectConversation: true,
-      rail: { kind: "project", projectId: route.projectId, projectAgent: { projectId: route.projectId } },
-      console: null,
-    },
-
   workspace: (route) =>
     route.workspaceId &&
     route.projectId && {
@@ -77,10 +68,24 @@ const STANDING = {
       console: { kind: "workspace", workspaceId: route.workspaceId },
     },
 
-  // The tracker's issue page and the legacy issue page are two URLs for one
-  // issue, so they key the same and crossing between them keeps the rail.
-  trackerIssue: (route) => issueStanding(route, route.issueId),
-  issue: (route) => issueStanding(route, route.id),
+  // An issue of the tracker stands on the PROJECT's conversation, not on one of
+  // its own. A tracker issue has none: the agents its page names are workspace
+  // agents it can be assigned to, and `kind: "issue"` addresses the legacy
+  // multi-stage issue record, which a tracker issue id is not. So the
+  // project's agent stays beside an issue of the project exactly as it is
+  // beside the project page — which is also why opening an issue from the
+  // Issues tab leaves the strip alone: same standing, same key.
+  trackerIssue: (route) => projectStanding(route),
+  project: (route) => projectStanding(route),
+
+  // The legacy issue page is the one that does carry a conversation of its own.
+  issue: (route) =>
+    route.id && {
+      key: `issue:${route.id}`,
+      mintsProjectConversation: false,
+      rail: { kind: "issue", projectId: route.projectId || null, issueId: route.id },
+      console: { kind: "issue", projectId: route.projectId || null, issueId: route.id },
+    },
 
   branch: (route) =>
     route.projectId &&
@@ -92,12 +97,15 @@ const STANDING = {
     },
 };
 
-const issueStanding = (route, issueId) =>
-  issueId && {
-    key: `issue:${issueId}`,
-    mintsProjectConversation: false,
-    rail: { kind: "issue", projectId: route.projectId || null, issueId },
-    console: { kind: "issue", projectId: route.projectId || null, issueId },
+/** Standing in a project: the project's own agent, on the owner its conversation
+ *  has. The one standing whose owner is not known from the route alone, so the
+ *  shell finds it before the rail goes up (`standProjectRail` below). */
+const projectStanding = (route) =>
+  route.projectId && {
+    key: `project:${deviceKey(route.deviceId, route.projectId)}`,
+    mintsProjectConversation: true,
+    rail: { kind: "project", projectId: route.projectId, projectAgent: { projectId: route.projectId } },
+    console: null,
   };
 
 /**
@@ -176,26 +184,85 @@ function mountShellParts(parts, context) {
       cacheScope: context.cacheScope,
     });
   }
-  if (parts.mintsProjectConversation) void mintProjectConversation(parts, context, mine);
+  if (parts.mintsProjectConversation) void standProjectRail(parts, context, mine);
   else live.rail = mountRail(parts.rail, context);
 }
 
+const PROJECTS_RECORD_KIND = "projects";
+
+/** Where this device keeps its project list, or null for a context with no
+ *  cache scope (a test standing a page up without one). */
+const projectsAddress = (context) => context.cacheScope?.address({ entityId: "", kind: PROJECTS_RECORD_KIND }) || null;
+
+/** The project's conversation owner as the cached list says it: null while the
+ *  list is cold, or while the project has no conversation yet. */
+async function cachedOwner(context, projectId) {
+  const address = projectsAddress(context);
+  const listed = address ? (await readCached(address))?.value : null;
+  const row = (listed || []).find((project) => project.project_id === projectId);
+  return (row && (row.entity_id || row.run_id)) || null;
+}
+
 /**
- * The project page's conversation, minted before its rail stands up.
+ * Stand the project's rail up on the owner of its conversation.
  *
- * The press names no harness, model or effort: what a project agent starts on
+ * The owner is read from the CACHE first: the machine's project list (the sync
+ * layer keeps it on disk) names it for every project that has one, so opening a
+ * page asks the bridge nothing and the rail is up whether or not the connection
+ * is. Only a project with no owner listed asks, through
+ * `project.ensure_conversation` — the project's half of what
+ * `workspace.ensure_conversation` is for a workspace: it answers the owner the
+ * project already has, or mints one over a scratch directory Build owns.
+ *
+ * Nothing here names a harness, model or effort. What a project agent starts on
  * is the DEVICE's setting, held by the bridge beside its default harness, so a
  * new browser is never asked for something the machine that runs the agent
  * already holds.
  */
-async function mintProjectConversation(parts, context, mine) {
+async function standProjectRail(parts, context, mine) {
+  const cached = await cachedOwner(context, parts.rail.projectId);
+  if (generation !== mine) return; // the reader left while the owner was found
+  if (cached) live.rail = mountRail({ ...parts.rail, entityId: cached }, context);
+  else await standOnAnswer(parts, context, mine);
+}
+
+/** The bridge's answer for a project the list names no owner for. A call that
+ *  fails (a session dropped on a phone, mostly) leaves the page waiting on the
+ *  list instead, and says so. */
+async function standOnAnswer(parts, context, mine) {
   try {
     const answer = await context.rpc("project.ensure_conversation", { project_id: parts.rail.projectId });
-    if (generation !== mine) return; // the reader left while this was in flight
+    if (generation !== mine) return;
     live.rail = mountRail({ ...parts.rail, entityId: answer?.entity_id || answer?.run_id || null }, context);
   } catch (error) {
-    if (generation === mine) notifyError("No conversation for this project", error.message || String(error));
+    if (generation !== mine) return;
+    notifyError("No conversation for this project", error.message || String(error));
+    live.rail = standWhenListed(parts, context, mine);
   }
+}
+
+/** The rail, once the sync layer lists an owner for the project. Until then a
+ *  handle that only knows how to stop waiting. */
+function standWhenListed(parts, context, mine) {
+  const address = projectsAddress(context);
+  if (!address) return null;
+  let rail = null;
+  let unsubscribe = null;
+  const tryMount = async () => {
+    const owner = await cachedOwner(context, parts.rail.projectId);
+    if (!owner || rail || generation !== mine) return;
+    unsubscribe?.();
+    unsubscribe = null;
+    rail = mountRail({ ...parts.rail, entityId: owner }, context);
+  };
+  unsubscribe = subscribeCache(address, () => void tryMount());
+  return {
+    dispose() {
+      unsubscribe?.();
+      unsubscribe = null;
+      rail?.dispose?.();
+    },
+  };
 }
 
 function mountRail(descriptor, context) {

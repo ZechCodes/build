@@ -27,6 +27,9 @@ vi.mock("../src/core/taskFeed.js", () => ({
   joinFeed: () => {},
 }));
 
+const go = vi.fn();
+vi.mock("../src/app.js", async (importOriginal) => ({ ...(await importOriginal()), go: (...args) => go(...args) }));
+
 import { App } from "../src/app.js";
 import { renderTrackerIssue } from "../src/views/trackerIssueView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
@@ -47,6 +50,7 @@ beforeEach(() => {
   document.body.innerHTML =
     '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside>';
   mountIssuePage.mockClear();
+  go.mockClear();
   subscribers = [];
   snapshot = { items: [], projects: [], workspaces: [], pending: [], devices: {} };
   App.viewDispose = null;
@@ -78,6 +82,27 @@ describe("the issue route", () => {
     expect([given.projectId, given.deviceId, given.issueId, given.projectKey]).toEqual([
       "proj-1", "dev-1", "issue-1", "dev-1/proj-1",
     ]);
+  });
+
+  // An issue is a page OF the issues tab, so the project's tabs stand over it
+  // as they do over the list: the way back to the list, and across to the
+  // workspaces, from a phone that has no other way back.
+  it("stands the project's tabs over the page, with Issues open", async () => {
+    await renderTrackerIssue();
+    await flush();
+    const tabs = [...document.querySelectorAll("#project-tabs .t")];
+    expect(tabs.map((tab) => tab.textContent.trim())).toEqual(["Workspaces", "Issues"]);
+    expect(tabs.find((tab) => tab.classList.contains("active"))?.textContent.trim()).toBe("Issues");
+  });
+
+  it("goes to the project's list from either tab, on the same machine and project", async () => {
+    await renderTrackerIssue();
+    await flush();
+    const [workspaces, issues] = document.querySelectorAll("#project-tabs .t");
+    issues.click();
+    expect(go).toHaveBeenLastCalledWith({ name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" });
+    workspaces.click();
+    expect(go).toHaveBeenLastCalledWith({ name: "project", deviceId: "dev-1", projectId: "proj-1" });
   });
 
   it("hands over the feed the links and the assignee names are read off", async () => {

@@ -39,6 +39,7 @@ pub mod shell_tail;
 pub(crate) mod stream_fixtures;
 pub mod surfaces;
 pub(crate) mod transcript_activity;
+pub(crate) mod usage_limit;
 
 pub(crate) use session::publish_context;
 pub use session::{

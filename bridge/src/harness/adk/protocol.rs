@@ -68,6 +68,20 @@ pub(super) struct ProtocolState {
     /// `Working` short-circuits the idle sweep, an agent that quietly stopped
     /// would never be explained.
     pub(super) turn_open: bool,
+    /// The limit sentence, when the very last thing this turn reported was one
+    /// (`harness/usage_limit.rs`).
+    ///
+    /// Held rather than acted on, because whether it is a verdict depends on what
+    /// comes next: a turn that says it and then carries on working was quoting,
+    /// and only a turn that says it and then STOPS has hit the limit. Cleared by
+    /// the next report of any kind, so at the stream's end this field is either
+    /// the last word or empty.
+    pub(super) limit_said_last: Option<crate::harness::usage_limit::UsageLimitSaid>,
+    /// The verdict, once the stream has ended on that sentence. The turn ended
+    /// because the harness has no usage left, which is not a crash and not a
+    /// completion, and until this existed it was neither — the agent simply went
+    /// quiet and nothing above it was told (issue #58).
+    pub(super) usage_limited: Option<crate::harness::usage_limit::UsageLimitSaid>,
     /// When the child last said anything at all — the quiet clock's instant.
     pub(super) last_line: Instant,
     /// The id the child gave this conversation, for `--resume`.
@@ -123,6 +137,8 @@ impl ProtocolState {
         ProtocolState {
             announced: false,
             turn_open: false,
+            limit_said_last: None,
+            usage_limited: None,
             last_line: Instant::now(),
             session_id: None,
             model: None,

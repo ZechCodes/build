@@ -255,6 +255,28 @@ describe("the new-issue form", () => {
     await choose("new_workspace");
     expect(document.querySelector("[data-create-go]").textContent).toBe("File and start");
   });
+
+  // `issues.create` is mid-change on the bridge: it answers `{issue}` today and
+  // `{issue, dispatch}` — with `dispatch: null` for a plain file — once it
+  // takes an assignee. The form reads the issue and nothing else, so it works
+  // against both, and this says so rather than leaving it to be found out
+  // against whichever bridge somebody happens to be pointed at.
+  it("reads the issue out of either answer shape", async () => {
+    for (const answer of [
+      { issue: issue({ id: "issue-1" }) },
+      { issue: issue({ id: "issue-1" }), dispatch: null },
+      { issue: issue({ id: "issue-1" }), dispatch: { kind: "new_workspace", workspace_id: "ws-9" } },
+    ]) {
+      const onFiled = vi.fn();
+      call = vi.fn(async () => answer);
+      open({ callRpc: call, onFiled });
+      type("#issue-new-title", "Kanban drag");
+      press("[data-create-go]");
+      await flush();
+      expect(onFiled.mock.calls[0][0].issue.id).toBe("issue-1");
+      handle = null; // the dialog closed itself on success
+    }
+  });
 });
 
 describe("labels as a person types them", () => {

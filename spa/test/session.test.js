@@ -3,6 +3,8 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
+import { ANSWER_TIMEOUT_MS } from "../src/core/sessionRpc.js";
+import { PING_TIMEOUT_MS } from "../src/core/pathLiveness.js";
 import { ApiError, selectAdapter } from "../src/core/bridgeApi/index.js";
 
 // ---- fakes -------------------------------------------------------------------
@@ -33,6 +35,12 @@ function fakeCarrier({ sendFails = null } = {}) {
   const carrier = {
     sent: [],
     closed: false,
+    // What a real carrier tells a liveness reader about the path under it
+    // (core/carrier.js): when a frame last arrived on any channel of this peer,
+    // and whether the browser's own ICE still holds it open.
+    frames: { at: 0, connected: false },
+    peerFrameAt: () => carrier.frames.at,
+    peerIsConnected: () => carrier.frames.connected === true,
     send: async (envelope) => {
       if (sendFails) throw new Error(sendFails);
       carrier.sent.push(envelope);
@@ -424,5 +432,126 @@ describe("a reply the browser stopped waiting for", () => {
 
   it("hands a reply that did arrive straight through", async () => {
     await expect(replyOrNothing(Promise.resolve({ branch: "build/x" }))).resolves.toEqual({ branch: "build/x" });
+  });
+});
+
+// ---- a path that died with ICE still calling it connected (#30) ---------------
+
+describe("a session whose path has silently died", () => {
+  /** A live session with the clock in the test's hands from the moment it is
+   *  live, so a 12-second deadline and a 3-second probe cost no wall time. */
+  const onFakeTime = async (body) => {
+    const stood = await carrying();
+    vi.useFakeTimers();
+    try {
+      return await body(stood);
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  /** A call that waits out its whole path deadline with nothing coming back —
+   *  the shape of Zech's post: it reached the bridge, and the receipt did not
+   *  reach him. */
+  const deadlineOn = async (session, method = "thread.post") => {
+    const failed = session.call(method, {}, DEFAULT_RPC_TIMEOUT_MS).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS);
+    return failed;
+  };
+
+  it("pings the wire when a call hits its path deadline", async () => {
+    await onFakeTime(async ({ session, peer, events }) => {
+      const error = await deadlineOn(session);
+
+      expect(error.timedOut).toBe(true);
+      expect(error.deadline).toBe("path");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replyTo(peer).method).toBe("ping");
+      expect(events.lost).toBe(0); // nothing is judged until the ping has had its say
+    });
+  });
+
+  it("keeps the session when the pong comes back", async () => {
+    await onFakeTime(async ({ session, peer, events }) => {
+      await deadlineOn(session);
+      await vi.advanceTimersByTimeAsync(0);
+      answer(peer, {});
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS);
+
+      expect(events.lost).toBe(0);
+      expect(peer.closed).toBe(false);
+    });
+  });
+
+  it("ends the session when the ping goes unanswered, though ICE still says connected", async () => {
+    await onFakeTime(async ({ session, peer, events }) => {
+      peer.frames.connected = true; // the ring is showing connected, as Zech's was
+      await deadlineOn(session);
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+
+      // The down edge the recovery supervisor mints the next session from — not
+      // a wait for SCTP to give up 105 seconds later.
+      expect(events.lost).toBe(1);
+      // And it is reported once, however many calls were waiting on that wire.
+      await deadlineOn(session, "board.list");
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+      expect(events.lost).toBe(1);
+      const pings = peer.sent.filter((sent) => sent.frameFields.payload.method === "ping");
+      expect(pings).toHaveLength(1); // a path judged dead is not asked about again
+    });
+  });
+
+  it("keeps a session whose channel carried something while the ping was out", async () => {
+    await onFakeTime(async ({ session, peer, events }) => {
+      await deadlineOn(session);
+      await vi.advanceTimersByTimeAsync(0);
+      // A frame for another session on the same peer: proof the path carries,
+      // and the pong is merely behind a backlog.
+      peer.frames.at = Date.now();
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+
+      expect(events.lost).toBe(0);
+    });
+  });
+
+  it("does not ping a path that carried a frame moments ago — busy is not dead", async () => {
+    await onFakeTime(async ({ session, peer, events }) => {
+      const failed = session.call("thread.post", {}, DEFAULT_RPC_TIMEOUT_MS).catch((error) => error);
+      await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS - 1);
+      peer.frames.at = Date.now();
+      await vi.advanceTimersByTimeAsync(1);
+      await failed;
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+
+      expect(peer.sent.map((sent) => sent.frameFields.payload.method)).toEqual(["thread.post"]);
+      expect(events.lost).toBe(0);
+    });
+  });
+
+  it("does not judge the peer on a signaling deadline — rtc.* rides the rendezvous", async () => {
+    await onFakeTime(async ({ session, peer, signaling, events }) => {
+      await deadlineOn(session, "rtc.offer");
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+
+      expect(signaling().sent.map((sent) => sent.frameFields.payload.method)).toEqual(["rtc.offer"]);
+      expect(peer.sent).toHaveLength(0);
+      expect(events.lost).toBe(0);
+    });
+  });
+
+  it("does not judge the peer when the bridge has the request and is taking its time", async () => {
+    await onFakeTime(async ({ session, peer, events }) => {
+      const pending = session.call("thread.post", {}, DEFAULT_RPC_TIMEOUT_MS).catch((error) => error);
+      await vi.advanceTimersByTimeAsync(0);
+      // The bridge's admission receipt: it has the request. That takes the call
+      // off the path's deadline and onto the answer's, and the wire is not in
+      // doubt any more.
+      peer.reply({ id: replyTo(peer).id, accepted: true });
+      await vi.advanceTimersByTimeAsync(ANSWER_TIMEOUT_MS + 1);
+
+      expect((await pending).deadline).toBe("answer");
+      expect(peer.sent.map((sent) => sent.frameFields.payload.method)).toEqual(["thread.post"]);
+      expect(events.lost).toBe(0);
+    });
   });
 });

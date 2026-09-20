@@ -40,23 +40,23 @@ function createDeadline(method, timeoutMs, onReceipt) {
   let timer = null;
   let settle = null;
   let receipted = false;
-  const arm = (waitMs, uncertain) => {
+  const arm = (waitMs, uncertain, which) => {
     clearTimeout(timer);
     if (waitMs == null || waitMs === 0) return;
-    timer = setTimeout(() => settle?.(timedOutError(method, uncertain())), waitMs);
+    timer = setTimeout(() => settle?.(timedOutError(method, uncertain(), which)), waitMs);
   };
   return {
     race(answer, uncertain) {
       const expiry = new Promise((_, reject) => {
         settle = reject;
-        arm(timeoutMs, uncertain);
+        arm(timeoutMs, uncertain, "path");
       });
       return Promise.race([answer, expiry]);
     },
     receipted(handoffAttempted) {
       if (receipted) return;
       receipted = true;
-      arm(ANSWER_TIMEOUT_MS, () => handoffAttempted);
+      arm(ANSWER_TIMEOUT_MS, () => handoffAttempted, "answer");
       onReceipt?.();
     },
     done() {
@@ -65,10 +65,17 @@ function createDeadline(method, timeoutMs, onReceipt) {
   };
 }
 
-function timedOutError(method, uncertain = false) {
+/** `deadline` says WHICH of the two fired, because they mean opposite things
+ *  about the wire: `"path"` is a frame that went unacknowledged and is reason to
+ *  doubt the connection (what core/pathProbe.js acts on), while `"answer"` is a
+ *  device that has the request and is taking its time, which says the wire is
+ *  fine. A single `timedOut` flag could not tell them apart, and a probe that
+ *  fired on the second would tear down a session over a long-running job. */
+function timedOutError(method, uncertain = false, deadline = "path") {
   const error = new Error(`${method} timed out`);
   error.timedOut = true;
   error.uncertain = uncertain;
+  error.deadline = deadline;
   return error;
 }
 

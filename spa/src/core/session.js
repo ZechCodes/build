@@ -17,8 +17,21 @@
 
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
+import { createPathProbe, PING_TIMEOUT_MS } from "./pathProbe.js";
 
 export { DEFAULT_RPC_TIMEOUT_MS };
+
+/** Whether this rejection is the PATH's deadline: a frame that went out and was
+ *  never acknowledged, which is the one failure that is about the wire rather
+ *  than about the bridge. The answer deadline (a device that has the request and
+ *  is taking its time) is deliberately not this, and neither is a refusal — a
+ *  probe fired on either would tear a session down over a long-running job.
+ *
+ *  `deadline` is absent on errors from a bridge adapter that re-wrapped the
+ *  rejection, so a timeout that reached here without one is read as the path's:
+ *  before the field existed that was the only deadline a call had. */
+const rpcHitThePathDeadline = (error) =>
+  Boolean(error && error.timedOut && (error.deadline === undefined || error.deadline === "path"));
 
 /** Whether this rejection is that timer rather than a refusal — the difference
  *  between "the daemon said no" and "the daemon has not said yet". This
@@ -80,11 +93,16 @@ export async function openSession({
   let adapter = null;
   /** This session's lease on the rendezvous, while one is open. */
   let signaling = null;
+  /** Asks the wire whether it is there (core/pathProbe.js). Stood up below,
+   *  because it names the session the rendezvous has not minted yet; declared
+   *  here so the teardowns above can reach it. */
+  let pathProbe = null;
 
   /** Nothing is carrying this session any more. The caller hears it once. */
   const severSession = () => {
     if (severed) return;
     severed = true;
+    pathProbe?.stop();
     const gone = new Error("your device went offline");
     rpc?.fail(gone);
     // Nothing is coming back on this session: the caller connects again, which
@@ -121,6 +139,27 @@ export async function openSession({
   takeSignalingWire(minted);
 
   /**
+   * Is the wire still there? Asked when a call burned its whole path deadline.
+   *
+   * The probe rides the peer carrier this session is on — never the rendezvous,
+   * which is not a data plane and would answer for the wrong wire — and it goes
+   * through `rpc.call` directly rather than through `rawCall`, so a probe cannot
+   * probe itself and an offline pause cannot hold back the question that decides
+   * whether the pause should end.
+   *
+   * A dead verdict severs the session on the spot: that is the down edge the
+   * recovery supervisor mints the next one from, the same edge a lost channel
+   * produces, so nothing downstream has to learn a new way for a session to end.
+   */
+  pathProbe = createPathProbe({
+    ping: () => rpc.call("ping", {}, { timeoutMs: PING_TIMEOUT_MS, carrier: carrierSwitch.active() }),
+    wire: () => carrierSwitch.active(),
+    rpc: { lastFrameAt: () => rpc?.lastFrameAt() || 0 },
+    diagnosticId: `${deviceId}:${minted.sessionId}`,
+    onDead: severSession,
+  });
+
+  /**
    * One RPC over whichever wire this method belongs on — the switch's rule,
    * not this module's.
    *
@@ -136,7 +175,18 @@ export async function openSession({
     // every other RPC retains the ordinary browser deadline.
     const defaultTimeoutMs = method === "workspace.get" ? null : DEFAULT_RPC_TIMEOUT_MS;
     const { timeoutMs = defaultTimeoutMs, priority } = callOptions(options);
-    return rpc.call(method, params, { timeoutMs, priority, carrier: carrierSwitch.wireFor(method) });
+    const pending = rpc.call(method, params, { timeoutMs, priority, carrier: carrierSwitch.wireFor(method) });
+    // Signaling rides the rendezvous, so its deadline says nothing about the
+    // peer path and must not be allowed to judge it.
+    if (isSignaling(method)) return pending;
+    return pending.catch((error) => {
+      // The call fails now, exactly as it always has — the composer still says
+      // "Delivery uncertain", and #30 is about what happens NEXT. The probe runs
+      // beside that rejection rather than delaying it: a caller waiting three
+      // more seconds to be told what it already knows is a worse surface.
+      if (rpcHitThePathDeadline(error)) pathProbe?.judge(method);
+      throw error;
+    });
   };
 
   return {
@@ -186,6 +236,7 @@ export async function openSession({
      */
     fail: (error) => {
       severed = true;
+      pathProbe?.stop();
       carrierSwitch.fail(error);
       rpc.fail(error);
     },
@@ -199,6 +250,7 @@ export async function openSession({
     close: () => {
       carrierSwitch.close();
       severed = true;
+      pathProbe?.stop();
       rpc.close(new Error("session closed"));
       signaling?.close(); // the rendezvous is the caller's; this lease on it is ours
     },

@@ -62,6 +62,14 @@ describe("the line, from the structured field", () => {
     expect(text(stated())).toBe("#32 commented on by Agent 01M2");
   });
 
+  // Zech, 21:15Z: "What does 'moved by' mean? Moved where?" A move's
+  // destination is its own field on the notice, and the line must say it.
+  it("says where a move went, from the notice's own field", () => {
+    expect(text(stated({ action: "moved", from: "in_progress", to: "in_review" }))).toBe("#32 moved to In review by Agent 01M2");
+    expect(text(stated({ action: "moved", to: "qa_hold" }))).toBe("#32 moved to qa hold by Agent 01M2");
+    expect(text(stated({ action: "moved to Done", to: "done" }))).toBe("#32 moved to Done by Agent 01M2");
+  });
+
   it("uses the bridge's own phrase for an action it has never heard of", () => {
     expect(text(stated({ action: "moved to In review" }))).toBe("#32 moved to In review by Agent 01M2");
     expect(text(stated({ action: "assigned to Agent 2" }))).toBe("#32 assigned to Agent 2 by Agent 01M2");

@@ -32,6 +32,7 @@
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
 import { actionPhrase, actorName } from "./trackerLineWords.js";
+import { FALLBACK_COLUMNS } from "./trackerModel.js";
 
 export const NOTICE_CLASS = "thread-issue-notice";
 
@@ -87,10 +88,12 @@ function actPartOf(stated, body) {
       // "assigned" alone leaves the reader asking the obvious question.
       assignee: stated.assignee || null,
       comment_id: stated.comment_id || null,
+      // A move's destination is its own field; the line says where.
+      to: stated.to || null,
     };
   }
   const parsed = noticeFromBody(body) || {};
-  return { actor: parsed.actor || "", action: parsed.action || "", assignee: null, comment_id: null };
+  return { actor: parsed.actor || "", action: parsed.action || "", assignee: null, comment_id: null, to: null };
 }
 
 export function issueNoticeOf(message) {
@@ -129,13 +132,28 @@ export function noticeHref(notice, place) {
  */
 export function noticeAction(notice, reading = {}) {
   const did = actionPhrase(notice?.action);
-  if (!did || !notice?.assignee) return did;
-  // A phrase the bridge wrote already says who; saying it twice is worse than
-  // not saying it at all.
-  if (/\bto\b/.test(did)) return did;
-  const toWhom = actorName(notice.assignee, reading);
-  return toWhom ? `${did} to ${toWhom.toLowerCase() === "you" ? "you" : toWhom}` : did;
+  // A phrase the bridge wrote already says where or to whom; saying it twice
+  // is worse than not saying it at all.
+  if (!did || /\bto\b/.test(did)) return did;
+  const target = actionTarget(notice, reading);
+  return target ? `${did} to ${target}` : did;
 }
+
+/** What the verb points at: the column a move landed in (its own field on the
+ *  notice; Zech, 21:15Z: "What does 'moved by' mean? Moved where?"), or the
+ *  person an assignment went to. */
+function actionTarget(notice, reading) {
+  if (notice?.to) return columnName(notice.to);
+  if (!notice?.assignee) return "";
+  const toWhom = actorName(notice.assignee, reading);
+  if (!toWhom) return "";
+  return toWhom.toLowerCase() === "you" ? "you" : toWhom;
+}
+
+/** The column's display name for a slug the bridge sent, or the slug itself as
+ *  words when the bridge named a column this client has never heard of. */
+const columnName = (slug) =>
+  FALLBACK_COLUMNS.find((column) => column.id === slug)?.name ?? String(slug).replace(/_/g, " ");
 
 /** The whole line as words, which is also what the hover text is built from. */
 export function noticeLineText(notice, reading = {}) {

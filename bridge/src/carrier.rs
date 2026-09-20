@@ -1654,6 +1654,61 @@ mod intake_tests {
         wedged.wait();
     }
 
+    /// A frame too big for one DataChannel message still arrives whole, with
+    /// the ping fast path in front of the intake.
+    ///
+    /// An attachment is one RPC carrying the file in its params, so the wire
+    /// splits it into parts (`rtc::chunk`) and the channel reader reassembles
+    /// them before the intake is handed anything. That ordering is what keeps
+    /// the fast path out of a chunked upload's way — it reads a method off a
+    /// decrypted frame, and a part is not a frame — and this is the test that
+    /// says so, because the alternative is an upload that never answers and a
+    /// caller that times out with nothing to blame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_chunked_upload_is_reassembled_and_answered_past_the_fast_path() {
+        let (intake, mut seen) = watching_intake();
+        let (channel, mut out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-upload", &session_init("s-upload", &key), &channel)
+            .unwrap();
+        out.try_recv().expect("the accept rode the carrier");
+
+        // Half a megabyte of base64, the way a screenshot arrives.
+        let content = "a".repeat(512 * 1024);
+        let envelope = client_request(
+            &key,
+            "s-upload",
+            "data",
+            json!({ "id": 7, "method": "thread.attach", "params": { "content_b64": content } }),
+        );
+        let json = serde_json::to_string(&envelope).expect("an envelope serializes");
+        let parts = crate::rtc::chunk::split(&json);
+        assert!(parts.len() > 1, "this payload has to be chunked to be the test it is");
+
+        // The channel reader's own loop: parts in, one whole envelope out, and
+        // only then the intake.
+        let mut reassembler = crate::rtc::chunk::Reassembler::default();
+        let mut delivered = 0;
+        for part in &parts {
+            if let Some(whole) = reassembler.accept(part).expect("the parts add up") {
+                let envelope: Envelope = serde_json::from_str(&whole).expect("a whole envelope");
+                intake
+                    .accept(envelope, &channel)
+                    .await
+                    .expect("the reassembled frame was admitted");
+                delivered += 1;
+            }
+        }
+
+        assert_eq!(delivered, 1, "{} parts made one frame", parts.len());
+        assert_eq!(
+            within_patience(seen.recv()).await,
+            "data:s-upload",
+            "the upload reached a handler rather than being eaten by the fast path"
+        );
+    }
+
     /// Rule 1: the relay carries the negotiation and nothing else. An app verb
     /// arriving on a relay carrier is refused with the wire spec's closed
     /// `ApiError` shape and never reaches a handler.

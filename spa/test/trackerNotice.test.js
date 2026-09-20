@@ -168,12 +168,17 @@ describe("the row, in the timeline", () => {
     expect(row.querySelector(".thread-avatar")).toBeNull();
   });
 
-  // Nor Build's restart notice, which IS a bubble and has to stay one.
-  it("leaves Build's own notice alone", () => {
-    const restart = { type: "message", data: { id: "m-1", sequence: 1, role: "user", from_build: true, body: "Carry on." } };
+  // Build's own restart notice is the SAME kind of row now (#42) — one quiet
+  // line — but it is not about an issue, so it carries no issue link and its
+  // press reveals the body rather than opening a page.
+  it("draws Build's own notice as the same kind of row, without an issue link", () => {
+    const restart = { type: "message", data: { id: "m-1", sequence: 1, role: "user", from_build: true, body: "Carry on. There is more to say about it here." } };
     const row = paint([restart]);
-    expect(row.classList.contains("from-build")).toBe(true);
-    expect(row.classList.contains("thread-notice")).toBe(false);
+    expect(row.classList.contains("thread-notice")).toBe(true);
+    expect(row.classList.contains("thread-issue-line")).toBe(true);
+    expect(row.classList.contains("user")).toBe(false);
+    expect(row.querySelector("[data-issue-notice]")).toBeNull();
+    expect(row.querySelector("details.thread-notice-more")).not.toBeNull();
   });
 
   it("is one line, with the comment body nowhere on it", () => {

@@ -30,6 +30,7 @@ import { issueActionLineHtml } from "./trackerActionLine.js";
 import { isIssueNotice, issueNoticeLineHtml, issueNoticeOf } from "./trackerNotice.js";
 import { isTransientTransportError } from "./transientRead.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
+import { buildNoticeSummary, noticeHasMore } from "./buildNoticeLine.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -957,28 +958,45 @@ function sentMessageHtml(message, { place, threadState }) {
   </article>`;
 }
 
-/// Build's own words in an agent's conversation.
+/// Build's own words in an agent's conversation, as ONE line.
 ///
-/// The bridge posts one of these when it comes back from a restart: the agent
-/// was working, its process is gone, and this is what tells it to carry on. It
-/// is written with the human's role because it lands on the inbound side — an
-/// instruction to the agent, whoever wrote it — and `from_build` is the whole
-/// of what distinguishes it from something the reader typed.
+/// Zech: "notifications are a single line left aligned". They were a bubble —
+/// the reader's bubble, on the reader's side, in the reader's colour — and a
+/// restart notice that says "assume nothing you were doing finished" reads
+/// very differently when it looks like the reader typed it.
 ///
-/// So it wears the bubble every instruction wears, and says who wrote it where
-/// an arrival says where it came from. What it must NOT be is an arrival: it
-/// does not fold (there is one paragraph behind it, not a report), it carries
-/// no conversation to point at, and no detail level hides it — an agent reading
-/// "Agent only" is still being told to resume, and hiding the instruction it is
-/// acting on would leave the conversation unreadable.
+/// Every one of these is written for the AGENT: the restart notice tells it
+/// what to distrust, the reminder lists what it still holds. All of that has
+/// to reach the agent and none of it has to be on screen, so the body is kept
+/// whole behind a press and the line is a summary of it
+/// (core/buildNoticeLine.js).
 ///
-/// No avatar. The reader's initial on a message the reader did not write is
-/// the one thing this must not say.
-function buildNoticeHtml(message, agentLabel, context) {
-  return `<article class="thread-message thread-comment user from-build"${sequenceAttribute(message)}>
-    <div class="thread-from"><span class="thread-from-build">from Build</span></div>
-    <div class="thread-comment-card">${messageCardHtml(message, agentLabel, context)}</div>
-  </article>`;
+/// A notice about an issue is the same row with the same look, and its line is
+/// the issue's (core/trackerNotice.js): the whole of it opens the issue, which
+/// is a better press than revealing prose about it.
+function noticeMessageHtml(message, context) {
+  const row = (inner) =>
+    `<article class="thread-message thread-issue-line thread-notice"${sequenceAttribute(message)}>${inner}</article>`;
+
+  if (isIssueNotice(message)) {
+    return row(issueNoticeLineHtml(issueNoticeOf(message), {
+      place: context.place,
+      agentLabels: context.agentLabels,
+      projectName: context.place?.projectName || "",
+    }));
+  }
+
+  const summary = buildNoticeSummary(message);
+  // `<details>` and not a button: the browser owns the toggle, which is the
+  // keyboard and the screen reader handled without this file re-implementing
+  // either. A notice with nothing more to say is a line and no press at all.
+  if (!noticeHasMore(message, summary)) {
+    return row(`<span class="thread-issue-notice"><span class="thread-issue-said">${esc(summary)}</span></span>`);
+  }
+  return row(`<details class="thread-notice-more">
+      <summary class="thread-issue-notice"><span class="thread-issue-said">${esc(summary)}</span></summary>
+      <div class="thread-notice-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "")}</div>
+    </details>`);
 }
 
 /// One message, drawn as whichever of the three things it is: what this agent
@@ -1000,50 +1018,51 @@ function issueActionMessageHtml(message, context) {
   </article>`;
 }
 
-/// `thread-issue-line` is on both this row and the action line above it: they
-/// are one KIND of row — a quiet clickable line about an issue — and the
-/// stylesheet rules that matter (no gutter, one line, the tight rhythm between
-/// consecutive ones) are about that kind rather than about which of the two it
-/// is. Zech, on the rolled build: "There's a lot of space on the left of the
-/// issue notifications, there's a lot of space between them, and they're not
-/// one line."
+
+/// The three kinds of message an agent RECEIVES, and the one it sends.
 ///
-/// A tracking notice, as one quiet line.
+/// Zech: "Messages to agents and messages from the user are different things
+/// and should never look the same. Agents receive 3 kinds of messages: from
+/// the user, from other agents, and notifications."
 ///
-/// Zech: "Tracking notices come in looking like user messages (same color and
-/// on the right). They should be a single line 'X did Y on Z' deep linking."
-/// They looked like that because on the wire they ARE a message on the user's
-/// side — so the two marks together are what tell them apart, and this row is
-/// the whole of what one draws. The comment body it carries is deliberately
-/// not shown: the press is what opens it.
-///
-/// The sequence rides the row, so it reads in order and counts as unread like
-/// any other message. No fold and no detail filter: it is one line, and a line
-/// nobody can see is a line nobody can press.
-function issueNoticeMessageHtml(message, context) {
-  return `<article class="thread-message thread-issue-line thread-notice"${sequenceAttribute(message)}>
-    ${issueNoticeLineHtml(issueNoticeOf(message), {
-      place: context.place,
-      agentLabels: context.agentLabels,
-      projectName: context.place?.projectName || "",
-    })}
-  </article>`;
+/// Named here, once, because the looks they get are mutually exclusive and
+/// the readings used to be a ladder of separate conditions that could each be
+/// true. That is how Build's restart notice ended up wearing the reader's own
+/// bubble on the reader's own side: `from_build` was checked after a special
+/// case for one KIND of notice, so the other kind fell through to the bubble
+/// every instruction wears.
+export const INCOMING_KINDS = Object.freeze({
+  /// The reader typed it. Right, and the reader's colour.
+  user: "user",
+  /// Another agent sent it here — the project's agent, a workspace agent, a
+  /// hand-off. Left, green, folded, with the sender named.
+  agent: "agent",
+  /// Build wrote it about the work, not to the reader. One quiet line.
+  notice: "notice",
+});
+
+/**
+ * Which of the three a message is — for a message that ARRIVED.
+ *
+ * Order is the whole of it: Build's mark outranks everything, because a
+ * notice carries the reader's own role and would otherwise read as something
+ * the reader wrote. A sender outranks the role for the same reason.
+ */
+export function incomingKindOf(message) {
+  if (message?.from_build) return INCOMING_KINDS.notice;
+  if (message?.from_agent) return INCOMING_KINDS.agent;
+  return INCOMING_KINDS.user;
 }
 
 function messageHtml(message, agentLabel, context) {
-  // Before the from_build reading, which would otherwise draw this as the
-  // restart notice's bubble — on the user's side, in the user's colour, with
-  // the whole comment body under it.
-  if (isIssueNotice(message)) return issueNoticeMessageHtml(message, context);
-  // First of the rest, so a notice can never be read as an arrival: the mark
-  // says Build wrote it, and that outranks every other reading of who a
-  // message is from.
-  if (message.from_build) return buildNoticeHtml(message, agentLabel, context);
-  // Before the sent/arrived readings: an action line is this agent saying what
-  // it just did here, whatever else the record carries.
+  // This agent's own doings first: an action line is it saying what it just
+  // did here, and a sent message is it speaking elsewhere. Neither arrived.
   if (message.issue_action) return issueActionMessageHtml(message, context);
   if (message.sent_to) return sentMessageHtml(message, context);
-  if (message.from_agent) return arrivedMessageHtml(message, agentLabel, context);
+  const kind = incomingKindOf(message);
+  if (kind === INCOMING_KINDS.notice) return noticeMessageHtml(message, context);
+  if (kind === INCOMING_KINDS.agent) return arrivedMessageHtml(message, agentLabel, context);
+  // An agent's own words are not incoming at all; only the reader's are.
   const user = message.role === "user";
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
     ${avatarHtml(user)}

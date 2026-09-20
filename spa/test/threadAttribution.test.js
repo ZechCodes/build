@@ -354,14 +354,60 @@ describe("a notice Build wrote", () => {
 
   const message = () => document.querySelector(".thread-message");
 
-  it("says it came from Build, where an arrival says where it came from", () => {
+  // #42. It used to wear the bubble and say "from Build" above it. Zech:
+  // "notifications are a single line left aligned" — a restart notice that
+  // says "assume nothing you were doing finished" reads very differently when
+  // it looks like the reader typed it.
+  it("is one quiet line, not a bubble", () => {
     document.body.innerHTML = notice();
 
-    expect(message().classList.contains("from-build")).toBe(true);
-    expect(document.querySelector(".thread-from-build").textContent).toBe("from Build");
-    // The same line an arrival names its sender in, so the two read alike.
-    expect(document.querySelector(".thread-from .thread-from-build")).not.toBeNull();
-    expect(document.querySelector(".thread-body").textContent).toBe(RESTART);
+    expect(message().classList.contains("thread-notice")).toBe(true);
+    expect(message().classList.contains("thread-issue-line")).toBe(true);
+    expect(message().classList.contains("user")).toBe(false);
+    expect(message().classList.contains("thread-comment")).toBe(false);
+    expect(message().querySelector(".thread-comment-card")).toBeNull();
+  });
+
+  it("summarises itself, and keeps the whole of it behind a press", () => {
+    document.body.innerHTML = notice();
+
+    // This body's shape is not one the summaries know, so it takes its own
+    // first sentence — never blank, and never a page of instructions.
+    expect(document.querySelector(".thread-issue-notice").textContent.trim()).toBe("The Build bridge restarted.");
+    // The agent still needs every word; the reader does not.
+    const more = document.querySelector("details.thread-notice-more");
+    expect(more.open).toBe(false);
+    expect(more.querySelector(".thread-notice-body").textContent).toContain("Carry on where you left off");
+  });
+
+  // The body Build actually sends, taken from one of these arriving mid-turn.
+  it("says when it restarted, in a time a reader reads", () => {
+    document.body.innerHTML = notice({
+      body: "Build restarted at 2026-09-20T20:09:27.317756819Z (bridge 0.2.0) and brought your session back. This message is from Build, not from the user — nobody is waiting on an answer to it.",
+    });
+
+    const line = document.querySelector(".thread-issue-notice").textContent.trim();
+    expect(line).toMatch(/^Build restarted at \d/);
+    expect(line).toContain("brought this session back");
+    expect(line).not.toContain("2026-09-20T20:09:27");
+  });
+
+  // The other one Build sends, which is a list and reads as one.
+  it("counts what it is reminding about rather than listing the lot", () => {
+    document.body.innerHTML = notice({
+      body: [
+        "You reported Complete, but 9 issues assigned to you are still open.",
+        "",
+        "- #38 Tracking notices render as one deep-linked line (In review)",
+        "- #34 Issues activity in the rail follows the surfaces UX (In review)",
+        "- #33 Issues list shows open issues by default (In review)",
+        "- #29 Workspace issues as a tab of the workspace page (In review)",
+        "- #28 Issue list row (In review)",
+      ].join("\n"),
+    });
+
+    expect(document.querySelector(".thread-issue-notice").textContent.trim())
+      .toBe("Build: 5 issues still held — #38, #34, #33 and 2 more");
   });
 
   it("wears no avatar, because the reader did not write it", () => {
@@ -370,11 +416,11 @@ describe("a notice Build wrote", () => {
     expect(document.querySelector(".thread-avatar")).toBeNull();
   });
 
-  it("keeps the bubble an instruction wears", () => {
+  it("is on the left, never on the reader's side", () => {
     document.body.innerHTML = notice();
 
-    expect(message().classList.contains("user")).toBe(true);
-    expect(message().querySelector(".thread-comment-card")).not.toBeNull();
+    expect(message().classList.contains("user")).toBe(false);
+    expect(message().classList.contains("from-agent")).toBe(false);
   });
 
   it("is not an arrival: it never folds and offers no press", () => {
@@ -391,7 +437,7 @@ describe("a notice Build wrote", () => {
   it("outranks a sender mark, so it can never be drawn as an arrival", () => {
     document.body.innerHTML = notice({ from_agent: PROJECT_SENDER });
 
-    expect(message().classList.contains("from-build")).toBe(true);
+    expect(message().classList.contains("thread-notice")).toBe(true);
     expect(message().classList.contains("from-agent")).toBe(false);
   });
 

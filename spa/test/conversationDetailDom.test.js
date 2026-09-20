@@ -493,19 +493,21 @@ describe("a notice Build wrote, at every level", () => {
     Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });
   });
 
-  const notice = () => timeline().querySelector(".thread-message.from-build");
+  // #42: a notification is one left-aligned line, not the bubble it wore.
+  const notice = () => timeline().querySelector(".thread-message.thread-notice");
 
   const mountWithNotice = async () => {
     conversation = NOTICE_CONVERSATION;
     await mountWorkspaceRail();
   };
 
-  it("is drawn with its chip and no avatar at All", async () => {
+  it("is drawn as one quiet line, with no avatar and no bubble, at All", async () => {
     await mountWithNotice();
 
     expect(notice()).not.toBeNull();
-    expect(notice().querySelector(".thread-from-build").textContent).toBe("from Build");
+    expect(notice().querySelector(".thread-issue-notice")).not.toBeNull();
     expect(notice().querySelector(".thread-avatar")).toBeNull();
+    expect(notice().querySelector(".thread-comment-card")).toBeNull();
     expect(notice().textContent).toContain("The Build bridge restarted");
   });
 
@@ -524,7 +526,7 @@ describe("a notice Build wrote, at every level", () => {
     await choose("agent");
 
     expect(notice()).not.toBeNull();
-    expect(notice().querySelector(".thread-from-build")).not.toBeNull();
+    expect(notice().querySelector(".thread-issue-notice")).not.toBeNull();
     // The arrival beside it is gone, which is what makes this a real test.
     expect(rowKinds()).toMatchObject({ arrived: 0, activity: 0 });
   });

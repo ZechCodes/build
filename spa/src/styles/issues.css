@@ -373,6 +373,26 @@ a.thread-issue-action:focus-visible, a.thread-issue-notice:focus-visible {
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 
+/* A notification with more to say than its line says (#42). `<details>` and
+   not a button: the browser owns the toggle, so the keyboard and the screen
+   reader are handled without this file re-implementing either.
+
+   The whole body is kept — the agent was given instructions and may need every
+   word of them — and it is the READER who does not need it on screen. */
+.thread-notice-more { min-width:0; }
+.thread-notice-more > summary {
+  list-style:none; cursor:pointer;
+}
+.thread-notice-more > summary::-webkit-details-marker { display:none; }
+.thread-notice-more[open] > summary .thread-issue-said { color:var(--ink2); }
+.thread-notice-body {
+  margin:3px 0 2px; padding:7px 9px;
+  border-radius:7px; background:var(--panel); border:1px solid var(--line2);
+  font-size:11.5px; line-height:1.5; color:var(--ink2);
+}
+.thread-notice-body :is(p, ul, ol):first-child { margin-top:0; }
+.thread-notice-body :is(p, ul, ol):last-child { margin-bottom:0; }
+
 /* The tight rhythm. Consecutive lines read as a list rather than as separate
    messages, so they pull back against the timeline's own gap — and only
    against each other: a real message either side keeps the full gap, because

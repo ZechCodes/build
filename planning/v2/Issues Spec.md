@@ -524,10 +524,73 @@ down — the same queue, the same receipt, the same start. It skips
 something is the work happening, not somebody speaking to the human, and it
 must not move the inbox anchor under a reader.
 
+### An agent says what it did
+
+Separately from tracking, and for a different reader: **every issue write an
+agent makes through its tools also posts one message into that agent's own
+conversation**, authored by the agent.
+
+The reason the two are separate mechanisms. A tracking notice is Build telling
+somebody ELSE what happened, and it is marked `from_build` because nobody is
+waiting on an answer to it. An action message is the AGENT saying what it just
+did, in its own conversation, to the person reading that conversation. It is
+role `agent` and carries no `from_build` mark, because it is not Build's
+sentence — it is the agent's, and a reader scrolling the conversation should see
+"Commented on #13 …" between the agent's other words rather than as something
+the system interjected.
+
+It is an ordinary agent message and not an activity row, so it survives every
+detail mode: a conversation read at its coarsest still shows what the agent did
+to the board, because that is a thing the agent did and not a tool call it made
+on the way.
+
+The message carries:
+
+```json
+{
+  "role": "agent",
+  "body": "Commented on #13 Issue tracking: an agent that tracks an issue …",
+  "issue_action": {
+    "action": "commented_on",
+    "issue_id": "issue-01K5Z…",
+    "number": 13,
+    "title": "Issue tracking: an agent that tracks an issue …",
+    "comment_id": "ic-01K5Z…"
+  }
+}
+```
+
+`action` is one of `created`, `created_and_assigned`, `assigned`, `moved`,
+`closed`, `reopened`, `commented_on`, `linked`, `updated` — a slug, the way a
+column is, so a client renders the label and the bridge does not decide the
+wording twice. `comment_id` is present only on `commented_on`, and is what lets
+a client deep-link the comment rather than the issue.
+
+**One message per write, never two.** A create that also assigns is one message
+with `created_and_assigned`, because it was one call and one thing the agent
+did. This is why the message is posted in `commit_issue_write` — the one funnel
+every tracker write already goes through — rather than in each verb, where a
+call that changes three things would post three times.
+
+**Only when the actor is an agent with a conversation.** A human moving a card
+on the board is already looking at the board; posting into a conversation nobody
+is reading to tell them what they just did on screen is noise. So the api path
+posts nothing, and the check is on the actor rather than on which verb was
+called — the same verb serves both.
+
+The message is in the ACTING agent's conversation and nobody else's. An
+assignment posts "Assigned #13 to …" for the agent that assigned; what the
+assignee gets is the dispatched issue itself, which it was already getting.
+
+Its shape is pinned in `fixtures/api/v1/thread.page.json` with the notice, for
+the same reason and in the same file.
+
 ### Where the notice's shape is pinned
 
-In **`fixtures/api/v1/thread.page.json`**, beside the other message shapes —
-not in `events.json`.
+Both the tracking notice and the action message live in
+**`fixtures/api/v1/thread.page.json`**, beside the other message shapes — not
+in `events.json`, and not in a `thread.json` (there is no such fixture; the
+message shape is `thread.page`'s).
 
 `events.json` holds what the bridge pushes on a session: `changes`,
 `board.changed`, `entity.changed`, `term.*`, `rtc.ice`. Its contract test

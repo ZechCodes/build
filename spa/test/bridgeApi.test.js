@@ -85,7 +85,27 @@ describe("adapter selection", () => {
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
       requests: { priority: true },
       errors: { codes: true },
+      // The hunks-per-file read arrived in 1.4; a 1.1 bridge is asked for
+      // whole patches.
+      diffs: { perFile: false },
     });
+  });
+
+  /** Hunks per file is 1.4, and the greeting says nothing about it — so the
+   *  minor is the whole of the answer. A surface that asked a 1.3 bridge for
+   *  them would draw a stack of files that never load. */
+  it("reads hunks per file off the minor alone, from 1.4", () => {
+    const greetingAt = (version) => ({
+      api_version: version,
+      push_events: true,
+      changes: { subscriptions: true, kinds: ["git"], items: "bodies" },
+    });
+    const perFile = (version) =>
+      selectAdapter(greetingAt(version)).create(vi.fn()).capabilities.diffs.perFile;
+
+    expect(perFile("1.3.0")).toBe(false);
+    expect(perFile("1.4.0")).toBe(true);
+    expect(perFile("1.5.2")).toBe(true);
   });
 
   // A greeting's kind list rides through whole, whatever is on it. The list
@@ -135,6 +155,7 @@ describe("adapter selection", () => {
         changes: { subscriptions: false, kinds: [] },
         requests: { priority: false },
         errors: { codes: false },
+        diffs: { perFile: false },
       });
     }
   });

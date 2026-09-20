@@ -7,7 +7,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, watchChanges;
 
-const NONE = { changes: { subscriptions: false, kinds: [] }, requests: { priority: false }, errors: { codes: false } };
+const NONE = {
+  changes: { subscriptions: false, kinds: [] },
+  requests: { priority: false },
+  errors: { codes: false },
+  diffs: { perFile: false },
+};
 
 const greeting11 = () => ({
   api_version: "1.2.0",
@@ -46,6 +51,7 @@ describe("the adapter a greeting selects", () => {
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
       requests: { priority: true },
       errors: { codes: true },
+      diffs: { perFile: false },
     });
   });
 

@@ -27,6 +27,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!("git.show", git_show, GitShowParams, CommitDetail),
         v1_method!("git.status", git_status, GitStatusParams, GitStatusResult),
         v1_method!("git.diff", git_diff, GitDiffParams, GitDiffResult),
+        v1_method!(
+            "git.changeset_diff",
+            git_changeset_diff,
+            ChangesetDiffParams,
+            ChangesetDiffResult
+        ),
         v1_method!("git.stage", git_stage, GitPathsParams, StatusPayload),
         v1_method!("git.unstage", git_unstage, GitPathsParams, StatusPayload),
         v1_method!("git.discard", git_discard, GitPathsParams, StatusPayload),
@@ -341,6 +347,26 @@ pub struct GitUnpushedParams {
     pub patch: Option<bool>,
 }
 
+/// `git.changeset_diff` — the hunks of named paths out of the changeset the
+/// scope's own whole-patch verb answers.
+///
+/// The scope is the same one every `git.*` verb takes, and which changeset it
+/// names follows the whole-patch verb for that scope: `run_id` is the run
+/// against its baseline, `project_id` + `worktree_id` an external checkout
+/// against its merge base, `project_id` alone the project's uncommitted work.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ChangesetDiffParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// 1 to 50 repo-relative paths — the files the reader has open.
+    pub paths: Vec<String>,
+    /// The `diff_key` the caller already holds. The key names the WHOLE
+    /// changeset, so a body fetched under it is still that file's body for
+    /// as long as the key stands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_diff_key: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectDiffParams {
     pub project_id: String,
@@ -406,12 +432,23 @@ pub struct DiffStat {
     pub deletions: u64,
 }
 
-/// One changed path in a diff listing: what it is, not what it says.
+/// One changed path in a diff listing: what it is and what it weighs, not
+/// what it says.
+///
+/// The counts are here because a reader holds the row before it holds the
+/// hunks — a `git` push and a cold pass carry the list with no patch — and
+/// the `+`/`−` beside the path is drawn from them.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DiffFileRow {
     pub path: String,
     /// `Added`, `Modified`, `Deleted`, `Renamed`, `Typechange`.
     pub status: String,
+    pub additions: u64,
+    pub deletions: u64,
+    /// What this file's hunks say, as a key — the same job `content_key` does
+    /// on a `git.status` row. A reader holding the row without the body uses
+    /// it to tell a body it still holds from one that has moved on.
+    pub content_key: String,
 }
 
 /// One changed path in a status walk: its staging tri-state, the key its body
@@ -795,6 +832,28 @@ pub struct RunDiff {
     pub issue_id: Option<String>,
 }
 
+/// What `git.changeset_diff` answers: the asked paths' rows and their hunks,
+/// under the whole changeset's key.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ChangesetDiff {
+    pub stat: DiffStat,
+    pub files: Vec<DiffFileRow>,
+    pub patch: String,
+    #[serde(default)]
+    pub file_edited_at: FileEditedAt,
+    /// Absent on a scope whose whole-patch verb answers no key either — the
+    /// project's own checkout, whose surface reads it fresh every time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ChangesetDiffResult {
+    Unchanged(UnchangedDiff),
+    Fresh(Box<ChangesetDiff>),
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum RunDiffResult {
@@ -864,6 +923,13 @@ fn git_status(
 
 fn git_diff(app: &mut AppState, params: GitDiffParams) -> Result<Answer<GitDiffResult>, ApiError> {
     answer(app.git_diff(&params.wire()))
+}
+
+fn git_changeset_diff(
+    app: &mut AppState,
+    params: ChangesetDiffParams,
+) -> Result<Answer<ChangesetDiffResult>, ApiError> {
+    answer(app.changeset_diff(&params.wire()))
 }
 
 fn git_stage(

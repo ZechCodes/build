@@ -158,12 +158,23 @@ function minorOf(version) {
  */
 export function capabilitiesOf(greeting, version) {
   const stated = statedGreeting(greeting);
-  if (!stated) return { changes: { subscriptions: false, kinds: [] }, requests: { priority: false }, errors: { codes: false } };
+  if (!stated)
+    return {
+      changes: { subscriptions: false, kinds: [] },
+      requests: { priority: false },
+      errors: { codes: false },
+      diffs: { perFile: false },
+    };
   const minor = minorOf(version);
   return {
     changes: { subscriptions: capability(stated.changes.subscriptions, 1, minor), kinds: kindsOf(stated) },
     requests: { priority: capability(stated.requests.priority, 1, minor) },
     errors: { codes: capability(stated.errors.codes, 1, minor) },
+    // `git.changeset_diff`, and the per-file counts and keys a stack drawn
+    // without hunks needs (1.4). The greeting states nothing about it, so the
+    // minor is the whole of the answer — and a surface that asked a 1.3 bridge
+    // for hunks per file would draw a stack of files that never load.
+    diffs: { perFile: minor >= 4 },
   };
 }
 

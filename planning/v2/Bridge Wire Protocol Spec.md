@@ -456,6 +456,41 @@ and stays short; after it, the client knows the device holds the request and
 waits far longer for the answer. A posted message can read *queued* from the
 receipt and *delivered* from the reply.
 
+#### Step 1.11: hunks per file (stage 3, second half)
+
+Step 1.9 stopped the bodies riding pushes; what was left was the reader's
+own. Landing straight on a workspace measured 1076 KB on the app channel, of
+which 1015 KB was one `run.diff` — the whole changeset, fetched because the
+review surface drew itself from one patch string.
+
+So the review surface reads what the rest of the client already reads:
+
+- every diff's file rows carry `additions`, `deletions` and `content_key`
+  beside `path` and `status`. The counts are taken per delta in the same
+  print the roll-up is taken in, and the key is an FNV-1a over that one
+  file's patch text as it prints, so both cost nothing beyond the walk. A
+  stack drawn from rows alone has its `+`/`−` and its review bar from the
+  counts, and its re-review chip from the key.
+- `git.changeset_diff` (1.4.0) takes the ordinary `git.*` scope and `paths`
+  (1 to 50, the cap `git.diff` already has) and answers the same changeset
+  narrowed to those paths: `{stat, files, patch, file_edited_at, diff_key}`.
+  Which changeset a scope names follows its whole-patch verb — `run_id` the
+  run against its baseline, `project_id` + `worktree_id` a checkout against
+  its merge base, `project_id` alone the project's uncommitted work. The
+  `diff_key` is the WHOLE changeset's, because that is what says whether a
+  held body still stands.
+- the whole-patch verbs are unchanged. Review and commit still read them,
+  and `patch: false` (step 1.9) is what a surface asks when it means to
+  fetch per file.
+
+Client side: the review plug (`spa/src/core/changesReview.js`) paints a view
+per row with no hunks in it and fetches bodies through
+`spa/src/core/changesetBodies.js` for the files `viewport.shouldLoad` says
+are on screen or expanded — the same gate the git pane has always fetched
+its uncommitted bodies through, and the same per-path cache discipline
+(`core/fileDiffs.js`). A reader who opens the changes pane and never scrolls
+pays for the first screenful; a reader who never opens it pays nothing.
+
 ### Part 2: API versioning
 
 #### Step 2.0: report a version, before the alpha
@@ -489,6 +524,18 @@ has been seen in `bridge.stats` for a month.
   session on the old one for 30 days.
 - `PROTOCOL_VERSION` (envelope), the MCP protocol date, and the Cargo
   version stay separate. They version different things.
+
+**One compatibility rule is not about versions at all, and every reader of
+this wire needs it: a frame bearing your request's id is not necessarily the
+answer.** Since step 1.10 the intake receipts a request on admission, so an
+id comes back twice — once as `{"id", "accepted": true}` and once as the
+reply. `ok` is what says a reply settled a call; `accepted` with no `ok`
+settles nothing. A reader that treated the first frame carrying its id as the
+answer settles every call on the receipt: in this repo that was three readers
+(`spa/src/core/sessionRpc.js`, `web/peer.mjs`, `bridge/src/rtc/testing.rs`),
+and outside it, it is whatever anyone has written against this wire. It rides
+no version gate on purpose — a client that cannot be taught is a client that
+must not be sent receipts, and there is no such client.
 
 #### Step 2.2: the bridge facade
 

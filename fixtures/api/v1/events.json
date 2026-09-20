@@ -169,7 +169,10 @@
               "files": [
                 {
                   "path": "src/lib.rs",
-                  "status": "Modified"
+                  "status": "Modified",
+                  "additions": 3,
+                  "deletions": 1,
+                  "content_key": "9f3c1a0b7e2d4c55"
                 }
               ],
               "file_edited_at": {

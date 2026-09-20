@@ -22,8 +22,10 @@ import "../styles/surfaces.css";
 import { reviewCommentContext } from "./reviewCommentContext.js";
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { createCommentLayer } from "./changesComments.js";
-import { createFileFolds, pathOf } from "./diff.js";
-import { diffStackEntries, stackClaims } from "./diffRender.js";
+import { fileKey, createFileFolds, pathOf } from "./diff.js";
+import { fileFoldOf, stackClaims } from "./diffRender.js";
+import { fileStackEntries, fileViewFromDiffRow } from "./fileEntries.js";
+import { CHANGESET_DIFF_RECORD_KIND, createChangesetBodies } from "./changesetBodies.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -90,6 +92,11 @@ export function createReviewPlug({
   // diff off the wire once per mount.
   entity = null,
   cacheEntity = entity,
+  // How this surface reads the hunks of files the reader has open:
+  // `fetchFiles(paths)` → the `git.changeset_diff` answer for its own scope.
+  // A surface that names none is drawn from whatever patch `fetchDiff`
+  // carried, exactly as before.
+  fetchFiles = null,
   // Whether this plug is the only reader of its changeset. A run's and a
   // worktree's `diff` record is written by the sync layer on every pass and
   // moved by every `git` push, so the record IS the diff. A workspace source
@@ -108,6 +115,7 @@ export function createReviewPlug({
   const parsedDiffs = createParsedDiffCache();
   let renderedFiles = []; // the freshest parsed diff — what a stamp is taken from
   let renderedPatch = ""; // the patch those files came from
+  let bodiesHeld = false; // hunks landed while repainting was frozen
   let commentableNow = false;
   let trayMounted = false;
   let noiseExpanded = false; // the collapsed generated-files group at the bottom
@@ -125,9 +133,40 @@ export function createReviewPlug({
   let sortOrder = loadDiffSort();
 
   /** The rendered files as the views a stamp is taken of: a whole patch's file
-   *  wears a hash of its own rows as its content key. */
+   *  wears a hash of its own rows as its content key, a file list's wears the
+   *  one the bridge counted for it. */
   let fileEditedAt = {};
   const renderedViews = () => renderedFiles;
+
+  /** The views one payload draws.
+   *
+   *  A payload that carried the whole patch is parsed as it always was. One
+   *  that carried the file list alone — which is what a push carries, and what
+   *  a surface reading for a reader on a phone asks for — becomes a view per
+   *  row with no hunks in it, and the hunks are fetched for the files the
+   *  reader can see. Either way what comes out is the same kind of view, so
+   *  nothing downstream of here knows which it was. */
+  const viewsOf = (payload) => {
+    if (typeof payload.patch === "string") {
+      const contentKeys = Object.fromEntries((payload.files || []).map((file) => [file.path, file.content_key]));
+      return parsedDiffs.views(payload.patch, { contentKeys, editedAt: fileEditedAt });
+    }
+    return (payload.files || []).map((row) => fileViewFromDiffRow(row, fileEditedAt[row.path]));
+  };
+
+  // The hunks behind the files in that list. A surface that reads whole
+  // patches has no use for it and makes none.
+  const bodies = fetchFiles
+    ? createChangesetBodies({
+        addressOf: (path) => {
+          const entityId = cacheEntityId();
+          return entityId ? cacheScope?.address({ entityId, kind: CHANGESET_DIFF_RECORD_KIND, sub: path }) || null : null;
+        },
+        fetchFiles,
+        keyFor: (path) => renderedFiles.find((view) => view.path === path)?.contentKey,
+      })
+    : null;
+  const bodyOf = bodies ? bodies.bodyOf : undefined;
 
   const commentLayer = submit
     ? createCommentLayer({
@@ -231,7 +270,40 @@ export function createReviewPlug({
   function render() {
     if (!host) return;
     paintKeepingPlace(host, paintStack, DIFF_PLACE_KEEPING);
+    refreshBodies();
   }
+
+  /** The files whose hunks are worth having: the ones the viewport says are on
+   *  screen or the reader has expanded, and never one folded shut. The same
+   *  gate the git pane fetches its uncommitted bodies through. */
+  const openPaths = () =>
+    new Set(
+      renderedFiles
+        .filter((view) => viewport.shouldLoad(fileKey(view), fileFoldOf(view, { folds, approved: marks.approved })))
+        .map((view) => view.path),
+    );
+
+  /** Ask for the hunks the paint found missing, and repaint when any land.
+   *  Fetching is the plug's job, never the render's — and a body that arrives
+   *  while a comment draft holds the DOM still is news kept for the turn the
+   *  surface is free to paint. */
+  const refreshBodies = () => {
+    if (!bodies || !host) return;
+    void bodies.sync(renderedFiles, openPaths()).then(
+      (filled) => {
+        if (!filled || !host) return;
+        if (repaintFrozen()) {
+          bodiesHeld = true;
+          return;
+        }
+        render();
+      },
+      () => {
+        // A body that could not be read is not an error the reader can act
+        // on: the file says "loading…" and the next paint asks again.
+      },
+    );
+  };
 
   function paintStack() {
     const views = renderedViews();
@@ -239,7 +311,8 @@ export function createReviewPlug({
     const filesToRender = changedOnlyFilter ? views.filter((file) => changed.has(file.path)) : views;
     const editable = commentableNow && Boolean(commentLayer);
     trayMounted = editable;
-    const entries = diffStackEntries(filesToRender, {
+    const entries = fileStackEntries(filesToRender, {
+      bodyOf,
       commentable: editable,
       openable: Boolean(openFile),
       changedSince: changed,
@@ -361,7 +434,7 @@ export function createReviewPlug({
    *  is one round trip behind it. */
   const applyCachedDiff = (value) => {
     fileEditedAt = fileEditedAtOf(value);
-    renderedFiles = parsedDiffs.views(value.patch, { editedAt: fileEditedAt });
+    renderedFiles = viewsOf(value);
     renderedPatch = value.patch || "";
     responseDiffKey = value.diff_key || null;
     commentableNow = value.commentable !== false && Boolean(commentLayer);
@@ -463,10 +536,9 @@ export function createReviewPlug({
       return;
     }
     fileEditedAt = fileEditedAtOf(payload);
-    const contentKeys = Object.fromEntries((payload.files || []).map((file) => [file.path, file.content_key]));
     renderedFiles = patchUnchanged
       ? renderedFiles.map((file) => ({ ...file, editedAt: fileEditedAt[file.path] }))
-      : parsedDiffs.views(payload.patch, { contentKeys, editedAt: fileEditedAt });
+      : viewsOf(payload);
     renderedPatch = payload.patch || "";
     commentableNow = nextCommentable;
     diffKey = key;
@@ -475,7 +547,11 @@ export function createReviewPlug({
     const address = diffAddress();
     if (address) {
       const value = {
-        patch: payload.patch,
+        ...(payload.patch === undefined ? {} : { patch: payload.patch }),
+        // The list is what a stack is drawn from when no patch came with it,
+        // so it is what the record has to hold for the next mount to paint.
+        files: payload.files || [],
+        stat: payload.stat,
         commentable: payload.commentable !== false,
         file_edited_at: fileEditedAt,
         diff_key: responseDiffKey,
@@ -515,6 +591,10 @@ export function createReviewPlug({
    *  then could not paint is asked for again. */
   const resumeHeldRefresh = () => {
     if (!host || repaintFrozen()) return;
+    if (bodiesHeld) {
+      bodiesHeld = false;
+      render();
+    }
     if (recordHeld) {
       recordHeld = false;
       void rereadDiff();
@@ -588,6 +668,7 @@ export function createReviewPlug({
       if (editedTimeWatcher) editedTimeWatcher.dispose();
       editedTimeWatcher = null;
       if (commentLayer) commentLayer.dispose();
+      bodies?.dispose();
       parsedDiffs.clear();
       viewport.dispose();
       if (host) {

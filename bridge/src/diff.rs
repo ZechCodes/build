@@ -7,6 +7,7 @@
 //! also answers the plan-phase enforcement question — *did anything change
 //! outside `.build/`?* — so the UI can flag a planning agent that wrote code.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Where plan-phase work is supposed to stay confined.
@@ -60,11 +61,28 @@ pub enum ChangeStatus {
     Other,
 }
 
-/// One changed path in the worktree's delta from base.
+/// One changed path in the worktree's delta from base, and what it weighs.
+///
+/// The counts ride the row because a reader may hold the row long before the
+/// hunks behind it: a `git` push and the client's cold pass carry the file
+/// list with no patch at all, and the `+`/`−` beside each path — and the
+/// totals in the review bar over them — are counted from here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangedFile {
     pub path: String,
     pub status: ChangeStatus,
+    pub additions: usize,
+    pub deletions: usize,
+    /// What this file's hunks say, as a key.
+    ///
+    /// It is taken over the patch text of this file alone, while that text is
+    /// being printed, so it costs nothing beyond the walk. A reader holding
+    /// the row without the body uses it for both things a content key is for:
+    /// deciding whether a body it already has is still this file's, and
+    /// deciding whether this file moved since the last time it was reviewed.
+    /// Identity, never integrity — the same job `git.status`'s `content_key`
+    /// does for an uncommitted file.
+    pub content_key: String,
 }
 
 /// The worktree's complete delta from its base branch.
@@ -122,9 +140,18 @@ pub fn diff_against_base(
     worktree_path: &Path,
     base_branch: &str,
 ) -> Result<WorktreeDiff, DiffError> {
+    diff_against_base_for(worktree_path, base_branch, DiffPaths::All)
+}
+
+/// [`diff_against_base`], narrowed to the paths a reader has open.
+pub fn diff_against_base_for(
+    worktree_path: &Path,
+    base_branch: &str,
+    paths: DiffPaths<'_>,
+) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(worktree_path)?;
     let base_tree = base_tree(&repo, base_branch)?;
-    diff_tree_to_dirty_workdir(&repo, Some(&base_tree))
+    diff_tree_to_dirty_workdir(&repo, Some(&base_tree), paths)
 }
 
 /// [`diff_against_base`]'s counts alone, without rendering the patch. This is
@@ -153,9 +180,18 @@ pub fn diff_against_merge_base(
     worktree_path: &Path,
     base_branch: &str,
 ) -> Result<WorktreeDiff, DiffError> {
+    diff_against_merge_base_for(worktree_path, base_branch, DiffPaths::All)
+}
+
+/// [`diff_against_merge_base`], narrowed to the paths a reader has open.
+pub fn diff_against_merge_base_for(
+    worktree_path: &Path,
+    base_branch: &str,
+    paths: DiffPaths<'_>,
+) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(worktree_path)?;
     let merge_base_tree = merge_base_tree(&repo, base_branch)?;
-    diff_tree_to_dirty_workdir(&repo, Some(&merge_base_tree))
+    diff_tree_to_dirty_workdir(&repo, Some(&merge_base_tree), paths)
 }
 
 /// [`diff_against_merge_base`]'s counts alone, without rendering the patch.
@@ -204,6 +240,7 @@ pub fn diff_between_commits(
     worktree_path: &Path,
     start_sha: &str,
     completion_sha: &str,
+    paths: DiffPaths<'_>,
 ) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(worktree_path)?;
     let start = repo.find_commit(git2::Oid::from_str(start_sha)?)?;
@@ -211,6 +248,7 @@ pub fn diff_between_commits(
     let start_tree = start.tree()?;
     let completion_tree = completion.tree()?;
     let mut opts = canonical_patch_options();
+    paths.narrow(&mut opts);
     let diff =
         repo.diff_tree_to_tree(Some(&start_tree), Some(&completion_tree), Some(&mut opts))?;
     worktree_diff_from_git_diff(&diff)
@@ -236,6 +274,31 @@ fn delta_path(delta: &git2::DiffDelta) -> String {
         .or_else(|| delta.old_file().path())
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// How much of a changeset a read covers.
+///
+/// `All` is the whole delta — what a review surface opens with and what a
+/// commit acts on. `Only` is the files a reader has on screen: the same
+/// changeset, narrowed to the paths asked for, which is how one file's hunks
+/// are fetched without the megabytes behind the ones nobody opened.
+#[derive(Debug, Clone, Copy)]
+pub enum DiffPaths<'a> {
+    All,
+    Only(&'a [String]),
+}
+
+impl DiffPaths<'_> {
+    /// Narrow `opts` to these paths. Matching is literal, never glob: the
+    /// paths come from a file list this bridge wrote, and a file named with a
+    /// `*` in it is the file that name asks for.
+    fn narrow(self, opts: &mut git2::DiffOptions) {
+        let Self::Only(paths) = self else { return };
+        opts.disable_pathspec_match(true);
+        for path in paths {
+            opts.pathspec(path);
+        }
+    }
 }
 
 /// Pin the patch path vocabulary expected by review clients and hunk parsing.
@@ -269,8 +332,10 @@ fn dirty_workdir_options(with_untracked_content: bool) -> git2::DiffOptions {
 fn diff_tree_to_dirty_workdir(
     repo: &git2::Repository,
     old_tree: Option<&git2::Tree>,
+    paths: DiffPaths<'_>,
 ) -> Result<WorktreeDiff, DiffError> {
     let mut opts = dirty_workdir_options(true);
+    paths.narrow(&mut opts);
     let diff = repo.diff_tree_to_workdir_with_index(old_tree, Some(&mut opts))?;
     worktree_diff_from_git_diff(&diff)
 }
@@ -297,7 +362,7 @@ pub fn diff_against_commit(
     let tree = base
         .map(|oid| repo.find_commit(oid).and_then(|commit| commit.tree()))
         .transpose()?;
-    diff_tree_to_dirty_workdir(&repo, tree.as_ref())
+    diff_tree_to_dirty_workdir(&repo, tree.as_ref(), DiffPaths::All)
 }
 
 /// Cheap identity corresponding exactly to [`diff_against_commit`].
@@ -517,35 +582,66 @@ fn worktree_diff_from_git_diff(diff: &git2::Diff<'_>) -> Result<WorktreeDiff, Di
     #[cfg(test)]
     PATCH_PRINTS.with(|count| count.set(count.get() + 1));
 
-    let files: Vec<ChangedFile> = diff
+    let mut files: Vec<ChangedFile> = diff
         .deltas()
         .map(|delta| ChangedFile {
             path: delta_path(&delta),
             status: map_status(delta.status()),
+            additions: 0,
+            deletions: 0,
+            content_key: String::new(),
         })
         .filter(|file| !is_mcp_config(&file.path))
         .collect();
+    let row_of: HashMap<String, usize> = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| (file.path.clone(), index))
+        .collect();
+    // One running hash per file, folded over the bytes as they print.
+    let mut keys: Vec<u64> = vec![FNV_OFFSET_BASIS; files.len()];
 
     // Stats are counted while printing (instead of `diff.stats()`) so the
-    // excluded MCP config contributes to neither the patch nor the numbers.
+    // excluded MCP config contributes to neither the patch nor the numbers —
+    // and the same pass that rolls them up puts each line on its own file's
+    // row, so per-file counts cost nothing beyond the walk already being made.
     let mut insertions = 0;
     let mut deletions = 0;
     let mut patch = String::new();
     diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
-        if is_mcp_config(&delta_path(&delta)) {
+        let path = delta_path(&delta);
+        if is_mcp_config(&path) {
             return true;
         }
-        match line.origin() {
-            '+' => insertions += 1,
-            '-' => deletions += 1,
+        let index = row_of.get(&path).copied();
+        match (line.origin(), index.map(|index| &mut files[index])) {
+            ('+', Some(file)) => {
+                insertions += 1;
+                file.additions += 1;
+            }
+            ('-', Some(file)) => {
+                deletions += 1;
+                file.deletions += 1;
+            }
             _ => {}
         }
-        if matches!(line.origin(), '+' | '-' | ' ') {
+        let marked = matches!(line.origin(), '+' | '-' | ' ');
+        if marked {
             patch.push(line.origin());
+        }
+        if let Some(index) = index {
+            let hash = &mut keys[index];
+            if marked {
+                *hash = fnv1a64_fold(*hash, &[line.origin() as u8]);
+            }
+            *hash = fnv1a64_fold(*hash, line.content());
         }
         patch.push_str(&String::from_utf8_lossy(line.content()));
         true
     })?;
+    for (file, hash) in files.iter_mut().zip(keys) {
+        file.content_key = format!("{hash:016x}");
+    }
     let stat = DiffStat {
         files_changed: files.len(),
         insertions,
@@ -576,12 +672,17 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Identity, not integrity: cache keys and change tokens, never a security
 /// boundary.
 pub(crate) fn fnv1a64_hex(text: &str) -> String {
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in text.as_bytes() {
+    format!("{:016x}", fnv1a64_fold(FNV_OFFSET_BASIS, text.as_bytes()))
+}
+
+/// One more chunk of bytes into a running FNV-1a 64, so a hash can be taken
+/// over text that is never assembled into one string.
+fn fnv1a64_fold(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(FNV_PRIME);
     }
-    format!("{hash:016x}")
+    hash
 }
 
 /// The primary checkout's uncommitted delta: HEAD's tree vs the working
@@ -589,9 +690,17 @@ pub(crate) fn fnv1a64_hex(text: &str) -> String {
 /// This is the "main worktree" review surface; committed work is upstream's
 /// business, not a review surface.
 pub fn diff_against_head(repo_path: &Path) -> Result<WorktreeDiff, DiffError> {
+    diff_against_head_for(repo_path, DiffPaths::All)
+}
+
+/// [`diff_against_head`], narrowed to the paths a reader has open.
+pub fn diff_against_head_for(
+    repo_path: &Path,
+    paths: DiffPaths<'_>,
+) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(repo_path)?;
     let head_tree = repo.head()?.peel_to_tree()?;
-    diff_tree_to_dirty_workdir(&repo, Some(&head_tree))
+    diff_tree_to_dirty_workdir(&repo, Some(&head_tree), paths)
 }
 
 /// [`diff_against_head`]'s counts alone, without rendering the patch.
@@ -605,9 +714,17 @@ pub fn stat_against_head(repo_path: &Path) -> Result<DiffStat, DiffError> {
 /// diffs against the empty tree instead of failing — the git-GUI status
 /// surface must keep working in a brand-new repository.
 pub fn diff_uncommitted(repo_path: &Path) -> Result<WorktreeDiff, DiffError> {
+    diff_uncommitted_for(repo_path, DiffPaths::All)
+}
+
+/// [`diff_uncommitted`], narrowed to the paths a reader has open.
+pub fn diff_uncommitted_for(
+    repo_path: &Path,
+    paths: DiffPaths<'_>,
+) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(repo_path)?;
     let head_tree = head_tree_if_born(&repo)?;
-    diff_tree_to_dirty_workdir(&repo, head_tree.as_ref())
+    diff_tree_to_dirty_workdir(&repo, head_tree.as_ref(), paths)
 }
 
 /// [`diff_uncommitted`]'s counts alone, without rendering the patch.
@@ -823,6 +940,173 @@ mod tests {
         );
     }
 
+    /// The counts a reviewer reads beside each path, on the rows themselves.
+    ///
+    /// A stack drawn from the rows alone — no hunks fetched yet — has nothing
+    /// else to count from: the `+`/`−` pair over each file and the totals in
+    /// the review bar are these numbers, and a row that could not say would
+    /// paint a file as empty while it loaded.
+    #[test]
+    fn a_changed_file_carries_its_own_line_counts() {
+        let (_dir, repo) = mixed_fixture();
+        let diff = diff_uncommitted(&repo).unwrap();
+        let file = |path: &str| {
+            diff.files()
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path} is not among {:?}", diff.files()))
+        };
+
+        assert_eq!(
+            (
+                file("tracked-modify.txt").additions,
+                file("tracked-modify.txt").deletions
+            ),
+            (1, 0)
+        );
+        assert_eq!(
+            (
+                file("tracked-delete.txt").additions,
+                file("tracked-delete.txt").deletions
+            ),
+            (0, 2)
+        );
+        assert_eq!(
+            (
+                file("staged-add.txt").additions,
+                file("staged-add.txt").deletions
+            ),
+            (1, 0)
+        );
+        // Untracked text prints whole, so its lines are additions like any
+        // other; the binary and the oversize file print nothing and count
+        // nothing.
+        assert_eq!(file("untracked.txt").additions, 3);
+        assert_eq!(
+            (
+                file("untracked.bin").additions,
+                file("untracked.bin").deletions
+            ),
+            (0, 0)
+        );
+
+        // The rows ARE the roll-up: a bar that summed them must reach the same
+        // numbers the stat carries, or two places on one screen disagree.
+        let stat = diff.stat();
+        assert_eq!(
+            diff.files()
+                .iter()
+                .map(|file| file.additions)
+                .sum::<usize>(),
+            stat.insertions,
+            "{:?}",
+            diff.files()
+        );
+        assert_eq!(
+            diff.files()
+                .iter()
+                .map(|file| file.deletions)
+                .sum::<usize>(),
+            stat.deletions,
+            "{:?}",
+            diff.files()
+        );
+    }
+
+    /// Each file's key is its own hunks' — so a reader holding the rows
+    /// without the bodies can tell which ONE file moved, and a body it
+    /// already holds for an untouched file is still that file's body.
+    #[test]
+    fn a_files_key_moves_only_when_that_file_moves() {
+        let (_dir, repo) = mixed_fixture();
+        let key_of = |diff: &WorktreeDiff, path: &str| {
+            diff.files()
+                .iter()
+                .find(|file| file.path == path)
+                .map(|file| file.content_key.clone())
+        };
+        let before = diff_uncommitted(&repo).unwrap();
+
+        std::fs::write(repo.join("staged-add.txt"), "staged\nand then some\n").unwrap();
+        let after = diff_uncommitted(&repo).unwrap();
+
+        assert_ne!(
+            key_of(&before, "staged-add.txt"),
+            key_of(&after, "staged-add.txt")
+        );
+        assert_eq!(
+            key_of(&before, "tracked-modify.txt"),
+            key_of(&after, "tracked-modify.txt"),
+            "a file nobody touched keeps its key"
+        );
+        // And a narrowed read of one file agrees with the whole changeset's
+        // row for it, or a body fetched under that key would never match.
+        let asked = ["tracked-modify.txt".to_string()];
+        let narrowed = diff_uncommitted_for(&repo, DiffPaths::Only(&asked)).unwrap();
+        assert_eq!(
+            key_of(&narrowed, "tracked-modify.txt"),
+            key_of(&after, "tracked-modify.txt")
+        );
+    }
+
+    /// The read behind one opened file: the same changeset, narrowed to the
+    /// paths asked for and carrying nothing else.
+    #[test]
+    fn a_diff_narrowed_to_paths_carries_those_files_alone() {
+        let (_dir, repo) = mixed_fixture();
+        let asked = ["tracked-modify.txt".to_string()];
+
+        let narrowed = diff_uncommitted_for(&repo, DiffPaths::Only(&asked)).unwrap();
+
+        assert_eq!(
+            narrowed
+                .files()
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tracked-modify.txt"]
+        );
+        assert!(
+            narrowed.patch().contains("tracked-modify.txt"),
+            "{}",
+            narrowed.patch()
+        );
+        assert!(
+            !narrowed.patch().contains("staged-add.txt"),
+            "{}",
+            narrowed.patch()
+        );
+        // The narrowed stat is the narrowed files', so a caller can show what
+        // it asked for without pretending to know the whole changeset.
+        assert_eq!(narrowed.stat().files_changed, 1, "{:?}", narrowed.stat());
+        assert_eq!(narrowed.stat().insertions, 1, "{:?}", narrowed.stat());
+    }
+
+    /// A path with no change in this changeset answers nothing rather than an
+    /// error: the file list a client reads from can lag the tree by a push.
+    #[test]
+    fn a_narrowed_diff_of_an_unchanged_path_is_empty() {
+        let (_dir, repo) = mixed_fixture();
+        let asked = ["nothing-touched-this.txt".to_string()];
+
+        let narrowed = diff_uncommitted_for(&repo, DiffPaths::Only(&asked)).unwrap();
+
+        assert!(narrowed.files().is_empty(), "{:?}", narrowed.files());
+        assert_eq!(narrowed.patch(), "");
+    }
+
+    /// A pathspec is a path, never a glob: a file literally named with a `*`
+    /// is the file that name asks for, and a `*` matches nothing else.
+    #[test]
+    fn a_narrowed_path_is_matched_literally() {
+        let (_dir, repo) = mixed_fixture();
+        let asked = ["*.txt".to_string()];
+
+        let narrowed = diff_uncommitted_for(&repo, DiffPaths::Only(&asked)).unwrap();
+
+        assert!(narrowed.files().is_empty(), "{:?}", narrowed.files());
+    }
+
     #[test]
     fn the_stat_path_never_runs_the_patch_printer() {
         let (_dir, repo) = mixed_fixture();
@@ -974,7 +1258,7 @@ mod tests {
                 .unwrap()
                 .trim()
                 .to_string();
-            let history = diff_between_commits(&repo, &start, &completion).unwrap();
+            let history = diff_between_commits(&repo, &start, &completion, DiffPaths::All).unwrap();
             assert!(
                 history
                     .patch()
@@ -1231,12 +1515,12 @@ line
         git(&["commit", "-m", "stage one"]);
         let completion = git(&["rev-parse", "HEAD"]);
 
-        let expected = diff_between_commits(&repo, &start, &completion).unwrap();
+        let expected = diff_between_commits(&repo, &start, &completion, DiffPaths::All).unwrap();
         std::fs::write(repo.join("stage-two.txt"), "two\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-m", "stage two"]);
         std::fs::write(repo.join("dirty.txt"), "dirty\n").unwrap();
-        let after = diff_between_commits(&repo, &start, &completion).unwrap();
+        let after = diff_between_commits(&repo, &start, &completion, DiffPaths::All).unwrap();
 
         assert_eq!(after, expected);
         assert!(after.patch().contains("stage-one.txt"));

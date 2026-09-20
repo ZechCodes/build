@@ -13,6 +13,8 @@ const patch = [
   "",
 ].join("\n");
 
+const file = { path: "a.txt", status: "Modified", additions: 1, deletions: 1, content_key: "c1" };
+
 function mountReview(state = "review") {
   const calls = [];
   const task = {
@@ -26,7 +28,10 @@ function mountReview(state = "review") {
     taskId: "r1",
     callRpc: async (method, params) => {
       calls.push({ method, params });
-      if (method === "run.diff") return { patch, stat: {}, files: [] };
+      // `run.diff` answers the list and the key; the hunks of the file the
+      // reader can see are read on their own.
+      if (method === "run.diff") return { stat: {}, files: [file], diff_key: "k1" };
+      if (method === "git.changeset_diff") return { stat: {}, files: [file], patch, diff_key: "k1" };
       return {};
     },
     getTask: () => task,

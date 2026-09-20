@@ -8,7 +8,15 @@ pub(in crate::app) fn diff_json(diff: &crate::diff::WorktreeDiff) -> Value {
     let files: Vec<Value> = diff
         .files()
         .iter()
-        .map(|file| json!({ "path": file.path, "status": format!("{:?}", file.status) }))
+        .map(|file| {
+            json!({
+                "path": file.path,
+                "status": format!("{:?}", file.status),
+                "additions": file.additions,
+                "deletions": file.deletions,
+                "content_key": file.content_key,
+            })
+        })
         .collect();
     json!({
         "stat": diff.stat().to_json(),

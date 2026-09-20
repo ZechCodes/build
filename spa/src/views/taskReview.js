@@ -17,6 +17,7 @@ import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError, notifySuccess } from "../core/notify.js";
 import { coordinatedRead, rpcReadKey } from "../core/readRequests.js";
+import { bridgeCapabilities } from "../core/changeEvents.js";
 
 // How long a git action's result (Committed./Pushed.) stays in the hint.
 
@@ -82,6 +83,11 @@ export function createTaskReview({
   // the actionbar is left untouched.
   const gitFlight = createSingleFlight();
   const requestScope = cacheScope || callRpc;
+  /** Whether this device's bridge answers hunks per file
+   *  (`git.changeset_diff`, API 1.4). One that does not is asked for the whole
+   *  patch, as every client before this one was — read off the greeting, never
+   *  by trying the verb and seeing it refused. */
+  const perFileDiffs = () => bridgeCapabilities(cacheScope?.deviceId)?.diffs?.perFile === true;
 
   const plug = createReviewPlug({
     cacheScope,
@@ -92,7 +98,19 @@ export function createTaskReview({
     entity: taskId,
     fetchDiff: async (ifDiffKey) => {
       if (!getTask()) return null;
-      const params = { run_id: taskId, ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}) };
+      // The list and the key, never the hunks: the reader opens files, and
+      // each one they open is read on its own (`fetchFiles`). A run with real
+      // work in it carries most of a megabyte of patch, and sending it at
+      // mount is what a phone's connection spent its first seconds on.
+      //
+      // Only of a bridge that can answer per file. One that cannot is asked
+      // for the whole patch exactly as before — a stack of files that never
+      // load is worse than a slow one.
+      const params = {
+        run_id: taskId,
+        ...(perFileDiffs() ? { patch: false } : {}),
+        ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}),
+      };
       const diff = await coordinatedRead({
         key: rpcReadKey({
           deviceId: cacheScope?.deviceId,
@@ -110,6 +128,8 @@ export function createTaskReview({
       if (!task) return null;
       return {
         patch: diff.patch,
+        files: diff.files,
+        stat: diff.stat,
         unchanged: diff.unchanged,
         diff_key: diff.diff_key,
         file_edited_at: diff.file_edited_at,
@@ -117,6 +137,10 @@ export function createTaskReview({
         commentable: COMMENTABLE_STATES.includes(task.state),
       };
     },
+    /** The hunks of the files the reader has open, out of this run's own
+     *  changeset. Not a conditional read: the caller is asking BECAUSE it has
+     *  no body, so a key that says "unchanged" would answer nothing. */
+    fetchFiles: (paths) => callRpc("git.changeset_diff", { run_id: taskId, paths }),
     submit: (messages) => {
       const context = viewingContext?.snapshot?.();
       return callRpc("run.request_changes", {

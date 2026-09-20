@@ -46,6 +46,29 @@ carried by the relay socket itself, kept so one check can offer the bridge app
 RPC over it and watch the refusal —
 `error_code: "unavailable"`, `details.reason: "relay_is_not_a_data_plane"`.
 
+## One rule for anything reading this wire
+
+**A frame bearing your request's id is not necessarily the answer.** The
+bridge receipts every request the moment its intake admits it, before anything
+decides how long answering will take:
+
+```json
+{ "id": "r12", "accepted": true }
+```
+
+`ok` is what says a reply settled a call. `accepted` with no `ok` settles
+nothing — the device has the request and the answer is still coming. A reader
+that resolved on the first frame carrying its id resolves every call on the
+receipt; `peer.mjs` skips it in `openCarriedSession`, and `sessionRpc.js` in
+the SPA treats it as proof of delivery and waits far longer after it than
+before it.
+
+That is what the receipt is FOR: before it, a deadline is a question about the
+path; after it, the client knows the request is on the device and can stop
+guessing. A 15 KB attachment was reported to its reader as failed after ten
+seconds while the bridge was busy storing it, which is the bug that bought
+this frame.
+
 ## The suites
 
 ```bash

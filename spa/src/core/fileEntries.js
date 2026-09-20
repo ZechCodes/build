@@ -44,6 +44,28 @@ export function fileViewFromStatus(statusFile) {
   };
 }
 
+// The one word the stack shows for a file, from the words a diff's file rows
+// use. A rename reads as an edit here, which is what its hunks are.
+const DIFF_STATUS_WORD = { Added: "ADD", Deleted: "DEL" };
+
+/** One file of a diff's `files` shape as the stack's view of it — the shape a
+ *  `git` push carries and a cold pass reads, which names every changed path
+ *  and weighs it but says nothing about what any of them say.
+ *
+ *  Its rows are not in the shape either: they arrive as a body fetched for
+ *  that one path, or never, exactly as an uncommitted file's do. */
+export function fileViewFromDiffRow(row, editedAt = undefined) {
+  return {
+    path: row.path,
+    status: DIFF_STATUS_WORD[row.status] || "EDIT",
+    add: Number(row.additions) || 0,
+    del: Number(row.deletions) || 0,
+    contentKey: row.content_key,
+    editedAt,
+    rows: null,
+  };
+}
+
 /** One file of a parsed patch (a `git.show` payload, the review aggregate) as
  *  the same view. Its content key is a hash of the rows it came with, so the
  *  re-review chip compares the same way on both stacks. */

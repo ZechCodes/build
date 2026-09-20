@@ -19,6 +19,7 @@ import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/ta
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
 import { coordinatedRead, rpcReadKey } from "../core/readRequests.js";
+import { bridgeCapabilities } from "../core/changeEvents.js";
 
 // The adopted-task merge set for the browse view: prune / keep / release only.
 // Committing and pushing this worktree is what the Changes surface around this
@@ -76,6 +77,11 @@ export function createWorktreeReview({
   let acting = false;
   let meta = null; // the last worktree.diff payload's branch/base/adoptable/path
   const requestScope = cacheScope || callRpc;
+  /** Whether this device's bridge answers hunks per file
+   *  (`git.changeset_diff`, API 1.4). One that does not is asked for the whole
+   *  patch, as every client before this one was — read off the greeting, never
+   *  by trying the verb and seeing it refused. */
+  const perFileDiffs = () => bridgeCapabilities(cacheScope?.deviceId)?.diffs?.perFile === true;
 
   const branchLabel = () => (meta && meta.branch) || "the branch";
   const baseLabel = () => (meta && meta.base_branch) || "main";
@@ -104,6 +110,10 @@ export function createWorktreeReview({
     const params = {
       project_id: projectId,
       worktree_id: worktreeId,
+      // The list and the key, never the hunks — each file the reader opens is
+      // read on its own through `fetchFiles`. Only of a bridge that can answer
+      // per file; one that cannot is asked for the whole patch as before.
+      ...(perFileDiffs() ? { patch: false } : {}),
       // Cached aggregate patches do not carry branch/base/adoptability. Take
       // one full live response after mount before asking conditionally.
       ...(ifDiffKey && meta ? { if_diff_key: ifDiffKey } : {}),
@@ -133,6 +143,8 @@ export function createWorktreeReview({
     meta = { branch: res.branch, base_branch: res.base_branch, path: res.path, adoptable: res.adoptable };
     return {
       patch: res.patch,
+      files: res.files,
+      stat: res.stat,
       unchanged: res.unchanged,
       diff_key: res.diff_key,
       file_edited_at: res.file_edited_at,
@@ -169,6 +181,9 @@ export function createWorktreeReview({
       // only browses: there is no task for a comment to reach.
       return worktreePayload(res);
     },
+    /** The hunks of the files the reader has open, out of this checkout's own
+     *  changeset against its merge base. */
+    fetchFiles: (paths) => callRpc("git.changeset_diff", { project_id: projectId, worktree_id: worktreeId, paths }),
     submit: async (messages) => {
       try {
         const context = viewingContext?.snapshot?.();

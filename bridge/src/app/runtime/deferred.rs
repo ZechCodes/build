@@ -181,9 +181,23 @@ pub(in crate::app) struct DeferredRead {
     /// cache asks for the shape without it: the stat, the per-file rows and
     /// the key that names the body it can ask for later.
     pub(in crate::app) with_patch: bool,
+    /// The paths this read covers, or `None` for the whole changeset. A
+    /// reader with one file open asks for that file: same changeset, same
+    /// key, none of the hunks behind the files nobody opened.
+    pub(in crate::app) paths: Option<Vec<String>>,
     #[cfg(test)]
     pub(in crate::app) gate: Option<OffLockGate>,
 }
+
+/// What a narrowed read answers, whichever kind of checkout it came off.
+///
+/// A whole-changeset read carries the checkout's own identity beside the diff
+/// — which worktree, which branch it is anchored on, where it is on disk —
+/// because the surface opening it is about that checkout. A read of one
+/// opened file is about the file: the rows, the hunks, and the key that says
+/// whether they still stand. So the subject's own fields are dropped rather
+/// than answered inconsistently across scopes.
+const CHANGESET_FIELDS: [&str; 5] = ["stat", "files", "patch", "file_edited_at", "diff_key"];
 
 /// Whether this read's caller wants the patch text. Absent means yes: a client
 /// that has not heard of the flag is answered exactly as it always was.
@@ -199,7 +213,11 @@ impl DeferredRead {
                 return Ok(json!({ "unchanged": true, "diff_key": diff_key }));
             }
         }
-        let mut rendered = self.subject.render()?;
+        let paths = match &self.paths {
+            Some(paths) => crate::diff::DiffPaths::Only(paths),
+            None => crate::diff::DiffPaths::All,
+        };
+        let mut rendered = self.subject.render(paths)?;
         if let (Some(issue_id), Some(object)) = (&self.issue_id, rendered.as_object_mut()) {
             object.insert("issue_id".to_string(), json!(issue_id));
         }
@@ -211,6 +229,11 @@ impl DeferredRead {
         if !self.with_patch {
             if let Some(object) = rendered.as_object_mut() {
                 object.remove("patch");
+            }
+        }
+        if self.paths.is_some() {
+            if let Some(object) = rendered.as_object_mut() {
+                object.retain(|field, _| CHANGESET_FIELDS.contains(&field.as_str()));
             }
         }
         Ok(rendered)
@@ -291,7 +314,10 @@ impl ReadSubject {
         Ok(Some(sha256_hex(material.as_bytes())))
     }
 
-    pub(in crate::app) fn render(&self) -> Result<Value, String> {
+    pub(in crate::app) fn render(
+        &self,
+        paths: crate::diff::DiffPaths<'_>,
+    ) -> Result<Value, String> {
         match self {
             Self::ProjectList { projects } => {
                 let projects = projects
@@ -312,8 +338,8 @@ impl ReadSubject {
                             .and_then(|head| head.shorthand().map(str::to_string))
                     })
                     .unwrap_or_else(|| "HEAD".to_string());
-                let diff =
-                    crate::diff::diff_against_head(repo_path).map_err(|error| error.to_string())?;
+                let diff = crate::diff::diff_against_head_for(repo_path, paths)
+                    .map_err(|error| error.to_string())?;
                 Ok(json!({
                     "project_id": project_id,
                     "branch": branch,
@@ -327,8 +353,9 @@ impl ReadSubject {
                 external,
                 base_branch,
             } => {
-                let diff = crate::diff::diff_against_merge_base(&external.path, base_branch)
-                    .map_err(|error| error.to_string())?;
+                let diff =
+                    crate::diff::diff_against_merge_base_for(&external.path, base_branch, paths)
+                        .map_err(|error| error.to_string())?;
                 let adoptable = external
                     .branch
                     .as_deref()
@@ -355,8 +382,10 @@ impl ReadSubject {
                 base_branch,
             } => {
                 let diff = match base_sha {
-                    Some(sha) => crate::diff::diff_against_base(worktree_path, sha),
-                    None => crate::diff::diff_against_merge_base(worktree_path, base_branch),
+                    Some(sha) => crate::diff::diff_against_base_for(worktree_path, sha, paths),
+                    None => {
+                        crate::diff::diff_against_merge_base_for(worktree_path, base_branch, paths)
+                    }
                 }
                 .map_err(|error| error.to_string())?;
                 Ok(worktree_diff_json(worktree_path, &diff))
@@ -368,9 +397,13 @@ impl ReadSubject {
                 start_sha,
                 completion_sha,
             } => {
-                let diff =
-                    crate::diff::diff_between_commits(object_database, start_sha, completion_sha)
-                        .map_err(|error| format!("stage diff unavailable: {error}"))?;
+                let diff = crate::diff::diff_between_commits(
+                    object_database,
+                    start_sha,
+                    completion_sha,
+                    paths,
+                )
+                .map_err(|error| format!("stage diff unavailable: {error}"))?;
                 let mut value = diff_json(&diff);
                 let object = value.as_object_mut().expect("diff_json returns an object");
                 object.insert("run_id".to_string(), json!(run_id));
@@ -655,6 +688,27 @@ impl AppState {
         self.defer_conditional_read(subject, issue_id, None, true)
     }
 
+    /// Hand the drain one changeset narrowed to the paths a reader has open.
+    /// The key is the whole changeset's, because that is what says whether the
+    /// body still stands; only the hunks are narrowed.
+    pub(in crate::app) fn defer_narrowed_read(
+        &mut self,
+        subject: ReadSubject,
+        if_diff_key: Option<&str>,
+        paths: Vec<String>,
+    ) -> Value {
+        self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
+            subject,
+            issue_id: None,
+            if_diff_key: if_diff_key.map(str::to_string),
+            with_patch: true,
+            paths: Some(paths),
+            #[cfg(test)]
+            gate: self.off_lock_gate.clone(),
+        })));
+        Value::Null
+    }
+
     /// Hand a changed subscription set to the drain, which reconciles the
     /// worktree watchers with the mutex released and answers from the result.
     /// The roots snapshot is refreshed here so the reconcile sees the board
@@ -682,6 +736,7 @@ impl AppState {
             issue_id,
             if_diff_key: if_diff_key.map(str::to_string),
             with_patch,
+            paths: None,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));

@@ -291,7 +291,15 @@ fn push_remote(repo: &git2::Repository, branch: &str) -> Option<String> {
 fn file_rows(diff: &crate::diff::WorktreeDiff) -> Vec<Value> {
     diff.files()
         .iter()
-        .map(|file| json!({ "path": file.path, "status": format!("{:?}", file.status) }))
+        .map(|file| {
+            json!({
+                "path": file.path,
+                "status": format!("{:?}", file.status),
+                "additions": file.additions,
+                "deletions": file.deletions,
+                "content_key": file.content_key,
+            })
+        })
         .collect()
 }
 

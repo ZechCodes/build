@@ -1,15 +1,17 @@
 {
-  "method": "git.unpushed",
-  "since": "1.1.0",
+  "method": "git.changeset_diff",
+  "since": "1.4.0",
   "params": {
-    "project_id": "proj-1",
-    "if_diff_key": "3c1a0b7e2d4c5566"
+    "run_id": "run-7",
+    "paths": [
+      "src/main.rs"
+    ],
+    "if_diff_key": "9f3c1a0b7e2d4c55"
   },
   "result": {
-    "patch": "diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n",
     "stat": {
       "files_changed": 1,
-      "insertions": 1,
+      "insertions": 3,
       "deletions": 1
     },
     "files": [
@@ -21,15 +23,11 @@
         "content_key": "9f3c1a0b7e2d4c55"
       }
     ],
+    "patch": "diff --git a/src/main.rs b/src/main.rs\n@@ -1,2 +1,4 @@\n+use std::io;\n",
     "file_edited_at": {
-      "src/main.rs": 1789293851000
+      "src/main.rs": 1789000000000
     },
-    "diff_key": "9f3c1a0b7e2d4c55",
-    "published": true,
-    "base": {
-      "kind": "push_target",
-      "label": "origin/build/wire"
-    }
+    "diff_key": "9f3c1a0b7e2d4c55"
   },
   "errors": [
     "not_found",

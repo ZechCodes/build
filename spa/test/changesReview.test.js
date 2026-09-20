@@ -83,6 +83,119 @@ describe("the review plug (DOM)", () => {
     await vi.advanceTimersByTimeAsync(0);
   };
 
+  // ---- a stack drawn from the file list, with the hunks fetched per file ----
+  //
+  // A push carries the list and no patch, and a surface reading for a phone
+  // asks for the same shape. What the reader opens is what gets fetched.
+
+  const rowOf = (path, { additions = 1, deletions = 1, key = "c1" } = {}) => ({
+    path,
+    status: "Modified",
+    additions,
+    deletions,
+    content_key: key,
+  });
+
+  const patchFor = (path, line) =>
+    [
+      `diff --git a/${path} b/${path}`,
+      "index 0000000..1111111 100644",
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      "@@ -1 +1 @@",
+      "-old",
+      `+${line}`,
+      "",
+    ].join("\n");
+
+  it("paints a file list that carried no patch, and says each file is still loading", async () => {
+    const { host, plug } = mountPlug({
+      fetchDiff: async () => ({ files: [rowOf("a.txt", { additions: 3, deletions: 2 })], diff_key: "k1" }),
+      fetchFiles: async () => ({ files: [], patch: "" }),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".file")).toBeTruthy();
+    expect(host.textContent).toContain("a.txt");
+    // The counts come off the row, because there are no rows to count.
+    expect(host.querySelector(".diffbar").textContent).toContain("+3");
+    expect(host.querySelector(".diffbar").textContent).toContain("−2");
+    plug.unmount();
+  });
+
+  it("fetches one file's hunks and draws them, asking for that file alone", async () => {
+    const asked = [];
+    const { host, plug } = mountPlug({
+      fetchDiff: async () => ({ files: [rowOf("a.txt"), rowOf("b.txt", { key: "c2" })], diff_key: "k1" }),
+      fetchFiles: async (paths) => {
+        asked.push(paths);
+        return {
+          files: paths.map((path) => rowOf(path, { key: path === "a.txt" ? "c1" : "c2" })),
+          patch: paths.map((path) => patchFor(path, `${path} body`)).join(""),
+        };
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(asked.flat().sort()).toEqual(["a.txt", "b.txt"]);
+    expect(host.textContent).toContain("a.txt body");
+    expect(host.textContent).toContain("b.txt body");
+    plug.unmount();
+  });
+
+  it("never asks twice for a body it already holds", async () => {
+    let calls = 0;
+    const { plug } = mountPlug({
+      fetchDiff: async () => ({ files: [rowOf("a.txt")], diff_key: "k1" }),
+      fetchFiles: async (paths) => {
+        calls += 1;
+        return { files: paths.map((path) => rowOf(path)), patch: patchFor("a.txt", "body") };
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    plug.refresh();
+    plug.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toBe(1);
+    plug.unmount();
+  });
+
+  it("asks nothing at all of a surface that carried its whole patch", async () => {
+    let calls = 0;
+    const { host, plug } = mountPlug({
+      fetchDiff: async () => ({ patch: patchOf("new") }),
+      fetchFiles: async () => {
+        calls += 1;
+        return { files: [], patch: "" };
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.textContent).toContain("new");
+    expect(calls).toBe(0);
+    plug.unmount();
+  });
+
+  it("draws a file the changeset no longer has hunks for rather than asking for ever", async () => {
+    let calls = 0;
+    const { host, plug } = mountPlug({
+      // A binary file weighs nothing in lines and has no hunks to send.
+      fetchDiff: async () => ({ files: [rowOf("logo.png", { additions: 0, deletions: 0 })], diff_key: "k1" }),
+      fetchFiles: async () => {
+        calls += 1;
+        return { files: [], patch: "" };
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    plug.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toBe(1);
+    expect(host.textContent).not.toContain("loading…");
+    plug.unmount();
+  });
+
   it("draws the stack and puts the surface's own verbs in the git toolbar", async () => {
     const { host, toolbar, plug } = mountPlug({
       submit: async () => {},

@@ -52,6 +52,7 @@ impl AppState {
             issue_id: None,
             if_diff_key: None,
             with_patch: true,
+            paths: None,
             #[cfg(test)]
             gate: self.off_lock_project_list_gate.clone(),
         })));

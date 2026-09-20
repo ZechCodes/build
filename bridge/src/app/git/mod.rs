@@ -96,11 +96,40 @@ pub(in crate::app) fn require_path_list(params: &Value) -> Result<Vec<String>, S
         .collect()
 }
 
+/// The paths one `git.changeset_diff` reads, fenced the way `git.diff` fences
+/// its own: a bounded list of repo-relative paths, each one inside the
+/// checkout. A diff verb is a way to read a changeset, never a way to read
+/// the machine the changeset is on.
+pub(in crate::app) fn require_changeset_paths(params: &Value) -> Result<Vec<String>, String> {
+    let paths = require_path_list(params)?;
+    if paths.len() > crate::gitgui::GIT_DIFF_MAX_PATHS {
+        return Err(format!(
+            "git.changeset_diff takes 1 to {} paths, got {}",
+            crate::gitgui::GIT_DIFF_MAX_PATHS,
+            paths.len()
+        ));
+    }
+    for path in &paths {
+        if !crate::plan::is_worktree_contained_path(path) {
+            return Err(format!("path escapes the worktree: {path}"));
+        }
+    }
+    Ok(paths)
+}
+
 /// The per-file rows a diff surface lists beside its patch.
 pub(in crate::app) fn diff_file_rows(diff: &crate::diff::WorktreeDiff) -> Vec<Value> {
     diff.files()
         .iter()
-        .map(|file| json!({ "path": file.path, "status": format!("{:?}", file.status) }))
+        .map(|file| {
+            json!({
+                "path": file.path,
+                "status": format!("{:?}", file.status),
+                "additions": file.additions,
+                "deletions": file.deletions,
+                "content_key": file.content_key,
+            })
+        })
         .collect()
 }
 
@@ -182,19 +211,7 @@ impl AppState {
     /// mechanical.
     pub(crate) fn project_diff(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let repo_path = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .map(|project| {
-                if project.is_git {
-                    Ok(project.repo_path.clone())
-                } else {
-                    Err("project is not a git repository; initialize Git first".to_string())
-                }
-            })
-            .ok_or_else(|| "unknown project_id".to_string())?;
-        let repo_path = repo_path?;
+        let repo_path = self.project_repo_path(&project_id)?;
         Ok(self.defer_read(
             ReadSubject::Project {
                 project_id,
@@ -202,6 +219,21 @@ impl AppState {
             },
             None,
         ))
+    }
+
+    /// The primary checkout of a project that has one. A project registered
+    /// as a plain folder has no changeset to read, and says so rather than
+    /// answering an empty one.
+    fn project_repo_path(&self, project_id: &str) -> Result<std::path::PathBuf, String> {
+        let project = self
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| "unknown project_id".to_string())?;
+        if !project.is_git {
+            return Err("project is not a git repository; initialize Git first".to_string());
+        }
+        Ok(project.repo_path.clone())
     }
 
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
@@ -220,6 +252,59 @@ impl AppState {
             params.get("if_diff_key").and_then(Value::as_str),
             crate::app::wants_patch(params),
         ))
+    }
+
+    /// `git.changeset_diff` — the hunks of named paths out of the changeset
+    /// the scope's own whole-patch verb answers.
+    ///
+    /// The list of changed paths reaches a client long before the hunks do: a
+    /// `git` push carries it with no patch at all, and the cold pass asks for
+    /// the same shape. This is how the body behind ONE of those paths is
+    /// read, when a reader opens it — so a checkout with a megabyte of diff
+    /// costs the file on screen rather than all of it.
+    ///
+    /// The key it answers with is the WHOLE changeset's: that is what says
+    /// whether a held body still stands, and a caller passing `if_diff_key`
+    /// is told `unchanged` on exactly the same terms as the whole-patch verb.
+    pub(crate) fn changeset_diff(&mut self, params: &Value) -> Result<Value, String> {
+        let paths = require_changeset_paths(params)?;
+        let subject = self.changeset_subject(params)?;
+        Ok(self.defer_narrowed_read(
+            subject,
+            params.get("if_diff_key").and_then(Value::as_str),
+            paths,
+        ))
+    }
+
+    /// Which changeset the scope names, as the whole-patch verbs resolve it:
+    /// a run against its baseline, one of the project's external checkouts
+    /// against its merge base, or the project's own uncommitted work.
+    fn changeset_subject(&mut self, params: &Value) -> Result<ReadSubject, String> {
+        if let Some(run_id) = optional_scope_id(params, "run_id")? {
+            self.project_of(&run_id)?;
+            let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
+            let base_sha = active.base_sha.clone();
+            let worktree_path = active.worktree.path.clone();
+            let base_branch = active.worktree.base_branch.clone();
+            return Ok(ReadSubject::Run {
+                worktree_path: self.run_git_root(&run_id, &worktree_path),
+                base_sha,
+                base_branch: self.run_base_branch(&run_id, &base_branch),
+            });
+        }
+        let project_id = require_str(params, "project_id")?;
+        if let Some(worktree_id) = optional_scope_id(params, "worktree_id")? {
+            let external = self.resolve_external_worktree(&project_id, &worktree_id)?;
+            return Ok(ReadSubject::Worktree {
+                external: Box::new(external),
+                base_branch: self.base_for(&project_id)?,
+            });
+        }
+        let repo_path = self.project_repo_path(&project_id)?;
+        Ok(ReadSubject::Project {
+            project_id,
+            repo_path,
+        })
     }
 
     fn resolve_workspace_git_scope(&mut self, params: &Value) -> Result<Option<GitScope>, String> {

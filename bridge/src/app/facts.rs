@@ -66,7 +66,7 @@ fn read_git(subject: &GitSubject, fact: &mut EntityFacts) {
 /// nobody's conditional read). The size rides the item either way; past the
 /// cap the client reads the body itself when a reviewer opens the changes.
 fn read_worktree_diff(subject: &GitSubject) -> (Option<Value>, Option<u64>) {
-    let Ok(body) = subject.diff.render() else {
+    let Ok(body) = subject.diff.render(crate::diff::DiffPaths::All) else {
         return (None, None);
     };
     let Some(bytes) = body["patch"].as_str().map(str::len) else {

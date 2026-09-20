@@ -304,6 +304,7 @@ fn allowed_during_project_deletion(method: &str) -> bool {
             | "fs.read"
             | "fs.tree"
             | "git.branches"
+            | "git.changeset_diff"
             | "git.diff"
             | "git.log"
             | "git.refs"

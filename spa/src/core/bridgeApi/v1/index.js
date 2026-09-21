@@ -166,6 +166,7 @@ export function capabilitiesOf(greeting, version) {
       errors: { codes: false },
       diffs: { perFile: false },
       issues: { attachments: false, watching: false },
+      conversations: { settings: false },
     };
   const minor = minorOf(version);
   return {
@@ -191,6 +192,10 @@ export function capabilitiesOf(greeting, version) {
       // capability, so one flag answers for both.
       watching: capability(stated.issues?.watching, 9, minor),
     },
+    // `conversation.settings`, the threshold one conversation compacts at
+    // (1.10). The greeting states nothing about it, so the minor answers alone,
+    // as it does for hunks per file.
+    conversations: { settings: minor >= 10 },
   };
 }
 

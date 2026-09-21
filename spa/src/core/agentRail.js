@@ -148,6 +148,12 @@ import { harnessIconHtml } from "./harnessIcon.js";
 import { PIN_CLASS, pinButtonHtml, syncPinButton } from "./pinControl.js";
 import { WATCH_BUTTON_SELECTOR, createWatchToggle, syncWatchButton, watchButtonHtml } from "./watchToggle.js";
 import { carriesWatching } from "./trackerWatch.js";
+import {
+  carriesCompactionSettings,
+  compactionLimitOfOptionId,
+  compactionMenuOptions,
+  createCompactionChoice,
+} from "./conversationCompaction.js";
 import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
@@ -185,6 +191,7 @@ const SURFACE_MENU_SELECTOR = `.${SURFACE_MENU_CLASS}`;
 const SURFACE_MENU_LABEL = "⋮";
 const SURFACE_MENU_TITLE = "Open a surface";
 const AGENT_NOT_YET_BORN = "ghost";
+const COMPACTION_REFUSED = "Build could not change when this chat compacts.";
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
 // from its id, so without a salt every agent would move exactly the same way on
@@ -883,6 +890,15 @@ function mountRailOnContext(host, context, swap) {
       syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next);
     },
     onFailure: (error) => notifyError("Could not change watching", error.message || String(error)),
+  });
+  // When this rail's conversations compact (wire 1.10): what the bridge
+  // answered, held until the digest says the same.
+  const compactionChoice = createCompactionChoice({
+    call: (method, params) => chatRepository.currentCall()(method, params),
+    onSettled: () => {
+      if (!disposed) motionSettled().then(paintSurfaceMenu);
+    },
+    onFailure: (error) => notifyError(COMPACTION_REFUSED, error.message || String(error)),
   });
   const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
   let projectOwner = knownOwner;
@@ -2551,14 +2567,24 @@ function mountRailOnContext(host, context, swap) {
   };
 
   /** Everything the conversation's ⋮ offers: how much of the thread to draw,
-   *  then whichever surfaces this agent has opened. The levels are always
+   *  when it compacts, then whichever surfaces this agent has opened. The levels are always
    *  there, which is what makes the menu itself always there — it used to
    *  vanish with the last surface, and the toggle has to be reachable from a
    *  conversation that has none. */
   const surfaceMenuOptionsInFocus = () => [
     ...detailLevelMenuOptions(detailLevel()),
+    ...compactionMenuOptionsInFocus(),
     ...surfaceMenuOptions(surfacesWithIssues(surfacesSeen().surfaces)),
   ];
+
+  /** The compaction rows, for a settled agent on a bridge that has the verb —
+   *  none while the chooser is up, and none for an agent not yet born, which
+   *  has no conversation to set. */
+  const compactionMenuOptionsInFocus = () => {
+    const agent = settledAgentInFocus();
+    if (!agent || !entity.entityId || !carriesCompactionSettings(context.deviceId)) return [];
+    return compactionMenuOptions(compactionChoice.agentAsKnown(agent));
+  };
 
   const mountSurfaces = (panel) => {
     const pillHost = panel.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
@@ -2628,12 +2654,21 @@ function mountRailOnContext(host, context, swap) {
     });
   };
 
-  /** One menu, two kinds of choice: a level is a way of reading what is already
-   *  here, a surface kind opens what the agent made. */
+  /** One menu, three kinds of choice: a level is a way of reading what is
+   *  already here, a compaction row is when the conversation compacts, a
+   *  surface kind opens what the agent made. */
   const chooseFromSurfaceMenu = (optionId) => {
     const level = detailLevelOfOptionId(optionId);
+    const compaction = compactionLimitOfOptionId(optionId);
     if (level) chooseDetailLevel(level);
+    else if (compaction) chooseCompaction(compaction.maxContextTokens);
     else openSurfaceOverlayForKind(optionId);
+  };
+
+  const chooseCompaction = (maxContextTokens) => {
+    const agent = settledAgentInFocus();
+    if (!agent || !entity.entityId) return;
+    void compactionChoice.choose({ entityId: entity.entityId, agent, maxContextTokens });
   };
 
   /** Read this conversation at a different level: remembered for it alone, and

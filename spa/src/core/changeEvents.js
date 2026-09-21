@@ -77,6 +77,7 @@ const NO_CAPABILITIES = Object.freeze({
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
   issues: Object.freeze({ attachments: false, watching: false }),
+  conversations: Object.freeze({ settings: false }),
 });
 
 // Event mode is a fact about one bridge, so it is held per device: one machine

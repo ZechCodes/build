@@ -90,6 +90,8 @@ describe("adapter selection", () => {
       diffs: { perFile: false },
       // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
       issues: { attachments: false, watching: false },
+      // A conversation's own compaction threshold arrived in 1.10.
+      conversations: { settings: false },
     });
   });
 
@@ -136,6 +138,17 @@ describe("adapter selection", () => {
     // Anything that is not a boolean is not a claim, so the minor decides.
     expect(watching("1.8.0", { issues: { watching: "yes" } })).toBe(false);
     expect(watching("1.9.0", { issues: { watching: null } })).toBe(true);
+  });
+
+  /** `conversation.settings` (1.10) is stated nowhere in the greeting, so the
+   *  minor is the whole of the answer, as it is for hunks per file. */
+  it("reads conversation settings off the minor alone, from 1.10", () => {
+    const settings = (version) =>
+      selectAdapter({ api_version: version, push_events: true }).create(vi.fn()).capabilities.conversations.settings;
+
+    expect(settings("1.9.0")).toBe(false);
+    expect(settings("1.10.0")).toBe(true);
+    expect(settings("1.11.2")).toBe(true);
   });
 
   // A greeting's kind list rides through whole, whatever is on it. The list
@@ -187,6 +200,7 @@ describe("adapter selection", () => {
         errors: { codes: false },
         diffs: { perFile: false },
         issues: { attachments: false, watching: false },
+        conversations: { settings: false },
       });
     }
   });

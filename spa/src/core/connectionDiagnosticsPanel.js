@@ -118,11 +118,11 @@ function painterFor(panel, { history, devices }) {
   };
 }
 
-function wireCopy(panel, { history, clipboard, timers, say }) {
+function wireCopy(panel, { report, clipboard, timers, say }) {
   const copy = panel.querySelector("#diagcopy");
   copy.onclick = async () => {
     say("");
-    if (await copyText(diagnosticsJson(history()), { clipboard })) reportOnButton(copy, "Copied", timers);
+    if (await copyText(diagnosticsJson(report()), { clipboard })) reportOnButton(copy, "Copied", timers);
     else say("This browser would not take the clipboard. Select the list and copy it by hand.");
   };
 }
@@ -130,14 +130,14 @@ function wireCopy(panel, { history, clipboard, timers, say }) {
 /// Share is the phone's way out of a tab with no console and no file system.
 /// Wired only where the browser actually has one: a button that opens nothing
 /// is worse than no button, so it stays hidden otherwise.
-function wireShare(panel, { history, share, say }) {
+function wireShare(panel, { report, share, say }) {
   if (!share) return;
   const button = panel.querySelector("#diagshare");
   button.hidden = false;
   button.onclick = async () => {
     say("");
     try {
-      await share({ title: "Build connection diagnostics", text: diagnosticsJson(history()) });
+      await share({ title: "Build connection diagnostics", text: diagnosticsJson(report()) });
     } catch (refusal) {
       // A share sheet the user dismissed reports as an abort. That is not a
       // failure worth a red line under the button they just pressed.
@@ -170,7 +170,7 @@ function wireClear(panel, { clear, paint, timers, say }) {
 export function mountConnectionDiagnostics(host, options = {}) {
   const panel = host?.querySelector?.("#diagnostics");
   if (!panel) return () => {};
-  const { history, clear, devices, clipboard, share, pollMs } = diagnosticsDependencies(options);
+  const { history, report, clear, devices, clipboard, share, pollMs } = diagnosticsDependencies(options);
   const error = panel.querySelector("#diagerr");
   const say = (message) => { error.textContent = message; };
   const timers = new Set();
@@ -178,8 +178,10 @@ export function mountConnectionDiagnostics(host, options = {}) {
   paint();
   const ticker = setInterval(paint, pollMs);
 
-  wireCopy(panel, { history, clipboard, timers, say });
-  wireShare(panel, { history, share, say });
+  // The list renders the events; the copy and the share carry the whole record,
+  // including how many events the ring had to drop (#60).
+  wireCopy(panel, { report, clipboard, timers, say });
+  wireShare(panel, { report, share, say });
   wireClear(panel, { clear, paint, timers, say });
 
   return () => {
@@ -192,10 +194,13 @@ export function mountConnectionDiagnostics(host, options = {}) {
 /// What the panel reads, with this browser's own answers behind whatever the
 /// caller did not name. Gathered here rather than in the signature so the mount
 /// reads as the six things it does and not as a list of fallbacks.
-function diagnosticsDependencies({ history, clear, devices, clipboard, share, pollMs } = {}) {
+function diagnosticsDependencies({ history, report, clear, devices, clipboard, share, pollMs } = {}) {
   const navigator = globalThis.navigator;
   return {
     history,
+    // A caller that names only `history` still copies something sensible: the
+    // events, with nothing claimed about what was dropped.
+    report: report || history,
     clear,
     devices: devices || NO_DEVICES,
     clipboard: clipboard === undefined ? navigator?.clipboard : clipboard,

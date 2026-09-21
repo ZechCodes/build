@@ -98,11 +98,28 @@ export function diagnosticRows(history, devices = []) {
     .reverse();
 }
 
-/// The dump as the console would have given it, which is what gets copied and
-/// shared: the raw history, untouched, so what support reads is what
-/// deploy/OPS.md describes and not this module's reading of it.
-export function diagnosticsJson(history) {
-  return JSON.stringify(history || [], null, 2);
+/// The dump that gets copied and shared: the raw events, untouched, so what
+/// support reads is what deploy/OPS.md describes and not this module's reading of
+/// them — wrapped in the two facts a reader cannot recover from the events alone.
+///
+/// `since` is when this tab started recording and `dropped` is how many events it
+/// had to discard to make room. Both exist because the report that prompted #60
+/// carried only the final session: the failures had been pushed out of the ring by
+/// the storm they caused, and nothing in the paste said so, so it read as a
+/// complete account of a connection that had simply worked.
+///
+/// An array is still accepted, for a caller that has only the events.
+export function diagnosticsJson(report) {
+  const whole = Array.isArray(report) ? { events: report } : report || {};
+  return JSON.stringify(
+    {
+      since: whole.since ?? null,
+      dropped: whole.dropped ?? 0,
+      events: whole.events || [],
+    },
+    null,
+    2,
+  );
 }
 
 /// What the rows amount to, for the line above them. A count rather than a

@@ -32,6 +32,8 @@ const button = (id) => document.querySelector(`#${id}`);
 const mount = (over = {}) => {
   dispose = mountConnectionDiagnostics(host(), {
     history: () => recorded,
+    // What the copy and the share carry: the whole record, not just the events.
+    report: () => ({ since: 1000, dropped: 0, events: recorded }),
     clear: () => { recorded = []; },
     devices: () => DEVICES,
     clipboard: null,
@@ -149,15 +151,21 @@ describe("while the section is open", () => {
 });
 
 describe("getting the dump off the device", () => {
-  it("puts the whole history on the clipboard as json", async () => {
+  it("puts the whole record on the clipboard as json, drops included", async () => {
     recorded = [entry({ event: "state", state: "failed" })];
     const writeText = vi.fn(async () => {});
-    mount({ clipboard: { writeText } });
+    mount({ clipboard: { writeText }, report: () => ({ since: 1000, dropped: 7, events: recorded }) });
 
     button("diagcopy").click();
     await vi.waitFor(() => expect(button("diagcopy").textContent).toBe("Copied"));
 
-    expect(JSON.parse(writeText.mock.calls[0][0])).toEqual(recorded);
+    // The dropped count is the point: a paste that cannot say it is incomplete is
+    // what sent #60 looking in the bridge log instead of the reader's own report.
+    expect(JSON.parse(writeText.mock.calls[0][0])).toEqual({
+      since: 1000,
+      dropped: 7,
+      events: recorded,
+    });
   });
 
   it("falls back to a textarea when the browser offers no clipboard", async () => {
@@ -201,7 +209,11 @@ describe("getting the dump off the device", () => {
     button("diagshare").click();
     await vi.waitFor(() => expect(share).toHaveBeenCalled());
 
-    expect(JSON.parse(share.mock.calls[0][0].text)).toEqual(recorded);
+    expect(JSON.parse(share.mock.calls[0][0].text)).toEqual({
+      since: 1000,
+      dropped: 0,
+      events: recorded,
+    });
   });
 
   it("stays quiet when the share sheet is dismissed", async () => {

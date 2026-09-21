@@ -22,7 +22,7 @@ import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core
 import { harnessDefaultsPanelHtml, mountHarnessDefaults } from "../core/harnessDefaults.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
 import { onDeviceStateChanged } from "../core/deviceContexts.js";
-import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../core/connectionDiagnostics.js";
+import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory, connectionDiagnosticReport } from "../core/connectionDiagnostics.js";
 import { connectionDiagnosticsPanelHtml, mountConnectionDiagnostics } from "../core/connectionDiagnosticsPanel.js";
 import { buildVersionLineHtml, mountBuildVersionLine } from "../core/buildVersionLine.js";
 
@@ -261,6 +261,10 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
 
   disposeDiagnostics = mountConnectionDiagnostics(root, {
     history: connectionDiagnosticHistory,
+    // The copy and the share carry the whole record — when this tab started and
+    // how many events the ring dropped — because a paste that cannot say it is
+    // incomplete is what sent #60 looking in the bridge log instead.
+    report: connectionDiagnosticReport,
     clear: clearConnectionDiagnosticHistory,
     devices: () => App.devices,
   });

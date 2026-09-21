@@ -22,7 +22,7 @@ import { createDeviceConnectionAttempts } from "./core/deviceConnectionAttempts.
 import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
-import { connectionDiagnosticHistory, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
+import { connectionDiagnosticReport, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, rememberSelectedDevice } from "./app.js";
@@ -264,7 +264,9 @@ function openDirectLink(deviceId, session, sessionLease, authority) {
 
 // Intentionally content-free and bounded; support can ask a user to run this
 // after a failure without requiring the console to have been open beforehand.
-globalThis.buildConnectionDiagnostics = connectionDiagnosticHistory;
+// The whole record rather than the events alone: somebody reading this out of a
+// console is the person who most needs to know the ring dropped something (#60).
+globalThis.buildConnectionDiagnostics = connectionDiagnosticReport;
 
 /**
  * Find this machine, open its connection, and put the session on it.

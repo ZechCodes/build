@@ -128,15 +128,33 @@ describe("the history as rows", () => {
 });
 
 describe("what gets copied and shared", () => {
-  it("is the raw history, so support reads what OPS.md describes", () => {
-    const history = [entry({ at: 1000, event: "state", state: "failed" })];
-    expect(JSON.parse(diagnosticsJson(history))).toEqual(history);
-    expect(diagnosticsJson(history)).toContain("\n  ");
+  it("is the raw events, so support reads what OPS.md describes", () => {
+    const events = [entry({ at: 1000, event: "state", state: "failed" })];
+    const copied = JSON.parse(diagnosticsJson({ since: 900, dropped: 0, events }));
+
+    expect(copied.events).toEqual(events);
+    expect(diagnosticsJson({ events })).toContain("\n  ");
   });
 
-  it("is an empty list rather than nothing when nothing was recorded", () => {
-    expect(diagnosticsJson([])).toBe("[]");
-    expect(diagnosticsJson(null)).toBe("[]");
+  // #60: the report that prompted it carried only the final session, because the
+  // failures had been pushed out of the ring by the storm they caused and nothing
+  // in the paste said so. A dump that cannot admit it is incomplete reads as a
+  // complete account of a connection that simply worked.
+  it("says when the tab started recording and how many events it had to drop", () => {
+    const copied = JSON.parse(diagnosticsJson({ since: 1000, dropped: 42, events: [] }));
+
+    expect(copied).toEqual({ since: 1000, dropped: 42, events: [] });
+  });
+
+  it("takes the events alone from a caller that has only those, claiming nothing about drops", () => {
+    const events = [entry({ at: 1000, event: "state" })];
+
+    expect(JSON.parse(diagnosticsJson(events))).toEqual({ since: null, dropped: 0, events });
+  });
+
+  it("is an empty record rather than nothing when nothing was recorded", () => {
+    expect(JSON.parse(diagnosticsJson([]))).toEqual({ since: null, dropped: 0, events: [] });
+    expect(JSON.parse(diagnosticsJson(null))).toEqual({ since: null, dropped: 0, events: [] });
   });
 });
 

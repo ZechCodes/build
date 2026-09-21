@@ -64,6 +64,7 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) project_agent: Option<ProjectAgentPatch>,
     pub(in crate::app) role_models: Option<crate::models::RoleModels>,
     pub(in crate::app) watch_agent_filed_issues: Option<bool>,
+    pub(in crate::app) compact_above_tokens: Option<u64>,
 }
 
 /// The list a `settings.set` asks for, refused before anything is written if
@@ -111,7 +112,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 9] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 10] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -173,6 +174,12 @@ impl SettingsPatch {
                     .as_bool()
                     .ok_or_else(|| "watch_agent_filed_issues is true or false.".to_string())?,
             );
+            Ok(())
+        }),
+        ("compact_above_tokens", |patch, value, _| {
+            patch.compact_above_tokens = Some(value.as_u64().ok_or_else(|| {
+                "compact_above_tokens must be a whole number of tokens, or 0 for never.".to_string()
+            })?);
             Ok(())
         }),
     ];
@@ -374,6 +381,9 @@ impl AppState {
             .and_then(Value::as_bool)
         {
             self.watch_agent_filed_issues = watching;
+        }
+        if let Some(tokens) = config.get("compact_above_tokens").and_then(Value::as_u64) {
+            self.compact_above_tokens = tokens;
         }
         self.apply_agent_modes_config(config);
         if let Some(isolation) = configured_isolation(config, "isolation") {

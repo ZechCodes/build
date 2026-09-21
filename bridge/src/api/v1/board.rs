@@ -416,6 +416,14 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub watch_agent_filed_issues: Named<bool>,
+    /// The context size an agent's next warm turn is preceded by a compaction
+    /// at, unless the conversation sets its own; 0 never compacts.
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compact_above_tokens: Named<u64>,
 }
 
 /// The three words a device says about its project agents, each of them
@@ -873,6 +881,9 @@ pub struct SettingsResult {
     /// before watching existed: the user sees what was filed.
     #[serde(default)]
     pub watch_agent_filed_issues: bool,
+    /// The context size an agent's next warm turn is preceded by a compaction
+    /// at, unless its conversation sets its own. 0 never compacts.
+    pub compact_above_tokens: u64,
 }
 
 /// One model the user has declared, and what they declared it for.

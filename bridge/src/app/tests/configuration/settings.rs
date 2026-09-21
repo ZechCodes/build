@@ -627,3 +627,49 @@ fn the_project_agent_choice_round_trips_field_by_field_and_outlives_a_restart() 
     assert_eq!(cleared["ok"], true, "{cleared:?}");
     assert_eq!(cleared["result"]["project_agent"], json!({}));
 }
+
+/// How big an agent's context may grow before its next turn is preceded by a
+/// compaction: 200k until the device says otherwise, 0 for never, and what it
+/// says outlives a restart.
+#[test]
+fn compact_above_tokens_defaults_sets_and_survives_a_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_dir, repo) = init_repo();
+    let cfg = tmp.path().join("config.json");
+    let open = || {
+        AppState::new(
+            repo.clone(),
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&cfg)
+        .unwrap()
+    };
+    {
+        let mut state = open();
+        let settings = state.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(settings["compact_above_tokens"], 200_000, "{settings:?}");
+
+        let refused = state.handle(req(
+            "settings.set",
+            json!({ "compact_above_tokens": "lots" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(refused["error_code"], "invalid_params", "{refused:?}");
+
+        let set = state.handle(req(
+            "settings.set",
+            json!({ "compact_above_tokens": 150_000 }),
+        ));
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(set["result"]["compact_above_tokens"], 150_000);
+    }
+    let mut reloaded = open();
+    let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
+    assert_eq!(settings["compact_above_tokens"], 150_000, "{settings:?}");
+
+    let off = reloaded.handle(req("settings.set", json!({ "compact_above_tokens": 0 })));
+    assert_eq!(off["result"]["compact_above_tokens"], 0, "0 turns it off");
+}

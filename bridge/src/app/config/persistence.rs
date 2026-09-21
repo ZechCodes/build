@@ -37,6 +37,7 @@ impl AppState {
             "project_agent": self.project_agent,
             "role_models": self.role_models,
             "watch_agent_filed_issues": self.watch_agent_filed_issues,
+            "compact_above_tokens": self.compact_above_tokens,
             "agent_modes": self.agent_modes,
             "isolation": isolation,
             "router_model": self.router_choice,

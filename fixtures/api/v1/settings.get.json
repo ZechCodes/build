@@ -49,7 +49,8 @@
         "capability": "step_by_step"
       }
     ],
-    "watch_agent_filed_issues": true
+    "watch_agent_filed_issues": true,
+    "compact_above_tokens": 200000
   },
   "errors": [
     "internal"

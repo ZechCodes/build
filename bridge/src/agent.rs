@@ -243,6 +243,19 @@ pub struct Agent {
     /// setting it false for an agent an agent made.
     #[serde(default = "watched_by_default")]
     pub watched: bool,
+    /// Tokens in context on the last turn this agent's session reported, or
+    /// `None` until it reports one — and again once a compaction has been
+    /// asked for, so a reading from before it cannot ask for another.
+    #[serde(default)]
+    pub last_context_tokens: Option<u64>,
+    /// Cache-read tokens the agent's current session process has spent over
+    /// all its turns, as the harness last reported them.
+    #[serde(default)]
+    pub session_cache_read_tokens: Option<u64>,
+    /// This conversation's own compaction threshold: `None` follows the
+    /// device's, `Some(0)` never compacts, `Some(n)` compacts at `n` tokens.
+    #[serde(default)]
+    pub max_context_tokens: Option<u64>,
 }
 
 /// Conversations are watched unless somebody says otherwise — see
@@ -250,6 +263,11 @@ pub struct Agent {
 fn watched_by_default() -> bool {
     true
 }
+
+/// The context size a device compacts its agents at until the user says
+/// otherwise — well inside every harness's window, and far enough past a fresh
+/// session's system prompt that a short conversation never pays for one.
+pub const DEFAULT_COMPACT_ABOVE_TOKENS: u64 = 200_000;
 
 /// The longest a name may be, and the most words it may have. Both are about
 /// the rail: a name is drawn in a bubble and read in a line beside other
@@ -327,7 +345,26 @@ impl Agent {
             name: None,
             name_asked: false,
             watched: true,
+            last_context_tokens: None,
+            session_cache_read_tokens: None,
+            max_context_tokens: None,
         }
+    }
+
+    /// The context size at which this agent's next warm turn is preceded by a
+    /// compaction: its own threshold, else the device's. 0 is never.
+    pub fn compact_at_tokens(&self, device_threshold: u64) -> u64 {
+        self.max_context_tokens.unwrap_or(device_threshold)
+    }
+
+    /// Whether the last reported context has reached the threshold. Inclusive,
+    /// and never for an agent whose context nobody has reported.
+    pub fn compaction_due(&self, device_threshold: u64) -> bool {
+        let threshold = self.compact_at_tokens(device_threshold);
+        threshold > 0
+            && self
+                .last_context_tokens
+                .is_some_and(|tokens| tokens >= threshold)
     }
 
     /// The durable storage identity of this agent's conversation.
@@ -1222,5 +1259,72 @@ mod name_tests {
         let wire = serde_json::to_value(&agent).unwrap();
         assert!(wire.get("name").is_none(), "{wire:?}");
         assert!(wire.get("name_asked").is_none(), "{wire:?}");
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    fn with_context(tokens: Option<u64>, max_context_tokens: Option<u64>) -> Agent {
+        let mut agent = Agent::new(
+            "agent-1",
+            "run-1",
+            ModelChoice::default(),
+            1,
+            "2026-09-21T09:00:00Z",
+        );
+        agent.last_context_tokens = tokens;
+        agent.max_context_tokens = max_context_tokens;
+        agent
+    }
+
+    #[test]
+    fn compaction_is_due_at_the_threshold_and_not_below_it() {
+        assert!(with_context(Some(200_000), None).compaction_due(200_000));
+        assert!(with_context(Some(250_000), None).compaction_due(200_000));
+        assert!(!with_context(Some(199_999), None).compaction_due(200_000));
+        assert!(
+            !with_context(None, None).compaction_due(200_000),
+            "an agent whose context nobody has reported is never compacted"
+        );
+    }
+
+    #[test]
+    fn the_agents_own_limit_beats_the_device_and_zero_is_never() {
+        let tighter = with_context(Some(60_000), Some(50_000));
+        assert_eq!(tighter.compact_at_tokens(200_000), 50_000);
+        assert!(tighter.compaction_due(200_000));
+
+        let never = with_context(Some(900_000), Some(0));
+        assert_eq!(never.compact_at_tokens(200_000), 0);
+        assert!(!never.compaction_due(200_000));
+
+        let device_off = with_context(Some(900_000), None);
+        assert_eq!(device_off.compact_at_tokens(0), 0);
+        assert!(!device_off.compaction_due(0));
+    }
+
+    #[test]
+    fn a_record_written_before_context_was_tracked_loads_without_it() {
+        let mut wire = serde_json::to_value(Agent::new(
+            "agent-1",
+            "run-1",
+            ModelChoice::default(),
+            1,
+            "2026-09-21T09:00:00Z",
+        ))
+        .unwrap();
+        for field in [
+            "last_context_tokens",
+            "session_cache_read_tokens",
+            "max_context_tokens",
+        ] {
+            wire.as_object_mut().unwrap().remove(field);
+        }
+        let agent: Agent = serde_json::from_value(wire).unwrap();
+        assert_eq!(agent.last_context_tokens, None);
+        assert_eq!(agent.session_cache_read_tokens, None);
+        assert_eq!(agent.max_context_tokens, None);
     }
 }

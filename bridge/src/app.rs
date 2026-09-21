@@ -395,6 +395,10 @@ pub struct AppState {
     /// Off is for a device where agents file between themselves and the user
     /// wants only what they asked for.
     watch_agent_filed_issues: bool,
+    /// How many tokens of context an agent's last turn may leave before its
+    /// next warm turn is preceded by a compaction; 0 never compacts. An
+    /// agent's own `max_context_tokens` overrides it.
+    compact_above_tokens: u64,
     /// The issue each agent's CURRENT turn was dispatched under (spec: Issues
     /// → Automatic activity).
     ///
@@ -579,6 +583,7 @@ impl AppState {
             session_registry: SessionRegistry::new(),
             delivery_queue: Default::default(),
             watch_agent_filed_issues: true,
+            compact_above_tokens: crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS,
             dispatched_issue: HashMap::new(),
             reminded_holdings: HashMap::new(),
             operation_ledger: Default::default(),

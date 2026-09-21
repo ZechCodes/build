@@ -38,7 +38,8 @@
         "capability": "step_by_step"
       }
     ],
-    "watch_agent_filed_issues": false
+    "watch_agent_filed_issues": false,
+    "compact_above_tokens": 150000
   },
   "result": {
     "projects_dir": "/home/ada/.build/projects",
@@ -87,7 +88,8 @@
         "capability": "step_by_step"
       }
     ],
-    "watch_agent_filed_issues": false
+    "watch_agent_filed_issues": false,
+    "compact_above_tokens": 150000
   },
   "errors": [
     "invalid_params",

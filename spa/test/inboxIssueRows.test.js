@@ -27,6 +27,8 @@ const issueRow = (over = {}) => ({
   assignee: null,
   assigned_to_user: false,
   last_event: { text: "New comment from issues-board · Rail scroll", actor: "issues-board", at: "2026-09-21T00:06:00Z" },
+  anchor: "2026-09-21T00:06:00Z",
+  last_activity: "2026-09-21T00:06:00Z",
   unread: 3,
   muted: false,
   done_until_next: false,
@@ -96,7 +98,7 @@ describe("where the rows sit", () => {
   it("interleaves with conversation rows by when each last moved", () => {
     const rows = listed([
       branchRow({ branch: "build/late", anchor: "2026-09-21T00:07:00Z", last_activity: "2026-09-21T00:07:00Z" }),
-      issueRow({ last_event: { ...issueRow().last_event, at: "2026-09-21T00:06:00Z" } }),
+      issueRow({ anchor: "2026-09-21T00:06:00Z", last_activity: "2026-09-21T00:06:00Z" }),
       branchRow({ branch: "build/early", anchor: "2026-09-21T00:05:00Z", last_activity: "2026-09-21T00:05:00Z" }),
     ]);
     expect(rows.map((row) => row.name)).toEqual([
@@ -110,10 +112,10 @@ describe("where the rows sit", () => {
   // was handed outranks the issues that merely moved.
   it("puts an issue assigned to the reader above the other issue rows", () => {
     const rows = listed([
-      issueRow({ issue_id: "issue-1", number: 1, title: "Older", last_event: { text: "moved", actor: "a", at: "2026-09-21T00:01:00Z" } }),
+      issueRow({ issue_id: "issue-1", number: 1, title: "Older", anchor: "2026-09-21T00:01:00Z", last_activity: "2026-09-21T00:01:00Z" }),
       issueRow({ issue_id: "issue-2", number: 2, title: "Yours", assigned_to_user: true,
-                 last_event: { text: "assigned to you", actor: "a", at: "2026-09-21T00:09:00Z" } }),
-      issueRow({ issue_id: "issue-3", number: 3, title: "Newer", last_event: { text: "moved", actor: "a", at: "2026-09-21T00:08:00Z" } }),
+                 anchor: "2026-09-21T00:09:00Z", last_activity: "2026-09-21T00:09:00Z" }),
+      issueRow({ issue_id: "issue-3", number: 3, title: "Newer", anchor: "2026-09-21T00:08:00Z", last_activity: "2026-09-21T00:08:00Z" }),
     ]);
     expect(rows.map((row) => row.number)).toEqual([2, 1, 3]);
   });
@@ -121,10 +123,31 @@ describe("where the rows sit", () => {
   it("leaves conversation rows alone when an assigned issue is pinned", () => {
     const rows = listed([
       branchRow({ branch: "build/first", anchor: "2026-09-21T00:01:00Z", last_activity: "2026-09-21T00:01:00Z" }),
-      issueRow({ assigned_to_user: true, last_event: { text: "assigned to you", actor: "a", at: "2026-09-21T00:09:00Z" } }),
+      issueRow({ assigned_to_user: true, anchor: "2026-09-21T00:09:00Z", last_activity: "2026-09-21T00:09:00Z" }),
     ]);
     // The pin orders the ISSUE rows among themselves; it does not lift the
     // issue over a conversation that moved more recently.
     expect(rows.map((row) => row.kind)).toEqual(["branch", "tracker_issue"]);
+  });
+});
+
+describe("when the row says it moved", () => {
+  // Settled on #64: the row carries `anchor` and `last_activity` as ISO
+  // strings, the way every other row in this feed does.
+  it("takes the row's own dates", () => {
+    const [row] = listed([issueRow({ anchor: "2026-09-21T00:02:00Z", last_activity: "2026-09-21T00:03:00Z" })]);
+    expect(row.anchorMs).toBe(Date.parse("2026-09-21T00:02:00Z"));
+    expect(row.lastActivityMs).toBe(Date.parse("2026-09-21T00:03:00Z"));
+  });
+
+  // A row that dated neither would sort under everything rather than where it
+  // belongs, so the event it carries is the fallback.
+  it("falls back to the event it carries", () => {
+    const row = issueRow();
+    delete row.anchor;
+    delete row.last_activity;
+    const [entry] = listed([row]);
+    expect(entry.anchorMs).toBe(Date.parse("2026-09-21T00:06:00Z"));
+    expect(entry.lastActivityMs).toBe(Date.parse("2026-09-21T00:06:00Z"));
   });
 });

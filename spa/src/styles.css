@@ -1710,6 +1710,13 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   border:0; border-radius:8px; background:none; color:var(--dim); cursor:pointer; }
 .composer-attach:hover { background:var(--panel); color:var(--ink2); }
 .composer-attach svg { width:16px; height:16px; }
+/* How full the agent's context is, beside the paperclip: dim while there is
+   room, the accent past half, amber past 80% where compaction is near. */
+.composer-gauge { flex:0 0 auto; font-size:11px; line-height:1; font-variant-numeric:tabular-nums;
+  color:var(--dim); cursor:default; user-select:none; }
+.composer-gauge[hidden] { display:none; }
+.composer-gauge[data-step="accent"] { color:var(--accent); }
+.composer-gauge[data-step="warning"] { color:var(--amber); }
 
 /* The tray sits ABOVE the text: what you are sending should be visible while
    you write the sentence about it, not below the fold of the box. */

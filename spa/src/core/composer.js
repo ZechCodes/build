@@ -210,6 +210,7 @@ export const composerPartIds = (inputId) => ({
   modelMenu: `${inputId}model`,
   reasoningMenu: `${inputId}reasoning`,
   context: `${inputId}context`,
+  gauge: `${inputId}gauge`,
 });
 
 /// The right-hand action is an arrow while there is something to send. When a
@@ -224,6 +225,8 @@ export function sendControlHtml({ sendId, canInterrupt = false, hasDraft = false
 /// surface with no upload path renders the plain box. `modelMenu` opens the
 /// slot on the row's left for the model menu (`mountComposerModelMenu` fills
 /// it); a surface that passes neither renders the row it always did.
+/// A conversation's composer (`modelMenu`) also carries the context gauge
+/// beside the paperclip, empty and hidden until `mountContextGauge` writes it.
 /// `canInterrupt` is what the send control is showing right now — a poll moves
 /// it in place rather than rebuilding the box around it.
 export function composerHtml({
@@ -252,6 +255,7 @@ export function composerHtml({
         </div>` : ""}
         <span class="hint" id="${esc(hintId)}"></span>
         <div class="composer-actions">
+          ${modelMenu ? `<span class="composer-gauge" id="${esc(parts.gauge)}" role="note" hidden></span>` : ""}
           ${attachControls}
           <div class="composer-send-control" id="${esc(parts.sendControl)}">${sendControlHtml({ sendId, canInterrupt })}</div>
         </div>

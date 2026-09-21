@@ -72,6 +72,7 @@ import {
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
 import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
+import { mountContextGauge } from "./contextGauge.js";
 import { catalogForProvider, creatableCatalog, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
@@ -1039,6 +1040,7 @@ function mountRailOnContext(host, context, swap) {
   let composerControl = null;
   let disposeComposerClearance = null;
   let composerModelMenu = null;
+  let composerGauge = null;
   let composerController = null;
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
@@ -1820,6 +1822,7 @@ function mountRailOnContext(host, context, swap) {
       composerController = null;
       composerControl = null;
       composerModelMenu = null;
+      composerGauge = null;
       if (shownMode === "tui") mountTui();
       else if (!rememberedConversationIsLoading() && entity.chatCapable !== false) {
         wireComposer(panel);
@@ -2386,12 +2389,18 @@ function mountRailOnContext(host, context, swap) {
     if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
     if (composerControl) composerControl.setBlocked(composerController?.choice().pending, "Applying model…");
     syncChatRecovery();
+    syncContextGauge();
     if (!composerModelMenu) return;
     const agent = agentInFocus();
     const settled = composerController?.choice();
     const choice = composerDisplayChoice(agent, settled);
     composerModelMenu.set(catalog, choice.provider, choice, settled?.activeModel || "", settled?.activeEffort || "");
   };
+
+  /// The share of its window the agent's last turn held, off the same record
+  /// every push repaints the rail from. It writes its own node, so the box
+  /// being typed into beside it is never touched.
+  const syncContextGauge = () => composerGauge?.set(agentInFocus(), catalog);
 
   const syncChatRecovery = () => {
     const recoveryHost = host.querySelector("#rail-chat-recovery");
@@ -2521,6 +2530,7 @@ function mountRailOnContext(host, context, swap) {
       onError: (error) => notifyError("Message failed", error.message),
     });
     composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });
+    composerGauge = mountContextGauge(panel, { ids: COMPOSER_IDS });
     unsubscribeComposerController?.();
     unsubscribeComposerController = controller.subscribe(syncComposer);
     mountSurfaces(panel);

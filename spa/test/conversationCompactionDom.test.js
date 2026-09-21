@@ -157,6 +157,44 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("the context gauge beside the paperclip", () => {
+  const gauge = () => panel().querySelector("#railinputgauge");
+
+  it("shows the agent's share of its window off the digest", async () => {
+    await mountWorkspaceRail();
+
+    expect(gauge().hidden).toBe(false);
+    expect(gauge().textContent).toBe("12%");
+    expect(gauge().dataset.step).toBe("dim");
+    expect(gauge().title).toBe("120k of 1M tokens in this agent's context, as of its last turn");
+  });
+
+  it("moves with a new record and leaves the box being typed in alone", async () => {
+    await mountWorkspaceRail();
+    const input = panel().querySelector("#railinput");
+    input.value = "half a sentence";
+    input.focus();
+    input.setSelectionRange(4, 4);
+
+    digestCompaction = { ...digestCompaction, last_context_tokens: 850000 };
+    await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
+    await flush();
+
+    expect(gauge().textContent).toBe("85%");
+    expect(gauge().dataset.step).toBe("warning");
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(4);
+  });
+
+  it("takes no space for an agent that has not run a turn", async () => {
+    digestCompaction = { ...digestCompaction, last_context_tokens: null };
+    await mountWorkspaceRail();
+
+    expect(gauge().hidden).toBe(true);
+  });
+});
+
 describe("compaction on the conversation's menu", () => {
   it("shows the device default the digest names, with its threshold", async () => {
     await mountWorkspaceRail();

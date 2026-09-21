@@ -256,7 +256,8 @@ impl OperationPayload {
     }
 
     /// Commands that must reach the provider's command parser byte-for-byte.
-    /// Claude owns `/compact`; both provider families own `/clear`. A payload
+    /// Claude and the Codex app server own `/compact`; both provider families
+    /// own `/clear`. A payload
     /// containing anything else is a reviewer turn and keeps its delivery
     /// envelope, after the user's leading prompt.
     fn unadorned_command(&self, provider: AgentProvider) -> Option<&str> {
@@ -675,10 +676,14 @@ mod tests {
                 command("/clear").delivery_prompt("op", true, provider),
                 "/clear"
             );
-            assert!(command("/compact")
-                .delivery_prompt("op", true, provider)
-                .contains("Build conversation protocol:"));
         }
+        assert!(command("/compact")
+            .delivery_prompt("op", true, AgentProvider::Codex)
+            .contains("Build conversation protocol:"));
+        assert_eq!(
+            command("/compact").delivery_prompt("op", true, AgentProvider::CodexAppServer),
+            "/compact"
+        );
         assert!(command("/goal ship it")
             .delivery_prompt("op", true, AgentProvider::Codex)
             .starts_with("/goal ship it\n\nProcess only reviewer operation"));

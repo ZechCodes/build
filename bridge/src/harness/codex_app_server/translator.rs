@@ -313,6 +313,8 @@ impl CodexActivityTranslator {
             }
             ServerNotification::Delta
             | ServerNotification::Error(_)
+            | ServerNotification::TokenUsage(_)
+            | ServerNotification::ContextCompacted
             | ServerNotification::ThreadStarted { .. }
             | ServerNotification::TurnStarted { .. }
             | ServerNotification::TurnCompleted { .. } => Ok(Vec::new()),

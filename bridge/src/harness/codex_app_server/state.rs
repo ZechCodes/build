@@ -7,7 +7,7 @@ use super::protocol::{
     ConnectionEvent, ErrorNotification, InitializeResult, OperationResult, PendingOperation,
     RpcError, ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult, CLIENT_NAME,
 };
-use crate::harness::{ActivityReport, AgentStatus, Turn, TurnChoiceSupport};
+use crate::harness::{ActivityReport, AgentStatus, Harness, Turn, TurnChoiceSupport};
 use crate::models::{AgentProvider, ModelChoice};
 use semver::Version;
 
@@ -84,6 +84,9 @@ enum Phase {
         completion: Option<TurnCompletion>,
         interrupt_after_start: bool,
         reconcile_since: Option<Duration>,
+        /// A compaction's answer names no turn, so once it is in, the turn
+        /// Codex announces next is the one to work in.
+        compaction_answered: bool,
     },
     Working(WorkingTurn),
     Ending,
@@ -107,6 +110,12 @@ struct WorkingTurn {
 struct AcceptedTurn {
     turn: Turn,
     applied_choice: ModelChoice,
+}
+
+impl AcceptedTurn {
+    fn is_compaction(&self) -> bool {
+        super::CodexAppServerHarness.starts_compaction(&self.turn.text)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -407,6 +416,7 @@ impl CodexSessionState {
             PendingOperation::ReadGoal { .. } => Err(StateError(
                 "thread/goal/get observation response reached session state".to_string(),
             )),
+            PendingOperation::CompactThread { .. } => self.compact_response(result, limits),
         }
     }
 
@@ -584,25 +594,29 @@ impl CodexSessionState {
     }
 
     fn begin_start_turn(&mut self, turn: AcceptedTurn) -> SessionEffect {
-        let input = turn.turn.text.clone();
-        let model = turn.applied_choice.model.clone();
-        let effort = turn.applied_choice.effort.clone();
+        let thread_id = self
+            .thread_id
+            .clone()
+            .expect("a turn starts only after its thread is ready");
+        let operation = if turn.is_compaction() {
+            PendingOperation::CompactThread { thread_id }
+        } else {
+            PendingOperation::StartTurn {
+                thread_id,
+                input: turn.turn.text.clone(),
+                model: turn.applied_choice.model.clone(),
+                effort: turn.applied_choice.effort.clone(),
+            }
+        };
         self.phase = Phase::StartingTurn {
             turn,
             observed_id: None,
             completion: None,
             interrupt_after_start: false,
             reconcile_since: None,
+            compaction_answered: false,
         };
-        SessionEffect::Request(PendingOperation::StartTurn {
-            thread_id: self
-                .thread_id
-                .clone()
-                .expect("a turn starts only after its thread is ready"),
-            input,
-            model,
-            effort,
-        })
+        SessionEffect::Request(operation)
     }
 
     fn start_turn_response(
@@ -656,23 +670,82 @@ impl CodexSessionState {
             ensure_id(&completion.turn_id, &id, "completed turn")?;
             self.finish_turn(completion, limits)
         } else {
-            self.phase = Phase::Working(WorkingTurn {
-                id: id.clone(),
-                steer: None,
-                interrupt: interrupt_after_start.then_some(PendingInterrupt::Response),
-                completion: None,
-                choice: running_choice,
-            });
-            Ok(interrupt_after_start
-                .then(|| {
-                    SessionEffect::Request(PendingOperation::InterruptTurn {
-                        thread_id: self.thread_id.clone().expect("an active turn has a thread"),
-                        turn_id: id,
-                    })
-                })
-                .into_iter()
-                .collect())
+            Ok(self.enter_working(id, running_choice, interrupt_after_start))
         }
+    }
+
+    fn enter_working(
+        &mut self,
+        id: String,
+        choice: ModelChoice,
+        interrupt_after_start: bool,
+    ) -> Vec<SessionEffect> {
+        self.phase = Phase::Working(WorkingTurn {
+            id: id.clone(),
+            steer: None,
+            interrupt: interrupt_after_start.then_some(PendingInterrupt::Response),
+            completion: None,
+            choice,
+        });
+        interrupt_after_start
+            .then(|| {
+                SessionEffect::Request(PendingOperation::InterruptTurn {
+                    thread_id: self.thread_id.clone().expect("an active turn has a thread"),
+                    turn_id: id,
+                })
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// Codex took the `/compact`. Its answer names no turn, so the turn is
+    /// whichever one Codex has announced — or will announce next.
+    fn compact_response(
+        &mut self,
+        result: Result<OperationResult, RpcError>,
+        limits: StateLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let Phase::StartingTurn {
+            turn,
+            observed_id,
+            completion,
+            interrupt_after_start,
+            compaction_answered,
+            ..
+        } = &mut self.phase
+        else {
+            return Err(StateError(
+                "thread/compact/start response arrived out of order".to_string(),
+            ));
+        };
+        if let Err(error) = expect_compaction_started(result)? {
+            return self.refuse_compaction(error, limits);
+        }
+        if let Some(completion) = completion.take() {
+            return self.finish_turn(completion, limits);
+        }
+        let Some(id) = observed_id.clone() else {
+            *compaction_answered = true;
+            return Ok(Vec::new());
+        };
+        let choice = turn.applied_choice.clone();
+        let interrupt_after_start = *interrupt_after_start;
+        Ok(self.enter_working(id, choice, interrupt_after_start))
+    }
+
+    /// A refused `/compact` is the agent's news, not the session's end: the
+    /// reason is reported and the session goes back to waiting.
+    fn refuse_compaction(
+        &mut self,
+        error: RpcError,
+        limits: StateLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let reason = format!("Codex could not compact the thread: {}", error.message);
+        self.reported_error = Some(reason.clone());
+        self.phase = Phase::Waiting;
+        let mut effects = vec![operational_report(reason)];
+        effects.extend(self.start_next_queued(limits));
+        Ok(effects)
     }
 
     fn turn_started(
@@ -681,6 +754,16 @@ impl CodexSessionState {
         now: Duration,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match &mut self.phase {
+            Phase::StartingTurn {
+                turn,
+                interrupt_after_start,
+                compaction_answered: true,
+                ..
+            } => {
+                let choice = turn.applied_choice.clone();
+                let interrupt_after_start = *interrupt_after_start;
+                Ok(self.enter_working(id, choice, interrupt_after_start))
+            }
             Phase::StartingTurn {
                 observed_id,
                 reconcile_since,
@@ -712,7 +795,7 @@ impl CodexSessionState {
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         if matches!(self.phase, Phase::StartingTurn { .. }) {
-            return self.complete_starting_turn(completion, now);
+            return self.complete_starting_turn(completion, now, limits);
         }
         if matches!(self.phase, Phase::Working(_)) {
             return self.complete_working_turn(completion, limits);
@@ -727,17 +810,24 @@ impl CodexSessionState {
         &mut self,
         completion: TurnCompletion,
         now: Duration,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::StartingTurn {
             observed_id,
             completion: held,
             reconcile_since,
+            compaction_answered,
             ..
         } = &mut self.phase
         else {
             unreachable!()
         };
         establish_id(observed_id, &completion.turn_id, "turn")?;
+        if *compaction_answered {
+            let mut effects = vec![SessionEffect::CloseTurn(completion.turn_id.clone())];
+            effects.extend(self.finish_turn(completion, limits)?);
+            return Ok(effects);
+        }
         if let Some(existing) = held {
             return duplicate_completion(existing, &completion);
         }
@@ -1294,6 +1384,18 @@ fn expect_turn_started(
     }
 }
 
+fn expect_compaction_started(
+    result: Result<OperationResult, RpcError>,
+) -> Result<Result<(), RpcError>, StateError> {
+    match result {
+        Ok(OperationResult::CompactionStarted) => Ok(Ok(())),
+        Ok(_) => Err(StateError(
+            "thread/compact/start response body was mistyped".to_string(),
+        )),
+        Err(error) => Ok(Err(error)),
+    }
+}
+
 fn expect_interrupted(
     result: Result<OperationResult, RpcError>,
 ) -> Result<Result<(), RpcError>, StateError> {
@@ -1313,8 +1415,11 @@ fn expect_interrupted(
 /// one — so without the second half no message ever reached a working Codex
 /// agent mid-turn, while the same message reaches a working claude agent at
 /// its next step boundary.
+///
+/// A `/compact` never steers: it is an operation of its own, not words for the
+/// running turn.
 fn steers_into(turn: &AcceptedTurn, working: &WorkingTurn) -> bool {
-    turn.turn.choice.is_none() || turn.applied_choice == working.choice
+    !turn.is_compaction() && (turn.turn.choice.is_none() || turn.applied_choice == working.choice)
 }
 
 fn retained_steer_turn(steer: PendingSteer) -> AcceptedTurn {

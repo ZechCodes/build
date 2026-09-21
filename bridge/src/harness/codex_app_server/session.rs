@@ -26,8 +26,9 @@ use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
 use crate::harness::{
-    ActivityReport, AgentSession, AgentStatus, HarnessError, SessionStatusSnapshot, Turn,
-    TurnChoiceSupport, TurnReceiptSnapshot, TurnReceiptSupport,
+    publish_context, ActivityReport, AgentSession, AgentStatus, Harness, HarnessError,
+    SessionStatusSnapshot, Turn, TurnChoiceSupport, TurnContext, TurnReceiptSnapshot,
+    TurnReceiptSupport,
 };
 use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
@@ -82,6 +83,16 @@ impl PendingTurnReceipts {
     }
 
     fn observe(&mut self, item: &super::protocol::ItemNotification, text: &str) -> Option<String> {
+        self.observe_matching(item, |pending| pending == text)
+    }
+
+    /// The pending turn `item` shows Codex consumed: the first whose text
+    /// `consumed` accepts, once per item.
+    fn observe_matching(
+        &mut self,
+        item: &super::protocol::ItemNotification,
+        consumed: impl Fn(&str) -> bool,
+    ) -> Option<String> {
         if let Some(item_id) = item.item["id"].as_str() {
             if !self.observed_item_ids.insert(item_id.to_string()) {
                 return None;
@@ -89,7 +100,7 @@ impl PendingTurnReceipts {
         } else if item.lifecycle != super::protocol::ItemLifecycle::Started {
             return None;
         }
-        let index = self.turns.iter().position(|turn| turn.text == text)?;
+        let index = self.turns.iter().position(|turn| consumed(&turn.text))?;
         self.turns.remove(index)?.operation_id
     }
 }
@@ -664,6 +675,7 @@ impl SessionCore {
                 }
                 self.apply_state(SessionEvent::TurnStarted(item.turn_id.clone()))?;
                 self.observe_user_message(item);
+                self.observe_compaction(item);
                 self.translate(&notification)
             }
             ServerNotification::Error(error) => {
@@ -679,6 +691,14 @@ impl SessionCore {
                 self.remember_protocol("error_notification");
                 self.apply_state(SessionEvent::ObservedError(error.clone()))
             }
+            ServerNotification::TokenUsage(context) => {
+                publish_context(&self.status, *context);
+                Ok(())
+            }
+            ServerNotification::ContextCompacted => {
+                self.forget_compacted_context();
+                Ok(())
+            }
             ServerNotification::Delta => Ok(()),
             ServerNotification::Unknown => self.translate(&notification),
         }
@@ -692,6 +712,46 @@ impl SessionCore {
             return;
         };
         let operation_id = self.pending_receipts.lock().unwrap().observe(item, &text);
+        self.mark_seen(operation_id);
+    }
+
+    /// A `contextCompaction` item is how a `/compact` shows it ran — no user
+    /// message echoes one — and whatever the context held before is gone.
+    fn observe_compaction(&self, item: &super::protocol::ItemNotification) {
+        if item.item["type"].as_str() != Some("contextCompaction")
+            || item.lifecycle != super::protocol::ItemLifecycle::Completed
+        {
+            return;
+        }
+        self.forget_compacted_context();
+        let operation_id = self
+            .pending_receipts
+            .lock()
+            .unwrap()
+            .observe_matching(item, |pending| {
+                super::CodexAppServerHarness.starts_compaction(pending)
+            });
+        self.mark_seen(operation_id);
+    }
+
+    /// Keep the thread's cache reads, but none of the context a compaction
+    /// just replaced: a reading from before it would overstate what is left.
+    fn forget_compacted_context(&self) {
+        let cache_read_tokens = self
+            .status
+            .borrow()
+            .context
+            .map_or(0, |context| context.cache_read_tokens);
+        publish_context(
+            &self.status,
+            TurnContext {
+                context_tokens: 0,
+                cache_read_tokens,
+            },
+        );
+    }
+
+    fn mark_seen(&self, operation_id: Option<String>) {
         let Some(operation_id) = operation_id else {
             return;
         };
@@ -1144,7 +1204,8 @@ fn operation_ids(operation: &PendingOperation) -> (Option<&str>, Option<&str>) {
         }
         PendingOperation::ResumeThread { thread_id, .. } => (Some(thread_id), None),
         PendingOperation::ReadThread { thread_id }
-        | PendingOperation::ReadGoal { thread_id, .. } => (Some(thread_id), None),
+        | PendingOperation::ReadGoal { thread_id, .. }
+        | PendingOperation::CompactThread { thread_id } => (Some(thread_id), None),
         PendingOperation::Initialize | PendingOperation::StartThread { .. } => (None, None),
     }
 }
@@ -1177,6 +1238,7 @@ fn operation_event(operation: &PendingOperation) -> &'static str {
         PendingOperation::InterruptTurn { .. } => "turn_interrupt_sent",
         PendingOperation::ReadThread { .. } => "thread_read_sent",
         PendingOperation::ReadGoal { .. } => "goal_read_sent",
+        PendingOperation::CompactThread { .. } => "thread_compact_sent",
     }
 }
 
@@ -2154,6 +2216,71 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn token_usage_and_a_compaction_publish_the_threads_context() {
+        let root = tempfile::tempdir().unwrap();
+        let compact_capture = root.path().join("compact-frame.json");
+        let usage = |context: u64| {
+            let breakdown = json!({"inputTokens":context,"cachedInputTokens":context / 2,
+                "cacheWriteInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,
+                "totalTokens":context + 1});
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":THREAD_ID,
+                "turnId":TURN_ID,"tokenUsage":{"last":breakdown,"total":breakdown,
+                "modelContextWindow":null}}})
+        };
+        let script = opened_thread_script(
+            root.path(),
+            &format!(
+                "printf '%s\\n' '{usage}'; read compact; printf '%s\\n' \"$compact\" > {staged}; mv {staged} {capture}; printf '%s\\n' '{answer}' '{started}' '{compacted}' '{completed}'; read hold",
+                usage = usage(90_000),
+                staged = compact_capture.with_extension("part").display(),
+                capture = compact_capture.display(),
+                answer = json!({"id":4,"result":{}}),
+                started = json!({"method":"turn/started","params":{"threadId":THREAD_ID,"turn":{"id":TURN_ID}}}),
+                compacted = json!({"method":"item/completed","params":{"threadId":THREAD_ID,"turnId":TURN_ID,"item":{"id":"compaction-1","type":"contextCompaction"}}}),
+                completed = json!({"method":"turn/completed","params":{"threadId":THREAD_ID,"turn":{"id":TURN_ID,"status":"completed"}}}),
+            ),
+        );
+        let (session, _activity) = scripted_session(root.path(), &script);
+        let watched = session.status_changed().unwrap();
+        let receipts = session.turn_receipts().unwrap();
+        wait_until("published the token usage", || {
+            watched.borrow().context.is_some()
+        });
+        let reported = watched.borrow().clone();
+        assert_eq!(reported.status, AgentStatus::Waiting);
+        assert_eq!(
+            reported.context,
+            Some(TurnContext {
+                context_tokens: 90_000,
+                cache_read_tokens: 45_000,
+            })
+        );
+
+        let mut compact = Turn::new("/compact");
+        compact.operation_id = Some("op-compact".to_string());
+        session.send_turn(&compact).unwrap();
+        wait_until("asked codex to compact", || compact_capture.exists());
+        let frame: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&compact_capture).unwrap()).unwrap();
+        assert_eq!(frame["method"], "thread/compact/start");
+        assert_eq!(frame["params"], json!({"threadId": THREAD_ID}));
+
+        wait_until("finished the compaction", || {
+            let snapshot = watched.borrow();
+            snapshot.status == AgentStatus::Waiting && snapshot.last_worked_at.is_some()
+        });
+        assert_eq!(
+            watched.borrow().context,
+            Some(TurnContext {
+                context_tokens: 0,
+                cache_read_tokens: 45_000,
+            })
+        );
+        assert_eq!(receipts.borrow().seen_operation_ids, ["op-compact"]);
+        session.end();
     }
 
     #[test]

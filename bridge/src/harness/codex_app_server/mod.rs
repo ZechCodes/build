@@ -86,8 +86,14 @@ impl Harness for CodexAppServerHarness {
         CodexHarness.model_args(choice)
     }
 
+    /// `/compact` too: the session hands it to Codex as `thread/compact/start`,
+    /// so it arrives bare rather than wrapped as a reviewer turn.
     fn requires_unadorned_command(&self, prompt: &str) -> bool {
-        CodexHarness.requires_unadorned_command(prompt)
+        CodexHarness.requires_unadorned_command(prompt) || self.starts_compaction(prompt)
+    }
+
+    fn starts_compaction(&self, prompt: &str) -> bool {
+        CodexHarness.starts_compaction(prompt)
     }
 
     fn spec(

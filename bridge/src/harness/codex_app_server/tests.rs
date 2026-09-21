@@ -3797,3 +3797,5 @@ fn checked_in_fixtures_retain_no_account_or_machine_material() {
         }
     }
 }
+
+mod compaction;

@@ -3,6 +3,8 @@ use std::io::Write;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use crate::harness::TurnContext;
+
 pub type RequestId = u64;
 
 /// The `clientInfo.name` this bridge sends in `initialize` and requires back in `userAgent`.
@@ -38,6 +40,11 @@ pub enum PendingOperation {
     ReadThread {
         thread_id: String,
     },
+    /// `/compact`: Codex summarizes the thread in a turn of its own, which is
+    /// announced and completed like any other.
+    CompactThread {
+        thread_id: String,
+    },
     ReadGoal {
         thread_id: String,
         generation: u64,
@@ -57,6 +64,7 @@ impl PendingOperation {
             PendingOperation::InterruptTurn { .. } => "turn/interrupt",
             PendingOperation::ReadThread { .. } => "thread/read",
             PendingOperation::ReadGoal { .. } => "thread/goal/get",
+            PendingOperation::CompactThread { .. } => "thread/compact/start",
         }
     }
 
@@ -164,6 +172,12 @@ impl PendingOperation {
                 self.method(),
                 &ThreadGoalGetParams { thread_id },
             ),
+            PendingOperation::CompactThread { thread_id } => serialize_request(
+                writer,
+                id,
+                self.method(),
+                &ThreadCompactStartParams { thread_id },
+            ),
         }
     }
 
@@ -184,6 +198,13 @@ impl PendingOperation {
             }
             PendingOperation::ReadThread { .. } => decode(value).map(OperationResult::ThreadRead),
             PendingOperation::ReadGoal { .. } => decode(value).map(OperationResult::GoalRead),
+            PendingOperation::CompactThread { .. } => {
+                if value.is_object() {
+                    Ok(OperationResult::CompactionStarted)
+                } else {
+                    Err("thread/compact/start response has the wrong body".to_string())
+                }
+            }
         }
         .map_err(|error| format!("{} response has the wrong body: {error}", self.method()))
     }
@@ -198,6 +219,7 @@ pub enum OperationResult {
     TurnInterrupted,
     ThreadRead(ThreadReadResult),
     GoalRead(ThreadGoalGetResult),
+    CompactionStarted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -238,6 +260,34 @@ pub struct ThreadReadResult {
 #[serde(rename_all = "camelCase")]
 struct ThreadGoalGetParams<'a> {
     thread_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadCompactStartParams<'a> {
+    thread_id: &'a str,
+}
+
+/// `thread/tokenUsage/updated`, down to the two readings Build keeps.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenUsageUpdated {
+    token_usage: ThreadTokenUsage,
+}
+
+#[derive(Deserialize)]
+struct ThreadTokenUsage {
+    last: TokenUsageBreakdown,
+    total: TokenUsageBreakdown,
+}
+
+/// One request's tokens, or a thread's sum of them. Codex counts cached input
+/// inside `inputTokens`, so it alone is what a request held in context.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenUsageBreakdown {
+    input_tokens: u64,
+    cached_input_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -522,6 +572,11 @@ pub enum ServerNotification {
     },
     Item(ItemNotification),
     Error(ErrorNotification),
+    /// What the thread's newest request held in context, and every cache read
+    /// the thread has made.
+    TokenUsage(TurnContext),
+    /// The thread's context was just compacted.
+    ContextCompacted,
     Delta,
     Unknown,
 }
@@ -572,6 +627,21 @@ fn item_completed_notification(method: &str, params: Value) -> Result<ServerNoti
 
 fn error_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
     decode(&params).map(ServerNotification::Error)
+}
+
+fn token_usage_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
+    let usage = decode::<TokenUsageUpdated>(&params)?.token_usage;
+    Ok(ServerNotification::TokenUsage(TurnContext {
+        context_tokens: usage.last.input_tokens,
+        cache_read_tokens: usage.total.cached_input_tokens,
+    }))
+}
+
+fn context_compacted_notification(
+    _method: &str,
+    _params: Value,
+) -> Result<ServerNotification, String> {
+    Ok(ServerNotification::ContextCompacted)
 }
 
 fn delta_notification(_method: &str, _params: Value) -> Result<ServerNotification, String> {
@@ -670,6 +740,14 @@ const NOTIFICATION_METHODS: &[(&str, NotificationMethod)] = &[
         thread_id_routed(item_completed_notification),
     ),
     ("error", thread_id_routed(error_notification)),
+    (
+        "thread/tokenUsage/updated",
+        thread_id_routed(token_usage_notification),
+    ),
+    (
+        "thread/compacted",
+        thread_id_routed(context_compacted_notification),
+    ),
     (
         "item/agentMessage/delta",
         thread_id_routed(delta_notification),

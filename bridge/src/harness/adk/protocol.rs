@@ -68,20 +68,23 @@ pub(super) struct ProtocolState {
     /// `Working` short-circuits the idle sweep, an agent that quietly stopped
     /// would never be explained.
     pub(super) turn_open: bool,
-    /// The limit sentence, when the very last thing this turn reported was one
-    /// (`harness/usage_limit.rs`).
+    /// What the harness said in the top-level assistant message it marked
+    /// `error: "rate_limit"` this turn (`harness/usage_limit.rs`).
     ///
-    /// Held rather than acted on, because whether it is a verdict depends on what
-    /// comes next: a turn that says it and then carries on working was quoting,
-    /// and only a turn that says it and then STOPS has hit the limit. Cleared by
-    /// the next report of any kind, so at the stream's end this field is either
-    /// the last word or empty.
+    /// Held until the turn ends — at its `result`, or at the stream's end when
+    /// the child goes first — which is when it becomes the verdict. A later
+    /// top-level assistant message without the mark clears it: the model
+    /// answered, so whatever limit was reported is not what ended the turn.
     pub(super) limit_said_last: Option<crate::harness::usage_limit::UsageLimitSaid>,
-    /// The verdict, once the stream has ended on that sentence. The turn ended
-    /// because the harness has no usage left, which is not a crash and not a
-    /// completion, and until this existed it was neither — the agent simply went
-    /// quiet and nothing above it was told (issue #58).
+    /// The verdict: the turn ended because the harness has no usage left, which
+    /// is not a crash and not a completion. Until this existed it was neither —
+    /// the agent simply went quiet and nothing above it was told (issue #58).
     pub(super) usage_limited: Option<crate::harness::usage_limit::UsageLimitSaid>,
+    /// When the harness's newest `rate_limit_event` said a rejected limit
+    /// resets — an instant, which wins over any clock read from the sentence.
+    pub(super) rate_limit_resets_at: Option<time::OffsetDateTime>,
+    /// The Build agent this child is, for the log lines that must name it.
+    pub(super) agent_id: Option<String>,
     /// When the child last said anything at all — the quiet clock's instant.
     pub(super) last_line: Instant,
     /// The id the child gave this conversation, for `--resume`.
@@ -139,6 +142,8 @@ impl ProtocolState {
             turn_open: false,
             limit_said_last: None,
             usage_limited: None,
+            rate_limit_resets_at: None,
+            agent_id: None,
             last_line: Instant::now(),
             session_id: None,
             model: None,

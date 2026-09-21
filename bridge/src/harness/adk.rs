@@ -105,6 +105,7 @@ impl Harness for AdkHarness {
             .arg("--verbose")
             .arg("--settings")
             .arg(COMPACTION_HOOK_SETTINGS)
+            .for_agent(&options.owner_id)
             .arg("--mcp-config")
             .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
             .arg("--strict-mcp-config")

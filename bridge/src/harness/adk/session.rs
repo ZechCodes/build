@@ -96,6 +96,7 @@ impl AdkSession {
             .spawn()?;
 
         let state = Arc::new(Mutex::new(ProtocolState::new(choice)));
+        state.lock().unwrap().agent_id = spec.agent_id.clone();
         let (sender, subscribed) = broadcast::channel(ACTIVITY_BACKLOG);
         let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
         let revision = SurfaceRevision::default();

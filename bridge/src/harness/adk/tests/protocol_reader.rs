@@ -761,63 +761,180 @@ async fn subagent_events_are_reported_under_the_call_that_spawned_them() {
     session.end();
 }
 
-/// The sentence as the Claude ADK emitted it on 2026-09-20, in the shape it
-/// arrives in: an ordinary assistant text block.
-fn limit_sentence_line() -> String {
-    serde_json::json!({
+/// The sentence the Claude ADK wrote on 2026-09-20.
+const LIMIT_SAID: &str = "You've hit your session limit · resets 6:20pm (America/New_York)";
+
+/// The message the CLI writes when a request is refused for usage, in the shape
+/// Claude's own transcript recorded on 2026-09-20 (issue #58): a synthetic
+/// assistant message, marked `error: "rate_limit"`.
+fn rate_limited_line(text: &str) -> String {
+    json!({
         "type": "assistant",
+        "parent_tool_use_id": null,
+        "error": "rate_limit",
         "message": {
-            "content": [{
-                "type": "text",
-                "text": "You've hit your session limit · resets 6:20pm (America/New_York)",
-            }],
+            "model": "<synthetic>",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": text }],
         },
     })
     .to_string()
 }
 
-/// #58: a turn that ends on the limit sentence leaves the session idle WITH A
-/// REASON. Before this the turn simply stopped and the agent was indistinguishable
-/// from one waiting for the human, which is how one sat with an uncommitted tree
-/// for fifty-five minutes and nothing said why.
-#[tokio::test]
-async fn a_turn_that_ends_on_the_limit_sentence_says_so_on_the_wire() {
+/// The same words as an agent's own prose: no `error`, because the model wrote
+/// them.
+fn quoted_line(text: &str) -> String {
+    json!({
+        "type": "assistant",
+        "parent_tool_use_id": null,
+        "message": { "content": [{ "type": "text", "text": text }] },
+    })
+    .to_string()
+}
+
+fn result_line() -> String {
+    json!({ "type": "result", "subtype": "success", "is_error": true }).to_string()
+}
+
+fn limited_reader() -> (
+    ProtocolReader,
+    tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>,
+) {
     let (sender, _heard) = broadcast::channel(ACTIVITY_BACKLOG);
-    let (mut reader, status) = reader_and_its_status(Arc::new(Mutex::new(Some(sender))));
+    reader_and_its_status(Arc::new(Mutex::new(Some(sender))))
+}
 
-    reader.read_line(&limit_sentence_line());
-    reader.end_stream();
+/// #58, the case of 2026-09-20: the child stayed up and took more turns, so the
+/// turn's own `result` is where the limit is concluded — not the stream's end.
+/// The session goes idle WITH A REASON, where before it went idle looking like
+/// an agent waiting for the human.
+#[tokio::test]
+async fn a_turn_the_harness_refused_for_usage_says_so_at_its_result() {
+    let (mut reader, status) = limited_reader();
 
-    let limit = status
-        .borrow()
+    reader.read_line(&rate_limited_line(LIMIT_SAID));
+    reader.read_line(&result_line());
+
+    let snapshot = status.borrow().clone();
+    let limit = snapshot
         .usage_limit
-        .clone()
         .expect("the session says why it is idle");
     assert_eq!(
-        limit.said, "You've hit your session limit · resets 6:20pm (America/New_York)",
-        "the harness's own words, kept whole for the reader"
+        limit.said, LIMIT_SAID,
+        "the harness's own words, kept whole"
     );
     assert!(
         limit.resets_at.is_some(),
         "and the reset resolved in the zone it named, so the banner can count down"
     );
+    assert_ne!(snapshot.status, AgentStatus::Working, "the turn is over");
 }
 
-/// The negative, and the one that matters: an agent that merely TALKS about a
-/// limit and carries on working has not hit one. A substring match would have put
-/// a banner over every conversation because somebody described the feature.
+/// A child that goes before its turn's result ended the turn at the limit too.
 #[tokio::test]
-async fn an_agent_that_quotes_the_sentence_and_keeps_working_is_not_limited() {
-    let (sender, _heard) = broadcast::channel(ACTIVITY_BACKLOG);
-    let (mut reader, status) = reader_and_its_status(Arc::new(Mutex::new(Some(sender))));
+async fn a_child_that_exits_on_the_limit_says_so_at_the_stream_end() {
+    let (mut reader, status) = limited_reader();
 
-    reader.read_line(&limit_sentence_line());
-    // Anything reported afterwards means the turn kept going.
-    reader.read_line(&todo_write_call("todo-1", "carry on"));
+    reader.read_line(&rate_limited_line(LIMIT_SAID));
     reader.end_stream();
 
-    assert!(
-        status.borrow().usage_limit.is_none(),
-        "the sentence was a quote, not a verdict"
+    assert_eq!(
+        status
+            .borrow()
+            .usage_limit
+            .as_ref()
+            .map(|limit| limit.said.as_str()),
+        Some(LIMIT_SAID)
     );
+}
+
+/// The CLI's `rate_limit_event` carries the reset as an instant, in epoch
+/// SECONDS; when it came, it wins over the clock read from the sentence.
+#[tokio::test]
+async fn the_rate_limit_events_reset_instant_wins_over_the_sentences_clock() {
+    let (mut reader, status) = limited_reader();
+    let resets_at = 1_789_945_200; // 2026-09-20T23:00:00Z, not the sentence's 22:20Z
+
+    reader.read_line(
+        &json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "rejected",
+                "resetsAt": resets_at,
+                "rateLimitType": "five_hour",
+            },
+            "session_id": "s",
+        })
+        .to_string(),
+    );
+    reader.read_line(&rate_limited_line(LIMIT_SAID));
+    reader.read_line(&result_line());
+
+    let limit = status.borrow().usage_limit.clone().expect("limited");
+    assert_eq!(
+        limit.resets_at.map(time::OffsetDateTime::unix_timestamp),
+        Some(resets_at)
+    );
+}
+
+/// Whatever the limit is called, it is a limit: the mark decides, not the
+/// words. A wording with no reset the parse can read is recorded with the reset
+/// unknown, rather than dropped.
+#[tokio::test]
+async fn any_wording_of_a_limit_is_one_and_an_unreadable_reset_is_unknown() {
+    let (mut reader, status) = limited_reader();
+    let said = "You've hit your weekly limit · resets whenever";
+
+    reader.read_line(&rate_limited_line(said));
+    reader.read_line(&result_line());
+
+    let limit = status.borrow().usage_limit.clone().expect("limited");
+    assert_eq!(limit.said, said);
+    assert_eq!(limit.resets_at, None, "reset time unknown");
+}
+
+/// The negative that pinned the first design and still pins this one: an agent
+/// that writes the sentence — here, the whole of its message, and in the middle
+/// of a paragraph — has not hit a limit, whatever follows.
+#[tokio::test]
+async fn an_agent_quoting_the_sentence_is_not_limited() {
+    for text in [
+        LIMIT_SAID.to_string(),
+        format!("The harness said \"{LIMIT_SAID}\" and nothing else recorded it."),
+    ] {
+        let (mut reader, status) = limited_reader();
+        reader.read_line(&quoted_line(&text));
+        reader.read_line(&result_line());
+        reader.end_stream();
+        assert!(
+            status.borrow().usage_limit.is_none(),
+            "a quote is not a verdict: {text:?}"
+        );
+    }
+}
+
+/// A limit the model then answered past is not what ended the turn.
+#[tokio::test]
+async fn a_model_answer_after_the_limit_means_the_turn_was_not_stopped_by_it() {
+    let (mut reader, status) = limited_reader();
+
+    reader.read_line(&rate_limited_line(LIMIT_SAID));
+    reader.read_line(&quoted_line("Carrying on."));
+    reader.read_line(&result_line());
+
+    assert!(status.borrow().usage_limit.is_none());
+}
+
+/// A subagent refused for usage is that subagent's trouble to report; the
+/// session's own turn is not over on it.
+#[tokio::test]
+async fn a_subagents_limit_is_not_the_sessions() {
+    let (mut reader, status) = limited_reader();
+    let mut line: Value = serde_json::from_str(&rate_limited_line(LIMIT_SAID)).unwrap();
+    line["parent_tool_use_id"] = json!("toolu_1");
+
+    reader.read_line(&line.to_string());
+    reader.read_line(&result_line());
+
+    assert!(status.borrow().usage_limit.is_none());
 }

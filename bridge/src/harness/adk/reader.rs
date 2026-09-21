@@ -74,6 +74,7 @@ impl ProtocolReader {
             Some("user") => self.read_message(&event, Voice::User),
             Some("result") => self.read_result(&event),
             Some("control_response") => self.read_control_response(&event),
+            Some("rate_limit_event") => self.read_rate_limit_event(&event),
             _ => {}
         }
         self.publish_live_status();
@@ -89,32 +90,97 @@ impl ProtocolReader {
     }
 
     pub(super) fn end_stream(&self) {
-        // The stream ending on the limit sentence is the verdict: the turn stopped
-        // because the harness has no usage left. Nothing else in the protocol says
-        // so — there is no result, no error and no non-zero exit — so this is the
-        // only moment it can be concluded (issue #58).
-        let (changed, limited) = {
+        // A child that goes before its turn's result still ended that turn at
+        // the limit, when the limit was what it last reported (issue #58).
+        self.conclude_usage_limit();
+        let changed = self
+            .state
+            .lock()
+            .unwrap()
+            .surfaces
+            .mark_retained_checklist_stale();
+        self.bump_revision_when(changed);
+    }
+
+    /// The turn is over: if the harness marked a message of it as a usage
+    /// limit, that is why, and the session says so on its status snapshot —
+    /// idle because limited, rather than idle and unexplained, which is how an
+    /// agent sat on an uncommitted tree for fifty-five minutes on 2026-09-20.
+    ///
+    /// The reset is the `rate_limit_event`'s instant when one came, and the
+    /// clock read from the sentence otherwise.
+    fn conclude_usage_limit(&self) {
+        let concluded = {
             let mut state = self.state.lock().unwrap();
-            let limited = state.limit_said_last.take().map(|said| {
-                let resolved = said.resolved(time::OffsetDateTime::now_utc());
-                let session = state.session_id.clone();
+            state.limit_said_last.take().map(|said| {
+                let mut resolved = said.resolved(time::OffsetDateTime::now_utc());
+                if let Some(instant) = state.rate_limit_resets_at {
+                    resolved.resets_at = Some(instant);
+                }
                 state.usage_limited = Some(said.clone());
-                (session, said, resolved)
-            });
-            (state.surfaces.mark_retained_checklist_stale(), limited)
+                (
+                    state.agent_id.clone(),
+                    state.session_id.clone(),
+                    said,
+                    resolved,
+                )
+            })
         };
-        // Written with the lock released, for the same reason as above.
-        if let Some((session, said, resolved)) = limited {
+        // Written with the lock released: `eprintln!` can block on a full pipe,
+        // and nothing else should wait on this session's state behind a log line.
+        if let Some((agent, session, said, resolved)) = concluded {
             eprintln!(
-                "harness usage_limited: session={session:?} said={:?} reset_clock={:?} resets_at={:?}",
+                "harness usage_limited: agent={agent:?} session={session:?} said={:?} reset_clock={:?} resets_at={:?}",
                 said.said, said.reset_clock, resolved.resets_at
             );
-            // And said on the wire, so the agent reads as idle-because-limited
-            // rather than as idle-and-unexplained. Without this the turn still
-            // just stops, which is the whole of #58.
             publish_usage_limit(&self.status_updates, resolved);
         }
-        self.bump_revision_when(changed);
+    }
+
+    /// A top-level assistant message's `error`, which is how the CLI marks a
+    /// message it wrote itself about a failed request rather than one the model
+    /// wrote. `rate_limit` is a usage limit (issue #58): the message's text is
+    /// what the harness said, kept for the turn's end to conclude on. Any
+    /// other assistant message means the model answered, so a limit reported
+    /// earlier in the turn is not what ended it.
+    ///
+    /// Every error is logged with the agent it happened to, so the next one is
+    /// diagnosable from bridge.log whatever it turns out to be.
+    fn read_assistant_error(&mut self, event: &Value) {
+        let Some(error) = event["error"].as_str() else {
+            self.state.lock().unwrap().limit_said_last = None;
+            return;
+        };
+        let said = assistant_text(&event["message"]);
+        let agent = {
+            let mut state = self.state.lock().unwrap();
+            state.limit_said_last = (error == "rate_limit")
+                .then(|| crate::harness::usage_limit::usage_limit_said(&said));
+            state.agent_id.clone()
+        };
+        eprintln!("harness assistant_error: agent={agent:?} error={error:?} said={said:?}");
+    }
+
+    /// The CLI's account of a usage window: whether requests are being refused
+    /// and when that ends. A `rejected` event's `resetsAt` is the reset
+    /// instant — epoch SECONDS, as the CLI's own formatter reads it
+    /// (`new Date(resetsAt * 1000)`); any other status means the window is open,
+    /// and no reset is owed.
+    fn read_rate_limit_event(&mut self, event: &Value) {
+        let info = &event["rate_limit_info"];
+        let status = info["status"].as_str();
+        let resets_at = info["resetsAt"]
+            .as_i64()
+            .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok());
+        let agent = {
+            let mut state = self.state.lock().unwrap();
+            state.rate_limit_resets_at = resets_at.filter(|_| status == Some("rejected"));
+            state.agent_id.clone()
+        };
+        eprintln!(
+            "harness rate_limit_event: agent={agent:?} status={status:?} type={:?} resets_at={resets_at:?}",
+            info["rateLimitType"].as_str()
+        );
     }
 
     /// The lifecycle line, and the background-task lines that ride the same
@@ -453,32 +519,29 @@ impl ProtocolReader {
                 .as_str()
                 .is_some_and(|kind| kind != "success");
         // Logged whether or not it failed, because the whole difficulty in #58
-        // was that nobody could say afterwards WHETHER a result had arrived. The
-        // limited turns of 2026-09-20 left no line here at all, which is how we
-        // know the stream simply ended; a future limit that does emit one will
-        // say so in bridge.log and can then be recognised structurally instead of
-        // by its prose.
-        // The session id is copied out and the lock released BEFORE the write:
+        // was that nobody could say afterwards WHETHER a result had arrived.
+        // The ids are copied out and the lock released BEFORE the write:
         // `eprintln!` can block on a full pipe, and blocking on I/O while holding
         // the protocol state would stall every reader of this session behind a
         // log line.
-        let session = self.state.lock().unwrap().session_id.clone();
+        let (agent, session) = {
+            let state = self.state.lock().unwrap();
+            (state.agent_id.clone(), state.session_id.clone())
+        };
         eprintln!(
-            "harness turn_result: session={:?} subtype={:?} is_error={:?} duration_ms={:?}",
+            "harness turn_result: agent={:?} session={:?} subtype={:?} is_error={:?} duration_ms={:?}",
+            agent,
             session,
             event["subtype"].as_str(),
             event["is_error"].as_bool(),
             event["duration_ms"].as_u64(),
         );
+        // Before the status says the turn is over, so no reader ever sees this
+        // session idle without the reason: a queue drained in that gap would
+        // hand the harness a turn it can only refuse.
+        self.conclude_usage_limit();
         {
             let mut state = self.state.lock().unwrap();
-            // A turn that ended with a result did not stop silently. Its limit
-            // sentence was therefore a quote — unless the result itself failed, in
-            // which case the sentence is the better explanation of why and is
-            // kept for `end_stream` to conclude on.
-            if !failed {
-                state.limit_said_last = None;
-            }
             // Taken, acked or not, so an interrupt can never leak into the turn
             // after the one it ended.
             let stopped = state.pending_interrupt.take();
@@ -520,6 +583,9 @@ impl ProtocolReader {
         if voice == Voice::Assistant {
             if parent_call_id.is_none() {
                 self.remember_context(&event["message"]["usage"]);
+                // A SUBAGENT's error is that subagent's own trouble to report;
+                // the session's usage is the parent's.
+                self.read_assistant_error(event);
             }
             if let Some(call_id) = parent_call_id {
                 let moved = self
@@ -542,18 +608,8 @@ impl ProtocolReader {
                     }
                 }
                 (Voice::Assistant, Some("text")) => {
-                    // Recognised BEFORE the report, so `send_report`'s clearing
-                    // does not wipe the verdict this very block establishes.
-                    let limit = block["text"]
-                        .as_str()
-                        .and_then(crate::harness::usage_limit::usage_limit_said);
                     if let Some(summary) = spoken(block["text"].as_str()) {
                         self.report(AgentActivity::Narration { summary }, parent_call_id);
-                    }
-                    // A limit sentence from a SUBAGENT is that subagent's own
-                    // trouble to report; the session's usage is the parent's.
-                    if parent_call_id.is_none() {
-                        self.state.lock().unwrap().limit_said_last = limit;
                     }
                 }
                 (Voice::Assistant, Some("tool_use")) => self.read_tool_use(block, parent_call_id),
@@ -689,16 +745,25 @@ impl ProtocolReader {
         });
     }
 
-    /// Every activity this session reports passes here, which is what makes
-    /// "the last thing the turn produced" answerable: anything reported after a
-    /// limit sentence means the turn kept working, so the sentence was the agent
-    /// talking about a limit rather than hitting one.
+    /// Every activity this session reports passes here.
     fn send_report(&self, report: ActivityReport) {
-        self.state.lock().unwrap().limit_said_last = None;
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
             let _ = sender.send(report);
         }
     }
+}
+
+/// Every text block of one message, in order: what a message the CLI wrote
+/// itself says, whole.
+fn assistant_text(message: &Value) -> String {
+    message["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block["type"] == "text")
+        .filter_map(|block| block["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The usage fields that together make up what one request put in context.

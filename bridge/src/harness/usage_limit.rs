@@ -1,41 +1,31 @@
-//! Recognising a harness saying it has run out of usage.
+//! What a harness said when it ran out of usage, and when it says the limit
+//! lifts.
 //!
-//! # Why this is a string match, which is not what anyone would choose
+//! # How a limit is recognised: structurally, not by its words
 //!
 //! On 2026-09-20 every Claude-harness agent on one machine stopped between
-//! 21:30Z and 22:25Z, and the only record of why — anywhere, in any log or
-//! store — was one line per agent in the conversation timeline:
+//! 21:30Z and 22:25Z. What each conversation showed was one line of assistant
+//! text:
 //!
 //! ```text
 //! You've hit your session limit · resets 6:20pm (America/New_York)
 //! ```
 //!
-//! The Claude ADK puts that sentence in the assistant's ordinary text output, so
-//! `adk/reader.rs` read it and filed it, faithfully, as the agent talking. There
-//! was no `result` record with `is_error`, no 429, nothing on stderr, and no
-//! non-zero exit anybody had recorded. The turn simply stopped: one agent went
-//! silent for fifty-five minutes with an uncommitted tree and nothing above it
-//! was told.
+//! Claude's own transcript of the same moment marks that message for what it
+//! is: `model: "<synthetic>"`, `isApiErrorMessage: true`, `error: "rate_limit"`.
+//! The CLI's stream-json schema carries `error` on every `assistant` line, so
+//! the ADK reader recognises a limit by `error == "rate_limit"` and never by
+//! prose (issue #58, decision of 2026-09-21 16:06Z). An agent that quotes the
+//! sentence cannot set that field, which is what makes a false banner
+//! impossible rather than merely unlikely.
 //!
-//! So until a harness gives us something typed, the sentence IS the signal, and
-//! this module is the one place that decides what counts as it.
-//!
-//! # The rule, and why it is deliberately narrow
-//!
-//! The whole trimmed text must BE the sentence. Not contain it — be it.
-//!
-//! An agent that merely writes about the limit must not trip this, and that is
-//! not a hypothetical: the issue comment reporting this finding quoted the
-//! sentence twice, and a substring match would have hung a "you are out of
-//! usage" banner over every conversation on the device because somebody
-//! described the feature. Under-detecting an odd future wording costs one
-//! outage's worth of silence; over-detecting costs every reader's trust in the
-//! banner. So the match is anchored at both ends, and the caller applies it only
-//! to the last thing a turn produced.
-//!
-//! Tolerant only where the harness might reasonably vary and the meaning cannot:
-//! "session limit" or "usage limit", either apostrophe, a reset clause that
-//! names a zone or does not, and no reset clause at all.
+//! So this module decides nothing about WHETHER a limit was hit. It keeps what
+//! the harness said, verbatim, and reads a reset clock out of it when there is
+//! one, whatever the limit is called: "session limit", "weekly limit", "Opus
+//! limit", "usage limit" — the CLI names each window differently, and a
+//! weekly reset more than a day out carries a date ("Sep 25, 6pm"). When the
+//! CLI's `rate_limit_event` supplies the reset as an instant, that wins, and
+//! this parse is the fallback.
 
 use time::OffsetDateTime;
 
@@ -43,23 +33,34 @@ use time::OffsetDateTime;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageLimitSaid {
     /// The harness's own sentence, kept whole: it is what the reader is shown
-    /// behind the banner, and inventing a paraphrase of a thing we recognised by
-    /// its exact shape would be the wrong way round.
+    /// behind the banner.
     pub said: String,
-    /// The wall clock it named, or `None` when it named none.
+    /// The wall clock it named, or `None` when it named none that could be read.
     pub reset_clock: Option<ResetClock>,
 }
 
-/// A reset time as the harness states it: a wall clock and, usually, the zone to
-/// read it in. Deliberately not an instant — resolving one needs a zone database
-/// this crate does not carry, and that is the caller's problem, not the parse's.
+/// A reset time as the harness states it: a wall clock, the date when it gave
+/// one, and usually the zone to read it in. Deliberately not an instant: that
+/// needs the zone's rules on the day it falls, which [`resolved_reset`] applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResetClock {
     /// 0–23, converted from the 12-hour clock the harness writes.
     pub hour: u8,
     pub minute: u8,
+    /// The date, when the reset is far enough out for the harness to name one.
+    pub date: Option<ResetDate>,
     /// The IANA zone in parentheses, when there was one.
     pub zone: Option<String>,
+}
+
+/// A month and day, and the year when the harness wrote one (it does only when
+/// the reset falls in another year).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetDate {
+    /// 1–12.
+    pub month: u8,
+    pub day: u8,
+    pub year: Option<i16>,
 }
 
 /// A harness that has run out of usage, as everything above the adapter reads it:
@@ -87,79 +88,95 @@ impl UsageLimitSaid {
     }
 }
 
-/// The two nouns seen or plausible for the same thing.
-const LIMIT_NOUNS: [&str; 2] = ["session limit", "usage limit"];
-
-/// Whether this text is a harness saying it is out of usage, and nothing else.
+/// What a message the harness marked as a usage limit said, with the reset
+/// clock read out of it when it names one.
 ///
-/// `text` is one assistant text block. The caller is responsible for it being
-/// the LAST thing the turn produced: a limit sentence in the middle of a turn
-/// that then carried on working is a quote, not a verdict.
-pub fn usage_limit_said(text: &str) -> Option<UsageLimitSaid> {
+/// Called only on a message already recognised as a limit (see the module
+/// docs); `text` is kept verbatim, whatever it says.
+pub fn usage_limit_said(text: &str) -> UsageLimitSaid {
     let said = text.trim();
-    let body = strip_opening(said)?;
-    let (noun, rest) = LIMIT_NOUNS
-        .iter()
-        .find_map(|noun| body.strip_prefix(*noun).map(|rest| (*noun, rest)))?;
-    let _ = noun;
-    Some(UsageLimitSaid {
+    UsageLimitSaid {
         said: said.to_string(),
-        reset_clock: reset_clause(rest.trim_start())?,
-    })
-}
-
-/// `You've hit your ` / `You’ve hit your `, and nothing before it. Both
-/// apostrophes, because which one a harness emits is not something to depend on.
-fn strip_opening(said: &str) -> Option<&str> {
-    for opening in ["You've hit your ", "You’ve hit your "] {
-        if let Some(rest) = said.strip_prefix(opening) {
-            return Some(rest);
-        }
+        reset_clock: reset_clock_in(said),
     }
-    None
 }
 
-/// What follows the noun: nothing at all, or a reset clause and nothing after it.
-///
-/// Returns `Some(None)` for "no reset time was named" and `None` for "this is not
-/// the sentence" — the difference between a limit whose lift time is unknown and
-/// a piece of prose that merely began like one.
-fn reset_clause(rest: &str) -> Option<Option<ResetClock>> {
-    if rest.is_empty() {
-        return Some(None);
-    }
-    // The separator the harness uses is a middle dot; a hyphen is the obvious
-    // variant and costs nothing to accept.
-    let after = rest
-        .strip_prefix('·')
-        .or_else(|| rest.strip_prefix('-'))
-        .or_else(|| rest.strip_prefix('—'))?
-        .trim_start();
-    let clock = after.strip_prefix("resets")?.trim_start();
-    parse_clock(clock).map(Some)
-}
-
-/// `6:20pm (America/New_York)`, `6:20 PM`, `6pm` — and nothing trailing.
-fn parse_clock(clock: &str) -> Option<ResetClock> {
-    let (time_part, zone) = match clock.split_once('(') {
-        Some((before, after)) => (before.trim_end(), Some(after.strip_suffix(')')?.trim())),
-        None => (clock, None),
+/// The clock after the last "resets" in the sentence: `6:20pm (America/New_York)`,
+/// `Sep 25, 6pm (America/New_York)`, `Jan 2, 2027, 9:30am`, `6 PM`. Anything it
+/// cannot read wholly is no clock at all, rather than a guess.
+fn reset_clock_in(said: &str) -> Option<ResetClock> {
+    let (_, clause) = said.rsplit_once("resets ")?;
+    let (before_zone, zone) = match clause.split_once('(') {
+        Some((before, after)) => (before, Some(after.split_once(')')?.0.trim())),
+        None => (clause, None),
     };
     if zone.is_some_and(str::is_empty) {
         return None;
     }
-    let (hour, minute) = parse_twelve_hour(time_part.trim())?;
+    let when = before_zone.trim().trim_end_matches('.');
+    let (date, time) = split_date(when)?;
+    let (hour, minute) = parse_twelve_hour(time)?;
     Some(ResetClock {
         hour,
         minute,
+        date,
         zone: zone.map(str::to_string),
     })
 }
 
-/// A 12-hour clock to 24-hour parts. Rejects anything with a character left over,
-/// which is what keeps a sentence with prose after the time from matching.
+/// `Sep 25, 6pm` into its date and its time; a bare `6pm` has no date.
+fn split_date(when: &str) -> Option<(Option<ResetDate>, &str)> {
+    let Some((month, rest)) = when.split_once(' ') else {
+        return Some((None, when));
+    };
+    let Some(month) = month_number(month) else {
+        return Some((None, when));
+    };
+    let mut parts = rest.split(',').map(str::trim);
+    let day: u8 = parts.next()?.parse().ok()?;
+    let mut next = parts.next()?;
+    let year = match next.parse::<i16>() {
+        Ok(year) => {
+            next = parts.next()?;
+            Some(year)
+        }
+        Err(_) => None,
+    };
+    if parts.next().is_some() || !(1..=31).contains(&day) {
+        return None;
+    }
+    let time = next.strip_prefix("at ").unwrap_or(next);
+    Some((Some(ResetDate { month, day, year }), time))
+}
+
+fn month_number(name: &str) -> Option<u8> {
+    const MONTHS: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    let lowered = name.trim_end_matches('.').to_ascii_lowercase();
+    let short = lowered.get(..3)?;
+    let number = MONTHS.iter().position(|month| *month == short)?;
+    // "Sept" and full names are fine; "Separately" is not a month.
+    let full = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ][number];
+    (full.starts_with(lowered.as_str()) || lowered == "sept").then(|| number as u8 + 1)
+}
+
+/// A 12-hour clock to 24-hour parts. Rejects anything with a character left over.
 fn parse_twelve_hour(text: &str) -> Option<(u8, u8)> {
-    let lowered = text.to_ascii_lowercase();
+    let lowered = text.trim().to_ascii_lowercase();
     let (digits, after_noon) = match (lowered.strip_suffix("am"), lowered.strip_suffix("pm")) {
         (Some(morning), _) => (morning.trim_end(), false),
         (_, Some(afternoon)) => (afternoon.trim_end(), true),
@@ -219,6 +236,10 @@ pub fn resolved_reset(said: &UsageLimitSaid, now: OffsetDateTime) -> Option<Offs
         .ok()?
         .to_zoned(zone.clone());
 
+    if let Some(date) = clock.date {
+        return dated_reset(date, clock, &zone, &now_there);
+    }
+
     // Today in that zone, at that clock. `to_zoned` applies the zone's rules,
     // which is what makes the two awkward nights right rather than approximate:
     // a clock in the hour that does not exist on the spring change is moved
@@ -232,6 +253,37 @@ pub fn resolved_reset(said: &UsageLimitSaid, now: OffsetDateTime) -> Option<Offs
         // twenty-four hours: on a change day those differ by an hour, and the
         // wall clock the harness named is the thing to honour.
         at_clock(now_there.date().tomorrow().ok()?, clock, &zone)?
+    };
+    OffsetDateTime::from_unix_timestamp(resets.timestamp().as_second()).ok()
+}
+
+/// A reset the harness dated. The year is the one it wrote, or this year in
+/// that zone — unless that is already more than a day gone, when the harness
+/// can only have meant next year (it writes the year only for another year).
+fn dated_reset(
+    date: ResetDate,
+    clock: &ResetClock,
+    zone: &jiff::tz::TimeZone,
+    now_there: &jiff::Zoned,
+) -> Option<OffsetDateTime> {
+    let month = i8::try_from(date.month).ok()?;
+    let day = i8::try_from(date.day).ok()?;
+    let on = |year: i16| {
+        jiff::civil::Date::new(year, month, day)
+            .ok()
+            .and_then(|civil| at_clock(civil, clock, zone))
+    };
+    let resets = match date.year {
+        Some(year) => on(year)?,
+        None => {
+            let this_year = on(now_there.year())?;
+            let a_day_ago = now_there.timestamp() - jiff::SignedDuration::from_hours(24);
+            if this_year.timestamp() < a_day_ago {
+                on(now_there.year() + 1)?
+            } else {
+                this_year
+            }
+        }
     };
     OffsetDateTime::from_unix_timestamp(resets.timestamp().as_second()).ok()
 }
@@ -258,80 +310,122 @@ mod tests {
         Some(ResetClock {
             hour,
             minute,
+            date: None,
             zone: zone.map(str::to_string),
         })
     }
 
-    /// The table. Left: what an assistant text block held. Right: what it means.
+    fn dated(
+        month: u8,
+        day: u8,
+        year: Option<i16>,
+        hour: u8,
+        minute: u8,
+        zone: Option<&str>,
+    ) -> Option<ResetClock> {
+        Some(ResetClock {
+            hour,
+            minute,
+            date: Some(ResetDate { month, day, year }),
+            zone: zone.map(str::to_string),
+        })
+    }
+
+    /// The table. Left: what a message the harness marked as a limit said.
+    /// Right: the reset clock read out of it. Every one is a limit — whether
+    /// it is one was decided before this parse, by the message's `error`.
     #[test]
-    fn the_sentences_that_are_a_usage_limit_and_the_prose_that_is_not() {
-        let cases: Vec<(&str, Option<Option<ResetClock>>)> = vec![
-            // The one we have evidence for, and the variants that cannot mean
-            // anything else.
-            (EVIDENCED, Some(clock(18, 20, Some("America/New_York")))),
+    fn a_reset_clock_is_read_from_any_wording_of_a_limit() {
+        let cases: Vec<(&str, Option<ResetClock>)> = vec![
+            (EVIDENCED, clock(18, 20, Some("America/New_York"))),
+            (
+                "You've hit your weekly limit · resets Sep 25, 6pm (America/New_York)",
+                dated(9, 25, None, 18, 0, Some("America/New_York")),
+            ),
+            (
+                "You've hit your Opus limit · resets Sep 25, 6:30pm (Europe/London)",
+                dated(9, 25, None, 18, 30, Some("Europe/London")),
+            ),
+            (
+                "You've hit your Sonnet limit · resets Jan 2, 2027, 9am (UTC)",
+                dated(1, 2, Some(2027), 9, 0, Some("UTC")),
+            ),
             (
                 "You've hit your usage limit · resets 6:20pm (America/New_York)",
-                Some(clock(18, 20, Some("America/New_York"))),
+                clock(18, 20, Some("America/New_York")),
             ),
             (
-                "You’ve hit your session limit · resets 6:20pm (America/New_York)",
-                Some(clock(18, 20, Some("America/New_York"))),
-            ),
-            ("You've hit your session limit · resets 6:20pm", Some(clock(18, 20, None))),
-            ("You've hit your session limit · resets 6:20 PM", Some(clock(18, 20, None))),
-            ("You've hit your session limit · resets 6pm", Some(clock(18, 0, None))),
-            ("You've hit your session limit · resets 12am", Some(clock(0, 0, None))),
-            ("You've hit your session limit · resets 12pm", Some(clock(12, 0, None))),
-            ("You've hit your session limit - resets 7:05am (UTC)", Some(clock(7, 5, Some("UTC")))),
-            // A limit with no reset time is still a limit; the banner says the
-            // time is unknown rather than guessing one.
-            ("You've hit your session limit", Some(None)),
-            ("   You've hit your session limit   ", Some(None)),
-            // And the prose. The first of these is the case that matters: the
-            // issue comment reporting this finding quoted the sentence, and a
-            // substring match would have bannered the whole device for it.
-            (
-                "The harness says \"You've hit your session limit · resets 6:20pm (America/New_York)\" and nothing else records it.",
-                None,
+                "You’ve hit your session limit · resets 6:20 PM",
+                clock(18, 20, None),
             ),
             (
-                "You've hit your session limit · resets 6:20pm (America/New_York) — so I stopped there.",
-                None,
+                "You've hit your session limit · resets 6pm",
+                clock(18, 0, None),
             ),
             (
-                "Quoting for the record: You've hit your session limit · resets 6:20pm",
-                None,
+                "You've hit your session limit · resets 12am",
+                clock(0, 0, None),
             ),
-            ("You've hit your stride", None),
-            ("You've hit your session limit yesterday too", None),
+            (
+                "You've hit your session limit · resets 12pm",
+                clock(12, 0, None),
+            ),
+            (
+                "You've hit your session limit - resets 7:05am (UTC).",
+                clock(7, 5, Some("UTC")),
+            ),
+            (
+                "   You've hit your session limit · resets 6pm   ",
+                clock(18, 0, None),
+            ),
+            // A limit whose reset could not be read is still recorded, with the
+            // reset unknown rather than guessed.
+            ("You've hit your session limit", None),
             ("You've hit your session limit · resets soon", None),
             ("You've hit your session limit · resets 25:00pm", None),
             ("You've hit your session limit · resets 6:20pm ()", None),
-            ("I have hit my session limit", None),
+            ("Usage credits required for 1M context", None),
             ("", None),
-            ("Reading the transport modules now.", None),
         ];
 
         for (text, expected) in cases {
             let found = usage_limit_said(text);
-            match expected {
-                Some(reset_clock) => {
-                    let found = found.unwrap_or_else(|| panic!("not recognised: {text:?}"));
-                    assert_eq!(found.reset_clock, reset_clock, "reset clock for {text:?}");
-                    assert_eq!(
-                        found.said,
-                        text.trim(),
-                        "the harness's own words for {text:?}"
-                    );
-                }
-                None => assert!(found.is_none(), "should not be a limit: {text:?}"),
-            }
+            assert_eq!(found.reset_clock, expected, "reset clock for {text:?}");
+            assert_eq!(
+                found.said,
+                text.trim(),
+                "the harness's own words for {text:?}"
+            );
         }
+    }
+
+    /// A dated reset is that date, not the next time the clock comes round.
+    #[test]
+    fn a_weekly_reset_resolves_on_the_date_it_names() {
+        let now = 1_789_939_878; // 2026-09-20T21:31:18Z
+        let resets = resolve(
+            "You've hit your weekly limit · resets Sep 25, 6pm (America/New_York)",
+            now,
+        )
+        .expect("resolves");
+        // 2026-09-25 18:00 EDT = 22:00Z. Midnight UTC on the 25th is
+        // 1_789_862_400 + 5 days.
+        assert_eq!(resets, 1_789_862_400 + 5 * 86_400 + 79_200);
+
+        let next_year = resolve(
+            "You've hit your weekly limit · resets Jan 2, 6pm (America/New_York)",
+            now,
+        )
+        .expect("resolves");
+        assert!(
+            next_year > now + 90 * 86_400,
+            "a date already past this year with no year written is next year's"
+        );
     }
 
     /// A clock in a zone, as an instant, for the tests to read.
     fn resolve(text: &str, now_unix: i64) -> Option<i64> {
-        let said = usage_limit_said(text).expect("a limit sentence");
+        let said = usage_limit_said(text);
         let now = OffsetDateTime::from_unix_timestamp(now_unix).unwrap();
         resolved_reset(&said, now).map(OffsetDateTime::unix_timestamp)
     }

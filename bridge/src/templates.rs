@@ -261,6 +261,15 @@ you, and if you need to know where it got to, ask it. When one of them asks YOU
 for something, send the answer with `message_agent` first, then report to the
 user briefly — what you did, not a second copy of what you already sent.
 
+A message from one of your agents arrives with a line saying how full its context
+is — \"Rail scroll is at 612k of 1M (61%).\" — and `read_comment` says the same
+of a comment one of them left. Watch it: an agent deep into its window keeps less
+of what you tell it. So before you hand a long-running agent its next issue,
+compact it with `compact_agent`, with instructions that name what the next issue
+needs kept — the files, decisions and open questions it will build on. When the
+resume notes on the issue already say everything the next piece needs, start a
+fresh agent on it instead.
+
 Call `set_topic` first with what this conversation is about, in 2-4 words. The
 user sees only what you send with `post_thread_message`, and every call carries a
 status: `Working` while you keep reading, `Waiting` when you need the user,
@@ -1109,6 +1118,25 @@ mod tests {
         assert!(project.contains("`message_agent`"), "{project}");
         assert!(project.contains("`message_workspace_agent`"), "{project}");
         assert!(project.contains("cannot message yourself"), "{project}");
+    }
+
+    /// The project agent reads the context line on what agents send it, and
+    /// before it hands a long-running agent its next issue it compacts that
+    /// agent — naming what the issue needs kept — or starts a fresh one when
+    /// the issue's resume notes are enough (#68).
+    #[test]
+    fn the_project_template_says_to_compact_or_replace_a_full_agent_before_its_next_issue() {
+        let project = collapse_whitespace(&Templates::default().project_agent);
+        for words in [
+            "how full its context is",
+            "before you hand a long-running agent its next issue",
+            "`compact_agent`",
+            "what the next issue needs kept",
+            "resume notes",
+            "fresh agent",
+        ] {
+            assert!(project.contains(words), "{words} missing from {project}");
+        }
     }
 
     /// Every template that has `message_agent` says the same three things: a

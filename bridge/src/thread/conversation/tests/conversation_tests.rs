@@ -57,6 +57,59 @@ fn compaction_completion_does_not_close_an_older_sessions_row() {
     assert!(!thread.resolve_compaction(Some("new-session")));
 }
 
+/// The focus a compaction was asked for and the context either side of it
+/// ride its own row, and only a row minted after the compaction was sent.
+#[test]
+fn a_compaction_row_carries_its_focus_and_the_context_either_side_of_it() {
+    let mut thread = Thread::new("plan-1");
+    thread.push_event(
+        ThreadEventKind::Compaction,
+        Some("Compacted".to_string()),
+        None,
+        None,
+        "2026-09-17T12:00:00Z",
+    );
+    let sent_after = thread.last_sequence();
+    let detail = CompactionDetail {
+        instructions: Some("keep the API notes".to_string()),
+        context_before: Some(180_000),
+        context_after: Some(8_000),
+    };
+    assert!(
+        !thread.stamp_compaction(sent_after, &detail),
+        "an older compaction's row is not this one's"
+    );
+    let sequence = thread.push_event(
+        ThreadEventKind::Compaction,
+        Some("Compacting".to_string()),
+        None,
+        None,
+        "2026-09-17T12:01:00Z",
+    );
+
+    assert!(thread.stamp_compaction(sent_after, &detail));
+
+    let ThreadItem::Event(event) = &thread.items[1] else {
+        panic!("compaction is an event");
+    };
+    assert_eq!(event.compaction.as_ref(), Some(&detail));
+    assert!(event.updated_sequence > sequence, "cursors re-ship the row");
+    let wire = serde_json::to_value(event).unwrap();
+    assert_eq!(
+        wire["compaction"],
+        serde_json::json!({
+            "instructions": "keep the API notes",
+            "context_before": 180_000,
+            "context_after": 8_000,
+        })
+    );
+    let older = serde_json::to_value(&thread.items[0]).unwrap();
+    assert!(
+        older["data"].get("compaction").is_none(),
+        "additive: a row with nothing to say says nothing"
+    );
+}
+
 fn thread_with_conversation() -> Thread {
     let mut thread = Thread::new("plan-1");
     thread.post_user("please rename the helper", None, "2026-07-24T12:00:00Z");

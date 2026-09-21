@@ -123,6 +123,12 @@ impl Harness for CodexHarness {
         true
     }
 
+    /// Codex compacts a thread without a focus, and anything after the
+    /// command would make it a turn instead.
+    fn compaction_command(&self, _focus: Option<&str>) -> String {
+        super::COMPACT_COMMAND.to_string()
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,

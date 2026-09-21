@@ -1,9 +1,9 @@
 use super::{
-    completion_text, doc_comment_of, snapshot_contents, AgentIdentity, ArtifactKind, DocAnchor,
-    DocComment, DocCommentState, EventClass, ItemMetadata, MessageAnchor, MessageAttachment,
-    MessageDeliveryStatus, MessageOption, MessageOutcome, MessageRole, MessageSource, OptionChoice,
-    ThreadEvent, ThreadEventDraft, ThreadEventKind, ThreadItem, ThreadLink, ThreadMessage,
-    ToolCallOutcome, UnreadSummary, WorktreeScope,
+    completion_text, doc_comment_of, snapshot_contents, AgentIdentity, ArtifactKind,
+    CompactionDetail, DocAnchor, DocComment, DocCommentState, EventClass, ItemMetadata,
+    MessageAnchor, MessageAttachment, MessageDeliveryStatus, MessageOption, MessageOutcome,
+    MessageRole, MessageSource, OptionChoice, ThreadEvent, ThreadEventDraft, ThreadEventKind,
+    ThreadItem, ThreadLink, ThreadMessage, ToolCallOutcome, UnreadSummary, WorktreeScope,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -1125,6 +1125,7 @@ impl Thread {
             links,
             parent_sequence,
             completion_report: None,
+            compaction: None,
             metadata,
         }));
         sequence
@@ -1187,6 +1188,26 @@ impl Thread {
             return false;
         };
         event.summary = Some("Compacted".to_string());
+        event.updated_sequence = bumped;
+        true
+    }
+    /// Write what Build knows about the compaction it sent after
+    /// `sent_after` onto the newest `Compaction` row minted since, and say
+    /// whether there was one. The row's sequence is bumped so cursored clients
+    /// re-ship it.
+    pub fn stamp_compaction(&mut self, sent_after: u64, detail: &CompactionDetail) -> bool {
+        let found = self.items.iter().rposition(|item| {
+            matches!(item, ThreadItem::Event(event)
+                if event.event == ThreadEventKind::Compaction && event.sequence > sent_after)
+        });
+        let Some(index) = found else {
+            return false;
+        };
+        let bumped = self.next();
+        let ThreadItem::Event(event) = &mut self.items[index] else {
+            return false;
+        };
+        event.compaction = Some(detail.clone());
         event.updated_sequence = bumped;
         true
     }

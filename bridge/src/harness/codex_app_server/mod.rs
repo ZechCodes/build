@@ -100,6 +100,11 @@ impl Harness for CodexAppServerHarness {
         CodexHarness.compacts_on_command()
     }
 
+    /// `thread/compact/start` takes no focus.
+    fn compaction_command(&self, focus: Option<&str>) -> String {
+        CodexHarness.compaction_command(focus)
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,

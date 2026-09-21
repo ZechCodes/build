@@ -178,6 +178,16 @@ pub trait Harness: Send + Sync {
         false
     }
 
+    /// What asks a session to compact, focused on `focus` where the harness
+    /// takes a focus. Claude reads whatever follows `/compact` as what the
+    /// summary should keep.
+    fn compaction_command(&self, focus: Option<&str>) -> String {
+        match focus {
+            Some(focus) => format!("{COMPACT_COMMAND} {focus}"),
+            None => COMPACT_COMMAND.to_string(),
+        }
+    }
+
     /// The command that opens an interactive session for `options`.
     ///
     /// The prompt is never part of this: every turn travels through the session
@@ -403,6 +413,11 @@ fn refuse_a_session_nobody_can_watch(session: &dyn AgentSession) -> Result<(), H
     ))
 }
 
+/// What a compaction is asked for with. Every harness that compacts on a
+/// command spells it this way, and says so through
+/// [`Harness::compacts_on_command`].
+pub const COMPACT_COMMAND: &str = "/compact";
+
 /// The implementation for `provider`. The only way to reach one.
 pub fn harness_for(provider: AgentProvider) -> &'static dyn Harness {
     match provider {
@@ -420,6 +435,27 @@ mod tests {
     use syn::visit::Visit;
 
     use super::*;
+
+    /// Claude takes a focus after `/compact`; Codex compacts a thread with
+    /// none, so the focus is dropped rather than sent as a turn of its own.
+    #[test]
+    fn a_compaction_carries_its_focus_only_where_the_harness_takes_one() {
+        for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+            let harness = harness_for(provider);
+            assert_eq!(
+                harness.compaction_command(Some("keep the API notes")),
+                "/compact keep the API notes",
+                "{provider:?}"
+            );
+            assert_eq!(harness.compaction_command(None), "/compact", "{provider:?}");
+        }
+        for provider in [AgentProvider::Codex, AgentProvider::CodexAppServer] {
+            let harness = harness_for(provider);
+            let command = harness.compaction_command(Some("keep the API notes"));
+            assert_eq!(command, "/compact", "{provider:?}");
+            assert!(harness.starts_compaction(&command), "{provider:?}");
+        }
+    }
 
     /// Every provider is reachable and answers for itself — the invariant that
     /// makes `harness_for` the single registry rather than one of several.

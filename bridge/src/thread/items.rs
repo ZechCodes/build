@@ -1326,10 +1326,35 @@ pub struct ThreadEvent {
     /// omits the field entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_report: Option<CompletionReport>,
+    /// What a compaction Build asked for was focused on, and the context either
+    /// side of it, on the `Compaction` row it produced. Absent on every other
+    /// event, on compactions Build did not ask for, and on every record
+    /// written before compactions were measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionDetail>,
     /// What this event referenced, derived when it was pushed. See
     /// [`ThreadMessage::metadata`].
     #[serde(default, skip_serializing_if = "ItemMetadata::is_empty")]
     pub metadata: ItemMetadata,
+}
+
+/// One compaction as Build asked for it and saw it land.
+///
+/// Every part is optional because each arrives on its own clock: the focus and
+/// the context before it are known when the command is sent, the context after
+/// it only once the harness next reports one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionDetail {
+    /// The focus the summary was asked to keep. Absent for an automatic
+    /// compaction, and for a harness that compacts without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// The context, in tokens, the agent's last turn left before it was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_before: Option<u64>,
+    /// The first context the harness reported after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_after: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

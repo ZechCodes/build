@@ -13,9 +13,7 @@ use crate::harness::{harness_for, AgentSession, Turn};
 use crate::timing::FrameTimer;
 use std::sync::{Arc, Mutex};
 
-/// What a compaction is asked for with. Every harness that compacts on a
-/// command spells it this way, and says so through `compacts_on_command`.
-pub(in crate::app) const COMPACT_COMMAND: &str = "/compact";
+pub(in crate::app) use crate::harness::COMPACT_COMMAND;
 
 /// Whether `prompt` is itself a compaction, focus instructions and all.
 fn is_compaction(prompt: &str) -> bool {

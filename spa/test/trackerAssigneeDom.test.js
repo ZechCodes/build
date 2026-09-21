@@ -188,6 +188,7 @@ describe("the inline issue composer", () => {
       labels: ["bug", "ui"],
       options: options(),
       catalog: CATALOG,
+      attachable: true,
       callRpc: call,
       ...over,
     });
@@ -222,6 +223,37 @@ describe("the inline issue composer", () => {
     expect(document.querySelector(".issue-compose .composer.attachable")).not.toBeNull();
     expect(document.querySelector(".composer-attach")).not.toBeNull();
     expect(document.querySelector(".composer-dropmask")).not.toBeNull();
+  });
+
+  // A press that cannot work is worse than no press: a bridge with no
+  // `issues.attach` gets the plain box, not one that apologises afterwards.
+  it("offers no paperclip at all against a bridge that cannot carry files", () => {
+    open({ attachable: false });
+    expect(document.querySelector(".composer-attach")).toBeNull();
+    expect(document.querySelector(".composer-tray")).toBeNull();
+    expect(document.querySelector(".composer-dropmask")).toBeNull();
+    expect(document.querySelector(".issue-compose .composer.attachable")).toBeNull();
+    // And the rest of the form is untouched — this is one affordance gone,
+    // not a degraded composer.
+    expect(document.querySelector("#issue-new-title")).not.toBeNull();
+    expect(document.querySelector("#issue-new-body")).not.toBeNull();
+  });
+
+  it("still files, and carries no attachments, without the tray", async () => {
+    open({ attachable: false });
+    type("#issue-new-title", "Kanban drag");
+    press("[data-compose-file]");
+    await flush();
+    expect(call.mock.calls[0][1]).toEqual({ project_id: "proj-1", title: "Kanban drag" });
+  });
+
+  it("cancels without a confirm when there is nothing to throw away", async () => {
+    open({ attachable: false });
+    slot.querySelector(".issue-compose").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    await flush();
+    expect(slot.querySelector(".issue-compose")).toBeNull();
   });
 
   it("will not file an issue with no title", async () => {

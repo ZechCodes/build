@@ -125,13 +125,14 @@ export function composedIssueParams(draft, { projectId, assignee, attachments })
 export const attachmentsWentNowhere = (sent, answer) =>
   Boolean(sent?.length) && !(answer?.issue?.attachments?.length);
 
-/** Whether closing now would throw anything away. */
+/** Whether closing now would throw anything away. A composer with no tray has
+ *  nothing in one, which is why the tray is asked rather than assumed. */
 export const composerHasContent = (draft, attachments) =>
   Boolean(
     String(draft.title || "").trim() ||
       String(draft.body || "").trim() ||
       draft.labels?.length ||
-      !attachments.isEmpty(),
+      (attachments && !attachments.isEmpty()),
   );
 
 const ids = composerPartIds(INPUT_ID);
@@ -140,23 +141,28 @@ const ids = composerPartIds(INPUT_ID);
 /// `.composer`, the tray, the textarea, the hidden file input and the
 /// paperclip, and wires the paste and the drop onto the root it is handed. The
 /// LAYOUT is ours — a send arrow belongs on a message, not on a form.
-const bodyBoxHtml = () => `<div class="composer-tray" id="${ids.tray}" hidden></div>
-  <div class="composer attachable issue-compose-body">
+///
+/// A bridge that cannot carry files on an issue gets the plain box: no
+/// paperclip, no tray, no drop mask, and nothing mounted over them. An
+/// affordance that is drawn and then apologised for is worse than one that was
+/// never offered (core/issueAttachments.js).
+const bodyBoxHtml = (attachable) => `${attachable ? `<div class="composer-tray" id="${ids.tray}" hidden></div>` : ""}
+  <div class="composer${attachable ? " attachable" : ""} issue-compose-body">
     <textarea id="${INPUT_ID}" rows="3" placeholder="Anything the title leaves out (markdown)"></textarea>
     <div class="composer-bar">
       <span class="hint issue-compose-hint"></span>
       <div class="composer-actions">
-        <input type="file" id="${ids.file}" class="composer-file" multiple hidden>
-        <button type="button" class="composer-attach" id="${ids.attach}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>
+        ${attachable ? `<input type="file" id="${ids.file}" class="composer-file" multiple hidden>
+        <button type="button" class="composer-attach" id="${ids.attach}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>` : ""}
       </div>
     </div>
-    <div class="composer-dropmask" aria-hidden="true"><span>Drop to attach</span></div>
+    ${attachable ? `<div class="composer-dropmask" aria-hidden="true"><span>Drop to attach</span></div>` : ""}
   </div>`;
 
-const frameHtml = (projectName) => `<section class="issue-compose" aria-label="File an issue in ${esc(projectName)}">
+const frameHtml = (projectName, attachable) => `<section class="issue-compose" aria-label="File an issue in ${esc(projectName)}">
     <input class="issue-compose-title" id="${PREFIX}-title" type="text" autocomplete="off"
       placeholder="What should be done" aria-label="Title">
-    ${bodyBoxHtml()}
+    ${bodyBoxHtml(attachable)}
     <div class="issue-compose-facets"></div>
     <div class="issue-compose-assignee"></div>
     <p class="warn issue-compose-error" hidden></p>
@@ -177,10 +183,11 @@ const FACETS = [
 /**
  * Open the composer into `host`.
  *
- * `upload(file, base64)` is the caller's — this form does not know which verb
- * carries the bytes. `onFiled(answer, outcome)` is handed the whole answer and
- * what the answer did not say for itself. `onClosed` runs however it ends, so
- * the caller can put the focus back where the reader left it.
+ * `attachable` is whether this device's bridge can carry files on an issue; a
+ * form that is not gets no paperclip rather than one that apologises.
+ * `onFiled(answer, outcome)` is handed the whole answer and what the answer did
+ * not say for itself. `onClosed` runs however it ends, so the caller can put
+ * the focus back where the reader left it.
  */
 export function openIssueComposer(host, {
   projectId,
@@ -189,11 +196,12 @@ export function openIssueComposer(host, {
   labels = [],
   options,
   catalog = null,
+  attachable = false,
   callRpc,
   onFiled = null,
   onClosed = null,
 }) {
-  host.innerHTML = frameHtml(projectName || projectId || "this project");
+  host.innerHTML = frameHtml(projectName || projectId || "this project", attachable);
   const root = host.querySelector(".issue-compose");
   const title = root.querySelector(`#${PREFIX}-title`);
   const body = root.querySelector(`#${INPUT_ID}`);
@@ -213,12 +221,14 @@ export function openIssueComposer(host, {
   // the tray calls `onChange` while it is still being mounted, so everything it
   // can reach has to exist before the mount rather than after it.
   let attachments = null;
-  attachments = mountComposerAttachments(root, {
-    ids: { input: INPUT_ID },
-    upload: (file, base64) => upload(file, base64),
-    onError: (message) => say(message),
-    onChange: () => paintPress(),
-  });
+  if (attachable) {
+    attachments = mountComposerAttachments(root, {
+      ids: { input: INPUT_ID },
+      upload: (file, base64) => upload(file, base64),
+      onError: (message) => say(message),
+      onChange: () => paintPress(),
+    });
+  }
 
   const menus = new Map(
     FACETS.map((facet) => [

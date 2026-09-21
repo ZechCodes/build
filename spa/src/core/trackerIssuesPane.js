@@ -35,6 +35,7 @@ import { BOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js
 import { paintIssueBoard, paintIssueRows } from "./trackerIssuesBody.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openIssueComposer } from "./issueComposer.js";
+import { carriesIssueAttachments } from "./issueAttachments.js";
 import { labelsOf } from "./trackerFilters.js";
 
 export function mountIssuesPane(host, options) {
@@ -349,6 +350,10 @@ export function mountIssuesPane(host, options) {
       labels: labelsOf(state.all),
       options: assigneeOptions(groups()),
       catalog: state.catalog(),
+      // Asked as the form opens, not when the tab mounted: a greeting lands
+      // after a tab is on screen, and a paperclip that waited for the next
+      // navigation would be a capability nobody got the benefit of.
+      attachable: carriesIssueAttachments(state.deviceId),
       callRpc: state.callRpc,
       onFiled: (answer, outcome) => {
         showTheNewIssue(answer?.issue);

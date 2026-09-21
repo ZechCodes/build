@@ -18,7 +18,12 @@ const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: carriedKinds } }),
+  bridgeCapabilities: () => ({
+    changes: { subscriptions: true, kinds: carriedKinds },
+    // #57: whether this bridge can carry files on an issue. A case that sets
+    // it false is an older bridge answering, not another machine.
+    issues: { attachments: carriesAttachments },
+  }),
   watchChanges: (registration) => {
     const named = RETIRED.filter((option) => option in registration);
     if (named.length) throw new TypeError(`watchChanges does not poll: remove ${named.join(", ")}`);
@@ -32,6 +37,8 @@ vi.mock("../src/core/changeEvents.js", () => ({
  *  shorter list is an older bridge answering, not another machine. */
 const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "issues"];
 let carriedKinds = EVERY_KIND;
+/** Whether the bridge under test has `issues.attach` (1.8). */
+let carriesAttachments = true;
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -168,6 +175,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
   carriedKinds = EVERY_KIND;
+  carriesAttachments = true;
   away = true;
   reconnecting = true;
   movedListeners = new Set();
@@ -630,6 +638,27 @@ describe("the two presses", () => {
       { name: "shot.png", path: ".build/attachments/abc-shot.png", mime: "image/png", size: 3 },
     ]);
     expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  // #57, the other half of being honest about a bridge that cannot carry
+  // files: do not offer the press at all. The apology below is for a bridge
+  // that claimed it could and then did not.
+  it("offers the paperclip on a bridge that carries files, and none on one that does not", async () => {
+    await mount();
+    await openComposer();
+    expect(host.querySelector(".composer-attach")).not.toBeNull();
+
+    pane.dispose();
+    carriesAttachments = false;
+    document.body.innerHTML = '<div id="pane"></div>';
+    host = document.querySelector("#pane");
+    await mount();
+    await openComposer();
+    expect(host.querySelector(".composer-attach")).toBeNull();
+    expect(host.querySelector(".composer-tray")).toBeNull();
+    // The composer is otherwise the same composer.
+    expect(host.querySelector(".issue-compose-title")).not.toBeNull();
+    expect(host.querySelector("[data-compose-file]")).not.toBeNull();
   });
 
   // The v1 facade drops a field the bridge predates rather than refusing it,

@@ -17,7 +17,11 @@ const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: carriedKinds } }),
+  bridgeCapabilities: () => ({
+    changes: { subscriptions: true, kinds: carriedKinds },
+    // #57: whether this bridge can carry files on an issue.
+    issues: { attachments: carriesAttachments },
+  }),
   watchChanges: (registration) => {
     const named = RETIRED.filter((option) => option in registration);
     if (named.length) throw new TypeError(`watchChanges does not poll: remove ${named.join(", ")}`);
@@ -31,6 +35,8 @@ vi.mock("../src/core/changeEvents.js", () => ({
  *  shorter list is an older bridge answering, not another machine. */
 const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "issues"];
 let carriedKinds = EVERY_KIND;
+/** Whether the bridge under test has `issues.attach` (1.8). */
+let carriesAttachments = true;
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -130,6 +136,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
   carriedKinds = EVERY_KIND;
+  carriesAttachments = true;
   away = true;
   reconnecting = true;
   movedListeners = new Set();
@@ -241,7 +248,55 @@ describe("the composer", () => {
 
   it("will not send an empty one", async () => {
     await mount();
-    expect(host.querySelector(".issue-composer button").disabled).toBe(true);
+    expect(host.querySelector('.issue-composer button[type="submit"]').disabled).toBe(true);
+  });
+
+  // #57: the comment box takes files too, and only against a bridge that can
+  // carry them. A press that cannot work is worse than no press.
+  it("offers the paperclip on a bridge that carries files, and none on one that does not", async () => {
+    await mount();
+    expect(host.querySelector(".issue-composer .composer-attach")).not.toBeNull();
+    expect(host.querySelector(".issue-composer .composer.attachable")).not.toBeNull();
+
+    page?.dispose?.();
+    carriesAttachments = false;
+    document.body.innerHTML = '<div id="page"></div>';
+    host = document.querySelector("#page");
+    await mount();
+    expect(host.querySelector(".issue-composer .composer-attach")).toBeNull();
+    expect(host.querySelector(".issue-composer .composer-tray")).toBeNull();
+    expect(host.querySelector(".issue-composer .composer-dropmask")).toBeNull();
+    // Still a comment box, still sends.
+    expect(host.querySelector("#issue-comment")).not.toBeNull();
+  });
+
+  it("sends a dropped file with the comment, through issues.attach", async () => {
+    await mount();
+    call.mockImplementation(async (method) => {
+      if (method === "issues.attach") {
+        return { name: "shot.png", path: "/store/abc-shot.png", mime: "image/png", size: 3 };
+      }
+      return method === "issues.get" ? answerFor() : {};
+    });
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", {
+      value: { files: [new File(["png"], "shot.png", { type: "image/png" })] },
+    });
+    host.querySelector("[data-issue-composer]").dispatchEvent(event);
+    await flush();
+    expect(listed("issues.attach")[0][1]).toMatchObject({ project_id: "proj-1", filename: "shot.png" });
+
+    // A comment that is only a screenshot is a comment: the press turns on
+    // with an empty box.
+    expect(host.querySelector('.issue-composer button[type="submit"]').disabled).toBe(false);
+    call.mockClear();
+    host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(listed("issues.comment")[0][1]).toEqual({
+      issue_id: "issue-1",
+      body: "",
+      attachments: [{ name: "shot.png", path: "/store/abc-shot.png", mime: "image/png", size: 3 }],
+    });
   });
 
   it("says why a refused comment did not land", async () => {

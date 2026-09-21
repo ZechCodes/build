@@ -17,7 +17,8 @@ import { actorName } from "./trackerLineWords.js";
 import { issueAvatarHtml } from "./issueAvatar.js";
 import { eventSentence } from "./trackerTimeline.js";
 import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateDotHtml } from "./trackerChips.js";
-import { attachmentGlyphHtml, formatAttachmentSize, isImageAttachment } from "./composer.js";
+import { attachmentGlyphHtml, composerPartIds, formatAttachmentSize, isImageAttachment } from "./composer.js";
+import { ICON_PAPERCLIP } from "./icons.js";
 
 /** The head: what the issue is called, and the two facts that are independent
  *  of each other — is it still open, and where does it stand on the board. */
@@ -108,11 +109,55 @@ export function timelineHtml(rows, context) {
     .join("")}</ul>`;
 }
 
-export const composerHtml = (draft, busy) => `<form class="issue-composer" data-issue-composer>
-    <label class="sr-only" for="issue-comment">Comment on this issue</label>
-    <textarea id="issue-comment" rows="3" placeholder="Comment on this issue"${busy ? " disabled" : ""}>${esc(draft)}</textarea>
+/// The ids `mountComposerAttachments` reads on the comment box. The textarea
+/// keeps the id it always had, so everything already addressing it still does.
+export const COMMENT_INPUT_ID = "issue-comment";
+const commentParts = composerPartIds(COMMENT_INPUT_ID);
+
+/**
+ * The comment box.
+ *
+ * `attachable` is whether this device's bridge can carry files on an issue
+ * (core/issueAttachments.js). One that cannot gets the plain box it always had
+ * — no paperclip, no tray, no drop mask — because an affordance that is drawn
+ * and then apologised for is worse than one that was never offered.
+ *
+ * The send press is enabled by a draft OR by a tray with something in it: a
+ * comment that is only a screenshot is a comment.
+ */
+/// The paperclip, the hidden picker and the drop mask — or nothing at all.
+const commentAttachHtml = () => `<div class="composer-bar">
+      <div class="composer-actions">
+        <input type="file" id="${commentParts.file}" class="composer-file" multiple hidden>
+        <button type="button" class="composer-attach" id="${commentParts.attach}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>
+      </div>
+    </div>
+    <div class="composer-dropmask" aria-hidden="true"><span>Drop to attach</span></div>`;
+
+/// Whether the send press can be pressed. A comment that is only a screenshot
+/// is a comment, so a tray with something in it is as good as a draft.
+const canComment = (draft, busy, hasFiles) => !busy && (Boolean(draft.trim()) || hasFiles);
+
+const commentFieldHtml = (draft, busy) =>
+  `<textarea id="${COMMENT_INPUT_ID}" rows="3" placeholder="Comment on this issue"${busy ? " disabled" : ""}>${esc(draft)}</textarea>`;
+
+/// The box, wrapped or bare. A bridge that cannot carry files gets exactly the
+/// box it always had — the same element, unwrapped — so gating the paperclip
+/// costs an older bridge nothing at all, not even a changed frame.
+const commentBoxHtml = (draft, busy, attachable) =>
+  attachable
+    ? `<div class="composer-tray" id="${commentParts.tray}" hidden></div>
+    <div class="composer attachable issue-comment-box">
+      ${commentFieldHtml(draft, busy)}
+      ${commentAttachHtml()}
+    </div>`
+    : commentFieldHtml(draft, busy);
+
+export const composerHtml = (draft, busy, attachable = false, hasFiles = false) => `<form class="issue-composer" data-issue-composer>
+    <label class="sr-only" for="${COMMENT_INPUT_ID}">Comment on this issue</label>
+    ${commentBoxHtml(draft, busy, attachable)}
     <div class="row issue-composer-row">
-      <button class="btn primary" type="submit"${busy || !draft.trim() ? " disabled" : ""}>${busy ? "sending…" : "Comment"}</button>
+      <button class="btn primary" type="submit"${canComment(draft, busy, hasFiles) ? "" : " disabled"}>${busy ? "sending…" : "Comment"}</button>
     </div>
   </form>`;
 
@@ -182,7 +227,7 @@ export function issuePageHtml(issue, context) {
       ${issueBodyHtml(issue, context.refLinks)}
       ${issueAttachmentsHtml(issue.attachments)}
       ${timelineHtml(context.rows, context)}
-      ${composerHtml(context.draft, context.sending)}
+      ${composerHtml(context.draft, context.sending, context.attachable, context.hasFiles)}
     </div>
     ${issueRailHtml(issue, context)}
   </div>`;

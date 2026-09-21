@@ -412,6 +412,23 @@
 .issue-composer textarea:focus-visible { outline:2px solid var(--accent); outline-offset:-1px; }
 .issue-composer-row { display:flex; justify-content:flex-end; }
 
+/* The comment box that takes files (#57): the conversation's own composer,
+   which wears its frame on the FIELD and hangs the paperclip on a bar beneath
+   it. Restated at a specificity that beats both `.issue-composer textarea`
+   above and `.composer textarea` in the base sheet, because those two are
+   equally specific and which of them wins should not depend on which file was
+   imported last. */
+.issue-composer .issue-comment-box textarea {
+  min-height:72px; resize:none;
+  border:1px solid var(--line); border-radius:11px;
+  padding:13px 14px; background:var(--bg);
+}
+.issue-composer .issue-comment-box textarea:focus-visible {
+  border-color:var(--accent); outline:none;
+}
+.issue-comment-box .composer-bar { padding:4px 2px 0; }
+.issue-composer .composer-tray:not([hidden]) { display:flex; flex-wrap:wrap; gap:6px; }
+
 .issue-rail { display:flex; flex-direction:column; gap:16px; }
 .issue-rail-section { display:flex; flex-direction:column; gap:6px; }
 .issue-rail-section h2 {

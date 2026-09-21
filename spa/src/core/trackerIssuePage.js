@@ -23,8 +23,10 @@ import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { issueLinkRows } from "./trackerLinks.js";
 import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
-import { issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
+import { COMMENT_INPUT_ID, issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
 import { referenceLinks } from "./referenceTargets.js";
+import { mountComposerAttachments } from "./composer.js";
+import { carriesIssueAttachments } from "./issueAttachments.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
 
@@ -46,6 +48,10 @@ export function mountIssuePage(host, options) {
     issues: [],
     disposed: false,
     picker: null,
+    // The tray's entries are the VIEW's draft, not the DOM's: this page
+    // rewrites itself whole on a repaint, and an upload started before one
+    // has to settle into the tray after it.
+    files: [],
   };
 
   const groups = () => workspaceAgents(state.feed(), state.projectKey);
@@ -107,6 +113,11 @@ export function mountIssuePage(host, options) {
       labelsDraft: state.labelsDraft,
       busy: state.busy,
       sending: state.sending,
+      // Asked at paint, never cached: a greeting lands after a page is on
+      // screen, and a paperclip that waited for the next navigation would be
+      // a capability nobody got the benefit of.
+      attachable: carriesIssueAttachments(state.deviceId),
+      hasFiles: state.files.length > 0,
     });
   };
 
@@ -221,14 +232,30 @@ export function mountIssuePage(host, options) {
       state.issue.state === "closed" ? "Could not reopen this issue" : "Could not close this issue",
     );
 
-  async function sendComment() {
+  /// What a comment would carry, or null when there is nothing to send yet.
+  /// A comment that is only a screenshot is a comment, so the tray can carry
+  /// one on its own — but a file still going up is not one yet.
+  function commentToSend() {
+    if (state.sending || comments?.busy()) return null;
     const body = state.draft.trim();
-    if (!body || state.sending) return;
+    const files = comments?.attachments() || [];
+    if (!body && !files.length) return null;
+    return {
+      issue_id: state.issueId,
+      body,
+      ...(files.length ? { attachments: files } : null),
+    };
+  }
+
+  async function sendComment() {
+    const params = commentToSend();
+    if (!params) return;
     state.sending = true;
     paint();
     try {
-      await state.callRpc("issues.comment", { issue_id: state.issueId, body });
+      await state.callRpc("issues.comment", params);
       state.draft = "";
+      comments?.clear();
       await refresh({ keepDrafts: true });
     } catch (error) {
       if (!state.disposed) notifyError("Could not add this comment", messageOf(error));
@@ -272,9 +299,38 @@ export function mountIssuePage(host, options) {
     };
   }
 
+  /// The comment box's tray, remounted after each repaint over the entries the
+  /// view is holding — which is what lets an upload started before a repaint
+  /// settle into the tray after it.
+  let comments = null;
+  function wireCommentAttachments(form) {
+    if (!carriesIssueAttachments(state.deviceId)) {
+      comments = null;
+      return;
+    }
+    comments = mountComposerAttachments(form, {
+      ids: { input: COMMENT_INPUT_ID },
+      upload: (file, base64) =>
+        state.callRpc("issues.attach", {
+          project_id: state.projectId,
+          filename: file.name,
+          content_b64: base64,
+        }),
+      onError: (message) => notifyError("Could not attach that file", message),
+      readAttachments: () => state.files,
+      writeAttachments: (entries) => {
+        state.files = entries;
+      },
+      // The send press turns on the moment a file is in the tray, and off
+      // again when the last one is taken out.
+      onChange: () => paint(),
+    });
+  }
+
   function wireComposer() {
     const form = host.querySelector("[data-issue-composer]");
-    const field = host.querySelector("#issue-comment");
+    const field = host.querySelector(`#${COMMENT_INPUT_ID}`);
+    wireCommentAttachments(form);
     field.oninput = () => {
       const wasEmpty = !state.draft.trim();
       state.draft = field.value;

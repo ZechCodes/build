@@ -609,6 +609,41 @@ impl AppState {
         });
     }
 
+    /// Write down what the agent's session said its last turn cost in
+    /// context. Compared before it is written, so a snapshot that repeats the
+    /// reading costs nothing.
+    pub(in crate::app) fn record_agent_turn_context(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        context: crate::harness::TurnContext,
+    ) {
+        let unchanged = self
+            .entity_agents(owner)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id))
+            .is_some_and(|agent| {
+                agent.last_context_tokens == Some(context.context_tokens)
+                    && agent.session_cache_read_tokens == Some(context.cache_read_tokens)
+            });
+        if unchanged {
+            return;
+        }
+        self.edit_agent_record("record_agent_turn_context", owner, agent_id, |agent| {
+            agent.last_context_tokens = Some(context.context_tokens);
+            agent.session_cache_read_tokens = Some(context.cache_read_tokens);
+        });
+    }
+
+    /// Forget the context an agent's last turn left, once a compaction has
+    /// been asked for: the reading describes a context that is going away, and
+    /// one left standing would ask for the compaction again.
+    pub(in crate::app) fn forget_agent_context(&mut self, owner: &str, agent_id: &str) {
+        self.edit_agent_record("forget_agent_context", owner, agent_id, |agent| {
+            agent.last_context_tokens = None;
+        });
+    }
+
     /// Start one agent's execution interval without moving an interval already
     /// in flight. A second read or a turn queued onto a native session is more
     /// work for the same execution, not a new start time.

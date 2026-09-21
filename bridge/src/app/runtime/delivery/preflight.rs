@@ -1,3 +1,4 @@
+use super::compaction::compact_before_turn;
 use crate::app::{
     ensure_agent_tab, still_pumping_instance, AgentSpawnRequest, AppState, DeliveryOutcome,
     DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey,
@@ -17,7 +18,7 @@ pub(in crate::app) use crate::orchestrator::NEW_THREAD_MESSAGES_PROMPT;
 /// turn back and stops it.
 pub(in crate::app) const WORKING_INDICATOR_NOTICE: &str = "Receiving these messages started the reviewer's \"Working\" indicator and its timer on the newest message. It runs until you call post_thread_message: status=Working keeps it running, while Waiting hands the turn back and Complete or Blocked records the final outcome. The user sees only messages sent with that tool. Do not leave the indicator running after you have finished.";
 
-fn record_command_activity(
+pub(super) fn record_command_activity(
     state: &Arc<Mutex<AppState>>,
     timer: &FrameTimer,
     turn: &PendingAgentTurn,
@@ -209,6 +210,9 @@ pub(in crate::app) fn deliver(
         Spawned::Fresh => &say.cold,
         Spawned::Warm => &say.warm,
     };
+    if compact_before_turn(state, turn, spawned, prompt, timer) {
+        return Ok(DeliveryOutcome::Deferred);
+    }
     let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
     // The handle comes out of the registry so the turn travels with the
     // app-wide state lock RELEASED: every RPC, every terminal pump and the idle

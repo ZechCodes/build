@@ -59,6 +59,7 @@ pub(in crate::app) fn spawn_status_pump(
     let state = Arc::downgrade(state);
     let session = Arc::downgrade(&session);
     tokio::spawn(async move {
+        let mut recorded_context = None;
         loop {
             let snapshot = changed.borrow_and_update().clone();
             let (ended, retry_deferred, clock, delivery_state) = {
@@ -77,6 +78,7 @@ pub(in crate::app) fn spawn_status_pump(
                 }
                 let owner = &instance.entity_id;
                 app.record_agent_status_snapshot(owner, &instance.agent_id, &snapshot);
+                record_new_turn_context(&mut app, instance, &snapshot, &mut recorded_context);
                 let retry_deferred = !matches!(snapshot.status, AgentStatus::Working)
                     && app
                         .delivery_queue
@@ -101,6 +103,29 @@ pub(in crate::app) fn spawn_status_pump(
             }
         }
     });
+}
+
+/// Record the turn context `snapshot` carries unless this pump already has.
+///
+/// Keyed on what the pump recorded rather than on the record, because the
+/// record is cleared when a compaction is asked for (see
+/// [`compact_before_turn`](super::delivery::compaction::compact_before_turn)):
+/// the snapshots that follow still carry the reading from before it until the
+/// harness reports a new one, and writing that back would ask again.
+fn record_new_turn_context(
+    app: &mut AppState,
+    instance: &SessionInstance,
+    snapshot: &crate::harness::SessionStatusSnapshot,
+    recorded: &mut Option<crate::harness::TurnContext>,
+) {
+    let Some(context) = snapshot
+        .context
+        .filter(|context| *recorded != Some(*context))
+    else {
+        return;
+    };
+    app.record_agent_turn_context(&instance.entity_id, &instance.agent_id, context);
+    *recorded = Some(context);
 }
 
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and

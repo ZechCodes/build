@@ -1,3 +1,4 @@
+pub(in crate::app) mod compaction;
 pub(in crate::app) mod preflight;
 pub(in crate::app) mod queue;
 pub(in crate::app) mod receipts;

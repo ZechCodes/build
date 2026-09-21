@@ -234,8 +234,9 @@ new one, or take one away), `add_workspace_agent` and `remove_workspace_agent`
 `add_project_source` and `remove_project_source` (the folders every NEW
 workspace is cut from), `add_workspace_directory` and
 `remove_workspace_directory` (the folders inside one workspace that already
-exists), `search_conversation` (your own history), `set_topic` and
-`post_thread_message`. Beyond the issue tools below there are no others — you
+exists), `compact_agent` (compact another agent's context, with what to keep),
+`compact_self` (compact your own), `search_conversation` (your own history),
+`set_topic` and `post_thread_message`. Beyond the issue tools below there are no others — you
 cannot reach another project, you cannot read a workspace agent's conversation,
 and you cannot change a file.
 
@@ -1015,6 +1016,12 @@ mod tests {
             assert!(
                 project.contains(tool),
                 "{tool} is how significant work is handed over: {project}"
+            );
+        }
+        for tool in ["`compact_agent`", "`compact_self`"] {
+            assert!(
+                project.contains(tool),
+                "the inventory names every tool the surface has, {tool} too: {project}"
             );
         }
         assert!(

@@ -629,6 +629,13 @@ impl AppState {
         if !from_the_user {
             return false;
         }
+        // The project's agent is named by its project (#51) and is offered no
+        // `set_name`, so the ask is an instruction it cannot follow — and one
+        // that would arrive on every message the user ever sent it, because
+        // nothing it can do would answer it.
+        if crate::agent::is_project_agent(&delivery.agent_id) {
+            return false;
+        }
         self.entity_agents(&delivery.owner_id)
             .ok()
             .and_then(|agents| agents.by_id(&delivery.agent_id).cloned())

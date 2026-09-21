@@ -6,7 +6,7 @@
 //! made or chosen by the agent itself, and it is what all of those places say
 //! instead.
 
-use super::project_agent::workspace;
+use super::project_agent::{project_agent, workspace};
 use super::tracker::{filed, tracked};
 use super::*;
 use crate::mcp::BridgeAction;
@@ -233,6 +233,41 @@ fn the_user_s_first_message_asks_an_unnamed_agent_to_name_itself() {
         "asked once: {}",
         second[0]
     );
+}
+
+/// The PROJECT's agent is never asked. It is named by its project, it is
+/// offered no `set_name`, and the ask would repeat on every message the user
+/// sent it for the rest of its life — an instruction it cannot follow.
+#[test]
+fn the_projects_agent_is_never_asked_to_name_itself() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+
+    for (operation, body) in [
+        ("op-project-1", "how is the roll going?"),
+        ("op-project-2", "and the second one?"),
+    ] {
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": owner,
+                "agent_id": agent_id,
+                "body": body,
+                "operation_id": operation,
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        for turn in state.delivery_queue.take_ready(|_| false) {
+            let warm = turn.say.as_ref().map(|say| say.warm.as_str()).unwrap_or("");
+            assert!(!warm.contains("You have no name yet"), "{warm}");
+            assert!(
+                warm.contains(body),
+                "and it still carries what was said: {warm}"
+            );
+        }
+    }
 }
 
 /// An agent that HAS a name is never asked, and neither is one woken by

@@ -80,10 +80,7 @@ pub(in crate::app) fn spawn_status_pump(
                 app.record_agent_status_snapshot(owner, &instance.agent_id, &snapshot);
                 record_new_turn_context(&mut app, instance, &snapshot, &mut recorded_context);
                 let retry_deferred = !matches!(snapshot.status, AgentStatus::Working)
-                    && app
-                        .delivery_queue
-                        .queued()
-                        .any(|turn| turn.owner == *owner && turn.agent_id == instance.agent_id);
+                    && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
                 (
                     matches!(snapshot.status, AgentStatus::Ended { .. }),
                     retry_deferred,
@@ -103,6 +100,17 @@ pub(in crate::app) fn spawn_status_pump(
             }
         }
     });
+}
+
+/// Whether an agent whose turn just ended has something waiting for it: a
+/// queued turn, or a compaction it asked for mid-turn, which is ready now.
+fn something_waits_for_the_turn(app: &mut AppState, owner: &str, agent_id: &str) -> bool {
+    let compaction_ready = app.compactions.turn_ended(owner, agent_id);
+    compaction_ready
+        || app
+            .delivery_queue
+            .queued()
+            .any(|turn| turn.owner == owner && turn.agent_id == agent_id)
 }
 
 /// Record the turn context `snapshot` carries unless this pump already has.

@@ -14,6 +14,8 @@ use std::io::{BufRead, Write};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod compaction;
+
 /// The protocol version this server advertises when a client omits one.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -132,6 +134,17 @@ pub enum BridgeAction {
     /// last word on whether it is taken.
     SetName {
         name: String,
+    },
+    /// Compact this agent's own session once its current turn ends, keeping
+    /// what `instructions` names. Every agent with a session.
+    CompactSelf {
+        instructions: String,
+    },
+    /// Compact another agent of this project's session: now between its
+    /// turns, else when its current one ends. Project only.
+    CompactAgent {
+        agent_id: String,
+        instructions: String,
     },
     /// Every harness this bridge can run, with its models and efforts, and
     /// which of them are installed here. The lookup an agent asked for a model
@@ -383,6 +396,8 @@ impl BridgeAction {
             BridgeAction::SearchConversation { .. } => "search_conversation",
             BridgeAction::SetTopic { .. } => "set_topic",
             BridgeAction::SetName { .. } => "set_name",
+            BridgeAction::CompactSelf { .. } => "compact_self",
+            BridgeAction::CompactAgent { .. } => "compact_agent",
             BridgeAction::ListHarnesses => "list_harnesses",
             BridgeAction::ListProjects => "list_projects",
             BridgeAction::ListWork => "list_work",
@@ -435,6 +450,7 @@ impl BridgeAction {
             | BridgeAction::SearchConversation { .. }
             | BridgeAction::SetTopic { .. }
             | BridgeAction::SetName { .. }
+            | BridgeAction::CompactSelf { .. }
             | BridgeAction::ListHarnesses
             | BridgeAction::MessageAgent { .. } => &[McpSurface::Coding, McpSurface::Project],
             BridgeAction::ListProjects
@@ -461,6 +477,9 @@ impl BridgeAction {
             BridgeAction::AddProjectSource { .. } | BridgeAction::RemoveProjectSource { .. } => {
                 &[McpSurface::Project]
             }
+            // Compacting ANOTHER agent is staffing, which is the project
+            // agent's business; every agent compacts itself.
+            BridgeAction::CompactAgent { .. } => &[McpSurface::Project],
             // The tracker is on every surface that WORKS a project: a coding
             // agent files and moves the issues it is given, and a project
             // agent runs the board. The router has no project to be scoped to.
@@ -679,6 +698,7 @@ impl DoneServer {
                 "description": SET_TOPIC_DESCRIPTION,
                 "inputSchema": Self::set_topic_input_schema()
             }),
+            compaction::compact_self_tool(),
             json!({
                 "name": "set_name",
                 "description": SET_NAME_DESCRIPTION,
@@ -1382,7 +1402,7 @@ impl DoneServer {
                 },
                 "required": ["source_id"]
             }
-        }), json!({
+        }), compaction::compact_agent_tool(), json!({
             "name": "post_thread_message",
             "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete when you have answered, Blocked when you cannot, Waiting when you need the user, or Working for a progress update while you keep reading.",
             "inputSchema": Self::project_message_input_schema()
@@ -1398,7 +1418,7 @@ impl DoneServer {
             "name": "set_topic",
             "description": SET_TOPIC_DESCRIPTION,
             "inputSchema": Self::set_topic_input_schema()
-        })]);
+        }), compaction::compact_self_tool()]);
         tools.extend(Self::issue_tools());
         Value::Array(tools)
     }
@@ -1524,6 +1544,8 @@ impl DoneServer {
             "search_conversation" => search_action(id, params),
             "set_topic" => topic_action(id, params),
             "set_name" => name_action(id, params),
+            "compact_agent" => compaction::compact_agent_action(id, params),
+            "compact_self" => compaction::compact_self_action(id, params),
             "post_thread_message" => project_message(id, params),
             other => refused(id, format!("unknown tool: {other}")),
         }
@@ -1545,6 +1567,9 @@ impl DoneServer {
         }
         if name == "set_topic" {
             return topic_action(id, params);
+        }
+        if name == "compact_self" {
+            return compaction::compact_self_action(id, params);
         }
         if name == "message_agent" {
             return message_agent_action(id, params);
@@ -2194,12 +2219,13 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5 + WORKSPACE_TOOLS.len() + ISSUE_TOOLS.len());
+        assert_eq!(tools.len(), 6 + WORKSPACE_TOOLS.len() + ISSUE_TOOLS.len());
         assert_eq!(tools[0]["name"], "post_thread_message");
         assert_eq!(tools[1]["name"], "message_agent");
         assert_eq!(tools[2]["name"], "search_conversation");
         assert_eq!(tools[3]["name"], "set_topic");
-        assert_eq!(tools[4]["name"], "set_name");
+        assert_eq!(tools[4]["name"], "compact_self");
+        assert_eq!(tools[5]["name"], "set_name");
         assert_eq!(
             tools[0]["inputSchema"]["properties"]["status"]["enum"],
             json!(["Complete", "Blocked", "Waiting", "Working"])
@@ -2763,6 +2789,7 @@ mod tests {
             "message_agent",
             "search_conversation",
             "set_topic",
+            "compact_self",
         ];
         assert_eq!(
             tool_names(&server()),
@@ -2781,7 +2808,11 @@ mod tests {
             tool_names(&project()),
             [
                 &WORKSPACE_TOOLS[..],
-                &["add_project_source", "remove_project_source"][..],
+                &[
+                    "add_project_source",
+                    "remove_project_source",
+                    "compact_agent"
+                ][..],
                 &conversation[..],
                 &ISSUE_TOOLS[..],
             ]
@@ -2796,7 +2827,11 @@ mod tests {
                 );
             }
         }
-        for project_only in ["add_project_source", "remove_project_source"] {
+        for project_only in [
+            "add_project_source",
+            "remove_project_source",
+            "compact_agent",
+        ] {
             assert!(
                 !tool_names(&server()).contains(&project_only.to_string()),
                 "{project_only} is the project agent's alone"

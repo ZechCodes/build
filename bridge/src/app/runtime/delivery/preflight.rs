@@ -18,24 +18,43 @@ pub(in crate::app) use crate::orchestrator::NEW_THREAD_MESSAGES_PROMPT;
 /// turn back and stops it.
 pub(in crate::app) const WORKING_INDICATOR_NOTICE: &str = "Receiving these messages started the reviewer's \"Working\" indicator and its timer on the newest message. It runs until you call post_thread_message: status=Working keeps it running, while Waiting hands the turn back and Complete or Blocked records the final outcome. The user sees only messages sent with that tool. Do not leave the indicator running after you have finished.";
 
+/// Mint the `Compaction` row for a command said to a terminal session, which
+/// has no event stream of its own to report the compaction's start.
 pub(super) fn record_command_activity(
     state: &Arc<Mutex<AppState>>,
     timer: &FrameTimer,
-    turn: &PendingAgentTurn,
+    speaker: &CommandSpeaker<'_>,
     session: &dyn crate::harness::AgentSession,
     prompt: &str,
 ) {
     if session.terminal().is_none()
-        || !crate::harness::harness_for(turn.model_choice.provider).starts_compaction(prompt)
+        || !crate::harness::harness_for(speaker.provider).starts_compaction(prompt)
     {
         return;
     }
     timer.lock(state).record_agent_activity(
-        &turn.owner,
-        &turn.agent_id,
+        speaker.owner,
+        speaker.agent_id,
         &crate::harness::AgentActivity::Compaction { completed: false },
         None,
     );
+}
+
+/// Who a command was said to, and through which harness.
+pub(super) struct CommandSpeaker<'a> {
+    pub(super) owner: &'a str,
+    pub(super) agent_id: &'a str,
+    pub(super) provider: crate::models::AgentProvider,
+}
+
+impl<'a> CommandSpeaker<'a> {
+    fn of_turn(turn: &'a PendingAgentTurn) -> CommandSpeaker<'a> {
+        CommandSpeaker {
+            owner: &turn.owner,
+            agent_id: &turn.agent_id,
+            provider: turn.model_choice.provider,
+        }
+    }
 }
 
 fn delivered_prompt(
@@ -313,7 +332,13 @@ pub(in crate::app) fn deliver(
         }
         return Err(error.to_string());
     }
-    record_command_activity(state, timer, turn, session.as_ref(), &native_turn.text);
+    record_command_activity(
+        state,
+        timer,
+        &CommandSpeaker::of_turn(turn),
+        session.as_ref(),
+        &native_turn.text,
+    );
     // The quiescence clock restarts here: whatever the agent was silent about
     // before, it now has something to answer for. A tab that closed while the
     // turn was in flight has no clock left to restart — and the turn still

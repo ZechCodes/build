@@ -1,3 +1,4 @@
+use super::compaction::{send_compaction, CompactionSend};
 use crate::app::{
     deliver, AppState, DeliveryOutcome, PendingTurns, AGENT_START_DECLINED_SESSION_OVER,
 };
@@ -28,9 +29,13 @@ impl DeliveryRunner {
     /// nothing else to drain it when the window ends, so the same acquisition
     /// asks for a wake then.
     pub(in crate::app) fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
-        let (turns, settle_wake) = {
+        let (compactions, turns, settle_wake) = {
             let mut app = timer.lock(state);
+            // Before the turns are taken: an agent with a turn queued has
+            // its compaction sent ahead of that turn, by the turn's delivery.
+            let compactions = app.take_ready_compactions();
             (
+                compactions,
                 app.take_pending_turns(),
                 app.delivery_queue.settle_wake_due(),
             )
@@ -38,7 +43,41 @@ impl DeliveryRunner {
         if let Some(at) = settle_wake {
             DeliveryRunner::wake_at(state, timer, at);
         }
+        DeliveryRunner::spawn_compactions(state, timer, compactions);
         DeliveryRunner::spawn(state, turns);
+    }
+
+    /// Send the compactions agents asked for that a drain took, off this
+    /// thread the way a turn is sent, and return at once. With no runtime
+    /// under it they are sent here.
+    fn spawn_compactions(
+        state: &Arc<Mutex<AppState>>,
+        timer: &FrameTimer,
+        compactions: Vec<CompactionSend>,
+    ) {
+        if compactions.is_empty() {
+            return;
+        }
+        let send_all = {
+            let state = Arc::clone(state);
+            let clock = Arc::clone(timer.clock());
+            move || {
+                let timer = clock.frame(AGENT_DELIVERY_METHOD);
+                for compaction in &compactions {
+                    send_compaction(&state, &timer, compaction);
+                }
+            }
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            send_all();
+            return;
+        };
+        let sending = runtime.spawn_blocking(send_all);
+        runtime.spawn(async move {
+            if let Err(joined) = sending.await {
+                eprintln!("requested compaction failed: {joined}");
+            }
+        });
     }
 
     /// Drain again at `at`, on a timer of the runtime's. Holds the state

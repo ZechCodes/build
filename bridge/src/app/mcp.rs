@@ -514,6 +514,13 @@ impl AppState {
         if let Some(answered) = self.project_scoped_action(entity_id, agent_id, &action) {
             return answered;
         }
+        let sender = crate::app::AgentSender {
+            entity_id,
+            agent_id,
+        };
+        if let Some(answered) = self.compaction_action(sender, &action) {
+            return answered;
+        }
         if let BridgeAction::ReadOperationMessages { operation_id } = &action {
             return self.read_operation_messages_for_agent(entity_id, agent_id, operation_id);
         }

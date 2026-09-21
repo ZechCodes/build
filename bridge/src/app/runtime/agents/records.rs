@@ -636,13 +636,15 @@ impl AppState {
 
     /// Write down what the agent's session said its last turn cost in
     /// context. Compared before it is written, so a snapshot that repeats the
-    /// reading costs nothing.
+    /// reading costs nothing. The first reading after a compaction Build sent
+    /// is also that compaction's size afterwards.
     pub(in crate::app) fn record_agent_turn_context(
         &mut self,
         owner: &str,
         agent_id: &str,
         context: crate::harness::TurnContext,
     ) {
+        self.stamp_sent_compaction(owner, agent_id, context.context_tokens);
         let unchanged = self
             .entity_agents(owner)
             .ok()

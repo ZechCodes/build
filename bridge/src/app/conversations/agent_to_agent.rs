@@ -37,7 +37,7 @@ impl AppState {
         target_agent_id: &str,
         body: &str,
     ) -> Result<Value, String> {
-        let target_entity_id = self.reachable_agent(sender, target_agent_id)?;
+        let target_entity_id = self.reachable_agent("message_agent", sender, target_agent_id)?;
         self.post_from_agent_to_agent(sender, &target_entity_id, target_agent_id, body)
     }
 
@@ -103,9 +103,11 @@ impl AppState {
     ///
     /// Three refusals, each naming what it refused: an id nobody answers to, an
     /// agent of another project, and a sender with no project of its own — which
-    /// is an entity Build cannot scope a send from at all.
-    fn reachable_agent(
+    /// is an entity Build cannot scope a send from at all. Each names `tool`,
+    /// the one asking: `compact_agent` reaches the same agents a send does.
+    pub(in crate::app) fn reachable_agent(
         &self,
+        tool: &str,
         sender: AgentSender<'_>,
         target_agent_id: &str,
     ) -> Result<String, String> {
@@ -115,10 +117,10 @@ impl AppState {
         let project_id = self
             .projects
             .project_id_of(sender.entity_id)
-            .ok_or_else(|| format!("message_agent: {} belongs to no project", sender.entity_id))?;
+            .ok_or_else(|| format!("{tool}: {} belongs to no project", sender.entity_id))?;
         if self.projects.project_id_of(&target_entity_id) != Some(project_id) {
             return Err(format!(
-                "message_agent: agent {target_agent_id} is not in project {project_id}"
+                "{tool}: agent {target_agent_id} is not in project {project_id}"
             ));
         }
         Ok(target_entity_id)

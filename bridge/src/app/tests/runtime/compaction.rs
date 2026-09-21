@@ -4,21 +4,21 @@
 use super::*;
 use crate::harness::{SessionStatusSnapshot, TurnContext};
 
-const RUN: &str = "run-compact";
+pub(super) const RUN: &str = "run-compact";
 
 /// A run whose agent talks to the Codex app server — a harness that compacts
 /// on `/compact` — through a live session waiting at its prompt.
-struct CompactingAgent {
+pub(super) struct CompactingAgent {
     _dir: tempfile::TempDir,
-    state: Arc<Mutex<AppState>>,
-    root: PathBuf,
-    agent_id: String,
-    log: SessionLog,
-    status: tokio::sync::watch::Sender<SessionStatusSnapshot>,
+    pub(super) state: Arc<Mutex<AppState>>,
+    pub(super) root: PathBuf,
+    pub(super) agent_id: String,
+    pub(super) log: SessionLog,
+    pub(super) status: tokio::sync::watch::Sender<SessionStatusSnapshot>,
 }
 
 impl CompactingAgent {
-    fn new() -> CompactingAgent {
+    pub(super) fn new() -> CompactingAgent {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
         let root = insert_run(&mut app, &repo, dir.path(), RUN, RunState::Building);
@@ -54,7 +54,7 @@ impl CompactingAgent {
         }
     }
 
-    fn with_context(self, context_tokens: u64) -> CompactingAgent {
+    pub(super) fn with_context(self, context_tokens: u64) -> CompactingAgent {
         self.state.lock().unwrap().record_agent_turn_context(
             RUN,
             &self.agent_id,
@@ -66,14 +66,14 @@ impl CompactingAgent {
         self
     }
 
-    fn edit(&self, edit: impl FnOnce(&mut crate::agent::Agent)) {
+    pub(super) fn edit(&self, edit: impl FnOnce(&mut crate::agent::Agent)) {
         self.state
             .lock()
             .unwrap()
             .edit_agent_record("test", RUN, &self.agent_id, edit);
     }
 
-    fn agent(&self) -> crate::agent::Agent {
+    pub(super) fn agent(&self) -> crate::agent::Agent {
         self.state.lock().unwrap().runs[RUN]
             .agents
             .by_id(&self.agent_id)
@@ -81,7 +81,7 @@ impl CompactingAgent {
             .clone()
     }
 
-    fn turn(&self, interrupt: bool) -> PendingAgentTurn {
+    pub(super) fn turn(&self, interrupt: bool) -> PendingAgentTurn {
         let agent = self.agent();
         PendingAgentTurn {
             operation_id: None,
@@ -103,13 +103,13 @@ impl CompactingAgent {
     }
 
     /// Queue one turn and run the drain, the way a verb that queued it does.
-    fn say(&self, interrupt: bool) {
+    pub(super) fn say(&self, interrupt: bool) {
         let turn = self.turn(interrupt);
         self.state.lock().unwrap().delivery_queue.enqueue(turn);
         deliver_pending_agent_turns(&self.state);
     }
 
-    fn still_queued(&self) -> usize {
+    pub(super) fn still_queued(&self) -> usize {
         self.state.lock().unwrap().delivery_queue.queued().count()
     }
 }

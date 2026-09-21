@@ -399,6 +399,10 @@ pub struct AppState {
     /// next warm turn is preceded by a compaction; 0 never compacts. An
     /// agent's own `max_context_tokens` overrides it.
     compact_above_tokens: u64,
+    /// The compactions agents have asked for and not yet had, and the ones
+    /// Build sent and has not yet measured. See
+    /// [`CompactionLedger`](self::runtime::delivery::compaction::CompactionLedger).
+    compactions: self::runtime::delivery::compaction::CompactionLedger,
     /// The issue each agent's CURRENT turn was dispatched under (spec: Issues
     /// → Automatic activity).
     ///
@@ -584,6 +588,7 @@ impl AppState {
             delivery_queue: Default::default(),
             watch_agent_filed_issues: true,
             compact_above_tokens: crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS,
+            compactions: Default::default(),
             dispatched_issue: HashMap::new(),
             reminded_holdings: HashMap::new(),
             operation_ledger: Default::default(),

@@ -635,7 +635,7 @@ impl AppState {
     }
 
     /// Write down what the agent's session said its last turn cost in
-    /// context. Compared before it is written, so a snapshot that repeats the
+    /// context, and when it said so. Compared before it is written, so a snapshot that repeats the
     /// reading costs nothing. The first reading after a compaction Build sent
     /// is also that compaction's size afterwards.
     pub(in crate::app) fn record_agent_turn_context(
@@ -656,8 +656,10 @@ impl AppState {
         if unchanged {
             return;
         }
+        let now = crate::store::now_rfc3339();
         self.edit_agent_record("record_agent_turn_context", owner, agent_id, |agent| {
             agent.last_context_tokens = Some(context.context_tokens);
+            agent.last_context_at = Some(now);
             agent.session_cache_read_tokens = Some(context.cache_read_tokens);
         });
     }
@@ -668,6 +670,7 @@ impl AppState {
     pub(in crate::app) fn forget_agent_context(&mut self, owner: &str, agent_id: &str) {
         self.edit_agent_record("forget_agent_context", owner, agent_id, |agent| {
             agent.last_context_tokens = None;
+            agent.last_context_at = None;
         });
     }
 

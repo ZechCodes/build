@@ -4,12 +4,14 @@
 //! run), while individual harness processes are recorded as session lineage.
 //! Messages cost agent tokens; events and revision links do not.
 
+mod context_reading;
 mod conversation;
 mod items;
 mod metadata;
 mod paging;
 mod rendering;
 
+pub use context_reading::ContextReading;
 use conversation::empty_agent;
 pub use conversation::{
     ArtifactRevision, CompletionReport, SessionInstance, SessionLineage, SessionStart, Thread,

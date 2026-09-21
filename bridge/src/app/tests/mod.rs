@@ -201,6 +201,7 @@ mod agent_messages;
 mod agent_names;
 mod agent_roles;
 mod api_facade;
+mod author_context;
 mod board;
 mod configuration;
 mod conversations;

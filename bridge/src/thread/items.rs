@@ -57,6 +57,11 @@ pub struct AgentIdentity {
     /// names existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// How full the SENDER's context was when it sent these words (#68).
+    /// Stamped on a message an agent wrote, and only when its harness had
+    /// reported a reading; absent on every other identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<super::ContextReading>,
 }
 
 impl AgentIdentity {
@@ -68,6 +73,7 @@ impl AgentIdentity {
             owner: None,
             topic: None,
             name: None,
+            context: None,
         }
     }
 }

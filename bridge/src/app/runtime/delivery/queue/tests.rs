@@ -119,6 +119,7 @@ fn delivery_receipt(operation_id: &str) -> OperationReceipt {
                 messages: Vec::new(),
                 prior_context: String::new(),
                 ask_to_name: false,
+                tells_sender_context: false,
             }),
         }),
         requested_by: None,

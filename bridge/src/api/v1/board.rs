@@ -922,6 +922,10 @@ pub struct ModelRow {
     pub label: String,
     pub supports_effort: bool,
     pub efforts: Vec<String>,
+    /// The most tokens the model holds in context; absent where Build does
+    /// not know it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
 }
 
 /// One harness and everything it can be asked for.

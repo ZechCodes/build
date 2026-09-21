@@ -1029,15 +1029,15 @@ fn a_project_agent_messages_no_agent_outside_its_project() {
 
 /// A project agent, an agent it staffed a workspace with, and the message it
 /// handed over — what every hand-off test starts from.
-struct HandedOver {
-    owner: String,
-    agent_id: String,
-    workspace_id: String,
-    entity_id: String,
-    worker: String,
+pub(super) struct HandedOver {
+    pub(super) owner: String,
+    pub(super) agent_id: String,
+    pub(super) workspace_id: String,
+    pub(super) entity_id: String,
+    pub(super) worker: String,
 }
 
-fn handed_over(state: &mut AppState, project_id: &str, body: &str) -> HandedOver {
+pub(super) fn handed_over(state: &mut AppState, project_id: &str, body: &str) -> HandedOver {
     let workspace_id = workspace(state, project_id, "one");
     let (owner, agent_id) = project_agent(state, project_id);
     let added = state

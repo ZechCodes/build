@@ -219,6 +219,7 @@ impl AppState {
             refs,
             attachments,
             created_at: now.clone(),
+            author_context: None,
         };
         let mut write = IssueWrite::by(Actor::User, issue);
         write.comments.push(comment.clone());

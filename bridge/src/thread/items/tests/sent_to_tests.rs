@@ -12,6 +12,7 @@ fn recipient() -> AgentIdentity {
         }),
         topic: Some("Reading the router".to_string()),
         name: None,
+        context: None,
     }
 }
 

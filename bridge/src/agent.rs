@@ -248,6 +248,10 @@ pub struct Agent {
     /// asked for, so a reading from before it cannot ask for another.
     #[serde(default)]
     pub last_context_tokens: Option<u64>,
+    /// When [`last_context_tokens`](Self::last_context_tokens) was recorded,
+    /// RFC3339 — what a reading an agent's words carry says it was taken at.
+    #[serde(default)]
+    pub last_context_at: Option<String>,
     /// Cache-read tokens the agent's current session process has spent over
     /// all its turns, as the harness last reported them.
     #[serde(default)]
@@ -346,6 +350,7 @@ impl Agent {
             name_asked: false,
             watched: true,
             last_context_tokens: None,
+            last_context_at: None,
             session_cache_read_tokens: None,
             max_context_tokens: None,
         }
@@ -365,6 +370,21 @@ impl Agent {
             && self
                 .last_context_tokens
                 .is_some_and(|tokens| tokens >= threshold)
+    }
+
+    /// The context this agent last reported, as what it writes carries it:
+    /// the tokens, when they were recorded, and the window of the model it
+    /// runs — the one running now, else the one chosen. `None` without a
+    /// recorded reading, which includes one cleared by a compaction.
+    pub fn context_reading(&self) -> Option<crate::thread::ContextReading> {
+        let tokens = self.last_context_tokens?;
+        let at = self.last_context_at.clone()?;
+        let window = self
+            .active_model
+            .as_deref()
+            .or(self.choice.model.as_deref())
+            .and_then(|model| crate::models::context_window_of(self.choice.provider, model));
+        Some(crate::thread::ContextReading { tokens, window, at })
     }
 
     /// The durable storage identity of this agent's conversation.
@@ -1306,6 +1326,36 @@ mod context_tests {
     }
 
     #[test]
+    fn a_reading_carries_the_tokens_the_time_and_the_running_models_window() {
+        let mut agent = with_context(Some(612_000), None);
+        agent.last_context_at = Some("2026-09-21T09:30:00Z".to_string());
+        agent.active_model = Some("claude-opus-5[1m]".to_string());
+        assert_eq!(
+            agent.context_reading(),
+            Some(crate::thread::ContextReading {
+                tokens: 612_000,
+                window: Some(1_000_000),
+                at: "2026-09-21T09:30:00Z".to_string(),
+            })
+        );
+        agent.active_model = None;
+        assert_eq!(
+            agent.context_reading().and_then(|reading| reading.window),
+            None,
+            "a default model is no model whose window Build knows"
+        );
+    }
+
+    #[test]
+    fn there_is_no_reading_without_tokens_or_a_time() {
+        let mut agent = with_context(None, None);
+        agent.last_context_at = Some("2026-09-21T09:30:00Z".to_string());
+        assert_eq!(agent.context_reading(), None);
+        let untimed = with_context(Some(612_000), None);
+        assert_eq!(untimed.context_reading(), None);
+    }
+
+    #[test]
     fn a_record_written_before_context_was_tracked_loads_without_it() {
         let mut wire = serde_json::to_value(Agent::new(
             "agent-1",
@@ -1319,6 +1369,7 @@ mod context_tests {
             "last_context_tokens",
             "session_cache_read_tokens",
             "max_context_tokens",
+            "last_context_at",
         ] {
             wire.as_object_mut().unwrap().remove(field);
         }

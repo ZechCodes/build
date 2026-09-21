@@ -14,13 +14,15 @@
           "high",
           "xhigh",
           "max"
-        ]
+        ],
+        "context_window": 1000000
       },
       {
         "id": "claude-haiku-4-5",
         "label": "Claude Haiku 4.5",
         "supports_effort": false,
-        "efforts": []
+        "efforts": [],
+        "context_window": 200000
       }
     ],
     "efforts": [
@@ -61,13 +63,15 @@
               "high",
               "xhigh",
               "max"
-            ]
+            ],
+            "context_window": 1000000
           },
           {
             "id": "claude-haiku-4-5",
             "label": "Claude Haiku 4.5",
             "supports_effort": false,
-            "efforts": []
+            "efforts": [],
+            "context_window": 200000
           }
         ],
         "binary": "claude",

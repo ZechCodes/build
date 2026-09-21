@@ -1495,6 +1495,8 @@ impl AppState {
             // has. The threshold is the conversation's own when it set one,
             // and `compact_at_tokens` is the one in effect (0: never).
             "last_context_tokens": agent.last_context_tokens,
+            // When that reading was recorded; null exactly when it is.
+            "last_context_at": agent.last_context_at,
             "session_cache_read_tokens": agent.session_cache_read_tokens,
             "max_context_tokens": agent.max_context_tokens,
             "compact_at_tokens": agent.compact_at_tokens(self.compact_above_tokens),

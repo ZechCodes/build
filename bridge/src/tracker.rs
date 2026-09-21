@@ -432,6 +432,11 @@ pub struct IssueComment {
     #[serde(default)]
     pub attachments: Vec<crate::thread::MessageAttachment>,
     pub created_at: String,
+    /// How full the authoring AGENT's context was when it wrote this (#68),
+    /// snapshotted at write time. Absent on the user's comments, on an agent's
+    /// written before it had a reading, and on every comment before #68.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_context: Option<crate::thread::ContextReading>,
 }
 
 /// What happened to an issue. Comments and events interleave into the one

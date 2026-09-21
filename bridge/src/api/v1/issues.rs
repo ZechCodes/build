@@ -396,6 +396,10 @@ pub struct IssueCommentView {
     #[serde(default)]
     pub attachments: Vec<IssueAttachment>,
     pub created_at: String,
+    /// How full the authoring agent's context was as it wrote (#68). Absent
+    /// on the user's comments and wherever the agent had no reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_context: Option<crate::thread::ContextReading>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -102,6 +102,7 @@ fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
         messages,
         prior_context: String::new(),
         ask_to_name: false,
+        tells_sender_context: false,
     });
     store
         .accept_thread_post("issue-1", &record.agents, &receipt)
@@ -269,6 +270,7 @@ fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
         messages: repair_messages,
         prior_context: String::new(),
         ask_to_name: false,
+        tells_sender_context: false,
     });
     store
         .accept_thread_post("issue-1", &record.agents, &repair)
@@ -293,6 +295,7 @@ fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
         messages: failed_messages,
         prior_context: String::new(),
         ask_to_name: false,
+        tells_sender_context: false,
     });
     store
         .accept_thread_post("issue-1", &record.agents, &failed)
@@ -350,6 +353,7 @@ fn recovery_ignores_an_orphaned_receipt_without_deleting_it() {
         messages,
         prior_context: String::new(),
         ask_to_name: false,
+        tells_sender_context: false,
     });
     store
         .accept_thread_post("issue-1", &record.agents, &receipt)

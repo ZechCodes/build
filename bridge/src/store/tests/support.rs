@@ -34,6 +34,7 @@ pub(super) fn queued_operation(operation_id: &str, posted_sequence: u64) -> Oper
                 messages: Vec::new(),
                 prior_context: String::new(),
                 ask_to_name: false,
+                tells_sender_context: false,
             }),
         }),
         requested_by: None,

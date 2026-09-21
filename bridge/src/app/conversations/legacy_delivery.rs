@@ -100,6 +100,7 @@ impl AppState {
             messages,
             prior_context: String::new(),
             ask_to_name: false,
+            tells_sender_context: false,
         }))
     }
 

@@ -66,6 +66,12 @@ pub struct OperationPayload {
     /// before names existed, which is what `default` is for.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ask_to_name: bool,
+    /// Whether this turn tells its reader how full each sending agent's
+    /// context was (#68). Only the project agent's are: it is the one that
+    /// decides who takes the next issue. Decided where the recipient is known,
+    /// like [`ask_to_name`](Self::ask_to_name).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tells_sender_context: bool,
 }
 
 impl OperationPayload {
@@ -114,6 +120,7 @@ impl OperationPayload {
         // only when the slash is the first token; putting Build's delivery
         // envelope ahead of it turns commands such as `/goal ...` into prose.
         let sender = self.sender_note();
+        let sender_context = self.sender_context_note();
         let workspace = self.workspace_note();
         let issue = self.issue_note();
         let looking = self.viewing_issue_note();
@@ -124,7 +131,7 @@ impl OperationPayload {
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{workspace}{issue}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{sender_context}{workspace}{issue}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -163,6 +170,34 @@ impl OperationPayload {
             named.join(" and "),
             handles.join(" and ")
         )
+    }
+
+    /// One line per sending agent saying how full its context was when it
+    /// wrote — "Rail scroll is at 612k of 1M (61%)." — for the project agent,
+    /// which is choosing who takes the next issue. Empty for every other
+    /// reader, for a notice Build wrote, and for a sender with no reading.
+    fn sender_context_note(&self) -> String {
+        if !self.tells_sender_context {
+            return String::new();
+        }
+        let mut lines: Vec<String> = self
+            .messages
+            .iter()
+            .filter(|message| !message.from_build)
+            .filter_map(|message| message.from_agent.as_deref())
+            .filter_map(|sender| {
+                let author = sender
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("Agent `{}`", sender.id));
+                sender
+                    .context
+                    .as_ref()
+                    .map(|reading| reading.sentence(&author))
+            })
+            .collect();
+        lines.dedup();
+        lines.iter().map(|line| format!("\n{line}\n")).collect()
     }
 
     /// What to do about the issue this turn was handed, when being HANDED one
@@ -422,7 +457,54 @@ mod tests {
             .unwrap()],
             prior_context: "The previous revision changed the parser.".into(),
             ask_to_name: false,
+            tells_sender_context: false,
         }
+    }
+
+    /// A message from an agent at 612k of a known 1M window, named Rail scroll.
+    fn from_rail_scroll(from_build: bool) -> ThreadMessage {
+        let mut sender = crate::thread::AgentIdentity::new("agent-9");
+        sender.name = Some("Rail scroll".to_string());
+        sender.context = Some(crate::thread::ContextReading {
+            tokens: 612_000,
+            window: Some(1_000_000),
+            at: "2026-09-21T12:00:00Z".to_string(),
+        });
+        ThreadMessage {
+            from_agent: Some(Box::new(sender)),
+            from_build,
+            ..payload().messages[0].clone()
+        }
+    }
+
+    /// The project agent is told how full a sender's context is, in one line;
+    /// nobody else is, and a notice Build wrote carries no such line.
+    #[test]
+    fn the_project_agent_is_told_how_full_a_senders_context_is() {
+        let told = OperationPayload {
+            messages: vec![from_rail_scroll(false)],
+            tells_sender_context: true,
+            ..payload()
+        };
+        let prompt = told.delivery_prompt("post-1", false, AgentProvider::Claude);
+        assert!(
+            prompt.contains("\nRail scroll is at 612k of 1M (61%).\n"),
+            "{prompt}"
+        );
+
+        let not_the_project_agent = OperationPayload {
+            tells_sender_context: false,
+            ..told.clone()
+        };
+        let prompt = not_the_project_agent.delivery_prompt("post-1", false, AgentProvider::Claude);
+        assert!(!prompt.contains("Rail scroll is at"), "{prompt}");
+
+        let a_notice = OperationPayload {
+            messages: vec![from_rail_scroll(true)],
+            ..told
+        };
+        let prompt = a_notice.delivery_prompt("post-1", false, AgentProvider::Claude);
+        assert!(!prompt.contains("Rail scroll is at"), "{prompt}");
     }
 
     #[test]

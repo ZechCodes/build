@@ -49,36 +49,42 @@ impl Harness for ClaudeHarness {
                 label: "Claude Fable 5.1",
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
             },
             ModelOption {
                 id: "claude-opus-5",
                 label: "Claude Opus 5",
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
             },
             ModelOption {
                 id: "claude-opus-4-8",
                 label: "Claude Opus 4.8",
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
             },
             ModelOption {
                 id: "claude-sonnet-5",
                 label: "Claude Sonnet 5",
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
             },
             ModelOption {
                 id: "claude-sonnet-4-6",
                 label: "Claude Sonnet 4.6",
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
             },
             ModelOption {
                 id: "claude-haiku-4-5",
                 label: "Claude Haiku 4.5",
                 supports_effort: false,
                 efforts: &[],
+                context_window: Some(200_000),
             },
         ]
     }

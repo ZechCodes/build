@@ -109,6 +109,7 @@ fn a_stamped_sender_names_its_owner_and_its_topic() {
         }),
         topic: Some(String::new()),
         name: None,
+        context: None,
     };
 
     let raw = serde_json::to_value(&sender).unwrap();

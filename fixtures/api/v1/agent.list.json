@@ -22,6 +22,7 @@
         "choice_revision": 4,
         "has_terminal": true,
         "last_context_tokens": 148210,
+        "last_context_at": "2026-09-13T10:03:25Z",
         "session_cache_read_tokens": 912004,
         "max_context_tokens": 150000,
         "compact_at_tokens": 150000,

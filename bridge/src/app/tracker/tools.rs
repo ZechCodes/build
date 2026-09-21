@@ -253,7 +253,7 @@ impl AppState {
         if project_id != scope.project_id {
             return Err(unknown());
         }
-        Ok(json!({
+        let mut read = json!({
             "comment_id": comment.id,
             "issue_id": issue.id,
             // The number and title, because the notice gave a number and the
@@ -264,7 +264,34 @@ impl AppState {
             "created_at": comment.created_at,
             "body": comment.body,
             "refs": comment.refs,
-        }))
+        });
+        if let Some(reading) = &comment.author_context {
+            read["author_context"] = json!(reading);
+        }
+        if let Some(line) = self.author_context_line(scope, &comment) {
+            read["author_context_line"] = json!(line);
+        }
+        Ok(read)
+    }
+
+    /// The sentence the PROJECT agent reads about a comment's author: how full
+    /// its context was as it wrote (#68). A comment reaches the project agent
+    /// as a one-line notice naming only its id, so this is where the line
+    /// lands. `None` for any other reader, and for a comment with no reading.
+    fn author_context_line(
+        &self,
+        scope: &IssueScope,
+        comment: &crate::tracker::IssueComment,
+    ) -> Option<String> {
+        let reader = scope.actor.agent_id()?;
+        if !crate::agent::is_project_agent(reader) {
+            return None;
+        }
+        let reading = comment.author_context.as_ref()?;
+        let author = self
+            .agent_display_name(&comment.author)
+            .unwrap_or_else(|| format!("Agent {}", comment.author.agent_id().unwrap_or_default()));
+        Some(reading.sentence(&author))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -342,6 +369,10 @@ impl AppState {
             refs,
             attachments,
             created_at: now.clone(),
+            author_context: scope
+                .actor
+                .agent_id()
+                .and_then(|agent_id| self.agent_context_reading(&scope.entity_id, agent_id)),
         };
         let mut write = IssueWrite::by(scope.actor.clone(), issue);
         write.comments.push(comment.clone());

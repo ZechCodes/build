@@ -61,7 +61,7 @@ impl AppState {
         params: &Value,
         requester: OperationRequester,
     ) -> Result<Value, String> {
-        let sender = self.agent_identity(&requester.entity_id, &requester.agent_id);
+        let sender = self.sender_identity(&requester.entity_id, &requester.agent_id);
         self.post_to_thread(params, PostOrigin::asked_by(requester, sender))
     }
 
@@ -79,7 +79,7 @@ impl AppState {
     ) -> Result<Value, String> {
         let origin = match requester {
             Some(requester) => {
-                let sender = self.agent_identity(&requester.entity_id, &requester.agent_id);
+                let sender = self.sender_identity(&requester.entity_id, &requester.agent_id);
                 let mut origin = PostOrigin::asked_by(requester, sender);
                 origin.from_issue = Some(issue);
                 origin
@@ -683,13 +683,10 @@ impl AppState {
         let asks_a_name = self.should_ask_for_a_name(delivery);
         let operation_prompt = receipt.and_then(|receipt| {
             delivery.payload.as_ref().map(|payload| {
-                let payload = if asks_a_name {
-                    OperationPayload {
-                        ask_to_name: true,
-                        ..payload.clone()
-                    }
-                } else {
-                    payload.clone()
+                let payload = OperationPayload {
+                    ask_to_name: asks_a_name || payload.ask_to_name,
+                    tells_sender_context: crate::agent::is_project_agent(&delivery.agent_id),
+                    ..payload.clone()
                 };
                 TurnText {
                     cold: payload.delivery_prompt(

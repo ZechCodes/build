@@ -127,6 +127,7 @@ fn a_warm_session_at_its_threshold_compacts_first_and_hears_the_turn_on_the_next
         None,
         "the reading that asked for it is spent"
     );
+    assert_eq!(agent.agent().last_context_at, None, "and so is its time");
 
     deliver_pending_agent_turns(&agent.state);
 
@@ -352,6 +353,7 @@ fn the_digest_carries_the_context_and_the_threshold_in_effect() {
     let agent = CompactingAgent::new();
     let unmeasured = agent.listed();
     assert_eq!(unmeasured["last_context_tokens"], Value::Null);
+    assert_eq!(unmeasured["last_context_at"], Value::Null);
     assert_eq!(unmeasured["session_cache_read_tokens"], Value::Null);
     assert_eq!(unmeasured["max_context_tokens"], Value::Null);
     assert_eq!(unmeasured["compact_at_tokens"], 200_000);
@@ -360,6 +362,12 @@ fn the_digest_carries_the_context_and_the_threshold_in_effect() {
     let measured = agent.listed();
     assert_eq!(measured["last_context_tokens"], 123_456);
     assert_eq!(measured["session_cache_read_tokens"], 7);
+    assert!(
+        measured["last_context_at"]
+            .as_str()
+            .is_some_and(|at| at.contains('T')),
+        "the reading says when it was taken: {measured:?}"
+    );
 }
 
 #[test]

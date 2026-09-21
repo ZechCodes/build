@@ -140,6 +140,25 @@ pub struct ModelOption {
     pub supports_effort: bool,
     /// Exact effort values this model accepts. Empty means effort is disabled.
     pub efforts: &'static [&'static str],
+    /// The most tokens this model holds in context, where it is documented.
+    /// Absent for a model whose window Build does not know.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+}
+
+/// The context window of the model an agent runs, when its harness's catalog
+/// knows it.
+///
+/// A running model reports its id as the catalog spells it or with something
+/// after it — `claude-opus-5[1m]` — so the longest catalog id the model starts
+/// with is the one it is. An alias (`opus`) is no id, and knows no window.
+pub fn context_window_of(provider: AgentProvider, model: &str) -> Option<u64> {
+    harness_for(provider)
+        .models()
+        .into_iter()
+        .filter(|option| model.starts_with(option.id))
+        .max_by_key(|option| option.id.len())
+        .and_then(|option| option.context_window)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -470,6 +489,31 @@ impl RoleModels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_claude_model_but_haiku_has_a_million_token_window() {
+        for model in harness_for(AgentProvider::Claude).models() {
+            let expected = if model.id.contains("haiku") {
+                200_000
+            } else {
+                1_000_000
+            };
+            assert_eq!(model.context_window, Some(expected), "{}", model.id);
+        }
+    }
+
+    #[test]
+    fn a_models_window_is_found_by_its_id_or_a_running_variant_of_it() {
+        let claude = AgentProvider::Claude;
+        assert_eq!(context_window_of(claude, "claude-opus-5"), Some(1_000_000));
+        assert_eq!(
+            context_window_of(claude, "claude-opus-5[1m]"),
+            Some(1_000_000),
+            "a running model reports its id with a suffix"
+        );
+        assert_eq!(context_window_of(claude, "opus"), None);
+        assert_eq!(context_window_of(AgentProvider::Pi, "anything"), None);
+    }
 
     fn choice(model: Option<&str>, effort: Option<&str>) -> ModelChoice {
         ModelChoice {

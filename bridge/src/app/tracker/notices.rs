@@ -69,7 +69,7 @@ impl AppState {
 
     /// What an acting agent is CALLED, when it has been named. `None` for the
     /// user and for an agent nobody has named.
-    fn agent_display_name(&self, actor: &Actor) -> Option<String> {
+    pub(in crate::app) fn agent_display_name(&self, actor: &Actor) -> Option<String> {
         let Actor::Agent { agent_id } = actor else {
             return None;
         };
@@ -544,6 +544,7 @@ mod tests {
             refs: Vec::new(),
             attachments: Vec::new(),
             created_at: "2026-09-20T15:01:00Z".into(),
+            author_context: None,
         });
         let notice = notice_of(&write, None).unwrap();
         assert_eq!(notice.action, "commented");
@@ -590,6 +591,7 @@ mod tests {
             refs: Vec::new(),
             attachments: Vec::new(),
             created_at: "2026-09-20T15:01:00Z".into(),
+            author_context: None,
         });
         let reading = reader_body_of(&write, "Rail scroll");
         assert_eq!(reading, "New comment from Rail scroll");

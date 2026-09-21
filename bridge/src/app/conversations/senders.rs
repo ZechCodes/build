@@ -23,7 +23,31 @@ impl AppState {
             owner: self.conversation_owner_ref(entity_id),
             topic: Some(self.agent_topic(entity_id, agent_id)),
             name: self.agent_name(entity_id, agent_id),
+            context: None,
         }
+    }
+
+    /// The agent that WROTE a message, as the message wears it: its identity,
+    /// and how full its context was as it wrote — snapshotted now, because a
+    /// reader wants the room the author had for these words.
+    pub(in crate::app) fn sender_identity(&self, entity_id: &str, agent_id: &str) -> AgentIdentity {
+        AgentIdentity {
+            context: self.agent_context_reading(entity_id, agent_id),
+            ..self.agent_identity(entity_id, agent_id)
+        }
+    }
+
+    /// The agent's last context reading, or `None` without one.
+    pub(in crate::app) fn agent_context_reading(
+        &self,
+        entity_id: &str,
+        agent_id: &str,
+    ) -> Option<crate::thread::ContextReading> {
+        self.entity_agents(entity_id).ok().and_then(|agents| {
+            agents
+                .by_id(agent_id)
+                .and_then(crate::agent::Agent::context_reading)
+        })
     }
 
     /// What this agent is called, when it has been named. `None` rather than

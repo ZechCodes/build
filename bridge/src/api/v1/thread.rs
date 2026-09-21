@@ -556,6 +556,9 @@ pub struct AgentDigest {
     /// harness reports one, and again once a compaction has been asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_context_tokens: Option<u64>,
+    /// When that reading was recorded, RFC3339; absent exactly when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_context_at: Option<String>,
     /// Cache-read tokens the agent's current session has spent in all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_cache_read_tokens: Option<u64>,

@@ -1,3 +1,4 @@
+/** @vitest-environment jsdom */
 // Watching an issue, from whichever surface offers the switch.
 //
 // #65. The issue page's toggle and the inbox's Mute are the same verb, so the
@@ -7,7 +8,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 
-import { createWatchToggle, watchTitle } from "../src/core/watchToggle.js";
+import { createWatchToggle, syncWatchButton, watchButtonHtml, watchTitle } from "../src/core/watchToggle.js";
 
 const settled = () => new Promise((done) => setTimeout(done, 0));
 
@@ -81,5 +82,58 @@ describe("the switch moving", () => {
     const toggle = createWatchToggle({ watching: false, watchers: 0, issueId: "i-1", call: async () => ({}) });
     toggle.settle({ watching: true, watchers: 4 });
     expect(toggle.state()).toEqual({ watching: true, watchers: 4, pending: false });
+  });
+});
+
+describe("what it is a watch of", () => {
+  // Two kinds of thing are watched and the wire names them differently (#64).
+  // The switch behaves the same for both; only the verb and its parameter move.
+  it("asks about a conversation by its own id", async () => {
+    const call = vi.fn(async () => ({}));
+    const toggle = createWatchToggle({ watching: false, watchers: 0, conversationId: "run-7", call });
+    await toggle.press();
+    expect(call).toHaveBeenCalledWith("conversation.watch", { conversation_id: "run-7" });
+    await toggle.press();
+    expect(call).toHaveBeenLastCalledWith("conversation.unwatch", { conversation_id: "run-7" });
+  });
+
+  it("stays on the issue verbs when it is an issue, which is what the issue page imports", async () => {
+    const call = vi.fn(async () => ({}));
+    await createWatchToggle({ watching: false, watchers: 0, issueId: "i-1", call }).press();
+    expect(call).toHaveBeenCalledWith("issues.watch", { issue_id: "i-1" });
+  });
+});
+
+describe("the control it wears", () => {
+  const button = (html) => {
+    document.body.innerHTML = html;
+    return document.body.firstElementChild;
+  };
+
+  it("says whether it is on, for a reader who cannot see the icon", () => {
+    expect(button(watchButtonHtml({ watching: true, watchers: 3 })).getAttribute("aria-pressed")).toBe("true");
+    expect(button(watchButtonHtml({ watching: false, watchers: 0 })).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("carries the count where hovering finds it", () => {
+    const on = button(watchButtonHtml({ watching: true, watchers: 3 }));
+    expect(on.getAttribute("title")).toBe("Watching · 3");
+    expect(on.getAttribute("aria-label")).toBe("Watching · 3");
+  });
+
+  it("is written onto a button already standing, so a press rebuilds no head", () => {
+    const node = button(watchButtonHtml({ watching: false, watchers: 2 }));
+    syncWatchButton(node, { watching: true, watchers: 3, pending: false });
+    expect(node.getAttribute("aria-pressed")).toBe("true");
+    expect(node.getAttribute("title")).toBe("Watching · 3");
+    expect(node.classList.contains("watching")).toBe(true);
+  });
+
+  it("is not pressable while a verb is in flight", () => {
+    const node = button(watchButtonHtml({ watching: false, watchers: 0 }));
+    syncWatchButton(node, { watching: true, watchers: 1, pending: true });
+    expect(node.disabled).toBe(true);
+    syncWatchButton(node, { watching: true, watchers: 1, pending: false });
+    expect(node.disabled).toBe(false);
   });
 });

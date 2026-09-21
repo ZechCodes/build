@@ -15,6 +15,9 @@
 // told when to repaint. That is what lets the issue page and the inbox import
 // the same rule without agreeing about anything else.
 
+import { esc } from "./text.js";
+import { ICON_EYE } from "./icons.js";
+
 /** What the switch says on hover: whether the reader is watching, and how many
  *  others are. Nobody else is not a number worth showing. */
 export function watchTitle({ watching = false, watchers = 0 } = {}) {
@@ -23,7 +26,26 @@ export function watchTitle({ watching = false, watchers = 0 } = {}) {
 }
 
 /**
- * A watch switch for one issue.
+ * What a watch is asked for, by what it is a watch OF.
+ *
+ * Two kinds of thing are watched and they are named differently on the wire
+ * (#64): an issue by `issue_id`, a conversation by `conversation_id`. The
+ * switch behaves identically for both, so the difference is one table rather
+ * than two copies of the logic — and the issue form is the default, because
+ * that is the shape the issue page already imports.
+ */
+function verbsFor({ issueId, conversationId }) {
+  if (conversationId) {
+    return { watch: "conversation.watch", unwatch: "conversation.unwatch", params: { conversation_id: conversationId } };
+  }
+  return { watch: "issues.watch", unwatch: "issues.unwatch", params: { issue_id: issueId } };
+}
+
+/**
+ * A watch switch for one issue, or for one conversation.
+ *
+ * Pass `issueId` for an issue or `conversationId` for a conversation; the verb
+ * and its parameter follow from which (`verbsFor` above).
  *
  * `watchers` is how many OTHERS watch it, so pressing counts the reader in or
  * out of the number the hover text shows. `onChange` is called with the new
@@ -39,10 +61,12 @@ export function createWatchToggle({
   watching = false,
   watchers = 0,
   issueId,
+  conversationId,
   call,
   onChange = () => {},
   onFailure = () => {},
 }) {
+  const asked = verbsFor({ issueId, conversationId });
   let state = { watching: Boolean(watching), watchers: Number(watchers) || 0, pending: false };
 
   const moveTo = (next) => {
@@ -68,7 +92,7 @@ export function createWatchToggle({
         pending: true,
       });
       try {
-        await call(watchingNow ? "issues.watch" : "issues.unwatch", { issue_id: issueId });
+        await call(watchingNow ? asked.watch : asked.unwatch, asked.params);
         moveTo({ pending: false });
       } catch (error) {
         moveTo({ ...before, pending: false });
@@ -86,4 +110,39 @@ export function createWatchToggle({
       });
     },
   };
+}
+
+/// What the control wears and how it is found. Exported so the rail's paint and
+/// a test name the same thing.
+export const WATCH_BUTTON_CLASS = "rail-watch";
+export const WATCH_BUTTON_SELECTOR = `.${WATCH_BUTTON_CLASS}`;
+
+/**
+ * The watch control, as markup.
+ *
+ * An eye rather than a word: it stands in a row of icon buttons beside the
+ * remove button, and a word there would be the only one. `aria-pressed` is
+ * what says whether it is on — the icon alone is not an answer to a reader who
+ * cannot see it — and the title carries the count, which is the whole reason
+ * the control is worth hovering.
+ */
+export function watchButtonHtml(state = {}) {
+  const label = esc(watchTitle(state));
+  const on = Boolean(state.watching);
+  return `<button type="button" class="iconbtn ${WATCH_BUTTON_CLASS}${on ? " watching" : ""}"
+    aria-pressed="${on}" title="${label}" aria-label="${label}">${ICON_EYE}</button>`;
+}
+
+/** …and the same state written onto a button already standing, so a press does
+ *  not have to rebuild the head it lives in. */
+export function syncWatchButton(button, state = {}) {
+  if (!button) return;
+  const label = watchTitle(state);
+  button.setAttribute("aria-pressed", String(Boolean(state.watching)));
+  button.setAttribute("title", label);
+  button.setAttribute("aria-label", label);
+  button.classList.toggle("watching", Boolean(state.watching));
+  // A verb in flight is not the reader's to press again (`press` ignores it
+  // anyway); saying so is what keeps the control honest about why.
+  button.toggleAttribute("disabled", Boolean(state.pending));
 }

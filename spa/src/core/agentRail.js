@@ -146,6 +146,7 @@ import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
 import { PIN_CLASS, pinButtonHtml, syncPinButton } from "./pinControl.js";
+import { WATCH_BUTTON_SELECTOR, createWatchToggle, syncWatchButton, watchButtonHtml } from "./watchToggle.js";
 import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
@@ -606,15 +607,37 @@ function railProjectChipHtml(chip) {
  *  it names, which the rail learns after the first paint. */
 const chipMark = (chip) => chip?.name || "";
 
-export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null, pinned = true, removalWho = "", projectChip } = {}) {
+/// What a head shows when the caller does not say. A spread rather than eight
+/// parameter defaults: each default is a branch, and the head was over the
+/// complexity cap by carrying them.
+const HEAD_DEFAULTS = Object.freeze({
+  provider: "",
+  removable: false,
+  hasTerminal: true,
+  surfaceOptions: [],
+  heading: null,
+  pinned: true,
+  removalWho: "",
+  projectChip: null,
+  /// Null on a rail that is not offering the switch — the project's side of a
+  /// swap, and any caller that predates it (#65).
+  watch: null,
+});
+
+/** The watch switch, on a head that has one. */
+const railWatchButtonHtml = (watch) => (watch ? watchButtonHtml(watch) : "");
+
+export function panelHeadHtml(who, mode, given = {}) {
+  const head = { ...HEAD_DEFAULTS, ...given };
   return `<div class="rail-head">
-    ${harnessIconHtml(provider)}
-    ${railWhoHtml(who, heading)}
-    ${railTuiButtonHtml(mode, hasTerminal)}
-    ${railRemoveButtonHtml(removalWho || who, removable)}
-    ${railProjectChipHtml(projectChip)}
-    ${pinButtonHtml({ subject: PANEL_SUBJECT, pinned })}
-    ${surfaceMenuRegionHtml(surfaceOptions)}
+    ${harnessIconHtml(head.provider)}
+    ${railWhoHtml(who, head.heading)}
+    ${railTuiButtonHtml(mode, head.hasTerminal)}
+    ${railRemoveButtonHtml(head.removalWho || who, head.removable)}
+    ${railWatchButtonHtml(head.watch)}
+    ${railProjectChipHtml(head.projectChip)}
+    ${pinButtonHtml({ subject: PANEL_SUBJECT, pinned: head.pinned })}
+    ${surfaceMenuRegionHtml(head.surfaceOptions)}
   </div>`;
 }
 
@@ -834,6 +857,20 @@ function mountRailOnContext(host, context, swap) {
   // project's when this is the workspace, the workspace's when this is the
   // project. `alongside` is the one it is NOT standing on, read for the bubbles
   // of it the strip carries and for nothing else.
+  // Whether the reader hears about this conversation (#65). One switch per
+  // mounted rail, because the rail stands on one conversation at a time — a
+  // swap to the project's side mounts a rail of its own with its own.
+  let watchState = { watching: context.watching !== false, watchers: context.watchers || 0, pending: false };
+  const watchSwitch = createWatchToggle({
+    ...watchState,
+    conversationId: context.entityId || null,
+    call: (method, params) => chatRepository.currentCall()(method, params),
+    onChange: (next) => {
+      watchState = next;
+      syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next);
+    },
+    onFailure: (error) => notifyError("Could not change watching", error.message || String(error)),
+  });
   const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
   let projectOwner = knownOwner;
   let projectName = knownName;
@@ -1738,7 +1775,7 @@ function mountRailOnContext(host, context, swap) {
       disposeComposerClearance?.();
       disposeComposerClearance = null;
       closeSurfaceMenu?.();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned, removalWho, projectChip: chip })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned, removalWho, projectChip: chip, watch: watchState })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
@@ -1770,6 +1807,7 @@ function mountRailOnContext(host, context, swap) {
       closeSurfaceMenu?.();
       disposeTitleMotion();
       panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, {
+        watch: watchState,
         provider,
         removable,
         hasTerminal,
@@ -1791,6 +1829,10 @@ function mountRailOnContext(host, context, swap) {
     syncRemoveWording(panel, removalWho);
     const pin = panel.querySelector(`.${PIN_CLASS}`);
     if (pin) syncPinButton(pin, { subject: PANEL_SUBJECT, pinned });
+    // Written onto the standing button rather than fingerprinted into the head:
+    // a press moves this and nothing else, and rebuilding the head for it would
+    // take the surface menu and the title's motion with it.
+    syncWatchButton(panel.querySelector(WATCH_BUTTON_SELECTOR), watchState);
     paintSurfaceMenu();
     syncSurfaceOverlay();
     if (shownMode === "chat") {
@@ -1810,6 +1852,8 @@ function mountRailOnContext(host, context, swap) {
     }
     const remove = panel.querySelector(".rail-remove");
     if (remove) remove.onclick = () => removeAgent(remove);
+    const watch = panel.querySelector(WATCH_BUTTON_SELECTOR);
+    if (watch) watch.onclick = () => void watchSwitch.press();
     const chip = panel.querySelector(".rail-project-chip");
     if (chip) chip.onclick = (event) => {
       // The anchor's href is the reader's to open elsewhere; a plain press is

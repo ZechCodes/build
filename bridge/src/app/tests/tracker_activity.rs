@@ -443,3 +443,120 @@ fn nothing_an_agent_says_lands_on_the_issue_as_a_comment() {
         vec!["Said deliberately.".to_string()]
     );
 }
+
+/// A Complete moves the issue the turn was dispatched under, and no other.
+///
+/// #48: an agent commonly holds a queue. The transport agent was assigned #30,
+/// #31 and #41, worked the first two, and its report moved #41 — which nobody
+/// had touched — to In review. It had to be moved back by hand.
+#[test]
+fn a_complete_moves_only_the_issue_the_turn_was_dispatched_under() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let ws = workspace(&mut state, &project_id, "here");
+    let worked = issue_id(&filed(&mut state, &project_id, "the one it was given"));
+    let untouched = issue_id(&filed(&mut state, &project_id, "still in its queue"));
+
+    // Dispatched the first, which makes the agent.
+    let handed = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": worked, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
+    ));
+    let dispatch = &handed["result"]["dispatch"].clone();
+    let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
+    let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
+
+    // And the second, which queues behind it. This is the last dispatch, so
+    // the turn now running is the one it started.
+    state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": untouched, "assignee": { "kind": "agent", "agent_id": agent_id } }),
+    ));
+
+    let column = |state: &mut AppState, id: &str| {
+        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["issue"]["status"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        report(DoneStatus::Completed, "Did the second one."),
+    );
+
+    assert_eq!(
+        column(&mut state, &untouched),
+        "in_review",
+        "the issue this turn was dispatched under"
+    );
+    assert_eq!(
+        column(&mut state, &worked),
+        "in_progress",
+        "and the one still in its queue is left exactly where it was"
+    );
+
+    // A second Complete in the same turn moves nothing more: the marker
+    // belonged to that turn and the report was the end of it.
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        report(DoneStatus::Completed, "Still done."),
+    );
+    assert_eq!(column(&mut state, &worked), "in_progress");
+}
+
+/// A turn nobody dispatched moves nothing. A reviewer message, a notice, a
+/// restart: a report on one of those says nothing about any issue.
+#[test]
+fn a_report_on_a_turn_no_assignment_started_moves_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let ws = workspace(&mut state, &project_id, "here");
+    let id = issue_id(&filed(
+        &mut state,
+        &project_id,
+        "assigned, not dispatched into this turn",
+    ));
+    let handed = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": id, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
+    ));
+    let dispatch = &handed["result"]["dispatch"].clone();
+    let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
+    let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
+
+    // The dispatch's own turn is reported and the card moves.
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        report(DoneStatus::Completed, "Done."),
+    );
+    let read = state.handle(req("issues.get", json!({ "issue_id": id })));
+    assert_eq!(read["result"]["issue"]["status"], "in_review");
+
+    // The user then says something and the agent answers. It still HOLDS the
+    // issue, but this turn was not about it.
+    state.handle(req(
+        "issues.update",
+        json!({ "issue_id": id, "status": "in_progress" }),
+    ));
+    state.handle(req(
+        "thread.post",
+        json!({ "entity_id": entity_id, "agent_id": agent_id, "body": "and what about the rail?" }),
+    ));
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        report(DoneStatus::Completed, "The rail is fine."),
+    );
+
+    let read = state.handle(req("issues.get", json!({ "issue_id": id })));
+    assert_eq!(
+        read["result"]["issue"]["status"], "in_progress",
+        "no assignment started that turn, so nothing moved: {read:?}"
+    );
+}

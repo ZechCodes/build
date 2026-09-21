@@ -327,6 +327,11 @@ impl AppState {
             delivered.wire(target.wire_kind()),
             now,
         );
+        // What the turn this dispatch just started is FOR. Its Complete moves
+        // this issue and no other; anything else the agent holds is a queue it
+        // has not been asked about.
+        self.dispatched_issue
+            .insert(delivered.agent_id.clone(), write.issue.id.clone());
         // Starting work moves the card, but only off the columns that mean
         // "not started". An issue already In progress, In review or Done was
         // put there deliberately, and a reassignment is not a reason to rewind

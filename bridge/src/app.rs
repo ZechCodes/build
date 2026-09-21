@@ -387,6 +387,18 @@ pub struct AppState {
     /// queued it has answered. The queue's in-flight counters let the idle
     /// sweep distinguish an agent on its way from one that never arrived.
     delivery_queue: self::runtime::delivery::queue::DeliveryQueue,
+    /// The issue each agent's CURRENT turn was dispatched under (spec: Issues
+    /// → Automatic activity).
+    ///
+    /// A report says something about the work that turn was started for, and
+    /// nothing about the rest of the agent's queue. Without this the Complete
+    /// move guessed — it took the newest open issue assigned to the agent —
+    /// and twice today moved an issue nobody had touched.
+    ///
+    /// In memory, like the reminder's own marker: a restart forgets which turn
+    /// was in flight, and a report that arrives after one moves nothing, which
+    /// is the safe way round.
+    dispatched_issue: HashMap<String, String>,
     /// What each agent was last told it still holds (spec: Issues → The
     /// Complete reminder), so the same list is not sent twice.
     ///
@@ -558,6 +570,7 @@ impl AppState {
             streams: HashMap::new(),
             session_registry: SessionRegistry::new(),
             delivery_queue: Default::default(),
+            dispatched_issue: HashMap::new(),
             reminded_holdings: HashMap::new(),
             operation_ledger: Default::default(),
             self_handle: None,

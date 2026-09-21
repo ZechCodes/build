@@ -28,8 +28,8 @@ use crate::tracker::{Actor, Issue, IssueEventKind, IssueState, IN_REVIEW_STATUS}
 use serde_json::json;
 
 impl AppState {
-    /// An agent reported Complete. If it holds a dispatched issue, move that
-    /// issue to In review.
+    /// An agent reported Complete. Move the issue THIS TURN was dispatched
+    /// under, and nothing else.
     ///
     /// Complete means the work is ready to be looked at, which is what In
     /// review means on a board — so the card follows the report without
@@ -45,7 +45,7 @@ impl AppState {
     /// over; failing to move a card must not turn a finished piece of work
     /// into a failed one.
     pub(in crate::app) fn move_held_issue_on_complete(&mut self, entity_id: &str, agent_id: &str) {
-        let Some((project_id, issue)) = self.issue_held_by(entity_id, agent_id) else {
+        let Some((project_id, issue)) = self.issue_this_turn_was_for(entity_id, agent_id) else {
             return;
         };
         if let Err(error) = self.hand_held_issue_on(&project_id, issue) {
@@ -79,41 +79,46 @@ impl AppState {
         self.commit_issue_write(project_id, write, &now).map(|_| ())
     }
 
-    /// The issue this agent is holding, when it is holding one.
+    /// The issue THIS TURN was dispatched under, when an assignment started it.
     ///
-    /// An agent holds an issue when the issue names it as assignee. Falling
-    /// back to "the issue links this agent's conversation" would be wrong the
-    /// moment two issues were ever dispatched into one conversation, which is
-    /// ordinary — an agent that finished one issue and was handed another
-    /// links both. The assignee is the one answer that stays true, and a
-    /// dispatch is what sets it.
+    /// Not "an issue this agent holds". An agent commonly holds a queue: it is
+    /// assigned three issues, works one, and reports. Picking the newest of
+    /// the three moved an issue nobody had touched — twice in one day — and
+    /// the agent had to move it back by hand and warn the project agent not to
+    /// roll it.
     ///
-    /// The newest such issue, by number, so an agent that somehow holds two
-    /// reports on the one it was given most recently rather than on all of
-    /// them.
-    fn issue_held_by(&mut self, entity_id: &str, agent_id: &str) -> Option<(String, Issue)> {
+    /// So the answer is the one the dispatch recorded when it started the
+    /// turn, and `None` for a turn nobody dispatched — a reviewer message, a
+    /// notice, a restart. A report on a turn that was not about an issue says
+    /// nothing about any issue.
+    ///
+    /// Taken rather than read: the marker belongs to one turn, and the report
+    /// is the end of it. A second Complete in the same turn moves nothing,
+    /// which is right — the card is already where the first one put it.
+    fn issue_this_turn_was_for(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+    ) -> Option<(String, Issue)> {
+        let issue_id = self.dispatched_issue.remove(agent_id)?;
         let project_id = self.projects.project_id_of(entity_id)?.to_string();
-        let project_path = self.tracker_project_path(&project_id).ok()?;
-        let held = self
+        let issue = self
             .tracker_store()
             .ok()?
-            .list_tracker_issues(
-                &project_path,
-                IssueFilter {
-                    state: Some(IssueState::Open),
-                    status: None,
-                },
-            )
-            .ok()?
-            .into_iter()
-            .find(|issue| {
-                issue
-                    .assignee
-                    .as_ref()
-                    .and_then(crate::tracker::Assignee::agent_id)
-                    == Some(agent_id)
-            })?;
-        Some((project_id, held))
+            .load_tracker_issue(&issue_id)
+            .ok()??;
+        // Still this agent's. A reassignment between the dispatch and the
+        // report means somebody else holds it now, and their card is not this
+        // report's to move.
+        if issue
+            .assignee
+            .as_ref()
+            .and_then(crate::tracker::Assignee::agent_id)
+            != Some(agent_id)
+        {
+            return None;
+        }
+        Some((project_id, issue))
     }
 
     fn issue_holder(&self, issue: &Issue) -> Option<String> {

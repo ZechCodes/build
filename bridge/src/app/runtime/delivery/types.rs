@@ -358,10 +358,19 @@ pub(in crate::app) const SPAWN_NEVER_OPENED: &str = "spawn_failed";
 
 impl AppState {
     pub(in crate::app) fn take_pending_turns(&mut self) -> PendingTurns {
+        // A reset that has passed lets its harness's turns go, and queues the
+        // agents its limit stopped, before anything is taken (issue #58).
+        self.release_due_usage_limits();
         let pending_rows = &self.pending_rows;
-        let mut ready = self
-            .delivery_queue
-            .take_ready(|turn| pending_rows.iter().any(|row| row.entity_id == turn.owner));
+        let usage_limits = &self.usage_limits;
+        let mut ready = self.delivery_queue.take_ready(|turn| {
+            pending_rows.iter().any(|row| row.entity_id == turn.owner)
+                // A harness out of usage starts no turn until its reset: the
+                // turn would only stop at the limit again. It stays queued,
+                // which is still delivered as far as its sender is concerned.
+                || usage_limits.holds(turn.model_choice.provider)
+        });
+        self.tell_turns_held_by_usage_limits();
         for turn in &mut ready {
             self.forget_agent_start_error(&turn.owner, &turn.agent_id);
             if !turn.wants_catch_up {

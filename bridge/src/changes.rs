@@ -406,6 +406,8 @@ pub struct SubscribeOutcome {
 pub struct BoardLists {
     pub projects: bool,
     pub workspaces: bool,
+    /// The harnesses out of usage on this device (issue #58).
+    pub usage_limits: bool,
 }
 
 impl BoardLists {
@@ -413,29 +415,43 @@ impl BoardLists {
     pub const PROJECTS: BoardLists = BoardLists {
         projects: true,
         workspaces: false,
+        usage_limits: false,
     };
     /// The workspace list moved: one was created, renamed, or deleted.
     pub const WORKSPACES: BoardLists = BoardLists {
         projects: false,
         workspaces: true,
+        usage_limits: false,
+    };
+    /// A harness on this device ran out of usage, or a turn ran on one that
+    /// had.
+    pub const USAGE_LIMITS: BoardLists = BoardLists {
+        projects: false,
+        workspaces: false,
+        usage_limits: true,
     };
 
     pub fn is_empty(self) -> bool {
-        !self.projects && !self.workspaces
+        !self.projects && !self.workspaces && !self.usage_limits
     }
 
     fn merge(&mut self, other: BoardLists) {
         self.projects |= other.projects;
         self.workspaces |= other.workspaces;
+        self.usage_limits |= other.usage_limits;
     }
 
     /// The wire keys this set names — what a board item may carry, and the
     /// filter a frame applies to a lookup answered for several frames at
     /// once.
     fn names(self) -> impl Iterator<Item = &'static str> {
-        [("projects", self.projects), ("workspaces", self.workspaces)]
-            .into_iter()
-            .filter_map(|(name, wanted)| wanted.then_some(name))
+        [
+            ("projects", self.projects),
+            ("workspaces", self.workspaces),
+            ("usage_limits", self.usage_limits),
+        ]
+        .into_iter()
+        .filter_map(|(name, wanted)| wanted.then_some(name))
     }
 }
 
@@ -1120,6 +1136,7 @@ fn unanswered_lists(owed: BoardLists, answer: Option<&Map<String, Value>>) -> Bo
     BoardLists {
         projects: owed.projects && answered_list(answer, "projects").is_none(),
         workspaces: owed.workspaces && answered_list(answer, "workspaces").is_none(),
+        usage_limits: owed.usage_limits && answered_list(answer, "usage_limits").is_none(),
     }
 }
 

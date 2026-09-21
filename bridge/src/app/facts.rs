@@ -111,6 +111,7 @@ pub(in crate::app) fn bus_with_sources(
 pub(in crate::app) struct BoardListFacts {
     projects: Option<Vec<super::ProjectListRow>>,
     workspaces: Option<Value>,
+    usage_limits: Option<Value>,
 }
 
 impl BoardListFacts {
@@ -125,6 +126,9 @@ impl BoardListFacts {
         }
         if let Some(workspaces) = self.workspaces {
             state.insert("workspaces".into(), workspaces);
+        }
+        if let Some(usage_limits) = self.usage_limits {
+            state.insert("usage_limits".into(), usage_limits);
         }
         Value::Object(state)
     }
@@ -454,6 +458,7 @@ impl AppState {
                 // and the bus keeps the subscription's latch up for a list
                 // nothing answered.
                 .filter(Value::is_array),
+            usage_limits: lists.usage_limits.then(|| self.usage_limits_json()),
         }
     }
 

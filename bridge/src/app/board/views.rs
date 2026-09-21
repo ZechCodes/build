@@ -537,6 +537,9 @@ impl AppState {
             // again.
             "scanning": checkouts.scanning,
             "workspace_summaries": workspace_summaries,
+            // The harnesses out of usage on this device (issue #58). The board
+            // item carries the same list whole whenever it moves.
+            "usage_limits": self.usage_limits_json(),
         })
     }
 

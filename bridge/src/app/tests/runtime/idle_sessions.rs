@@ -667,6 +667,47 @@ fn mark_idle_demotes_a_quiet_plan_and_run() {
         .contains("exit code 7"));
 }
 
+/// An agent that went quiet because its harness ran out of usage did not walk
+/// off without reporting (issue #58): it is idle with the limit as its reason,
+/// and it is started again when the limit lifts. No demotion, no "went quiet"
+/// post.
+#[test]
+fn mark_idle_leaves_an_agent_stopped_at_a_usage_limit_alone() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    insert_run_with_dying_agent_tab(
+        &mut state,
+        &repo,
+        dir.path(),
+        "run-limited",
+        RunState::Building,
+        HarnessSpec::new("sh").arg("-c").arg("exit 0"),
+    );
+    let agent = state
+        .entity_agents("run-limited")
+        .unwrap()
+        .primary()
+        .unwrap()
+        .clone();
+    let limit = crate::harness::usage_limit::UsageLimited {
+        said: "You've hit your session limit · resets 6:20pm (America/New_York)".into(),
+        resets_at: None,
+    };
+    state.usage_limits.observe(
+        agent.choice.provider,
+        "run-limited",
+        &agent.id,
+        &limit,
+        time::OffsetDateTime::now_utc(),
+    );
+
+    let demoted = state.mark_idle_tasks(Duration::from_secs(3600));
+
+    assert!(!demoted.contains(&"run-limited".to_string()), "{demoted:?}");
+    let got = state.handle(req("run.get", json!({ "run_id": "run-limited" })));
+    assert_eq!(got["result"]["state"], "building", "{got:?}");
+}
+
 /// A turn addressed to a worktree that cannot host an agent — the scaffold
 /// step fails on a path that is not a directory.
 fn unreachable_turn(state: &mut AppState, owner: &str) -> PendingAgentTurn {

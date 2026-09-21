@@ -736,6 +736,26 @@ pub struct BoardListResult {
     pub scanning: bool,
     /// One entry per workspace, whatever project it belongs to.
     pub workspace_summaries: Vec<WorkspaceSummaryRow>,
+    /// One entry per harness out of usage on this device; empty when none is.
+    /// Since 1.11.0.
+    #[serde(default)]
+    pub usage_limits: Vec<UsageLimitRow>,
+}
+
+/// A harness on this device that has run out of usage (issue #58). Present
+/// from the first turn that stopped at the limit until a turn on that harness
+/// runs again.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UsageLimitRow {
+    /// The provider's wire id, as an agent digest's `provider` names it.
+    pub harness: String,
+    /// When this device first saw the limit, RFC 3339.
+    pub since: String,
+    /// When the harness says it lifts, RFC 3339; `null` when it said nothing
+    /// that could be resolved to an instant.
+    pub resets_at: Option<String>,
+    /// The harness's own words.
+    pub said: String,
 }
 
 /// What a workspace has done, across every git directory in it. `null` while

@@ -424,6 +424,10 @@ pub struct AppState {
     /// has been restarted is one whose agent is reading its conversation from
     /// the top anyway.
     reminded_holdings: HashMap<String, Vec<String>>,
+    /// The harnesses out of usage on this device, and the agents whose turns
+    /// stopped at a limit (issue #58). In memory: a restart resumes every live
+    /// agent anyway, and one still limited says so again on its first turn.
+    usage_limits: self::runtime::usage_limits::UsageLimits,
     /// Operation receipts cached only for Store-free execution, plus the one
     /// acceptance awaiting its canonical owner persistence. SQLite remains
     /// authoritative whenever configured.
@@ -591,6 +595,7 @@ impl AppState {
             compactions: Default::default(),
             dispatched_issue: HashMap::new(),
             reminded_holdings: HashMap::new(),
+            usage_limits: Default::default(),
             operation_ledger: Default::default(),
             self_handle: None,
             next_stream: 1,

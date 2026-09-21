@@ -898,6 +898,14 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   border:0; border-top-left-radius:inherit; border-top-right-radius:inherit;
   background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
+/* The watch switch in the panel head (#65). Its on state was carried only by
+   aria-pressed, which is an answer for a screen reader and nothing at all for
+   everyone else. Dim at rest, accent when the reader is watching — the same
+   two weights the pin beside it uses. */
+.rail-watch { flex:none; display:grid; place-items:center; }
+.rail-watch svg { display:block; width:15px; height:15px; }
+.rail-watch.watching { color:var(--accent-fill, var(--accent)); }
+.rail-watch[disabled] { opacity:.55; cursor:default; }
 .rail-harness-icon { flex:none; width:20px; height:20px; display:grid; place-items:center;
   color:var(--ink); }
 .rail-harness-icon svg { display:block; width:20px; height:20px; }
